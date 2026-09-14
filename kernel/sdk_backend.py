@@ -3060,6 +3060,20 @@ def read_reg(state_dir: Path, sid: str) -> dict | None:
         return None
 
 
+def _reg_absent_for_write(path) -> bool:
+    """Whether a reg WRITER may build a fresh {sid} record at `path`: only when the stat says ENOENT, a genuinely absent
+    file. Every other stat error (EACCES on sdk/, ELOOP on a symlink-loop path, ENOTDIR, EIO) is a reg that exists or a
+    path that cannot hold one, and a write there guts the record or lands in the wrong place; never Path.exists(), which
+    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14)."""
+    try:
+        path.stat()
+        return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     """read_reg for a READ-MODIFY-WRITE on one reg FIELD: {} when the reg genuinely does not
     exist (a fresh session — an empty base is correct), None when the reg EXISTS but would not
@@ -3071,7 +3085,7 @@ def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     reg = read_reg(state_dir, sid)
     if reg is not None:
         return reg
-    return None if _reg_path(state_dir, sid).exists() else {}
+    return {} if _reg_absent_for_write(_reg_path(state_dir, sid)) else None
 
 
 def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
@@ -5044,7 +5058,7 @@ class SdkSession:
         self._host = None
         self._host_intent = False          # set before the host attach or spawn begins, so a drain mid-attach detaches
         self._host_is_attach = False       # the current host connect is an ATTACH (a replay-bearing hello)
-        self._connect_attach = False       # this connect was read as an attach before its options build (T346): no launch stamp
+        self._deliberate_connect = False   # this connect is a deliberate reconnect inside a live thread: a fresh CLI marks no echoes
         self._host_attach_retries = 0
         self.detached = False
         self._host_end_grace = None
@@ -6290,21 +6304,36 @@ class SdkSession:
         finally:
             self._cur_ask_fut = None
 
+    def _fresh_cli_stamp(self, spawned_at: int, cli_ident: str = "", mark_echoes=True) -> None:
+        """The FRESH-CLI block, run ONCE PER CLI: stamp spawnedAt (the kernel's bg-tasks box drops unfinished tasks that
+        predate the live CLI, they died with the old one and their completion notifications can never arrive; the judge's
+        _cli_epoch is the same gate) with `cli_ident`, the identity of the CLI the epoch belongs to ("pid:start" under a host,
+        "" for a kernel child), clear any stale awaiting overlay the old CLI's death stranded (the Stop hook that clears it
+        died too), and mark the dropped echoes (the SPAWN half; boot half: _reseed_echoes): a fresh CLI means whatever held
+        any earlier send is gone. Both heals previously ran only at KERNEL boot, so a session restart inside a live kernel
+        kept ghost '25 background tasks' / waiting displays that read as a wedged session (the user 2026-07-10).
+        WHO calls it, and when (2026-09-14, the spawnedAt fix and its follow-up's rounds): under a session host, the
+        backend's _on_host_hello, when the host's hello names a CLI whose identity differs from the reg's `spawnedAtCli`,
+        with the host's own spawn time (the host is the authority for when ITS CLI spawned); the connect loop, at the
+        connect, for a kernel child (hosts off), with now. Never keyed on the connect's ROAD or on a lease pre-read: a
+        spawned host whose handshake fails after the CLI is up is attached by the next iteration, and the stamp must land
+        exactly once for that CLI whichever iteration first sees it; a kernel restart RE-ATTACHES to the CLI still running
+        under its host, whose identity the reg already names, so nothing here runs (its epoch, its background launches, its
+        awaiting and its held sends all stand; before the fix every boot re-stamped every attached session, re-arming the
+        planner's persisted memo and the evidence gate and reading the live CLIs' running tasks as ghosts). `mark_echoes` is
+        False on a DELIBERATE reconnect inside a live thread (the waker's effort or model change), whose forwarded sends land
+        through the resume."""
+        self.backend._update_reg(self.sid, spawnedAt=int(spawned_at), spawnedAtCli=str(cli_ident or ""))
+        self.backend._heal_stale_awaiting(self.sid)
+        if mark_echoes:
+            try:
+                self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending())
+            except Exception as e:                       # bookkeeping over the live tail: a raise here is no launch fault, the
+                self.backend._log("dropped-echo marking (%s) failed: %s: %s" % (self.name, type(e).__name__, e))   # connect goes on
+
     def _run(self):
         try:
-            # A FRESH CLI is about to spawn for this sid: stamp when (the kernel's bg-tasks box drops
-            # unfinished tasks that predate the live CLI — they died with the old one, their completion
-            # notifications can never arrive) and clear any stale awaiting overlay the old CLI's death
-            # stranded (the Stop hook that clears it died too). Both previously healed only at KERNEL
-            # boot, so a session restart inside a live kernel kept ghost '25 background tasks' /
-            # waiting displays that read as a wedged session (nimbus, the user 2026-07-10).
-            self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
-            self.backend._heal_stale_awaiting(self.sid)
-            # The SPAWN half of the dropped-echo marking (boot half: _reseed_echoes): a fresh CLI means
-            # whatever held any earlier send is gone. An echo neither in self._pending (delivered to the
-            # new CLI) nor landed has no holder left — flag it so the chat says "never delivered".
-            self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending())
-            asyncio.run(self._amain())
+            asyncio.run(self._amain())               # the fresh-CLI block runs inside: at the host's hello, or at a kernel child's connect
         except Exception as e:                       # surfaced for debugging; never crash kernel
             # The TRACEBACK too, not just the type and message: a bare "KeyError: <uuid>" names no line,
             # so a crash that killed a session left nothing to fix it by. The error center shows the
@@ -6409,6 +6438,13 @@ class SdkSession:
         # incoming message, leaking the client + its claude subprocess).
         while not self.ended:
             self._wake.clear()
+            # a DELIBERATE reconnect (the waker tore the last client down for an effort or model change: _reconnect armed and
+            # no attach retry pending) hands the same conversation to a fresh client and its forwarded sends land through the
+            # resume, so the fresh-CLI block below stamps the epoch and heals the awaiting but does NOT mark held echoes
+            # dropped; a thread-top spawn, a crash heal (a new thread) and a respawn after an incomplete attach have no
+            # holder left for an unlanded send, and mark (round two of the spawnedAt fix, 2026-09-14)
+            deliberate = bool(self._reconnect) and not self._host_attach_retries
+            self._deliberate_connect = deliberate    # read by _on_host_hello, where the block runs under a host
             self._reconnect = False
             self._ping_feeding = False   # a reconnect restarts the feed — a stale hold must not wedge it
             # the abandoned client's live subagents and background tasks died with it — retire them on
@@ -6416,13 +6452,13 @@ class SdkSession:
             self._drop_live_work("reconnect")
             # settle + recover anything the abandoned client stranded — see _reconcile_stranded
             self._reconcile_stranded()
-            # Whether this connect ATTACHES to a live host (a restart survived: the CLI keeps running and replays no
-            # init) or launches a CLI, read off the lease BEFORE the options build: _options stamps the launch's login
-            # and resets the init evidence only for a launch (review 2026-09-11: the stamp ran on every connect and
-            # wiped the evidence the reg had just restored on the very attach it was persisted for). A pre-read the
-            # lease outran (a host that died in between) is corrected by _host_transport_for, which stamps when it
-            # launches after all.
-            self._connect_attach = self.backend._connect_would_attach(self)
+            # The launch-login stamp (T346) and the fresh-CLI block are decided per CLI, never per connect road and never at a
+            # lease pre-read: under a host at the host's hello (_on_host_hello, keyed on the CLI identity the hello names
+            # against the reg's spawnedAtCli), for a kernel child at the connect below. A pre-read the lease outran stamped a
+            # fresh CLI's login onto a survivor (the reverse race) or withheld it from a launch (the host gone in between);
+            # a stamp at the connect's outcome missed a host whose CLI came up and whose handshake then failed, since the
+            # retry ATTACHED to that fresh CLI and nothing stamped for its life (the spawnedAt fix's rounds, 2026-09-14).
+            # _options builds the options only.
             try:
                 opts = self.backend._options(self, ClaudeAgentOptions)
             except Exception as e:
@@ -6440,6 +6476,7 @@ class SdkSession:
             connected = False
             try:
                 transport = None
+                self._host_is_attach = False             # the transport's attach branch alone sets it True (every other road spawns)
                 if self.backend.session_hosts_on() or self.backend._host_lease_applies(self):
                     # T315: the CLI runs under a per-session host; this client speaks to it over the host's
                     # socket (attach to a live host, or spawn one), never to a child of its own. A LIVE host lease
@@ -6453,6 +6490,15 @@ class SdkSession:
                     connected = True
                     self._host_attach_retries = 0   # consecutive incomplete attaches, as the stand-down's docstring
                     #   promises: a recovered timeout earlier in this object's life never counts toward a later bound
+                    if self._host is None:
+                        # a KERNEL CHILD (hosts off): the SDK spawned a CLI of this client's own, which dies with the client,
+                        # so every connect that gets here is a fresh CLI and the block runs at the connect (an iteration that
+                        # never gets here, a missing binary, a bad cwd, a transport fault, a rewind refused before the
+                        # handshake, moves nothing): the launch-login stamp (T346) and the fresh-CLI block, with now as the
+                        # epoch and no CLI identity. Under a HOST the block ran at the hello inside the connect above
+                        # (_on_host_hello), once per CLI, whatever this iteration's road (the spawnedAt fix's follow-up)
+                        self.backend._stamp_launch_login(self)
+                        self._fresh_cli_stamp(int(time.time()), "", mark_echoes=not deliberate)
                     self.client = client
                     # The handshake IS the "this session is open" event (snapshot `connected`, the flip
                     # the kernel's opening chip stands down on) — push THIS session now. Left to the
@@ -9543,12 +9589,15 @@ class SdkBackend:
         #                                           (as two same-sized budgets they burst to 2x the cap after
         #                                           a restart — 2026-08-18 review); a spawn holds its slot
         #                                           until the CLI proves up or its thread dies
-        # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
-        # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
-        # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
+        # Kernel-restart heal: an alive session still reading awaiting:true whose CLI died with the previous kernel
+        # is stale — its background tasks (and the Stop hook that clears the overlay) died too. Left uncleared it
+        # reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24). Under session hosts
+        # the CLI SURVIVES the kernel (a valid host lease names it) and its awaiting is real: the heal skips it, as
+        # the connect thread's fresh-CLI block skips an attach (the spawnedAt fix's follow-up, 2026-09-14: every boot
+        # wiped a surviving CLI's real awaiting and read its held send as never delivered).
         regs = list_regs(self.state_dir)
         for reg in regs:
-            if reg.get("alive"):
+            if reg.get("alive") and not self._lease_survives(reg["sid"]):
                 self._heal_stale_awaiting(reg["sid"])
         self._reseed_echoes(regs)   # unlanded input echoes survive the restart (reg['echoes'] mirror)
         # Boot reconcile (reconcile=True: the KERNEL passes it at boot; tests and ad-hoc constructions
@@ -9778,26 +9827,19 @@ class SdkBackend:
     def session_hosts_on(self) -> bool:
         return _ht().session_hosts_on(self.state_dir)
 
-    def _connect_would_attach(self, sess) -> bool:
-        """Whether the connect about to be made ATTACHES to a live host (the lease reads 'attach') rather than
-        launching a CLI. Read by the connect loop before _options, which stamps a launch's login and resets the
-        init evidence only when it launches. False on any doubt: the launch stamp is the safe default (the init
-        that follows a launch refreshes the evidence; an attach replays none)."""
-        try:
-            if not (self.session_hosts_on() or self._host_lease_applies(sess)):
-                return False
-            return _ht().host_lease_state(read_lease(self.state_dir, sess.sid), time.time()) == "attach"
-        except Exception:
-            return False
-
-    def _stamp_launch_login(self, sess) -> None:
-        """A LAUNCH is being made from the options last built for `sess`: record the stored login it carries
-        (_options_login; "" = the machine's own) and reset the init evidence to none (this process has said
-        nothing yet), both persisted (_persist_login_evidence). Never run for an attach: the running CLI's
-        evidence, restored from the reg, is about a process that is still there, and the login it carried is
-        not recomputed from today's availability (a record refused by another session meanwhile must not move
-        the attached session's spend rows onto the machine's login; review 2026-09-11)."""
-        login_id = str(getattr(sess, "_options_login", "") or "")
+    def _stamp_launch_login(self, sess, login_id=None) -> None:
+        """A CLI was LAUNCHED for `sess`: record the stored login the launch carries (`login_id`, the login's
+        IDENTIFIER, "" = the machine's own; None = the options last built for `sess`, _options_login) and
+        reset the init evidence to none (this process has said nothing yet), both persisted
+        (_persist_login_evidence, the one writer every login reader resolves against). Run once per CLI: at a
+        kernel child's connect from its options, and at a host's hello for a CLI the reg has not stamped, from
+        the hello's cli.login (the identifier the host's spec carried at the spawn, so a retry that attaches to
+        the CLI a failed handshake left running stamps the login the launch USED, not the one today's
+        availability would pick). Never for a CLI the reg already names: the running CLI's evidence, restored
+        from the reg, is about a process that is still there, and the login it carried is not recomputed (a
+        record refused by another session meanwhile must not move the attached session's spend rows onto the
+        machine's login; review 2026-09-11)."""
+        login_id = str((getattr(sess, "_options_login", "") if login_id is None else login_id) or "")
         sess._launched_login = login_id
         sess.auth_login_live = None
         self._persist_login_evidence(sess, launchedLogin=login_id, authLoginLive=None)
@@ -9849,12 +9891,9 @@ class SdkBackend:
             # records no kernel consumed. Replay that tail through the same road (no wait: no holder to wait
             # for; no host.died row: nothing died), then clear the directory.
             await self._host_orphan_recover(sess, opts, None, msg_classes, died=False)
-        if state != "attach" and getattr(sess, "_connect_attach", False):
-            # the connect loop's lease pre-read took this connect for an attach and the host has gone since: every
-            # road from here LAUNCHES a CLI (a kernel child, a fresh host), so the launch stamp the options build
-            # skipped is made now (review 2026-09-11)
-            sess._connect_attach = False
-            self._stamp_launch_login(sess)
+        # every road from here that is not an attach LAUNCHES a CLI (a kernel child, a fresh host); the launch stamp and
+        # the fresh-CLI block are made per CLI, not here: at the host's hello (_on_host_hello) or, for a kernel child,
+        # at the connect (2026-09-14)
         hosts_on, hosts_value = _ht().session_hosts_read(self.state_dir)   # one read: the branch and its log agree
         if state == "none" and not hosts_on:
             # the kill switch: with the setting file saying off nothing SPAWNS a host, whatever happened to the last
@@ -9883,6 +9922,9 @@ class SdkBackend:
             self._host_spawning.add(sess.sid)
         try:
             spec = ht.spawn_spec(opts, sess.sid, sess.name, self.state_dir, self.code_version, ht.session_host_grace_s(self.state_dir))
+            spec["login"] = str(getattr(sess, "_options_login", "") or "")   # the login IDENTIFIER this launch bills, echoed
+            #   in every hello as cli.login, so the kernel that first sees the CLI stamps the login the launch used (never a
+            #   token or key: those ride the env overlay, and the hello never carries them)
             spec_path = ht.write_spawn_spec(self.state_dir, sess.sid, spec)
             sock = ht.host_sock(self.state_dir, sess.sid)
             try:
@@ -10047,14 +10089,30 @@ class SdkBackend:
             self._update_reg_dropping(sess.sid, drop=("hostAck", "hostLogPos"))
 
     def _on_host_hello(self, sess, hello: dict) -> None:
-        """Attached: the `host.attached` session-events row (boot or later), then every host.log line since
-        the last attach that names a fault, a self-answered hook or a forced end becomes a problem row —
-        the host never writes the ledger itself. The host's open turn count becomes this session's, so a
-        host death after the attach is a mid-turn death, not an idle exit; and an attach with nothing to
-        replay settles the boot stagger's slot (no init record will arrive to do it)."""
+        """Attached: the fresh-CLI decision (below), the `host.attached` session-events row (boot or later), then
+        every host.log line since the last attach that names a fault, a self-answered hook or a forced end
+        becomes a problem row (the host never writes the ledger itself). The host's open turn count becomes
+        this session's, so a host death after the attach is a mid-turn death, not an idle exit; and an attach
+        with nothing to replay settles the boot stagger's slot (no init record will arrive to do it).
+
+        The fresh-CLI decision (2026-09-14): the host is the authority for WHICH CLI it runs (cli.pid:cli.start,
+        the identity hostAck already keys on) and for WHEN it spawned (cli.spawnedAt, stamped once by the host
+        at the spawn). The reg's `spawnedAtCli` names the CLI its spawnedAt belongs to; the hello runs inside the
+        transport's connect, before the SDK's initialize, so the decision is made the first time this kernel
+        sees the CLI, whichever iteration and road got here. Equal identity: nothing (a survivor across the
+        kernel's restart, or a retry attaching to the CLI a failed handshake left running: one stamp per CLI).
+        A different identity with a spawn time: a fresh CLI, the launch-login stamp (cli.login, the identifier
+        the spec carried at the spawn; the options' login when a hello lacks it) and the fresh-CLI block with the
+        host's spawn time. A different identity WITHOUT a spawn time: a host running code older than the field,
+        whose CLI therefore predates this kernel; its identity is recorded and nothing else moves. No CLI
+        identity at all (a hello older than the identity itself): nothing stamped, said in the log, never a
+        raise out of the connect."""
         boot = sess.sid in self._boot_attach_sids
         self._boot_attach_sids.discard(sess.sid)
         h, c, j = hello.get("host") or {}, hello.get("cli") or {}, hello.get("journal") or {}
+        if not isinstance(c, dict):
+            c = {}
+        self._fresh_cli_decision(sess, c)
         try:
             open_turns = int(hello.get("inflight") or 0)
         except (TypeError, ValueError):
@@ -10073,6 +10131,29 @@ class SdkBackend:
                              replayFrom=int(sess._host.ack_offset) + 1 if sess._host else None, journalNext=j.get("next"),
                              parked=len(hello.get("parked") or []))
         self._file_host_log_rows(sess)
+
+    def _fresh_cli_decision(self, sess, cli: dict) -> None:
+        """The fresh-CLI decision at a host's hello (the rule in _on_host_hello's docstring), from the hello's `cli` dict."""
+        pid, start = cli.get("pid"), cli.get("start")
+        if pid is None or not start:
+            self._log("host (%s): the hello names no CLI identity; nothing stamped (a host older than the identity)" % sess.name)
+            return
+        ident = "%s:%s" % (pid, start)
+        reg = read_reg(self.state_dir, sess.sid) or {}
+        if ident == str(reg.get("spawnedAtCli") or ""):
+            return                                        # the CLI the reg's epoch already belongs to: a survivor, or a retry
+        spawned = cli.get("spawnedAt")
+        if isinstance(spawned, bool) or not isinstance(spawned, int) or spawned <= 0:
+            # a host running code older than the spawn-time field: its CLI predates this kernel (every host spawned by this
+            # code carries the field), so the epoch, the awaiting, the held sends and the launch login all stand
+            self._update_reg(sess.sid, spawnedAtCli=ident)
+            self._log("host (%s): the hello carries no CLI spawn time (older host code); CLI %s recorded, nothing stamped"
+                      % (sess.name, ident))
+            return
+        login = cli.get("login")
+        self._stamp_launch_login(sess, login_id=login if isinstance(login, str) else None)
+        sess._fresh_cli_stamp(spawned, ident, mark_echoes=not getattr(sess, "_deliberate_connect", False))
+        self._log("host (%s): a fresh CLI %s (spawned at %d); its epoch and launch login stamped" % (sess.name, ident, spawned))
 
     def _file_host_log_rows(self, sess) -> None:
         """host.log lines not yet filed become problem rows. The position is kept in the registry beside hostAck
@@ -12069,12 +12150,12 @@ class SdkBackend:
         # launched login and resets the init evidence to none: a relaunch that stops carrying the helper (the login
         # went unavailable, then a model or effort reconnect) must not keep the old init's word, or a revoked KEY's
         # auth error would refuse the stored login and a reply served on the fallback would clear a real refusal.
-        # For an ATTACH to a live host (the connect loop read the lease first) nothing is stamped: no CLI launches,
-        # no init replays, and the evidence and the launched login stand as the reg restored them; the host road
-        # stamps if it launches after all (review 2026-09-11, twice).
+        # For an ATTACH to the CLI the reg already names nothing is stamped: no CLI launches, no init replays, and the
+        # evidence and the launched login stand as the reg restored them (review 2026-09-11, twice). The stamp is made
+        # per CLI: at a kernel child's connect from this value, at a host's hello from the login the spawn's spec carried
+        # (this value, written into the spec by the host road), so a retry attaching to a CLI a failed handshake left
+        # running stamps the login the launch used (2026-09-14).
         sess._options_login = login_id
-        if not getattr(sess, "_connect_attach", False):
-            self._stamp_launch_login(sess)
         sess._launched_unkeyed_pick = side == "key" and not launch_keyed
         if self.session_hosts_on():
             # under a host, a hook the kernel cannot answer in time (a restart in progress) is answered by the
@@ -12739,6 +12820,14 @@ class SdkBackend:
         except Exception as e:
             self._log("echo mirror (%s): registry write failed: %s" % (sid[:8], e))
 
+    def _lease_survives(self, sid: str) -> bool:
+        """Whether a live session host holds `sid`'s CLI across this kernel's restart: its lease reads 'attach' (the rule the
+        host road applies to choose the attach), so the boot-time heals leave what the surviving CLI still owns."""
+        try:
+            return _ht().host_lease_state(read_lease(self.state_dir, sid), time.time()) == "attach"
+        except Exception:
+            return False
+
     def _reseed_echoes(self, regs: list[dict]) -> None:
         """Kernel boot: re-create each alive session's persisted unlanded echoes in the live store, so a
         send in flight across the restart stays visible until its real record lands (then the normal
@@ -12772,10 +12861,15 @@ class SdkBackend:
                 if e.get("landed"):
                     atom["_landed"] = True           # already adjudicated landed: never re-scanned, never flagged
                 self._stash_live(reg["sid"], key, atom)
-            if self._live.get(reg["sid"]):
+            if self._live.get(reg["sid"]) and not self._lease_survives(reg["sid"]):
+                # a CLI that survived under its host still holds the sends the previous kernel handed it: nothing is
+                # dropped by the restart, so nothing is flagged (the fresh-CLI block's rule, applied at the boot)
                 _texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
-                self._mark_dropped_echoes(reg["sid"], [{"md": t, "qid": (m or {}).get("qid")}
-                                                       for t, m in zip(_texts, queue_meta_from_reg(reg))])
+                try:
+                    self._mark_dropped_echoes(reg["sid"], [{"md": t, "qid": (m or {}).get("qid")}
+                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))])
+                except Exception as e:                   # bookkeeping over the live tail, as at the spawn half: said, never a
+                    self._log("dropped-echo marking (%s) failed: %s: %s" % (reg["sid"][:8], type(e).__name__, e))   # boot fault
 
     def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True) -> None:
         """A fresh CLI is spawning for this sid, or the kernel just booted: whatever process held any
@@ -12812,9 +12906,11 @@ class SdkBackend:
         # re-delivers a copy that is in fact queued.
         _queued = lambda a: _echo_queued_in(a, queued_texts)
         # The selection is under the live-tail lock; everything after it (the transcript scan, the
-        # queue re-add, the reg write) is not. This runs on the SESSION thread at spawn and at every
-        # reconnect, outside the connect's try — while the kernel thread's send() stashes an echo into
-        # the same dict. Unlocked, the comprehension raised RuntimeError there and the session thread
+        # queue re-add, the reg write) is not. This runs on the SESSION thread inside the connect loop, right after
+        # a fresh CLI is first seen (_fresh_cli_stamp) or at the boot reseed (_reseed_echoes); both callers catch and
+        # log a raise here as a bookkeeping fault, so it never reads as the CLI failing to come up. Meanwhile the
+        # kernel thread's send() stashes an
+        # echo into the same dict. Unlocked, the comprehension raised RuntimeError there and the session thread
         # died with no reconnect (2026-09-06).
         with self._live_lock:
             d = self._live.get(sid)
@@ -13730,7 +13826,7 @@ class SdkBackend:
         with self._reg_lock:
             reg = read_reg(self.state_dir, sid)
             if reg is None:
-                if _reg_path(self.state_dir, sid).exists():
+                if not _reg_absent_for_write(_reg_path(self.state_dir, sid)):   # the writers' one rule (2026-09-14)
                     sys.stderr.write("update_reg: %s unreadable — skipping a %s write rather than "
                                      "gutting the reg\n" % (sid[:8], "/".join(sorted(fields) + list(drop))))
                     return
@@ -15124,7 +15220,7 @@ class SdkBackend:
         with self._reg_lock:                       # kernel + loop threads both write (queue mirror);
             reg = read_reg(self.state_dir, sid)    # unserialized RMWs would drop fields
             if reg is None:
-                if _reg_path(self.state_dir, sid).exists():
+                if not _reg_absent_for_write(_reg_path(self.state_dir, sid)):
                     # the reg EXISTS but would not read: writing {sid}+fields here GUTS it — no
                     # alive, no name — and a gutted reg vanishes from every listing until a full
                     # rewrite (the 2026-08-31 blink class). Losing one mirror update is the far

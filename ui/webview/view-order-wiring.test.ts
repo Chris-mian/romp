@@ -23,7 +23,7 @@ test("the arrangement is re-read per emit, never cached", () => {
   // surfaces arranged one way and this one's another until a reload
   assert.match(FED, /private view\(\): string\[\] \{\s*\n\s*return readViewOrder\(\);\s*\n\s*\}/);
   assert.match(FED, /mergeHostOrder\(this\.perHostOrder, this\.hostSeq, this\.view\(\)\)/);
-  assert.match(FED, /mergeHostFeeds\(this\.perHostFeed, this\.hostSeq, this\.view\(\), dead, this\.perHostFeedAt\)/);
+  assert.match(FED, /mergeHostFeeds\(this\.perHostFeed, this\.hostSeq, this\.view\(\), dead, this\.perHostFeedAt, this\.hostsRead\)/);   // the sixth argument: whether the host list has been read (T404 round nine)
   assert.match(FED, /mergeHostTimelines\(this\.perHostTl, this\.hostSeq, this\.view\(\)\)/);
 });
 

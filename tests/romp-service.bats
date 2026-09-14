@@ -27,9 +27,20 @@ setup() {
     # The env-file path is baked (and, when non-default, exported) into the unit too; a developer shell
     # that carries either variable must not leak it into the default-install assertions below.
     unset ROMP_SERVICE_ENV_FILE XDG_CONFIG_HOME
+    # The macOS install's verification probes the control port when the agent's manager is not running (a manager
+    # already serving there, a hand-run one, is named as such). A developer's machine, and a romp session's, has a
+    # live manager on the default port, so every test here answers that probe with a stand-in that says nothing
+    # serves; the tests about that state set their own.
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_DIR/probe-nothing"
+    chmod +x "$TEST_DIR/probe-nothing"
+    export ROMP_MANAGER_PROBE="$TEST_DIR/probe-nothing"
 }
 
-teardown() { rm -rf "$TEST_DIR"; }
+teardown() {
+    # the hang shapes record their pids: whatever a failing case left alive dies here, never in the suite's wake
+    local p; for p in node sleeper; do [ -s "$TEST_DIR/$p.pid" ] && kill -KILL "$(cat "$TEST_DIR/$p.pid")" 2>/dev/null; done
+    rm -rf "$TEST_DIR"
+}
 
 @test "install (macOS): launchd plist runs 'romp-manager up' at login, kept alive" {
     ROMP_OS_OVERRIDE=Darwin run "$SVC" install
@@ -40,6 +51,10 @@ teardown() { rm -rf "$TEST_DIR"; }
     grep -q "<string>up</string>" "$plist"
     grep -q "RunAtLoad" "$plist"
     grep -q "KeepAlive" "$plist"
+    # issue 1600: KeepAlive with launchd's default ten-second throttle respawned a manager that died at once
+    # six times a minute forever; the interval bounds that loop to once a minute (a manager that ran longer
+    # than it before exiting is respawned at once, since the throttle counts from the job's last start)
+    grep -q "<key>ThrottleInterval</key><integer>60</integer>" "$plist"
 }
 
 @test "install (macOS): login agent runs the manager under the romp-node copy (FDA identity)" {
@@ -63,6 +78,264 @@ teardown() { rm -rf "$TEST_DIR"; }
     # install tells the user the exact path to grant Full Disk Access to.
     [[ "$output" == *"$rn"* ]]
     [[ "$output" == *"Full Disk Access"* ]]
+}
+
+@test "install (macOS): a node copy that cannot run from the state dir is removed, and the install says the manager runs on the system node" {
+    # issue 1600: the copy is probed once made (an empty program, stdin closed, a bound); a node whose shared
+    # library is referenced relative to its install dies from the copy, so the copy goes and the message
+    # names the consequence for Full Disk Access. The launcher probes too, so this is the install's half.
+    local src="$TEST_DIR/bound-node"
+    cat > "$src" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$src") exit 0 ;;
+  *) echo "dyld[4242]: Library not loaded: @rpath/libnode.dylib" >&2; exit 134 ;;
+esac
+EOF
+    chmod +x "$src"
+    ROMP_NODE_SRC="$src" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    local rn="$XDG_STATE_HOME/romp/romp-node"
+    [ ! -e "$rn" ]                                            # the unusable copy is gone
+    [[ "$output" == *"cannot run from $rn"* ]]
+    [[ "$output" == *"runs on the system node"* ]]
+    [[ "$output" == *"ROMP_NO_NODE_COPY=1"* ]]
+    [[ "$output" != *"grant it to romp's OWN node copy"* ]]   # no grant advice for a copy that is not there
+}
+
+@test "install (macOS): ROMP_NO_NODE_COPY=1 in service.env, the route the message names, makes no copy and removes a stale one" {
+    # round two of issue 1600: the install never parsed service.env (it bakes the path into the unit and the plist), so
+    # the line the messages name did nothing for the install's own copy. The environment is UNSET here; the file is
+    # the default one under this test's HOME (the setup clears XDG_CONFIG_HOME and ROMP_SERVICE_ENV_FILE).
+    ROMP_OS_OVERRIDE=Darwin "$SVC" install >/dev/null        # a copy from a normal install
+    local rn="$XDG_STATE_HOME/romp/romp-node"
+    [ -x "$rn" ]
+    unset ROMP_NO_NODE_COPY
+    mkdir -p "$HOME/.config/romp"
+    printf '# knobs\nROMP_NO_NODE_COPY="1"\n' > "$HOME/.config/romp/service.env"
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$rn" ]
+    [[ "$output" != *"grant it to romp's OWN node copy"* ]]   # no grant advice for a copy that is not there
+    # …and the line read from a non-default path, the one the plist and unit are told about
+    printf 'ROMP_NO_NODE_COPY=\n' > "$HOME/.config/romp/service.env"   # an empty value is OFF
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$rn" ]
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/elsewhere/service.env"
+    mkdir -p "$TEST_DIR/elsewhere"; printf 'ROMP_NO_NODE_COPY=yes\n' > "$ROMP_SERVICE_ENV_FILE"
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$rn" ]
+}
+
+@test "install (macOS): a node copy that HANGS from the state dir is killed at the bound and removed, and no node is leaked" {
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local src="$TEST_DIR/hang-node"
+    cat > "$src" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$src") exit 0 ;;
+  *) exec sleep 600 ;;
+esac
+EOF
+    chmod +x "$src"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t
+    for t in bash sh cmp cp chmod mv mkdir rm sleep ps setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    PATH="$bare" ROMP_NODE_SRC="$src" ROMP_OS_OVERRIDE=Darwin run "$tmo" 60 setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [[ "$output" != *"sleep 600"* ]]
+    [ -z "$output" ]
+}
+
+# These cases need setsid and coreutils timeout for their outer bound, so on a mac, the platform that takes the watchdog
+# path, they SKIP: the watchdog code is the same on both platforms and is exercised here through the bare PATH, but a mac
+# run of the suite proves nothing about it (the tidy of the fresh-install set names this; a mac-shaped bound is future work).
+# The hang shapes on both probe paths, the install's twin of the launcher's matrix (round four of issue 1600): exec (the
+# copy is the hung process), fork (a version manager's shim runs node instead of exec'ing it: the hung process is a child
+# of the pid the wrapper holds, which leaked on the watchdog path) and deaf (TERM ignored: only KILL ends it, and a timeout
+# without -k held the install for good). The stand-in runs from its source path and hangs from the copy's; the bound is
+# two seconds here (ROMP_NODE_PROBE_BOUND); the hung pids go to files, so the leak check names them.
+_hang_src() {   # $1 shape: exec | fork | deaf
+    local body
+    case "$1" in
+      exec) body='exec sleep 60' ;;
+      fork) body='sleep 60 & echo $! > "'"$TEST_DIR"'/sleeper.pid"; wait' ;;
+      deaf) body='trap "" TERM; exec sleep 60' ;;
+    esac
+    cat > "$TEST_DIR/hang-node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$TEST_DIR/hang-node") exit 0 ;;
+  *) echo \$\$ > "$TEST_DIR/node.pid"; $body ;;
+esac
+EOF
+    chmod +x "$TEST_DIR/hang-node"
+}
+_dead() {   # $1 pid: gone, or a zombie awaiting its reap
+    local st; st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')"
+    [ -z "$st" ] || [ "${st#Z}" != "$st" ]
+}
+_run_install_hang() {   # $1 shape, $2 path: bare (the watchdog) | timeout; the install in its own session under a 20 s outer bound
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    _hang_src "$1"
+    local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm sleep ps pgrep setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    if [ "$2" = timeout ]; then ln -s "$tmo" "$bare/timeout"; fi
+    rm -f "$TEST_DIR/node.pid" "$TEST_DIR/sleeper.pid" "$TEST_DIR/pgid"
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=2 ROMP_NODE_SRC="$TEST_DIR/hang-node" ROMP_OS_OVERRIDE=Darwin run "$tmo" 20 setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+}
+_install_hang_asserts() {   # the copy is removed with the reason said, and nothing of the probe survives: not the node, not its child, nothing in the session
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+    [ -s "$TEST_DIR/node.pid" ]
+    _dead "$(cat "$TEST_DIR/node.pid")"
+    [ ! -s "$TEST_DIR/sleeper.pid" ] || _dead "$(cat "$TEST_DIR/sleeper.pid")"
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+@test "install (macOS), the watchdog path: a shim that FORKS the hung node leaks nothing: the tree under the wrapper's pid is killed" { _run_install_hang fork bare; _install_hang_asserts; }
+@test "install (macOS), the watchdog path: a node that IGNORES TERM is killed a second later and the copy removed" { _run_install_hang deaf bare; _install_hang_asserts; }
+@test "install (macOS), the timeout path: a hung copy is killed at the bound (control: so it was before this round)" { _run_install_hang exec timeout; _install_hang_asserts; }
+@test "install (macOS), the timeout path: a shim that FORKS the hung node leaks nothing (control: timeout signals the whole group)" { _run_install_hang fork timeout; _install_hang_asserts; }
+@test "install (macOS), the timeout path: a node that IGNORES TERM is killed by -k a second after the bound instead of holding the install for good" { _run_install_hang deaf timeout; _install_hang_asserts; }
+
+@test "install (macOS): ROMP_NODE_PROBE_BOUND=0 is clamped to one second, so a good copy is kept instead of failed at once" {
+    # on the watchdog path (a bare PATH without timeout, a stock mac's): the base's sleep 0 killed the probe before a copy that
+    # takes half a second answered (the setup's instant stand-in beat that kill, so the copy here sleeps first)
+    printf '#!/bin/sh\nsleep 0.5\necho fake-node "$@"\n' > "$TEST_DIR/slow-node"; chmod +x "$TEST_DIR/slow-node"
+    local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm sleep ps pgrep id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    PATH="$bare" ROMP_NODE_SRC="$TEST_DIR/slow-node" ROMP_NODE_PROBE_BOUND=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" != *"cannot run from"* ]]
+    # and a value with a leading zero is a decimal bound, not an octal error on stderr (round two of the tidy)
+    ROMP_NODE_PROBE_BOUND=08 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" != *"value too great"* ]]
+    [[ "$output" != *"octal"* ]]
+    # and a huge value is the hour cap, not an integer diagnostic and a one-second clamp (the second tidy)
+    ROMP_NODE_PROBE_BOUND=99999999999999999999 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" != *"integer expression expected"* ]]
+}
+
+@test "install (macOS): a ROMP_NODE_PROBE_BOUND with leading zeros is its number, not an hour: 0000001 bounds a hung copy at one second" {
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    _hang_src exec
+    rm -f "$TEST_DIR/node.pid"
+    ROMP_NODE_PROBE_BOUND=0000001 ROMP_NODE_SRC="$TEST_DIR/hang-node" ROMP_OS_OVERRIDE=Darwin run "$tmo" 20 "$SVC" install
+    [ "$status" -eq 0 ]                                        # not the outer bound: an hour would have hit it
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+}
+
+@test "install (macOS), the watchdog path: a sleep on PATH that FORKS its sleep leaves no child behind: the sleep's tree is ended" {
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local bare="$TEST_DIR/bare-fork"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm ps pgrep setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    printf '#!/bin/sh\n"%s" "$@" &\nwait\n' "$real" > "$bare/sleep"; chmod +x "$bare/sleep"
+    printf '#!/bin/sh\n"%s" 0.3\necho fake-node "$@"\n' "$real" > "$TEST_DIR/slow-node"; chmod +x "$TEST_DIR/slow-node"
+    PATH="$bare" ROMP_NODE_SRC="$TEST_DIR/slow-node" ROMP_OS_OVERRIDE=Darwin run setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
+@test "install (macOS), the watchdog path: a sleep on PATH that ignores TERM is KILLed after a bounded check, so a fast probe does not wait out the bound" {
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    local bare="$TEST_DIR/bare-deaf"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm ps pgrep setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    printf '#!/bin/sh\ntrap "" TERM\nexec "%s" "$@"\n' "$real" > "$bare/sleep"; chmod +x "$bare/sleep"
+    local t0=$SECONDS
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=8 ROMP_OS_OVERRIDE=Darwin run "$tmo" 30 setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [ $((SECONDS - t0)) -lt 5 ]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
+@test "install (macOS): the hatch reads 0, false, no and off as off, and the file's last assignment wins" {
+    mkdir -p "$HOME/.config/romp"
+    local rn="$XDG_STATE_HOME/romp/romp-node"
+    unset ROMP_NO_NODE_COPY
+    for v in 0 false No off OFF; do
+        rm -f "$rn"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$HOME/.config/romp/service.env"
+        ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+        [ "$status" -eq 0 ]
+        [ -x "$rn" ]
+    done
+    for v in disabled none; do                                 # any other non-empty value is on: the docs say so
+        rm -f "$rn"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$HOME/.config/romp/service.env"
+        ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+        [ "$status" -eq 0 ]
+        [ ! -e "$rn" ]
+    done
+    printf 'ROMP_NO_NODE_COPY=1\nROMP_NO_NODE_COPY=\n' > "$HOME/.config/romp/service.env"   # set, then cleared below: the copy is made
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$rn" ]
+    printf 'ROMP_NO_NODE_COPY=\nROMP_NO_NODE_COPY=1\n' > "$HOME/.config/romp/service.env"   # cleared, then set: skipped and removed
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$rn" ]
+    printf 'ROMP_NO_NODE_COPY=0\n' > "$HOME/.config/romp/service.env"                            # the file's last word wins over the environment: it says off here
+    ROMP_NO_NODE_COPY=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install                              # 0 in the environment is off too
+    [ "$status" -eq 0 ]
+    [ -x "$rn" ]
+}
+
+@test "install (macOS): ROMP_NO_NODE_COPY=1 in the environment makes no copy either (the second route)" {
+    ROMP_NO_NODE_COPY=1 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+}
+
+@test "install (macOS): a node copy that dies by SIGNAL from the state dir leaves no job-status line in the output" {
+    local src="$TEST_DIR/abort-node"
+    cat > "$src" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$src") exit 0 ;;
+  *) kill -ABRT \$\$ ;;
+esac
+EOF
+    chmod +x "$src"
+    ROMP_NODE_SRC="$src" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+    [[ "$output" != *"Aborted"* ]]
+    [[ "$output" != *"core dumped"* ]]
 }
 
 @test "install (Linux): systemd unit is unchanged — no romp-node launcher (no TCC there)" {
@@ -110,6 +383,8 @@ teardown() { rm -rf "$TEST_DIR"; }
 #!/bin/sh
 echo "\$1" >> "$calls"
 [ "\$1" = bootout ] && exit 0
+# once loaded, print names the live process (the post-install check reads the pid line, not print's exit)
+[ "\$1" = print ] && [ "\$(grep -c bootstrap "$calls")" -ge 3 ] && { echo "	pid = 4242"; exit 0; }
 [ "\$(grep -c bootstrap "$calls")" -ge 3 ] && exit 0
 echo "Bootstrap failed: 5: Input/output error" >&2
 exit 5
@@ -133,10 +408,10 @@ EOF
 #!/bin/sh
 echo "\$1" >> "$calls"
 if [ "\$1" = print ]; then
-    # After bootstrap the NEW job answers print (the post-install running check sees it).
-    grep -q bootstrap "$calls" && exit 0
+    # After bootstrap the NEW job answers print with its live pid (the post-install running check reads it).
+    grep -q bootstrap "$calls" && { echo "	pid = 4242"; exit 0; }
     [ "\$(grep -c print "$calls")" -ge 4 ] && exit 5   # the old job finally drains away
-    exit 0                                             # still tearing down
+    exit 0                                             # still tearing down (loaded, no process named)
 fi
 exit 0
 EOF
@@ -203,6 +478,209 @@ EOF2
     ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 1 ]
     [[ "$output" == *"NOT running"* ]]
+}
+
+# ── loaded is not running (issue 1600) ─────────────────────────────────────────────────────
+# launchctl print succeeds for any LOADED job, a crash-looping one included: the manager's copied node
+# aborted at exec, KeepAlive respawned it every throttle interval, `status` said running and install.sh
+# trusted that. The job's record names its process (a `pid = N` line) only while one runs, and keeps the
+# previous run's exit code; both are read now.
+_dying_record() {   # the record of a loaded job that keeps dying: no pid, last exit 134
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 134\n\truns = 17\n}\n'
+}
+_crashloop_loaded_stub() {   # for status: a launchctl whose job is loaded from the start and keeps dying
+    cat > "$1" <<'EOF'
+#!/bin/sh
+[ "$1" = bootout ] && exit 0
+[ "$1" = bootstrap ] && exit 0
+if [ "$1" = print ]; then
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 134\n\truns = 17\n}\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$1"
+}
+_crashloop_stub() {   # for install: print fails until bootstrap (the drain wait ends at once); the FIRST post-bootstrap print
+    # names a pid, the aborting manager alive for its first split second, and every later print says not running, exit 134.
+    # Round two of issue 1600: the base declared success on that first pid; the install must re-read a second later and
+    # see the SAME pid before it says installed.
+    local stub="$1" calls="$2"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo "\$1" >> "$calls"
+[ "\$1" = bootout ] && exit 0
+[ "\$1" = bootstrap ] && exit 0
+if [ "\$1" = print ]; then
+    grep -q bootstrap "$calls" || exit 5                                  # not loaded until bootstrapped
+    if [ "\$(sed -n '/bootstrap/,\$p' "$calls" | grep -c print)" -eq 1 ]; then      # the first print AFTER the bootstrap: alive
+        printf 'gui/501/com.romp.manager = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n\tlast exit code = (never exited)\n}\n'
+        exit 0
+    fi
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 134\n\truns = 2\n}\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+}
+_running_stub() {   # a launchctl whose job runs: print names the pid, the same one every time
+    cat > "$1" <<'EOF'
+#!/bin/sh
+[ "$1" = print ] && { printf 'gui/501/com.romp.manager = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n\tlast exit code = (never exited)\n}\n'; exit 0; }
+exit 0
+EOF
+    chmod +x "$1"
+}
+
+@test "status (macOS): a loaded job that keeps dying is NOT running, and the last exit code is named" {
+    unset ROMP_SERVICE_NO_LOAD
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null   # the plist alone
+    local stub="$TEST_DIR/launchctl-stub"; _crashloop_loaded_stub "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"installed:"* ]]
+    [[ "$output" == *"loaded but not running"* ]]
+    [[ "$output" == *"last exit code: 134"* ]]
+    # never the bare line install.sh keys its skip-the-reinstall shortcut on
+    run grep -qx running <<< "$output"
+    [ "$status" -ne 0 ]
+}
+
+@test "status (macOS): a job whose record names a live pid is running (a CONTROL: green at the base too, where print's exit alone said running)" {
+    unset ROMP_SERVICE_NO_LOAD
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null
+    local stub="$TEST_DIR/launchctl-stub"; _running_stub "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    run grep -qx running <<< "$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "status (macOS): the record's readers survive a print of thousands of lines and capture the exit value whole" {
+    # round two, lows 1 and 2: `sed | head -1` under set -e plus pipefail died of SIGPIPE once sed's output passed the pipe
+    # buffer (exit 141, no status line), and the value stopped at its first space, so "(signal: 6)" read as "(signal:"
+    unset ROMP_SERVICE_NO_LOAD
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null
+    local stub="$TEST_DIR/launchctl-stub"
+    cat > "$stub" <<'EOF'
+#!/bin/sh
+if [ "$1" = print ]; then
+    printf 'gui/501/com.romp.manager = {\n\tstate = not running\n'
+    i=0; while [ "$i" -lt 3000 ]; do printf '\tlast exit code = (signal: 6)\n'; i=$((i+1)); done   # loop-ok: a fixed-count stub
+    printf '}\n'; exit 0
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"last exit code: (signal: 6)"* ]]
+    # …and a record of thousands of pid lines reads as running, not as a broken pipe
+    cat > "$stub" <<'EOF'
+#!/bin/sh
+if [ "$1" = print ]; then
+    printf 'gui/501/com.romp.manager = {\n\tstate = running\n'
+    i=0; while [ "$i" -lt 3000 ]; do printf '\tpid = 4242\n'; i=$((i+1)); done   # loop-ok: a fixed-count stub
+    printf '}\n'; exit 0
+fi
+exit 0
+EOF
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    run grep -qx running <<< "$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "install (macOS): a job that loads, lives for a moment and then keeps dying fails loudly, naming the last exit code" {
+    # round two, medium 1: the first post-bootstrap read saw the aborting manager alive; a second later the pid is gone.
+    # The stub's print fails until the bootstrap, so the drain wait before it ends at once (low 3).
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _crashloop_stub "$stub" "$calls"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running"* ]]
+    [[ "$output" == *"last exit code: 134"* ]]
+    [[ "$output" != *"Installed launchd agent"* ]]
+    [ "$(grep -c print "$calls")" -ge 3 ]                     # the drain wait's print, the first live read, the re-read
+}
+
+# ── a manager already serving outside the service ─────────────────────────────────────────
+# bin/romp-manager refuses to start a second manager on a held control port (exit 1 at once), the throttle keeps the
+# respawn out of the verification window, and the install ended saying the dashboard would be dead while the hand-run
+# manager was serving it. The verification probes the control port and names that state with its own code.
+_dying_loaded_stub() {   # for install: print fails until bootstrap, then a loaded job with no pid and last exit $3 (1 by default)
+    local stub="$1" calls="$2" code="${3:-1}"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo "\$1" >> "$calls"
+[ "\$1" = bootout ] && exit 0
+[ "\$1" = bootstrap ] && exit 0
+if [ "\$1" = print ]; then
+    grep -q bootstrap "$calls" || exit 5
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = $code\n\truns = 2\n}\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+}
+
+@test "install (macOS): a manager already serving on the control port is named when the agent's code is the manager's refusal (1), with the log pointer" {
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _dying_loaded_stub "$stub" "$calls" 1
+    printf '#!/bin/sh\necho "probed :$1" >> "%s"\nexit 0\n' "$TEST_DIR/probe-calls" > "$TEST_DIR/probe-up"; chmod +x "$TEST_DIR/probe-up"
+    ROMP_MANAGER_PORT=7499 ROMP_MANAGER_PROBE="$TEST_DIR/probe-up" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"ALREADY serving on :7499"* ]]
+    [[ "$output" == *"code 1"* ]]
+    [[ "$output" == *"most likely outside the login service"* ]]     # the probe cannot tell whose manager answers
+    [[ "$output" == *"check $XDG_STATE_HOME/romp/manager.log"* ]]     # the log pointer stays in every branch (round two)
+    [[ "$output" != *"dashboard"* ]]                                   # the control port proves a manager, not the dashboard
+    grep -q "probed :7499" "$TEST_DIR/probe-calls"                     # the port the manager would use, not a default
+    # …and with nothing answering the port, the plain NOT running verdict and exit 1 as before
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_DIR/probe-down"; chmod +x "$TEST_DIR/probe-down"
+    rm -f "$calls"
+    ROMP_MANAGER_PROBE="$TEST_DIR/probe-down" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running"* ]]
+    [[ "$output" != *"ALREADY serving"* ]]
+}
+
+@test "install (macOS): an agent that died of its own cause (134) beside a manager answering is reported as both facts, not as the held port" {
+    # round two of the install-wording fix: the branch was gated on the probe alone, so issue 1600's own shape (the node copy
+    # aborting at exec) read as a held port once the user had worked around it with a hand-run romp up
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _dying_loaded_stub "$stub" "$calls" 134
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/probe-up"; chmod +x "$TEST_DIR/probe-up"
+    ROMP_MANAGER_PORT=7499 ROMP_MANAGER_PROBE="$TEST_DIR/probe-up" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running (last exit code: 134)"* ]]
+    [[ "$output" == *"check $XDG_STATE_HOME/romp/manager.log"* ]]
+    [[ "$output" == *"A manager is also serving on :7499"* ]]
+    [[ "$output" == *"not why it died"* ]]
+    [[ "$output" != *"ALREADY serving"* ]]
+}
+
+@test "install (macOS): the probe asks the port service.env gives the agent's manager (last assignment, quotes off), not the environment's default" {
+    unset ROMP_SERVICE_NO_LOAD ROMP_MANAGER_PORT
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$HOME/.config/romp"
+    printf 'ROMP_MANAGER_PORT=7601\nROMP_MANAGER_PORT="7602"\n' > "$HOME/.config/romp/service.env"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _dying_loaded_stub "$stub" "$calls" 1
+    printf '#!/bin/sh\necho "probed :$1" >> "%s"\nexit 0\n' "$TEST_DIR/probe-calls" > "$TEST_DIR/probe-up"; chmod +x "$TEST_DIR/probe-up"
+    ROMP_MANAGER_PROBE="$TEST_DIR/probe-up" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"ALREADY serving on :7602"* ]]
+    grep -q "probed :7602" "$TEST_DIR/probe-calls"
+    ! grep -q "probed :7432" "$TEST_DIR/probe-calls"
 }
 
 @test "both units bake ROMP_SUPERVISED=1 — the manager's stale-self refresh needs a respawning supervisor" {

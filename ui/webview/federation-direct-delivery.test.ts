@@ -241,7 +241,7 @@ test("a view-order storage event re-emits all three merged frames to the registe
   g.document = Object.assign(new EventTarget(), { visibilityState: "visible" });
   g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
   g.setInterval = () => 0;                                   // start()'s poll and watchdog timers: never armed here
-  g.fetch = () => Promise.reject(new Error("no kernel"));    // start()'s first /tunnels poll: returns quietly
+  g.fetch = () => new Promise(() => {});   // start()'s first /tunnels poll never answers here: a rejection files a crumb, and that read of the window would land after the finally below restored the globals
   try {
     const fm: any = new FederationManager();
     fm.start();

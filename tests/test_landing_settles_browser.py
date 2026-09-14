@@ -78,14 +78,18 @@ const rowsAtLand = (await rows()).slice(rowsBefore1);
 // a LIVE turn lands in the tail while the reader is on the landed message: the transcript grows, the event the pusher
 // wakes on, exactly as a live session's does under a reader deep in its history
 const now = new Date();
+const tailBefore = await page.evaluate(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return rs && rs.length ? rs[rs.length - 1].n : -1; });   // the tail run's size before the live turn (T386 stage 2)
 fs.appendFileSync(cfg.transcript,
-  JSON.stringify({ type: "user", uuid: cfg.liveU, parentUuid: null, timestamp: now.toISOString(), sessionId: cfg.sid,
+  // chained to the transcript's last assistant record: a user record with no parent is a NEW ROOT, and the kernel's chat is the leaf's
+  // ancestry, so the conversation would become these two events alone (at the merge-base a detached client never saw that frame; with the
+  // tail always live it does, and it is the honest one: T386 stage 2, 2026-09-13)
+  JSON.stringify({ type: "user", uuid: cfg.liveU, parentUuid: cfg.lastUuid, timestamp: now.toISOString(), sessionId: cfg.sid,
                    message: { role: "user", content: "and one more question, live, about the notes api" } }) + "\n" +
   JSON.stringify({ type: "assistant", uuid: cfg.liveA, parentUuid: cfg.liveU, timestamp: new Date(now.getTime() + 1000).toISOString(), sessionId: cfg.sid,
                    message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "end_turn", content: [{ type: "text", text: "Live answer: the handler reads the note by id and returns it." }] } }) + "\n");
 // the live turn reaches the page only if the kernel sends this client a tail; either way the reader's view is measured
 let liveArrived = true;
-try { await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), cfg.liveA, { timeout: 8000 }); }
+try { await page.waitForFunction(([u, n0]) => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; if (rs && rs.length && n0 >= 0 && rs[rs.length - 1].n >= n0 + 2) return true; return !!document.querySelector('#content .turn[data-uuid="' + u + '"]'); }, [cfg.liveA, tailBefore], { timeout: 8000 }); }   // the live turn lands at the TAIL, far below the landed reader: the tail run grows by its two events (T386 stage 2; the run's last key is the api-error card), the DOM row when rendered
 catch (e) { liveArrived = false; }
 await page.waitForTimeout(500);
 const oLive = await offset();
@@ -278,7 +282,6 @@ const units13 = await page.evaluate(() => document.querySelectorAll("#content .t
 // .turn elements with word ids, so the last turn with a record's uuid is the one
 const tailEnd13 = { rendered: await page.evaluate(() => { const t = Array.from(document.querySelectorAll("#content .turn")).map((x) => x.getAttribute("data-uuid") || "").filter((u) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u)); return t.length ? t[t.length - 1] : null; }),
                     transcript: (() => { const lines = fs.readFileSync(cfg.transcript, "utf8").trim().split("\n"); for (let i = lines.length - 1; i >= 0; i--) { try { const r = JSON.parse(lines[i]); if (r && r.uuid) return r.uuid; } catch (e) { /* not a record */ } } return null; })() };
-const strip13 = await page.evaluate(() => { const s = document.getElementById("live-paused"); return !!s && s.style.display !== "none" && getComputedStyle(s).display !== "none"; });
 const writes13 = (await ledger()).slice(ledgerBefore13).filter((wr) => wr.writer === "land-realign");
 const rows13 = (await rows()).slice(rowsBefore13);
 // the anchor's place in the DOM: its ancestors up to #content and the siblings that follow it (the turn's atoms as rendered),
@@ -296,7 +299,7 @@ const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
-  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, linkInView12, writes12, rows12, landed13, after13, live13, units13, strip13, tailEnd13, writes13, rows13, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
+  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, linkInView12, writes12, rows12, landed13, after13, live13, units13, tailEnd13, writes13, rows13, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -308,7 +311,7 @@ class ServedLandingSettles(WindowLab):
         windows already, a different road)."""
         cls = type(self)
         if cls._r is None:
-            cls._r = self._drive(DRIVER, "settles", extra={"liveU": LIVE_U, "liveA": LIVE_A, "turns": TURNS,
+            cls._r = self._drive(DRIVER, "settles", extra={"liveU": LIVE_U, "liveA": LIVE_A, "turns": TURNS, "lastUuid": "22222222-3333-4444-5555-%012d" % (2 * TURNS - 1),
                                                     # classic scrollbars, for the drag road's REAL press on the thumb (Playwright hides them headless by default)
                                                     "launch": {"ignoreDefaultArgs": ["--hide-scrollbars"]}})
             print("RESULT:" + json.dumps(cls._r), file=sys.stderr)   # the whole measurement rides a failure's captured stderr
@@ -338,9 +341,15 @@ class ServedLandingSettles(WindowLab):
         for k in ("o300", "o700", "oLive", "oLate"):
             self.assertLessEqual(abs(r[k]["top"]), max(8, h), "the target left the viewport top by %s (%r); the writes after the landing: %s; live turn arrived: %s"
                                  % (k, r[k], moved, r["liveArrived"]))
-        # the writes that followed the landing are the landing's own (its re-aligns), never a rebuild's placement
-        strangers = [w["writer"] for w in r["writes"] if w["writer"] not in ("land-on", "land-realign")]
+        # the writes that followed the landing are the landing's own (its re-aligns), never a rebuild's placement. T386 stage 2 adds
+        # three writers the slice sees: land-guess (the jump into the gap where the target will be, BEFORE the window arrives) and the
+        # rewindow that jump provokes, both before the landing; and anchor-restore, the live turn's append keeping the reader's row
+        # (the tail is live now: at stage 1 a deep-linked client was detached and no live turn reached it). The offsets above prove the
+        # row held through them; a rebuild's own placement (land-bottom, land-saved, gap-fill) would still be a stranger here
+        strangers = [w["writer"] for w in r["writes"] if w["writer"] not in ("land-on", "land-realign", "land-guess", "rewindow", "anchor-restore")]
         self.assertEqual(strangers, [], "a write other than the landing's moved the view after it: %s" % moved)
+        self.assertEqual([w["writer"] for w in r["writes"] if w["writer"] == "anchor-restore"], ["anchor-restore"] if r["liveArrived"] else [],
+                         "the live turn's append restores the reader's row exactly once when it arrived (T386 stage 2): %s" % moved)
 
     def test_a_card_anchored_on_a_tool_call_lands_on_the_words_it_quotes_not_on_the_tool_group(self):
         r = self._result()
@@ -473,7 +482,6 @@ class ServedLandingSettles(WindowLab):
         # the jump re-renders the pane as the live tail's run (measured heights; the history window it left stood on spacer estimates),
         # so the new view shares no pixel with the landing: the claims are the rendered tail, the view at its end, no paused strip
         self.assertGreaterEqual(r["units13"], 1, "the live tail's turns are rendered: %s" % r["units13"])
-        self.assertFalse(r["strip13"], "the paused strip is gone at the live tail")
         # what only the TAIL run has (round seven, low 1): the window's end is the transcript's end, the last rendered turn being the
         # transcript's last record; a history window's bottom is some other turn
         self.assertIsNotNone(r["tailEnd13"]["transcript"], "the transcript's last record: %r" % r["tailEnd13"])

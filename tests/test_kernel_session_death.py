@@ -146,6 +146,48 @@ class CodexRecordsBlind(unittest.TestCase):
         (jd.STATE / "codex" / "registry.json").write_text("{}")
         self.assertTrue(km._codex_records_blind(None), "records exist that this kernel cannot read")
 
+    def test_no_module_and_a_codex_directory_the_kernel_cannot_read_is_blind(self):
+        """The real fault staged, not a stub: a mode-000 codex/ makes the registry's stat raise EACCES; the check answers
+        blind on every interpreter (CPython 3.14's Path.exists() answers False on EACCES, 2026-09-14)."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        d = jd.STATE / "codex"; d.mkdir(parents=True, exist_ok=True); (d / "registry.json").write_text("{}")
+        os.chmod(d, 0)
+        try:
+            self.assertTrue(km._codex_records_blind(None), "a registry directory this kernel cannot read: blind, never absent")
+        finally:                                          # the shared root: leave no registry behind for the next test
+            os.chmod(d, 0o755); (d / "registry.json").unlink()
+            try:
+                d.rmdir()                                 # only when this test's file was the directory's whole content
+            except OSError:
+                pass
+
+
+class GhostDroppedCounters(unittest.TestCase):
+    """Item f of the spawnedAt follow-up: the spawned-at ghost floor counts what it drops (memos.ghostDropped on /perf), so the
+    boot after a fix shows in numbers whether a surviving CLI's launches read as ghosts; zero for survivors is the read."""
+
+    def test_the_bg_tasks_floor_counts_the_launches_it_drops(self):
+        before = dict(km._GHOST_DROPPED)
+        d = tempfile.mkdtemp(); p = os.path.join(d, "t.jsonl")
+        rows = [{"type": "assistant", "uuid": "a1", "parentUuid": None, "timestamp": "2026-09-14T00:00:00.000Z",
+                 "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu-old", "name": "Bash",
+                                                                "input": {"command": "sleep 9", "run_in_background": True}}]}}]
+        open(p, "w").write("".join(json.dumps(r) + "\n" for r in rows))
+        res = km._bg_tasks(p, spawned_at=4102444800)                # an epoch after every launch: all of them died with the old CLI
+        self.assertEqual(res["count"], 0)
+        self.assertGreaterEqual(km._GHOST_DROPPED["bgTasks"] - before["bgTasks"], 1, "the drop is counted")
+        n = km._GHOST_DROPPED["bgTasks"]
+        km._bg_tasks(p, spawned_at=1)                                  # an epoch before the launch: nothing dropped, nothing counted
+        self.assertEqual(km._GHOST_DROPPED["bgTasks"], n)
+
+    def test_the_agent_gate_counts_the_dots_it_drops(self):
+        before = km._GHOST_DROPPED["agents"]
+        self.assertFalse(km._agent_alive({"id": "tu", "status": "running", "t": 100}, "ag", None, 200), "older than the epoch: dropped")
+        self.assertEqual(km._GHOST_DROPPED["agents"], before + 1)
+        self.assertTrue(km._agent_alive({"id": "tu", "status": "running", "t": 300}, "ag", None, 200), "younger: kept")
+        self.assertEqual(km._GHOST_DROPPED["agents"], before + 1, "a kept dot is not counted")
+
 
 class DeathSweepTick(unittest.TestCase):
     def setUp(self):

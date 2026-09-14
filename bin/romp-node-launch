@@ -19,6 +19,14 @@
 # copy-based approach (a signed romp.app would avoid it; that's the heavier
 # "Path B"). Falls back to the system node if the copy can't be made or used, so
 # a botched copy can never take the manager — and thus the whole kernel — down.
+# "Used" is checked, not assumed (issue 1600): a node whose shared libnode is
+# referenced relative to its own install (Homebrew's build, a version manager's
+# shim) cannot run from the copy; dyld aborts it at exec, and under the login
+# agent's KeepAlive that abort respawned forever while every launch remade the
+# same copy. The copy is probed once per launch (an empty program, stdin closed,
+# a short bound) and the system node takes over when the probe fails.
+# ROMP_NO_NODE_COPY=1 skips the copy altogether (the Full Disk Access grant then
+# reads "node").
 #
 # Usage: romp-node-launch <manager-path> [args...]   (the login agent passes "up")
 set -eu
@@ -29,21 +37,6 @@ shift
 STATE="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
 ROMP_NODE="$STATE/romp-node"
 sys_node="$(command -v node 2>/dev/null || true)"
-
-# (Re)create the romp-node copy when it is missing or differs from the system
-# node. cmp follows the /opt/homebrew/bin/node symlink and compares real bytes,
-# so a node upgrade (new bytes) triggers a fresh copy. Atomic rename so a
-# concurrent launch never sees a half-written binary.
-if [ -n "$sys_node" ]; then
-    if [ ! -x "$ROMP_NODE" ] || ! cmp -s "$sys_node" "$ROMP_NODE"; then
-        mkdir -p "$STATE" 2>/dev/null || true
-        if cp "$sys_node" "$ROMP_NODE.tmp" 2>/dev/null && chmod +x "$ROMP_NODE.tmp" 2>/dev/null; then
-            mv -f "$ROMP_NODE.tmp" "$ROMP_NODE" 2>/dev/null || rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
-        else
-            rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
-        fi
-    fi
-fi
 
 # Extra service environment (parity with the systemd unit's EnvironmentFile=-):
 # plain KEY=VALUE lines exported to the manager, so variables available only in
@@ -77,14 +70,130 @@ if [ -f "$ENV_FILE" ]; then
                     \"*\") _val="${_val#\"}"; _val="${_val%\"}" ;;
                     \'*\') _val="${_val#\'}"; _val="${_val%\'}" ;;
                 esac
-                export "$_name=$_val" 2>/dev/null || true ;;
+                # A name that is not a name (an "export KEY" prefix, a space) is skipped as the header
+                # promises: under dash `export` is a special builtin, and handing it a bad name exits
+                # the shell in spite of the or-true (round three of issue 1600). A name that IS a name but
+                # READONLY in this shell (UID=1000, PPID=1: the .env idiom) does the same under macOS's
+                # /bin/sh, bash in POSIX mode, where an assignment error in a special builtin exits the
+                # shell too: before any exec, with nothing in the manager log, and KeepAlive respawning
+                # that silent exit every ThrottleInterval (round four). So the export is tried in a
+                # subshell first, and only a line that subshell survives is exported here.
+                case "$_name" in
+                    *[!A-Za-z0-9_]*) ;;
+                    *) if ( export "$_name=$_val" ) 2>/dev/null; then export "$_name=$_val" 2>/dev/null || true; fi ;;
+                esac ;;
         esac
     done < "$ENV_FILE"
 fi
 
-# Prefer the labeled copy; fall back to the system node so a bad/missing copy
-# never blocks startup.
-if [ -x "$ROMP_NODE" ]; then
-    exec "$ROMP_NODE" "$MANAGER" "$@"
+# The escape hatch is read AFTER the env file above, so the line the fallback message names,
+# ROMP_NO_NODE_COPY=1 in service.env, is the route that works: a launchd-started launcher has no other
+# way to receive it (round two of issue 1600: the variable was read before the file was parsed). The
+# value rule, shared with romp-service's reader: 0, false, no and off (any case) are off, any other
+# non-empty value is on (disabled and none included: the docs say so), and the last assignment in the file
+# wins, as it does for every variable here.
+NO_COPY="${ROMP_NO_NODE_COPY:-}"
+case "$NO_COPY" in 0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) NO_COPY="" ;; esac
+
+# Can this node run from where it sits? One empty program, stdin closed, output dropped, under a
+# ten-second bound: `timeout` where the platform has it (coreutils; a stock mac does not), else a
+# watchdog that kills the probe. A copy that cannot load its shared library dies here in a moment
+# instead of under launchd forever; a hang counts as unusable.
+# The probe runs inside a subshell that ends in an explicit exit: a node killed by a SIGNAL (the real
+# dyld abort; coreutils timeout re-raises the child's signal on itself) would otherwise be the
+# subshell's LAST command, and a subshell whose last command dies by a signal dies by that signal
+# too, which the shell that reaped it reports as a job-status line ("Aborted (core dumped)") in the
+# manager log ahead of the message below. Ended with exit, the death is an exit code (134) and
+# nothing is said. The watchdog subshell traps TERM and kills its own sleep, so a fast probe leaves
+# no ten-second sleep behind per launch. The bound is ten seconds; ROMP_NODE_PROBE_BOUND (whole seconds)
+# shortens it for the tests, which run the hang shapes in two.
+_bound="${ROMP_NODE_PROBE_BOUND:-10}"
+# not a number: the default; seven digits or more (a value the integer test would refuse with a diagnostic and then
+# clamp to ONE second, the opposite of what was asked): an hour, the cap; 0: one second, since 0 would be NO bound for
+# timeout and an instant kill for the watchdog's sleep
+case "$_bound" in ''|*[!0-9]*) _bound=10 ;; esac
+_bound="${_bound#"${_bound%%[!0]*}"}"; [ -n "$_bound" ] || _bound=0   # leading zeros off first: 0000001 is one second, not seven digits
+case "$_bound" in ???????*) _bound=3600 ;; esac
+[ "$_bound" -ge 1 ] || _bound=1
+# Everything under a pid, TERM then KILL. The node that hangs may be a version manager's shim that RUNS node
+# instead of exec'ing it, so the hung process is a CHILD of the pid the wrapper holds; the timeout path signals
+# the whole process group, and this keeps the watchdog path equivalent (round four of issue 1600: one hung
+# grandchild leaked per launch there). pgrep -P lists a pid's children on Linux and a stock mac alike; without
+# it the pid alone is signalled. The KILL a second later is for a process that ignores TERM (timeout gets -k 1
+# for the same reason: without it a TERM-ignoring node held the timeout path forever).
+_tree_of() {
+    for _t in "$@"; do
+        echo "$_t"
+        _tree_of $(pgrep -P "$_t" 2>/dev/null || true)
+    done
+}
+_kill_tree() {
+    _all="$(_tree_of "$@")"
+    kill -TERM $_all 2>/dev/null || true
+    sleep 1
+    kill -KILL $_all 2>/dev/null || true
+}
+# The watchdog's sleep is ended the way the wrapper ends the node: its whole tree (a sleep on PATH that forks would
+# leave its child otherwise), TERM, then a KILL if the sleep is still there, waited on either way. The check between
+# them is bounded (up to a second in tenths) and costs nothing on the fast path, where the sleep is gone at the first
+# look; a sleep that ignores TERM (a stand-in on PATH) held the launcher for its whole remaining duration before. The
+# pid may be unbound when the TERM lands between the fork and its assignment under set -u, so it is passed with a
+# default and an empty one is nothing to end.
+_end_sleep() {
+    [ -n "$1" ] || return 0
+    _all="$(_tree_of "$1")"
+    kill -TERM $_all 2>/dev/null || true
+    _i=0
+    while kill -0 "$1" 2>/dev/null && [ "$_i" -lt 10 ]; do sleep 0.1; _i=$((_i + 1)); done
+    kill -KILL $_all 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+}
+_probe_node() {
+    if command -v timeout >/dev/null 2>&1; then
+        ( timeout -k 1 "$_bound" "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null || return $?
+        return 0
+    fi
+    # The wrapper runs the node in ITS background, traps TERM to kill that node's tree, waits for it and exits
+    # with its status: the watchdog can only signal the wrapper (the pid it has), and a wrapper that
+    # merely ran the node in the foreground survived the kill while the hung node did not die (round
+    # three of issue 1600: one hung node leaked per launch on the no-timeout path, a stray child of the
+    # manager). Ended with exit, a node's signal death is still an exit code, never a job-status line.
+    # Both traps WAIT for what they killed before exiting: a kill is asynchronous, and a watchdog that exited right after
+    # signalling its sleep let the launcher exec the manager while the sleep was still dying, a leftover a check of the
+    # launcher's session could see for an instant (CI, 2026-09-14). Waited on, nothing of the probe outlives the launcher.
+    ( trap '_kill_tree "$_n"; wait "$_n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & _n=$!; wait "$_n"; exit $? ) 2>/dev/null &
+    _pp=$!
+    ( trap '_end_sleep "${_s:-}"; exit 0' TERM; sleep "$_bound" & _s=$!; wait "$_s"; kill "$_pp" 2>/dev/null ) >/dev/null 2>&1 &
+    _wd=$!
+    _rc=0
+    wait "$_pp" || _rc=$?
+    kill "$_wd" 2>/dev/null || true
+    wait "$_wd" 2>/dev/null || true
+    return $_rc
+}
+
+# (Re)create the romp-node copy when it is missing or differs from the system
+# node. cmp follows the /opt/homebrew/bin/node symlink and compares real bytes,
+# so a node upgrade (new bytes) triggers a fresh copy. Atomic rename so a
+# concurrent launch never sees a half-written binary.
+if [ -z "$NO_COPY" ] && [ -n "$sys_node" ]; then
+    if [ ! -x "$ROMP_NODE" ] || ! cmp -s "$sys_node" "$ROMP_NODE"; then
+        mkdir -p "$STATE" 2>/dev/null || true
+        if cp "$sys_node" "$ROMP_NODE.tmp" 2>/dev/null && chmod +x "$ROMP_NODE.tmp" 2>/dev/null; then
+            mv -f "$ROMP_NODE.tmp" "$ROMP_NODE" 2>/dev/null || rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
+        else
+            rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Prefer the labeled copy WHEN IT RUNS; fall back to the system node so a bad,
+# missing or unusable copy never blocks startup. The fallback is said once per
+# launch on stderr (the manager log), with the way to stop the copy attempts.
+if [ -z "$NO_COPY" ] && [ -x "$ROMP_NODE" ]; then
+    if _probe_node "$ROMP_NODE"; then
+        exec "$ROMP_NODE" "$MANAGER" "$@"
+    fi
+    echo "romp-node-launch: the romp-node copy at $ROMP_NODE cannot run here (node's shared library is likely referenced relative to its install, as Homebrew's and version managers' builds do); running the manager on ${sys_node:-node} instead, so the Full Disk Access grant reads 'node'. Set ROMP_NO_NODE_COPY=1 in service.env to stop the copy attempts." >&2
 fi
 exec "${sys_node:-node}" "$MANAGER" "$@"

@@ -460,10 +460,21 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   const schedule = (ms: number) => { clearTimeout(timer); if (!pop.hidden) timer = setTimeout(refresh, ms); };
   const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel";
 
+  let lastHosts: string[] | null = null;   // the last list read: a failed refresh keeps it instead of painting none
   function loadHosts() {
-    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => r.json())
-      .then((d) => { fillHostSelect(sel, d && d.hosts, "(no ~/.ssh/config hosts)"); })
-      .catch(() => { fillHostSelect(sel, [], "(kernel unreachable)"); });   // loud, never silently empty
+    // a non-ok answer is not the host list (a JSON-bodied 5xx painted "no ~/.ssh/config hosts"): it throws with its
+    // status, and the catch keeps the last good list, as it does for a body that will not parse; a REJECTED fetch (the
+    // kernel gone) keeps the kernel-unreachable signal whatever was read before, so a dead kernel never hides behind a
+    // stale list; both say so in the console, and the kept list is named only when there is one
+    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).catch((e: any) => { e = e || new Error("fetch rejected"); e.network = true; throw e; })
+      .then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })
+      .then((d) => { lastHosts = (d && d.hosts) || []; fillHostSelect(sel, lastHosts, "(no ~/.ssh/config hosts)"); })
+      .catch((err: any) => {
+        const keep = !!lastHosts && !(err && err.network);
+        try { console.error("romp: ssh hosts could not be read" + (keep ? "; keeping the last list" : ""), err); } catch { /* the line is never worth the read */ }
+        if (keep) fillHostSelect(sel, lastHosts as string[], "(no ~/.ssh/config hosts)");   // a non-ok or unparseable answer: the last list stands
+        else fillHostSelect(sel, [], "(kernel unreachable)");   // loud, never silently empty
+      });
   }
 
   function act(path: string, host: string, b: HTMLButtonElement, busyText: string, via?: string) {
@@ -1040,7 +1051,10 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
 
   let diagPending = false;   // report the first /tunnels outcome of each open, not every 3s poll
   function refresh() {
-    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+    // a non-ok answer is not the host list (a proxy in JSON-error mode answers a 5xx whose body parses, and it read as
+    // an empty list: "No remotes attached", the autoUpdate box mirrored off, a clientDiag filed as ok); it throws into
+    // the catch below, the same rule as the dashboard rail's refresh and the federation manager's poll
+    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) { const e: any = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); }).then((d) => {
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
       if (!autoCb.disabled) autoCb.checked = !!(d && d.autoUpdate);   // mirror the kernel; never clobber a write in flight
@@ -1052,14 +1066,17 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       const pushing = ts.some((t: any) => t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting" || t.autoPush.phase === "pulling"));
       button.classList.toggle("busy", ts.some((t: any) => busy(t.status)) || pushing);
       schedule(ts.some((t: any) => busy(t.status)) || pushing ? 600 : 3000);   // fast while mid-attach/pushing, slow keep-alive after
-    }).catch((err) => {
-      // Fail loudly: an unreachable kernel renders as an error line, never a
-      // silently empty box that reads as a dead button.
+    }).catch((err: any) => {
+      // Fail loudly, and say which failure (the host picker's rule): a non-ok answer names its status, since the kernel
+      // is up and refusing or failing; a rejected fetch says the kernel is unreachable; both reach the console, and
+      // neither renders as a silently empty box that reads as a dead button.
+      try { console.error("romp: /tunnels could not be read", err); } catch { /* never worth the read */ }
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: false, err: String(err) } }); }
       list.textContent = "";
       const e = document.createElement("div");
       e.className = "sn-empty";
-      e.textContent = `Couldn't reach the kernel (${(window as any).__rompKernelBase || "same origin"}) — retrying…`;
+      e.textContent = err && err.httpStatus ? `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`
+        : `Couldn't reach the kernel (${(window as any).__rompKernelBase || "same origin"}) — retrying…`;
       list.appendChild(e);
       schedule(3000);
     });

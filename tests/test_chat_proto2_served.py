@@ -4,7 +4,7 @@ synthetic session whole and leaves its assembly document at exit; a second kerne
 session frame is the post-boundary tail with headKnown false and headTotal null and hydrates nothing (the
 flattening step: no pre-cut body is read at a first open); loadOlder by uuid walks page by page to the head, where
 the count appears, and the pages plus the tail equal what an index (proto-1) client on the same kernel assembles
-from today's frames; loadAround lands a deep anchor in one reply with the client detached; loadNewer walks the
+from today's frames; loadAround lands a deep anchor in one reply as a run by its span; loadTurns pages the gap to the
 window back to the live tail and re-attaches, so the next transcript append reaches it as a chatTail; every leaf
 byte is the tail, the guards and the pages asked for. Synthetic transcript (the stage 4a fixture); TESTHOST."""
 import json
@@ -64,15 +64,20 @@ class Proto2Wire(A.RestartOverACheckpointedSession):
             evs = r["events"] + evs; head_from = r["from"]
         self.fail("the index walk did not reach the head")
 
-    def _walk_newer(self, client, held):
-        for steps in range(1, MAX_PAGES + 1):
-            client.send({"type": "loadNewer", "id": WEB, "after": held[-1]["uuid"]})
-            n = self._reply(client, "chatMore")
-            self.assertEqual(n["afterUuid"], held[-1]["uuid"])
-            held = held + n["events"]
-            if not n["more"]:
-                return held, steps
-        self.fail("the tail was not reached in %d pages" % MAX_PAGES)
+    def _fill_to_tail(self, client, window, frame):
+        """The regions protocol (T386 stage 2): the tail run is always resident (the session frame), a window is a run by its turn span,
+        and the gap between them is filled page by page with loadTurns by span (the frame names the tail run's first turn, tailLo, and
+        the page size, pageTurns). Returns the window's events plus the pages' plus the tail's, and the number of pages."""
+        lo, tail_lo, page = window["span"][1], frame["tailLo"], frame.get("pageTurns", 16)
+        evs = list(window["events"]); pages = 0
+        while lo < tail_lo:
+            hi = min(lo + page, tail_lo)
+            client.send({"type": "loadTurns", "id": WEB, "lo": lo, "hi": hi})
+            r = self._reply(client, "chatTurns")
+            self.assertEqual(r["span"], [lo, hi]); self.assertNotIn("missing", r)
+            evs += r["events"]; lo = hi; pages += 1
+            self.assertLessEqual(pages, MAX_PAGES, "the tail was not reached in %d pages" % MAX_PAGES)
+        return evs + list(frame["events"]), pages
 
     def test_a_proto2_tab_over_a_restored_kernel(self):
         k1, p1, log1 = self._boot()
@@ -133,9 +138,10 @@ class Proto2Wire(A.RestartOverACheckpointedSession):
             self._reply(c4, "chatWindow")
             dt_win2 = time.time() - t_win2                 # the same window again: the pages cache serves it
             self.assertEqual(w["moreBefore"], False); self.assertTrue(w["moreAfter"])
-            # forward to the live tail through loadNewer: re-attached
-            held, steps = self._walk_newer(c4, list(w["events"]))
-            self.assertEqual([e["uuid"] for e in held], [e["uuid"] for e in whole2], "the window walked to the tail is the whole")
+            self.assertEqual(w["span"][0], 0, "the window reaches the head, so its span starts at turn 0")
+            # to the live tail through the regions protocol: the gap between the window and the resident tail, page by page
+            held, steps = self._fill_to_tail(c4, w, f4)
+            self.assertEqual([e["uuid"] for e in held], [e["uuid"] for e in whole2], "the window, the pages and the tail are the whole")
             # a transcript append now reaches the re-attached client as a uuid-anchored delta (a record chained on the
             # last one: a parentless record would open a new conversation, a fork, and a full frame is right for that)
             time.sleep(4.0)                                # one pusher cycle: the shared diff baseline for the list stands

@@ -2549,7 +2549,7 @@ class RailBell(unittest.TestCase):
         page = body.decode()
         # kernel-authoritative paint of the master: GET /notify-all at boot and the shell WS push
         # on every toggle, so every dashboard's row agrees
-        self.assertIn("fetch('/notify-all')", page)
+        self.assertIn("readSwitch('/notify-all',function(on){isOn=on;},3);", page, "the master is read through readSwitch: a status check, a bounded retry")
         self.assertIn("window.__rompNotifyAllPaint", page)
         self.assertIn("m.type==='notifyAll'", page, "the shell WS repaints every open dashboard")
         self.assertIn("post('/notify-all',{on:want})", page)

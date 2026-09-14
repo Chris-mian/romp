@@ -296,8 +296,10 @@ _svc_stub() {   # write a fake romp-service to $1; behavior toggled by ROMP_SVC_
 #!/usr/bin/env bash
 echo "$1" >> "$ROMP_SVC_LOG"
 case "$1" in
-  status) echo "installed: /tmp/plist"; [[ -n "${ROMP_SVC_RUNNING:-}" ]] && echo "running" ;;
-  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; } ;;
+  status) echo "installed: /tmp/plist"; [[ -n "${ROMP_SVC_RUNNING:-}" ]] && echo "running"
+          [[ -n "${ROMP_SVC_DYING:-}" ]] && echo "loaded but not running (last exit code: 134); launchd keeps respawning it — check /tmp/manager.log" ;;
+  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; }
+           [[ -n "${ROMP_SVC_HELD:-}" ]] && { echo "romp-service: the agent's manager exited at once because a manager is ALREADY serving on :7432 outside the login service" >&2; exit 3; } ;;
 esac
 exit 0
 SH
@@ -316,12 +318,41 @@ SH
     ! grep -qx install "$TEST_DIR/svc.log"
 }
 
+@test "install.sh: a loaded manager that keeps dying is reinstalled, not left up (the status line that is not running)" {
+    # issue 1600, the status fix: romp-service says "loaded but not running (last exit code: N)" for a crash-looping
+    # job; the shortcut keys on the bare line `running` (an exact whole-line grep), so this takes the reinstall branch
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_DYING=1
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"already running"* ]]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
 @test "install.sh: installs the service when romp-manager is NOT running" {
     unset ROMP_NO_SERVICE
     _svc_stub "$TEST_DIR/romp-service"
     export ROMP_SVC_LOG="$TEST_DIR/svc.log"   # ROMP_SVC_RUNNING unset -> not running
     ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
+@test "install.sh: a manager already serving outside the service is named as such, not as a dead dashboard (romp-service exit 3)" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_HELD=1
+    ROMP_INSTALL_TOKEN_TRIES=1 ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -ne 0 ]                                            # the service is still not the one running
+    [[ "$output" == *"a manager already serving on the control port holds it"* ]]
+    [[ "$output" == *"most likely a hand-run romp up outside the service"* ]]
+    [[ "$output" != *"dashboard will be dead"* ]]
+    [[ "$output" != *"dashboard is up"* ]]                          # the control port proves a manager, not the dashboard
+    # round two: romp IS serving in this state, so the run goes on to the finish line (the link, or how to print it) and
+    # the end-of-run banner, and exits non-zero at the END, not before them
+    [[ "$output" == *"romp url"* ]]
+    [[ "$output" == *"exiting non-zero"* ]]
     grep -qx install "$TEST_DIR/svc.log"
 }
 

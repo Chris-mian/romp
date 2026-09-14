@@ -227,8 +227,9 @@ error center says so under the `refused` kind.
 
 ### Folder click, in your terminal or editor
 
-The chat statusline shows the session's working directory; clicking it opens
-that folder. The default is the OS opener (`open` / `xdg-open`). To open it
+The chat statusline shows the session's working directory by default (a widget
+of the Status line section under Settings, Chat, beside the git branch, on by
+default too); clicking it opens that folder. The default is the OS opener (`open` / `xdg-open`). To open it
 elsewhere, set a command via the env var `ROMP_OPEN_FOLDER` or the first
 non-comment line of `~/.config/romp/open-folder`; `{dir}` is replaced with
 the clicked path (omitted, the path is appended). The command runs on the
@@ -739,6 +740,34 @@ not change what the kernel runs at its next restart. On a machine that runs
 romp as a service, pin it anyway: `ROMP_PYTHON=/usr/bin/python3.12` in
 `service.env` makes the choice explicit and holds if the venv is deleted or
 rebuilt. Pin the versioned path, not `python3`, which an upgrade repoints.
+Whatever the pick, 3.10 is the floor for an interpreter that reports a version:
+`bin/romp-serve` runs the picked interpreter once for its version (its first
+execution), reads the sentinel line the probe prints (`romp-pyver X.Y`, carriage
+returns stripped, so a site customization's chatter or an `atexit` hook that
+prints cannot pass for the version or hide it), and refuses to start the kernel
+below 3.10, naming the interpreter, its version and the install commands, with an
+exit code of its own (2). The probe is bounded to five seconds where `timeout`
+exists, its whole process group signalled at the bound so a child the interpreter
+left behind dies with it; an interpreter that runs out that clock, or exits 124 or
+137 of its own accord (the codes the bound reads as), is refused as unresponsive
+with exit code 1. Where there is no `timeout` (a stock mac) the probe is
+unbounded, as the picker's own runs of a candidate are: the residual. The output
+goes to a file (`TMPDIR`, then `/tmp`, then the state directory: a `TMPDIR` that
+is stale or unwritable falls to the next directory, and only a `PATH` without
+`mktemp`, or every directory unusable, falls to a pipe read, which the bound
+covers for the interpreter but not for a helper it leaves holding the output),
+read afterwards by the shell itself, so a helper the interpreter left holding its
+output cannot hold the file read; the file goes with the shell, a stop mid-probe
+included. An interpreter that reports no readable version is started on purpose
+(the pick already checked it is an executable file, and a version nobody can read
+is not a version below the floor). `bin/romp-serve --print-python` prints the
+pick with that floor applied and starts nothing, which is what `install.sh`'s
+preflight runs, claiming a Python cause on that code alone and passing the
+script's other refusals (the two port spellings disagreeing, a kernel binary that
+is not there, an unrunnable pin, an unresponsive interpreter) through with their
+own line and a plain stop; every python the install runs afterwards is that same
+interpreter, and under `ROMP_SKIP_PREFLIGHT` the pin (`ROMP_PYTHON`) stands in
+for it.
 
 Moving romp to another Python, whether another version or the free-threaded
 build of the same one, takes four steps, and skipping any one of them leaves a
@@ -769,7 +798,28 @@ owner-only permissions (`chmod 600`). The file carries the billing declaration
 (`ROMP_EXPECTED_AUTH`, below) and the service knobs (the ports, the CLI scopes
 and their memory limits, the perf log), never a key. The service reads the file
 at manager startup, so a change needs a manager restart. `ROMP_SERVICE_ENV_FILE`
-overrides the file's path.
+overrides the file's path. The launcher reads the file line by line and never
+sources it: a line that is not `KEY=VALUE`, or whose name the shell refuses to
+assign (`UID`, `PPID`), is skipped and the rest reach the manager.
+
+On macOS the login agent runs the manager under a copy of `node` named
+`romp-node` in the state directory, so that Full Disk Access can be granted to
+romp alone rather than to every script the shared `node` runs; the copy is
+refreshed when `node` changes (a re-grant follows a node upgrade). A `node` whose
+shared library is referenced relative to its own install (Homebrew's build, a
+version manager's shim) cannot run from the copy: the launcher probes the copy
+before using it and runs the manager on the system `node` instead, saying so once
+in the manager log, and `romp-service install` removes such a copy rather than
+leave it. `ROMP_NO_NODE_COPY=1` in `service.env` skips the copy altogether (the
+grant then reads `node`); the launcher reads the file before it decides, so the
+line works for a manager launchd started. The value rule is the same in both
+readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
+value is on (`disabled` and `none` included: only those four words turn it off),
+and the last assignment in the file wins. The copy is probed under a ten-second
+bound (`ROMP_NODE_PROBE_BOUND`, never below one second nor above an hour: seven
+digits or more read as 3600), and a probe that hangs is
+killed with everything under it, TERM then KILL, so a version manager's shim that
+runs `node` without replacing itself leaks nothing.
 
 The installed unit also sets `MALLOC_ARENA_MAX=2` for the manager and every kernel it spawns (2026-09-11): the kernel is a many-threaded Python process that rebuilds large record lists, and the allocator's per-thread arenas kept hundreds of megabytes of freed memory between restarts; two arenas return it. A line in `service.env` overrides it.
 
@@ -943,11 +993,14 @@ in the vault, and everywhere within the TTL.
 
 `romp down` stops the kernel and keeps it stopped until `romp up`. The manager
 is supervised (`Restart=always` under systemd, `KeepAlive` under launchd), so a
-kernel or manager that merely exits is back within seconds, and Ctrl+C is not
+kernel or manager that merely exits is back within seconds (on macOS, within a
+minute when the manager had run for less than a minute before it exited: the
+throttle that bounds a crash loop delays a manager's own refresh exit in that
+window too), and Ctrl+C is not
 available to a manager the service runs. `romp down` instead stops the login
 service itself (`systemctl --user stop romp-manager.service`; on macOS
 `launchctl bootout` of the agent), which nothing respawns, and then probes the
-processes themselves rather than trusting the exit code of `romp-service stop`.
+processes themselves rather than trusting the exit code of `romp-service stop`. A manager that dies as soon as it starts is another matter: launchd's `ThrottleInterval` in the agent is 60 seconds, so such a manager is retried once a minute rather than every ten seconds (a manager that ran longer than that before exiting, its own refresh, is respawned at once), and `romp-service status` reads the job's record rather than its mere presence, so it says `loaded but not running` with the last exit code instead of `running`, which is also what `install.sh` keys its skip-the-reinstall shortcut on. One such death has a reading of its own: when the agent's manager exited with code 1, its refusal to start beside a manager already holding the control port, and something answers on that port (the port the agent's manager would bind: `ROMP_MANAGER_PORT` in `service.env`, else the environment's, else 7432), `romp-service install` names the manager already serving, most likely a hand-run `romp up` outside the service, with the two ways out (leave it, and the agent takes over when that manager stops; or stop it and re-run the install), and exits 3; `install.sh` then finishes its run, link and banner included, and exits non-zero at the end. Any other exit code with a manager answering is reported as two facts, the agent's own death and its log first. Under systemd, `Restart=always` keeps the unit's default start limit (five starts within ten seconds and the unit stops), and `systemctl --user status romp-manager.service` tells the two apart.
 
 Before stopping, `romp down` gives the turns in flight `--wait` seconds
 (default 5, up to 600) to reach a turn boundary. It asks the kernel to quiesce
@@ -1932,15 +1985,38 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   reason).
 - `asmIndex`: the lazy index (T323 stage 4c) a restored session's pre-cut turns
   come from: `materialized` atoms built from the document's rows since boot,
-  `materializedBy` (per consumer), `resident` (the process-wide LRU, `cap`
-  20000 atoms across every session; eviction drops the memo, never a field in
+  `materializedBy` (per consumer), `materializedByStage` (the same builds
+  under the calling thread's stage mark beside the consumer, as
+  `hydratedByStage` does for bodies: `push`, `connect`, `push.session`
+  (the backend's targeted one-session push, on a thread of the
+  backend's own at a session's connect handshake; the mark is the
+  thread's default, so a backend calling the push synchronously under
+  a request keeps the request's route), `jobs.<job>`,
+  `judge.<tier>` for a tier thread and every worker of the pools it
+  submits to (the mark rides the submit, as the pass frame does, since a
+  thread-local does not cross into a pool worker), `http.<METHOD>.<route>`
+  for every request and the socket a GET becomes (the route is the path's
+  first segment, or its first two under `/push`, `/tunnels` and `/usage`,
+  whose roads differ by the second), `warm.parse`, `warm.boot`,
+  `producer`, `revive`, `rewind.migration`, `rewind.holds`, `move`,
+  `remote-ws`, `federation.push`, `federation.pull`, `federation.ask`,
+  `ask-poll`; `none` means the build ran on a thread with no mark, which
+  should not happen: the kernel's thread census (every Thread, Timer and
+  pool construction site in the kernel, the judge and the two session
+  backends, walked by the ast, and every kernel callback the backends are
+  handed, since a backend runs those on threads of its own) holds every
+  thread marked or listed as a pure I/O helper and every handed callback
+  marked or listed, and a `none` row on a live `/perf` names a thread or a
+  callback the census missed), `resident` (the
+  process-wide LRU, `cap` atoms across every session: the machine's memory
+  over 32 KiB, never under 500,000; eviction drops the memo, never a field in
   place), `evictions`, and `restoredTurns`.
 - `skillLoadIndex`: the judge's skill-load boot pass (the tops older stores minted from
   the harness's own skill load): `filesRead` and `bytesRead` (transcripts read raw this
   boot, appended tails only once the persisted index holds a file), `filesIndexed`, and
   `checked` (prompt anchors known not to be a wrapper, never read again).
 - `chatPages`: the rendered pages of chat history before a session's render
-  floor (the chat wire's `loadOlder`, `loadAround` and `loadNewer` answers, below):
+  floor (the chat wire's `loadOlder`, `loadAround` and `loadTurns` answers, below):
   `hits`, `misses`, `evictions`, `pages` and `bytes` resident (a bound of 32
   pages or 16 MB per kernel), `renderMs` spent rendering; the warming, after
   the pusher's send stage (`push.warm`), with a board client and a proto-2 chat
@@ -2178,18 +2254,55 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   exists and cannot be read or parsed is answered empty, marks the running
   judge stage incomplete, and is not memoized, so the next call reads the file
   again. `plannerSkip` is the planner's inner change gate (`skipped`,
-  `planned`, `recorded`). The planner runs behind two gates. The outer gate is
+  `planned`, `recorded`, and since T401 (5c) `restored`, `refused`,
+  `persisted`: the gate's memo of "the key of the last pass that had
+  nothing to do", one row per session, persists across boots in
+  `STATE/planner-seen.json` (version 1, the tick-seen shape: a row is never
+  an answer on its own, the key is recomputed at the pass and compared, a
+  malformed row is refused, rows are dropped with the sessions a non-empty
+  pass discovers (an empty discovery is unknown, not every session gone,
+  and leaves the rows for the next non-empty pass), the write
+  is atomic under a per-writer temporary and re-armed on a failed replace).
+  The key holds every file the plan tier's inventory names (the parse, the
+  store trio, the episode log, the leaf's task store, the captions file,
+  the death marker and `cleared.jsonl` by stat; the reg by the values the
+  pass reads, its `spawnedAt` and the SDK-owned bit; the stall slice by
+  this session's records; and each running background launch's deadline
+  bit under the pass clock). The rule: a persisted key term must be stable
+  across the event it persists over, so a file rewritten at every boot (the
+  reg at attach, the stall slice by the jobs pass) is keyed by the values
+  the pass reads, never by its stat (derivation 1 keyed both by stat and no
+  row stood across a boot: the second deploy boot read restored 20, skipped
+  0). The file carries a derivation pair (the planner's derivation version,
+  2 since that fix, and `PLACEMENTS_V`), and a file written under another
+  pair is refused whole, so the first pass after such a change plans every
+  session once and rewrites the rows (the v1 rows are refused once and
+  rewritten under 2). `mismatchByTerm` counts, for every row that stood in
+  the table and compared unequal at a pass, the indexes of the key terms
+  that differed (reset with the process), so a read boot names a term that
+  moves at boot instead of leaving it to a guess. `restored` counts the rows a boot loaded, `refused`
+  the rows it would not trust (a file that cannot be read or decoded counts
+  once per fault spell and leaves the load unlatched, so the next pass
+  retries and the exit drain's forced write declines meanwhile; a torn,
+  empty or other-shaped file counts
+  once; another derivation counts every row), `persisted` the rows on disk
+  after the last write. Before it every boot re-planned every session
+  (`planned` 20 and `skipped` 0 on the 2026-09-14 read boots); the first
+  boot after the change has no rows and re-plans everything while its
+  passes record and persist, and the boot after that is the one to read.
+  The planner runs behind two gates. The outer gate is
   the judge's evidence gate around `_plan_session` (`docs/judges.md`, "Ops and
   knobs"): a session whose signature equals the one the planner stamped after
   its last complete run is skipped before it is submitted. It keys on the
-  inner gate's inputs, the reg by its `spawnedAt` and backend values rather
-  than by identity, plus `cleared.jsonl`, the death marker and the session's
-  stall records. The inner gate
+  same files as the inner gate by identity, plus derived values the inner
+  key does not read (the reg's `spawnedAt` and backend, the stall slice's
+  value, the task-store fingerprint). The inner gate
   sits inside `_plan_session` and sees only the sessions the outer gate ran: a
   session whose parse, store, journal, archive, episode log, its leaf's task
-  store, captions file and reg have not moved since a pass that had nothing to
-  do, and none of whose running background launches has crossed its deadline,
-  is not planned again. The inner gate records a pass only when it placed
+  store, captions file, reg file, death marker, `cleared.jsonl` and stall
+  slice file have not moved since a pass that had nothing to do, and none of
+  whose running background launches has crossed its deadline, is not planned
+  again. The inner gate records a pass only when it placed
   nothing, left the store's key where it was, and ran to completion; a
   deferral without a write, or a side file that exists and did not read,
   marks the run incomplete, and that session is planned again next pass. So
@@ -2332,8 +2445,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   uuids and user texts the transcript already holds, and the newest human
   turn's time), one entry per session keyed on the parsed session object's
   identity and shared by the chat, feed and timeline builds of one cycle:
-  `hit` and `miss` (merges served against derived) and the gauge `entries`
-  (a session neither shown as a tab nor alive is dropped). `chatPostal` is
+  `hit` and `miss` (merges served against derived), the gauge `entries`
+  (a session neither shown as a tab nor alive is dropped), and two numbers
+  a miss records (T401 (5b)): `floorAgeMaxS`, the largest distance from the
+  newest atom's time over every turn, live tail included, back to the
+  oldest live echo's send that floors the derivation (a zero floor, an echo
+  with no send time, is skipped, and a floor newer than every atom
+  contributes zero), and `builtAboveFloor`, the restored pre-cut user rows
+  the derivation itself built above such a floor since boot (never another
+  road's builds, never the rows it read already built); a restored session's
+  pre-cut turns above the floor are read through the index's light facts,
+  building only the user rows that carry text, so the two say whether a
+  dropped echo days back should hold the floor at all. `chatPostal` is
   the chat fold's memo of a tab's sealed postal cards, keyed on the values
   the cards embed from outside the transcript (the message log's identity
   and, per card, its caption and its peer's name and colour): `gate` (gate
@@ -2400,27 +2523,46 @@ announces `chatProto2` in its `caps`:
   after it and appends; an anchor it does not hold is a gap (`needFull`);
 - `loadOlder {id, before: <oldest resident uuid>}` is answered by `chatHead {id,
   beforeUuid, events, more}`; `more: false` is the head;
-- `loadAround {id, uuid}` is answered by `chatWindow {id, anchor, events,
+- every history reply names its TURN SPAN (`span: [lo, hi)` in the kernel's turn
+  numbering) so the page can place it among its regions, the runs it holds and
+  the gaps it does not; the session frame carries `tailLo` (the tail run's first
+  turn) and `pageTurns` (the page the gaps ask by), and the tail run is always
+  resident and live: no client is ever detached, and no window pauses live
+  updates;
+- `loadAround {id, uuid}` is answered by `chatWindow {id, anchor, events, span,
   moreBefore, moreAfter}` in one round trip (`missing: true` when the anchor is
-  in no page); a window with `moreAfter` leaves the client DETACHED: it gets no
-  delta until `loadNewer {id, after: <newest resident uuid>}`, answered by
-  `chatMore {id, afterUuid, events, more}`, reaches the tail (`more: false`,
-  the reply then carries the frame's status and ledger), or a `needFull`
-  re-attaches it (the page's "Return to live" strip and its jump chip ask for
-  one, and the full frame answering that ask merges into the held run it
-  overlaps, so the pages the reader walked stay, the kernel's base keeping the
-  run's older first edge with it (the page sends its newest resident keys with
-  the ask, `reattachKeys`, and the kernel keeps the older edge when the highest
-  of them still in the list lies inside the frame); every other full frame
-  replaces the run, its
-  in-list events being the fresh copies); a reconnect's `ready` starts a fresh
-  base. A window that overlaps the run the client holds
-  through the live tail, by turn span, keeps it attached (`connected`; a
-  `loadOlder` advances the run's first edge, so the kernel's picture of the run
-  follows the page's). A
-  detached run whose edges left the transcript (a `/clear`, a fork, a rewind)
-  gets a full frame; a `missing` reply on a held key is a gap the page answers
-  with `needFull`. A reply that reaches the head carries the head cards first.
+  in no page); the page inserts the window as a run by its span, and a
+  navigation's window lands while any other fills in place; a reply with no
+  `span` is an OLDER host speaking the pre-regions protocol, and the page says
+  so rather than dropping the reader where a pre-jump left them;
+- `loadTurns {id, lo, hi}` asks for a gap's page directly and is answered by
+  `chatTurns {id, span, events, head}` (`head: true` at the head, the head cards
+  riding along; an empty or out-of-range span is `missing`); `loadNewer` is
+  retired (`missing, retired`): an OLD bundle against this kernel is the only
+  caller left, and its detached client snaps to the tail on the retired reply,
+  dropping the pages it had walked — acceptable, since an old bundle holds no
+  regions to keep them in;
+- three rules the page keeps for its regions: a socket death clears every
+  in-flight history ask (the page asks, the landing's held gap, the notice, the
+  cancelled mark), tells the reader once that a jump in flight was lost, and
+  lets a gap met again on the healed socket ask anew; a gap is sized by its
+  TURN count times the rendered run's measured pixels per turn (a turn is a
+  user row plus its reply and any tool rows; a per-display-unit average drew
+  gaps half true); a fill anchors on the first row that intersects the
+  viewport, whatever the sign of its top; with no row on screen (or that row
+  gone from the rebuild) it names the point under the viewport top as a TURN
+  and a fraction into its gap and puts that turn back after the rebuild, so
+  the point moves by less than a turn (the head stays at zero); every row
+  carries its own turn, stamped when it is painted, so the point is named by
+  the row's position and never by looking its uuid up (a row anchored on an
+  answer's tool_result uuid has no event of its own), and a fill that leaves
+  no row on screen re-windows once around the named point;
+- the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
+  only when its span reaches the tail run, so the tail's deltas keep flowing to a
+  reader in older history; a reconnect's `ready` starts a fresh base. A run whose
+  edges left the transcript (a `/clear`, a fork, a rewind) gets a full frame; a
+  `missing` reply on a held key is a gap the page answers with `needFull`. A
+  reply that reaches the head carries the head cards first.
   Every slice of the list is turn-aligned. A remote kernel learns the protocol
   from a `ready` the page sends on each host socket's open; a redialed local
   socket carries it on its dial term (`&proto=`), since a redial posts no
@@ -3608,6 +3750,78 @@ what is there; a run that fails between the two writes leaves its deltas
 journaled and the next run folds them first. A standing correction of a day's
 first cumulative row is kept as it was made, so the day's later rows never
 rewrite it.
+
+## The Task tracking switch
+
+Task tracking has one master switch, at the top of Settings, Task tracking, on by default. It is a kernel-side,
+per-install setting: `~/.local/state/romp/task-tracking.json`, `{"enabled": false, "gt": <gesture stamp>}`. An absent,
+unreadable or malformed file reads ON; only the literal `false` turns tracking off, and reading never creates the file.
+An absent file is the quiet default. A file that is present but cannot be read or is not the store's shape reads ON
+too, and says so once per episode, one kernel log line and one error-center notice (the dashboard's bell) that the task
+tracking switch file could not be read and tracking is running: unlike its siblings' defaults, which withhold a
+capability, this one resumes spending the user may have opted out of. A clean read, or the file's absence, ends the
+episode. The next flip in the gear rewrites the file where the path can be written; a directory in the file's place
+refuses the write, nothing is applied, and the gear says so (the setting's stale toast names the fault), so the directory
+has to be removed by hand.
+The gear's click posts `setTaskTracking` with a gesture stamp; the setter follows the ordering, echo and stale rules every
+gesture-stamped setting uses, and an applied flip is echoed to the socket that made it (a `taskTracking` frame), which is
+when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is
+told on the same socket instead (a `settingStale` frame naming the fault and the kept value), so the gear snaps back to
+the kernel's value and the rail and the panes stay as they were. It is one value across attached machines: the click
+reaches every attached kernel, and a kernel attached later adopts the newest stamp, the road Auto Nudge, Suggest
+/compact and file editing take.
+
+**Across attached machines** the browser merges every host's feed frame into one. A host whose frame is the off stand-in
+is named in the merged frame (`offHosts`, beside the per-host build counters), a host that is attached but has not yet
+sent a frame is named too (`pendingHosts`), and a frame built before the browser has read the host list at all (a page
+load's very first, which the local kernel's push produces before the first `/tunnels` answer) says so (`hostsUnread`)
+and counts every card as not in hand until the answer lands, when the frame is re-emitted. This touches the
+single-kernel page too: its first frames are unread until the first answer, which the poll delivers within a
+cycle, and an answer that is not the list (a non-ok status, a failed fetch) leaves them unread and is filed once
+in the client diagnostics (a `hostconn` row, `tunnels-poll-failing`, with the reason on one line) and its end
+once (`tunnels-poll-recovered`, filed after the list is read, so it says the frames are no longer unread); the
+frame's own
+`off` stays the local kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree.
+While any host is named in either list, its cards are not in hand, which is not the same as gone, and the feed pane's
+writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or forgotten because a card is
+not in the frame (a pending clear's confirmation, a card's disclosure state, a predicted move's gone verdict, an
+optimistic tick, a bell mark); presence-driven work goes on and the reporting hosts' cards still ring the bell. The
+bell's card marks name their host from the mint (a remote card's as a trailing segment, a local card's as the empty
+one), so only the marks of the hosts not in hand are kept and the reporting hosts' prune by absence as ever; a host
+mints nothing while off, so what is kept for it is what its cards carried at the flip, and the store stays bounded
+however long it stays off. A mark stored before the segment existed names no host: it is kept while any host is not in
+hand and rewritten with its host the next time its card is seen, a finite set that only shrinks. The convergence above
+does not reach an isolated peer (its settings are neither adopted nor pushed), so an attached isolated host with the
+switch off stays named indefinitely: the marks kept for it are bounded as said, and the disclosure state grows only by
+the user's own gestures, so a long mixed state costs stale entries for cards that have left, never growth without a
+gesture. Before the pending hosts counted, every reload pruned every remote card's marks and disclosure state on its
+first frame and re-rang every remote warn once the frames arrived.
+
+**Off, the kernel stands down** the two judge tiers (the producer starts no index and no triage thread: no
+kernel-initiated model call, no `judge-usage.jsonl` row), the feed and outline builds (the panes receive one frame with
+`off` and show a notice in place of their list; the `/feed` and `/fleet` pages render the notice, and its button opens the
+settings at Task tracking, through the shell when the pane sits in one, else by sending a standalone page to the
+dashboard with `#settings=tasks`), and the goal nudges, which wait, since their redundancy read is a judge call. A call in
+flight when the switch flips finishes; the next pass starts nothing. The stores stay on disk; on again resumes from them.
+
+**Off, these carry on:** the chat and the Sessions pane (its judging band is empty), the sessions' working and awaiting
+dots in the chat (derived from the transcripts, outside the feed build), the compaction suggestion, the reminders
+about unanswered messages from other sessions, which need no judge and follow Auto Nudge's own switch, and the error
+center (the dashboard's bell): a failed machine sync, a refused state write or a session that cannot start is told while
+off as before, since the notice rings ride the off frame. An opt-out of judging is not an opt-out of being told when the
+machine fails. One pre-existing gap stands, tracking on or off: a browser with the Feed pane turned off in the gear's Panes
+section never loads the feed frame, so no ring row reaches that browser's bell; the shell should feed the bell from the
+frame it already receives rather than from the feed frame alone. The producer's
+episode settle, goals snapshot and evidence frame still run as store bookkeeping, and a rewind's reconcile runs as before.
+
+The shell hides the Outline and Feed buttons and phone tabs (`body.no-task-tracking`) and closes an open pane of theirs
+in memory (the stored pane set stands); the gear greys the judge rows, the two pane toggles and the Judging-bands boxes
+with the tooltip "Enable task tracking to use this (Settings, Task tracking)."
+
+Where to read it: `/version` carries `taskTracking` at the top level and in `settings`, with its stamp under
+`settingsGt` as `task-tracking`; `/perf` carries `judge.tierStarts`, the count of judge tier threads started, flat while
+off. `kernel/judge.py` `MODEL_CALLERS` is the census of every judge that makes a model call, each declaring its relation
+to the switch; an ast test holds it to the module's call sites, and the entry point refuses an undeclared name.
 
 ## Switches
 

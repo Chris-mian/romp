@@ -251,7 +251,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* a WIDGET ROW: the live demo (a miniature tab), the name (its one-line description behind the panel's hover popover, .rs-sub), the sliding switch, the options */
 /* ONE grid across every row (round one, LOW 2: each row was its own grid, so the switches did not line up): the host holds
    the columns, each row spans them through a subgrid, so the demos, the switches and the options align down the list */
-#rsettings .rs-widgets { display: grid; grid-template-columns: 96px 1fr auto auto; column-gap: 10px; }
+#rsettings .rs-widgets { display: grid; grid-template-columns: 18px 96px 1fr auto auto; column-gap: 10px; }   /* the grip's column leads (T409: the rows reorder by drag) */
 #rsettings .rs-widget { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; padding: 7px 0; position: relative;
   border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.08)); }
 #rsettings .rs-widget:last-child { border-bottom: 0; }
@@ -270,13 +270,52 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
    fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
 #rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; }
-#rsettings .rs-widget-demo .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
-#rsettings .rs-widget-demo .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
-#rsettings .rs-widget-demo .tab-dot.none { visibility: hidden; }
-#rsettings .rs-widget-demo .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
-#rsettings .rs-widget-demo .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
-#rsettings .rs-widget-demo .tab-dot.opening { background: var(--accent, #9cd2ff); }
-#rsettings .rs-widget-demo .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
-#rsettings .rs-widget-demo .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
-#rsettings .rs-widget-demo .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
+#rsettings .rs-widget-demo .tab-dot, #rsettings .rs-preview .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
+#rsettings .rs-widget-demo .tab-dot.await, #rsettings .rs-preview .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
+#rsettings .rs-widget-demo .tab-dot.none, #rsettings .rs-preview .tab-dot.none { visibility: hidden; }
+#rsettings .rs-widget-demo .tab-dot.idle, #rsettings .rs-preview .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
+#rsettings .rs-widget-demo .tab-dot.unknown, #rsettings .rs-preview .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
+#rsettings .rs-widget-demo .tab-dot.opening, #rsettings .rs-preview .tab-dot.opening { background: var(--accent, #9cd2ff); }
+#rsettings .rs-widget-demo .tab-ctx, #rsettings .rs-preview .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
+#rsettings .rs-widget-demo .tab-ctx-fill, #rsettings .rs-preview .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
+#rsettings .rs-widget-demo .tab-key, #rsettings .rs-preview .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
   border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's
+   dress), keeps its hover so the title says what to enable, and its inputs are inert (disabled, and no pointer on them or
+   their house pickers). */
+#rsettings .rs-row.rs-off, #rsettings .rs-jrow.rs-off { color: var(--text-faint, #6e7681); cursor: default; }
+#rsettings .rs-row.rs-off > *, #rsettings .rs-jrow.rs-off > * { pointer-events: none; }
+#rsettings .rs-row.rs-off input, #rsettings .rs-jrow.rs-off input, #rsettings .rs-jrow.rs-off select, #rsettings .rs-jrow.rs-off button { opacity: .4; }
+/* the Status line section's demos (T409): the widget alone, as the line draws it (status-widgets.ts renders the row's
+   node through the same function as the line), in the line's own dim mono; the name chip on its identity colour */
+#rsettings .rs-widget-demo .status-dir, #rsettings .rs-widget-demo .status-branch { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#rsettings .rs-widget-demo .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
+#rsettings .rs-widget-demo .status-dir-icon svg { display: block; }
+#rsettings .rs-widget-demo .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* REORDER (the user's addition to T409): the grip on every widget row's left; a row in flight; the Tab widgets DIVIDER, the
+   session name's place as a line with subtle text (never a fake name); the PREVIEW under each section's rows */
+#rsettings .rs-grip { width: 18px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--text-muted); font-size: 14px; line-height: 1;
+  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; border-radius: 4px; }
+#rsettings .rs-grip:hover, #rsettings .rs-grip:focus-visible { color: var(--text-bright); background: var(--accent-wash); outline: none; }
+#rsettings .rs-widget.rs-dragging { opacity: 0.7; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 6px; }
+#rsettings .rs-widget.rs-dragging .rs-grip { cursor: grabbing; }
+#rsettings .rs-divider { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; padding: 6px 0; border-bottom: 0; color: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+#rsettings .rs-divider::before, #rsettings .rs-divider::after { content: ""; flex: 1 1 auto; height: 2px; background: var(--hairline); border-radius: 1px; }
+#rsettings .rs-preview { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--bg); display: flex; align-items: center; gap: 12px; }
+#rsettings .rs-preview-label { flex: 0 0 auto; color: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+#rsettings .rs-preview-body { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+#rsettings .rs-preview .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg); position: relative; border: 1px solid var(--menu-border); border-radius: 6px; }
+#rsettings .rs-sl { display: flex; align-items: center; gap: 10px; width: 100%; font-size: 12px; }
+#rsettings .rs-sl-chip { display: inline-block; padding: 2px 10px; border-radius: 11px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; background: var(--accent); color: var(--accent-fg); }
+#rsettings .rs-sl-right { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+#rsettings .rs-sl .status-dir, #rsettings .rs-sl .status-branch, #rsettings .rs-sl-ctl { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; }
+#rsettings .rs-sl .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
+#rsettings .rs-sl .status-dir-icon svg { display: block; }
+#rsettings .rs-sl .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); }
+#rsettings .rs-sl-batt { border: 1px solid var(--menu-border); border-radius: 4px; padding: 0 5px; font-size: 10px; color: var(--text-muted); }
+/* a move refused (a status-line row held in its slot's group): a brief sideways nudge; the live region every move speaks through */
+@keyframes rs-nudge { 0% { transform: translateX(0); } 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } 100% { transform: translateX(0); } }
+#rsettings .rs-widget.rs-nudge { animation: rs-nudge 0.3s ease; }
+@media (prefers-reduced-motion: reduce) { #rsettings .rs-widget.rs-nudge { animation: none; outline: 1px solid var(--accent); outline-offset: -1px; } }
+#rsettings .rs-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

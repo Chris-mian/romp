@@ -129,10 +129,10 @@ test("every day walk decides against a DayWalk mark and never a raw epoch; windo
   assert.equal(calls.length, 4, "four call sites: " + calls.join(" | "));
   for (const c of calls) assert.match(c, /^dayDividerFor\(\w+, walk\)$/, "each hands the walk, not a number: " + c);
   const ai = RENDER.slice(RENDER.indexOf("function appendItem("), RENDER.indexOf("function renderWindowItems("));
-  assert.match(ai, /^function appendItem\(v: View, s: Session, items: DisplayItem\[\], u: number, prevEpoch: number \| null, walk: DayWalk, working: boolean\): number \| null \{/m);
+  assert.match(ai, /^function appendItem\(v: View, s: Session, items: DisplayItem\[\], u: number, prevEpoch: number \| null, walk: DayWalk, working: boolean, turns: number\[\] \| null = null\): number \| null \{/m);
   assert.match(ai, /walk\.pass\(unitExit\(s, it\)\);[^\n]*\n\s*for \(const n of nodes\) if \(!stamped\.has\(n\)\) stampWalkDay\(n, walk\);\s*\n\s*return prevEpoch;\s*\n\}/, "the unit's exit passes the mark on the way out, and every node the unit appended is stamped with the walk's day unless a row was stamped in its own day mid-unit (T342)");
   const rw = RENDER.slice(RENDER.indexOf("function renderWindowItems("), RENDER.indexOf("function sizeSpacers("));
-  assert.match(rw, /const walk = dayWalkBefore\(s, items, unitStart\);[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working\);/, "a window seeds the mark by walking the units before it");
+  assert.match(rw, /const walk = dayWalkBefore\(s, items, unitStart\);[^\n]*\n\s*const turns = s\.regions \? turnOfEvents\(s\) : null;[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working, turns\);/, "a window seeds the mark by walking the units before it");
   assert.match(RENDER, /function dayWalkBefore\(s: Session, items: DisplayItem\[\], unitStart: number\): DayWalk \{\s*\n\s*const w = new DayWalk\(\);\s*\n\s*for \(let u = 0; u < unitStart && u < items\.length; u\+\+\) w\.pass\(unitExit\(s, items\[u\]\)\);/);
   // unitExit: the one rule — a lone event its own epoch, a notice run its anchor, a tool run its first (collapsed) or last (expanded)
   const ue = RENDER.slice(RENDER.indexOf("function unitExit("), RENDER.indexOf("function dayWalkBefore("));

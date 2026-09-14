@@ -139,7 +139,7 @@ elements (an event, not a scroll poll), which asks for `pagesToAsk` and marks th
 arrives, the gap is replaced by a run region in one DOM operation (`replaceChildren` on a fragment): the turns
 render through the existing virtualiser, so a large run still has spacers inside it. **A fill moves nothing** (the user
 2026-09-12): the content appears in place and `scrollTop` does not change at all, on every fill, above the viewport
-included. The placeholder's height is an estimate, so the fill compensates the difference exactly in the same frame:
+included. The placeholder's height is an estimate, so the fill compensates the difference exactly in the same frame (shipped in stage 2, round five: a row that intersects the viewport anchors the fill wherever its top sits; with no row on screen the point under the viewport top is named as a turn and a fraction into its gap and put back by its turn after the rebuild):
 after the replace, the rendered run's height minus the gap's height is added to `scrollTop` when the gap sat above
 the viewport's top (one attributed write, `gap-fill`), and nothing is written when it sat below; `overflow-anchor`
 stays on as the belt for the browser's own compensation. The lab reads `scrollTop` and the target turn's rect before

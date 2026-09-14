@@ -55,13 +55,19 @@ class _TimedPool(ThreadPoolExecutor):
         super().__init__(*args, **kwargs)                 #  stack sample keys them by tier, never as an anonymous pool (T401)
 
     def submit(self, fn, /, *args, **kwargs):
+        stage = em._read_stage()                          # the submitter's stage mark (judge.<tier> on a tier thread) rides the submit
+        #                                                   the same way the pass frame does: a build or a hydration inside the worker
+        #                                                   counts under the tier, never under `none` (T401 (5a) round two)
         def run():
             _judge_ctx.in_pass = True
+            prev = em._read_stage()
+            em._set_stage_mark(stage)
             c0 = time.thread_time()
             try:
                 return fn(*args, **kwargs)
             finally:
                 _judge_cpu_add(time.thread_time() - c0)
+                em._set_stage_mark(prev)                  # the worker's previous mark restored on every exit
         return super().submit(run)
 
 
@@ -189,7 +195,10 @@ def _rebind_state(path):
     _CHAIN_MEMO.clear()     # the write-moment chain memo keys on paths under STATESDIR; a new root is a new world
     parse_cache_clear()      # the parses belong to the old root too
     _COURIER_SEEN.clear()   # the courier gate keys on the old root's files
-    _PLANNER_SEEN.clear()   # ...and the planner gate
+    _PLANNER_SEEN.clear(); _PLANNER_SEEN_LOADED[0] = False; _PLANNER_SEEN_DIRTY[0] = False; _PLANNER_SEEN_READ_FAULT[0] = False   # ...and the planner gate, its load latch
+    #                                                                                          with it: the new root's rows load on
+    #                                                                                          the next pass, and a forced persist
+    #                                                                                          before that writes nothing (T401 (5c) round three)
     _BACKREF_MEMO["slot"] = None   # ...and so does the sender-board walk's map
     _CAPTIONS_MEMO.clear(); _GOALARCH_MEMO.clear()   # ...and the per-file read memos
     _episode_memo.clear()   # ...and so are the episode-log reads
@@ -1293,12 +1302,29 @@ def _reg_spawned_at(fsid):
     components rely on, but a rewrite in place of equal size within one mtime tick keeps all three, and a
     memo keyed on them served the previous content (the kernel publishes the reg by os.replace, so it
     never does that; a test fixture writing in place did, 2026-09-07). The reg is small; one read per
-    session per tier is the whole cost. None when the reg is absent, unreadable, or carries no number
-    (the value _cli_epoch derives too)."""
+    session per tier is the whole cost. None when the reg is absent or carries no number (the value
+    _cli_epoch derives too). STRICT, like _stall_slice (2026-09-14, the planner memo tidy's round two): a
+    reg that exists and cannot be read or parsed raises OSError, so the gate runs the stage without a
+    stamp (_gate_check's bypass) instead of matching a stamp taken while the reg was readable, one
+    judge-errors row per failure episode (_read_failed); before, the fault read as None, the same as a
+    reg with no spawnedAt, and a plan-tier stamp taken over a spawnedAt-less reg skipped the session for
+    as long as its reg stayed unreadable, while _plan_key's sentinel for the same fault was never even
+    computed."""
+    p = STATE / "sdk" / (fsid + ".json")
     try:
-        v = json.loads((STATE / "sdk" / (fsid + ".json")).read_text()).get("spawnedAt")
-    except Exception:
+        raw = p.read_text()
+    except FileNotFoundError:
+        _read_ok(str(p))
         return None
+    except OSError as e:
+        _read_failed(str(p), "reg-unreadable", fsid, e)
+        raise OSError("sdk reg unreadable: %r" % (e,))
+    try:
+        v = json.loads(raw).get("spawnedAt")
+    except (ValueError, AttributeError) as e:
+        _read_failed(str(p), "reg-unreadable", fsid, e)
+        raise OSError("sdk reg unparseable: %r" % (e,))
+    _read_ok(str(p))
     return v if isinstance(v, (int, float)) else None
 
 
@@ -2095,6 +2121,40 @@ _KILL_RC = -signal.SIGALRM               # the other kill shape: the perl `alarm
 #                                          install would have tombstoned every turn it touched after three passes).
 
 
+# ── the Task tracking master switch's census (T404, the user 2026-09-13) ─────────────────────────
+# Every kernel-initiated model call goes through _judge_run, and every caller names its judge. MODEL_CALLERS
+# lists each judge name with its relation to the kernel's master switch: "tracking" stands down while the
+# switch is off (the producer starts no tier; this gate catches any path that still asks, the nudge's
+# redundancy check among them). A judge with NO entry is REFUSED, with a judge-errors row saying why (T404 round
+# two, low 3: letting it out defeated the switch for any caller that forgot the table), and
+# tests/test_task_tracking_switch.py holds this table to an ast census of _judge_run's call sites, so a new
+# caller cannot ship undeclared; a call that names no judge at all (a harness, a direct probe) is not gated.
+# The kernel installs its _task_tracking_on as TASK_TRACKING_ON at boot; the romp-judge CLI runs with the
+# default (on): a pass the user starts by hand is the user's.
+TASK_TRACKING_ON = lambda: True
+MODEL_CALLERS = {
+    "captioner": "tracking", "archiver": "tracking", "gister": "tracking", "titler": "tracking",   # the index tier and its title work
+    "planner": "tracking", "opener": "tracking", "placer": "tracking", "grouper": "tracking", "consolidator": "tracking",
+    "closer": "tracking", "unblocker": "tracking", "courier": "tracking",                          # the triage tier
+    "distiller": "tracking", "briefer": "tracking", "staller": "tracking",                          # the distill tier
+    "nudge-check": "tracking",                                                                     # the auto-nudge's redundancy read
+}
+
+
+def _model_call_allowed(judge):
+    """Whether a model call by `judge` may go out now: a declared "tracking" judge only while the Task tracking switch
+    is on; a declared "user" judge always; an undeclared NAME is refused and files a judge-errors row (the census test
+    catches it at merge time; this is the running kernel's belt); an unnamed call is not this gate's business."""
+    if judge is None:
+        return True
+    rel = MODEL_CALLERS.get(judge)
+    if rel is None:
+        _log_judge_error(judge, getattr(_judge_ctx, "fsid", None), "unregistered-caller",
+                         note="judge %r is not in judge.py MODEL_CALLERS: declare its relation to the Task tracking switch; the call was refused" % (judge,))
+        return False
+    return rel != "tracking" or bool(TASK_TRACKING_ON())
+
+
 def _call_shape(model, sys_prompt, user, sent):
     """The grep-able shape of a FAILED call for its 'call' row: the model, the prompt size in chars
     (system + user — the SIZE only, never the text) and the wall-clock ms since it was sent. 2026-09-03:
@@ -2129,6 +2189,9 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
             return ""                                 # from a real call failure — event-based, no time window
     except Exception:
         pass
+    if not _model_call_allowed(judge):                # the Task tracking switch off for a declared tracking judge (T404):
+        _judge_ctx.paused = True                      # a stand-down like a pause, never a failure to count
+        return ""
     fsid = getattr(_judge_ctx, "fsid", None)
     engine = _judge_engine()                          # "claude" | "codex" (docs/codex.md §judges)
     try:
@@ -3121,26 +3184,219 @@ _COURIER_SEEN = {}         # fsid -> the scan key of its last pass that found no
 # The key is every input the pass reads, taken BEFORE the store read (the chain-memo rule): the parse
 # cache's fileset key bound to the session object, the store file's key with its journal's and archive's,
 # the episode log's key, the LEAF's task-store files (each name with its key: the declared-plan sync reads
-# the leaf fsid's directory, which a /clear forks away from an SDK session's sid), the reg file's key, the
+# the leaf fsid's directory, which a /clear forks away from an SDK session's sid), the reg by the VALUES the
+# pass reads (spawnedAt and the SDK-owned bit; a reg that cannot be read is a sentinel, never keyed), the
 # captions file's key (the floor-title heal reads it), each running background launch with whether it has
 # crossed its deadline under the pass clock (the settle's one input no file records; see _bg_expiry_key),
-# and the transcript path. Recorded only when the pass did nothing, the store's key after the pass
+# the transcript path, the death marker's key (_cli_epoch), cleared.jsonl's key (plan_units through
+# _live_anchor_gone) and this session's stall records by value (rollup_status): every file the plan tier's
+# inventory (_sig_inputs) names, held by a completeness pin; the reg and the stall slice by value because
+# both files are rewritten at every boot (derivation 2, 2026-09-14). Recorded only when the pass did nothing, the store's key after the pass
 # equals the one before it (a heal, a mint, a retirement or a rollup change moves it), and the pass was
 # COMPLETE by the evidence gate's bit (_judge_ctx.stage_incomplete, reset by _gated before the run: a
 # deferral without a write or a side file that exists and did not read sets it); a pass with units,
 # placements, a moved store or that bit is planned again next pass whatever the key says. A parse the cache
 # does not hold is never keyed, nor is an expiry view that cannot be computed. Pruned to the sessions the
 # pass discovered; a rebound root clears. This gate sits INSIDE _plan_session; the evidence gate
-# (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on a superset of these inputs
-# (cleared.jsonl, the death marker, the reg's spawnedAt value and the stall slice as well), so most skips
+# (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on the same files by identity,
+# the same reg and stall-slice values, and the task-store fingerprint this key does not read, so most skips
 # happen there and this table sees the sessions it let through.
-_PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do
-_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0}
+_PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do (JSON-normalized: lists, not tuples)
+_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "refused": 0, "persisted": 0, "mismatchByTerm": {}}
+#                            mismatchByTerm: for every row that stood in the table (restored or recorded this boot) and compared
+#                            unequal at a pass, the INDEXES of the key terms that differed, counted (str(index) -> count, reset per
+#                            boot with the process): the instrument that names a term moving at boot instead of leaving it to a
+#                            guess (the 5c follow-up: the second deploy boot read restored 20 and skipped 0 because the reg's and the
+#                            stall slice's STATS moved at every boot; this histogram would have read {"5": 20, "10": 20})
+#                            restored: rows a boot loaded (served only when their key stands); refused: rows the load would not
+#                            trust; persisted: the rows on disk after the last write (T401 (5c): every boot re-planned every
+#                            session because this memo lived in memory alone: plannerSkip skipped 0, planned 20 on 2026-09-14)
+_PLANNER_SEEN_FILE = "planner-seen.json"   # STATE/planner-seen.json: {"v": 1, "derivation": [<_PLANNER_SEEN_DERIVATION_V>, <PLACEMENTS_V>],
+#                                                                  "rows": {fsid: <the normalized plan key>}}
+_PLANNER_SEEN_V = 1                        # the DOCUMENT's shape (a reader of another shape loads nothing)
+_PLANNER_SEEN_DERIVATION_V = 2             # the PLANNER's derivation under which a row means "nothing to do": a persisted row asserts
+#                                            that under the code that wrote it, and before T401 (5c) every restart discarded the
+#                                            assertion; now a file whose derivation pair differs from the running code's is refused
+#                                            whole (every row counted refused), so the first pass after the change plans every
+#                                            session once and the rows are rewritten under the new derivation. PLACEMENTS_V rides
+#                                            beside it: the store's placementsV seal sits below the skip return in _plan_session, so
+#                                            a seg-id migration must invalidate the rows or a standing row would keep a store at the
+#                                            old placementsV. BUMP THIS when a change to _plan_session's reads or writes would make
+#                                            a pass that had nothing to do under the old code have something under the new (a heal,
+#                                            a new unit shape, a retire rule), or when the KEY's shape changes (the rows would compare
+#                                            unequal anyway; the bump refuses them once, explicitly, and rewrites them).
+#                                            v1 = the memo's first persisted shape (2026-09-14); v2 = the reg (index 5) and the stall
+#                                            slice (index 10) keyed by value instead of by stat, since both files are rewritten at
+#                                            every boot and no v1 row stood across one (2026-09-14, the second deploy boot's read).
+_PLANNER_SEEN_LOCK = threading.Lock()
+_PLANNER_SEEN_DIRTY = [False]
+_PLANNER_SEEN_LOADED = [False]
+_PLANNER_SEEN_SAID = [False]               # the persist's failure said once per fault episode (re-armed by a clean write)
+_PLANNER_SEEN_READ_FAULT = [False]         # the load's read or decode fault, counted ONCE per fault spell (re-armed by a successful load):
+#                                            the latch stays unset on a fault so the next pass retries the read, and a file that stays
+#                                            unreadable must not count a refusal per pass (the 5c follow-up, the manager's refinement)
+_PLANNER_FSID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _planner_key_norm(pkey):
+    """The plan key as JSON carries it (tuples to lists, ints and floats kept), or None for a key that cannot be persisted: a
+    _file_key sentinel (a fresh object() for a file that exists but cannot be read) is never equal to anything, so such a key is
+    neither recorded nor compared (the in-memory memo never matched it either). Both sides of every comparison go through here."""
+    try:
+        return json.loads(json.dumps(pkey))
+    except (TypeError, ValueError):
+        return None
+
+
+def _planner_seen_read_fault(what):
+    """A read or decode fault of the memo file: counted once and SAID once per fault spell (the flag re-arms on a successful
+    load), the way persist_planner_seen says its write fault; the latch stays unset so the next pass retries. The
+    check-and-set and the bump are under the memo lock, as every planner counter is (the pool's workers bump together)."""
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN_READ_FAULT[0]:
+            return
+        _PLANNER_SEEN_READ_FAULT[0] = True
+        _PLANNER_STATS["refused"] += 1
+    sys.stderr.write("planner-seen memo: %s (said once per episode; retried by the next pass)\n" % what)
+
+
+def _planner_bump(key):
+    """One planner counter, under the memo lock: the pool's workers bump skipped, planned and recorded together, and an
+    unlocked += under-counted (the histogram had the same fault; round one of the tidy)."""
+    with _PLANNER_SEEN_LOCK:
+        _PLANNER_STATS[key] += 1
+
+
+def _load_planner_seen():
+    """The previous kernel's planner memo into _PLANNER_SEEN, once per boot (best-effort; a missing or torn file is an empty memo).
+    Every row is checked: a uuid-shaped fsid and a list value, else refused (counted, never trusted); a row is an ANSWER only when
+    its key, recomputed at the next pass, equals the persisted one (the tick-seen rule: recompute and compare, never trust).
+    The load LATCHES only after a successful read and parse (a missing file is a successful empty load and latches too): a read or
+    decode fault leaves the latch unset, so the next pass retries the read and the exit drain's forced persist declines meanwhile
+    (the previous kernel's rows stand on disk); the fault counts one refusal per fault spell, said once until a load succeeds.
+    Before the 5c follow-up the latch was set before the read, so a present-but-unreadable file latched an empty table and a
+    kernel exiting before any pass emptied the file through the drain."""
+    if _PLANNER_SEEN_LOADED[0]:
+        return 0
+    try:
+        raw = (STATE / _PLANNER_SEEN_FILE).read_bytes()
+    except FileNotFoundError:
+        _PLANNER_SEEN_LOADED[0] = True                                 # a fresh root: an empty memo, nothing to refuse, latched
+        _PLANNER_SEEN_READ_FAULT[0] = False
+        return 0
+    except OSError as e:
+        _planner_seen_read_fault("not read: %s: %s" % (type(e).__name__, str(e)[:120]))   # one refusal and one line per fault
+        return 0                                                       #  spell; the latch stays unset (the next pass retries)
+    try:
+        d = json.loads(raw.decode("utf-8"))                            # the decode under the parse try: a UnicodeDecodeError is a
+    except ValueError as e:                                            #  ValueError, and round two's read_text let it out of run_plan
+        _planner_seen_read_fault("not decoded: %s: %s" % (type(e).__name__, str(e)[:120]))   # (round three, medium 2); torn or
+        return 0                                                       #  not UTF-8: one refusal and one line per fault spell, the latch unset
+    _PLANNER_SEEN_LOADED[0] = True                                     # read and parsed: this boot's load, whatever the rows say
+    _PLANNER_SEEN_READ_FAULT[0] = False
+    rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _PLANNER_SEEN_V else None
+    if not isinstance(rows, dict):
+        _PLANNER_STATS["refused"] += 1                                 # empty, null, another shape or version: one refusal
+        return 0
+    if d.get("derivation") != [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V]:
+        _PLANNER_STATS["refused"] += len(rows)                         # written under another derivation: every row refused, the
+        return 0                                                       #  first pass plans everything once (round two, medium 3)
+    n = 0
+    with _PLANNER_SEEN_LOCK:
+        for fsid, v in rows.items():
+            if not (isinstance(fsid, str) and _PLANNER_FSID_RE.match(fsid) and isinstance(v, list)):
+                _PLANNER_STATS["refused"] += 1
+                continue
+            _PLANNER_SEEN[fsid] = v; n += 1
+    _PLANNER_STATS["restored"] = n
+    return n
+
+
+def _planner_seen_set(fsid, norm):
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN.get(fsid) != norm:
+            _PLANNER_SEEN[fsid] = norm; _PLANNER_SEEN_DIRTY[0] = True       # dirty by CHANGE only
+
+
+def _planner_seen_pop(fsid):
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN.pop(fsid, None) is not None:
+            _PLANNER_SEEN_DIRTY[0] = True
+
+
+def _planner_seen_drop(alive):
+    """Drop every row whose fsid is not in `alive`: bounded by the sessions this pass discovered."""
+    with _PLANNER_SEEN_LOCK:
+        for gone in [f for f in _PLANNER_SEEN if f not in alive]:
+            _PLANNER_SEEN.pop(gone, None); _PLANNER_SEEN_DIRTY[0] = True
+
+
+def persist_planner_seen(force=False):
+    """Write the memo when a row changed since the last write (or `force`, the kernel's exit): serialized under the lock before the
+    flag clears, staged under a per-writer tmp (pid and thread id), the tmp unlinked and the flag re-armed on a failed replace,
+    the failure said once per episode; best-effort, never raises for a write fault."""
+    with _PLANNER_SEEN_LOCK:
+        if not (_PLANNER_SEEN_DIRTY[0] or force):
+            return False
+        if not _PLANNER_SEEN_DIRTY[0] and not _PLANNER_SEEN and not _PLANNER_SEEN_LOADED[0]:
+            return False                                               # a forced write over a memo NO pass has loaded (a kernel that
+        #                                                                took SIGTERM before its first planner pass) would replace the
+        #                                                                previous kernel's rows with an empty document (T401 (5c) round
+        #                                                                three, medium 1: 3 rows to 0, the next boot restored 0)
+        snap = {"v": _PLANNER_SEEN_V, "derivation": [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V], "rows": {k: v for k, v in _PLANNER_SEEN.items()}}
+        try:
+            body = json.dumps(snap)                                        # every row went through _planner_key_norm: JSON-native;
+        except (TypeError, ValueError) as e:                               #  serialized BEFORE the flag clears, under the lock
+            if not _PLANNER_SEEN_SAID[0]:                                  #  (the tick-seen shape): an unserializable row is a bug,
+                _PLANNER_SEEN_SAID[0] = True                               #  said once, re-raised with the flag still dirty so the
+                sys.stderr.write("planner-seen memo: not serialized: %s: %s (said once per episode; retried by the next persist)\n"
+                                 % (type(e).__name__, str(e)[:120]))       #  next persist retries once the row is gone (round two, low 2)
+            raise
+        _PLANNER_SEEN_DIRTY[0] = False
+    p = STATE / _PLANNER_SEEN_FILE
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, p)
+        _PLANNER_STATS["persisted"] = len(snap["rows"])
+        _PLANNER_SEEN_SAID[0] = False
+        return True
+    except Exception as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        with _PLANNER_SEEN_LOCK:
+            _PLANNER_SEEN_DIRTY[0] = True
+        if not _PLANNER_SEEN_SAID[0]:
+            _PLANNER_SEEN_SAID[0] = True
+            sys.stderr.write("planner-seen memo: not written: %s: %s (said once per episode; retried by the next persist)\n" % (type(e).__name__, str(e)[:120]))
+        return False
 
 
 def planner_skip_stats():
-    """A copy of the planner gate's counters for /perf (memos.plannerSkip)."""
-    return dict(_PLANNER_STATS)
+    """A copy of the planner gate's counters for /perf (memos.plannerSkip); the histogram copied too."""
+    d = dict(_PLANNER_STATS); d["mismatchByTerm"] = dict(_PLANNER_STATS["mismatchByTerm"]); return d
+
+
+def _planner_seen_stands(fsid, norm):
+    """Whether the row the table holds for fsid equals `norm`, the key recomputed this pass. A row that stands skips the pass; a
+    row that does not is counted by the indexes of the terms that differed (mismatchByTerm), so a read boot names the moving term."""
+    row = _PLANNER_SEEN.get(fsid)
+    if row is None:
+        return False
+    if row == norm:
+        return True
+    with _PLANNER_SEEN_LOCK:                          # the pool workers bump it together: unlocked, a boot read under-counted
+        hist = _PLANNER_STATS["mismatchByTerm"]
+        if isinstance(row, list) and isinstance(norm, list):
+            for i in range(max(len(row), len(norm))):
+                if i >= len(row) or i >= len(norm) or row[i] != norm[i]:
+                    hist[str(i)] = hist.get(str(i), 0) + 1
+        else:
+            hist["shape"] = hist.get("shape", 0) + 1
+    return False
 
 
 def _task_store_key(fsid):
@@ -3162,17 +3418,51 @@ def _task_store_key(fsid):
 def _plan_key(fsid, path, session, now):
     """Every input _plan_session reads, or None when the parse is not the cache's own (never skip what cannot
     be keyed). Taken before the store read. Index 2 is the store key: the record rule compares it after the
-    pass, so new terms go after the existing ones. Three terms beyond the files the pass opens by sid: the
-    LEAF's task store (the directory the declared-plan sync reads, which differs from the sid's for every SDK
-    session after a /clear), the captions file (the floor-title heal reads it), and each running background
-    launch with whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle
-    reads that crossing and no file records it)."""
+    pass, so new terms go after the existing ones. Beyond the files the pass opens by sid: the LEAF's task
+    store (the directory the declared-plan sync reads, which differs from the sid's for every SDK session
+    after a /clear), the captions file (the floor-title heal reads it), each running background launch with
+    whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle reads that
+    crossing and no file records it), and every file the plan tier's inventory names (_sig_inputs("plan")):
+    the death marker and cleared.jsonl by stat, the reg and the stall slice by the VALUES the pass reads
+    (spawnedAt and the SDK-owned bit; this session's stall records), as the outer gate keys them. THE RULE
+    (the 5c follow-up, from the second deploy boot's read: restored 20, skipped 0): a persisted key term
+    must be stable across the event it persists over, and a file rewritten at every boot (the reg at attach,
+    the stall slice by the jobs pass) is keyed by the values the pass reads, never by its stat."""
     pk = _parse_entry(fsid, session)
     if pk is None or pk[1] is not session:
         return None
     return (str(path), pk[0], _store_key(fsid), _file_key(str(EPIDIR / (fsid + ".jsonl"))),
-            _task_store_key(session.get("leafFsid") or fsid), _file_key(str(SDKDIR / (fsid + ".json"))),
-            _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now))
+            _task_store_key(session.get("leafFsid") or fsid), _reg_key(fsid),
+            _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now),
+            # T401 (5c) round two: the three files of the plan tier's inventory (_sig_inputs) this key lacked: the death marker
+            # (_cli_epoch), cleared.jsonl (plan_units through _live_anchor_gone) and the stall slice (rollup_status). The in-memory
+            # memo forgot every row at each restart, so a move between boots was planned by that amnesty; a persisted row must
+            # carry every input the pass reads (the completeness pin holds this tuple against _sig_inputs("plan")).
+            _file_key(str(GONEDIR / (fsid + ".json"))), _file_key(str(STATE / "cleared.jsonl")), _stall_slice_key(fsid))
+
+
+def _reg_key(fsid):
+    """The reg's values the pass reads, [spawnedAt, the SDK-owned bit], or a fresh sentinel when the reg exists and cannot be
+    read or parsed: a sentinel key is never recorded and never compared, so the session is planned. The outer gate reads
+    the same reg through the same strict _reg_spawned_at, whose raise makes _gate_check run the stage without a stamp, so
+    the two gates agree on the fault (round two of the tidy: the gate's read was lenient, answered None as for a reg with
+    no spawnedAt, and a stamp taken while the reg was readable skipped the session for as long as it stayed unreadable).
+    An absent reg is [None, owned]: a genuine state, keyed."""
+    try:
+        v = _reg_spawned_at(fsid)
+    except OSError:
+        return object()
+    return [v, _sdk_owned(fsid)]
+
+
+def _stall_slice_key(fsid):
+    """This session's stall records by value (_stall_slice, the outer gate's term), or a fresh sentinel when auto-nudge.json exists
+    and does not read (the strict raise): a sentinel key is never recorded and never compared, so a session whose slice cannot be
+    read is planned, as the outer gate runs its stage without a stamp."""
+    try:
+        return _stall_slice(fsid)
+    except Exception:
+        return object()
 
 
 def _store_key(fsid):
@@ -11328,10 +11618,11 @@ def _plan_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     pkey = _plan_key(fsid, path, session, now)        # BEFORE the store read (the chain-memo rule)
-    if pkey is not None and _PLANNER_SEEN.get(fsid) == pkey:
-        _PLANNER_STATS["skipped"] += 1               # nothing moved since a pass that had nothing to do
+    norm = _planner_key_norm(pkey) if pkey is not None else None
+    if norm is not None and _planner_seen_stands(fsid, norm):   # the persisted or in-memory row stands: recomputed and compared,
+        _planner_bump("skipped")                     # never trusted (T401 (5c)); nothing moved since a pass that had nothing to do
         return 0
-    _PLANNER_STATS["planned"] += 1
+    _planner_bump("planned")
     store = load_goals(fsid)
     _judge_ctx.relay_turns = (str(fsid), session.get("turns") or [])   # the block writer's excerpt source (T334 relay)
     if _heal_quote_titles(store) + _heal_floor_titles(fsid, store) \
@@ -11851,11 +12142,11 @@ def _plan_session(fsid, path, now):
     save_goals(fsid, store)
     if pkey is not None:
         if placed == 0 and not units and not retired and _store_key(fsid) == pkey[2] \
-                and not getattr(_judge_ctx, "stage_incomplete", False):
-            _PLANNER_SEEN[fsid] = pkey               # nothing to do and nothing written: skipped until an input moves
-            _PLANNER_STATS["recorded"] += 1
+                and not getattr(_judge_ctx, "stage_incomplete", False) and norm is not None:
+            _planner_seen_set(fsid, norm)            # nothing to do and nothing written: skipped until an input moves (persisted)
+            _planner_bump("recorded")
         else:
-            _PLANNER_SEEN.pop(fsid, None)            # work done, the store moved, or the pass was INCOMPLETE (the
+            _planner_seen_pop(fsid)                  # work done, the store moved, or the pass was INCOMPLETE (the
             #                                          completeness bit the evidence gate reads, _gated: a stand-down
             #                                          without a write, or a side file that exists and did not read):
             #                                          planned again next pass. A recorded incomplete pass would skip
@@ -11908,8 +12199,13 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
         except Exception as e:
             _log_judge_error("peer-wait-sweep", "-", "the store-side peer-wait pass raised: %r" % (e,))
     fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]   # muted sessions are out of task tracking
-    for _gone in [f for f in _PLANNER_SEEN if f not in {s[0] for s in fleet}]:
-        _PLANNER_SEEN.pop(_gone, None)                # the planner gate, bounded by the sessions this pass discovered
+    _load_planner_seen()                              # T401 (5c): the previous kernel's rows, once per boot, before the first gate check
+    if fleet:
+        _planner_seen_drop({s[0] for s in fleet})     # the planner gate, bounded by the sessions this pass discovered. An EMPTY
+    #                                                   discovery is unknown, not every session gone (discover reads an unreadable
+    #                                                   names root as no sessions): the rows stay until the next non-empty pass,
+    #                                                   which costs nothing, since a stale row never serves without its key
+    #                                                   (the 5c follow-up; before it one such pass rewrote the file empty)
     placed = 0
     with ThreadPoolExecutor(max_workers=_conc(concurrency)) as ex:
         futs = {}
@@ -11927,6 +12223,7 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
     if verbose:
         sys.stderr.write("romp-judge: planner placed %d segments across %d sessions\n" % (placed, len(fleet)))
     _wrap_index_save()                                # T333: the negative memo grew this pass? persist it
+    persist_planner_seen()                            # T401 (5c): a row changed this pass? persist it
     return placed
 
 

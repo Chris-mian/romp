@@ -431,7 +431,7 @@ test("each pane tells the shell which hosts IT still waits on — by its own cha
 test("a host that ATTACHES is pending from that moment: the poll re-emits the merged payloads it can complete", async () => {
   const g: any = globalThis;
   const hadFetch = "fetch" in g, prevFetch = g.fetch;
-  g.fetch = async () => ({ json: async () => ({ tunnels: [{ host: "TESTHOST", hasToken: true, localPort: 5, status: "up" }] }) });
+  g.fetch = async () => ({ ok: true, json: async () => ({ tunnels: [{ host: "TESTHOST", hasToken: true, localPort: 5, status: "up" }] }) });
   try {
     await withManager(async (fm, emitted) => {
       fm.app = "feed";
@@ -452,7 +452,7 @@ test("the kernel's recovery counter bumping while a row reads up is a hostUp: on
   const g: any = globalThis;
   const hadFetch = "fetch" in g, prevFetch = g.fetch;
   let seq = 4;
-  g.fetch = async () => ({ json: async () => ({ tunnels: [{ host: "TESTHOST", hasToken: true, localPort: 5, status: "up", upSeq: seq }] }) });
+  g.fetch = async () => ({ ok: true, json: async () => ({ tunnels: [{ host: "TESTHOST", hasToken: true, localPort: 5, status: "up", upSeq: seq }] }) });
   try {
     await withManager(async (fm, emitted) => {
       fm.app = "feed";
@@ -476,7 +476,7 @@ test("the kernel's recovery counter bumping while a row reads up is a hostUp: on
 test("…but never drops an EMPTY merged feed onto a page still waiting for its local kernel", async () => {
   const g: any = globalThis;
   const hadFetch = "fetch" in g, prevFetch = g.fetch;
-  g.fetch = async () => ({ json: async () => ({ tunnels: [{ host: "TESTHOST", hasToken: true, localPort: 5, status: "up" }] }) });
+  g.fetch = async () => ({ ok: true, json: async () => ({ tunnels: [{ host: "TESTHOST", hasToken: true, localPort: 5, status: "up" }] }) });
   try {
     await withManager(async (fm, emitted) => {
       fm.app = "feed";
@@ -512,7 +512,7 @@ test("the poll dials the hosts that HAVE a token, and no dial URL carries a toke
   const g: any = globalThis;
   const hadFetch = "fetch" in g, prevFetch = g.fetch;
   const LEAKED = "remote-secret-DO-NOT-USE";
-  g.fetch = async () => ({ json: async () => ({ tunnels: [
+  g.fetch = async () => ({ ok: true, json: async () => ({ tunnels: [
     { host: "TESTHOST", hasToken: true, localPort: 5, status: "up" },
     { host: "HOSTB", hasToken: false, localPort: 6, status: "up" },          // no admin path to it: not dialed
     { host: "HOSTC", hasToken: true, token: LEAKED, localPort: 7, status: "up" },   // an older kernel's row shape

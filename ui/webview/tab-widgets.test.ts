@@ -160,7 +160,7 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
   assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, tabHotkey \} from "\.\/tab-widgets";/m);
+  assert.match(RENDER, /^import \{ composeTabWidgets, tabHotkey, miniChord \} from "\.\/tab-widgets";/m);
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
@@ -170,4 +170,59 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
 test("ONE .tab-key rule in the strip's sheet: this side owns it, so a merge with the tab hot keys pull request's copy cannot leave two identical blocks silently", () => {
   assert.equal((STRIP_CSS.match(/^\.tab-key \{/gm) || []).length, 1);
   assert.match(STRIP_CSS, /^\.tab-key \{ flex: 0 0 auto; font: 600 calc\(0\.82em \/ 0\.92\) ui-monospace, SFMono-Regular, Menlo, monospace; color: var\(--dim\); border: 1px solid var\(--box-border\);/m, "the agreed rule text");
+});
+
+// The DIVIDER and the order (the user's additions to T409): the session name's place in the Tab widgets list is a fixed
+// row; a widget's slot is its side of it in the stored order, nothing moves until the user drags, and the rows' visual
+// order (widgets, the divider, widgets) is the list a drag or an arrow key reorders and stores back whole.
+// (the "mark" and "boom" widgets earlier tests registered stay in the registry; the lists below drop them)
+const noMark = (ids: string[]) => ids.filter((x) => x !== "mark" && x !== "boom");
+test("widgetSlot: the registered slot until the order names both the widget and the divider; then the widget's side of it", () => {
+  const dot = W.tabWidget("dot")!, ctx = W.tabWidget("ctx")!, key = W.tabWidget("hotkey")!;
+  assert.deepEqual([W.widgetSlot(P(), dot), W.widgetSlot(P(), ctx)], ["before", "after"], "no order: the registered slots");
+  assert.deepEqual([W.widgetSlot(P({ order: ["ctx", "dot"] }), dot), W.widgetSlot(P({ order: ["ctx", "dot"] }), ctx)], ["before", "after"], "an order without the divider changes no slot");
+  const moved = P({ order: ["ctx", W.NAME_DIVIDER, "dot", "hotkey"] });
+  assert.deepEqual([W.widgetSlot(moved, ctx), W.widgetSlot(moved, dot), W.widgetSlot(moved, key)], ["before", "after", "after"], "dragged across: the context bar before the name, the dot after it");
+  assert.equal(W.widgetSlot(P({ order: [W.NAME_DIVIDER, "ctx"] }), dot), "before", "a widget the order does not name keeps its registered slot");
+  assert.deepEqual(noMark(W.orderedWidgets(moved, "before").map((w) => w.id)), ["ctx"]);
+  assert.deepEqual(noMark(W.orderedWidgets(moved, "after").map((w) => w.id)), ["dot", "hotkey"]);
+});
+
+test("tabListOrder: the rows' visual order, the divider between the sides; a drag's result stored back reproduces itself", () => {
+  assert.deepEqual(noMark(W.tabListOrder(P())), ["dot", W.NAME_DIVIDER, "ctx", "hotkey"], "registration order until the user drags");
+  assert.deepEqual(noMark(W.tabListOrder(P({ order: ["hotkey"] }))), ["dot", W.NAME_DIVIDER, "hotkey", "ctx"], "a partial order without the divider reorders within the sides");
+  const dragged = P({ order: ["ctx", W.NAME_DIVIDER, "dot", "hotkey"] });
+  assert.deepEqual(noMark(W.tabListOrder(dragged)), ["ctx", W.NAME_DIVIDER, "dot", "hotkey"]);
+  assert.deepEqual(W.tabListOrder(P({ order: W.tabListOrder(dragged) })), W.tabListOrder(dragged), "storing the list back is a fixed point");
+});
+
+test("the strip composes each slot from the widget's side of the divider, so a drag across it moves the widget to the other side of the name", () => {
+  const moved = P({ order: ["ctx", W.NAME_DIVIDER, "dot", "hotkey"], opts: { ctx: { show: "always" } } });
+  assert.deepEqual(compose("before", { state: "working", ctx: "40%" }, moved).map(classes), [["tab-ctx"]], "the context bar before the name");
+  assert.deepEqual(compose("after", { state: "working", ctx: "40%" }, moved).map(classes), [["tab-dot"]], "the dot after it (no hot key is assigned to this sid, so the keycap renders nothing)");
+  assert.deepEqual(compose("after", { state: "working", ctx: "40%" }, moved, W.DEMO_SID).map(classes), [["tab-dot"], ["tab-key"]], "the demo sid carries a key: the keycap follows the dot");
+});
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const PREFS = require("./widget-prefs") as typeof import("./widget-prefs");
+test("moveId: the id out and back in at the index into the rest; unknown ids and bad indexes change nothing", () => {
+  assert.deepEqual(PREFS.moveId(["a", "b", "c"], "c", 0), ["c", "a", "b"]);
+  assert.deepEqual(PREFS.moveId(["a", "b", "c"], "a", 2), ["b", "c", "a"]);
+  assert.deepEqual(PREFS.moveId(["a", "b", "c"], "b", 1), ["a", "b", "c"], "to its own place: unchanged");
+  assert.deepEqual(PREFS.moveId(["a", "b", "c"], "a", 99), ["b", "c", "a"], "past the end: the end");
+  assert.deepEqual(PREFS.moveId(["a", "b", "c"], "zz", 0), ["a", "b", "c"]);
+  assert.deepEqual(PREFS.moveId(["a", "b", "c"], "a", NaN), ["a", "b", "c"]);
+});
+
+// A malformed stored order is rewritten clean at rest (review round one of the status line's widgets): duplicates keep
+// their first place, ids the registry does not know go, the divider's id stays; the settings' save normalizes the same way
+test("tabWidgetPrefs sanitizes the order: duplicates once, unknown ids gone, the divider kept", () => {
+  assert.deepEqual(W.tabWidgetPrefs({ order: ["ctx", "zz", "ctx", W.NAME_DIVIDER, "dot", "dot"] }).order, ["ctx", W.NAME_DIVIDER, "dot"]);
+  assert.deepEqual(W.tabWidgetPrefs({ order: [] }).order, []);
+  store.clear();
+  store.set("romp:settings", JSON.stringify({ compact: true, tabWidgets: { on: {}, order: ["hotkey", "hotkey", "gone"], opts: {} } }));
+  const saved = S.saveSettings({ compact: false });
+  assert.deepEqual(saved.tabWidgets.order, ["hotkey"], "the next save rewrites the store clean");
+  assert.deepEqual(JSON.parse(store.get("romp:settings")!).tabWidgets.order, ["hotkey"]);
+  store.clear();
 });

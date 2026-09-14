@@ -313,6 +313,46 @@ class DroppedSendsAnnounceThemselves(unittest.TestCase):
         self.assertTrue((sb.read_reg(state, SID).get("echoes") or [{}])[0].get("dropped"),
                         "the flag rides the mirror, so the NEXT restart keeps the verdict")
 
+    def _live_host_lease(self, state, sid):
+        """A lease that reads 'attach': the CLI pid and the holder are THIS process (alive, start time matching), the holder a
+        host, the beat now: a CLI that survived the kernel under its session host."""
+        pid = os.getpid(); start = sb.proc_start(pid)
+        sb.write_lease(state, {"sid": sid, "fsid": sid, "name": "web", "pid": pid, "start": start,
+                               "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": 1700000000, "t": time.time()})
+
+    def test_boot_reseed_does_not_flag_a_send_a_surviving_cli_still_holds(self):
+        """The boot-time twin of the fresh-CLI marking (the spawnedAt fix's follow-up, 2026-09-14): under session hosts the CLI
+        survives the kernel under a valid host lease and still holds the sends the previous kernel handed it; the boot's reseed
+        flagged them dropped anyway, and the chat said never delivered of a message the live CLI was about to take."""
+        state = tempfile.mkdtemp(); open(os.path.join(state, "session-hosts"), "w").write("on")
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k, e = _echo("the send the surviving CLI still holds")
+        be._live[SID] = dict([(k, e)])
+        be._persist_echoes(SID)
+        self._live_host_lease(state, SID)
+        be2 = self._backend(state)               # "kernel restart" with the CLI alive under its host
+        atoms = be2.live_atoms(SID)
+        self.assertTrue(atoms and not atoms[0].get("dropped"), "a surviving CLI's held send is not lost: no flag")
+        self.assertFalse((sb.read_reg(state, SID).get("echoes") or [{}])[0].get("dropped"), "and the mirror carries none")
+        os.unlink(sb.lease_path(state, SID))
+        be3 = self._backend(state)               # the next restart with the host gone: the dead CLI's send is flagged
+        self.assertTrue((be3.live_atoms(SID) or [{}])[0].get("dropped"), "no lease: the send was held by a dead CLI, flagged as before")
+
+    def test_boot_awaiting_heal_spares_a_surviving_cli(self):
+        """The other twin: __init__ cleared every alive session's awaiting:true on the premise nothing is running yet; under
+        session hosts a surviving CLI's awaiting is real (its background tasks and its Stop hook live on)."""
+        state = tempfile.mkdtemp(); open(os.path.join(state, "session-hosts"), "w").write("on")
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        sb.append_awaiting(state, SID, True)
+        self._live_host_lease(state, SID)
+        self._backend(state)                     # "kernel restart" with the CLI alive under its host
+        self.assertTrue(sb.last_awaiting(state, SID), "the surviving CLI's awaiting stands")
+        os.unlink(sb.lease_path(state, SID))
+        self._backend(state)                     # the host gone: the stale overlay is healed as before
+        self.assertFalse(sb.last_awaiting(state, SID), "no lease: healed")
+
     def test_boot_reseed_spares_an_echo_still_in_the_queue(self):
         state = tempfile.mkdtemp()
         be = self._backend(state)
@@ -352,12 +392,17 @@ class DroppedSendsAnnounceThemselves(unittest.TestCase):
         # practical) — pin it the way error-visibility's NoSilentSwallows pins handlers: read the source
         import ast
         import inspect
-        run = next(n for n in ast.walk(ast.parse(inspect.getsource(sb)))
-                   if isinstance(n, ast.FunctionDef) and n.name == "_run")
-        calls = [n.func.attr for n in ast.walk(run)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
-        self.assertIn("_mark_dropped_echoes", calls,
-                      "_run no longer marks orphaned echoes when a fresh CLI spawns")
+        tree = ast.parse(inspect.getsource(sb))
+        def calls_of(name):
+            fn = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+            return [n.func.attr for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        # the spawn half moved into _fresh_cli_stamp (2026-09-14: the whole fresh-CLI block runs once per CLI, never for the CLI
+        # the reg already names); the connect loop calls it for a kernel child, the hello's decision for a CLI under a host, and
+        # it calls the marking
+        self.assertIn("_fresh_cli_stamp", calls_of("_amain"), "the connect loop no longer runs the fresh-CLI block for a kernel child")
+        self.assertIn("_fresh_cli_stamp", calls_of("_fresh_cli_decision"), "the hello's decision no longer runs the fresh-CLI block")
+        self.assertIn("_mark_dropped_echoes", calls_of("_fresh_cli_stamp"),
+                      "the fresh-CLI block no longer marks orphaned echoes when a fresh CLI spawns")
 
     def test_landing_still_prunes_a_dropped_echo(self):
         # the self-correcting guarantee: a premature mark can never stick to a delivered message
