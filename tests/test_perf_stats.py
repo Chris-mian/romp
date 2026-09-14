@@ -190,7 +190,8 @@ class Collector(unittest.TestCase):
         """The lazy index's block (asmIndex): its keys pinned, the light-facts gauge among them (T401 (3) target 3, round three:
         the gauge was documented on /perf but never exposed)."""
         st = km.em.asm_index_stats()
-        self.assertEqual(set(st), {"cap", "evictions", "materialized", "materializedBy", "resident", "restoredTurns", "rowDecodes", "userFacts"})
+        self.assertEqual(set(st), {"cap", "evictions", "materialized", "materializedBy", "materializedByStage", "resident", "restoredTurns",
+                                   "rowDecodes", "userFacts"})
         self.assertIsInstance(st["userFacts"], int); self.assertGreaterEqual(st["userFacts"], 0)
 
     def test_the_feed_build_block_carries_the_per_session_card_memo(self):

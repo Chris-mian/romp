@@ -897,6 +897,20 @@ def _thread_stacks(limit=40):
     return out
 
 
+_ROUTE_TWO_SEGMENTS = ("push", "tunnels", "usage")   # prefixes whose roads differ by their second segment (/push/relay, /tunnels/dial,
+#                                                      /usage/fleet): the mark keeps both, so eight push roads never share one row
+
+def _route_seg(path):
+    """A request path's route for the stage mark: its first segment ("/chat/x" -> "chat", "/ws" -> "ws", "/remote/h/ws" -> "remote",
+    "/" -> "root"), or its first two for the prefixes above ("/push/relay" -> "push.relay", "/usage/fleet" -> "usage.fleet";
+    T401 (5a): a request handler's reads, builds and hydrations count under http.<METHOD>.<route>)."""
+    parts = str(path or "").split("?", 1)[0].strip("/").split("/")
+    seg = parts[0] if parts else ""
+    if seg in _ROUTE_TWO_SEGMENTS and len(parts) > 1 and parts[1]:
+        return seg + "." + parts[1]
+    return seg or "root"
+
+
 def _stage_marked(name):
     """Decorator: the calling thread's stage mark is `name` for the function's duration and restored on EVERY exit, a raise or an
     early return included (T401 round one: _push set the mark inline and restored it at its end, so a caught build failure
@@ -915,6 +929,7 @@ def _stage_marked(name):
 
 
 em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
+em.set_stage_provider(_set_stage)                 # T401 (5a): the setter's pair, so the judge's pool workers carry their tier's mark
 
 
 
@@ -18826,6 +18841,7 @@ def _open_or_revive(sid, live=False, client=None):
     _reveal_or_confirm(sid, focus, client)
 
 
+@_stage_marked("revive")                                  # the revive's parse and build count under it (T401 (5a))
 def _revive_session(sid, client=None):
     """The revive door (the WS reviveSession op, on its own thread). The dead session's name is claimed
     (kind revive) and verified against a live snapshot taken under the claim, outside the claims lock,
@@ -23092,6 +23108,7 @@ def _notice_list(head, sep, items, extra=0, cap=SYNC_NOTICE_FIT, joiner=", "):
     return out
 
 
+@_stage_marked("federation.push")
 def _auto_push_remote(host):
     """Run ONE automatic update of `host` in the background, publishing phase as it goes. Never called for a
     non-fast-forward (see _is_fast_forward). Failures are kept VISIBLE on the row rather than swallowed
@@ -23122,6 +23139,7 @@ def _auto_push_remote(host):
     return ok
 
 
+@_stage_marked("federation.pull")
 def _auto_pull_remote(host):
     """Run ONE automatic pull FROM `host` in the background — the mirror of _auto_push_remote for a
     trusted remote that is strictly ahead. On success the phase parks at 'pulled' with the restart
@@ -23141,6 +23159,7 @@ def _auto_pull_remote(host):
     return ok
 
 
+@_stage_marked("federation.ask")
 def _auto_ask_peer(host):
     """Run ONE automatic 'fast-forward yourself' ask against a checked-in peer, publishing phase as it
     goes — the third direction of the same sync, for the host this machine cannot reach by ssh at all.
@@ -28612,6 +28631,7 @@ def _suppress_kernel_driven_ask(sid, ask, now=None):
                 and "model" in str(ask).lower())
 
 
+@_stage_marked("ask-poll")
 def _ask_poll():
     """Surface each live session's in-flight AskUserQuestion/permission prompt to chat. ONE check per session
     per ~1.2s tick. Each backend answers current_ask from its own store (the SDK: the ask it stored in
@@ -31162,6 +31182,7 @@ def _on_rewind_resolved(sid, outcome):
     _pusher_wake.set()
 
 
+@_stage_marked("rewind.migration")                       # a boot pass that parses: marked (T401 (5a))
 def _rewind_migration_bg():
     """ONE-TIME boot migration (marker-gated): the ongoing dead-branch reconciliation only rides the
     triage cadence over recently-touched sessions, so the residue that accumulated BEFORE it shipped
@@ -31191,6 +31212,7 @@ def _rewind_migration_bg():
         sys.stderr.write("rewind migration: %s\n" % traceback.format_exc())
 
 
+@_stage_marked("rewind.holds")                           # a boot pass over holds: marked (T401 (5a))
 def _rewind_holds_boot():
     """Boot pass over persisted holds: a kernel restart mid-window must neither drop a hide (the
     file survives; reads keep filtering) nor leave one latched forever after its resolving event
@@ -31298,7 +31320,7 @@ def _warm_fleet_bg(now):
         finally:
             with _warm_lock:
                 _warming[0] = False
-    threading.Thread(target=go, daemon=True, name="parse-warm").start()
+    threading.Thread(target=_stage_marked("warm.parse")(go), daemon=True, name="parse-warm").start()   # marked (T401 (5a))
 
 
 def _boot_warm():
@@ -31323,7 +31345,7 @@ def _boot_warm():
             # nothing to pre-parse selectively either. Per boot per session: O(file) → 0.
         except Exception:
             sys.stderr.write("boot-warm: %s\n" % traceback.format_exc())
-    threading.Thread(target=go, daemon=True, name="boot-warm").start()
+    threading.Thread(target=_stage_marked("warm.boot")(go), daemon=True, name="boot-warm").start()     # marked (T401 (5a))
 
 
 def _ask_fill_answers(blocks, answers):
@@ -32124,6 +32146,7 @@ def _fire_move(be, sid, path, tries, wid):
     return th
 
 
+@_stage_marked("move")                                   # asks the backend and reports: marked for the census (T401 (5a))
 def _move_now(be, sid, path, tries, wid):
     """The move itself, on whatever thread called it: ask the backend, then report. "" → the session
     broadcast carries the new cwd (build_session reads _cwd_of) and the asker gets a typed `moved`;
@@ -51121,14 +51144,18 @@ def _run_tier(fn):
     The thread's own CPU over the run goes to /perf's judge.cpu_ms_sum; the per-session workers the
     tier runs in judge.py's pools account for theirs there (judge_worker_cpu_ms)."""
     _c0 = time.thread_time()
+    _prev = getattr(_STAGE_TL, "name", None)
+    _set_stage("judge." + threading.current_thread().name)   # the tier's reads, builds and hydrations count under judge.<tier> (T401 (5a))
     try:
         fn()
     except Exception:
         sys.stderr.write("producer tier: %s\n" % traceback.format_exc())
     finally:
+        _set_stage(_prev)
         _PERF_STATS.judge_cpu(time.thread_time() - _c0)
 
 
+@_stage_marked("producer")                                # the tiers' driver: its own parses count under it (T401 (5a))
 def _producer():
     _prev_wall = _prev_mono = None
     # the FIRST pass waits (bounded) for the boot's census and re-attaches: the producer's cold refolds and the
@@ -58113,6 +58140,7 @@ class Handler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
     @_perf_http_timed
+    @_stage_marked(lambda self: "http.OPTIONS." + _route_seg(self.path))   # every request handled under its route (T401 (5a))
     def do_OPTIONS(self):
         """CORS preflight. The strip's tunnel actions POST JSON (Content-Type:
         application/json is not a 'simple' request, so the webview's browser asks
@@ -58133,6 +58161,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     @_perf_http_timed
+    @_stage_marked(lambda self: "http.HEAD." + _route_seg(self.path))   # every request handled under its route (T401 (5a))
     def do_HEAD(self):
         # HEAD exists for ONE route: /file (the preview existence probe). Without this the base handler
         # 501s every HEAD, which the client would read as "gone" and hide a live chip.
@@ -58164,6 +58193,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     @_perf_http_timed
+    @_stage_marked(lambda self: "http.GET." + _route_seg(self.path))   # every request handled under its route (T401 (5a))
     def do_GET(self):
         u = urlparse(self.path)
         p = u.path
@@ -58794,6 +58824,7 @@ class Handler(BaseHTTPRequestHandler):
         return raw, None
 
     @_perf_http_timed
+    @_stage_marked(lambda self: "http.POST." + _route_seg(self.path))   # every request handled under its route (T401 (5a))
     def do_POST(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
@@ -61664,7 +61695,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 _quiet_shutdown(down)            # unblock the rfile read below → both halves die together
 
-        threading.Thread(target=_pump_remote_to_client, daemon=True, name="remote-ws").start()
+        threading.Thread(target=_stage_marked("remote-ws")(_pump_remote_to_client), daemon=True, name="remote-ws").start()   # marked (T401 (5a))
         try:
             while True:
                 # rfile, not the raw socket: the buffered reader may already hold client bytes
