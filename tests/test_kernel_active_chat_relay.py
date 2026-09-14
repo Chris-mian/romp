@@ -48,8 +48,10 @@ class ActiveChatRelay(unittest.TestCase):
     def setUp(self):
         self._clients = list(km._clients)
         self._record = dict(km._ACTIVE_CHAT_BY_WID)
+        self._nonces = dict(getattr(km, "_ACTIVE_CHAT_NONCE_BY_WID", {}))   # absent before T416 round two: the base run reads red on the roads, not here
         del km._clients[:]
         km._ACTIVE_CHAT_BY_WID.clear()
+        getattr(km, "_ACTIVE_CHAT_NONCE_BY_WID", {}).clear()
         km._pusher_wake.clear()
 
     def tearDown(self):
@@ -57,6 +59,10 @@ class ActiveChatRelay(unittest.TestCase):
         km._clients.extend(self._clients)
         km._ACTIVE_CHAT_BY_WID.clear()
         km._ACTIVE_CHAT_BY_WID.update(self._record)
+        nonces = getattr(km, "_ACTIVE_CHAT_NONCE_BY_WID", None)
+        if nonces is not None:
+            nonces.clear()
+            nonces.update(self._nonces)
 
     def _client(self, app, wid=None, register=True, send=None):
         frames = []
@@ -260,7 +266,30 @@ class ActiveChatRelay(unittest.TestCase):
         the feed's section moves on it ahead of this module's socket relay, which then reconciles."""
         js = km._LANDING_FOCUS_JS   # the shell's cross-pane script, where the paneFocus relay lives too
         self.assertIn("if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;", js)
-        self.assertIn("ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null)},'*')", js)
+        self.assertIn("ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*')", js)
+
+    def test_12_the_chats_announcement_number_rides_the_relayed_frame_so_every_announcement_goes(self):
+        """T416 round two: the feed clears its pending record only on the echo of its own switch. The chat numbers each
+        announcement; the kernel copies the number onto the relayed frame, so a repeated tab with a new number relays
+        again (the slot's dedup keys on the frame) and a chat that sends no number keeps the plain frame and its dedup.
+        A number that is not an int (a bool, a string) is dropped, never echoed: the plain frame follows once (a different
+        frame on the slot) and repeats dedup as before."""
+        chat = self._client("chat", "W1")
+        feed = self._client("feed", "W1")
+        _dispatch({"type": "activeTab", "id": WEB, "nonce": 7}, chat)
+        _dispatch({"type": "activeTab", "id": WEB, "nonce": 8}, chat)
+        _dispatch({"type": "activeTab", "id": API, "nonce": 9}, chat)
+        self.assertEqual([(f["id"], f.get("nonce")) for f in self._relayed(feed)], [(WEB, 7), (WEB, 8), (API, 9)],
+                         "each numbered announcement relays with its number, the repeated tab included")
+        self.assertEqual(km._ACTIVE_CHAT_NONCE_BY_WID.get("W1"), 9)
+        _dispatch({"type": "activeTab", "id": API, "nonce": True}, chat)
+        _dispatch({"type": "activeTab", "id": API, "nonce": "10"}, chat)
+        self.assertEqual([f.get("nonce") for f in self._relayed(feed)[3:]], [None],
+                         "a bool or a string is no number: the plain frame goes once (it differs from the numbered one on the slot) and the next plain repeat is deduped as before")
+        self.assertIsNone(km._ACTIVE_CHAT_NONCE_BY_WID.get("W1"))
+        feed2 = self._client("feed", "W1")
+        _dispatch({"type": "ready"}, feed2)
+        self.assertEqual(self._relayed(feed2), [{"type": "activeChat", "id": API}], "a feed joining learns the record; no number when the chat sent none")
 
 
 class Wiring(unittest.TestCase):
@@ -270,7 +299,7 @@ class Wiring(unittest.TestCase):
         src = inspect.getsource(km.Handler._dispatch_ws)
         i = src.index('msg.get("type") == "activeTab"')
         body = src[i:src.index('msg.get("type") == "needSlot"', i)]
-        self.assertIn('_relay_active_chat(client, msg.get("id"))', body)
+        self.assertIn('_relay_active_chat(client, msg.get("id"), msg.get("nonce"))', body)
         self.assertLess(body.index("_pusher_wake.set()"), body.index("_relay_active_chat("),
                         "release, wake, THEN relay: the older pins on the arm's first 400 chars hold")
 

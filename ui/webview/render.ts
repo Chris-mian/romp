@@ -29,6 +29,7 @@ import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, a
 import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
+import { inInputEvent } from "./input-event";
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
@@ -12554,11 +12555,14 @@ function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): numbe
 // the cached DOM is just revealed.
 // Tell the extension which tab is active, so it can publish it to the romp
 // timeline (which outlines the open lane). activeId may be null (no session).
+let activeTabNonce = 0;   // one per announcement (T416 round two): the kernel echoes it on the relayed activeChat frame, so the feed's pending record clears on the echo of its own switch and never on a stranger's
 function notifyActive() {
-  if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId });
+  const nonce = ++activeTabNonce;
+  const gesture = inInputEvent();   // the reader's own switch (a strip click, a hot key) passes the feed's hover-freeze; a kernel-driven one (a focus frame, a re-activation) defers there like a push
+  if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId, nonce });
   // the same fact to the shell, which hands it to this page's feed pane (T416): the feed's current-session section
-  // moves on it at once, ahead of the kernel's relay of the post above, which then reconciles
-  try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "activeTab", id: activeId }, "*"); } catch (e) { /* standalone page — no shell */ }
+  // moves on it without waiting for the kernel's relay of the post above, which then reconciles
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "activeTab", id: activeId, nonce, gesture }, "*"); } catch (e) { /* standalone page — no shell */ }
 }
 
 // Move id to the front of the recency stack (most-recently-active).
@@ -18490,6 +18494,9 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // showActive scrolls there; and cover the ALREADY-ACTIVE case, where setActive early-returns (activeId ===
     // id, no anchor) and would otherwise leave a scrolled-up chat parked in history, not at the prompt.
     if (m.live) { const v = views.get(m.id); if (v) v.stick = true; }
+    // the jump landed on the tab already shown (setActive early-returns below with no anchor): announce it again, so a
+    // feed that moved its section on the click gets the kernel's echo and settles its pending record (T416 round two)
+    if (activeId === m.id && m.anchor == null && m.anchorT == null) notifyActive();
     if (m.live && activeId === m.id) {
       // one frame LATER, not now: when this focus is what un-hid the pane (the shell's reveal lands a
       // task after revealSelfPane's postMessage), the pane is still display:none here and scrollHeight

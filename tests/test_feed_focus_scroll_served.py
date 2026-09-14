@@ -14,7 +14,12 @@ Completed card), the section switched on through the View menu, and walks these 
   (a) row layout, web focused, the list scrolled 600 px down: a click on api's summary line posts the jump and, at once,
       the section shows api with the list at scrollTop 0 and the section's first block head in view; the kernel's
       frame for web that a push built before the switch carries (stale) flips nothing; the frame for api settles it; a
-      later frame for web is a real switch; then a jump to api followed by two frames for web in a row: the kernel wins;
+      later frame for web is a real switch;
+  (k) a burst of three switches faster than the round trip (the shell's relays api, tests, web with their announcement
+      numbers), then the kernel's frames in order: the section stays on web through all three (the round-two medium: a
+      count of disagreeing frames used to let the second one land a stale session); and a burst back to the same
+      session (api, web, api): the first frame for api is not the echo (its number differs), the frame for web yields,
+      the numbered echo settles, and a frame with nothing pending is a real switch;
   (b) the reader scrolls after the jump: the kernel's frame lands and the list stays where they put it;
   (c) a summary click on the session already focused (api, scrolled down): the top at once;
   (d) the section OFF, a board of more than twenty cards with more than 900 px of room: the click and the frame move the
@@ -23,9 +28,14 @@ Completed card), the section switched on through the View menu, and walks these 
   (e) a summary click on a CLOSED session's card, then a hand switch (a frame for api) later: the click switches and
       scrolls nothing, the frame switches the section and scrolls nothing;
   (f) the split summary: a click on its second paragraph switches and scrolls at once (the one-place note);
-  (g) the shell's relay of the chat's tab change ({romp:"activeChat"}) switches the section at once with the pointer
-      resting on a board card; the kernel's frame for another session under that pointer still waits for the release;
-  (h) the single-column layout (a 520 px viewport): road (a)'s jump again.
+  (g) the shell's relay of the chat's tab change ({romp:"activeChat"}) made by the reader (gesture true) switches the
+      section at once with the pointer resting on a board card; a relay of a kernel-driven switch (gesture false) under
+      that pointer waits for the release like a push (the round-two low), and so does the kernel's own frame;
+  (h) a session name clicked in the feed (an openSession post) switches the section and scrolls nothing: the jump
+      scroll rides the Summary and card jumps only (the round-two low);
+  (i) a grouped card's modal opened (its title handler once posted its jump at paint time, braces missing): the
+      section and the scroll stand, through a later push too (the round-two medium);
+  (j) the single-column layout (a 520 px viewport): road (a)'s jump again.
 Screenshots with FEED_FOCUS_SCROLL_SHOTS=<path-prefix>: -1-row-dark/-light and -2-stacked-dark/-light. Optional, never a
 skip. Skips LOUDLY without the extension deps or a Playwright browser, and for nothing else; a build or kernel failure
 is a failure. Source pins ride ui/webview/feed-focus-local-switch.test.ts. All fixtures synthetic.
@@ -56,6 +66,8 @@ WEB_DONE = "cccccccc-1111-2222-3333-000000000009"
 API_DONE = "cccccccc-1111-2222-3333-000000000021"
 API_SPLIT = "cccccccc-1111-2222-3333-000000000022"
 TESTS_DONE = "cccccccc-1111-2222-3333-000000000031"
+API_GRP1 = "cccccccc-1111-2222-3333-000000000041"
+API_GRP2 = "cccccccc-1111-2222-3333-000000000042"
 API_ANCHOR = "dddddddd-1111-2222-3333-000000000001"
 WEB_ANCHOR = "dddddddd-1111-2222-3333-000000000002"
 TESTS_ANCHOR = "dddddddd-1111-2222-3333-000000000003"
@@ -110,6 +122,9 @@ asks.push(ask(cfg.apiDone, cfg.api, "api", "completed", "notes-api: wire the tag
 asks.push(ask(cfg.apiSplit, cfg.api, "api", "completed", "notes-api: name the tag routes", now - 400,
   { summary: "The tag routes are named after the resource they filter.\n\nThe old query-string form still answers, with a deprecation header.",
     summaryAnchorUuid: cfg.apiAnchor, summaryAnchorsPara: [{ u: cfg.paraAnchors[0], q: "named after the resource" }, { u: cfg.paraAnchors[1], q: "deprecation header" }] }));
+// two sibling asks of one typed turn: the board folds them into a GROUP card whose modal titles once posted at paint time
+asks.push(ask(cfg.apiGrp1, cfg.api, "api", "working", "notes-api: list the tag routes", now - 200, { turnId: "turn-grp", groupTitle: "notes-api: the tag work" }));
+asks.push(ask(cfg.apiGrp2, cfg.api, "api", "working", "notes-api: test the tag routes", now - 190, { turnId: "turn-grp", groupTitle: "notes-api: the tag work" }));
 asks.push(ask(cfg.testsDone, cfg.tests, "tests", "completed", "notes-api: cover the tag filter", now - 3000,
   { live: false, summary: "The tag filter has a test per operator, and one for an unknown tag.", summaryAnchorUuid: cfg.testsAnchor }));
 const payload = { type: "feed", asks, sessions: [{ sid: cfg.web, name: "web" }, { sid: cfg.api, name: "api" }, { sid: cfg.tests, name: "tests" }],
@@ -126,7 +141,9 @@ const state = () => page.evaluate(() => {
            section: !!sec, name: sec ? (sec.querySelector(".feed-focus-head .fname") || {}).textContent || null : null,
            headInView: hr ? (hr.top >= lr.top - 0.5 && hr.bottom <= lr.bottom + 0.5) : null, headTop: hr ? hr.top - lr.top : null,
            hovered: !!document.querySelector(".fitem:hover"),
-           posted: (window.__posted || []).filter((m) => m && m.type === "showOnTimeline").map((m) => m.sid) };
+           posted: (window.__posted || []).filter((m) => m && m.type === "showOnTimeline").map((m) => m.sid),
+           postedOpen: (window.__posted || []).filter((m) => m && m.type === "openSession").map((m) => m.id),
+           modal: !!document.getElementById("feed-modal") };
 });
 const scrollList = (top) => page.evaluate((top) => { const l = document.getElementById("feed-list"); l.scrollTop = top; return l.scrollTop; }, top);
 const light = async (on) => { await page.evaluate((on) => { document.body.classList[on ? "add" : "remove"]("chat-theme-yatharth", "theme-light"); }, on); await page.waitForTimeout(250); };
@@ -143,7 +160,9 @@ const toggleSection = async () => {
   await page.waitForSelector(".feed-viewmenu", { state: "detached", timeout: 10000 });
   await park();
 };
-const kernel = async (sid) => { await deliver({ type: "activeChat", id: sid }); await frame(); };   // the kernel's relay frame
+const kernel = async (sid, nonce) => { await deliver(Object.assign({ type: "activeChat", id: sid }, nonce == null ? {} : { nonce })); await frame(); };   // the kernel's relay frame, numbered when the chat numbered its announcement
+const relay = async (sid, nonce, gesture) => { await deliver({ romp: "activeChat", id: sid, nonce, gesture: gesture !== false }); await frame(); };   // the shell's relay of the chat's tab change
+const clickHeaderName = async (name) => { const ok = await page.evaluate((name) => { const el = Array.from(document.querySelectorAll(".feed-sess-head .fname")).find((n) => n.textContent === name); if (!el) return false; el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return true; }, name); if (!ok) throw new Error("no session header named " + name); await frame(); };
 const out = {};
 await page.goto(cfg.feed);
 await ready();
@@ -165,13 +184,26 @@ await park();
 await shotBoth("1-row");
 await kernel(cfg.web);   // no record pending: a real switch
 out.a4 = await state();
-// the kernel wins after two disagreeing frames in a row
-await scrollList(300);
-await clickSummary(cfg.apiDone);
-await kernel(cfg.web);
+// (k) a burst of three switches faster than the round trip, then the kernel's frames in order: the section stays on the last
+await relay(cfg.api, 1); await relay(cfg.tests, 2); await relay(cfg.web, 3);
+out.k0 = await state();
+await kernel(cfg.api, 1);
 out.k1 = await state();
-await kernel(cfg.web);
+await kernel(cfg.tests, 2);
 out.k2 = await state();
+await kernel(cfg.web, 3);
+out.k3 = await state();
+// …and a burst back to the same session: only the numbered echo settles the record
+await relay(cfg.api, 4); await relay(cfg.web, 5); await relay(cfg.api, 6);
+out.k4 = await state();
+await kernel(cfg.api, 4);   // the same session, an earlier announcement: not the echo
+out.k5 = await state();
+await kernel(cfg.web, 5);   // a stale frame: yields (it would have landed had the frame before cleared the record)
+out.k6 = await state();
+await kernel(cfg.api, 6);   // the echo
+out.k7 = await state();
+await kernel(cfg.web, 7);   // nothing pending: a real switch
+out.k8 = await state();
 await park();
 // (b) the reader scrolls after the jump, before the kernel's frame: the list stays where they put it
 await scrollList(600);
@@ -224,21 +256,41 @@ await scrollList(0);
 await page.hover(`#feed-cols [data-key="a:cccccccc-1111-2222-3333-000000000010"]`);
 await page.waitForTimeout(120);
 out.g0 = await state();
-await deliver({ romp: "activeChat", id: cfg.tests });
-await frame();
+await relay(cfg.tests, 11, true);   // the reader's own switch in the chat
 out.g1 = await state();
-await kernel(cfg.tests);   // the echo
+await kernel(cfg.tests, 11);        // the echo
 out.g2 = await state();
-await kernel(cfg.web);     // another session, under the pointer: deferred
+await relay(cfg.api, 12, false);    // a kernel-driven switch (a focus frame, a re-activation) under the pointer: deferred
 out.g3 = await state();
-await park();
+await kernel(cfg.api, 12);          // its echo: still deferred
 out.g4 = await state();
-// (h) single column: road (a)'s jump again
-await page.setViewportSize({ width: 520, height: 760 });
+await park();
+out.g5 = await state();
+// (h) a session name clicked in the feed: the section switches, the list stands
 await kernel(cfg.web); await park();
 out.scrolledH = await scrollList(600);
-await clickSummary(cfg.apiDone);
+await clickHeaderName("api");
 out.h = await state();
+await park();
+await kernel(cfg.api);
+// (i) a grouped card's modal opened: the section and the scroll stand, through a later push too
+await kernel(cfg.web); await park();
+out.scrolledI = await scrollList(600);
+await clickOn(`#feed-cols .fitem.fgroup[data-key="g:turn-grp"]`);
+await page.waitForTimeout(450);   // the card's single-click opens the modal after its double-click debounce
+out.i1 = await state();
+await deliver(payload);   // a later push repaints the open modal
+await frame();
+out.i2 = await state();
+await clickOn("#feed-modal");   // the backdrop closes it
+await frame();
+out.i3 = await state();
+// (j) single column: road (a)'s jump again
+await page.setViewportSize({ width: 520, height: 760 });
+await kernel(cfg.web); await park();
+out.scrolledJ = await scrollList(600);
+await clickSummary(cfg.apiDone);
+out.j = await state();
 await park();
 await kernel(cfg.api);
 await shotBoth("2-stacked");
@@ -299,7 +351,7 @@ class ServedFocusedSectionJumpScroll(unittest.TestCase):
         with open(cfg, "w") as f:
             json.dump({"feed": "http://127.0.0.1:%d/feed?token=%s" % (self.port, self.token),
                        "web": SID_WEB, "api": SID_API, "tests": SID_TESTS, "webDone": WEB_DONE, "apiDone": API_DONE, "apiSplit": API_SPLIT,
-                       "testsDone": TESTS_DONE, "apiAnchor": API_ANCHOR, "webAnchor": WEB_ANCHOR, "testsAnchor": TESTS_ANCHOR, "paraAnchors": PARA_ANCHORS,
+                       "testsDone": TESTS_DONE, "apiGrp1": API_GRP1, "apiGrp2": API_GRP2, "apiAnchor": API_ANCHOR, "webAnchor": WEB_ANCHOR, "testsAnchor": TESTS_ANCHOR, "paraAnchors": PARA_ANCHORS,
                        "colors": {"web": {"bg": "#1EA1EB", "fg": "#ffffff"}, "api": {"bg": "#E0A526", "fg": "#000000"}, "tests": {"bg": "#7A5CFF", "fg": "#ffffff"}},
                        "out": os.path.join(self.lab, "result.json"),
                        "shots": os.environ.get("FEED_FOCUS_SCROLL_SHOTS", "")}, f)
@@ -315,6 +367,14 @@ class ServedFocusedSectionJumpScroll(unittest.TestCase):
         self.assertTrue(os.path.exists(out_path), "driver wrote no result file:\n" + p.stdout[-3000:] + p.stderr[-3000:])
         with open(out_path) as fh:
             r = json.load(fh)
+        # the roads' outcomes in one line each, for the record a base run leaves (pytest -s): a red assertion below stops
+        # at the first road, the print shows every road's state
+        summary = []
+        for k in ("a1", "a2", "a3", "a4", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "b0", "b1", "c", "d1", "d2", "d3", "e1", "e2", "f", "g1", "g3", "g4", "g5", "h", "i1", "i2", "i3", "j"):
+            st_ = r.get(k) or {}
+            summary.append("%s: name=%s scrollTop=%s%s%s" % (k, st_.get("name"), st_.get("scrollTop"),
+                                                          " hovered" if st_.get("hovered") else "", " modal" if st_.get("modal") else ""))
+        print("\n" + "\n".join(summary))
         self.assertEqual(r.get("errors"), [], "the page threw nothing: %r" % r.get("errors"))
         st = r["start"]
         self.assertTrue(st["section"] and st["name"] == "web", "the section is on and web is focused: %r" % st)
@@ -327,8 +387,11 @@ class ServedFocusedSectionJumpScroll(unittest.TestCase):
         self.assertEqual((r["a2"]["name"], r["a2"]["scrollTop"]), ("api", 0), "a frame for web built before the switch flips nothing: %r" % r["a2"])
         self.assertEqual((r["a3"]["name"], r["a3"]["scrollTop"]), ("api", 0), "the frame for api settles the record and changes nothing: %r" % r["a3"])
         self.assertEqual(r["a4"]["name"], "web", "with nothing pending a frame for web is a real switch: %r" % r["a4"])
-        self.assertEqual(r["k1"]["name"], "api", "one disagreeing frame yields to the local switch: %r" % r["k1"])
-        self.assertEqual(r["k2"]["name"], "web", "two in a row: the kernel's view wins: %r" % r["k2"])
+        # (k) the burst: an event, never a count
+        self.assertEqual([r[k]["name"] for k in ("k0", "k1", "k2", "k3")], ["web"] * 4,
+                         "three switches faster than the round trip, then the kernel's three frames in order: the section stays on the last, never lands a stale one: %r" % [r[k]["name"] for k in ("k0", "k1", "k2", "k3")])
+        self.assertEqual([r[k]["name"] for k in ("k4", "k5", "k6", "k7", "k8")], ["api", "api", "api", "api", "web"],
+                         "a burst back to the same session: an earlier announcement's frame is no echo, the stale frame yields, the numbered echo settles, the next frame is a real switch: %r" % [r[k]["name"] for k in ("k4", "k5", "k6", "k7", "k8")])
         # (b) the reader scrolls after the jump: the frame lands and the list stays where they put it (clamped to api's shorter document)
         self.assertEqual((r["b0"]["name"], r["b0"]["scrollTop"]), ("api", 0), "the jump scrolled to the top: %r" % r["b0"])
         self.assertGreater(r["scrolledB"], 0, "the reader scrolled back down (the browser clamps 300 to the shorter document): %r" % r["scrolledB"])
@@ -357,14 +420,28 @@ class ServedFocusedSectionJumpScroll(unittest.TestCase):
         self.assertEqual((f["name"], f["scrollTop"], f["headInView"], f["posted"][-1]), ("api", 0, True, SID_API), "a paragraph's click switches and scrolls at once: %r" % f)
         # (g) the shell's relay through the hover-freeze; the kernel's frame still waits under the pointer
         self.assertTrue(r["g0"]["hovered"] and r["g0"]["name"] == "web", "the pointer rests on a board card: %r" % r["g0"])
-        self.assertEqual((r["g1"]["hovered"], r["g1"]["name"]), (True, "tests"), "the shell's relay switches the section at once under the pointer: %r" % r["g1"])
+        self.assertEqual((r["g1"]["hovered"], r["g1"]["name"]), (True, "tests"), "the reader's own switch, relayed by the shell, passes the hover-freeze: %r" % r["g1"])
         self.assertEqual(r["g2"]["name"], "tests", "the kernel's echo changes nothing: %r" % r["g2"])
-        self.assertEqual((r["g3"]["hovered"], r["g3"]["name"]), (True, "tests"), "a kernel frame for another session waits for the release (T347): %r" % r["g3"])
-        self.assertEqual((r["g4"]["hovered"], r["g4"]["name"]), (False, "web"), "…and paints on it: %r" % r["g4"])
-        # (h) single column
-        self.assertEqual(r["scrolledH"], 600)
+        self.assertEqual((r["g3"]["hovered"], r["g3"]["name"]), (True, "tests"), "a kernel-driven switch relayed under the pointer waits for the release like a push (the round-two low): %r" % r["g3"])
+        self.assertEqual((r["g4"]["hovered"], r["g4"]["name"]), (True, "tests"), "…and so does its echo: %r" % r["g4"])
+        self.assertEqual((r["g5"]["hovered"], r["g5"]["name"]), (False, "api"), "…which paints on the release: %r" % r["g5"])
+        # (h) a session name: the switch without the scroll
         h = r["h"]
-        self.assertEqual((h["name"], h["scrollTop"], h["headInView"]), ("api", 0, True), "single column: the same switch and scroll at once: %r" % h)
+        self.assertEqual(r["scrolledH"], 600)
+        self.assertEqual((h["name"], h["scrollTop"], h["postedOpen"][-1]), ("api", _clamped(600, h), SID_API),
+                         "a session name's openSession switches the section and scrolls nothing (the round-two low): %r" % h)
+        # (i) the grouped modal: nothing moves at paint time
+        i1, i2, i3 = r["i1"], r["i2"], r["i3"]
+        self.assertEqual(r["scrolledI"], 600)
+        self.assertTrue(i1["modal"], "the group card's modal opened: %r" % i1)
+        self.assertEqual((i1["name"], i1["scrollTop"]), ("web", 600), "opening the modal switches and scrolls nothing (the round-two medium: its title once posted at paint time): %r" % i1)
+        self.assertEqual((i2["name"], i2["scrollTop"]), ("web", 600), "…and a later push repainting the open modal moves nothing either: %r" % i2)
+        self.assertEqual((i3["modal"], i3["name"], i3["scrollTop"]), (False, "web", 600), "the backdrop closes it, nothing moved: %r" % i3)
+        self.assertNotIn(SID_API, i3["posted"][len(r["f"]["posted"]):], "no jump was posted by the modal's paint: %r" % i3["posted"][len(r["f"]["posted"]):])
+        # (j) single column
+        self.assertEqual(r["scrolledJ"], 600)
+        j = r["j"]
+        self.assertEqual((j["name"], j["scrollTop"], j["headInView"]), ("api", 0, True), "single column: the same switch and scroll at once: %r" % j)
 
 
 if __name__ == "__main__":

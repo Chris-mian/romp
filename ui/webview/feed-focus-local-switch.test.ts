@@ -29,57 +29,79 @@ test("every jump this pane posts is noted in ONE place, the host api's postMessa
     "no per-handler note, no record waiting on a kernel frame, no scroll guard (T414's first cut, folded here)");
   const fn = slice(FEED, "function noteOwnJump(", "function applyLocalFocus(");
   assert.match(fn, /if \(!m \|\| \(m\.type !== "openSession" && m\.type !== "showOnTimeline"\)\) return;/, "the two posts that jump into a session");
+  assert.match(fn, /if \(inRender \|\| inModalRender \|\| !inInputEvent\(\)\) return;/,
+    "only a post made inside the reader's input event and outside a render is a jump (round two: a render-time post once switched the section on every push)");
   assert.match(fn, /if \(!sid \|\| !focusedIdentity\(sid\)\.live\) return;/, "a closed session's jump changes no tab (the chat's confirmRevive), so it moves nothing here");
-  assert.match(fn, /applyLocalFocus\(sid, true\);/, "this pane's own jump: the switch and the T414 scroll together");
+  assert.match(fn, /applyLocalFocus\(sid, m\.type === "showOnTimeline", true, null\);/,
+    "this pane's own jump: a Summary or card jump (showOnTimeline) switches and scrolls, a session name or peer chip (openSession) only switches (round two)");
+});
+
+test("render time is marked from the paint gate to the end of render, on the empty exit, and around the modal's paint; the group modal's title handler is braced", () => {
+  const render = slice(FEED, "function render() {", "let focusStale = false;");
+  assert.match(render, /applyFollowMove\(asks\);[^\n]*\n\s*inRender = true;/, "set after the hidden-paint gate and the follow-up move (both pinned elsewhere)");
+  assert.match(render, /ensureHostLoad\(list\);[^\n]*\n\s*inRender = false;\s*\n\s*return;/, "cleared on the empty-board exit");
+  assert.match(render, /persistViewState\(\);[^\n]*\n\s*inRender = false;\s*\n\}/, "cleared at the end");
+  assert.match(FEED, /function renderModal\(\) \{\s*\n\s*inModalRender = true;[^\n]*\n\s*try \{ renderModalNow\(\); \} finally \{ inModalRender = false; \}\s*\n\}/, "the modal's paint is render time too");
+  assert.match(FEED, /ttlEl\.onclick = \(\) => \{ focusEcho\(grp\.sid\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: gm0\.itemId, sid: grp\.sid, t: grp\.t, anchor: "prompt", anchorUuid: gm0Prompt \}\); \};/,
+    "the pre-existing fault the wrapper amplified: the group modal's title posted its jump at render time (the braces were missing)");
+  assert.doesNotMatch(FEED, /onclick = \(\) => focusEcho\([^\n]*\); vscodeApi\?\.postMessage/, "no other handler assignment posts outside its braces");
 });
 
 test("the local switch paints at once through the hover-freeze, defers only to an open card menu, and scrolls to the top on this pane's own jump", () => {
   const fn = slice(FEED, "function applyLocalFocus(", "// The section's OWN block layout (T410");
-  assert.match(fn, /const changed = sid !== focusedSid;\s*\n\s*focusedSid = sid;\s*\n\s*if \(changed\) focusPending = \{ sid, age: 0 \};/,
-    "the pending record holds the locally applied session; an unchanged one has nothing to reconcile");
+  assert.match(fn, /const changed = sid !== focusedSid;\s*\n\s*focusedSid = sid;\s*\n\s*if \(changed\) focusPending = \{ sid, nonce \};/,
+    "the pending record holds the locally applied session and the chat's announcement number; an unchanged one has nothing to reconcile");
+  assert.match(fn, /else if \(focusPending && focusPending\.sid === sid && nonce != null\) focusPending\.nonce = nonce;/,
+    "the chat's announcement of the switch this pane made adopts its number: that echo is the one to wait for");
   assert.match(fn, /if \(!showFocused\) return;/, "with the section off nothing paints or scrolls");
-  assert.doesNotMatch(fn, /freezeKey/, "the pointer resting on the clicked card is no gate: the reader's own gesture, never a push");
-  assert.match(fn, /if \(tabScopeKey\) focusStale = true;[^\n]*\n\s*else \{ render\(\); focusStale = false; \}/, "an open card menu's anchor stands; else the paint is the switch");
+  assert.match(fn, /if \(tabScopeKey \|\| \(!gesture && freezeKey\)\) focusStale = true;[^\n]*\n\s*else \{ render\(\); focusStale = false; \}/,
+    "the reader's own gesture passes the hover-freeze; a kernel-driven switch under a held card defers like a push (round two low); an open card menu's anchor stands");
   assert.match(fn, /if \(jump\) scrollFeedTop\(\);/, "the jump scroll rides the switch, the already-focused session included");
   const top = slice(FEED, "function scrollFeedTop(", "/** This pane's own jump");
   assert.match(top, /list\.scrollTop = 0;/, "a plain scroll to the top of the feed's box");
   assert.doesNotMatch(top, /scrollTo\(|behavior|smooth|scrollIntoView|requestAnimationFrame|setTimeout/, "no animated chase, no clock");
 });
 
-test("the shell's relay of the chat's tab change is a local signal too, without the jump scroll", () => {
-  assert.match(FEED, /if \(m\.romp === "activeChat"\) \{ applyLocalFocus\(typeof m\.id === "string" && m\.id \? m\.id : null, false\); return; \}/,
-    "a strip click or a hot key in the chat lands here ahead of the kernel's frame");
+test("the shell's relay of the chat's tab change is a local signal too, tagged with the gesture and the announcement number, without the jump scroll", () => {
+  assert.match(FEED, /if \(m\.romp === "activeChat"\) \{ applyLocalFocus\(typeof m\.id === "string" && m\.id \? m\.id : null, false, !!m\.gesture, typeof m\.nonce === "number" \? m\.nonce : null\); return; \}/,
+    "a strip click or a hot key in the chat lands here without waiting for the kernel's frame");
 });
 
-test("the kernel's frame reconciles: the pending session's frame settles, a disagreeing one yields until two in a row or a reaffirm, an unchanged one is no event", () => {
+test("the kernel's frame reconciles: only the echo (the pending session and its announcement number) or the marked reaffirm clears the record; a disagreeing frame yields and never wins by count; an unchanged session is no event", () => {
   const branch = slice(FEED, '} else if (m.type === "activeChat") {', '} else if (m.type === "hoverCards") {');
-  assert.match(branch, /const id = typeof m\.id === "string" && m\.id \? m\.id : null;/);
-  assert.match(branch, /if \(focusPending\) \{\s*\n\s*if \(m\.reaffirm \|\| id === focusPending\.sid\) focusPending = null;\s*\n\s*else if \(\+\+focusPending\.age < FOCUS_PENDING_MAX_AGE\) return;\s*\n\s*else focusPending = null;\s*\n\s*\}/,
-    "the strip's pending rule (tab-meta.ts): echo clears, disagreement ages, the kernel's answer wins at once");
-  assert.match(FEED, /const FOCUS_PENDING_MAX_AGE = 2;/);
+  assert.match(branch, /const id = typeof m\.id === "string" && m\.id \? m\.id : null;\s*\n\s*const nonce = typeof m\.nonce === "number" \? m\.nonce : null;/);
+  assert.match(branch, /if \(focusPending\) \{\s*\n(\s*\/\/[^\n]*\n)*\s*const echo = id === focusPending\.sid && \(focusPending\.nonce == null \|\| nonce == null \|\| nonce === focusPending\.nonce\);\s*\n\s*if \(!m\.reaffirm && !echo\) return;\s*\n\s*focusPending = null;\s*\n\s*\}/,
+    "an event, never a count (the round-two review): the echo or the kernel's marked answer, nothing else");
+  assert.doesNotMatch(FEED, /FOCUS_PENDING_MAX_AGE|focusPending\.age/, "no age, no count");
   assert.match(branch, /if \(id === focusedSid\) return;\s*\n\s*focusedSid = id;/, "an unchanged session is no event");
   assert.match(branch, /if \(!showFocused\) return;\s*\n\s*if \(freezeKey \|\| tabScopeKey\) \{ focusStale = true; return; \}\s*\n\s*render\(\);/,
     "a kernel frame that does change the session still waits for the hover release (T347's contract, for pushes)");
   assert.doesNotMatch(branch, /setTimeout|setInterval|requestAnimationFrame/);
 });
 
-test("the chat tells the shell its tab on every switch, and re-announces it when a jump reached a closed session", () => {
+test("the chat tells the shell its tab on every switch with its announcement number and whether the reader made it, and re-announces it when a jump reached a closed session or landed on the tab already shown", () => {
   const fn = slice(RENDER, "function notifyActive() {", "// Move id to the front of the recency stack");
-  assert.match(fn, /if \(vscodeApi\) vscodeApi\.postMessage\(\{ type: "activeTab", id: activeId \}\);/, "the kernel's copy, unchanged");
-  assert.match(fn, /window\.parent\.postMessage\(\{ romp: "activeTab", id: activeId \}, "\*"\)/, "the shell's copy, for the feed pane on the same page");
+  assert.match(RENDER, /let activeTabNonce = 0;/);
+  assert.match(fn, /const nonce = \+\+activeTabNonce;\s*\n\s*const gesture = inInputEvent\(\);/, "one number per announcement; the gesture read off the event under dispatch");
+  assert.match(fn, /if \(vscodeApi\) vscodeApi\.postMessage\(\{ type: "activeTab", id: activeId, nonce \}\);/, "the kernel's copy carries the number it echoes");
+  assert.match(fn, /window\.parent\.postMessage\(\{ romp: "activeTab", id: activeId, nonce, gesture \}, "\*"\)/, "the shell's copy, for the feed pane on the same page, tagged");
+  assert.match(RENDER, /if \(activeId === m\.id && m\.anchor == null && m\.anchorT == null\) notifyActive\(\);/,
+    "a focus that lands on the tab already shown is announced again, so the feed's pending record gets its echo (setActive early-returns there)");
   assert.match(RENDER, /else if \(m\.type === "confirmRevive" && m\.id\) \{\s*\n\s*revealSelfPane\(\);[^\n]*\n\s*notifyActive\(\);/,
     "no tab changed: the standing tab is re-announced (after the pane's own reveal, whose pin in tests/test_per_viewer_focus.py opens the branch), so a section that moved on the click comes back");
 });
 
 test("the shell hands the chat's tab to the feed pane, from a child frame of this page only", () => {
   assert.match(KERNEL, /if\(!m\|\|m\.romp!=='activeTab'\|\|!e\.source\|\|e\.source===window\|\|e\.origin!==location\.origin\)return;/, "a chat column of this page, same origin");
-  assert.match(KERNEL, /var ff=document\.getElementById\('f-feed'\);try\{ff&&ff\.contentWindow&&ff\.contentWindow\.postMessage\(\{romp:'activeChat',id:\(typeof m\.id==='string'\?m\.id:null\)\},'\*'\);\}catch\(x\)\{\}\}\);/,
-    "the feed pane gets {romp:'activeChat', id}");
+  assert.match(KERNEL, /var ff=document\.getElementById\('f-feed'\);try\{ff&&ff\.contentWindow&&ff\.contentWindow\.postMessage\(\{romp:'activeChat',id:\(typeof m\.id==='string'\?m\.id:null\),nonce:\(typeof m\.nonce==='number'\?m\.nonce:null\),gesture:!!m\.gesture\},'\*'\);\}catch\(x\)\{\}\}\);/,
+    "the feed pane gets {romp:'activeChat', id, nonce, gesture}");
 });
 
 test("the kernel answers a jump that reached a closed session with a marked activeChat frame for the asking window's feeds", () => {
   const fn = slice(KERNEL, "def _send_active_chat(client, reaffirm=False):", "def _forget_active_chat_if_last(client):");
   assert.match(fn, /if reaffirm:\s*\n(\s*#[^\n]*\n)*\s*frame\["reaffirm"\] = True\s*\n\s*frame\["nonce"\] = _next_nonce\(\)/, "marked, and never swallowed by the slot's dedup");
+  assert.match(fn, /if _ACTIVE_CHAT_NONCE_BY_WID\.get\(wid\) is not None:\s*\n\s*frame\["nonce"\] = _ACTIVE_CHAT_NONCE_BY_WID\[wid\]/, "the chat's announcement number rides the relayed frame: the echo");
+  assert.match(KERNEL, /_relay_active_chat\(client, msg\.get\("id"\), msg\.get\("nonce"\)\)/, "the activeTab arm hands the number to the relay");
   assert.match(fn, /def _reaffirm_active_chat\(client\):/);
   const dead = slice(KERNEL, "def _reveal_or_confirm(sid, focus_msg, client=None):", "def _folder_opener():");
   assert.match(dead, /_reveal_chat_for\(client, \{"type": "confirmRevive", "id": sid, "name": _name_of\(sid\) or sid\}\)\s*\n\s*if client:\s*\n\s*_reaffirm_active_chat\(client\)/,
