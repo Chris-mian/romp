@@ -29,8 +29,8 @@ function makeNode(tag: string): any {
     addEventListener(t: string, fn: any) { n._listeners[t] = fn; }, removeEventListener() {},
     querySelector() { return null; }, querySelectorAll() { return []; },
     getBoundingClientRect() { return { width: 32, height: 18, left: 8, top: 400, right: 40, bottom: 418 }; },
-    closest() { return null; },
-    focus() { n._focused = true; if (n._listeners.focus) n._listeners.focus({}); },   // the strip tidy: a row's focus listener roves the tab stop
+    closest() { return null; }, contains(c: any): boolean { for (let p = c; p; p = p.parentNode) if (p === n) return true; return false; },
+    focus() { n._focused = true; (g.document as any).activeElement = n; if (n._listeners.focus) n._listeners.focus({}); },   // the stub document's focus follows, as a browser's would; a row's focus listener roves the tab stop
     click() { if (n._listeners.click) n._listeners.click({ stopPropagation() {}, preventDefault() {} }); },
     createEl(t: string, o: any) { const e = makeNode(t); if (o && o.cls) e.classList.add(o.cls); if (o && o.text) e.textContent = o.text; this.appendChild(e); return e; },
     createDiv(o: any) { return this.createEl("div", o); }, createSpan(o: any) { return this.createEl("span", o); },
@@ -96,7 +96,7 @@ test("executed: each tag row is the house switch (menuitemcheckbox, aria-checked
   assert.ok(on && off, "each tag row carries the mark");
   assert.equal(on._attrs["data-check"], "true"); assert.equal(on.textContent, "✓", "selected: the ✓-in-circle (the palette's check)");
   assert.equal(off._attrs["data-check"], "false"); assert.equal(off.textContent, "", "unselected: an empty ring");
-  assert.match(off._attrs.style, /border-radius:50%;box-sizing:border-box;border:1px solid #9aa0a6;/, "the ring in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground; this clears 3)");
+  assert.match(off._attrs.style, /border:1px solid #9aa0a6;background:transparent;/, "the ring in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground; this clears 3)");
   assert.match(r[2]._attrs.style, /^padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;outline:none;$/, "the chip row's shape, room for the mark, the focus ring the hover wash");
   panel._closeViewsMenu();
 });
@@ -168,30 +168,61 @@ test("executed: the inlined menu takes the house rows menu's keyboard grammar: r
   assert.equal(panel._viewsMenu, null, "Escape closed it"); assert.equal(refocused, 1, "and handed the focus back to the button"); assert.ok(esc.stopped);
 });
 
-test("executed: a keyboard open (the button holds the focus) puts the focus on the first row; the Group by tag switch is a checkbox row", () => {
-  const panel = panelWith({ tags: ["infra"] });
-  const anchor = makeNode("button");
-  (g.document as any).activeElement = anchor;   // the button had the focus: a keyboard open
-  try {
-    panel._openViewsMenu(anchor); const menu = panel._viewsMenu;
+// the view's own tags button (the corner bar's, title "filter these lanes by tag"), the way a user reaches the menu
+const tagsButton = (panel: any): any => { const walk = (n: any): any => { if (n.tag === "button" && n.title === "filter these lanes by tag") return n; for (const c of n.children || []) { const f = walk(c); if (f) return f; } return null; }; return walk(panel._cornerBar); };
+const keyOn = (node: any, k: string) => { const e = { key: k, target: node, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } }; node._listeners.keydown(e); return e; };
+
+test("executed: the view's tags button opens from the keyboard (Enter, Space, ArrowDown on the focused button) with the focus on the first row; a pointer press opens without moving the focus", () => {
+  for (const k of ["Enter", " ", "ArrowDown"]) {
+    const panel = panelWith({ tags: ["infra"] });
+    const btn = tagsButton(panel);
+    assert.ok(btn, "the corner bar's tags button is built in the stub host");
+    assert.ok(btn._listeners.keydown, "the button takes the keys (round two of the tidy: it bound only the pointer, so the menu's grammar was unreachable)");
+    btn.focus();   // the user tabbed to it
+    const e = keyOn(btn, k);
+    assert.ok(e.prevented && e.stopped, k + ": the key is the button's");
+    const menu = panel._viewsMenu; assert.ok(menu, k + " opened the menu");
     const r = rows(menu).filter((x: any) => x._attrs.role);
-    assert.ok(r[0]._focused, "the first row took the focus"); assert.equal(r[0].tabIndex, 0);
+    assert.ok(r[0]._focused, k + ": the first row took the focus"); assert.equal((g.document as any).activeElement, r[0]); assert.equal(r[0].tabIndex, 0);
     assert.equal(r[4]._attrs.role, "menuitemcheckbox", "Group by tag: a switch row"); assert.equal(r[4]._attrs["aria-checked"], "false");
-    panel._closeViewsMenu();
-  } finally { delete (g.document as any).activeElement; }
+    panel._closeViewsMenu(); delete (g.document as any).activeElement;
+  }
+  const panel = panelWith({ tags: ["infra"] }); const btn = tagsButton(panel);
+  const composer = makeNode("textarea"); composer.focus();
+  btn._listeners.pointerdown({ preventDefault() {}, stopPropagation() {} });
+  const r = rows(panel._viewsMenu).filter((x: any) => x._attrs.role);
+  assert.ok(!r[0]._focused && (g.document as any).activeElement === composer, "a pointer press opens the menu and leaves the focus where it was");
+  assert.equal(r[0].tabIndex, 0, "the first row is still the one tab stop");
+  panel._closeViewsMenu(); delete (g.document as any).activeElement;
 });
 
-test("drift pins: the two-state mark is one drawing in both copies: the shared checkMark's geometry byte for byte, the check from the check token or the palette's accent, the ring from the muted text token or the palette's muted text", () => {
-  const mark = MENU.slice(MENU.indexOf("function checkMark("), MENU.indexOf("\n}\n", MENU.indexOf("function checkMark(")));
-  const geo = "position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;";
-  assert.ok(mark.includes('"' + geo + '"'), "the shared mark's geometry is where the pin expects it");
-  assert.ok(mark.includes('"display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;"'), "the shared mark's glyph box");
-  assert.match(mark, /background:var\(--check-bg, #1EA1EB\);color:#fff;/, "on: the check token"); assert.match(mark, /border:1px solid var\(--text-muted, #9aa0a6\);background:transparent;/, "off: the muted text token");
-  const ring = /const menuRingStyleFor = \(p\) => '([^']+)'\s*\n\s*\+ 'border:1px solid ' \+ p\.modelFg \+ ';background:transparent;';/.exec(SRC);
-  assert.ok(ring, "the view's ring maker is where the pin expects it");
-  assert.equal(ring![1], geo, "the ring: the shared geometry byte for byte, the palette's muted text (modelFg) standing for --text-muted");
-  const check = /const menuCheckStyleFor = \(p\) => 'position:absolute;right:6px;top:50%;transform:translateY\(-50%\);'\s*\n\s*\+ 'background:' \+ p\.accentSolid \+ ';color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'\s*\n\s*\+ 'font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;';/.exec(SRC);
-  assert.ok(check, "the view's check maker: the same 13px round box, 9px at weight 900, centred, the palette's accent standing for --check-bg");
+test("executed: the marks are decoration (aria-hidden): the row's name is its label and its state is aria-checked; Tab out of the menu (a focusout that leaves it) closes it", () => {
+  const panel = panelWith({ tags: ["infra"] });
+  const menu = openMenu(panel);
+  const r = rows(menu).filter((x: any) => x._attrs.role);
+  for (const row of [r[2], r[3], r[4]]) { const m = markOf(row); assert.ok(m, text(row) + ": a mark"); assert.equal(m._attrs["aria-hidden"], "true", text(row) + ": the mark is decoration"); }   // the tag rows and the switch; this copy's (no tags) is a plain row with the ✓ only when current
+  assert.ok(menu._listeners.focusout, "the menu watches the focus leaving it");
+  menu._listeners.focusout({ relatedTarget: r[2] }); assert.equal(panel._viewsMenu, menu, "the focus moving between rows keeps the menu");
+  const elsewhere = makeNode("button");
+  menu._listeners.focusout({ relatedTarget: elsewhere }); assert.equal(panel._viewsMenu, null, "the focus leaving the menu (Tab) closes it: the one-tab-stop pattern's other half");
+});
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const SHARED = require("./webview/tag-menu");   // the shared menu module loads in the runner (the stub document above is its document)
+const decls = (style: string): string[] => style.split(";").map((d) => d.trim()).filter(Boolean).sort();
+test("executed drift: the two-state mark RENDERS the same in both copies, declaration set for declaration set, the shared tokens standing for the palette's values (the check token for the accent, the muted text token for the muted text)", () => {
+  const panel = panelWith({ tags: ["infra"] });
+  const menu = openMenu(panel);
+  const r = rows(menu).filter((x: any) => x._attrs.role);
+  const viewOn = markOf(r[2])._attrs.style as string, viewOff = markOf(r[3])._attrs.style as string;
+  const accent = /background:(#[0-9A-Fa-f]{6});/.exec(viewOn)![1], muted = /border:1px solid (#[0-9A-Fa-f]{6});/.exec(viewOff)![1];
+  assert.equal(accent, "#1EA1EB", "the dark palette's accent"); assert.equal(muted, "#9aa0a6", "the dark palette's muted text");
+  const sharedOn = SHARED.checkMark(true).getAttribute("style").replace("var(--check-bg, #1EA1EB)", accent);
+  const sharedOff = SHARED.checkMark(false).getAttribute("style").replace("var(--text-muted, #9aa0a6)", muted);
+  assert.deepEqual(decls(viewOn), decls(sharedOn), "the ✓ mark: the same declarations, the palette's accent for the check token");
+  assert.deepEqual(decls(viewOff), decls(sharedOff), "the ring: the same declarations, the palette's muted text for the muted text token");
+  assert.equal(SHARED.checkMark(true).getAttribute("aria-hidden"), "true", "the shared mark is decoration too");
+  panel._closeViewsMenu();
 });
 
 test("drift pins: the inlined chip is the shared tagChip's pill up to the colour, and the fade and row shape match the shared menu", () => {

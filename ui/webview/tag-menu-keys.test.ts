@@ -128,7 +128,18 @@ test("the Group tabs by tag switch is a checkbox row like the house rows menu's 
   assert.equal(sw.getAttribute("aria-checked"), "false", "off in this fixture, said so");
   const mark = sw.children.find((c: any) => c.getAttribute("data-check") !== null);
   assert.ok(mark && mark.getAttribute("data-check") === "false", "the two-state mark, the empty ring when off");
+  assert.equal(mark.getAttribute("aria-hidden"), "true", "the mark is decoration: the row's name is its label and its state is aria-checked, never the glyph (round two of the tidy)");
+  for (const r of m.rows()) { const k = r.children.find((c: any) => c.getAttribute("data-check") !== null); if (k) assert.equal(k.getAttribute("aria-hidden"), "true", label(r) + ": its mark is decoration"); }
   mod.closeTagMenu();
+});
+
+test("Tab out of the menu closes it: a focusout whose target leaves the menu, the one-tab-stop pattern's other half; the focus moving between rows keeps it", () => {
+  const m = open({ all: true });
+  const rows = m.rows();
+  assert.ok((m.menu.listeners.focusout || []).length >= 1, "the menu watches the focus leaving it");
+  const fo = (to: any) => { const e: any = ev("focusout"); e.relatedTarget = to; m.menu.dispatch("focusout", e); };
+  fo(rows[2]); assert.equal(m.menu.parentNode, body, "between rows: the menu stays");
+  fo(m.composer); assert.equal(m.menu.parentNode, null, "Tab (or Shift+Tab) out: the menu is gone, the focus where the browser sent it");
 });
 
 test("ArrowDown and ArrowUp walk the rows, Home and End jump to the ends, and neither end wraps", () => {

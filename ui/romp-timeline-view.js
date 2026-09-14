@@ -411,14 +411,16 @@ const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-ser
 const menuStyleFor = (p) => 'padding:4px;background:' + p.menuBg + ';border:1px solid ' + p.hairline + ';'
   + 'border-radius:6px;box-shadow:0 4px 12px ' + p.menuShadow + ';font:12px/1.4 ' + FONT + ';'
   + 'color:' + p.menuFg + ';user-select:none;';
-const menuCheckStyleFor = (p) => 'position:absolute;right:6px;top:50%;transform:translateY(-50%);'
-  + 'background:' + p.accentSolid + ';color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'
-  + 'font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;';
+// THE TWO-STATE MARK, one drawing with the shared menu's checkMark (ui/webview/tag-menu.ts): the same declaration set, the palette's
+// values standing for its tokens (accentSolid for --check-bg, modelFg for --text-muted); ui/timeline-tag-chips.test.ts renders both
+// and compares them, so a change on either side reds the other
+const MENU_MARK_BOX = 'position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;'
+  + 'display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;';
+const menuCheckStyleFor = (p) => MENU_MARK_BOX + 'background:' + p.accentSolid + ';color:#fff;';
 // the checkbox row's OFF mark (T413, the user 2026-09-14): an empty ring where the ✓ sits when on, so a tag row's box reads in both
 // states, in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground, under the 3 to 1 floor;
 // the muted text clears it in both themes); the shared menu (ui/webview/tag-menu.ts checkMark) draws the same from its tokens
-const menuRingStyleFor = (p) => 'position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;'
-  + 'border:1px solid ' + p.modelFg + ';background:transparent;';
+const menuRingStyleFor = (p) => MENU_MARK_BOX + 'border:1px solid ' + p.modelFg + ';background:transparent;';
 let MENU_STYLE = null, MENU_CHECK_STYLE = null, MENU_RING_STYLE = null;   // set by applyPal() below (dark by default)
 // THE TAG CHIP in the views menu (T283b, the user 2026-09-09: menus wear one vocabulary): the shared tag-lens
 // menu renders each tag as the tag chip itself acting as a toggle (ui/webview/tag-menu.ts tagChip + T283's
@@ -4183,6 +4185,10 @@ class TimelinePanel {
       // the follow-up click would bubble to the document's menu-closer and shut the menu the same
       // instant it opened (the click-and-hold bug, 2026-08-24). Swallow it here.
       b.addEventListener('click', (e) => e.stopPropagation());
+      // the keyboard's open (the strip tidy, round two): the press opens on the pointer and swallows its click, so Enter on the focused
+      // button did nothing and the menu's keys were unreachable; Enter, Space and ArrowDown open it with the focus on the first row
+      // (the shared button's route, ui/webview/tag-menu.ts tagMenuButton)
+      b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); open(b); } });
       bar.appendChild(b);
       return b;
     };
@@ -4237,7 +4243,7 @@ class TimelinePanel {
     if (more) tail(tailStr, 'live sessions outside this view \u2014 click to switch views, or un-hide via Sessions & tags\u2026');
   }
 
-  _closeViewsMenu() { if (this._viewsMenu) { this._viewsMenu.remove(); this._viewsMenu = null; } }
+  _closeViewsMenu() { const m = this._viewsMenu; this._viewsMenu = null; if (m) m.remove(); }   // cleared BEFORE the removal: removing a menu with a focused row fires focusout, whose closer must find nothing left to close
   _closeViewsDialog() {
     if (!this._viewsDialog) return;
     this._closeTagColorPop();   // the colour popover is the dialog's; it never outlives it
@@ -4389,6 +4395,17 @@ class TimelinePanel {
     menu.addEventListener('click', (e) => e.stopPropagation());
     // THE KEYS (T413 round two, mirroring the shared menu's house rows grammar): Escape closes the menu and hands the focus back to
     // the button; ArrowDown and ArrowUp walk the rows (the focused row is the key's target), Home and End jump, neither end wraps
+    // Tab out of the menu closes it, the one-tab-stop pattern's other half; a focus moving between rows keeps it, and a focus leaving the
+    // window (relatedTarget null, the document no longer focused) keeps it too (the shared menu's rule)
+    let rebuilding = false;   // a toggle's repaint removes the focused row, and Chromium fires focusout for it: the closer stands down meanwhile
+    menu.addEventListener('focusout', (e) => {
+      if (rebuilding) return;
+      const to = e.relatedTarget;
+      if (to && menu.contains(to)) return;
+      const doc = menu.ownerDocument || document;
+      if (!to && typeof doc.hasFocus === 'function' && !doc.hasFocus()) return;
+      if (this._viewsMenu === menu) this._closeViewsMenu();
+    });
     menu.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.stopPropagation(); this._closeViewsMenu(); try { anchorEl.focus(); } catch (err) { /* a detached anchor: nothing to hand it to */ } return; }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
@@ -4420,12 +4437,14 @@ class TimelinePanel {
       row.setAttribute('role', opts && opts.checkbox ? 'menuitemcheckbox' : 'menuitem');
       if (opts && opts.checkbox) row.setAttribute('aria-checked', opts.current ? 'true' : 'false');
       row.appendChild(document.createTextNode(label));
-      if (opts && opts.checkbox) {   // the two-state mark (the ✓ when on, the ring when off), as the tag rows carry it
+      if (opts && opts.checkbox) {   // the two-state mark (the ✓ when on, the ring when off), as the tag rows carry it; decoration
         const mark = row.createSpan({ text: opts.current ? '\u2713' : '' });
         mark.setAttribute('data-check', opts.current ? 'true' : 'false');
+        mark.setAttribute('aria-hidden', 'true');
         mark.setAttribute('style', opts.current ? MENU_CHECK_STYLE : MENU_RING_STYLE);
       } else if (opts && opts.current) {
         const c = row.createSpan({ text: '✓' });
+        c.setAttribute('aria-hidden', 'true');
         c.setAttribute('style', MENU_CHECK_STYLE);
       }
       row.addEventListener('mouseenter', () => { row.style.background = HOVER_BG; });
@@ -4451,6 +4470,7 @@ class TimelinePanel {
       if (!on) chip.classList.add(TAG_CHIP_OFF_CLASS);
       const mark = row.createSpan({ text: on ? '\u2713' : '' });
       mark.setAttribute('data-check', on ? 'true' : 'false');
+      mark.setAttribute('aria-hidden', 'true');   // decoration: the row's name is its label and its state is aria-checked
       mark.setAttribute('style', on ? MENU_CHECK_STYLE : MENU_RING_STYLE);
       row.addEventListener('mouseenter', () => { row.style.background = HOVER_BG; });
       row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
@@ -4475,6 +4495,7 @@ class TimelinePanel {
       // unclickable corner button; timeline-tagbtn-click.test.ts executes this path under a
       // three-helper host so an Obsidian-only call can never land again).
       const focusAt = Array.prototype.indexOf.call(menu.children, (menu.ownerDocument || document).activeElement);   // the focused row's place, kept across the repaint a toggle causes
+      rebuilding = true;
       while (menu.firstChild) menu.removeChild(menu.firstChild);
       const v = this._curViews();
       const lens = timelineLens(v);
@@ -4522,6 +4543,7 @@ class TimelinePanel {
       const back = menu.children[focusAt];   // the same place after the repaint: the rows rebuild in one order
       if (back && back.getAttribute('role')) back.focus();
       else { const first = menuRowsOf(menu)[0]; if (first) first.tabIndex = 0; }   // no focus in the menu: the first row is the one tab stop
+      rebuilding = false;
     };
     build();
     menu._build = build;   // viewsAck / setCaps / _kernelViewsAnswer repaint the open menu with a refusal or the not-saved note
@@ -4531,7 +4553,9 @@ class TimelinePanel {
     menu.style.top = Math.round(menuTop(h.rect, menu.offsetHeight || 0, h.win.innerHeight || 9999)) + 'px';
     // the focus moves to the first row on a KEYBOARD open only, when the button held it; a pointer open leaves the focus where it was
     // (the strip tidy, the shared menu's rule); either way the first row is the one tab stop
-    if ((menu.ownerDocument || document).activeElement === anchorEl && menu.children[0] && menu.children[0].focus) menu.children[0].focus();
+    // the ANCHOR's document, not the menu's: a menu lifted into the shell (_menuHost) lives in the host document while the button stays in
+    // the pane's, and only the button's own document can hold its focus
+    if ((anchorEl.ownerDocument || document).activeElement === anchorEl && menu.children[0] && menu.children[0].focus) menu.children[0].focus();
     this._viewsMenu = menu;
   }
 

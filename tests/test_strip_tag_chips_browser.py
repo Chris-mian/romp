@@ -101,7 +101,7 @@ const readStrip = () => page.evaluate(() => {
 });
 const readMenu = () => page.evaluate(() => { const m = document.querySelector('[data-tag-menu="1"]'); if (!m) return null;
   return Array.from(m.children).map((r) => { const mark = r.querySelector("[data-check]"); const chip = Array.from(r.children).find((k) => /border:1px solid/.test(k.getAttribute("style") || ""));
-    return { label: r.textContent.replace("✓", "").trim(), role: r.getAttribute("role"), checked: r.getAttribute("aria-checked"), menuBg: getComputedStyle(m).backgroundColor, menuRole: m.getAttribute("role"), tabIndex: r.tabIndex,
+    return { label: r.textContent.replace("✓", "").trim(), role: r.getAttribute("role"), checked: r.getAttribute("aria-checked"), menuBg: getComputedStyle(m).backgroundColor, menuRole: m.getAttribute("role"), tabIndex: r.tabIndex, markHidden: mark ? mark.getAttribute("aria-hidden") : null,
              mark: mark ? { check: mark.getAttribute("data-check"), text: mark.textContent, bg: getComputedStyle(mark).backgroundColor, border: getComputedStyle(mark).borderTopColor, w: mark.getBoundingClientRect().width } : null,
              chipOpacity: chip ? getComputedStyle(chip).opacity : null }; }); });
 // the menu opens on the press and the release's click is the button's to swallow: the press is held while the rows are
@@ -161,6 +161,11 @@ await page.keyboard.press("Enter"); await page.waitForTimeout(300); out.kbOpen =
 await page.keyboard.press("ArrowDown"); await page.keyboard.press("ArrowDown"); await page.waitForTimeout(100); out.kbDown2 = await kbRead();
 await page.keyboard.press("Space"); await page.waitForTimeout(500); out.kbSpace = await kbRead();
 await page.keyboard.press("Escape"); await page.waitForTimeout(300); out.kbEscape = await kbRead();
+// 5c. Tab out of the menu closes it (round two of the tidy): a keyboard open, one arrow, then Tab; the menu is gone and the focus outside it
+await page.evaluate(() => document.querySelector("#tabs .tab-tagfilter").focus());
+await page.keyboard.press("Enter"); await page.waitForTimeout(250); await page.keyboard.press("ArrowDown"); await page.waitForTimeout(100);
+await page.keyboard.press("Tab"); await page.waitForTimeout(300); out.kbTab = await kbRead();
+await page.evaluate(() => document.body.click()); await page.waitForTimeout(200);
 // 6. a narrow window: the run yields rather than add a row (the rows with the chips equal the rows without them)
 await page.setViewportSize({ width: 560, height: 700 }); await page.waitForTimeout(500);
 out.narrowMany = await readStrip();
@@ -436,6 +441,12 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertEqual(pf["stops"][0], 0, "the first row is the one tab stop" + tp); self.assertEqual(set(pf["stops"][1:]), {-1}, "and the rest are -1" + tp)
         grp = rows["Group tabs by tag"]
         self.assertEqual((grp["role"], grp["checked"], grp["mark"]["check"]), ("menuitemcheckbox", "true", "true"), "the group switch is a checkbox row with its state and the two-state mark (grouping on at boot)\n  " + json.dumps(grp))
+        for label in ("(no tags)", "infra", "Group tabs by tag"):
+            self.assertEqual(rows[label]["markHidden"], "true", label + ": the mark is decoration (aria-hidden), the name the label and the state aria-checked\n  " + json.dumps(rows[label]))
+        self.assertEqual(r["errors"], [], "no page error along the keyboard scene (round two of the tidy: a closer re-entering the menu's removal threw a NotFoundError that ate the refocus)")
+        tb = r["kbTab"]; tt = "\n  " + json.dumps(tb)
+        self.assertFalse(tb["menu"], "Tab out of the menu closes it (the one-tab-stop pattern's other half)" + tt)
+        self.assertFalse(tb["active"] and tb["active"]["inMenu"], "and the focus is outside it" + tt)
 
     def test_the_unselected_ring_clears_three_to_one_against_the_menu_ground_in_both_themes(self):
         r = self._run()
