@@ -260,6 +260,8 @@ class ServedFocusedSessionSection(unittest.TestCase):
         copy_dist(os.path.join(EXT, "dist"), dist)
         state = os.path.join(cls.lab, "xdg", "romp")
         os.makedirs(state, exist_ok=True)
+        with open(os.path.join(state, "session-hosts"), "w") as fh:   # a lab root of its own pins the hosts OFF (CLAUDE.md 2026-09-11)
+            fh.write("off\n")
         cls.port = _free_port()
         cls.token = "testtok-feedfocus"
         env = _lab.kernel_env(cls.lab, os.path.join(cls.lab, "claude"), dist, cls.port, cls.token)

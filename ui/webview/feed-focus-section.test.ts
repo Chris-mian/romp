@@ -109,7 +109,7 @@ test("the section's cards are SECOND elements: its own caches under 'f:' keys, t
 
 test("the board's own column lookups are scoped to #feed-cols now that the section carries the same classes", () => {
   assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ key\)/, "applyColStack folds the board's column");
-  assert.match(FEED, /const twin = document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ key\);/, "…and writes the dragged order to the section's twin column too");
+  assert.match(FEED, /const twin = document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ key\);/, "…the section's twin is applyFocusLayout's to paint (its own order, or the board's while it follows), never the board's write");
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/, "the board's own statement stands as feed-col-fold.test.ts pins it");
   assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the board drag's element lookup reads the board (BOARD_SLOTS.col)");
   assert.match(FEED, /const oc = slots\.col\(other\);/, "the drag walks its OWN container's elements: the board's for a chip, the section's for a grip (T410)");
@@ -181,11 +181,13 @@ test("feed.css: #feed-focus, the head, the caption, the rule and the empty line 
   assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; \}/);
   assert.match(CSS, /\.feed-focus-head \{[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
     "the label (T410): the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
-  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: inherit; font-weight: 600; \}/, "the name at the label's size, bold (its identity colour is set inline)");
+  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: inherit; font-weight: 600;/, "the name at the label's size, bold (its identity colour is set inline)");
   assert.match(CSS, /\.feed-focus-fold \{[^}]*font: inherit; color: var\(--dim\);[^}]*\}/, "the label text: a button in the head's font, dim like the column heads");
   assert.match(CSS, /\.feed-focus-caret \{[^}]*font-size: 1\.389em; font-weight: 400; line-height: 1;/, "the caret at the block carets' compensated size");
   assert.doesNotMatch(CSS, /feed-focus-cap/, "the cap's rule went with the cap");
-  assert.match(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}/, "no grab cursor where nothing drags");
+  assert.match(CSS, /\.feed-focus-head \.fname \{[^}]*flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;/,
+    "the label's name clamps like a card's (.fask-id .fname), so a long name shrinks and the caret keeps the end of the line (T410 review)");
+  assert.match(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}/, "the chip stays inert in the section: the grip drags there, and a chip drag is the board's");
   assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 2px solid var\(--rule-strong\); margin: 8px 0 4px; \}/,
     "T410: a 2px rule in --rule-strong, a step up from the hairline");
   assert.ok(/--rule-strong:\s*rgba\(255, 255, 255, 0\.22\)/.test(CSS) && /--rule-strong:\s*rgba\(0, 0, 0, 0\.22\)/.test(CSS), "the token is defined in both themes");

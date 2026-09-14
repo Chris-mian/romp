@@ -422,7 +422,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    feed's base); the folded count rides .feed-col-count. */
 .feed-focus-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 2px 3px 0;
   font-size: 0.72em; font-weight: 600; cursor: pointer; }
-.feed-focus-head .fname { font-size: inherit; font-weight: 600; }
+.feed-focus-head .fname { font-size: inherit; font-weight: 600;
+  flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* the card's name clamp (.fask-id .fname): a long name shrinks, the caret keeps the end of the line */
 .feed-focus-fold { flex: none; padding: 0; border: 0; background: transparent; font: inherit; color: var(--dim);
   cursor: pointer; transition: color 0.12s ease; }
 .feed-focus-head:hover .feed-focus-fold, .feed-focus-fold:focus-visible { color: var(--fg); }
@@ -439,10 +440,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    rest, full on its hover, its focus and the head's hover, grab cursor; touch-action none so a finger drags
    the block, not the page. The glyph rides the fold caret's size compensation (1.389em against the head's
    0.72em), so it paints at the feed's base size rather than shrinking with the label. */
-.drag-grip { flex: none; width: 18px; padding: 0; border: 0; background: transparent; color: var(--dim);
-  font: inherit; font-size: 1.389em; line-height: 1; border-radius: 4px; cursor: grab; touch-action: none;
-  user-select: none; -webkit-user-select: none; transition: color 0.12s ease; }
-.drag-grip:hover, .drag-grip:focus-visible, .feed-col-head:hover .drag-grip, .feed-col.col-dragging .drag-grip { color: var(--fg); }
+.drag-grip { flex: none; width: 18px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--text-muted);
+  font: inherit; font-size: 14px; line-height: 1; border-radius: 4px; cursor: grab; touch-action: none;
+  user-select: none; -webkit-user-select: none; transition: color 0.12s ease, background 0.12s ease; }
+/* rest and hover are the settings' rs-grip's exactly (gear.css; ui/webview/grip-parity.test.ts pins the pair): muted at rest,
+   bright on hover and focus with the accent wash behind, so the two surfaces read as one handle */
+.drag-grip:hover, .drag-grip:focus-visible, .feed-col-head:hover .drag-grip, .feed-col.col-dragging .drag-grip { color: var(--text-bright); background: var(--accent-wash); outline: none; }
 .feed-col.col-dragging .drag-grip { cursor: grabbing; }
 /* the fold caret shows in the section in BOTH layouts (the stacked rule's dress, copied; this selector outranks
    the base `display: none`): folding is how a block gives its room back, since height is never resized */
