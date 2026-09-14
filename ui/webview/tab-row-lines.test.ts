@@ -21,7 +21,7 @@ test("the painter groups rendered tabs by row and lines every row but the last",
 
 test("repaints are event-keyed: every strip rebuild, plus wrap changes via ResizeObserver", () => {
   assert.match(RENDER, /paintTabRowLines\(bar\);\s*\n\s*ensureTabRowObserver\(bar\);/, "renderTabs ends by painting + arming the observer once");
-  assert.match(RENDER, /tabRowObserver = new ResizeObserver\(\(\) => paintTabRowLines\(bar\)\);/, "a width resize re-wraps rows without a rebuild — the observer catches it, no polling");
+  assert.match(RENDER, /tabRowObserver = new ResizeObserver\(\(\) => \{ stripFit\?\.\(\); paintTabRowLines\(bar\); \}\);/, "a width resize re-wraps rows without a rebuild: the observer catches it, no polling; the chip run's fit runs first, since its verdict can change the rows (T413 round two)");
 });
 
 test("full-bleed hairlines in the strip's own border color, Classic-scoped", () => {

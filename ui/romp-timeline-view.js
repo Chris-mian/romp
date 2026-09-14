@@ -414,10 +414,11 @@ const menuStyleFor = (p) => 'padding:4px;background:' + p.menuBg + ';border:1px 
 const menuCheckStyleFor = (p) => 'position:absolute;right:6px;top:50%;transform:translateY(-50%);'
   + 'background:' + p.accentSolid + ';color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'
   + 'font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;';
-// the checkbox row's OFF mark (T413, the user 2026-09-14): an empty ring in the menu's hairline where the ✓ sits when on, so a
-// tag row's box reads in both states; the shared menu (ui/webview/tag-menu.ts checkMark) draws the same from its tokens
+// the checkbox row's OFF mark (T413, the user 2026-09-14): an empty ring where the ✓ sits when on, so a tag row's box reads in both
+// states, in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground, under the 3 to 1 floor;
+// the muted text clears it in both themes); the shared menu (ui/webview/tag-menu.ts checkMark) draws the same from its tokens
 const menuRingStyleFor = (p) => 'position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;'
-  + 'border:1px solid ' + p.hairline + ';background:transparent;';
+  + 'border:1px solid ' + p.modelFg + ';background:transparent;';
 let MENU_STYLE = null, MENU_CHECK_STYLE = null, MENU_RING_STYLE = null;   // set by applyPal() below (dark by default)
 // THE TAG CHIP in the views menu (T283b, the user 2026-09-09: menus wear one vocabulary): the shared tag-lens
 // menu renders each tag as the tag chip itself acting as a toggle (ui/webview/tag-menu.ts tagChip + T283's
@@ -435,7 +436,7 @@ const TAG_CHIP_GEOM = (() => {
   const pad = /padding:(\d+)px (\d+)px/.exec(TAG_CHIP_STYLE);
   return { padY: pad ? +pad[1] : 2, padX: pad ? +pad[2] : 7, radius: num(/border-radius:(\d+)px/, 9), fontEm: num(/font-size:([\d.]+)em/, 0.82), border: num(/border:(\d+)px/, 1) };
 })();
-const TAG_CHIP_ROW_STYLE = 'padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;';   // T413: room at the right for the checkbox mark
+const TAG_CHIP_ROW_STYLE = 'padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;outline:none;';   // T413: room at the right for the checkbox mark
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and
 // OUTLINED in the judge's OWN colour (so a bar reads as "judge X on session Y"). Fed by
@@ -4383,14 +4384,36 @@ class TimelinePanel {
     if (reopen) return;
     const menu = document.body.createDiv();
     menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:200px;' + MENU_STYLE);
+    menu.setAttribute('role', 'menu');
     menu.dataset.rompMenu = '1';   // the echo writers skip in-menu presses (T213)
     menu.addEventListener('click', (e) => e.stopPropagation());
+    // THE KEYS (T413 round two, mirroring the shared menu's house rows grammar): Escape closes the menu and hands the focus back to
+    // the button; ArrowDown and ArrowUp walk the rows (the focused row is the key's target), Home and End jump, neither end wraps
+    menu.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); this._closeViewsMenu(); try { anchorEl.focus(); } catch (err) { /* a detached anchor: nothing to hand it to */ } return; }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
+      const rows = Array.prototype.filter.call(menu.children, (c) => c.tabIndex >= 0);
+      if (!rows.length) return;
+      e.preventDefault(); e.stopPropagation();
+      let at = rows.indexOf(e.target);
+      if (at < 0) at = rows.indexOf((menu.ownerDocument || document).activeElement);
+      const to = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : e.key === 'ArrowDown' ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1);
+      rows[to].focus();
+    });
+    // a row that takes the focus and the keys: tabindex 0, the hover wash while focused, Enter and Space pressing it as a click would
+    const focusable = (row) => {
+      row.tabIndex = 0;
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); row.click(); } });
+      row.addEventListener('focus', () => { row.style.background = HOVER_BG; });
+      row.addEventListener('blur', () => { row.style.background = 'transparent'; });
+    };
     // a plain row (All, (no tags), Configure tags…): the label, the ✓ when current. The tags are not rows any
     // more but CHIPS (tagRow below, T283b), so the colour dot the tag rows wore is gone, as in the shared menu
     const item = (label, opts) => {
       const row = menu.createDiv();
-      row.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;'
+      row.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;outline:none;'
         + (opts && opts.dim ? 'opacity:0.85;' : ''));
+      row.setAttribute('role', 'menuitem');
       row.appendChild(document.createTextNode(label));
       if (opts && opts.current) {
         const c = row.createSpan({ text: '✓' });
@@ -4398,6 +4421,7 @@ class TimelinePanel {
       }
       row.addEventListener('mouseenter', () => { row.style.background = HOVER_BG; });
       row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+      focusable(row);
       return row;
     };
     // one tag per line, the chip at the left: the chip IS the toggle (aria-pressed), full colour when selected,
@@ -4421,6 +4445,7 @@ class TimelinePanel {
       mark.setAttribute('style', on ? MENU_CHECK_STYLE : MENU_RING_STYLE);
       row.addEventListener('mouseenter', () => { row.style.background = HOVER_BG; });
       row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+      focusable(row);
       return row;
     };
     const sep = () => {
@@ -4440,6 +4465,7 @@ class TimelinePanel {
       // TypeError and every tag-button press died before the menu appeared (the 2026-08-25
       // unclickable corner button; timeline-tagbtn-click.test.ts executes this path under a
       // three-helper host so an Obsidian-only call can never land again).
+      const focusAt = Array.prototype.indexOf.call(menu.children, (menu.ownerDocument || document).activeElement);   // the focused row's place, kept across the repaint a toggle causes
       while (menu.firstChild) menu.removeChild(menu.firstChild);
       const v = this._curViews();
       const lens = timelineLens(v);
@@ -4484,6 +4510,8 @@ class TimelinePanel {
         nr.setAttribute('style', noticeStyle);
         nr.createSpan({ text: '⚠ this filter is not saved — ' + this._localLens.reason });
       }
+      const back = menu.children[focusAt];   // the same place after the repaint: the rows rebuild in one order
+      if (back && back.tabIndex >= 0) back.focus();
     };
     build();
     menu._build = build;   // viewsAck / setCaps / _kernelViewsAnswer repaint the open menu with a refusal or the not-saved note
@@ -4491,6 +4519,7 @@ class TimelinePanel {
     h.doc.body.appendChild(menu);
     menu.style.left = Math.max(6, Math.min(Math.round(h.rect.left), (h.win.innerWidth || 9999) - 220)) + 'px';
     menu.style.top = Math.round(menuTop(h.rect, menu.offsetHeight || 0, h.win.innerHeight || 9999)) + 'px';
+    if (menu.children[0] && menu.children[0].focus) menu.children[0].focus();   // the first row takes the focus on open (the house rows menu's rule)
     this._viewsMenu = menu;
   }
 

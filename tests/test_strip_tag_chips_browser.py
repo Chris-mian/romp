@@ -7,6 +7,11 @@ every selected tag shows as the standard chip just LEFT of the tags button: two 
 plain "+27 more" chip that opens the menu; a chip's cross drops its tag; the run never adds a row (the rows with the chips equal
 the rows without them, in a wide window and a narrow one where the run yields) and never pushes the button or the gear off the
 strip's right end. Grouping, the tags are the section headings and nothing sits beside the button. Both themes, screenshots.
+ROUND TWO (the manager's read of 2026-09-14): the rows without the chips are measured with the host OUT OF THE FLOW (display none,
+never the attribute, whose effect this lab asserts by computed style and a zero rect); across a sweep of widths the run gives up
+chips one by one before it hides, never adds a row and never clips a chip, and the verdict follows a resize; the menu takes the
+house rows menu's keyboard grammar (role menu, rows with focus and keys, Escape back to the button, the button opening on Enter);
+the unselected ring clears 3 to 1 against the menu ground in both themes.
 
 STRIP_TAGS_DIST=<dir> serves another tree's UI bundle (the red run's before); STRIP_TAGS_SHOTS=<prefix> writes
 <prefix>-<scene>-<theme>.png; STRIP_TAGS_DUMP=<path> writes the whole measurement. Skips LOUDLY without the extension deps or a
@@ -81,20 +86,22 @@ const readStrip = () => page.evaluate(() => {
   const items = () => Array.from(bar.children).filter((c) => !c.classList.contains("tab-row-line") && c.getClientRects().length);
   const rowsNow = () => new Set(items().map((c) => Math.round(c.getBoundingClientRect().top))).size;
   const end = bar.querySelector(".tab-strip-end"), gear = bar.querySelector(".tab-widgets-gear"), btn = bar.querySelector(".tab-tagfilter"), host = bar.querySelector(".tab-tagbox .tab-tagchips");
-  let rowsSansChips = null;
-  if (host) { const was = host.hidden; host.hidden = true; rowsSansChips = rowsNow(); host.hidden = was; }
+  let rowsSansChips = null;   // the rows with the host OUT OF THE FLOW: display none by style (round two: the attribute alone proved inert against the author display)
+  if (host) { const was = host.style.display; host.style.display = "none"; rowsSansChips = rowsNow(); host.style.display = was; }
+  const hostDisplay = host ? getComputedStyle(host).display : null, hr = host ? host.getBoundingClientRect() : null;
   const chips = host ? Array.from(host.children).map((c) => ({ text: c.textContent.replace("✕", "").trim(), cls: c.className, title: c.title, color: getComputedStyle(c).color, w: r1(c.getBoundingClientRect().width) })) : null;
   return { rows: rowsNow(), rowsSansChips, heads: bar.querySelectorAll(".tab-group-head").length, tabs: bar.querySelectorAll(".tab[data-id]").length,
            endRightGap: end ? r1(b.right - end.getBoundingClientRect().right) : null, gearRightGap: gear ? r1(b.right - gear.getBoundingClientRect().right) : null,
            btnToGear: btn && gear ? r1(gear.getBoundingClientRect().left - btn.getBoundingClientRect().right) : null,
            pressed: btn ? btn.getAttribute("aria-pressed") : null, btnColor: btn ? getComputedStyle(btn).color : null,
-           hostPresent: !!host, hostHidden: host ? host.hidden : null, hostVisible: !!host && host.getClientRects().length > 0 && !host.hidden, chips,
+           hostPresent: !!host, hostDisplay, hostRect: hr ? [r1(hr.width), r1(hr.height)] : null, hostVisible: hostDisplay !== null && hostDisplay !== "none" && hr.width > 0,
+           hostClip: host ? host.scrollWidth > host.clientWidth + 1 : null, chips,
            chipsLeftOfBtn: host && btn && host.getClientRects().length ? r1(btn.getBoundingClientRect().left - host.getBoundingClientRect().right) : null,
            stripW: r1(b.width), groups: (() => { try { return JSON.parse(localStorage.getItem("romp:tabgroups") || "null"); } catch (e) { return null; } })() };
 });
 const readMenu = () => page.evaluate(() => { const m = document.querySelector('[data-tag-menu="1"]'); if (!m) return null;
   return Array.from(m.children).map((r) => { const mark = r.querySelector("[data-check]"); const chip = Array.from(r.children).find((k) => /border:1px solid/.test(k.getAttribute("style") || ""));
-    return { label: r.textContent.replace("✓", "").trim(), role: r.getAttribute("role"), checked: r.getAttribute("aria-checked"),
+    return { label: r.textContent.replace("✓", "").trim(), role: r.getAttribute("role"), checked: r.getAttribute("aria-checked"), menuBg: getComputedStyle(m).backgroundColor, menuRole: m.getAttribute("role"), tabIndex: r.tabIndex,
              mark: mark ? { check: mark.getAttribute("data-check"), text: mark.textContent, bg: getComputedStyle(mark).backgroundColor, border: getComputedStyle(mark).borderTopColor, w: mark.getBoundingClientRect().width } : null,
              chipOpacity: chip ? getComputedStyle(chip).opacity : null }; }); });
 // the menu opens on the press and the release's click is the button's to swallow: the press is held while the rows are
@@ -140,9 +147,28 @@ if (await page.$("#tabs .tab-tagchips .tag-chip-more")) { await page.click("#tab
 else out.moreOpens = null;
 await page.evaluate(() => { const host = document.querySelector("#tabs .tab-tagbox .tab-tagchips"); const x = host && host.children[0] && host.children[0].lastElementChild; if (x) x.click(); }); await page.waitForTimeout(400);
 out.afterRemove = await readStrip();
+// 5b. the keyboard (round two): Enter on the focused button opens the menu with the focus on its first row; ArrowDown twice lands on
+// the first tag row (infra, off since the cross); Space toggles it back on with the menu staying and the focus kept; Escape closes
+// the menu and hands the focus back to the button (the strip rebuilt on the toggle, so it is the button's live replacement)
+const kbRead = () => page.evaluate(() => { const m = document.querySelector('[data-tag-menu="1"]'); const a = document.activeElement;
+  return { menu: !!m, role: m ? m.getAttribute("role") : null, active: a ? { text: (a.textContent || "").replace("✓", "").trim(), role: a.getAttribute("role"), checked: a.getAttribute("aria-checked"), cls: a.className, tag: a.tagName, tabIndex: a.tabIndex, inMenu: !!(m && m.contains(a)) } : null,
+    chips: Array.from(document.querySelectorAll("#tabs .tab-tagchips > *")).map((c) => c.textContent.replace("✕", "").trim()) }; });
+await page.evaluate(() => document.querySelector("#tabs .tab-tagfilter").focus());
+await page.keyboard.press("Enter"); await page.waitForTimeout(300); out.kbOpen = await kbRead();
+await page.keyboard.press("ArrowDown"); await page.keyboard.press("ArrowDown"); await page.waitForTimeout(100); out.kbDown2 = await kbRead();
+await page.keyboard.press("Space"); await page.waitForTimeout(500); out.kbSpace = await kbRead();
+await page.keyboard.press("Escape"); await page.waitForTimeout(300); out.kbEscape = await kbRead();
 // 6. a narrow window: the run yields rather than add a row (the rows with the chips equal the rows without them)
 await page.setViewportSize({ width: 560, height: 700 }); await page.waitForTimeout(500);
 out.narrowMany = await readStrip();
+// 6b. across widths (round two): the run gives up chips one by one before it hides, never adds a row and never clips; the verdict
+// follows the resize itself (nothing else rebuilds the strip between the steps)
+out.sweep = [];
+for (const w of [1400, 1200, 1060, 980, 920, 860, 800, 760, 720, 680, 640, 600, 560, 500, 440]) {
+  await page.setViewportSize({ width: w, height: 700 }); await page.waitForTimeout(350);
+  const s = await readStrip();
+  out.sweep.push({ w, rows: s.rows, rowsSansChips: s.rowsSansChips, chips: s.chips.map((c) => c.text), hostVisible: s.hostVisible, hostDisplay: s.hostDisplay, hostRect: s.hostRect, hostClip: s.hostClip, endRightGap: s.endRightGap, gearRightGap: s.gearRightGap });
+}
 await page.setViewportSize({ width: 1400, height: 700 }); await page.waitForTimeout(500);
 // 7. grouping on again: the headings, no chips
 await openMenu(); await clickRow("Group tabs by tag"); await page.waitForTimeout(300); await closeMenu();
@@ -153,6 +179,27 @@ fs.writeFileSync(cfg.out, JSON.stringify(out));
 console.log("RESULT: ok");
 await browser.close();
 """
+
+
+def _rgba(css):
+    """a computed css colour (rgb() or rgba()) as (r, g, b, a) on 0..255 and 0..1"""
+    n = [float(x) for x in re.findall(r"[\d.]+", css)]
+    return (n[0], n[1], n[2], n[3] if len(n) > 3 else 1.0)
+
+
+def _lum(rgb):
+    """relative luminance of an opaque colour"""
+    lin = [(c / 255) / 12.92 if c / 255 <= 0.03928 else (((c / 255) + 0.055) / 1.055) ** 2.4 for c in rgb]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def _contrast(fg, ground):
+    """the WCAG contrast ratio of a computed colour over an opaque ground: a translucent colour is composited first (the hairline
+    tokens are white or black at 0.12, so their alpha is the whole story)"""
+    r, g, b, a = _rgba(fg); gr, gg, gb, _ = _rgba(ground)
+    over = (r * a + gr * (1 - a), g * a + gg * (1 - a), b * a + gb * (1 - a))
+    la, lb = _lum(over), _lum((gr, gg, gb))
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
 
 class ServedStripTagChips(unittest.TestCase):
@@ -283,7 +330,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertEqual(many["infra"]["chipOpacity"], "1", "and the chip lit" + tm)
         light = {x["label"]: x for x in r["menu_light"]}
         self.assertEqual(light["infra"]["mark"]["bg"], "rgb(194, 65, 12)", "the light theme's clay check behind the mark: " + json.dumps(light["infra"]))
-        self.assertEqual((rows["All"]["role"], rows["All"]["mark"]["text"], rows["(no tags)"]["role"]), (None, "✓", "menuitemcheckbox"), "at boot the lens is All: its ✓ alone, no checkbox role (the exclusive pick's grammar); (no tags) is a checkbox row" + t)
+        self.assertEqual((rows["All"]["role"], rows["All"]["mark"]["text"], rows["(no tags)"]["role"]), ("menuitem", "✓", "menuitemcheckbox"), "at boot the lens is All: a plain menu item (the exclusive pick's grammar, round two: every row carries the rows menu's role) with its ✓ alone; (no tags) is a checkbox row" + t)
         self.assertIsNone(many["All"]["mark"], "with tags selected All is not current and shows no mark at all, no ring: the exclusive pick's grammar" + tm)
 
     def test_the_menu_with_thirty_tags_caps_its_height_scrolls_within_itself_and_never_covers_its_button(self):
@@ -321,7 +368,10 @@ class ServedStripTagChips(unittest.TestCase):
     def test_a_narrow_window_the_run_yields_rather_than_add_a_row(self):
         r = self._run(); s = r["narrowMany"]; t = "\n  " + json.dumps(s)
         self.assertTrue(s["hostPresent"], t)
-        self.assertEqual(s["rows"], s["rowsSansChips"], "the rows with the chips equal the rows without them: the run yields (hidden) when it alone would wrap the right end" + t)
+        self.assertEqual(s["rows"], s["rowsSansChips"], "the rows with the chips equal the rows without them: the run yields (fewer chips, then hidden) when it alone would wrap the right end" + t)
+        self.assertFalse(s["hostClip"], "no chip is clipped" + t)
+        if not s["hostVisible"]:
+            self.assertEqual((s["hostDisplay"], s["hostRect"]), ("none", [0, 0]), "hidden means out of the flow: computed display none and a zero rect, never the attribute alone" + t)
         self.assertLessEqual(s["endRightGap"], 2.0, "the right end still flush" + t); self.assertLessEqual(abs(s["gearRightGap"] - 4), 0.6, "the gear on the strip's end" + t)
         self.assertEqual(s["pressed"], "true", "the accent still says narrowed, chips or not" + t)
 
@@ -333,8 +383,53 @@ class ServedStripTagChips(unittest.TestCase):
             self.assertGreaterEqual(s["heads"], 1, "the tags are the section headings" + t)
             self.assertTrue(s["hostPresent"], "the host exists" + t)
             self.assertFalse(s["hostVisible"], "and shows nothing beside the button" + t)
+            self.assertEqual((s["hostDisplay"], s["hostRect"]), ("none", [0, 0]), "out of the flow: computed display none and a zero rect" + t)
             self.assertEqual(s["chips"], [], t)
         self.assertEqual(r["groupedMany"]["pressed"], "true", "narrowed to thirty tags, the button says so in group mode too")
+
+    # ROUND TWO (the manager's read of 2026-09-14)
+    def test_across_widths_the_run_gives_up_chips_one_by_one_before_it_hides_and_never_adds_a_row_or_clips(self):
+        r = self._run(); sweep = r["sweep"]; t = "\n  " + "\n  ".join(json.dumps(e) for e in sweep)
+        self.assertEqual(len(sweep), 15, t)
+        for e in sweep:
+            te = "\n  at %d px: %s" % (e["w"], json.dumps(e))
+            self.assertEqual(e["rows"], e["rowsSansChips"], "the run never adds a row (the verdict follows the resize)" + te)
+            self.assertFalse(e["hostClip"], "no chip is ever clipped" + te)
+            if e["hostVisible"]:
+                shown = [c for c in e["chips"] if not c.startswith("+")]
+                more = [c for c in e["chips"] if c.startswith("+")]
+                self.assertTrue(1 <= len(shown) <= 3, "a visible run holds one to three chips" + te)
+                self.assertEqual(more, ["+%d more" % (30 - len(shown))], "the count names the rest of the thirty" + te)
+            else:
+                self.assertEqual((e["hostDisplay"], e["hostRect"]), ("none", [0, 0]), "hidden means out of the flow" + te)
+            self.assertLessEqual(e["endRightGap"], 2.0, "the right end flush" + te); self.assertLessEqual(abs(e["gearRightGap"] - 4), 0.6, "the gear at its 4px" + te)
+        self.assertTrue(any(e["hostVisible"] and len([c for c in e["chips"] if not c.startswith("+")]) == 3 for e in sweep), "the wide end: the full run" + t)
+        self.assertTrue(any(e["hostVisible"] and 1 <= len([c for c in e["chips"] if not c.startswith("+")]) <= 2 for e in sweep), "somewhere between, a shorter run: chip by chip before hiding" + t)
+        self.assertTrue(any(not e["hostVisible"] for e in sweep), "and a width where even one chip and the count do not fit: hidden" + t)
+
+    def test_the_menu_takes_the_house_rows_menus_keyboard_grammar(self):
+        r = self._run(); o, d2, sp, es = r["kbOpen"], r["kbDown2"], r["kbSpace"], r["kbEscape"]
+        t = "\n  open=%s\n  down2=%s\n  space=%s\n  escape=%s" % tuple(json.dumps(x) for x in (o, d2, sp, es))
+        self.assertTrue(o["menu"], "Enter on the focused button opens the menu" + t)
+        self.assertEqual(o["role"], "menu", "the menu's role" + t)
+        self.assertTrue(o["active"] and o["active"]["inMenu"] and o["active"]["text"] == "All" and o["active"]["tabIndex"] == 0, "the first row holds the focus on open" + t)
+        self.assertEqual((d2["active"]["text"], d2["active"]["role"], d2["active"]["checked"]), ("infra", "menuitemcheckbox", "false"), "two ArrowDowns land on the first tag row, off since its cross" + t)
+        self.assertTrue(sp["menu"], "Space keeps the menu open" + t)
+        self.assertEqual((sp["active"]["text"], sp["active"]["checked"]), ("infra", "true"), "Space toggled the focused row on and the focus stayed with it across the repaint" + t)
+        self.assertEqual(sp["chips"][:1], ["infra"], "the strip's run shows the tag again" + t)
+        self.assertFalse(es["menu"], "Escape closes the menu" + t)
+        self.assertEqual((es["active"]["cls"], es["active"]["tag"]), ("tab-tagfilter", "BUTTON"), "and hands the focus back to the (rebuilt) button" + t)
+        rows = {x["label"]: x for x in r["menuBoot"]}
+        for label in ("All", "(no tags)", "infra"):
+            self.assertEqual((rows[label]["menuRole"], rows[label]["tabIndex"]), ("menu", 0), label + ": on the pointer's open too, the menu's role and a row that takes focus\n  " + json.dumps(rows[label]))
+
+    def test_the_unselected_ring_clears_three_to_one_against_the_menu_ground_in_both_themes(self):
+        r = self._run()
+        for theme in ("dark", "light"):
+            rows = {x["label"]: x for x in r["menu_" + theme]}; row = rows["(no tags)"]; t = "\n  " + theme + ": " + json.dumps(row)
+            self.assertEqual(row["mark"]["check"], "false", "(no tags) is unselected here: its mark is the ring" + t)
+            ratio = _contrast(row["mark"]["border"], row["menuBg"])
+            self.assertGreaterEqual(ratio, 3.0, "the ring against the menu ground clears the 3 to 1 non-text floor (round one, low 1: the hairline read at 1.46 dark and 1.32 light); measured %.2f" % ratio + t)
 
 
 if __name__ == "__main__":

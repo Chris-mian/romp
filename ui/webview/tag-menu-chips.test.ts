@@ -20,17 +20,21 @@ type Node = { tag: string; attrs: Record<string, string>; kids: Node[]; text?: s
               handlers: Record<string, () => void>; setAttribute(k: string, v: string): void; getAttribute(k: string): string | null;
               appendChild(c: Node): void; addEventListener(k: string, fn: () => void): void; remove(): void;
               getBoundingClientRect(): { left: number; right: number; top: number; bottom: number };
-              offsetWidth: number; offsetHeight: number; textContent: string; dataset: Record<string, string> };
+              offsetWidth: number; offsetHeight: number; textContent: string; dataset: Record<string, string>;
+              // the rows menu grammar (T413 round two): rows take focus and keys; the menu walks its element children
+              children: Node[]; tabIndex: number; isConnected: boolean; focus(): void; click(): void; getClientRects(): unknown[] };
 
 /** The real openTagMenu against a stub document; returns the menu's rows and the recorded applies. */
 function open(lens: { all?: boolean; none?: boolean; tags?: string[] }, unions: { name: string; color: string }[]) {
   const created: Node[] = [];
   const mk = (tag: string): Node => {
-    const n: Node = { tag, attrs: {}, kids: [], style: {}, handlers: {}, offsetWidth: 200, offsetHeight: 100, dataset: {},
+    const n: Node = { tag, attrs: {}, kids: [], style: {}, handlers: {}, offsetWidth: 200, offsetHeight: 100, dataset: {}, tabIndex: -1, isConnected: true,
       get textContent() { return this.kids.map((k) => k.tag === "#text" ? k.text || "" : k.textContent).join(""); },
       set textContent(v: string) { this.kids = v ? [{ tag: "#text", text: v } as Node] : []; },
+      get children() { return this.kids.filter((k) => k.tag !== "#text"); },
       setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       appendChild(c) { this.kids.push(c); }, addEventListener(k, fn) { this.handlers[k] = fn; }, remove() { /* detached */ },
+      focus() { /* the focus walk is tag-menu-keys.test.ts's */ }, click() { if (this.handlers.click) this.handlers.click(); }, getClientRects() { return [1]; },
       getBoundingClientRect() { return { left: 10, right: 40, top: 10, bottom: 30 }; } };
     created.push(n); return n;
   };
@@ -85,7 +89,7 @@ test("each union tag is its own row switch: role menuitemcheckbox + aria-checked
   assert.equal(on.attrs["data-check"], "true"); assert.equal(label(on), "✓", "selected: the house ✓-in-circle");
   assert.match(on.attrs.style, /background:var\(--check-bg, #1EA1EB\)/);
   assert.equal(off.attrs["data-check"], "false"); assert.equal(label(off), "", "unselected: an empty ring, so the checkbox reads in both states");
-  assert.match(off.attrs.style, /border:1px solid var\(--menu-border, rgba\(255,255,255,0\.12\)\)/);
+  assert.match(off.attrs.style, /border:1px solid var\(--text-muted, #9aa0a6\)/, "the ring in the muted text (round two: 3 to 1 against the menu ground in both themes)");
   assert.equal(label(rows[2]).replace("✓", ""), "infra"); assert.equal(label(rows[3]), "qa");
   m.close();
 });
@@ -122,13 +126,13 @@ test("source pins: the tag rows build through the shared tagChip, the row is the
   assert.match(LOOP, /r\.setAttribute\("role", "menuitemcheckbox"\);\s*\n\s*r\.setAttribute\("aria-checked", on \? "true" : "false"\);/, "the row is the checkbox");
   assert.doesNotMatch(LOOP, /aria-pressed/, "the chip carries no control role: one control per row");
   assert.match(LOOP, /r\.appendChild\(checkMark\(on\)\);/, "the two-state mark at the row's right");
-  assert.match(MENU, /function checkMark\(on: boolean\): HTMLElement \{/, "one builder for the mark, the tag menu's and the rows menu's: the ✓-in-circle from --check-bg when on, an empty ring in the menu's hairline when off");
-  assert.match(MENU, /border:1px solid var\(--menu-border, rgba\(255,255,255,0\.12\)\);background:transparent;/);
+  assert.match(MENU, /function checkMark\(on: boolean\): HTMLElement \{/, "one builder for the mark, the tag menu's and the rows menu's: the ✓-in-circle from --check-bg when on, an empty ring in the muted text when off");
+  assert.match(MENU, /border:1px solid var\(--text-muted, #9aa0a6\);background:transparent;/, "the ring's token clears 3 to 1 against the menu ground in both themes (round two; the hairline read at 1.5)");
   assert.match(MENU, /export const TAG_CHIP_OFF_CLASS = "tag-chip-off";/);
   assert.match(MENU, /export const TAG_CHIP_OFF_OPACITY = "0\.45";/);
   for (const [name, sheet] of [["styles.css", CSS], ["feed.css", FEED_CSS]] as const)
     assert.match(sheet, /\n\.tag-chip-off \{ opacity: 0\.45; \}\n/, name + " defines the faded class at the inline value");
   // the ✓ grammar survives for All: the row helper paints the on mark from the token
-  assert.match(OPEN, /else if \(current\) r\.appendChild\(checkMark\(true\)\);/);
+  assert.match(OPEN, /else \{ r\.setAttribute\("role", "menuitem"\); if \(current\) r\.appendChild\(checkMark\(true\)\); \}/, "a plain row is a menu item (the rows grammar, round two) with the ✓ when current");
   assert.match(OPEN, /row\("All", lensAll\(lens\)\)/); assert.match(OPEN, /row\("\(no tags\)", !lensAll\(lens\) && !!lens\.none, false, true\)/, "(no tags): a two-state row");
 });

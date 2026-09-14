@@ -30,6 +30,7 @@ function makeNode(tag: string): any {
     querySelector() { return null; }, querySelectorAll() { return []; },
     getBoundingClientRect() { return { width: 32, height: 18, left: 8, top: 400, right: 40, bottom: 418 }; },
     closest() { return null; }, focus() {},
+    click() { if (n._listeners.click) n._listeners.click({ stopPropagation() {}, preventDefault() {} }); },
     createEl(t: string, o: any) { const e = makeNode(t); if (o && o.cls) e.classList.add(o.cls); if (o && o.text) e.textContent = o.text; this.appendChild(e); return e; },
     createDiv(o: any) { return this.createEl("div", o); }, createSpan(o: any) { return this.createEl("span", o); },
   };
@@ -94,8 +95,8 @@ test("executed: each tag row is the house switch (menuitemcheckbox, aria-checked
   assert.ok(on && off, "each tag row carries the mark");
   assert.equal(on._attrs["data-check"], "true"); assert.equal(on.textContent, "✓", "selected: the ✓-in-circle (the palette's check)");
   assert.equal(off._attrs["data-check"], "false"); assert.equal(off.textContent, "", "unselected: an empty ring");
-  assert.match(off._attrs.style, /border-radius:50%;box-sizing:border-box;border:1px solid /, "the ring in the palette's hairline");
-  assert.match(r[2]._attrs.style, /^padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;$/, "the chip row's shape, room for the mark");
+  assert.match(off._attrs.style, /border-radius:50%;box-sizing:border-box;border:1px solid #9aa0a6;/, "the ring in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground; this clears 3)");
+  assert.match(r[2]._attrs.style, /^padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;outline:none;$/, "the chip row's shape, room for the mark, the focus ring the hover wash");
   panel._closeViewsMenu();
 });
 
@@ -129,6 +130,39 @@ test("executed: clicking a chip's row toggles that tag, the menu stays open and 
   assert.equal(rows(menu)[2]._attrs["aria-checked"], "false"); assert.equal(markOf(rows(menu)[2]).textContent, "");
   assert.equal(chipOf(rows(menu)[2]).classList.contains("tag-chip-off"), true);
   panel._closeViewsMenu();
+});
+
+// ROUND TWO of T413 (the manager's read of 2026-09-14): the shared menu took the house rows menu's keyboard grammar, and so does
+// this copy: role menu; rows that take focus (tabindex 0) and keys (Enter and Space press, ArrowDown and ArrowUp walk, Home and
+// End jump), the first row focused on open; Escape closes and hands the focus back to the button.
+test("executed: the inlined menu takes the house rows menu's keyboard grammar: role menu, rows with focus and keys, Escape back to the button", () => {
+  const panel = panelWith({ tags: ["infra"] });
+  const anchor = makeNode("button"); let refocused = 0; anchor.focus = () => { refocused++; };
+  let focusedRow: any = null;
+  panel._openViewsMenu(anchor); const menu = panel._viewsMenu;
+  assert.equal(menu._attrs.role, "menu", "the menu's role");
+  const r = rows(menu).filter((x: any) => x._attrs.role);
+  assert.deepEqual(r.map(text).map((t: string) => t.replace("✓", "")), ["All", "(no tags)", "infra", "qa", "Group by tag", "Configure tags…"]);
+  for (const x of r) {
+    assert.equal(x.tabIndex, 0, text(x) + ": the row takes focus");
+    assert.ok(x._listeners.keydown, text(x) + ": and the keys");
+    assert.match(x._attrs.style, /outline:none;/, text(x) + ": the focus ring is the hover wash");
+    x.focus = () => { focusedRow = x; };
+  }
+  assert.ok(menu._listeners.keydown, "the menu's own handler: Escape and the walk");
+  const key = (k: string) => ({ key: k, target: null as any, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } });
+  // the walk: from the first row, ArrowDown lands on the second (the menu's handler reads the focused row from the event's target)
+  const d = key("ArrowDown"); d.target = r[0]; menu._listeners.keydown(d);
+  assert.equal(focusedRow, r[1], "ArrowDown moves to the next row"); assert.ok(d.prevented);
+  const e = key("End"); e.target = r[1]; menu._listeners.keydown(e); assert.equal(focusedRow, r[5], "End jumps to the last");
+  const u = key("ArrowDown"); u.target = r[5]; menu._listeners.keydown(u); assert.equal(focusedRow, r[5], "the end holds");
+  // Space on the qa row toggles it, the menu staying
+  const applied: any[] = []; panel._setLens = (blob: any) => { applied.push(blob); panel.data.views.actives = blob.actives; };
+  const sp = key(" "); r[3]._listeners.keydown(sp);
+  assert.deepEqual(applied[0].actives.timeline.tags, ["infra", "qa"], "Space pressed the row"); assert.ok(sp.prevented && sp.stopped);
+  assert.equal(panel._viewsMenu, menu, "the menu stayed open");
+  const esc = key("Escape"); esc.target = r[3]; menu._listeners.keydown(esc);
+  assert.equal(panel._viewsMenu, null, "Escape closed it"); assert.equal(refocused, 1, "and handed the focus back to the button"); assert.ok(esc.stopped);
 });
 
 test("drift pins: the inlined chip is the shared tagChip's pill up to the colour, and the fade and row shape match the shared menu", () => {

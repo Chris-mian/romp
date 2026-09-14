@@ -80,15 +80,34 @@ test("the strip: the chips host sits left of the button in the tag box, fed only
   assert.match(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "the host is built");
   assert.match(RENDER, /tagBox\.append\(tagChipsHost, tagBtn\);/, "and sits LEFT of the button in the tag box");
   assert.match(RENDER, /syncTagFilter\(tagBtn, plan\.sectioned \? null : tagChipsHost, surfaceLens\(v, "chat"\), unions, \(l\) => \{/, "sectioned (grouping on and a tag holding a visible tab, the plan's own reading): no host, the headings show the tags; otherwise the chips");
-  assert.match(RENDER, /\}, "inline", \{ limit: 3, tagsOnly: true \}\);/, "three chips then the count; the none pick draws none");
-  const iEnd = RENDER.indexOf("  bar.appendChild(end);\n"), iFit = RENDER.indexOf("  fitStripChips(end, tagChipsHost);");
-  assert.ok(iEnd > 0 && iFit > iEnd, "the fit check runs once the right end is on the bar");
-  assert.match(RENDER, /function fitStripChips\(end: HTMLElement, host: HTMLElement\): void \{[\s\S]*?host\.hidden = true;\s*\n\s*const without = end\.offsetTop;\s*\n\s*host\.hidden = false;\s*\n\s*if \(end\.offsetTop !== without\) host\.hidden = true;/,
-               "the run yields when it alone would carry the right end onto a new row");
+  assert.match(RENDER, /\}, "inline", \{ limit, tagsOnly: true \}\);/, "the chip count is the fit's to set (three, then fewer on a short row); the none pick draws none");
+  const iEnd = RENDER.indexOf("  bar.appendChild(end);\n"), iFeed = RENDER.indexOf("    stripFit = () => fitStripChips(end, tagChipsHost, feed);"), iFit = RENDER.indexOf("  stripFit();\n");
+  assert.ok(iEnd > 0 && iFeed > iEnd && iFit > iFeed, "the fit runs once the right end is on the bar, through the closure the strip's observer re-runs");
   assert.match(MENU, /export function chipRun<T>\(items: T\[\], limit: number\): \{ shown: T\[\]; more: number \}/);
   assert.match(MENU, /opts\?: \{ limit\?: number; tagsOnly\?: boolean \}/, "the sync's options");
   const box = CSS.match(/\n\.tab-tagchips \{[^}]*\}/)![0];
   assert.match(box, /display: inline-flex;/); assert.match(box, /min-width: 0;/); assert.match(box, /overflow: hidden;/); assert.match(box, /margin-right: 4px;/);
   assert.match(CSS, /\n\.tab-tagchips:empty \{ display: none; \}/, "an empty host takes no room");
   assert.match(CSS, /\n\.tab-tagchips \.tag-chip-more \{ cursor: pointer; \}/, "the more chip is a click");
+});
+
+// ROUND TWO (the manager's read of 2026-09-14): (1) the host's [hidden] was defeated by its author display, so the fit hid nothing
+// and the run added a strip row at narrow widths; (2) the fit shrinks the run chip by chip before it hides it, and a run that
+// would clip yields too; (3) the tags box and the right end shrink before the controls do; (4) the fit re-runs on the strip's
+// resize, where before its verdict stood until some other input rebuilt the strip.
+test("round two: the hidden host is out of the flow, the fit steps the run down before it hides, the shrink chain reaches the host, and a resize re-runs the fit", () => {
+  assert.match(CSS, /\n\.tab-tagchips\[hidden\] \{ display: none; \}/, "[hidden] loses to author display (the sheet's standing trap): the fit's hide needs its own rule");
+  const tagbox = CSS.match(/\n\.tab-tagbox \{[^}]*\}/)![0];
+  assert.match(tagbox, /flex-wrap: nowrap;/, "the box never wraps the run under the button"); assert.match(tagbox, /min-width: 0;/, "and lets the run shrink");
+  const end = CSS.match(/\n\.tab-strip-end \{[^}]*\}/)![0];
+  assert.match(end, /min-width: 0;/, "the right end lets its content shrink: the run gives before the controls do");
+  assert.match(RENDER, /^const STRIP_CHIP_LIMIT = 3;/m, "the run's full count, one name");
+  const fit = RENDER.slice(RENDER.indexOf("function fitStripChips("), RENDER.indexOf("\n}\n", RENDER.indexOf("function fitStripChips(")));
+  assert.match(fit, /^function fitStripChips\(end: HTMLElement, host: HTMLElement, feed: \(limit: number\) => void\): void \{/, "the fit feeds the run itself");
+  assert.match(fit, /feed\(STRIP_CHIP_LIMIT\);/, "the full run first (the button's state syncs in the same call, host or none)");
+  assert.match(fit, /host\.hidden = true;\s*\n\s*const without = end\.offsetTop;\s*\n\s*host\.hidden = false;/, "the right end's row read with the host out of the flow");
+  assert.match(fit, /const fits = \(\) => end\.offsetTop === without && host\.scrollWidth <= host\.clientWidth \+ 1;/, "a run stands when the end keeps its row and no chip is clipped");
+  assert.match(fit, /for \(let limit = STRIP_CHIP_LIMIT - 1; limit >= 1; limit--\) \{\s*\n\s*feed\(limit\);\s*\n\s*if \(fits\(\)\) return;\s*\n\s*\}\s*\n\s*host\.hidden = true;/, "then chip by chip, and hidden when even one chip and the count do not fit");
+  assert.match(RENDER, /^let stripFit: \(\(\) => void\) \| null = null;/m, "the last paint's fit, kept for the observer");
+  assert.match(RENDER, /tabRowObserver = new ResizeObserver\(\(\) => \{ stripFit\?\.\(\); paintTabRowLines\(bar\); \}\);/, "a resize re-runs the fit, then the hairlines follow the rows");
 });

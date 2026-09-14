@@ -574,7 +574,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    wrapped line stands as tall as one the + is on. The gear is a bare glyph dressed exactly as the rail's settings gear at the
    bottom right of every romp page (kernel.py .rail-act and #rail-gear, which strip-chrome.test.ts reads value for value):
    no border, no background at rest, the 19px glyph, the rail's rest colour, its 5px radius and its hover wash. */
-.tab-strip-end { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; }
+.tab-strip-end { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; min-width: 0; }   /* min-width 0 (T413 round two): the end's content, the run of chips, may shrink; the controls keep their sizes */
 .tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: 1px 4px; padding: 4px 0; cursor: pointer;
   font-size: 19px; line-height: 1; border: 0; border-radius: 5px; background: transparent; color: #8a8a8a; user-select: none;
   transition: color 0.1s, background 0.1s; }
@@ -836,12 +836,15 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    tag-mounts.test.ts): a wrapped controls-only flex line otherwise stood only as tall as the 18px
    pill and landed nearly flush under the tab row above, while a line the + shared had air (the
    user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
-.tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
+.tab-tagbox { display: inline-flex; align-items: center; flex-wrap: nowrap; min-height: 31px; min-width: 0; }   /* nowrap + min-width 0 (T413 round two): the run of chips shrinks beside the button, never wraps under it */
 /* the selected tags as chips LEFT of the tags button (T413, the user 2026-09-14), outside group mode: the shared chips with
    their crosses, the run bounded to three and a plain "+N more" chip (tag-menu.ts chipRun); the host shrinks before the
-   controls do, an empty host takes no room, and render.ts fitStripChips hides a run that alone would add a row */
+   controls do (the chain: .tab-strip-end and .tab-tagbox above let it), an empty host takes no room, and render.ts
+   fitStripChips steps a run that would carry the right end onto a new row down chip by chip, then hides it. The hide is
+   [hidden], which loses to this author display (the sheet's standing trap: the attribute alone hid nothing, round two) */
 .tab-tagchips { display: inline-flex; gap: 5px; align-items: center; margin-right: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
 .tab-tagchips:empty { display: none; }
+.tab-tagchips[hidden] { display: none; }
 .tab-tagchips .tag-chip-more { cursor: pointer; }
 /* (the tab lock's strip button and its box left with T405, the user 2026-09-13: the lock is a row in the strip's gear menu) */
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }

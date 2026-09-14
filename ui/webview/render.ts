@@ -6492,9 +6492,10 @@ function paintTabRowLines(bar: HTMLElement): void {
   }
 }
 let tabRowObserver: ResizeObserver | null = null;
+let stripFit: (() => void) | null = null;   // the last strip paint's fit of the chip run (fitStripChips), re-run on the strip's resize (T413 round two)
 function ensureTabRowObserver(bar: HTMLElement): void {
   if (tabRowObserver) return;
-  tabRowObserver = new ResizeObserver(() => paintTabRowLines(bar));
+  tabRowObserver = new ResizeObserver(() => { stripFit?.(); paintTabRowLines(bar); });   // the fit first: its verdict can change the rows the lines follow
   tabRowObserver.observe(bar);
 }
 
@@ -6844,11 +6845,14 @@ function renderTabs() {
   bar.appendChild(end);
   {
     const v = effViews();
-    syncTagFilter(tagBtn, plan.sectioned ? null : tagChipsHost, surfaceLens(v, "chat"), unions, (l) => {   // sectioned: the headings carry the tags, no host; else the chips
+    // the run is the fit's to feed (round two): three chips, then fewer where the row is short (fitStripChips); the button's own
+    // state syncs in the same call, host or none
+    const feed = (limit: number) => syncTagFilter(tagBtn, plan.sectioned ? null : tagChipsHost, surfaceLens(v, "chat"), unions, (l) => {   // sectioned: the headings carry the tags, no host; else the chips
       postLens({ actives: Object.assign({}, (v || {}).actives, { chat: l }) });
-    }, "inline", { limit: 3, tagsOnly: true });
+    }, "inline", { limit, tagsOnly: true });
+    stripFit = () => fitStripChips(end, tagChipsHost, feed);
   }
-  fitStripChips(end, tagChipsHost);
+  stripFit();
   // T161 (the user 2026-08-28, Android: no tag control on mobile): the phone chat page hides the whole
   // #tabs strip — and the mount above with it. The kernel's mobile header carries an empty #mtag-slot
   // (left of +); mount the SAME shared button + chips into it ONCE — the slot is kernel-built and never
@@ -6899,14 +6903,27 @@ function renderTabs() {
  *  its working note), and the all-hidden blank. All are idempotent, and all read live state a skipped
  *  rebuild must not leave behind: the active view is built lazily, so it can appear between two renders
  *  whose strips are equal. */
-// the run of selected tags yields rather than add a row (T413): the right end's row is read with the host hidden and shown,
-// and a run that alone would carry the right end onto a new row is hidden; the button's accent still says the strip is narrowed
-function fitStripChips(end: HTMLElement, host: HTMLElement): void {
+// the run of selected tags yields rather than add a row (T413): the right end's row is read with the host out of the flow
+// ([hidden], its own display rule in styles.css) and with the run fed at each count from the full three down to one, and the
+// first that keeps the right end on that row with no chip clipped stands; a run that cannot is hidden. The button's accent still
+// says the strip is narrowed. Round two (the manager's read, 2026-09-14): the attribute alone proved inert against the host's
+// author display, so the run added a row at narrow widths and never shrank; and the verdict now follows a resize (the strip's
+// ResizeObserver re-runs stripFit), where before it stood until some other input rebuilt the strip.
+const STRIP_CHIP_LIMIT = 3;
+function fitStripChips(end: HTMLElement, host: HTMLElement, feed: (limit: number) => void): void {
+  if (!end.isConnected) return;   // a paint the observer outlived
+  feed(STRIP_CHIP_LIMIT);
   if (!host.childElementCount) { host.hidden = false; return; }
   host.hidden = true;
   const without = end.offsetTop;
   host.hidden = false;
-  if (end.offsetTop !== without) host.hidden = true;
+  const fits = () => end.offsetTop === without && host.scrollWidth <= host.clientWidth + 1;
+  if (fits()) return;
+  for (let limit = STRIP_CHIP_LIMIT - 1; limit >= 1; limit--) {
+    feed(limit);
+    if (fits()) return;
+  }
+  host.hidden = true;
 }
 function stripAftermath(visibleIds: readonly string[], ids: readonly string[]): void {
   syncNoSessionsPlaceholder(visibleIds.length, ids.length, ids.filter(heldHere).length);   // …and how many this column holds (the chat split's copy)
