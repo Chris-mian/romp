@@ -17,7 +17,7 @@ The pane (`ui/webview/fleet.ts`, `FleetSession` and `render`) reads: `sid` (keys
 | Field | Today's source | The provisional row |
 | --- | --- | --- |
 | `name`, `color` | the live map's row (`m["name"]`, `m.get("color")`), the session's own record, the strip's | the same values; no build |
-| `status` | the built status dict | `_light_status(sid, path, tm, now)`: the live row's word with blocked, awaiting and compacting from their cheap reads; `state`, `sinceEpoch`, `faded`, `needsYou`, `ctx`, `ctxOver`, the context colour and tone, the model and effort colours and tones, the awaiting fields, the API flags, the retry ladder, backend, model, effort, mode; `provisional: True`. The pane reads `state`, so the pip rule is unchanged. `None` when the live map has no row for the session: the gate builds then, as today, and the row is the built one |
+| `status` | the built status dict | `_light_status(sid, path, tm, now)`: the live row's word with blocked, awaiting and compacting from their cheap reads; `state`, `sinceEpoch`, `faded`, `needsYou`, `ctx`, `ctxOver`, the context colour and tone, the model and effort colours and tones, the awaiting fields, the API flags, the retry ladder, backend, model, effort, mode; `provisional: True`. The pane reads `state`, so the pip rule is unchanged. This column applies to a tab with a live row only: `None` (no row in the live map) means the gate builds the tab as today, and its row is the built one |
 | mail-off fields | `_mail_off_fields(sid)` | the same call; a postal record read, no build |
 | `ledger.tree` | the tree walk (`_twalk`) over the goal store's nodes (`jd.load_goals_shared_or_fault`, `_apply_rewind_hold`), each node stamped with its deep-link anchors from the parsed transcript (`_node_anchor_uuids` over the trail segments: `promptAnchorUuid`, `anchorUuid`) | the same walk over the store alone: text, depth, marks, blocked, cleared, children, the agent-open flag; the two anchors `None`. The rows render as today; the jump actions (`goprompt`, `gowork`) are withheld on a provisional row, since there is no transcript position to land on until the tab is built. The walk moves into a helper the build and the provisional assembly share, with the anchor pass a parameter |
 | `ledger.current` | `{"t": last_turn["t"]}` when the parsed transcript's last turn is open | the live row's `since` as `t` when the row says working (the backend's turn start, the same instant the parse would find), else `None`; the recency stamp follows it |
@@ -38,7 +38,13 @@ The pane marks a provisional row lightly, the way it marks the feed's provisiona
 
 ## The gate's condition
 
+Two gate sites, one changes (romp_perf's read): the periodic push's clause in `_push` (`not want_fleet and not _any_sessions_pane`) is the one the capability replaces; the handshake push's copy in `_push_session_now` gates on the chat clients' skeleton sets alone and never read the pane, so it stands. The ledgers attach in `_push` (`chat_sessions or want_fleet`) must include the provisional rows for the skipped tabs, in build order, or a pane alone on the wire gets an empty list.
+
 Today: no Sessions pane connected (`_any_sessions_pane`) and no pane in the push's audience (`want_fleet`). Proposed: the pane declares the capability at its dial, a query flag on the shared connect URL beside `app`, `delta`, `iid`, `wid`, `active` and the chat's `skeleton` (the kernel's landing script builds that query; the handshake reads `skeleton=1` into the client record), read into the client record as `provRows`. The condition becomes: no connected Sessions pane that lacks `provRows`. `want_fleet` alone no longer forces a build: for a skipped tab, `_push` appends a provisional row, assembled as above, to the ledgers in build order. An older pane (no flag) disables the gate as today; a mixed set, one old pane among new ones, disables it too. The gate's own rule is otherwise untouched: the watched tabs build, a warm tab is served from its cache, a session without a live row builds.
+
+## The cost on the pusher thread
+
+With the pane connected the skipped set is every cold tab (349 at the last boot), so `_provisional_ledger(sid, tm)` is memoized per session against the goal store file's stamp and the archive's (the same `_stat_key` idiom the build's ledger memo uses for `cleared.jsonl`), else the pusher walks 349 stores every cycle where today the build pays the walk once per built tab and caches it. On the gate's side, `_light_status`'s compact-boundary tail read runs per skipped tab per push and re-reads a growing suffix; romp_perf memoizes it per path, since and size (their queued low) and lands that memo on main before this pull request, which then carries it.
 
 ## The measurement
 
@@ -52,6 +58,6 @@ The next deploy boot's `/perf` (`romp perf`): `builds.chat.coldSkipped` and the 
 
 ## Open points for the read
 
-- The tree's anchors: withheld (this line) or a store-only stand-in, the node's `mt` as a time to jump near? Withheld is honest; a near-jump can mislead.
-- `current` from the live row's `since`: the same instant the parse would find for a live turn, or a blank with a reason? This line takes the value.
-- The dial: a query flag like the chat's `skeleton=1` (this line), or a capabilities frame? The kernel's `caps` list is the kernel's own capabilities to the client; the client's declarations ride the query today, so the flag follows precedent.
+- The tree's anchors: withheld (this line) or a store-only stand-in, the node's `mt` as a time to jump near? Withheld is honest; a near-jump can mislead. romp_perf's read: withheld.
+- `current` from the live row's `since`: the same instant the parse would find for a live turn, or a blank with a reason? This line takes the value; romp_perf's read agrees.
+- The dial: a query flag like the chat's `skeleton=1` (this line), or a capabilities frame? The kernel's `caps` list is the kernel's own capabilities to the client; the client's declarations ride the query today, so the flag follows precedent. romp_perf's read agrees.
