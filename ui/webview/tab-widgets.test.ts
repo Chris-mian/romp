@@ -213,3 +213,16 @@ test("moveId: the id out and back in at the index into the rest; unknown ids and
   assert.deepEqual(PREFS.moveId(["a", "b", "c"], "zz", 0), ["a", "b", "c"]);
   assert.deepEqual(PREFS.moveId(["a", "b", "c"], "a", NaN), ["a", "b", "c"]);
 });
+
+// A malformed stored order is rewritten clean at rest (review round one of the status line's widgets): duplicates keep
+// their first place, ids the registry does not know go, the divider's id stays; the settings' save normalizes the same way
+test("tabWidgetPrefs sanitizes the order: duplicates once, unknown ids gone, the divider kept", () => {
+  assert.deepEqual(W.tabWidgetPrefs({ order: ["ctx", "zz", "ctx", W.NAME_DIVIDER, "dot", "dot"] }).order, ["ctx", W.NAME_DIVIDER, "dot"]);
+  assert.deepEqual(W.tabWidgetPrefs({ order: [] }).order, []);
+  store.clear();
+  store.set("romp:settings", JSON.stringify({ compact: true, tabWidgets: { on: {}, order: ["hotkey", "hotkey", "gone"], opts: {} } }));
+  const saved = S.saveSettings({ compact: false });
+  assert.deepEqual(saved.tabWidgets.order, ["hotkey"], "the next save rewrites the store clean");
+  assert.deepEqual(JSON.parse(store.get("romp:settings")!).tabWidgets.order, ["hotkey"]);
+  store.clear();
+});

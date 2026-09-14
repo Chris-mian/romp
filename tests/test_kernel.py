@@ -4639,7 +4639,6 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("Show git branch", _gear_src())
         self.assertIn("s.showBranch = m.showBranch; s.showSessionBadge = m.showSessionBadge; save(s);", _gear_src())   # a section save writes both mirrors
         self.assertNotIn("showBranch: false", _gear_src())            # no injected default (the fresh-key rule)
-        self.assertNotIn("showBranch: true", _gear_src())
         self.assertNotIn("showBranch: true", _gear_src())             # the old default must not linger
 
     def test_gear_has_compact_tabs_and_agents_toggle(self):

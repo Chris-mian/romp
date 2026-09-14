@@ -122,7 +122,7 @@ const readPanel = () => setF.evaluate(() => {
   if (!p || p.hidden) return { open: false };
   const pills = Array.from(document.querySelectorAll("#rsettings .rs-tab")).map((b) => ({ tab: b.dataset.tab, text: b.textContent, on: b.classList.contains("on"), selected: b.getAttribute("aria-selected") }));
   const panes = Array.from(document.querySelectorAll("#rsettings .rs-pane")).map((pn) => ({ pane: pn.dataset.pane, hidden: pn.hidden, display: getComputedStyle(pn).display, rows: pn.querySelectorAll(".rs-row, .rs-widget").length }));
-  const rows = Array.from(document.querySelectorAll("#rs-widgets .rs-widget")).map((r) => {
+  const rows = Array.from(document.querySelectorAll("#rs-widgets .rs-widget[data-widget]")).map((r) => {
     const sw = r.querySelector(".rs-switch"); const cs = getComputedStyle(sw); const knob = getComputedStyle(sw, "::after");
     const demo = r.querySelector(".rs-widget-demo .tab"); const desc = r.querySelector(".rs-widget-name .rs-sub, .rs-widget-name span");
     return { id: r.dataset.widget, label: r.querySelector(".rs-widget-name b").textContent, desc: desc.textContent,

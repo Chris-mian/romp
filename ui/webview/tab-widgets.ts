@@ -21,7 +21,7 @@
 import { tabDotClass, tabDotTitle } from "./tab-state";
 import { ctxFallbackColor, pickTone } from "./ctx-color";
 import { effectiveChord, loadOverrides, resolveChord } from "./keybindings";
-import { type WidgetChoice, type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets,
+import { type WidgetChoice, type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder,
          widgetOn as prefOn, widgetOpts as prefOpts } from "./widget-prefs";
 
 export type { WidgetChoice, WidgetOption };
@@ -57,7 +57,7 @@ export function tabWidget(id: string): TabWidget | undefined { return REGISTRY.f
  *  derive from the older tabCtx mode (the mirror), so a store from before the widgets keeps its gauge setting. */
 export function tabWidgetPrefs(v: unknown, tabCtx?: unknown): TabWidgetPrefs {
   const o = normalizeWidgetPrefs(v);
-  if (o) return o;
+  if (o) { o.order = sanitizeOrder(o.order, (id) => id === NAME_DIVIDER || REGISTRY.some((w) => w.id === id)); return o; }   // the divider's id is an order entry too
   const out = emptyWidgetPrefs();
   if (tabCtx === "never") out.on.ctx = false;
   else if (tabCtx === "always") out.opts.ctx = { show: "always" };

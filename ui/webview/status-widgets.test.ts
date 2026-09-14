@@ -148,3 +148,13 @@ test("settings: a store from before the widgets reads its legacy keys into the p
   assert.equal(legacy.showBranch, true);
   store.clear();
 });
+
+test("statusWidgetPrefs sanitizes the order: duplicates once, unknown ids gone; the next save rewrites the store clean", () => {
+  assert.deepEqual(W.statusWidgetPrefs({ order: ["branch", "nope", "branch", "folder"] }).order, ["branch", "folder"]);
+  store.clear();
+  store.set("romp:settings", JSON.stringify({ compact: true, statusWidgets: { on: {}, order: ["host", "host", "zz"], opts: {} } }));
+  const saved = S.saveSettings({ compact: false });
+  assert.deepEqual(saved.statusWidgets.order, ["host"]);
+  assert.deepEqual(JSON.parse(store.get("romp:settings")!).statusWidgets.order, ["host"]);
+  store.clear();
+});

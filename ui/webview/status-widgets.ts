@@ -19,7 +19,7 @@
 // the widgets' defaults when absent (the branch's default flipped on under a fresh key, never under the old one, since
 // the gear's whole-object saves had merged the old default into every store); every save writes them back.
 import { badgeSpec } from "./session-badge";
-import { type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, widgetOn, widgetOpts } from "./widget-prefs";
+import { type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder, widgetOn, widgetOpts } from "./widget-prefs";
 
 export type StatusSlot = "left" | "right";
 /** The slice of the session record the widgets read. */
@@ -67,7 +67,7 @@ export interface StatusLegacy { showBranch?: unknown; showSessionBadge?: unknown
  *  default) when absent: a fresh install shows the branch, an install that turned it off keeps it off. */
 export function statusWidgetPrefs(v: unknown, legacy?: StatusLegacy): StatusWidgetPrefs {
   const o = normalizeWidgetPrefs(v);
-  if (o) return o;
+  if (o) { o.order = sanitizeOrder(o.order, (id) => REGISTRY.some((w) => w.id === id)); return o; }
   const out = emptyWidgetPrefs();
   if (legacy) {
     if (typeof legacy.showBranch === "boolean") out.on.branch = legacy.showBranch;
