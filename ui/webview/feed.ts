@@ -27,7 +27,7 @@ import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
 import { liveNow, liveRefresher, refreshAges, stampAge } from "./feed-age";
-import { badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,
+import { badgeCardHalf, clearBoundaryNotices, frameCardsUnknown, sdkProblemNotices, syncNotices, type CardsUnknown,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
@@ -279,15 +279,16 @@ const pendingMoveAck = new Map<string, { host: string; buildId: number }>();
 // (the user 2026-07-23). An entry survives until the authoritative tree agrees, or until the kernel says
 // it disagrees — nodeOverrideResult, whose failure path reverts it and says why out loud.
 const pendingDone = new Set<string>();
-function reconcilePendingDone(asks: AskItem[]) {
+function reconcilePendingDone(asks: AskItem[], cardsUnknown = false) {
   if (!pendingDone.size) return;
   const seen = new Map<string, string>();               // nodeId -> its status in this payload
   for (const a of asks) for (const n of a.tree || []) seen.set(n.id, n.status);
   for (const id of Array.from(pendingDone)) {
     const st = seen.get(id);
     // done → the kernel caught up, drop the optimistic flag. Absent → the node is gone from the tree
-    // entirely, so there is nothing left to paint and holding the flag would leak it forever.
-    if (st === "done" || st === undefined) pendingDone.delete(id);
+    // entirely, so there is nothing left to paint and holding the flag would leak it forever — unless this
+    // payload cannot vouch for every host's cards (the gate in applyFeedPayload, T404 round seven).
+    if (st === "done" || (st === undefined && !cardsUnknown)) pendingDone.delete(id);
   }
 }
 type MoveKind = "followup" | "answer";
@@ -393,9 +394,12 @@ function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: strin
 // right after retiring the picker (answerAsk → _mark_views_dirty), so a payload that still shows the card out
 // of Working is post-answer truth — a real remaining/renewed block (e.g. the next permission prompt of a
 // burst). Holding the prediction there would MASK a genuine "needs you"; dropping it re-shows the ⏸ card.
-function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Record<string, number>) {
+function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Record<string, number>, cardsUnknown = false) {
   for (const id of Array.from(pendingFollowMove.keys())) {
     const a = incoming.find((x) => x.itemId === id);
+    // absent → gone, unless this payload cannot vouch for every host's cards (the gate in applyFeedPayload, T404 round
+    // seven): then the prediction waits for a payload that can, with the MOVE_ACK_MS backstop standing behind it
+    if (!a && cardsUnknown) continue;
     if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
       clearFollowMove(id, !a ? "gone" : a.column === "working" ? "confirmed" : "answer-yield");
       continue;
@@ -5766,11 +5770,15 @@ function pipeBanner(up: boolean, queued: number): void {
 // the {romp:'notify'} post the shell's bell listens for. Storing only the ACTIVE set is what re-arms a
 // cleared badge and keeps the store from growing: a card that left the payload takes its sigs with it.
 const BADGE_SEEN_KEY = "romp:cardNotified";
-function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[], sync: SyncNoticeRow[]): void {
+function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[], sync: SyncNoticeRow[], opts?: { cardsUnknown?: CardsUnknown }): void {
   let seen: string[] = [];
   try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
   const seenSet = new Set(seen);
-  const badges = badgeNotices(items, seenSet);
+  // cardsUnknown (the Task tracking switch, T404 rounds five and six): not every card in the frame was built (the frame is
+  // the switch's own off frame, or a merged frame naming an off host), so an absent card may sit behind a stand-in rather
+  // than have left; the card half then keeps the stored card marks, and mints the on hosts' notices either way
+  // (badge-mirror.ts). A stand-in frame never feeds a writer that prunes by absence
+  const badges = badgeCardHalf(items, seenSet, opts?.cardsUnknown ?? false);
   // /clear boundary settles share the same seen-set + bell (the user 2026-07-27): a clear that
   // dropped open cards logs one durable entry naming them, so the drop is never silent.
   const boundary = clearBoundaryNotices(clears, seenSet);
@@ -6049,16 +6057,30 @@ function applyFeedPayload(m: any): void {
   judgeLimit = m.judgeLimit && typeof m.judgeLimit === "object"
     ? m.judgeLimit as { bucket?: string; resets_at?: number; model?: string } : null;
   const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
+  // THE GATE for absence (T404 round seven). A card absent from this payload is the event every writer below acts on:
+  // a clear confirmed, a card's disclosure state pruned, a predicted move given up as gone, an optimistic tick retired,
+  // a badge mark pruned. That reading holds only when the payload was BUILT over every host's cards. The Task tracking
+  // switch's off frame is a stand-in with no cards (the single-kernel one returns before this function; a merged frame
+  // carries an off host's stand-in beside the others' frames and names that host in offHosts), a host attached but
+  // yet to send a frame is named in pendingHosts, and a page load's very first merged frame, built before the first
+  // /tunnels answer has said which remote hosts exist at all, is marked hostsUnread (round nine), so while any host's
+  // cards are unknown, every absence-driven writer stands down: nothing is confirmed, pruned, retired or forgotten
+  // by a card not being here, and presence-driven work goes on. The store bounds hold: the badge mirror keeps only the
+  // off hosts' marks, and the view state grows by gestures alone (feed-view-state.ts), so a long mixed state (an
+  // attached ISOLATED peer never adopts the switch: _converge_peer_settings stands down for it) costs stale entries
+  // for cards that left, never growth without a gesture. The frame's own `off` stays the local kernel's word.
+  const cardsUnknown = frameCardsUnknown(m);
   // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
   // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
-  for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
+  if (!cardsUnknown) for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
   // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
   // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
   // incomingAsks, deliberately — not `visible` below: `#only=` hides cards without ending them, and
   // pruning against the filtered list would throw away the hidden cards' sections. Event-based: a card
-  // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer.
-  pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
+  // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer. Not while a host's
+  // cards are unknown (the gate above): a card of an off host has not left, it was not built.
+  if (!cardsUnknown) pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
   const only = onlyTag();
   const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
   asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
@@ -6072,8 +6094,8 @@ function applyFeedPayload(m: any): void {
   // absent on a single-kernel payload, where the top-level buildId is the one counter there is
   const perHostBuildIds = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds)
     ? m.buildIds as Record<string, number> : undefined;
-  reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds);
-  reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
+  reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds, !!cardsUnknown);
+  reconcilePendingDone(incomingAsks, !!cardsUnknown);   // retire an optimistic tick once the real tree carries it
   // An optimistic Undo is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
   // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
   if (pendingRestored.size) {
@@ -6115,7 +6137,7 @@ function applyFeedPayload(m: any): void {
   }
   mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
     Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
-    Array.isArray(m.syncNotices) ? m.syncNotices : []);   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
+    Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown });   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
   if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
   clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
   if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
@@ -6168,6 +6190,23 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     return;
   }
   if (m.type === "feed") {
+    // the Task tracking switch off (T404): the kernel builds no feed and sends this flag; the page shows its notice in
+    // place of the list (rendered by the kernel, hidden while on) and applies nothing; the next real frame swaps back
+    const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("feed-list");
+    if (ttOff) ttOff.hidden = !m.off;
+    if (ttList) ttList.hidden = !!m.off;
+    if (m.off) {
+      // the notice IS this frame's content: the romp loader, whose observer watches the list the off frame leaves empty,
+      // would otherwise sit over the notice to its 30 s failsafe (T404 round two, medium 1)
+      document.getElementById("pane-spin")?.classList.add("gone");
+      // the error center is not task tracking (round four, the ruling): the off frame carries the notice rings, and the
+      // shell's bell is fed from here as from a built frame, so a failed sync, a refused write or a session that cannot
+      // start is told while off; the frame stays loaded hidden while the shell closes the pane, so this runs
+      mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown: true });
+      if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
+      if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
+      return;
+    }
     // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and
     // hint the deferred churn on the headers instead; mouseleave/blur flush it (see freezeEnter).
     if (freezeKey || tabScopeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
@@ -6552,3 +6591,11 @@ setFileViewIdentity((id) => {
 initFileBrowse((m) => vscodeApi?.postMessage(m));   // …and a Browse files ask lands its sibling overlay
 
 vscodeApi?.postMessage({ type: "ready" });
+
+// the notice's button while the Task tracking switch is off (T404): the settings on Task tracking
+document.getElementById("tt-off-btn")?.addEventListener("click", () => {
+  // through gear-host's one road (the shell forwards it into the settings iframe at the Task tracking tab); a standalone
+  // /feed or /fleet page has no shell to ask and hosts no gear, so it goes to the dashboard with the tab named in the hash,
+  // which the landing opens (T404 round two, medium 2: the bare post reached nothing on the only page where the notice shows)
+  if (!openGear(window, { tab: "tasks" })) window.location.assign("/" + window.location.search + "#settings=tasks");
+});

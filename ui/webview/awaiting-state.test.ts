@@ -50,7 +50,10 @@ test("the feed dot matches too: dotFor picks work/await per name, the dot retint
   // (T368: the per-session body records the dot name on its memoized entry; the fold appends it per build)
   assert.match(KERNEL, /if sess_awaiting_why and not who_working:\s*\n\s*ent_awaiting = name/);
   assert.match(KERNEL, /if entry\.get\("awaiting"\):\s*\n\s*awaiting\.append\(entry\["awaiting"\]\)/);
-  assert.match(KERNEL, /\{"type": "working", "names": feed\["working"\],\s*\n\s*"awaiting": feed\.get\("awaiting"\) or \[\]\}/);
+  // T404 round two: the names come from the feed frame while it is built, and from _chat_dots_off (the same two signals off the
+  // sessions' parses) while the Task tracking switch has the feed unbuilt, so the chat's dots carry on
+  assert.match(KERNEL, /_dots_w, _dots_a = feed\["working"\], feed\.get\("awaiting"\) or \[\]/);
+  assert.match(KERNEL, /\{"type": "working", "names": _dots_w, "awaiting": _dots_a\}/);
   assert.match(FEED, /awaitingSet = new Set\(Array\.isArray\(m\.awaiting\) \? m\.awaiting : \[\]\);/);
   // dotFor still ranks work over await; the unreadable-state quarter follows (feed-status-pips.test.ts)
   assert.match(FEED, /workingSet\.has\(name\) \? "work" : awaitingSet\.has\(name\) \? "await"/);

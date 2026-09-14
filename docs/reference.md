@@ -3641,6 +3641,73 @@ journaled and the next run folds them first. A standing correction of a day's
 first cumulative row is kept as it was made, so the day's later rows never
 rewrite it.
 
+## The Task tracking switch
+
+Task tracking has one master switch, at the top of Settings, Task tracking, on by default. It is a kernel-side,
+per-install setting: `~/.local/state/romp/task-tracking.json`, `{"enabled": false, "gt": <gesture stamp>}`. An absent,
+unreadable or malformed file reads ON; only the literal `false` turns tracking off, and reading never creates the file.
+An absent file is the quiet default. A file that is present but cannot be read or is not the store's shape reads ON
+too, and says so once per episode, one kernel log line and one error-center notice (the dashboard's bell) that the task
+tracking switch file could not be read and tracking is running: unlike its siblings' defaults, which withhold a
+capability, this one resumes spending the user may have opted out of. A clean read, or the file's absence, ends the
+episode. The next flip in the gear rewrites the file where the path can be written; a directory in the file's place
+refuses the write, nothing is applied, and the gear says so (the setting's stale toast names the fault), so the directory
+has to be removed by hand.
+The gear's click posts `setTaskTracking` with a gesture stamp; the setter follows the ordering, echo and stale rules every
+gesture-stamped setting uses, and an applied flip is echoed to the socket that made it (a `taskTracking` frame), which is
+when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is
+told on the same socket instead (a `settingStale` frame naming the fault and the kept value), so the gear snaps back to
+the kernel's value and the rail and the panes stay as they were. It is one value across attached machines: the click
+reaches every attached kernel, and a kernel attached later adopts the newest stamp, the road Auto Nudge, Suggest
+/compact and file editing take.
+
+**Across attached machines** the browser merges every host's feed frame into one. A host whose frame is the off stand-in
+is named in the merged frame (`offHosts`, beside the per-host build counters), a host that is attached but has not yet
+sent a frame is named too (`pendingHosts`), and a frame built before the browser has read the host list at all (a page
+load's very first, which the local kernel's push produces before the first `/tunnels` answer) says so (`hostsUnread`)
+and counts every card as not in hand until the answer lands, when the frame is re-emitted; the frame's own
+`off` stays the local kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree.
+While any host is named in either list, its cards are not in hand, which is not the same as gone, and the feed pane's
+writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or forgotten because a card is
+not in the frame (a pending clear's confirmation, a card's disclosure state, a predicted move's gone verdict, an
+optimistic tick, a bell mark); presence-driven work goes on and the reporting hosts' cards still ring the bell. The
+bell's card marks name their host from the mint (a remote card's as a trailing segment, a local card's as the empty
+one), so only the marks of the hosts not in hand are kept and the reporting hosts' prune by absence as ever; a host
+mints nothing while off, so what is kept for it is what its cards carried at the flip, and the store stays bounded
+however long it stays off. A mark stored before the segment existed names no host: it is kept while any host is not in
+hand and rewritten with its host the next time its card is seen, a finite set that only shrinks. The convergence above
+does not reach an isolated peer (its settings are neither adopted nor pushed), so an attached isolated host with the
+switch off stays named indefinitely: the marks kept for it are bounded as said, and the disclosure state grows only by
+the user's own gestures, so a long mixed state costs stale entries for cards that have left, never growth without a
+gesture. Before the pending hosts counted, every reload pruned every remote card's marks and disclosure state on its
+first frame and re-rang every remote warn once the frames arrived.
+
+**Off, the kernel stands down** the two judge tiers (the producer starts no index and no triage thread: no
+kernel-initiated model call, no `judge-usage.jsonl` row), the feed and outline builds (the panes receive one frame with
+`off` and show a notice in place of their list; the `/feed` and `/fleet` pages render the notice, and its button opens the
+settings at Task tracking, through the shell when the pane sits in one, else by sending a standalone page to the
+dashboard with `#settings=tasks`), and the goal nudges, which wait, since their redundancy read is a judge call. A call in
+flight when the switch flips finishes; the next pass starts nothing. The stores stay on disk; on again resumes from them.
+
+**Off, these carry on:** the chat and the Sessions pane (its judging band is empty), the sessions' working and awaiting
+dots in the chat (derived from the transcripts, outside the feed build), the compaction suggestion, the reminders
+about unanswered messages from other sessions, which need no judge and follow Auto Nudge's own switch, and the error
+center (the dashboard's bell): a failed machine sync, a refused state write or a session that cannot start is told while
+off as before, since the notice rings ride the off frame. An opt-out of judging is not an opt-out of being told when the
+machine fails. One pre-existing gap stands, tracking on or off: a browser with the Feed pane turned off in the gear's Panes
+section never loads the feed frame, so no ring row reaches that browser's bell; the shell should feed the bell from the
+frame it already receives rather than from the feed frame alone. The producer's
+episode settle, goals snapshot and evidence frame still run as store bookkeeping, and a rewind's reconcile runs as before.
+
+The shell hides the Outline and Feed buttons and phone tabs (`body.no-task-tracking`) and closes an open pane of theirs
+in memory (the stored pane set stands); the gear greys the judge rows, the two pane toggles and the Judging-bands boxes
+with the tooltip "Enable task tracking to use this (Settings, Task tracking)."
+
+Where to read it: `/version` carries `taskTracking` at the top level and in `settings`, with its stamp under
+`settingsGt` as `task-tracking`; `/perf` carries `judge.tierStarts`, the count of judge tier threads started, flat while
+off. `kernel/judge.py` `MODEL_CALLERS` is the census of every judge that makes a model call, each declaring its relation
+to the switch; an ast test holds it to the module's call sites, and the entry point refuses an undeclared name.
+
 ## Switches
 
 Effective immediately, no restart.
