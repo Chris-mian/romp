@@ -414,7 +414,11 @@ const menuStyleFor = (p) => 'padding:4px;background:' + p.menuBg + ';border:1px 
 const menuCheckStyleFor = (p) => 'position:absolute;right:6px;top:50%;transform:translateY(-50%);'
   + 'background:' + p.accentSolid + ';color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'
   + 'font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;';
-let MENU_STYLE = null, MENU_CHECK_STYLE = null;   // set by applyPal() below (dark by default)
+// the checkbox row's OFF mark (T413, the user 2026-09-14): an empty ring in the menu's hairline where the ✓ sits when on, so a
+// tag row's box reads in both states; the shared menu (ui/webview/tag-menu.ts checkMark) draws the same from its tokens
+const menuRingStyleFor = (p) => 'position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;'
+  + 'border:1px solid ' + p.hairline + ';background:transparent;';
+let MENU_STYLE = null, MENU_CHECK_STYLE = null, MENU_RING_STYLE = null;   // set by applyPal() below (dark by default)
 // THE TAG CHIP in the views menu (T283b, the user 2026-09-09: menus wear one vocabulary): the shared tag-lens
 // menu renders each tag as the tag chip itself acting as a toggle (ui/webview/tag-menu.ts tagChip + T283's
 // loop); this pane inlines the RESOLVED twin, since it may live in a foreign document that loads no module.
@@ -431,7 +435,7 @@ const TAG_CHIP_GEOM = (() => {
   const pad = /padding:(\d+)px (\d+)px/.exec(TAG_CHIP_STYLE);
   return { padY: pad ? +pad[1] : 2, padX: pad ? +pad[2] : 7, radius: num(/border-radius:(\d+)px/, 9), fontEm: num(/font-size:([\d.]+)em/, 0.82), border: num(/border:(\d+)px/, 1) };
 })();
-const TAG_CHIP_ROW_STYLE = 'padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;';
+const TAG_CHIP_ROW_STYLE = 'padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;';   // T413: room at the right for the checkbox mark
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and
 // OUTLINED in the judge's OWN colour (so a bar reads as "judge X on session Y"). Fed by
@@ -951,7 +955,7 @@ function applyPal() {
   MODEL_FG = p.modelFg; ACCENT = p.accent; META_HOVER_FG = p.metaHoverFg;
   MENU_FG = p.menuFg; HAIRLINE = p.hairline; OUTLINE_FG = p.outline;
   HOVER_BG = p.hoverBg; SEL_BG = p.selBg; INPUT_BG = p.inputBg; INPUT_FG = p.inputFg;
-  MENU_STYLE = menuStyleFor(p); MENU_CHECK_STYLE = menuCheckStyleFor(p);
+  MENU_STYLE = menuStyleFor(p); MENU_CHECK_STYLE = menuCheckStyleFor(p); MENU_RING_STYLE = menuRingStyleFor(p);
 }
 applyPal();
 function modelLabel(s) {
@@ -4399,17 +4403,22 @@ class TimelinePanel {
     // one tag per line, the chip at the left: the chip IS the toggle (aria-pressed), full colour when selected,
     // faded when not, its colour kept — the pill tagChip builds for every other surface, resolved here (T283b).
     // The uncoloured fallback is the palette's muted text, the theme token's resolved value (MODEL_FG).
+    // T413 (the user 2026-09-14): the ROW is the control, the house switch (role menuitemcheckbox, aria-checked) with a two-state
+    // mark at its right (the ✓ when selected, an empty ring when not); the chip beside it stays lit or faded, decorative
     const tagRow = (name, color, on) => {
       const row = menu.createDiv();
       row.setAttribute('style', TAG_CHIP_ROW_STYLE);
+      row.setAttribute('role', 'menuitemcheckbox');
+      row.setAttribute('aria-checked', on ? 'true' : 'false');
+      row.setAttribute('title', on ? 'selected: click to drop it from the filter' : 'click to add it to the filter');
       const col = color || MODEL_FG;
       const chip = row.createSpan({ text: name });
       chip.setAttribute('style', TAG_CHIP_STYLE + col + ';color:' + col + ';background:transparent;white-space:nowrap;font-weight:400;letter-spacing:normal;'
         + (on ? '' : 'opacity:' + TAG_CHIP_OFF_OPACITY + ';'));
       if (!on) chip.classList.add(TAG_CHIP_OFF_CLASS);
-      chip.setAttribute('role', 'button');
-      chip.setAttribute('aria-pressed', on ? 'true' : 'false');
-      chip.setAttribute('title', on ? 'selected \u2014 click to drop it from the filter' : 'click to add it to the filter');
+      const mark = row.createSpan({ text: on ? '\u2713' : '' });
+      mark.setAttribute('data-check', on ? 'true' : 'false');
+      mark.setAttribute('style', on ? MENU_CHECK_STYLE : MENU_RING_STYLE);
       row.addEventListener('mouseenter', () => { row.style.background = HOVER_BG; });
       row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
       return row;

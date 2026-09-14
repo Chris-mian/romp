@@ -1,7 +1,8 @@
 // THE TIMELINE'S VIEWS MENU RENDERS EACH TAG AS ITS CHIP ACTING AS A TOGGLE (T283b, the user 2026-09-09: menus wear
 // one vocabulary): the shared tag-lens menu (ui/webview/tag-menu.ts, T283) made each union tag the tag chip itself,
-// aria-pressed on the chip, selected = full colour, unselected = faded at 0.45 with its colour kept, one tag per line
-// with the chip at the left, All and (no tags) keeping the ✓ row grammar. This pane inlines its own copy of that
+// selected = full colour, unselected = faded at 0.45 with its colour kept, one tag per line with the chip at the left, All
+// and (no tags) keeping the ✓ row grammar; since T413 (the user 2026-09-14) the ROW is the control, the house switch
+// (menuitemcheckbox, aria-checked) with a two-state mark at its right (the ✓ when selected, an empty ring when not). This pane inlines its own copy of that
 // menu (it may live in Obsidian's document and loads no module), so the copy mirrors the chips with the RESOLVED
 // palette values it already carries. Executed over the house three-helper host (the tagbtn-click harness), plus
 // drift pins between the two menus' chip and row shapes. Synthetic sessions and tags only.
@@ -68,10 +69,11 @@ function panelWith(lens: any): any {
 const openMenu = (panel: any) => { panel._openViewsMenu(makeNode("button")); return panel._viewsMenu; };
 const rows = (menu: any) => menu.children.filter((c: any) => c.tag === "div");
 const text = (n: any): string => (n.tag === "#text" ? n.textContent : (n.textContent || "")) + (n.children || []).map(text).join("");
-const chipOf = (row: any) => (row.children || []).find((c: any) => c.tag === "span" && "aria-pressed" in c._attrs);
+const chipOf = (row: any) => (row.children || []).find((c: any) => c.tag === "span" && /border:1px solid/.test(c._attrs.style || "") && !("data-check" in c._attrs));
+const markOf = (row: any) => (row.children || []).find((c: any) => c.tag === "span" && "data-check" in c._attrs);
 const hasCheck = (row: any) => (row.children || []).some((c: any) => c.tag === "span" && c.textContent === "✓");
 
-test("executed: each tag is its own chip acting as a toggle, the selected one full colour, the other faded with its colour kept", () => {
+test("executed: each tag row is the house switch (menuitemcheckbox, aria-checked, the ✓ or ring mark), its chip full colour when selected and faded with its colour kept when not", () => {
   const panel = panelWith({ tags: ["infra"] });
   const menu = openMenu(panel);
   const r = rows(menu);
@@ -79,16 +81,21 @@ test("executed: each tag is its own chip acting as a toggle, the selected one fu
   const infra = chipOf(r[2]), qa = chipOf(r[3]);
   assert.ok(infra && qa, "the two tags render as chips, one per row, after All and (no tags)");
   assert.equal(infra.textContent, "infra"); assert.equal(qa.textContent, "qa");
-  assert.equal(infra._attrs["aria-pressed"], "true"); assert.equal(infra._attrs.role, "button");
+  assert.equal(r[2]._attrs.role, "menuitemcheckbox"); assert.equal(r[2]._attrs["aria-checked"], "true", "the row is the checkbox and reads selected");
+  assert.equal(r[3]._attrs.role, "menuitemcheckbox"); assert.equal(r[3]._attrs["aria-checked"], "false");
+  assert.equal(infra._attrs["aria-pressed"], undefined, "the chip carries no control role of its own: the row does"); assert.equal(infra._attrs.role, undefined);
   assert.doesNotMatch(infra._attrs.style, /opacity/, "a selected chip stands at full opacity");
   assert.equal(infra.classList.contains("tag-chip-off"), false);
   assert.match(infra._attrs.style, /border:1px solid #DD42FF;color:#DD42FF;/, "the chip keeps the tag's own colour");
-  assert.equal(qa._attrs["aria-pressed"], "false");
   assert.equal(qa.classList.contains("tag-chip-off"), true, "an unselected chip wears the faded class");
   assert.match(qa._attrs.style, /opacity:0\.45;/, "…and paints the same fade inline: this host loads no sheet");
   assert.match(qa._attrs.style, /border:1px solid #3355aa;color:#3355aa;/, "faded, not recoloured");
-  for (const row of [r[2], r[3]]) assert.equal(hasCheck(row), false, "the tag rows carry no ✓: the chip's state IS the mark");
-  assert.match(r[2]._attrs.style, /^padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;$/, "the chip row's shape");
+  const on = markOf(r[2]), off = markOf(r[3]);
+  assert.ok(on && off, "each tag row carries the mark");
+  assert.equal(on._attrs["data-check"], "true"); assert.equal(on.textContent, "✓", "selected: the ✓-in-circle (the palette's check)");
+  assert.equal(off._attrs["data-check"], "false"); assert.equal(off.textContent, "", "unselected: an empty ring");
+  assert.match(off._attrs.style, /border-radius:50%;box-sizing:border-box;border:1px solid /, "the ring in the palette's hairline");
+  assert.match(r[2]._attrs.style, /^padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;$/, "the chip row's shape, room for the mark");
   panel._closeViewsMenu();
 });
 
@@ -116,10 +123,10 @@ test("executed: clicking a chip's row toggles that tag, the menu stays open and 
   assert.deepEqual(applied[0].actives.timeline.tags, ["infra", "qa"]); assert.ok(!applied[0].actives.timeline.none);
   assert.equal(panel._viewsMenu, menu, "the menu stayed open");
   assert.equal(rows(menu).length, before, "repainted in place: the same rows");
-  assert.equal(chipOf(rows(menu)[3])._attrs["aria-pressed"], "true", "the chip now reads selected");
+  assert.equal(rows(menu)[3]._attrs["aria-checked"], "true", "the row now reads selected"); assert.equal(markOf(rows(menu)[3]).textContent, "✓");
   assert.equal(chipOf(rows(menu)[3]).classList.contains("tag-chip-off"), false);
   rows(menu)[2]._listeners.click();          // infra: on → off
-  assert.equal(chipOf(rows(menu)[2])._attrs["aria-pressed"], "false");
+  assert.equal(rows(menu)[2]._attrs["aria-checked"], "false"); assert.equal(markOf(rows(menu)[2]).textContent, "");
   assert.equal(chipOf(rows(menu)[2]).classList.contains("tag-chip-off"), true);
   panel._closeViewsMenu();
 });
@@ -153,7 +160,7 @@ test("drift pins: the inlined chip is the shared tagChip's pill up to the colour
   const cls = /export const TAG_CHIP_OFF_CLASS = "([^"]+)";/.exec(MENU);
   assert.ok(cls, "the shared state class is where the pin expects it");
   assert.equal(cls![1], "tag-chip-off", "the shared state class");
-  const row = /r\.setAttribute\("style", "([^"]+)"\);\s*\n\s*const chip = tagChip\(u\.name/.exec(MENU);
+  const row = /r\.setAttribute\("style", "([^"]+)"\);\s*\n(?:\s*r\.setAttribute\([^\n]*\n)*\s*const chip = tagChip\(u\.name/.exec(MENU);   // T413: the row's role, state and title sit between the style and the chip
   assert.ok(row, "the shared chip row is where the pin expects it");
   assert.equal(/const TAG_CHIP_ROW_STYLE = '([^']+)';/.exec(SRC)![1], row![1], "the chip row's shape");
   // the shared tag rows never carried a dot after T283; this copy's plain rows carry none either
