@@ -302,7 +302,7 @@ OLD
     [ -r /proc/self/fd/1 ] || skip "the stand-in finds its stdout through /proc (Linux)"
     cat > "$TEST_DIR/unlinking-python" << 'OLD'
 #!/usr/bin/env bash
-case "$*" in *romp-pyver*) echo "romp-pyver 3.12"; rm -f "$(readlink /proc/self/fd/1)"; exit 0 ;; esac
+case "$*" in *romp-pyver*) echo "romp-pyver 3.12"; rm -f "$(readlink /proc/$$/fd/1)"; exit 0 ;; esac   # $$: the script's own stdout, the probe file (a substitution's fd 1 is its pipe)
 exec bash "$@"
 OLD
     chmod +x "$TEST_DIR/unlinking-python"
