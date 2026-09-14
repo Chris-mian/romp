@@ -1331,7 +1331,7 @@ class CommentOps(CommentBase):
         km.Sessions.backend_for = staticmethod(lambda sid: self.be)
         km._sdk_ready = lambda: True
         km._live_map = lambda: {}   # the create/promote doors' live snapshot (names reserved atomically) — never the machine's live sessions
-        p = self._write(PARENT, self._parent_records())
+        p = self.parent_path = self._write(PARENT, self._parent_records())
         km._sessions = lambda now, window=None, forks=True: [
             {"sid": PARENT, "name": "parent", "path": str(p), "mtime": self.now}]
         km._reveal_chat_for = lambda client, msg: None
@@ -1373,6 +1373,38 @@ class CommentOps(CommentBase):
         row = km._comment_thread(PARENT, tid)
         self.assertEqual(row["status"], "open")
         self.assertEqual(row["anchorUuid"], "a1")
+
+    def _stub(self, name, value):
+        self.addCleanup(setattr, km, name, getattr(km, name))
+        setattr(km, name, value)
+
+    def test_a_parent_idle_past_the_discovery_window_still_takes_a_comment(self):
+        # the user 2026-09-14: a 4-day-idle session's popover said "no transcript for this session yet"
+        # while its chat rendered fine — _sessions' 48h horizon is caption/walk cost, not a permission.
+        # The door now resolves an SDK parent through its registry (cwd + lastSid) like build_session does.
+        km._sessions = lambda now, window=None, forks=True: []
+        self._stub("_sdk", lambda: type("Owner", (), {"owns": staticmethod(lambda sid: sid == PARENT)})())
+        real_reg = km._thread_reg
+        self._stub("_thread_reg", lambda sid: ({"name": "parent", "lastSid": PARENT, "cwd": str(Path(str(self.parent_path)).parent)}
+                                               if sid == PARENT else real_reg(sid)))
+        real_tpath = km._thread_transcript_path
+        self._stub("_thread_transcript_path",
+                   lambda reg, sid: str(self.parent_path) if sid == PARENT else real_tpath(reg, sid))
+        err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why jitter at all?")
+        self.assertIsNone(err)
+        self.assertEqual([c[0] for c in self.be.calls], ["fork", "connect", "send"])
+        self.assertEqual(self.be.calls[0][3], "a1", "the cut resolved against the registry's transcript")
+        self.assertEqual(km._comment_thread(PARENT, tid)["name"], "parent-comment-1",
+                         "the default name still comes off the resolved row's name")
+
+    def test_a_parent_with_no_transcript_anywhere_is_still_refused(self):
+        km._sessions = lambda now, window=None, forks=True: []
+        self._stub("_sdk", lambda: None)
+        self._stub("_discover_wide", lambda now, window: {})
+        err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        self.assertIn("no transcript", err)
+        self.assertIsNone(tid)
+        self.assertEqual(self.be.calls, [])
 
     def test_threads_autoname_by_count_and_accept_an_edited_name(self):
         _, tid1 = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")

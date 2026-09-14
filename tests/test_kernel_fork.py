@@ -231,6 +231,60 @@ class ForkSessionOp(unittest.TestCase):
         self.assertEqual([e[0] for e in self.be.events], [],
                          "an unprotected fork must never be created (the replay storm)")
 
+    # ── the parent idle past discover's 48h horizon (the user 2026-09-14) ──────────────────────────
+    # _sessions(now) reaches back only the caption window, so a 4-day-idle session — tab and chat right
+    # there via _alive_sessions' wide walk — was refused as "no transcript for this session yet" by the
+    # fork door (and the comment/rewind doors). _session_row resolves it the way build_session does.
+
+    def _stub(self, name, value):
+        self.addCleanup(setattr, km, name, getattr(km, name))
+        setattr(km, name, value)
+
+    def _sdk_owner(self, *sids):
+        return type("Owner", (), {"owns": staticmethod(lambda sid: sid in sids)})()
+
+    def test_an_sdk_parent_idle_past_the_discovery_window_still_forks(self):
+        km._sessions = lambda now: []                       # the 48h walk has forgotten it
+        self._stub("_sdk", lambda: self._sdk_owner(PARENT))
+        real_reg = km._thread_reg
+        self._stub("_thread_reg", lambda sid: ({"name": "parent", "lastSid": PARENT, "cwd": self.td.name}
+                                               if sid == PARENT else real_reg(sid)))
+        self._stub("_thread_transcript_path", lambda reg, sid: self.path)   # cwd + lastSid → the CURRENT transcript
+        self._stub("_name_of", lambda sid: "parent" if sid == PARENT else "")
+        row = km._session_row(PARENT, T_A2 + 5 * 86400)
+        self.assertEqual((row["sid"], row["name"], row["path"], row["anchor"]), (PARENT, "parent", self.path, PARENT),
+                         "the registry names the row: same shape _sessions hands out, no directory walk")
+        self.assertIsNone(km._fork_session(PARENT, "u2", "api-fork"))
+        self.assertEqual([e[0] for e in self.be.events], ["seed", "fork", "connect"])
+        self.assertEqual(next(e for e in self.be.events if e[0] == "fork")[3], "a1",
+                         "the cut resolved against the transcript the registry pointed at")
+
+    def test_a_parent_no_sdk_registry_names_resolves_through_the_wide_walk(self):
+        # a session the SDK backend does not own (a Codex one): the same cached wide walk _alive_sessions
+        # keeps its tab alive through
+        km._sessions = lambda now: []
+        self._stub("_sdk", lambda: None)
+        self._stub("_discover_wide", lambda now, window: {PARENT: (PARENT, Path(self.path), PARENT, "parent")})
+        self.assertIsNone(km._fork_session(PARENT, "", "api-fork"))
+        self.assertEqual([e[0] for e in self.be.events], ["seed", "fork", "connect"])
+
+    def test_an_sdk_session_that_never_ran_is_still_refused(self):
+        # a registry without a transcript file is the genuine "no transcript yet" — the refusal keeps its name
+        km._sessions = lambda now: []
+        self._stub("_sdk", lambda: self._sdk_owner(PARENT))
+        self._stub("_thread_reg", lambda sid: {"name": "parent", "cwd": self.td.name})
+        self._stub("_thread_transcript_path", lambda reg, sid: os.path.join(self.td.name, "never-ran.jsonl"))
+        self._stub("_discover_wide", lambda now, window: {})
+        self.assertIn("no transcript", km._fork_session(PARENT, "", "api-fork") or "")
+        self.assertEqual(self.be.events, [])
+
+    def test_a_session_with_no_transcript_anywhere_is_still_refused(self):
+        km._sessions = lambda now: []
+        self._stub("_sdk", lambda: None)
+        self._stub("_discover_wide", lambda now, window: {})
+        self.assertIn("no transcript", km._fork_session(PARENT, "", "api-fork") or "")
+        self.assertEqual(self.be.events, [])
+
     def test_the_fork_inherits_the_parents_tags_before_its_first_push(self):
         # tab groups on tags (the user 2026-09-04): a fork joins every tag holding its parent, at the
         # creation event — the parent keeps its tags — and BEFORE connect/push, so the first tabOrder
