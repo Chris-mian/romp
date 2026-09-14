@@ -350,7 +350,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertGreaterEqual(s["chipsLeftOfBtn"], 0, "the chips sit LEFT of the button" + t)
         self.assertEqual(s["rows"], base["rows"], "the selection added no row" + t)
         self.assertEqual(s["rows"], s["rowsSansChips"], "the rows with the chips equal the rows without them" + t)
-        self.assertLessEqual(s["endRightGap"], 2.0, "the right end flush with the strip" + t); self.assertLessEqual(abs(s["gearRightGap"] - 4), 0.6, "the gear at its 4px" + t)
+        self.assertLessEqual(s["endRightGap"], 2.0, "the right end flush with the strip" + t); self._gear_at_end(s, "the gear at its 4px" + t)
         self.assertEqual(s["pressed"], "true", "the button wears the accent: narrowed" + t)
         self.assertEqual(base["chips"], [], "the baseline, All: no chip" + t)
 
@@ -360,7 +360,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertEqual(s["chips"][3]["cls"], "tag-chip-more", "the more chip is the plain chip" + t)
         for name in ("docs", "sdk", "cli"): self.assertIn(name, s["chips"][3]["title"], "its title names the rest" + t)
         self.assertEqual(s["rows"], base["rows"], "thirty tags added no row" + t); self.assertEqual(s["rows"], s["rowsSansChips"], t)
-        self.assertLessEqual(s["endRightGap"], 2.0, t); self.assertLessEqual(abs(s["gearRightGap"] - 4), 0.6, "the gear and the button stay on the strip's end" + t)
+        self.assertLessEqual(s["endRightGap"], 2.0, t); self._gear_at_end(s, "the gear and the button stay on the strip's end" + t)
         self.assertTrue(r["moreOpens"], "the more chip opens the menu")
         a = r["afterRemove"]; ta = "\n  " + json.dumps(a)
         self.assertEqual([c["text"] for c in a["chips"]], ["web", "api", "docs", "+26 more"], "the first chip's cross dropped its tag: the run shifts, the count follows" + ta)
@@ -372,7 +372,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertFalse(s["hostClip"], "no chip is clipped" + t)
         if not s["hostVisible"]:
             self.assertEqual((s["hostDisplay"], s["hostRect"]), ("none", [0, 0]), "hidden means out of the flow: computed display none and a zero rect, never the attribute alone" + t)
-        self.assertLessEqual(s["endRightGap"], 2.0, "the right end still flush" + t); self.assertLessEqual(abs(s["gearRightGap"] - 4), 0.6, "the gear on the strip's end" + t)
+        self.assertLessEqual(s["endRightGap"], 2.0, "the right end still flush" + t); self._gear_at_end(s, "the gear on the strip's end" + t)
         self.assertEqual(s["pressed"], "true", "the accent still says narrowed, chips or not" + t)
 
     def test_in_group_mode_the_headings_carry_the_tags_and_nothing_sits_beside_the_button(self):
@@ -386,6 +386,14 @@ class ServedStripTagChips(unittest.TestCase):
             self.assertEqual((s["hostDisplay"], s["hostRect"]), ("none", [0, 0]), "out of the flow: computed display none and a zero rect" + t)
             self.assertEqual(s["chips"], [], t)
         self.assertEqual(r["groupedMany"]["pressed"], "true", "narrowed to thirty tags, the button says so in group mode too")
+
+    def _gear_at_end(self, s, why, t=""):
+        """the gear at its 4px from the strip's end where it is drawn; since T415 part one the standalone chat page (this lab's) draws no gear,
+        so the tags button closes the right end itself (endRightGap, asserted beside every call)"""
+        if s["gearRightGap"] is not None:
+            self.assertLessEqual(abs(s["gearRightGap"] - 4), 0.6, why + t)
+        else:
+            self.assertLessEqual(s["endRightGap"], 2.0, "no gear on the solo page: the button itself closes the right end" + t)
 
     # ROUND TWO (the manager's read of 2026-09-14)
     def test_across_widths_the_run_gives_up_chips_one_by_one_before_it_hides_and_never_adds_a_row_or_clips(self):
@@ -402,7 +410,7 @@ class ServedStripTagChips(unittest.TestCase):
                 self.assertEqual(more, ["+%d more" % (30 - len(shown))], "the count names the rest of the thirty" + te)
             else:
                 self.assertEqual((e["hostDisplay"], e["hostRect"]), ("none", [0, 0]), "hidden means out of the flow" + te)
-            self.assertLessEqual(e["endRightGap"], 2.0, "the right end flush" + te); self.assertLessEqual(abs(e["gearRightGap"] - 4), 0.6, "the gear at its 4px" + te)
+            self.assertLessEqual(e["endRightGap"], 2.0, "the right end flush" + te); self._gear_at_end(e, "the gear at its 4px" + te)
         self.assertTrue(any(e["hostVisible"] and len([c for c in e["chips"] if not c.startswith("+")]) == 3 for e in sweep), "the wide end: the full run" + t)
         self.assertTrue(any(e["hostVisible"] and 1 <= len([c for c in e["chips"] if not c.startswith("+")]) <= 2 for e in sweep), "somewhere between, a shorter run: chip by chip before hiding" + t)
         self.assertTrue(any(not e["hostVisible"] for e in sweep), "and a width where even one chip and the count do not fit: hidden" + t)
