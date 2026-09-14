@@ -235,6 +235,12 @@ if command -v mktemp >/dev/null 2>&1; then
     done
 fi
 _pyrm() { [[ -n "$_pyout_file" ]] && rm -f "$_pyout_file" 2>/dev/null; return 0; }
+_pyread() {   # $1 the probe file: its bytes into _pyout with NULs dropped; a missing or unreadable file leaves _pyout empty
+    local _chunk
+    _pyout=""
+    { while IFS= read -r -d '' _chunk || [[ -n "$_chunk" ]]; do _pyout+="$_chunk"; _chunk=""; done < "$1"; } 2>/dev/null || true
+    return 0
+}
 trap '_pyrm' EXIT
 # a TERM to this script during the probe is acted on when the foreground probe returns (bash runs a trap after the
 # command it interrupted), at the bound at the latest: the exit is 143 then, not at once
@@ -249,15 +255,17 @@ if command -v timeout >/dev/null 2>&1; then
         # $(<file) form: bash performs that one in the current shell, and a redirection that fails there (the probe
         # file gone inside the window: an interpreter that unlinks its own stdout) exits the script under set -e
         # before any or-else runs, a silent refusal of a good interpreter; read's failed redirection is an ordinary
-        # command failure, the or-true stands, and an unreadable file is the no-version leg
-        { IFS= read -r -d '' _pyout < "$_pyout_file"; } 2>/dev/null || true
+        # command failure, the or-true stands, and an unreadable file is the no-version leg. read -d '' stops at a
+        # NUL byte, so the chunks between NULs are read in turn and joined: a site customization writing a NUL ahead
+        # of the sentinel no longer hides the version (the old cat dropped the NUL with a warning)
+        _pyread "$_pyout_file"
     else
         _pyout="$( ( timeout -k 1 5 "$PY" -c "$_pyprog" </dev/null 2>/dev/null; exit $? ) 2>/dev/null )" || _prc=$?
     fi
 else
     if [[ -n "$_pyout_file" ]]; then
         "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null || _prc=$?
-        { IFS= read -r -d '' _pyout < "$_pyout_file"; } 2>/dev/null || true
+        _pyread "$_pyout_file"
     else
         _pyout="$("$PY" -c "$_pyprog" </dev/null 2>/dev/null)" || _prc=$?
     fi

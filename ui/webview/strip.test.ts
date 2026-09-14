@@ -86,7 +86,9 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
   assert.ok(src.includes('fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/ssh-hosts answered HTTP " + r.status); return r.json(); })'),
     "a non-ok /ssh-hosts answer throws instead of painting no hosts");
-  assert.ok(src.includes("if (lastHosts) fillHostSelect(sel, lastHosts,"), "a failed refresh keeps the last good list");
+  assert.ok(src.includes("if (err && err.httpStatus && lastHosts) fillHostSelect(sel, lastHosts,"), "a non-ok answer keeps the last good list");
+  assert.ok(src.includes('else fillHostSelect(sel, [], "(kernel unreachable)")'), "a rejected fetch keeps the kernel-unreachable signal, whatever was read before");
+  assert.ok(src.includes('console.error("romp: ssh hosts could not be read"'), "every failure shape says so in the console");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
 });
 
