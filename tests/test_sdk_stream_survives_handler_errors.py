@@ -358,8 +358,9 @@ class TheLiveTailLock(unittest.TestCase):
                          "under the lock no key vanishes mid-sweep, so no race line")
 
     def test_mark_dropped_echoes_survives_a_concurrent_send_stash(self):
-        """Refuter finding 2: _mark_dropped_echoes runs on the SESSION thread at spawn and at every
-        reconnect, outside the connect's try; its comprehension over the tail raised RuntimeError when
+        """Refuter finding 2: _mark_dropped_echoes runs on the SESSION thread inside the connect loop, right after
+        a fresh CLI spawns (a raise there is caught and logged as a bookkeeping fault, never read as a launch
+        error); its comprehension over the tail raised RuntimeError when
         the kernel thread's send() stashed an echo mid-walk, and the session thread died with no reconnect."""
         be = self._backend()
         def session_body(i):

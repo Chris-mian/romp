@@ -402,6 +402,26 @@ class PlannerSkip(_World):
         self.assertEqual(self.run_pass()[0:2], (1, 2))
         self.assertEqual(jd.planner_skip_stats()["mismatchByTerm"], {"3": 1})
 
+    def test_an_unreadable_reg_is_a_sentinel_term_never_recorded_and_an_absent_one_is_keyed(self):
+        """The tidy's low 3: _reg_spawned_at answered None for absent and unreadable alike, so an unreadable reg keyed the same
+        whatever its bytes said; the reg term is a fresh sentinel on a read or parse fault (the session is planned, never
+        recorded), and [None, owned] when the reg is genuinely absent (keyed, skipped when nothing else moves)."""
+        self.settle()                                                          # no regs: [None, owned] keyed, all three recorded
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        (jd.SDKDIR / (A + ".json")).write_text("{corrupt")
+        self.assertEqual(self.run_pass()[0:2], (1, 2), "A's reg exists and does not parse: A planned")
+        self.assertEqual(self.run_pass()[0:2], (1, 2), "and never recorded: planned again")
+        self.assertNotIn(A, jd._PLANNER_SEEN)
+        (jd.SDKDIR / (A + ".json")).write_text(json.dumps({"sid": A, "name": "worker0", "cwd": "/tmp", "spawnedAt": 1700000000.0}))
+        self.settle()
+        if os.geteuid() != 0:
+            os.chmod(jd.SDKDIR, 0)
+            try:
+                self.assertEqual(self.run_pass()[1], 0, "sdk/ unreadable: every reg is a sentinel, no session skipped")
+            finally:
+                os.chmod(jd.SDKDIR, 0o755)
+            self.settle()
+
     def test_a_bumped_derivation_re_plans_everything_once_after_a_reboot(self):
         """Round two, medium 3: a row asserts nothing to do under the code that wrote it; a derivation or a placements-identity
         change refuses the rows once, plans every session, and the rows are rewritten under the new pair."""

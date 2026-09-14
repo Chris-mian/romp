@@ -434,7 +434,13 @@ const after14 = { asked: await page.evaluate((n) => window.__sent.slice(n).filte
 // one reused notice element does not replay a pulse it did not earn (before the fix the class stayed and the display flip restarted the
 // animation: the verifier saw it running after the re-show). Pulses are counted from the element's own animationstart events.
 await reboot();
-await page.evaluate(() => { window.__pulses = 0; document.addEventListener("animationstart", (e) => { if (e.animationName === "tx-notice-pulse") window.__pulses++; }, true); window.__hold.add("loadAround"); });
+await page.evaluate(() => { window.__pulses = 0; document.addEventListener("animationstart", (e) => { if (e.animationName === "tx-notice-pulse") window.__pulses++; }, true); window.__hold.add("loadAround");
+  // every animationend listener added to or removed from the notice element is counted (the tidy after PR 1642, low 2): a pulse the hide cuts short
+  // never fires animationend, so its once listener stayed on the reused element, one dead closure per cut pulse
+  window.__aeAdd = 0; window.__aeRemove = 0; const isNotice = (el) => el instanceof Element && el.classList.contains("tx-landing-notice");
+  const ael = EventTarget.prototype.addEventListener, rel = EventTarget.prototype.removeEventListener;
+  EventTarget.prototype.addEventListener = function (ty, fn, opt) { if (ty === "animationend" && isNotice(this)) window.__aeAdd++; return ael.call(this, ty, fn, opt); };
+  EventTarget.prototype.removeEventListener = function (ty, fn, opt) { if (ty === "animationend" && isNotice(this)) window.__aeRemove++; return rel.call(this, ty, fn, opt); }; });
 const deepA15 = "11111111-2222-3333-4444-" + pad(2 * 45); const deepB15 = "11111111-2222-3333-4444-" + pad(2 * 160);   // both in the head gap of a fresh page
 const focus15 = (u, turn) => page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: u, anchorT: cfg.base + 2 * turn });
 const noticeShown = () => page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
@@ -449,6 +455,7 @@ await page.waitForFunction(() => window.__pulses >= 1, null, { timeout: 3000 }).
 const pulsed15 = await pulseState();
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && !n.classList.contains("pulse"); }, null, { timeout: 3000 }).catch(() => {});   // the class leaves on the animation's end (500 ms)
 const afterEnd15 = await pulseState();
+const listeners15 = await page.evaluate(() => ({ add: window.__aeAdd, remove: window.__aeRemove }));   // one completed pulse: one listener added, and gone by its own once
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deepA15, { timeout: 15000 }).catch(() => {});
 await noticeHidden(); await painted();
@@ -460,11 +467,17 @@ await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { t
 await noticeShown();
 await page.waitForTimeout(200);                                                       // a replayed animation would have started by now (a stale class restarts on the display flip)
 const reshow15 = await pulseState();
+// a pulse CUT SHORT by the hide: a real second click on B pulses, and the release lands B within the animation's 500 ms, hiding the notice mid-pulse
+await focus15(deepB15, 160);
+await page.waitForFunction((n) => window.__pulses > n, reshow15.pulses, { timeout: 3000 }).catch(() => {});
+const cut15 = await page.evaluate(() => ({ pulses: window.__pulses, add: window.__aeAdd, remove: window.__aeRemove, cls: !!document.querySelector(".tx-landing-notice.pulse") }));
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deepB15, { timeout: 15000 }).catch(() => {});
 await noticeHidden(); await painted();
 const targetB15 = await onScreen(deepB15);
-process.stdout.write("RESULT:" + JSON.stringify({ first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, settled7, askState7, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+await page.waitForTimeout(700);                                                       // past the cut animation's own length: a listener the hide did not remove would still be there
+const afterCut15 = await page.evaluate(() => ({ add: window.__aeAdd, remove: window.__aeRemove, cls: !!document.querySelector(".tx-landing-notice.pulse"), shown: (() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; })() }));
+process.stdout.write("RESULT:" + JSON.stringify({ listeners15, cut15, afterCut15, first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, settled7, askState7, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -681,6 +694,20 @@ class ServedLandingNotice(WindowLab):
         self.assertEqual(s["pulses"], 1, "the re-shown notice replays no pulse: %r" % s)
         self.assertEqual((s["cls"], s["running"]), (False, 0), "…no stale class, nothing animating: %r" % s)
         self.assertIsNotNone(r["targetB15"]); self.assertTrue(r["targetB15"]["visible"], "the later landing landed: %r" % r["targetB15"])
+        # the tidy after PR 1642, low 2: every animationend listener the pulse adds leaves the element, the cut pulse's by the hide
+        # a once listener that FIRES is consumed by the browser with no removeEventListener call, so a completed pulse reads adds 1, removes 0;
+        # a pulse the hide cuts short never fires, and only the hide's own remove takes its handler off: adds minus removes is the count of
+        # pulses that completed, and removes counts the cut ones the hide took away
+        l = r["listeners15"]
+        self.assertEqual((l["add"], l["remove"]), (1, 0), "a completed pulse: one listener added, consumed by its own once: %r" % l)
+        c = r["cut15"]
+        self.assertGreater(c["pulses"], r["reshow15"]["pulses"], "the second click on B pulsed while its landing was on the wire: %r" % c)
+        self.assertEqual(c["add"], 2, "…a second listener added for it: %r" % c)
+        a = r["afterCut15"]
+        self.assertFalse(a["shown"], "the landing hid the notice: %r" % a)
+        self.assertEqual(a["remove"], 1, "the hide removed the cut pulse's handler (before the fix nothing did, and it stayed on the reused element): %r" % a)
+        self.assertEqual(a["add"] - a["remove"], 1, "adds minus removes is the one completed pulse: no dead closure left (adds %d, removes %d): %r" % (a["add"], a["remove"], a))
+        self.assertFalse(a["cls"], "…and no pulse class: %r" % a)
 
     def test_the_panes_pipe_down_edge_clears_the_landing_like_the_sockets_death(self):
         # round nine, medium 2: pipeState down with a landing in flight, then up; the next click asks

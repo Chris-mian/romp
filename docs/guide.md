@@ -171,6 +171,26 @@ paths found in the text wear a dotted underline that turns solid under the point
 link that names a file keeps the ordinary link look. Selecting text across a link works as
 before, and a click that lands while text is selected inside a link opens nothing.
 
+**A session that needs you.** A tab wears a dashed red ring while its session is stopped on a
+permission or picker prompt. When the feed shows one of the session's cards under Blocked (it
+asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
+a stalled task needs a look), the tab wears a dashed yellow ring instead, whether the session
+is idle, waiting on background work or still working, so the sessions that need you stand out
+in the strip without a click through each of them; a working session keeps its gold dot inside
+the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
+does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
+yellow one; the amber ring of a session retrying an API error on its own gives way to it. The
+three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Needs you**, **Waiting on
+you**, **Retrying**), each with its own switch, listed in that order because a tab wears one
+ring at a time and the first that applies wins: red over yellow over amber. A ring switched off
+leaves the tab with its dot; the small dot on a folded group's header and the phone's picker
+follow the same switches. With
+notifications on, the card entering Blocked is also what notifies you (see [Notifications on
+your phone](#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
+stays as long as the card does, including across a kernel restart, which announces nothing. On
+a phone, the session picker marks the same sessions with a yellow bar at the row's left edge,
+and the button that names the current session wears the dashed yellow border.
+
 **Tags and groups.** A tag is a named, colored set of sessions; a session can be in
 several. Right-click a tab and open **Tags** to add or remove them. Tags filter every
 surface (the tag button in the strip narrows the tabs to the tags you pick), and they group
@@ -180,9 +200,9 @@ own at the end. A session with several tags appears under each of them; every co
 session (click either to open it, and closing either ends it). Each header shows the tag's color and name, then a chevron and a
 member count. Click a header, or press Enter on it, to fold its section down to the header
 alone; the count then says how many tabs are folded away, and a small dot after it shows when
-one of them is busy or needs you: red when one is blocked or waiting on you, otherwise gold
-when one is working, otherwise amber when one hit an API error and is retrying on its own
-(hover it for their names). To keep one tab visible while its section is folded, right-click
+one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow
+when one has something waiting on you, otherwise gold when one is working, otherwise amber
+when one hit an API error and is retrying on its own (hover it for their names). To keep one tab visible while its section is folded, right-click
 the tab and pick **Show when folded** under **Tags**;
 the header's count then leaves that tab out; when every tab in a section is set to
 show, the folded header shows the full count and its tooltip says nothing is hidden. Pick it
@@ -203,7 +223,7 @@ of its own; a section folded in either place is folded in both, and while groupe
 follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. The gear at the strip's right end, the same gear as the one at the bottom right of every romp page, opens a small menu: **Lock the tabs in place** freezes every tab move (a drag, a Move to, the Sessions pane's lanes) until you turn it off, and **Tab widgets…** opens the settings on the Chat tab's widget rows. The strip's tag button, at the other end of the controls from the gear, shows no chips of its own: the tags show in the strip's sections when the tabs are grouped, and the button wears the accent while a filter is on. Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
-tags stays short. The **Status line** section, next to Tab widgets in the same Chat tab, does the same for the line above the composer: the folder and the git branch are on by default, the session's name and the host of a remote session are there to switch on, and in both sections the rows reorder by dragging a row's grip or with the arrow keys on it, each section previewing the result below its rows; in Tab widgets a line marking the session name's place divides the list, and a row dragged above or below it renders on that side of the name.
+tags stays short. The **Status line** section, next to Tab widgets in the same Chat tab, does the same for the line above the composer: the folder and the git branch are on by default, the session's name and the host of a remote session are there to switch on, and in both sections the rows reorder by dragging a row's grip or with the arrow keys on it, each section previewing the result below its rows; in Tab widgets a line marking the session name's place divides the list, and a row dragged above or below it renders on that side of the name; the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name.
 
 **A section at a glance.** Clicking a header also shows the section in the transcript's place: one
 row per session, with its color, a dot for its state (yellow working, red stopped on a prompt or an
@@ -264,6 +284,15 @@ in a transcript when it is shown in another column, lands you in the column that
 no session is ever shown twice. The arrangement, each column's sessions and widths, is
 remembered per browser across reloads. Four columns at most; the phone shows one pane at a time
 and never splits.
+
+A tab can have a **hot key**: right-click it, pick **Hot key…**, press a combination, and the
+combination shows on the tab after its name; pressing it switches to that session, in the column that holds it. Once one is set the row reads
+**Update hot key…**: press a new combination to change it, or Backspace or its **Remove**
+button to take it away. **Focus the next chat column** and
+**Focus the previous chat column** in **Keyboard shortcuts** take a hot key too, and cycle the
+focus between the columns; **Toggle notifications for this session** flips the bell of the
+session you are looking at (the tab menu's **Notify me**) and flashes "Notifications enabled
+for web" or "disabled"; once it has a key, the menu's row shows it.
 
 ### The feed
 

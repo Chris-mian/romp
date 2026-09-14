@@ -311,6 +311,34 @@ OLD
     [ "$output" = "$TEST_DIR/unlinking-python" ]
 }
 
+@test "romp-serve: a NUL byte ahead of the sentinel does not hide the version: a 3.9 behind a leading NUL is refused" {
+    # the second tidy: read -d '' stops at a NUL, so a site customization writing one before the program's line read as
+    # no version and STARTED the 3.9 (the old cat dropped the NUL with a warning); the chunks between NULs are joined now
+    cat > "$TEST_DIR/nul-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) printf '\0romp-pyver 3.9\n'; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/nul-python"
+    ROMP_PYTHON="$TEST_DIR/nul-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+}
+
+@test "romp-serve: the NUL join reads a version a few NULs in, and is capped so a NUL-stuffed output cannot slow a launch" {
+    # the third tidy: one read per NUL with no cap (200k NULs added 1.7 s to a launch); ten NULs ahead of the sentinel are
+    # joined as before (a control), and the cap is pinned in the source, since a timing assertion would ride the machine
+    cat > "$TEST_DIR/nuls-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) printf '\0\0\0\0\0\0\0\0\0\0romp-pyver 3.9\n'; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/nuls-python"
+    ROMP_PYTHON="$TEST_DIR/nuls-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    grep -q 'while \[\[ \$_n -lt 64 \]\] && { IFS= read -r -d' "$ROMP_SERVE"   # the cap: sixty-four chunks
+}
+
 @test "romp-serve: a TERM mid-probe leaves no probe file behind" {
     # round five of issue 1600: the probe file was removed after the read alone, so a romp-serve stopped during the probe
     # (a manager restart mid-launch) left one romp-pyver.* per stop in TMPDIR

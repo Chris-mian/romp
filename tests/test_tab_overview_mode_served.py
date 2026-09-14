@@ -123,14 +123,15 @@ await page.waitForTimeout(600);
 out.overview = await measure();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "/romp_chat-tab-overview-dark.png", fullPage: false });
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "/romp_chat-tab-overview-awaiting-dark.png", clip: { x: 0, y: 0, width: 1100, height: 360 } });   // T322b: the awaiting row's chip
-// the cascade's two exceptions, probed in the mode: a hard-blocked active tab keeps its red fill (the class the tab
-// state paints, added here since a hermetic kernel has no blocked session), and under the Yatharth theme the active
+// the cascade's two exceptions, probed in the mode: a hard-blocked active tab keeps its red fill (the state class the tab
+// paints AND the red ring class the registry composes beside it — the fill rides the ring since the rings became widgets,
+// 2026-09-14 — both added here since a hermetic kernel has no blocked session), and under the Yatharth theme the active
 // tab wears that theme's resting wash with no selection border
 const probe = (fn) => page.evaluate(fn, cfg.web);
-await probe((id) => { document.querySelector('#tabs .tab[data-id="' + id + '"]').classList.add("tab-blocked"); });
+await probe((id) => { document.querySelector('#tabs .tab[data-id="' + id + '"]').classList.add("tab-blocked", "ring-needs-you"); });
 await page.waitForTimeout(100);
 out.blocked = await probe((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const cs = getComputedStyle(t); return { bg: cs.backgroundColor, active: t.classList.contains("active") }; });
-await probe((id) => { document.querySelector('#tabs .tab[data-id="' + id + '"]').classList.remove("tab-blocked"); document.body.classList.add("chat-theme-yatharth"); });
+await probe((id) => { document.querySelector('#tabs .tab[data-id="' + id + '"]').classList.remove("tab-blocked", "ring-needs-you"); document.body.classList.add("chat-theme-yatharth"); });
 await page.waitForTimeout(150);
 out.yatharth = await probe((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const cs = getComputedStyle(t);
   const rest = Array.from(document.querySelectorAll('#tabs .tab.colored:not(.active)')).map((r) => getComputedStyle(r).backgroundColor);

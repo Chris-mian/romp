@@ -108,8 +108,13 @@ case "$NO_COPY" in 0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) NO_COPY="" ;; e
 # no ten-second sleep behind per launch. The bound is ten seconds; ROMP_NODE_PROBE_BOUND (whole seconds)
 # shortens it for the tests, which run the hang shapes in two.
 _bound="${ROMP_NODE_PROBE_BOUND:-10}"
+# not a number: the default; seven digits or more (a value the integer test would refuse with a diagnostic and then
+# clamp to ONE second, the opposite of what was asked): an hour, the cap; 0: one second, since 0 would be NO bound for
+# timeout and an instant kill for the watchdog's sleep
 case "$_bound" in ''|*[!0-9]*) _bound=10 ;; esac
-[ "$_bound" -ge 1 ] || _bound=1   # 0 would be NO bound for timeout and an instant kill for the watchdog's sleep
+_bound="${_bound#"${_bound%%[!0]*}"}"; [ -n "$_bound" ] || _bound=0   # leading zeros off first: 0000001 is one second, not seven digits
+case "$_bound" in ???????*) _bound=3600 ;; esac
+[ "$_bound" -ge 1 ] || _bound=1
 # Everything under a pid, TERM then KILL. The node that hangs may be a version manager's shim that RUNS node
 # instead of exec'ing it, so the hung process is a CHILD of the pid the wrapper holds; the timeout path signals
 # the whole process group, and this keeps the watchdog path equivalent (round four of issue 1600: one hung
@@ -128,6 +133,21 @@ _kill_tree() {
     sleep 1
     kill -KILL $_all 2>/dev/null || true
 }
+# The watchdog's sleep is ended the way the wrapper ends the node: its whole tree (a sleep on PATH that forks would
+# leave its child otherwise), TERM, then a KILL if the sleep is still there, waited on either way. The check between
+# them is bounded (up to a second in tenths) and costs nothing on the fast path, where the sleep is gone at the first
+# look; a sleep that ignores TERM (a stand-in on PATH) held the launcher for its whole remaining duration before. The
+# pid may be unbound when the TERM lands between the fork and its assignment under set -u, so it is passed with a
+# default and an empty one is nothing to end.
+_end_sleep() {
+    [ -n "$1" ] || return 0
+    _all="$(_tree_of "$1")"
+    kill -TERM $_all 2>/dev/null || true
+    _i=0
+    while kill -0 "$1" 2>/dev/null && [ "$_i" -lt 10 ]; do sleep 0.1; _i=$((_i + 1)); done
+    kill -KILL $_all 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+}
 _probe_node() {
     if command -v timeout >/dev/null 2>&1; then
         ( timeout -k 1 "$_bound" "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null || return $?
@@ -143,7 +163,7 @@ _probe_node() {
     # launcher's session could see for an instant (CI, 2026-09-14). Waited on, nothing of the probe outlives the launcher.
     ( trap '_kill_tree "$_n"; wait "$_n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & _n=$!; wait "$_n"; exit $? ) 2>/dev/null &
     _pp=$!
-    ( trap 'kill "$_s" 2>/dev/null; wait "$_s" 2>/dev/null; exit 0' TERM; sleep "$_bound" & _s=$!; wait "$_s"; kill "$_pp" 2>/dev/null ) >/dev/null 2>&1 &
+    ( trap '_end_sleep "${_s:-}"; exit 0' TERM; sleep "$_bound" & _s=$!; wait "$_s"; kill "$_pp" 2>/dev/null ) >/dev/null 2>&1 &
     _wd=$!
     _rc=0
     wait "$_pp" || _rc=$?

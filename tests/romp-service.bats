@@ -229,6 +229,57 @@ _install_hang_asserts() {   # the copy is removed with the reason said, and noth
     [ -x "$XDG_STATE_HOME/romp/romp-node" ]
     [[ "$output" != *"value too great"* ]]
     [[ "$output" != *"octal"* ]]
+    # and a huge value is the hour cap, not an integer diagnostic and a one-second clamp (the second tidy)
+    ROMP_NODE_PROBE_BOUND=99999999999999999999 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" != *"integer expression expected"* ]]
+}
+
+@test "install (macOS): a ROMP_NODE_PROBE_BOUND with leading zeros is its number, not an hour: 0000001 bounds a hung copy at one second" {
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    _hang_src exec
+    rm -f "$TEST_DIR/node.pid"
+    ROMP_NODE_PROBE_BOUND=0000001 ROMP_NODE_SRC="$TEST_DIR/hang-node" ROMP_OS_OVERRIDE=Darwin run "$tmo" 20 "$SVC" install
+    [ "$status" -eq 0 ]                                        # not the outer bound: an hour would have hit it
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+}
+
+@test "install (macOS), the watchdog path: a sleep on PATH that FORKS its sleep leaves no child behind: the sleep's tree is ended" {
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local bare="$TEST_DIR/bare-fork"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm ps pgrep setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    printf '#!/bin/sh\n"%s" "$@" &\nwait\n' "$real" > "$bare/sleep"; chmod +x "$bare/sleep"
+    printf '#!/bin/sh\n"%s" 0.3\necho fake-node "$@"\n' "$real" > "$TEST_DIR/slow-node"; chmod +x "$TEST_DIR/slow-node"
+    PATH="$bare" ROMP_NODE_SRC="$TEST_DIR/slow-node" ROMP_OS_OVERRIDE=Darwin run setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
+@test "install (macOS), the watchdog path: a sleep on PATH that ignores TERM is KILLed after a bounded check, so a fast probe does not wait out the bound" {
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    local bare="$TEST_DIR/bare-deaf"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm ps pgrep setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    printf '#!/bin/sh\ntrap "" TERM\nexec "%s" "$@"\n' "$real" > "$bare/sleep"; chmod +x "$bare/sleep"
+    local t0=$SECONDS
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=8 ROMP_OS_OVERRIDE=Darwin run "$tmo" 30 setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [ $((SECONDS - t0)) -lt 5 ]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
 }
 
 @test "install (macOS): the hatch reads 0, false, no and off as off, and the file's last assignment wins" {

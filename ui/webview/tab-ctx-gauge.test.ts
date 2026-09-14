@@ -47,7 +47,7 @@ test("the gauge is a slim VERTICAL bar and the strip tightened to make room for 
   assert.match(CSS, /\.tab-ctx-fill \{ position: absolute; left: 0; right: 0; bottom: 0/);
   // the strip's spacing trade (the user 2026-08-08): inter-tab gap 0; in-tab gap/padding shrunk.
   // (The Yatharth theme reopens a 3px seam under its scope — tab-theme.test.ts pins that.)
-  assert.match(CSS, /#tabs \{ display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 0; position: relative; \}/);
+  assert.match(CSS, /#tabs \{ display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 1px 0; position: relative; \}/);
   assert.match(CSS, /\.tab \{[\s\S]{0,400}gap: 4px;[^\n]*\n\s*padding: 6px 7px;/);
 });
 
@@ -70,7 +70,7 @@ test("gear → Tabs: the Context bar widget's WHEN option (From 50% full / Alway
   assert.match(TW, /options: \[\{ key: "show", label: "Show", default: "over50",\s*\n\s*choices: \[\{ value: "over50", label: "From 50% full" \}, \{ value: "always", label: "Always" \}\] \}\],/);
   assert.doesNotMatch(GEAR, /id=rs-tabctx\b/, "the old Chat-section row is gone");
   assert.match(GEAR, /var drop = housePick\(wrap, cfg\.pickPrefix \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/, "the option is the panel's house picker (one builder for both widget sections since T409)");
-  assert.match(GEAR, /host: document\.getElementById\('rs-widgets'\), list: TW\.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/, "the tab section keeps its picker ids");
+  assert.match(GEAR, /host: document\.getElementById\('rs-widgets'\), list: TW\.titleWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/, "the tab section keeps its picker ids (its rows are the widgets that render into the title; the rings have rows of their own, 2026-09-14)");
   assert.match(GEAR, /s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\);/, "the prefs and the mirror");
   assert.match(GEAR, /function tabCtxMode\(v\) \{ return \(v === 'always' \|\| v === 'never'\) \? v : \(v === false \? 'never' : 'over50'\); \}/, "the normalizer stays for the mirror's readers");
 });

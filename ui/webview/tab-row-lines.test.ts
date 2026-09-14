@@ -17,6 +17,10 @@ test("the painter groups rendered tabs by row and lines every row but the last",
   assert.match(body, /rows\.set\(top, Math\.max\(rows\.get\(top\) \?\? 0, bot\)\);/, "a row = the tabs sharing an offsetTop; its line sits at the tallest bottom");
   assert.match(body, /bottoms\.pop\(\);/, "the LAST row already has #tabbar's own border-bottom beneath it — no double line");
   assert.match(body, /el\("div", "tab-row-line"\)/);
+  assert.match(body, /bar\.appendChild\(line\);   \/\/ at the row's bottom edge: the strip's 1px row gap is the line's own pixel row/);
+  // T417 (the user 2026-09-14): the line at a row's bottom edge overlapped the top pixel of the row below, and the active tab's inset
+  // identity ring there, beginning one pixel under that edge, read cut off at the top; a 1px ROW gap gives each line its own pixel row
+  assert.match(CSS, /\n#tabs \{ display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 1px 0; position: relative; \}/, "a 1px row gap, no column gap: the T134 line sits between the rows, over neither");
 });
 
 test("repaints are event-keyed: every strip rebuild, plus wrap changes via ResizeObserver", () => {
@@ -28,5 +32,4 @@ test("full-bleed hairlines in the strip's own border color, Classic-scoped", () 
   assert.match(CSS, /body:not\(\.chat-theme-yatharth\) #tabs \.tab-row-line \{\n  position: absolute; left: -8px; right: -8px; height: 1px; background: var\(--box-border\); pointer-events: none; \}/,
     "the negative bleed spans the bar's 8px side padding, like the outer close");
   assert.match(CSS, /body\.chat-theme-yatharth #tabs \.tab-row-line \{ display: none; \}/, "Yatharth keeps his merged look");
-  assert.match(CSS, /#tabs \{ display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 0; position: relative; \}/);
 });

@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,7 +27,7 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
@@ -52,8 +52,10 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
-import { composeTabWidgets, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry
-import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
+import { composeTabWidgets, composeTabRing, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
+import { titleWithKey, keyHint, chordOf, effectiveChord, loadOverrides, saveOverride, KEYS_EVENT } from "./keybindings";
+import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys } from "./tab-keys";   // per-tab hot keys (2026-09-10): the set and its bookkeeping; the keycap on the tab is the T379 widget, read from the same store
+import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, type SessionFlag } from "./flag-pending";   // the per-session view flags' pending guard (review 2026-09-14)
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
@@ -319,7 +321,7 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // the add flow could read for a stored one), `why` the reason it is greyed when `available` is false
 interface AuthLogin { id?: string; value?: string; label?: string; machine?: boolean; available?: boolean; why?: string; expiresSoon?: boolean }
 interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean; logins?: AuthLogin[] }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -5767,6 +5769,18 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   // restore above, so its render is the first that may post or fall back.
   if (localStrip(report)) tabOrderSeen = true;
   renderTabs();
+  syncTabKeysWithStrip();
+}
+// The hot-key set follows the strip (review, 2026-09-10): a session whose tab is gone loses its "Switch to" command
+// and its chord — there is nothing to switch to — and a renamed one is re-titled, so the shortcuts dialog never
+// says "Switch to <old name>". The pane owns this end because only it knows the strip; the shell hears the writes
+// (storage events) and follows them in its registry. Every column runs it on the same push: the first to write
+// wins, the rest find the set already right.
+function syncTabKeysWithStrip(): void {
+  if (!inRompShell()) return;   // the set exists only under the shell's dispatcher
+  const set = loadTabKeys(localStorage);
+  for (const sid of goneTabKeys(set, order)) { forgetTabKey(localStorage, sid); saveOverride(hotkeyCommandId(sid), null); }
+  for (const [sid, name] of renamedTabKeys(set, (sid) => sessions.get(sid)?.name)) rememberTabKey(localStorage, sid, name);
 }
 // The tabOrder frame's `skeleton` list (2026-09-07): the tabs the kernel is withholding from this page after a
 // redial (skeleton-tabs.ts). Applied BEFORE applyTabOrder — the dispatch calls this first — so the ONE
@@ -6159,16 +6173,19 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
   n.textContent = words.count;   // folded: the hidden members — a pinned one shows itself; all pinned: the total (headWords)
   head.appendChild(n);
   if (collapsed) {
-    // the folded gist, MEMBER-derived: one pip by the TAB's own state rule (tab-state.ts) — red for a
-    // hidden member blocked on you or waiting for you, gold for working, amber for an API error
+    // the folded gist, MEMBER-derived: one pip by the TAB's own ring rule (tab-state.ts) — red for a
+    // hidden member blocked on you or waiting for you, yellow for one with something waiting on you (the
+    // ask ring, 2026-09-13 — a fold must not hide it), gold for working, amber for an API error
     // retrying on its own (the tab renders that amber too; a red pip there was a false interrupt).
     // After the count and small, so the header still reads as a label; the tooltip names the sessions.
     // Over the HIDDEN members only: a pinned member's own tab shows its state. Not the header's own
     // pip — it wears no state class — and never a tab pip class (the kernel's mobile scrape keys on those).
-    const kind = sectionPip(hidden.map((id) => sessions.get(id)?.status));
+    // Under the same ring SWITCHES the members' tabs wear (ringSwitch over settings.tabWidgets, 2026-09-14), so a
+    // fold never shows a colour no unfolded tab would.
+    const kind = sectionPip(hidden.map((id) => sessions.get(id)?.status), ringSwitch(settings.tabWidgets));
     if (kind) {
       const pip = el("span", "tab-group-pip" + (kind === "working" ? "" : " " + kind));
-      pip.title = sectionPipTitle(kind, sectionPipMembers(kind, hidden.map((id) => sessions.get(id))));
+      pip.title = sectionPipTitle(kind, sectionPipMembers(kind, hidden.map((id) => sessions.get(id)), ringSwitch(settings.tabWidgets)));
       pip.setAttribute("aria-hidden", "true");   // a dot says nothing aloud: its phrase rides the header's label
       spoken += "; " + pip.title;
       head.appendChild(pip);
@@ -6247,6 +6264,15 @@ function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Stat
   // strip's signature (renderTabs) so a state whose class changed always repaints
   const stateCls = tabStateClass(s.status);
   if (stateCls) tab.classList.add(stateCls);
+  // …and the RING beside it (the rings-as-widgets change, 2026-09-14): the dashed outline is a WIDGET of the
+  // registry now, one of three with a switch each in the settings (red for a live prompt or an API stop only
+  // you can clear, yellow for a card of the session's under needs-you, in every live state the ask ring of
+  // 2026-09-13 rides working included, amber for an API retry on its own), and the tab wears ONE at a time:
+  // composeTabRing takes every ring class off, then puts on the first switched-on ring whose predicate
+  // holds, red over yellow over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
+  // folded header's pip; the strip's signature reads the inputs (the state, the flags, needsYou) and
+  // settings.tabWidgets, so a card entering or leaving the column, and a switch flipped, always repaint.
+  composeTabRing(tab, s.id || "", s.status, settings.tabWidgets);
   if (s.status.faded) tab.classList.add("at-rest");
   // WORKING shows a yellow dot; AWAITING-BG the same dot in await-green — matching the chip's color, so the
   // tab reads the split at a glance (the user 2026-07-13); BLOCKED (API error) gets NO dot — the dashed
@@ -6488,7 +6514,7 @@ function paintTabRowLines(bar: HTMLElement): void {
   for (const y of bottoms) {
     const line = el("div", "tab-row-line");
     line.style.top = y + "px";
-    bar.appendChild(line);
+    bar.appendChild(line);   // at the row's bottom edge: the strip's 1px row gap is the line's own pixel row (styles.css #tabs, T417)
   }
 }
 let tabRowObserver: ResizeObserver | null = null;
@@ -6631,12 +6657,12 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379)
+                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the yellow ring's input (2026-09-13)
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
-      return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints
+      return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), st.needsYou === true, !!st.faded,
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints; + the feed's needs-you verdict (2026-09-13): a card entering or leaving needs-you repaints the yellow ring (the state class already carries the red and amber rings' inputs; settings.tabWidgets below carries the switches)
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -6771,8 +6797,8 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
-  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user: the lock is a row inside the strip's gear below; its
-  // state, its drag rules and its saveSettings road are unchanged, only where it is toggled moved.)
+  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user; since T415, 2026-09-14, the lock is a checkbox row in the
+  // settings' Tab strip section, where the strip's gear jumps; its state, its drag rules and its saveSettings road are unchanged.)
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6813,33 +6839,23 @@ function renderTabs() {
   // control stays the same button with the same convention and menu, and nothing folds into the gear
   const end = el("span", "tab-strip-end");
   end.appendChild(tagBox);
-  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
-  // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
-  // same file), a bare glyph after the tags button in the strip's right-end wrapper (T412, the user 2026-09-13: no box,
-  // dressed exactly as the rail's gear; styles.css .tab-widgets-gear mirrors the kernel's .rail-act rules). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
-  // "Lock the tabs in place", the tab lock's toggle row with the two titles the strip's button wore (T395: the state,
-  // its drag rules and its saveSettings road are unchanged); and "Tab widgets…", the settings on the Chat tab scrolled to
-  // its Tab widgets section (T379's ask, through the shell or this window's own gear as before), that row only where a
-  // settings gear can be reached (an honest absence elsewhere); the strip's gear itself is everywhere the strip is, since
-  // the lock's button was. Built once per strip paint; the click is its own, click-safe because the strip is rebuilt
-  // only when its signature changes; a keyboard press on the gear then on the row keeps the focus on the row.
-  {
-    const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+  const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13; T412; T415, the user 2026-09-14): ONE glyph, the
+  // shell's own settings gear (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by
+  // the kernel from the same file), a bare glyph after the tags button in the strip's right-end wrapper, dressed exactly as the
+  // rail's (styles.css .tab-widgets-gear mirrors the kernel's .rail-act rules). One click takes the person STRAIGHT to the
+  // settings' Chat tab scrolled to the strip's own "Tab strip" section (gear.js showSection), which holds the tab lock as a
+  // checkbox row above Tab widgets; the menu the gear opened since T405 (the lock's toggle row and the row to Tab widgets) kept nothing
+  // once the lock moved, so it is gone, and the gear is drawn only where a settings card can open: the shell, or a host with its
+  // own gear (__rompShowStrip). The lock's state, its drag rules and its saveSettings road are unchanged (T395). Click-safe:
+  // the strip is rebuilt only when its signature changes.
+  if (settingsReachable) {
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
-    gear.title = settingsReachable ? "Tab strip: lock, widgets…" : "Tab strip: lock";   // no widgets row where no settings gear can be reached, and the title says so (round two, low 1)
+    gear.title = "Tab strip settings";
     gear.setAttribute("aria-label", "Tab strip settings");
-    gear.setAttribute("aria-haspopup", "menu");
     gear.textContent = GEAR_GLYPH;
-    gear.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openRowsMenu(gear, () => [
-        { label: "Lock the tabs in place", current: settings.tabsLocked, glyph: settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN,
-          title: settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",
-          press: () => { setTabsLocked(!settings.tabsLocked); return false; } },
-        ...(settingsReachable ? [{ label: "Tab widgets…", dim: true, press: () => { openSettingsOn("chat", "tabwidgets"); } }] : []),
-      ]);
-    });
+    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabstrip"); });
     end.appendChild(gear);
   }
   bar.appendChild(end);
@@ -7003,9 +7019,11 @@ function copyToClipboard(text: string) {
 // Toggle a per-session view flag (feed mute / postal isolation) — the SAME message the timeline lane toggles
 // send, persisted + re-broadcast by the kernel. Optimistically update the local copy so reopening the menu
 // reflects it before the next push (the kernel reconciles).
+const pendingFlags: PendingFlags = new Map();   // the view flags a click flipped here, held against frames built before it (flag-pending.ts)
 function setSessionFlag(id: string, flag: "hideFromFeed" | "postalServiceOff" | "notify", value: boolean) {
   const s = sessions.get(id);
   if (s) s[flag] = value;   // both flags are declared optional booleans on Session — no cast needed
+  notePendingFlag(pendingFlags, id, flag, value);   // a frame built before the kernel applied this cannot flip the row back (flag-pending.ts)
   if (vscodeApi) vscodeApi.postMessage({ type: "setSessionFlag", id, flag, value });
 }
 // Override a session's identity color from the tab menu's swatches (the user 2026-06-29). Optimistically paint
@@ -7034,7 +7052,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -7047,6 +7065,8 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
           ? '<path d="M2 4.5 A1.2 1.2 0 0 1 3.2 3.3 L6.2 3.3 L7.6 4.9 L12.8 4.9 A1.2 1.2 0 0 1 14 6.1 L14 11.5 A1.2 1.2 0 0 1 12.8 12.7 L3.2 12.7 A1.2 1.2 0 0 1 2 11.5 Z"/>'  // folder (browse files)
         : kind === "tag"
           ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
+        : kind === "key"
+          ? '<rect x="1.5" y="4" width="13" height="8" rx="1.5"/><line x1="4.5" y1="9.5" x2="11.5" y2="9.5"/>'  // a keycap (the tab's hot key)
         : kind === "pencil"
           ? '<path d="M3 13 L3.6 10.4 L10.8 3.2 A1.3 1.3 0 0 1 12.8 5.2 L5.6 12.4 Z"/><line x1="9.8" y1="4.2" x2="11.8" y2="6.2"/>'  // pencil (rename)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
@@ -7151,6 +7171,26 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     rename.appendChild(bodyEl);
     rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id, copy); });
     menu.appendChild(rename);
+  }
+  // Hot key (the user 2026-09-10): a key combination that switches to this tab, recorded in the shell's
+  // shortcuts dialog (it owns the recorder and the conflict check) — this pane only asks. The chord shows
+  // minified on the tab (the T379 keycap widget, from the same store). ONE row (the user 2026-09-11): while a chord is bound it reads "Update hot key…", and the
+  // recorder it opens both re-records and removes (Backspace, or its Remove button — an unbind in the shared store).
+  if (inRompShell() && typeof (window.parent as any).__rompHotkeyConfigure === "function") {
+    const cur = tabHotkey(id);
+    const hot = el("div", "ctx-item ctx-item-toggle");
+    hot.appendChild(ctxIcon("key", false));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = cur ? "Update hot key…" : "Hot key…"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub");
+    sb.textContent = cur ? "now " + miniChord(cur) + " — press a new combination, or remove it" : "press a key combination that switches to this tab";
+    bodyEl.appendChild(sb);
+    hot.appendChild(bodyEl);
+    hot.addEventListener("click", (ev) => {
+      ev.stopPropagation(); dismissTabMenu();
+      try { window.parent.postMessage({ romp: "hotkeyConfigure", sid: id, name: sessions.get(id)?.name || "" }, "*"); } catch (e) { /* no shell to ask */ }
+    });
+    menu.appendChild(hot);
   }
   // The colour swatches close the section with Rename (the user 2026-08-24, who grouped the menu by
   // kind). The swatch row itself is unchanged (the user 2026-06-29): the identity palette as circles,
@@ -7338,7 +7378,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             row.appendChild(bodyE);
             // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
             // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
-            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the tab strip's gear menu"; }
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the settings (Chat, Tab strip)"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
             plus.type = "button"; plus.textContent = "+";
             plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
@@ -7485,9 +7525,12 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     () => setSessionFlag(id, "postalServiceOff", !offMail));
   // system-notification bell (the user 2026-07-28) — same flag the timeline lane bell toggles. NOTE the
   // inverted polarity vs the two above: `notify` true is the ENABLED state, so the icon slashes on !onBell.
+  // the row's sub-line names the command's chord when one is bound (the user 2026-09-11: where is the key revealed?)
+  const bellKey = keyHint("session.notify");
   toggle("bell", !onBell,
     onBell ? "Stop notifying" : "Notify me",
-    onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
+    (onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes")
+      + (bellKey ? " · " + bellKey : ""),
     () => setSessionFlag(id, "notify", !onBell));
   // (The hide-session mechanism is fully RETIRED, the user 2026-08-24 — the tag system covers
   // backgrounding; the kernel migrated existing hidden entries into the "archived" tag. revealIn
@@ -7669,7 +7712,9 @@ window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contai
 // an Escape that closed the menu says so on the event (preventDefault), so the section view's own Escape
 // (installSnapshotEscape, armed at this same capture phase, later in the listener order) yields to it
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenuEl) { dismissTabMenu(); e.preventDefault(); } }, true);
-window.addEventListener("scroll", dismissTabMenu, true);
+// …but not the menu's own scroll: taller than the window it scrolls inside it (styles.css max-height, 2026-09-13), and a
+// dismissal on that scroll closed it under the pointer the moment a row below the fold was brought into view
+window.addEventListener("scroll", (e) => { if (ctxMenuEl && ctxMenuEl.contains(e.target as Node)) return; dismissTabMenu(); }, true);
 window.addEventListener("blur", () => dismissTabMenu());
 
 // "Rename" (tab context menu): swap the tab's label for an inline input. Enter
@@ -11821,6 +11866,11 @@ function ensureToastBox(): HTMLElement {
 // as before: the nack (the attachment was not saved, the held message not sent), the dismissal and the other-tab ack
 // (the held message not sent).
 function ephemeralWarnToast(msg: string): void { warnToast(msg).dataset.ephemeral = "1"; }
+// The same toast for a CONFIRMATION (review 2026-09-14): the warn toast's border is the error colour, so a routine
+// "done" on it read as a failure. Dressed .note (styles.css: the standard hairline, no tint), otherwise the warn toast's
+// mechanics, the ✕, Esc, the fade and the reload-skip mark, since what it confirms is a state the fresh page reads
+// for itself. For an act that succeeded, never a refusal: those stay warnings.
+function ephemeralNoteToast(msg: string): void { const t = warnToast(msg); t.classList.add("note"); t.dataset.ephemeral = "1"; }
 
 // Tail-windowing (see the View comment): a fresh/rewound view renders only the
 // last WINDOW_TAIL events; scrolling within EXPAND_TRIGGER_PX of the top reveals
@@ -13989,10 +14039,14 @@ function virtualizeToViewport(): void {
 let landingNoticeEl: HTMLElement | null = null;
 let pendingAnchorClick = false;   // the landing this pass attempts was armed by the reader's click (a focus frame), not by a pass's own re-attempt
 /** A real second click on the anchor a landing is already on the wire for: the notice pulses once (the page has no other feedback for it). */
+let pulseEnd: (() => void) | null = null;   // the live pulse's one-shot end handler, held so a hide that cuts the animation can remove it (the tidy after PR 1642, low 2: a cut pulse left one dead closure on the reused element per cancel)
 function pulseLandingNotice(): void {
   const n = landingNoticeEl; if (!n || n.style.display === "none") return;
+  if (pulseEnd) { n.removeEventListener("animationend", pulseEnd); pulseEnd = null; }
   n.classList.remove("pulse"); void n.offsetWidth; n.classList.add("pulse");
-  n.addEventListener("animationend", () => n.classList.remove("pulse"), { once: true });   // one-shot: the class leaves on the animation's own end, so a later landing that re-shows this one element replays nothing (the follow-up after PR 1584, low 1)
+  const end = () => { n.classList.remove("pulse"); if (pulseEnd === end) pulseEnd = null; };
+  pulseEnd = end;
+  n.addEventListener("animationend", end, { once: true });   // one-shot: the class leaves on the animation's own end, so a later landing that re-shows this one element replays nothing (the follow-up after PR 1584, low 1)
 }
 let landingNoticeSid: string | null = null;
 // the landing's state lives in ONE RECORD PER ASK (WindowAsk, beside requestAround below; round eight): no per-session slot here
@@ -14020,7 +14074,14 @@ function showLandingNotice(sid: string, t: number | null | undefined): void {
   landingNoticeEl.classList.remove("pulse");   // a pulse cut short by the hide (no animationend) must not replay on this re-show (low 1)
   landingNoticeEl.style.display = "";
 }
-function hideLandingNotice(): void { if (landingNoticeEl) landingNoticeEl.style.display = "none"; landingNoticeSid = null; }
+function hideLandingNotice(): void {
+  if (landingNoticeEl) {
+    if (pulseEnd) { landingNoticeEl.removeEventListener("animationend", pulseEnd); pulseEnd = null; }   // a pulse the hide cuts short never fires animationend: its handler leaves with it (low 2)
+    landingNoticeEl.classList.remove("pulse");
+    landingNoticeEl.style.display = "none";
+  }
+  landingNoticeSid = null;
+}
 /** The notice's click: the pending target and the notice go, the reply still inserts its run when it arrives (nothing is thrown
  *  away) and the view is not moved; the reader stays where they are, including where the pre-jump put them. */
 function cancelLanding(): void {
@@ -17257,6 +17318,7 @@ function upsert(msg: any) {
   // watches transcript+states only) — the freshest tabOrder meta wins over it, pending guard included
   const tm = tabMeta.get(msg.id);
   if (tm) applyMetaToSession(s, tm, pendingTabMeta.get(msg.id));
+  applyFrameFlags(s, msg, pendingFlags, msg.id);   // the flags the frame carries, under the click's pending guard: a frame built before a click cannot revert them (flag-pending.ts)
   reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileHeldCopies(s);   // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
@@ -17516,6 +17578,9 @@ function chatTail(msg: any) {
   if (s.proto === 2 && s.headKnown && !(s.regions && s.regions.some((r) => r.kind === "gap"))) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the WHOLE is resident (no gap): its count (T386 stage 2, low 7: a mid-transcript gap holds older history, so the resident count is not the total)
   const before = awaitKey(s.status);
   if (msg.status) s.status = msg.status;
+  // the per-session view flags ride the tail beside the status (2026-09-11): a bell flipped in another column or
+  // browser reaches this caught-up copy on the flip, not on the next full frame
+  applyFrameFlags(s, msg, pendingFlags, msg.id);   // under the click's pending guard (flag-pending.ts): a tail built before a click cannot flip its row back
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   scheduleRenderTabs();   // once per animation frame however many tails a cycle lands (2026-09-04)
   if (msg.id === activeId) {
@@ -18358,6 +18423,20 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // shell names ONLY the ids that page's own cross removed (colEmpty's `crossed`): the backstop behind this hold toasts
   // "Couldn't close", which is right for a refused cross and wrong for anything else (the vanishing tab, 2026-09-12)
   if (m.romp === "closing") { if (Array.isArray(m.ids)) for (const id of m.ids) { if (typeof id === "string" && id) closingTabs.set(id, Date.now()); } renderTabs(); return; }
+  // the shell's palette, or a chord bound to it: flip the ACTIVE session's bell — the same per-session override the
+  // tab menu's bell row writes (setSessionFlag "notify"), so the kernel's next push repaints the row; a toast names
+  // the new state, since the icon in that menu is the flip's only other witness (the user 2026-09-11, who wanted the
+  // bell on a key). A quiet note, not a warning: it confirms (review 2026-09-14). A placeholder tab has no session to
+  // flag yet; nothing happens.
+  if (m.romp === "notifyToggle") {
+    const s = activeId && !isProvisionalId(activeId) ? liveSession(activeId) : undefined;   // a skeleton's copy is stale: no flag blind
+    if (s && activeId) {
+      const on = !s.notify;
+      setSessionFlag(activeId, "notify", on);
+      ephemeralNoteToast((on ? "Notifications enabled for " : "Notifications disabled for ") + (s.name || activeId.slice(0, 8)));
+    }
+    return;
+  }
   // the shell's pane set, which panes are on screen by key: the cache openPath routes file links by (panesOn
   // above; the shell posts it on every toggle, on this iframe's load and on a phone's tab switch). Whole-set
   // replace: a key the shell stopped naming must not linger as on.
@@ -18480,6 +18559,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (m.gesture === "flag" && typeof m.sid === "string" && typeof m.flag === "string" && m.sid && m.flag) {
       // a tab-menu flag: repaint the local copy to the value the kernel still paints (the frame carries it —
       // what the next push shows), not to a value recorded at the click, which a second click made wrong
+      dropPendingFlag(pendingFlags, m.sid, m.flag as SessionFlag);   // the click's expectation ends here, not after three frames
       const s = sessions.get(m.sid);
       if (s && typeof m.value === "boolean") (s as any)[m.flag] = m.value;
     }
@@ -18698,7 +18778,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     notePendingMeta(pendingTabMeta, m.id, { name: m.name });   // kernel truth — hold it against a push built pre-rename
     const s = sessions.get(m.id);
-    if (s && s.name !== m.name) { s.name = m.name; renderTabs(); if (m.id === activeId) { syncComposerPh(); updateStatusline(); } }   // the box and the badge name the session as it is now called
+    if (s && s.name !== m.name) { s.name = m.name; renderTabs(); syncTabKeysWithStrip(); if (m.id === activeId) { syncComposerPh(); updateStatusline(); } }   // the box, the badge and a hot key's title name the session as it is now called
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") {   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
     const ackShip = typeof m.shipId === "string" && m.shipId ? m.shipId : undefined;
@@ -20128,6 +20208,10 @@ window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_KEY) renderT
 // source's own dragend render already read the new sets in the same task)
 window.addEventListener("storage", (e) => { if (e.key === "romp-chat-cols") renderTabs(); });
 window.addEventListener(TABGROUPS_EVENT, () => renderTabs());
+// a hot key bound or removed (the shell's dialog writes the bindings store; this document's own Remove does too)
+// repaints the tabs' badges — the store's key doubles as the same-document event name
+window.addEventListener("storage", (e) => { if (e.key === KEYS_EVENT) renderTabs(); });
+window.addEventListener(KEYS_EVENT, () => renderTabs());
 // …and so does crossing the phone/desktop boundary (an iPad rotation): renderTabs samples
 // phoneLayout() per render, and the kernel's CSS swaps the strip for its scraped session list the
 // instant the same media rule flips — so the DOM kept the desktop plan (folded tabs absent from the
