@@ -18494,9 +18494,11 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // showActive scrolls there; and cover the ALREADY-ACTIVE case, where setActive early-returns (activeId ===
     // id, no anchor) and would otherwise leave a scrolled-up chat parked in history, not at the prompt.
     if (m.live) { const v = views.get(m.id); if (v) v.stick = true; }
-    // the jump landed on the tab already shown (setActive early-returns below with no anchor): announce it again, so a
-    // feed that moved its section on the click gets the kernel's echo and settles its pending record (T416 round two)
-    if (activeId === m.id && m.anchor == null && m.anchorT == null) notifyActive();
+    // the jump landed on the tab already shown: announce it again, anchored or not (an anchored jump onto the shown tab
+    // takes setActive's path but a column that does not hold the session forwards it and announces nothing here), so a
+    // feed that moved its section on the click gets the kernel's echo and settles its pending record (T416 rounds two
+    // and three)
+    if (activeId === m.id) notifyActive();
     if (m.live && activeId === m.id) {
       // one frame LATER, not now: when this focus is what un-hid the pane (the shell's reveal lands a
       // task after revealSelfPane's postMessage), the pane is still display:none here and scrollHeight

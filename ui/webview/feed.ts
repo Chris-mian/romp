@@ -1608,6 +1608,9 @@ let focusPending: { sid: string | null; nonce: number | null } | null = null;
 // handler assignment once missing its braces posted a jump on every push) can never read as the reader's jump
 let inRender = false;
 let inModalRender = false;
+// a reader's gesture arriving THROUGH a frame (the shell's revealCard for a bell click or a notification tap, marked
+// gesture on the frame): honoured for the post that frame makes (round three)
+let frameGesture = false;
 function scrollFeedTop(): void {
   const list = document.getElementById("feed-list");
   if (list) list.scrollTop = 0;
@@ -1617,7 +1620,7 @@ function scrollFeedTop(): void {
  *  card jump) also scrolls the feed's box to the top (T414), an openSession (a session name, a peer chip) only switches. */
 function noteOwnJump(m: any): void {
   if (!m || (m.type !== "openSession" && m.type !== "showOnTimeline")) return;
-  if (inRender || inModalRender || !inInputEvent()) return;   // a render-time or unprompted post is no gesture of the reader's
+  if (inRender || inModalRender || !(inInputEvent() || frameGesture)) return;   // a render-time or unprompted post is no gesture of the reader's
   const sid = typeof m.id === "string" && m.id ? m.id : typeof m.sid === "string" && m.sid ? m.sid : "";
   if (!sid || !focusedIdentity(sid).live) return;   // a closed session's jump changes no tab, so it moves nothing here
   applyLocalFocus(sid, m.type === "showOnTimeline", true, null);
@@ -1631,7 +1634,10 @@ function applyLocalFocus(sid: string | null, jump: boolean, gesture: boolean, no
   if (changed) focusPending = { sid, nonce };   // held until the kernel's echo of this very switch, or its marked answer
   else if (focusPending && focusPending.sid === sid && nonce != null) focusPending.nonce = nonce;   // the chat announcing the switch this pane made: its echo is the one to wait for
   if (!showFocused) return;
-  if (changed) {
+  // the reader's gesture paints whether or not it changed the record: when the kernel's frame beat the shell's relay for
+  // the same switch under a held card, the frame parked the paint (focusStale) and the relay finds nothing changed; the
+  // gesture releases that park and paints now (the round-three review: the original lag, restored by a coin-flip order)
+  if (changed || (gesture && focusStale)) {
     if (tabScopeKey || (!gesture && freezeKey)) focusStale = true;   // an open card menu, or a held card under a switch the reader did not make: the paint waits for the release (T347)
     else { render(); focusStale = false; }
   }
@@ -5492,7 +5498,10 @@ function render() {
   if (paintHeld(document.hidden, feedIntersecting, list.childElementCount > 0)) { paintDirty = true; return; }
   pruneTip();   // drop the styled tip only if the render tore its hovered anchor out (tip.ts pruneTip)
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
-  inRender = true;   // from here to the end a post is render time, never the reader's jump (noteOwnJump, T416 round two)
+  inRender = true;   // the body is render time: a post it makes is never the reader's jump (noteOwnJump, T416 round two)
+  try { renderBody(list); } finally { inRender = false; }   // a throw inside the body must not leave the mark set (round three)
+}
+function renderBody(list: HTMLElement) {
   paintJudgeLimit();   // the usage-limit banner above the columns (build-once; hidden when unlatched)
   auditShownColumns(asks); // tripwire: what this render SHOWS is the record a bounce report needs
   const prevScroll = list.scrollTop;
@@ -5525,7 +5534,6 @@ function render() {
       list.appendChild(e);
     }
     ensureHostLoad(list);   // an attached host's cards may be the ONLY thing coming — say so here too
-    inRender = false;
     return;
   }
 
@@ -5743,7 +5751,6 @@ function render() {
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
   applyExtHover(); // reconcile/renderModal may have rebuilt nodes — re-apply the rail-dot outlines (cards AND modal rows)
   persistViewState();   // whatever the user opened survives the reload a kernel restart brings (no-op unless it changed)
-  inRender = false;
 }
 
 window.addEventListener("keydown", (e) => {
@@ -6319,7 +6326,8 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       target.classList.add("reveal-pulse");
       target.addEventListener("animationend", () => target.classList.remove("reveal-pulse"), { once: true });
     } else if (m.sid) {
-      vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) });
+      frameGesture = !!m.gesture;   // the bell click or the notification tap behind this frame is the reader's gesture (round three)
+      try { vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) }); } finally { frameGesture = false; }
     }
     return;
   }
@@ -6360,7 +6368,13 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const id = typeof m.id === "string" && m.id ? m.id : null;
     const nonce = typeof m.nonce === "number" ? m.nonce : null;
     if (focusPending) {
-      const echo = id === focusPending.sid && (focusPending.nonce == null || nonce == null || nonce === focusPending.nonce);
+      // the echo is an agreeing frame whose number is at or above the record's (a watermark): the record's own echo, or
+      // a later announcement of the same session (the chat re-announcing after a socket flap, with a new number) that
+      // would otherwise leave the record standing for the page's life; a burst back to the same session is still
+      // protected, since its earlier announcement's frame carries a lower number. One caveat for a SECOND delivery path:
+      // the frames ride one ordered socket, so an echo can never overtake an earlier frame; a path that could reorder
+      // them would let the stale frame land after the echo cleared the record (the round-three review).
+      const echo = id === focusPending.sid && (focusPending.nonce == null || nonce == null || nonce >= focusPending.nonce);
       if (!m.reaffirm && !echo) return;
       focusPending = null;
     }

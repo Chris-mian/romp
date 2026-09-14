@@ -53331,7 +53331,7 @@ row.addEventListener('click',function(){close();
 if(!feedHere()){jumpChat(n.tgt.sid||'');return;}
 try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',true);}catch(e){}
 var f=document.getElementById('f-feed');
-try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''},'*');}catch(e){}});}
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||'',gesture:true},'*');}catch(e){}});}
 row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
 if(!shown){var e=document.createElement('div');e.className='rerr-empty';
 e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'Nothing logged';list.appendChild(e);}}
@@ -55936,7 +55936,7 @@ var feedReady=false,pendingCard=null,chatUp=false;   // chatUp: this page's own 
 function revealCard(itemId,sid){if(window.__rompPaneEnabled&&!window.__rompPaneEnabled('feed'))return;
 if(!feedReady){pendingCard={itemId:itemId,sid:sid};return;}
 var f=document.getElementById('f-feed');
-try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid},'*');}catch(e){}}
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid,gesture:true},'*');}catch(e){}}
 window.addEventListener('message',function(e){var m=e&&e.data;
 if(m&&m.romp==='wsState'&&m.app==='chat'&&m.state==='up')chatUp=true;   // the chat pane's shim, on its socket's open: from here a tap is delivered live
 if(!(m&&m.romp==='ready'&&m.app==='feed'))return;

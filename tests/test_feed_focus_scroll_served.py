@@ -35,6 +35,15 @@ Completed card), the section switched on through the View menu, and walks these 
       scroll rides the Summary and card jumps only (the round-two low);
   (i) a grouped card's modal opened (its title handler once posted its jump at paint time, braces missing): the
       section and the scroll stand, through a later push too (the round-two medium);
+  (l) the kernel's frame beats the shell's relay for the same switch while a board card is held: the frame parks the
+      paint, and the relay (the reader's gesture) paints it at once instead of leaving the section stale until the
+      pointer moves (the round-three medium);
+  (m) one throw inside render (a lookup made to fail once) leaves no mark behind: the next Summary click switches and
+      scrolls (the round-three medium: a bare clearing once left the mark set);
+  (n) the shell's revealCard for a card no longer on the board, marked with the reader's gesture (a bell click, a
+      notification tap): its openSession switches the section at once and scrolls nothing (a round-three low);
+  (o) a re-announce after a socket flap (an agreeing frame with a higher number) settles the record, so a later frame
+      for another session is a real switch (a round-three low: the record used to stand for the page's life);
   (j) the single-column layout (a 520 px viewport): road (a)'s jump again.
 Screenshots with FEED_FOCUS_SCROLL_SHOTS=<path-prefix>: -1-row-dark/-light and -2-stacked-dark/-light. Optional, never a
 skip. Skips LOUDLY without the extension deps or a Playwright browser, and for nothing else; a build or kernel failure
@@ -93,7 +102,7 @@ try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 }, deviceScaleFactor: 2 });
 const errors = [];
-page.on("pageerror", (e) => errors.push(String(e && e.stack || e).slice(0, 400)));
+page.on("pageerror", (e) => { const t = String(e && e.stack || e); if (!t.includes("lab: one-shot throw inside render")) errors.push(t.slice(0, 400)); });   // road (m)'s own throw is expected
 page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text().slice(0, 300)); });
 // capture what the page posts to its host (a jump is a showOnTimeline message)
 await page.addInitScript(() => {
@@ -285,6 +294,48 @@ out.i2 = await state();
 await clickOn("#feed-modal");   // the backdrop closes it
 await frame();
 out.i3 = await state();
+// (l) the frame first, then the relay, with a board card held: the relay's gesture paints the parked switch
+await kernel(cfg.web); await park();
+await scrollList(0);
+await page.hover(`#feed-cols [data-key="a:cccccccc-1111-2222-3333-000000000010"]`);
+await page.waitForTimeout(120);
+await kernel(cfg.tests, 31);          // the kernel's frame lands first: parked under the held card
+out.l1 = await state();
+await relay(cfg.tests, 31, true);     // the shell's relay of the same switch, the reader's gesture
+out.l2 = await state();
+await park();
+out.l3 = await state();
+// (m) one throw inside render leaves no mark: the next Summary click still switches and scrolls
+await kernel(cfg.web); await park();
+out.scrolledM = await scrollList(600);
+await page.evaluate(() => {
+  const orig = document.getElementById.bind(document);
+  document.getElementById = function (id) { if (id === "feed-foot") { document.getElementById = orig; throw new Error("lab: one-shot throw inside render"); } return orig(id); };
+});
+await deliver(payload);   // this push's render throws once, inside the body
+await frame();
+out.m0 = await state();
+await clickSummary(cfg.apiDone);
+out.m1 = await state();
+await park();
+await kernel(cfg.api);
+// (n) the shell's revealCard for a card gone from the board, carrying the reader's gesture: the fallback's openSession switches at once
+await kernel(cfg.web); await park();
+out.scrolledN = await scrollList(600);
+await deliver({ romp: "revealCard", itemId: "cccccccc-1111-2222-3333-0000000000ff", sid: cfg.api, gesture: true });
+await frame();
+out.n = await state();
+await park();
+await kernel(cfg.api);
+// (o) a re-announce with a higher number settles the record: the next frame for another session is a real switch
+await kernel(cfg.web); await park();
+await relay(cfg.api, 40, true);
+out.o1 = await state();
+await kernel(cfg.api, 41);   // the chat re-announced after a socket flap: the same session, a new number
+out.o2 = await state();
+await kernel(cfg.web, 42);   // nothing pending any more: a real switch
+out.o3 = await state();
+await park();
 // (j) single column: road (a)'s jump again
 await page.setViewportSize({ width: 520, height: 760 });
 await kernel(cfg.web); await park();
@@ -370,7 +421,7 @@ class ServedFocusedSectionJumpScroll(unittest.TestCase):
         # the roads' outcomes in one line each, for the record a base run leaves (pytest -s): a red assertion below stops
         # at the first road, the print shows every road's state
         summary = []
-        for k in ("a1", "a2", "a3", "a4", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "b0", "b1", "c", "d1", "d2", "d3", "e1", "e2", "f", "g1", "g3", "g4", "g5", "h", "i1", "i2", "i3", "j"):
+        for k in ("a1", "a2", "a3", "a4", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "b0", "b1", "c", "d1", "d2", "d3", "e1", "e2", "f", "g1", "g3", "g4", "g5", "h", "i1", "i2", "i3", "l1", "l2", "l3", "m0", "m1", "n", "o1", "o2", "o3", "j"):
             st_ = r.get(k) or {}
             summary.append("%s: name=%s scrollTop=%s%s%s" % (k, st_.get("name"), st_.get("scrollTop"),
                                                           " hovered" if st_.get("hovered") else "", " modal" if st_.get("modal") else ""))
@@ -438,6 +489,21 @@ class ServedFocusedSectionJumpScroll(unittest.TestCase):
         self.assertEqual((i2["name"], i2["scrollTop"]), ("web", 600), "…and a later push repainting the open modal moves nothing either: %r" % i2)
         self.assertEqual((i3["modal"], i3["name"], i3["scrollTop"]), (False, "web", 600), "the backdrop closes it, nothing moved: %r" % i3)
         self.assertNotIn(SID_API, i3["posted"][len(r["f"]["posted"]):], "no jump was posted by the modal's paint: %r" % i3["posted"][len(r["f"]["posted"]):])
+        # (l) the frame first under a held card, then the relay: the gesture paints the parked switch
+        self.assertEqual((r["l1"]["hovered"], r["l1"]["name"]), (True, "web"), "the kernel's frame under the held card parks the paint: %r" % r["l1"])
+        self.assertEqual((r["l2"]["hovered"], r["l2"]["name"]), (True, "tests"), "the relay of the same switch is the reader's gesture: it paints now (the round-three medium): %r" % r["l2"])
+        self.assertEqual(r["l3"]["name"], "tests", "…and the release changes nothing: %r" % r["l3"])
+        # (m) a throw inside render leaves no mark
+        self.assertEqual(r["scrolledM"], 600)
+        self.assertEqual((r["m0"]["name"], r["m0"]["scrollTop"]), ("web", 600), "the throwing push moved nothing: %r" % r["m0"])
+        self.assertEqual((r["m1"]["name"], r["m1"]["scrollTop"]), ("api", 0), "the next Summary click switches and scrolls: the mark did not stay set (the round-three medium): %r" % r["m1"])
+        # (n) the shell's revealCard with the reader's gesture: the fallback's openSession switches at once, scrolls nothing
+        n = r["n"]
+        self.assertEqual(r["scrolledN"], 600)
+        self.assertEqual((n["name"], n["scrollTop"], n["postedOpen"][-1]), ("api", _clamped(600, n), SID_API), "a gesture arriving through the shell's frame is honoured (a round-three low): %r" % n)
+        # (o) the watermark: a re-announce with a higher number settles the record
+        self.assertEqual([r[k]["name"] for k in ("o1", "o2", "o3")], ["api", "api", "web"],
+                         "the chat's re-announce after a flap (a higher number, the same session) settles the record and the next frame is a real switch (a round-three low): %r" % [r[k]["name"] for k in ("o1", "o2", "o3")])
         # (j) single column
         self.assertEqual(r["scrolledJ"], 600)
         j = r["j"]
