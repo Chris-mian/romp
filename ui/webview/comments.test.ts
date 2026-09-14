@@ -178,7 +178,7 @@ test("marks, badges AND every popover button ride the stable document.body deleg
 });
 
 test("highlights re-apply after every render path", () => {
-  assert.match(UI, /m\.type === "session" \|\| m\.type === "chatTail" \|\| m\.type === "chatHead" \|\| m\.type === "chatWindow" \|\| m\.type === "chatMore" \|\| m\.type === "chatEpisode"\)\)\s*\n\s*applyCommentMarks\(String\(m\.id\)\)/);   // chatWindow / chatMore: the proto-2 pages rebuild DOM too (T323 stage 4b)
+  assert.match(UI, /m\.type === "session" \|\| m\.type === "chatTail" \|\| m\.type === "chatHead" \|\| m\.type === "chatWindow" \|\| m\.type === "chatTurns" \|\| m\.type === "chatEpisode"\)\)\s*\n\s*applyCommentMarks\(String\(m\.id\)\)/);   // chatTurns: a gap's page (T386 stage 2), where chatMore was   // chatWindow / chatMore: the proto-2 pages rebuild DOM too (T323 stage 4b)
   assert.match(UI, /applyCommentMarks\(activeId\);\s+\/\/ the re-window rebuilt turns/,
                "the scroll re-window path re-anchors too");
   // the syncView wrapper covers renders that run OFF the message handlers (tab switch, prebuild)
@@ -621,7 +621,7 @@ test("executable, real thinking fixture: the unit stream drops thinking and fold
 test("everything that re-renders the chat's units refills the open popover live", () => {
   assert.match(UI, /function refillOpenCommentPop\(\): void \{/);
   assert.match(UI, /refillOpenCommentPop\(\);   \/\/ the popover renders the same units — its copy of this run must flip too/);
-  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
+  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); updateStatusline\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
 });
 
 // ── T106 (the user 2026-08-26, found by the romp-lab loop's first full pass): three seam fixes ────

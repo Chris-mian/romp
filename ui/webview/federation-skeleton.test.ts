@@ -217,14 +217,6 @@ test("routeOutbound: needFull's optional `why` passes through untouched — only
   assert.deepEqual(bare, [{ host: "", msg: { type: "needFull", id: "B" } }], "no `why` → no `why` minted");
 });
 
-test("routeOutbound: a re-attach's resident keys go to the owning kernel by the id's host, the id bared, the keys intact (T323 follow-up)", () => {
-  const keys = ["k1", "k2#2"];
-  assert.deepEqual(routeOutbound({ type: "reattachKeys", id: "B", keys }, new Set(["gpu1"])), [{ host: "", msg: { type: "reattachKeys", id: "B", keys } }]);
-  assert.deepEqual(routeOutbound({ type: "reattachKeys", id: "gpu1:" + V, keys }, new Set(["gpu1"])), [{ host: "gpu1", msg: { type: "reattachKeys", id: V, keys } }]);
-  assert.ok(BOOKKEEPING.has("reattachKeys"), "held for the socket's open like the other proto-2 asks, never toasted");
-  assert.equal(BOOKKEEPING.get("reattachKeys")!({ id: "B" }), String(BOOKKEEPING.get("loadNewer")!({ id: "B" })).replace("loadNewer", "reattachKeys"));
-});
-
 test("the manager's outbound puts needFull(+why) on the owning kernel's wire — local send or remote socket", () => {
   withManager((fm, _e, localSent) => {
     const ws = attach(fm, "gpu1");
@@ -256,14 +248,14 @@ test("the page's ready (proto 2) goes to every OPEN remote socket at once, and t
   });
 });
 
-test("an index page's ready (no proto) is told to no remote socket: an older kernel needs nothing and a newer one defaults to index frames", () => {
+test("an index page's ready (no proto) is told to every remote socket as proto 1: a kernel that serves no chat frame before the handshake would otherwise serve that socket nothing (the follow-up after PR 1584, low 2)", () => {
   withManager((fm) => {
     const a = attach(fm, "gpu1");
     fm.outbound({ type: "ready" });
-    assert.deepEqual(a.sent, [], "no protocol declared: nothing sent");
+    assert.deepEqual(a.sent, [{ type: "ready", proto: 1 }], "the index wire is declared to the open remote socket");
     fm.openRemote("gpu2", true);
     const b = FakeWS.made[FakeWS.made.length - 1]; b.open();
-    assert.deepEqual(b.sent.filter((m: any) => m.type === "ready"), [], "…nor on a later open");
+    assert.deepEqual(b.sent.filter((m: any) => m.type === "ready"), [{ type: "ready", proto: 1 }], "…and to a later socket on its open");
     fm.conns.get("gpu1").closed = true; fm.conns.get("gpu2").closed = true;
   });
 });

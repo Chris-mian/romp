@@ -69,11 +69,12 @@ test("gear → Tabs: the Context bar widget's WHEN option (From 50% full / Alway
   assert.match(TW, /id: "ctx", label: "Context bar", defaultOn: true, slot: "after",/);
   assert.match(TW, /options: \[\{ key: "show", label: "Show", default: "over50",\s*\n\s*choices: \[\{ value: "over50", label: "From 50% full" \}, \{ value: "always", label: "Always" \}\] \}\],/);
   assert.doesNotMatch(GEAR, /id=rs-tabctx\b/, "the old Chat-section row is gone");
-  assert.match(GEAR, /var drop = housePick\(wrap, 'wopt-' \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/, "the option is the panel's house picker");
+  assert.match(GEAR, /var drop = housePick\(wrap, cfg\.pickPrefix \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/, "the option is the panel's house picker (one builder for both widget sections since T409)");
+  assert.match(GEAR, /host: document\.getElementById\('rs-widgets'\), list: TW\.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/, "the tab section keeps its picker ids");
   assert.match(GEAR, /s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\);/, "the prefs and the mirror");
   assert.match(GEAR, /function tabCtxMode\(v\) \{ return \(v === 'always' \|\| v === 'never'\) \? v : \(v === false \? 'never' : 'over50'\); \}/, "the normalizer stays for the mirror's readers");
 });
 
 test("a gear change repaints the tab strip live, not on the next kernel push", () => {
-  assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\)/);
+  assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); updateStatusline\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\)/);
 });

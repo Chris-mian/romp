@@ -61,7 +61,7 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const MOVED = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates",
-               "rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets", "rs-feedcollapsed", "rs-defaultdir", "rs-backend", "rs-autonudge", "rs-suggestcompact", "rs-judgemodel", "rs-judgeconc",
+               "rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets", "rs-feedcollapsed", "rs-defaultdir", "rs-backend", "rs-autonudge", "rs-suggestcompact", "rs-tasktrack", "rs-judgemodel", "rs-judgeconc",
                "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver", "rs-filelink", "rs-activeonly", "rs-collapsegaps"];   // the last three must be GONE (T404)
 // open the landing in a fresh context, seeded with a remembered tab when given; hand back the settings frame once the panel is up
 async function openPanel(seedTab, ask) {
@@ -132,7 +132,71 @@ const out = {};
       out.automationRows[theme] = { rest, hoverCard: hover.card, theme };
     }
     out.panesLabels = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.querySelector("b").textContent : null; }));
+    out.panesRowClasses = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.className : null; }));
+    // the popover stays inside the card (the T408 read): four rows near their pane's bottom sent it past the card's edge, which grew a
+    // scrollbar for it and clipped it; hovered, each must leave the card unscrollable with the popover inside the card's rect
+    const hoverRow = async (tab, id) => {
+      await setF.click('#rsettings .rs-tab[data-tab="' + tab + '"]'); await setF.waitForTimeout(120);
+      await page.mouse.move(4, 4); await setF.waitForTimeout(60);
+      await setF.hover(".rs-row:has(#" + id + "), label:has(#" + id + ")"); await setF.waitForTimeout(160);   // the ROW: two of the four controls are hidden selects
+      const r = await setF.evaluate((rid) => { const el = document.getElementById(rid), row = el.closest(".rs-row") || el.closest("label") || el, card = document.querySelector("#rsettings .rs-card");
+        const sub = row.querySelector(".rs-sub"); const sr = sub ? sub.getBoundingClientRect() : null, cr = card.getBoundingClientRect();
+        return { id: rid, shown: !!sr && sr.height > 0, subTop: sr ? sr.top : null, subBottom: sr ? sr.bottom : null, cardTop: cr.top, cardBottom: cr.bottom, inside: !!sr && sr.top >= cr.top - 1 && sr.bottom <= cr.bottom + 1,
+                 up: row.classList.contains("rs-up"), card: { scrollHeight: card.scrollHeight, clientHeight: card.clientHeight, scrollable: card.scrollHeight > card.clientHeight + 1 } }; }, id);
+      await page.mouse.move(4, 4); await setF.waitForTimeout(60);
+      return r;
+    };
+    out.hoverRows = {};
+    for (const theme of ["dark", "light"]) {
+      for (const f of [page, setF]) await f.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
+      await page.waitForTimeout(150);
+      out.hoverRows[theme] = [];
+      for (const [tab, id] of [["feed", "rs-feedcollapsed"], ["sessions", "rs-backend"], ["tasks", "rs-indexeffort"], ["tasks", "rs-judgeconc"]]) out.hoverRows[theme].push(await hoverRow(tab, id));
+    }
     for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
+    // the Fast mode boxes (round two, the medium): their popover is the box's own, nested in the judge row; at a short window it ran
+    // past the card's bottom because the rule read the row's hidden popover and returned early; the box carries rs-up itself now
+    await page.setViewportSize({ width: 1200, height: 380 }); await page.waitForTimeout(200);
+    await setF.click('#rsettings .rs-tab[data-tab="tasks"]'); await setF.waitForTimeout(150);
+    out.fastBoxes = [];
+    for (const id of ["rs-judgefast-wrap", "rs-distillfast-wrap", "rs-indexfast-wrap"]) {
+      await page.mouse.move(4, 4); await setF.waitForTimeout(60);
+      await setF.evaluate(() => { document.querySelector("#rsettings .rs-card").scrollTop = 0; }); await setF.waitForTimeout(80);   // the pane's natural scroll, where the read measured (centring a box gives it room below)
+      const rest = await setF.evaluate(() => document.querySelector("#rsettings .rs-card").scrollHeight);
+      await setF.hover("#" + id); await setF.waitForTimeout(160);
+      const r = await setF.evaluate((i) => { const box = document.getElementById(i), sub = box.querySelector(".rs-sub"), card = document.querySelector("#rsettings .rs-card");
+        const sr = sub.getBoundingClientRect(), cr = card.getBoundingClientRect(), br = box.getBoundingClientRect();
+        return { id: i, shown: sr.height > 0, subTop: sr.top, subBottom: sr.bottom, cardTop: cr.top, cardBottom: cr.bottom, inside: sr.height > 0 && sr.top >= cr.top - 1 && sr.bottom <= cr.bottom + 1,
+                 up: box.classList.contains("rs-up"), roomAbove: br.top - cr.top, roomBelow: cr.bottom - br.bottom, scrollHeight: card.scrollHeight, viewport: window.innerHeight }; }, id);
+      r.scrollHeightRest = rest; out.fastBoxes.push(r);
+    }
+    // no room on either side (round three, the ruling): a 300 px window and the Thinking summaries popover, more room above than
+    // below and neither enough; the popover stays BELOW, where the card's scroll reaches the clip (a top clip cannot be reached)
+    await page.mouse.move(4, 4);
+    await page.setViewportSize({ width: 1200, height: 300 }); await page.waitForTimeout(200);
+    await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeout(150);
+    await setF.evaluate(() => document.getElementById("rs-thinksum").closest("label").scrollIntoView({ block: "center" })); await setF.waitForTimeout(80);
+    // the case wants MORE room above than below: a centred row sits within a pixel of even, and the Chat tab grew below this row
+    // (the Status line section, T409) enough to tip it; two pixels of scroll back keep the premise the assertions state
+    await setF.evaluate(() => { document.querySelector("#rsettings .rs-card").scrollTop -= 2; }); await setF.waitForTimeout(60);
+    await setF.hover("label:has(#rs-thinksum)"); await setF.waitForTimeout(160);
+    out.noRoom = await setF.evaluate(() => { const row = document.getElementById("rs-thinksum").closest("label"), sub = row.querySelector(".rs-sub"), card = document.querySelector("#rsettings .rs-card");
+      const sr = sub.getBoundingClientRect(), cr = card.getBoundingClientRect(), rr = row.getBoundingClientRect();
+      return { subHeight: sr.height, roomAbove: rr.top - cr.top, roomBelow: cr.bottom - rr.bottom, up: row.classList.contains("rs-up"), subTop: sr.top, subBottom: sr.bottom, cardTop: cr.top, cardBottom: cr.bottom, viewport: window.innerHeight }; });
+    await page.mouse.move(4, 4);
+    await page.setViewportSize({ width: 1200, height: 800 }); await page.waitForTimeout(200);
+    // the off-dashboard hide's outcome (round two, low 4): the selector the hide uses takes the four Panes rows and their head; hidden,
+    // each reads display none and height 0; shown again, display flex (its trigger is the VS Code host, ownPage false, not this page)
+    out.panesHide = await setF.evaluate(() => {
+      const els = Array.from(document.querySelectorAll("#rs-panes-sec,.rs-panes-row"));
+      const rows = ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => document.getElementById(id).closest("label"));
+      const covered = rows.every((r) => els.includes(r));
+      els.forEach((el) => { el.hidden = true; });
+      const hidden = rows.map((r) => ({ display: getComputedStyle(r).display, height: r.getBoundingClientRect().height }));
+      els.forEach((el) => { el.hidden = false; });
+      const shown = rows.map((r) => getComputedStyle(r).display);
+      return { count: els.length, covered, hidden, shown };
+    });
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
     out.debug = await readPanel(setF);
     await setF.click('#rsettings .rs-tab[data-tab="tasks"]'); await setF.waitForTimeout(150);
@@ -147,6 +211,69 @@ out.mapping = {};
 for (const old of ["automatic", "system", "tabs", "appearance"]) {
   const { ctx, page, setF } = await openPanel(old, null);
   out.mapping[old] = setF ? await readPanel(setF) : { open: false };
+  await page.close(); await ctx.close();
+}
+// 3. the Token usage panel's close returns to the card (the T409 tidy's read, a pre-existing gap): before, its close button,
+// its backdrop and its Escape only hid the analytics layer while the card stayed hidden and nothing posted settings off, so
+// the shell's transparent full-window frame kept covering the page: Escape dead (the shell asks the page, which answers
+// no on a hidden card), every click landing on the invisible frame, only the palette or a reload recovering
+{
+  const { ctx, page, setF } = await openPanel(null, "debug");   // the Diagnostics section with the Token usage button is on the Debug pane
+  let chatF = page.frames().find((f) => f.url().includes("/chat"));
+  const shellRead = () => page.evaluate(() => { const f = document.getElementById("f-chat").getBoundingClientRect(); const el = document.elementFromPoint(f.left + f.width / 2, f.top + f.height / 2);
+    return { settingsOpen: document.body.classList.contains("settings-open"), hit: el ? el.tagName + "#" + el.id : null }; });
+  const frameRead = () => setF.evaluate(() => ({ cardHidden: document.getElementById("rsettings").hidden, backShown: !document.getElementById("ranalytics-back").hidden }));
+  await setF.click("#ra-open");
+  await setF.waitForFunction(() => !document.getElementById("ranalytics-back").hidden, null, { timeout: 5000 });
+  await setF.waitForTimeout(200);
+  const mid = { frame: await frameRead(), shell: await shellRead() };
+  await setF.click("#ra-close"); await setF.waitForTimeout(250);
+  const afterClose = { frame: await frameRead(), shell: await shellRead() };
+  await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const afterEsc = { frame: await frameRead(), shell: await shellRead() };
+  // a click that must land: another tab in the chat frame's strip becomes the active one
+  const tgt = await chatF.evaluate(() => { const tabs = Array.from(document.querySelectorAll("#tabs .tab[data-id]")); const t = tabs.find((x) => !x.classList.contains("active")) || tabs[0];
+    const b = t.getBoundingClientRect(); return { id: t.dataset.id, x: b.left + b.width / 2, y: b.top + b.height / 2, activeBefore: (document.querySelector("#tabs .tab.active") || {}).dataset ? document.querySelector("#tabs .tab.active").dataset.id : null }; });
+  const fr = await page.evaluate(() => { const f = document.getElementById("f-chat").getBoundingClientRect(); return { x: f.left, y: f.top }; });
+  await page.mouse.click(fr.x + tgt.x, fr.y + tgt.y); await page.waitForTimeout(500);
+  const activeAfter = await chatF.evaluate(() => { const a = document.querySelector("#tabs .tab.active"); return a ? a.dataset.id : null; });
+  out.tokenUsageClose = { mid, afterClose, afterEsc, click: { target: tgt.id, activeBefore: tgt.activeBefore, activeAfter, shell: await shellRead() } };
+  // 3b. the panel's other roads (the read of that fix queued them, pre-existing): the shell's Escape chain had no entry for
+  // the layer, so with the keyboard in the SHELL document Escape did nothing for the panel; nothing reset the layer, so an
+  // open through the shell while the panel was up showed the card UNDER the layer; and the scene covered the close button only
+  await page.evaluate(() => window.__rompOpenSettings("debug"));
+  await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 10000 });
+  await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 10000 }); await setF.waitForTimeout(200);
+  // between roads: a known state whatever a road did at the base (the button road, which held there, takes a layer left up;
+  // the card is reopened on the Debug pane, where the Token usage button lives)
+  const reset = async () => {
+    await setF.evaluate(() => { const b = document.getElementById("ranalytics-back"); if (b && !b.hidden) document.getElementById("ra-close").click(); });
+    const open = await page.evaluate(() => document.body.classList.contains("settings-open"));
+    const cardHidden = await setF.evaluate(() => document.getElementById("rsettings").hidden);
+    if (!open || cardHidden) { await page.evaluate(() => window.__rompOpenSettings("debug")); await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 10000 }); }
+    await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 10000 });
+    await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(200);
+  };
+  const raUp = async () => { await reset(); await setF.click("#ra-open"); await setF.waitForFunction(() => !document.getElementById("ranalytics-back").hidden, null, { timeout: 5000 }); await setF.waitForTimeout(150); };
+  // (a) the keyboard in the shell document: Escape reaches the panel through the shell's chain, one level (the layer down, the card back)
+  await raUp();
+  await page.evaluate(() => { const a = document.activeElement; if (a && a.blur) a.blur(); document.body.focus(); });
+  await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const shellEsc = { frame: await frameRead(), shell: await shellRead() };
+  // (b) an open through the shell while the panel is up: the card, never under the layer
+  await raUp();
+  await page.evaluate(() => window.__rompOpenSettings("general")); await page.waitForTimeout(300);
+  const openUnder = { frame: await frameRead(), shell: await shellRead() };
+  // (c) the backdrop click, and the panel's own Escape with the keyboard in the frame, then the next Escape closing the settings
+  await raUp();
+  await setF.click("#ranalytics-back", { position: { x: 4, y: 4 } }); await setF.waitForTimeout(250);
+  const backdrop = { frame: await frameRead(), shell: await shellRead() };
+  await raUp();
+  await setF.focus("#ra-close"); await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const frameEsc = { frame: await frameRead(), shell: await shellRead() };
+  await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const secondEsc = await shellRead();
+  out.tokenUsageRoads = { shellEsc, openUnder, backdrop, frameEsc, secondEsc };
   await page.close(); await ctx.close();
 }
 fs.writeFileSync(cfg.out, JSON.stringify(out));
@@ -275,6 +402,29 @@ class ServedSettingsTabs(unittest.TestCase):
             Path(os.environ["SETTINGS_TABS_DUMP"]).write_text(json.dumps(result, indent=1) + "\n")
         return result
 
+    def test_the_token_usage_panels_close_returns_to_the_card_so_escape_closes_the_settings_and_the_next_click_lands(self):
+        r = self._run()["tokenUsageClose"]; t = "\n  " + json.dumps(r)
+        self.assertEqual((r["mid"]["frame"]["cardHidden"], r["mid"]["frame"]["backShown"], r["mid"]["shell"]["settingsOpen"]), (True, True, True), "the Token usage panel up over the hidden card, the shell's overlay lifted" + t)
+        self.assertEqual((r["afterClose"]["frame"]["cardHidden"], r["afterClose"]["frame"]["backShown"]), (False, False), "its close returns to the card: the card shows, the analytics layer is down" + t)
+        self.assertTrue(r["afterClose"]["shell"]["settingsOpen"], "the overlay legitimately stays while the card shows" + t)
+        self.assertFalse(r["afterEsc"]["shell"]["settingsOpen"], "Escape then closes the settings by the normal road: the shell released the overlay" + t)
+        self.assertEqual(r["afterEsc"]["shell"]["hit"], "IFRAME#f-chat", "the chat frame is what a pointer meets at the page's centre, not the settings frame" + t)
+        self.assertEqual(r["click"]["activeAfter"], r["click"]["target"], "the next click landed: the tab it hit is the active one" + t)
+        self.assertNotEqual(r["click"]["activeAfter"], r["click"]["activeBefore"], "and it was a change" + t)
+
+    def test_the_token_usage_panels_other_roads_the_shells_escape_an_open_while_it_is_up_the_backdrop_and_its_own_escape(self):
+        r = self._run()["tokenUsageRoads"]; t = "\n  " + json.dumps(r)
+        a = r["shellEsc"]
+        self.assertEqual((a["frame"]["backShown"], a["frame"]["cardHidden"], a["shell"]["settingsOpen"]), (False, False, True), "with the keyboard in the shell document, one Escape takes the panel down and returns to the card: the shell's chain asks the page, which answers for the layer" + t)
+        b = r["openUnder"]
+        self.assertEqual((b["frame"]["backShown"], b["frame"]["cardHidden"]), (False, False), "an open through the shell while the panel is up lands on the card, never under the layer" + t)
+        c = r["backdrop"]
+        self.assertEqual((c["frame"]["backShown"], c["frame"]["cardHidden"]), (False, False), "the backdrop click returns to the card" + t)
+        d = r["frameEsc"]
+        self.assertEqual((d["frame"]["backShown"], d["frame"]["cardHidden"], d["shell"]["settingsOpen"]), (False, False, True), "the panel's Escape with the keyboard in the frame returns to the card, one level" + t)
+        self.assertFalse(r["secondEsc"]["settingsOpen"], "the next Escape closes the settings" + t)
+        self.assertEqual(r["secondEsc"]["hit"], "IFRAME#f-chat", "and the chat frame is under the page's centre again" + t)
+
     def test_the_pills_read_general_chat_feed_sessions_automation_task_tracking_debug_in_that_order(self):
         # T404 (the user 2026-09-13): Automation is new, Appearance folded into General
         g = self._run()["general"]
@@ -284,9 +434,9 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual([x["text"] for x in g["pills"]], ["General", "Chat", "Feed", "Sessions", "Automation", "Task tracking", "Debug"], table)
         self.assertEqual(g["shown"], ["general"], "the ask for General shows General alone" + table)
         self.assertEqual(g["heads"]["general"], ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"], table)
-        self.assertEqual(g["heads"]["chat"], ["Display", "Comments", "Thinking", "Tab widgets"], "Transcript is Display; the text scheme and the strip row joined it; Thinking creates, so it is Chat's" + table)
+        self.assertEqual(g["heads"]["chat"], ["Display", "Comments", "Thinking", "Tab widgets", "Status line"], "Transcript is Display; the text scheme and the strip row joined it; Thinking creates, so it is Chat's; the Status line section follows Tab widgets (T409)" + table)
         self.assertEqual(g["heads"]["debug"], ["Judging bands", "Diagnostics"], "Updates went to General" + table)
-        self.assertEqual(g["heads"]["tasks"], ["Judges"], "Task tracking keeps the judges alone" + table)
+        self.assertEqual(g["heads"]["tasks"], ["Task tracking", "Judges"], "the master switch, then the judges (T404 PR 2)" + table)
         self.assertEqual(g["heads"]["automation"], ["Nudges"], table)
         self.assertEqual(g["heads"]["feed"], ["Cards"], table)
         self.assertEqual(g["heads"]["sessions"], ["New sessions"], "the Sessions-pane rows left settings: the pane carries them" + table)
@@ -295,6 +445,52 @@ class ServedSettingsTabs(unittest.TestCase):
         # T407 (the user 2026-09-13, a screenshot of the Panes section): the row read "Files control in the dashboard bar"
         r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
         self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
+
+    def test_the_off_dashboard_hide_takes_all_four_panes_rows(self):
+        # round two, low 4: the outcome, not the class: hidden by the selector the hide uses, every row reads display none and height 0
+        r = self._run(); h = r["panesHide"]; table = "\n  " + json.dumps(h) + " classes: " + json.dumps(r.get("panesRowClasses"))
+        self.assertTrue(h["covered"], "the hide's selector reaches all four Panes rows (the Files row too since this tidy)" + table)
+        self.assertEqual(h["count"], 5, "the head and the four rows, nothing else" + table)
+        for x in h["hidden"]:
+            self.assertEqual((x["display"], x["height"]), ("none", 0), "hidden: display none, height 0" + table)
+        self.assertEqual(h["shown"], ["flex"] * 4, "shown again: display flex" + table)
+
+    def test_the_fast_mode_boxes_popovers_stay_inside_the_card_at_a_short_window(self):
+        # round two, the medium: the box's own popover, nested in the judge row, ran 15 px past the card at 380 px (48 at 300)
+        fb = self._run()["fastBoxes"]; table = "\n  " + json.dumps(fb)
+        self.assertEqual([x["id"] for x in fb], ["rs-judgefast-wrap", "rs-distillfast-wrap", "rs-indexfast-wrap"], table)
+        for x in fb:
+            self.assertLess(x["viewport"], 400, "a short window" + table)
+            self.assertTrue(x["shown"], x["id"] + ": the box's own popover shows" + table)
+            self.assertTrue(x["inside"], x["id"] + ": inside the card (%.1f to %.1f in %.1f to %.1f)" % (x["subTop"], x["subBottom"], x["cardTop"], x["cardBottom"]) + table)
+            self.assertEqual(x["scrollHeight"], x["scrollHeightRest"], x["id"] + ": no scroll growth under the hover" + table)
+        self.assertTrue(any(x["up"] for x in fb), "at least one opened above its box" + table)
+
+    def test_with_no_room_on_either_side_the_popover_stays_below_where_the_card_scrolls_to_it(self):
+        # round three, the manager's ruling: at 300 px the Thinking summaries popover fits neither side, with more room above than
+        # below; it stays below (main's behaviour), because a bottom clip is reachable by the card's scroll and a top clip is not.
+        # The executed cover of the dropped roomier-side clause: adding it back opens this one above
+        n = self._run()["noRoom"]; table = "\n  " + json.dumps(n)
+        self.assertLess(n["viewport"], 320, table)
+        self.assertGreater(n["roomAbove"], n["roomBelow"], "the case: more room above than below" + table)
+        self.assertLess(n["roomAbove"], n["subHeight"] + 2, "…and not enough above" + table)
+        self.assertLess(n["roomBelow"], n["subHeight"], "…nor below" + table)
+        self.assertFalse(n["up"], "neither side fits: below, as main had it, where the scroll reaches the clip" + table)
+        self.assertGreaterEqual(n["subTop"], n["cardTop"] - 1, "the start of the text is inside the card" + table)
+        self.assertGreater(n["subBottom"], n["cardBottom"], "the clip is at the bottom" + table)
+
+    def test_a_row_near_its_panes_bottom_opens_its_popover_above_and_the_card_does_not_scroll(self):
+        # the T408 read: Feed rs-feedcollapsed, Sessions rs-backend and Task tracking rs-indexeffort and rs-judgeconc sent their hover
+        # popover 23 to 47 px past the card's bottom, and the card grew a scrollbar for it
+        h = self._run()["hoverRows"]
+        for theme in ("dark", "light"):
+            rows = h[theme]; table = "\n  " + theme + ": " + json.dumps(rows)
+            self.assertEqual([x["id"] for x in rows], ["rs-feedcollapsed", "rs-backend", "rs-indexeffort", "rs-judgeconc"], table)
+            for x in rows:
+                self.assertTrue(x["shown"], x["id"] + ": the popover shows on hover" + table)
+                self.assertTrue(x["inside"], x["id"] + ": the popover stays inside the card (%.0f to %.0f in %.0f to %.0f)" % (x["subTop"], x["subBottom"], x["cardTop"], x["cardBottom"]) + table)
+                self.assertFalse(x["card"]["scrollable"], x["id"] + ": the card grows no scrollbar for it" + table)
+            self.assertTrue(any(x["up"] for x in rows), "at least one of the four opened above its row" + table)
 
     def test_the_automation_rows_carry_a_line_each_no_tooltip_and_the_card_does_not_scroll_at_rest_or_under_the_pointer(self):
         # T408 (the user 2026-09-13, a screenshot of the Automation tab): the pane scrolled over two rows because a hover tooltip
@@ -332,7 +528,7 @@ class ServedSettingsTabs(unittest.TestCase):
         gen = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"]
         chat = ["rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets"]
         expect = dict([(i, "general") for i in gen] + [(i, "chat") for i in chat] + [("rs-feedcollapsed", "feed"), ("rs-defaultdir", "sessions"), ("rs-backend", "sessions"),
-                       ("rs-autonudge", "automation"), ("rs-suggestcompact", "automation"), ("rs-judgemodel", "tasks"), ("rs-judgeconc", "tasks"),
+                       ("rs-autonudge", "automation"), ("rs-suggestcompact", "automation"), ("rs-tasktrack", "tasks"), ("rs-judgemodel", "tasks"), ("rs-judgeconc", "tasks"),
                        ("rs-judges-index", "debug"), ("rs-judges-triage", "debug"), ("ra-open", "debug"), ("rs-log-open", "debug"), ("rsver", "debug"),
                        ("rs-filelink", "missing"), ("rs-activeonly", "missing"), ("rs-collapsegaps", "missing")])   # the three rows that left settings (T404): no element
         self.assertEqual(g["homes"], expect, "every id in its new home, none missing, the three gone: " + json.dumps(g["homes"]))

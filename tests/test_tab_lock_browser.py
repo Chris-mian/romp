@@ -86,7 +86,8 @@ const layout = () => page.evaluate(() => {
   const r1 = (v) => Math.round(v * 10) / 10;
   const tabs = Array.from(bar.querySelectorAll(".tab[data-id]")).map((t) => { const r = t.getBoundingClientRect();
     return { id: t.dataset.id, name: (t.querySelector(".tab-label") || t).textContent.trim(), left: r1(r.left - b.left), top: r1(r.top - b.top), w: r1(r.width), h: r1(r.height), draggable: !!t.draggable }; });
-  const box = bar.querySelector(".tab-gearbox"); const btn = box && box.querySelector(".tab-widgets-gear");
+  const end = bar.querySelector(".tab-strip-end");   // T412: one right-end wrapper, the tags button and the gear
+  const btn = end && end.querySelector(".tab-widgets-gear");
   const menu = document.querySelector('[data-rows-menu="1"]');
   const rowsOf = (m) => Array.from(m.children).map((r) => ({ label: Array.from(r.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim(), checked: r.getAttribute("aria-checked"), title: r.title, role: r.getAttribute("role"),
     glyph: (r.querySelector("svg path") || {}).getAttribute ? r.querySelector("svg path").getAttribute("d") : null }));
@@ -97,19 +98,25 @@ const layout = () => page.evaluate(() => {
   const add = bar.querySelector(".tab-add"), tagBox = bar.querySelector(".tab-tagbox"), tagBtn = bar.querySelector(".tab-tagbox .tab-tagfilter");
   const tb = tagBtn ? { w: r1(tagBtn.getBoundingClientRect().width), h: r1(tagBtn.getBoundingClientRect().height), border: getComputedStyle(tagBtn).borderTopColor, radius: getComputedStyle(tagBtn).borderRadius } : null;
   let s = {}; try { s = JSON.parse(localStorage.getItem("romp:settings") || "{}") || {}; } catch (e) {}
-  const gear = box ? { present: true, last: bar.lastElementChild === box, prev: box.previousElementSibling ? box.previousElementSibling.className : null,
-                       boxH: r1(box.getBoundingClientRect().height), tagBoxH: tagBox ? r1(tagBox.getBoundingClientRect().height) : null,
-                       rightGap: r1(b.right - box.getBoundingClientRect().right), text: btn.textContent, svg: !!btn.querySelector("svg"),
+  const gear = end ? { present: true, last: bar.lastElementChild === end, prev: end.previousElementSibling ? end.previousElementSibling.className : null,
+                       endH: r1(end.getBoundingClientRect().height), tagBoxH: tagBox ? r1(tagBox.getBoundingClientRect().height) : null, tagInEnd: !!tagBox && tagBox.parentElement === end,
+                       rightGap: r1(b.right - btn.getBoundingClientRect().right), endRightGap: r1(b.right - end.getBoundingClientRect().right), text: btn.textContent, svg: !!btn.querySelector("svg"),
                        label: btn.getAttribute("aria-label"), title: btn.title, haspopup: btn.getAttribute("aria-haspopup"),
-                       border: getComputedStyle(btn).borderTopColor, radius: getComputedStyle(btn).borderRadius, color: getComputedStyle(btn).color,
-                       w: r1(btn.getBoundingClientRect().width), h: r1(btn.getBoundingClientRect().height) }
+                       border: getComputedStyle(btn).borderTopColor, borderW: getComputedStyle(btn).borderTopWidth, borderStyle: getComputedStyle(btn).borderTopStyle, radius: getComputedStyle(btn).borderRadius,
+                       color: getComputedStyle(btn).color, bg: getComputedStyle(btn).backgroundColor, fontSize: getComputedStyle(btn).fontSize, boxed: btn.parentElement !== end,
+                       w: r1(btn.getBoundingClientRect().width), h: r1(btn.getBoundingClientRect().height),
+                       tagRightOfAdd: tagBtn && add ? r1(tagBtn.getBoundingClientRect().left - add.getBoundingClientRect().right) : null,
+                       tagToGear: tagBtn ? r1(btn.getBoundingClientRect().left - tagBtn.getBoundingClientRect().right) : null,
+                       tagRightGap: tagBtn ? r1(b.right - tagBtn.getBoundingClientRect().right) : null, tagTag: tagBtn ? tagBtn.tagName : null }
                    : { present: false };
   const lockRow = menu ? rowsOf(menu).find((r) => r.label === "Lock the tabs in place") || null : null;
   const lock = { present: !!bar.querySelector(".tab-lock, .tab-lockbox"), menuOpen: !!menu, rows: menu ? rowsOf(menu).map((r) => r.label) : [], row: lockRow,
                  on: !!(lockRow && lockRow.checked === "true") };
   const chips = bar.querySelector(".tab-tagbox .tab-tagchips");
   const tagCtl = tagBtn ? { pressed: tagBtn.getAttribute("aria-pressed"), chipsInDom: !!chips, chipCount: chips ? chips.children.length : 0 } : null;
-  return { bar: { left: b.left, top: b.top, right: b.right }, tabs, order: tabs.map((t) => t.id), gear, lock, tagBtn: tb, tagCtl, accent, cardBorder, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
+  const ms = document.getElementById("mtag-slot");   // the phone header's tag mount: on the desktop its chips host takes no chip per paint (the T405 read)
+  return { bar: { left: b.left, top: b.top, right: b.right }, tabs, order: tabs.map((t) => t.id), gear, lock, tagBtn: tb, tagCtl, accent, cardBorder,
+           mountChips: ms && ms.children[1] ? ms.children[1].childElementCount : null, mountPresent: !!ms, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
 });
 // drag the tab at index `from` and release over the left part of the tab at index `to` (the reorder lab's gesture)
 async function drag(label) {
@@ -137,7 +144,7 @@ await page.evaluate(() => document.body.classList.add("theme-light")); await pag
 out.light = await layout();
 await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(150);
 out.unlockedDrag = await drag("unlocked: the 3rd tab to the first slot");
-const openGear = async () => { await page.click("#tabs .tab-gearbox .tab-widgets-gear"); await page.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 }); };
+const openGear = async () => { await page.click("#tabs .tab-widgets-gear"); await page.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 }); };
 const press = async () => {
   if (!(await layout()).gear.present) return false;
   await openGear();
@@ -158,7 +165,7 @@ out.lockedDrag = await drag("locked: the same drag");
 // the strip rebuilds, and the focus stays on the row, not the active tab; Escape hands it back to the gear
 const activeDesc = () => page.evaluate(() => { const a = document.activeElement; return a ? { cls: a.className || "", role: a.getAttribute("role") || "",
   text: Array.from(a.childNodes || []).filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim().slice(0, 30) } : null; });   // the row's own label, not its ✓ badge
-await page.focus("#tabs .tab-gearbox .tab-widgets-gear"); await page.keyboard.press("Enter"); await page.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 }); await page.waitForTimeout(100);
+await page.focus("#tabs .tab-widgets-gear"); await page.keyboard.press("Enter"); await page.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 }); await page.waitForTimeout(100);
 out.keyOpen = await activeDesc();
 await page.keyboard.press("Enter"); await page.waitForTimeout(400);
 out.keyToggle = { active: await activeDesc(), store: (await layout()).store, menuOpen: (await layout()).lock.menuOpen };
@@ -200,13 +207,25 @@ for (const theme of ["dark", "light"]) {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
   await page.mouse.move(4, 4); await page.waitForTimeout(200);   // the pointer off the gear: its REST border, not the hover's accent
   const restLay = await layout();
+  // the gear's hover, then the pointer off again; and the REFERENCE: the rail's settings gear at the bottom right of the shell page,
+  // rest and hover, under the same theme (T412: the strip's gear is that gear's twin, no box, the same size, colours and hover)
+  await page.hover("#tabs .tab-widgets-gear"); await page.waitForTimeout(200);
+  const hov = await page.evaluate(() => { const g = document.querySelector("#tabs .tab-widgets-gear"), cs = getComputedStyle(g); return { color: cs.color, bg: cs.backgroundColor, border: cs.borderTopWidth + " " + cs.borderTopStyle }; });
+  await page.mouse.move(4, 4); await page.waitForTimeout(150);
+  await shell.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme); await shell.mouse.move(4, 4); await shell.waitForTimeout(200);
+  const railRead = () => shell.evaluate(() => { const g = document.getElementById("rail-gear"), cs = getComputedStyle(g); return { color: cs.color, bg: cs.backgroundColor, fontSize: cs.fontSize, border: cs.borderTopWidth + " " + cs.borderTopStyle, radius: cs.borderRadius, h: g.getBoundingClientRect().height }; });
+  const railRest = await railRead();
+  await shell.hover("#rail-gear"); await shell.waitForTimeout(200);
+  const railHover = await railRead();
+  await shell.mouse.move(4, 4); await shell.waitForTimeout(100);
   await openGear(); await page.waitForTimeout(150);
   out.themes[theme] = await layout();
   out.themes[theme].restBorder = restLay.gear.border; out.themes[theme].restCardBorder = restLay.cardBorder;
+  out.themes[theme].rest = restLay.gear; out.themes[theme].hover = hov; out.themes[theme].railRest = railRest; out.themes[theme].railHover = railHover;
   // compact tabs (round two, the medium): the dense row is 25px, and the gear must stand inside it, not stretch it
   await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150);
   out.themes[theme].dense = await page.evaluate(() => { const h = (el) => el ? el.getBoundingClientRect().height : null;
-    return { tab: h(document.querySelector("#tabs .tab[data-id]")), gear: h(document.querySelector("#tabs .tab-widgets-gear")), gearbox: h(document.querySelector("#tabs .tab-gearbox")),
+    return { tab: h(document.querySelector("#tabs .tab[data-id]")), gear: h(document.querySelector("#tabs .tab-widgets-gear")), end: h(document.querySelector("#tabs .tab-strip-end")),
              tagbox: h(document.querySelector("#tabs .tab-tagbox")), contentTop: document.getElementById("content") ? document.getElementById("content").getBoundingClientRect().top : null }; });
   if (cfg.shots) {
     const dbar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: window.innerWidth, height: Math.min(window.innerHeight - b.top, b.height + 120) }; });
@@ -227,7 +246,10 @@ await phone.waitForFunction(() => document.querySelectorAll("#tabs .tab[data-id]
 await phone.waitForTimeout(600);
 out.phone = await phone.evaluate(() => { const tabs = document.getElementById("tabs"); const gear = document.querySelector("#tabs .tab-widgets-gear");
   const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).display !== "none" && getComputedStyle(el).visibility !== "hidden";
-  return { phoneLayout: window.matchMedia("(pointer:coarse) and (max-width:1024px)").matches, stripVisible: vis(tabs), gearVisible: vis(gear), mslot: !!document.getElementById("mtag-slot") }; });
+  const ms = document.getElementById("mtag-slot");
+  return { phoneLayout: window.matchMedia("(pointer:coarse) and (max-width:1024px)").matches, stripVisible: vis(tabs), gearVisible: vis(gear), mslot: !!ms,
+           tagVisible: vis(document.querySelector("#tabs .tab-tagfilter")), endVisible: vis(document.querySelector("#tabs .tab-strip-end")),
+           mslotChips: ms && ms.children[1] ? ms.children[1].childElementCount : null }; });
 await phoneCtx.close();
 out.pressedAgain = await press();
 out.unlocked = await layout();
@@ -360,26 +382,49 @@ class ServedTabLock(unittest.TestCase):
         self.assertTrue(s["gear"]["present"], "the strip carries the gear box" + table)
         g = s["gear"]
         self.assertTrue(g["last"], "the last thing on the bar" + table)
-        self.assertLessEqual(g["rightGap"], 2.0, "its right edge is the strip's right edge" + table)
-        self.assertGreaterEqual(g["boxH"], 31 - 0.5, "the tags box's floor" + table)
-        self.assertLessEqual(abs(g["boxH"] - g["tagBoxH"]), 0.5, "the same height as the tags box" + table)
+        self.assertLessEqual(g["endRightGap"], 2.0, "the right-end wrapper is flush with the strip's right edge" + table)
+        self.assertLessEqual(abs(g["rightGap"] - 4), 0.6, "the gear keeps the rail action's 4px from the strip's end, its margin (T412 round two)" + table)
+        self.assertGreaterEqual(g["endH"], 31 - 0.5, "the tags box's floor" + table)
+        self.assertLessEqual(g["tagBoxH"], g["endH"] + 0.5, "the tags box stands inside the wrapper (which #tabs stretches to the row)" + table)
         self.assertEqual((g["text"], g["svg"]), ("\u26ed", False), "the shell's own glyph, a character, no drawing" + table)
         self.assertEqual(g["text"], r["railGlyph"], "the rail's gear at the bottom right of the shell page wears the same character (one source)" + table)
-        self.assertEqual((g["label"], g["haspopup"], g["radius"]), ("Tab strip settings", "menu", "6px"), table)
+        self.assertEqual((g["label"], g["haspopup"], g["radius"]), ("Tab strip settings", "menu", "5px"), "the rail action's radius (T412)" + table)
         self.assertEqual(g["title"], "Tab strip: lock", "standalone: no widgets row, and the title says so (round two, low 1)" + table)
-        for theme in ("dark", "light"):   # the gear's rest border is the card-border token in BOTH themes, and the token differs between them (round two, low 7)
+        for theme in ("dark", "light"):   # no border at rest in EITHER theme (T412 replaced T405's card-border token with the rail gear's borderless dress)
             t = r["themes"][theme]
-            self.assertEqual(t["restBorder"], t["restCardBorder"], theme + ": the gear's rest border is the card-border token, one source (the lens is narrowed here, so the tag button itself wears the accent; read with the pointer off the gear)" + table)
+            self.assertEqual((t["rest"]["borderW"], t["rest"]["borderStyle"]), ("0px", "none"), theme + ": no border at rest whatever the lens (T412: the rail gear's dress; read with the pointer off the gear)" + table)
         self.assertNotEqual(r["themes"]["dark"]["restCardBorder"], r["themes"]["light"]["restCardBorder"], "the token differs between the themes, so the two checks are two" + table)
         self.assertFalse(s["lock"]["present"], "no lock button or box in the strip" + table)
+        # the T405 read: the phone header's mount builds its chips only in the phone layout, so on the desktop no chip is built per paint
+        # anywhere; read at the first paint and after every repaint the lab drives (the lock toggles, the theme flips)
+        if s["mountPresent"]:
+            self.assertEqual(s["mountChips"], 0, "desktop: the mount's host holds no chip" + table)
+            for theme in ("dark", "light"):
+                self.assertEqual(r["themes"][theme]["mountChips"], 0, theme + ": still none after the repaints" + table)
         for theme in ("dark", "light"):
-            t = r["themes"][theme]; tb = "\n  " + theme + "=" + json.dumps(t["gear"])
-            self.assertTrue(t["gear"]["last"] and t["gear"]["rightGap"] <= 2.0, theme + ": the gear at the strip's farthest right" + tb)
+            t = r["themes"][theme]; g = t["gear"]; tb = "\n  " + theme + "=" + json.dumps(g)
+            # T412 (the user): the tags button and the gear together at the strip's farthest right, the gear a bare glyph dressed as the
+            # rail's settings gear at the bottom right of every page: no box, the same size, colours and hover; the tags control a button still
+            self.assertTrue(g["last"] and g["endRightGap"] <= 2.0 and g["rightGap"] <= 8.0, theme + ": the right-end wrapper is last and flush right, the gear at the strip's farthest right" + tb)
+            self.assertTrue(g["tagInEnd"] and 0 <= g["tagToGear"] <= 8.0 and g["tagRightOfAdd"] > 0, theme + ": the tags button rides the same wrapper, right of the + tab, beside the gear" + tb)
+            self.assertEqual(g["prev"], "tab tab-add", theme + ": the + tab is what precedes the right end" + tb)
+            self.assertEqual(g["tagTag"], "BUTTON", theme + ": the tags control stays a button" + tb)
+            self.assertFalse(g["boxed"], theme + ": no box around the gear" + tb)
+            self.assertEqual((g["borderW"], g["borderStyle"]), ("0px", "none"), theme + ": the gear has no border" + tb)
+            self.assertEqual(t["rest"]["bg"], "rgba(0, 0, 0, 0)", theme + ": no background box at rest" + tb)
+            rr, rh, hv = t["railRest"], t["railHover"], t["hover"]; tr = "\n  rail rest=" + json.dumps(rr) + "\n  rail hover=" + json.dumps(rh) + "\n  gear hover=" + json.dumps(hv)
+            self.assertEqual(g["fontSize"], rr["fontSize"], theme + ": the rail gear's glyph size" + tb + tr)
+            self.assertEqual(t["rest"]["color"], rr["color"], theme + ": the rail gear's rest colour" + tb + tr)
+            self.assertEqual((hv["color"], hv["bg"]), (rh["color"], rh["bg"]), theme + ": the rail gear's hover colour and wash" + tr)
+            self.assertEqual(hv["border"], "0px none", theme + ": no border on hover either" + tr)
+            self.assertEqual(g["radius"], rr["radius"], theme + ": the rail action's corner radius" + tb + tr)
             self.assertTrue(t["lock"]["menuOpen"], theme + ": the menu opened" + tb)
             d = t["dense"]; td = "\n  " + theme + " dense=" + json.dumps(d)
             self.assertLessEqual(abs(d["tab"] - 25), 0.6, theme + ": compact tabs are 25px" + td)
-            self.assertLessEqual(d["gear"], d["tab"] + 0.01, theme + ": the gear button stands inside the dense row (round two, the medium: it was 26px and stretched the row)" + td)
-            self.assertLessEqual(abs(d["gearbox"] - d["tab"]), 0.6, theme + ": the gear box is the row's height" + td)
+            self.assertLessEqual(d["gear"], d["tab"] + 0.01, theme + ": the gear button stands inside the dense row (T405 round two, the medium: it was 26px and stretched the row)" + td)
+            self.assertLessEqual(abs(d["gear"] - 25), 0.6, theme + ": the dense gear button is the row's 25px: the 19px glyph, 3px above and below, no border" + td)
+            self.assertLessEqual(abs(d["contentTop"] - 31), 0.6, theme + ": the transcript's top stays at 31px under compact tabs (32 with the stretched row)" + td)
+            self.assertLessEqual(abs(d["end"] - d["tab"]), 0.6, theme + ": the right-end wrapper is the row's height" + td)
             self.assertLessEqual(abs(d["tagbox"] - d["tab"]), 0.6, theme + ": the tags box too" + td)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)
 
@@ -400,8 +445,11 @@ class ServedTabLock(unittest.TestCase):
     def test_the_phone_layout_hides_the_strip_and_the_gear_with_it(self):
         p = self._run()["phone"]
         self.assertTrue(p["phoneLayout"], json.dumps(p))
+        if p["mslot"]:
+            self.assertGreaterEqual(p["mslotChips"], 1, "phone: the mount builds its chips (the lens is narrowed to none, one chip says so): " + json.dumps(p))
         self.assertFalse(p["stripVisible"], "the phone page hides the whole strip (T161)" + json.dumps(p))
         self.assertFalse(p["gearVisible"], "so there is no gear to place" + json.dumps(p))
+        self.assertFalse(p["tagVisible"] or p["endVisible"], "nor a tags button or the right-end wrapper: the strip's two right-end controls go with it (T412)" + json.dumps(p))
 
     def test_locked_the_drag_moves_nothing_and_unlocked_the_same_drag_moves_the_tab(self):
         r = self._run()

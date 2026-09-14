@@ -218,7 +218,7 @@ of its own; a section folded in either place is folded in both, and while groupe
 follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. The gear at the strip's right end, the same gear as the one at the bottom right of every romp page, opens a small menu: **Lock the tabs in place** freezes every tab move (a drag, a Move to, the Sessions pane's lanes) until you turn it off, and **Tab widgets…** opens the settings on the Chat tab's widget rows. The strip's tag button, at the other end of the controls from the gear, shows no chips of its own: the tags show in the strip's sections when the tabs are grouped, and the button wears the accent while a filter is on. Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
-tags stays short.
+tags stays short. The **Status line** section, next to Tab widgets in the same Chat tab, does the same for the line above the composer: the folder and the git branch are on by default, the session's name and the host of a remote session are there to switch on, and in both sections the rows reorder by dragging a row's grip or with the arrow keys on it, each section previewing the result below its rows; in Tab widgets a line marking the session name's place divides the list, and a row dragged above or below it renders on that side of the name.
 
 **A section at a glance.** Clicking a header also shows the section in the transcript's place: one
 row per session, with its color, a dot for its state (yellow working, red stopped on a prompt or an
@@ -286,6 +286,11 @@ The feed is Romp's task-management layer: a card for each task. Romp's
 [judges](judges.md) watch each session's work, split it into those tasks, and
 keep every card current.
 
+Task tracking has a master switch at the top of Settings, Task tracking, on by
+default. Off, the judges do not run and spend nothing, the feed and the outline
+are not shown, and Romp is a chat-only tool: the chat, the Sessions pane and
+the postal service carry on.
+
 Cards sit in three columns:
 
 - <span class="romp-chip romp-chip-working">Working</span> — the session is
@@ -307,6 +312,24 @@ tasks, and a task can be handed from one session to another.
 
 Press <span class="romp-btn">Clear</span> on a card when you are done with it. A
 cleared card is archived, and no more work is added to it.
+
+The **View** button in the feed's footer holds the layout choices: the sort
+direction, a single-column layout, grouping each column's cards by session, and
+**Show focused session**. That last switch puts the session you are reading in
+the chat at the top of the feed, above a divider (a two-pixel rule, a step
+up from the hairlines), under a label reading
+**Current session:** followed by the session's name. Clicking the name opens the
+session; clicking the label or its caret folds the whole section to that one
+line, which then shows the session's card count, and clicking again unfolds it.
+Under the label the session's cards sit in the same three blocks as the board
+below, which stays as it is. The blocks have their own controls: the six-dot
+grip on each block drags it to another slot within the section (the arrow keys
+move a focused grip's block the same way), the gutter between two blocks resizes
+them against each other (width only; the section's height follows its cards),
+and each block's caret folds it to its head, a choice that holds for whichever
+session is focused next. The section's blocks follow the board's arrangement
+until the first drag in the section; from then on the two are arranged
+independently.
 
 ### The timeline
 
@@ -347,10 +370,9 @@ otherwise over the chat. Pick a file in the
 listing and it opens where the listing is. Selecting a passage in the viewer
 puts the quote in the chat's composer, as it does from the viewer over the
 chat. When no file is open, the pane lists the files most recently opened in
-it; click one to open it again. The pane and its control are both off by
-default: the gear's **Files** row (Settings, General, Panes) adds a Files
-toggle to the bottom bar (on a phone, a Files tab like the others), and that
-toggle turns the pane on.
+it; click one to open it again. The gear's **Files** row (Settings, General,
+Panes) adds a Files toggle to the bottom bar (on a phone, a Files tab like the
+others), and that toggle turns the pane on.
 
 ## Automatic nudges
 

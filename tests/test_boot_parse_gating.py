@@ -6,6 +6,7 @@ session whose transcript and state log are unchanged since their last look (the 
 /perf counts every cold parse so the effect is measurable. Hermetic: synthetic files under a temp root, the kernel and
 judge loaded against a temp state directory, threads joined explicitly."""
 import inspect
+import io
 import json
 import os
 import tempfile
@@ -154,6 +155,90 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         self.assertFalse(skip, "an appended record is the event: evaluate")
         km._tick_job_done("interrupt-block", r, st)
         self.assertTrue(km._tick_job_skips("interrupt-block", r))
+
+    def test_a_failed_persist_leaves_no_tmp_re_arms_the_dirty_flag_and_says_it_once(self):
+        """1603 low 1: the tick-seen persist took only the tmp NAME from the marks persist; on a failed replace it left the tmp
+        on disk, left the memo clean (never written again until something else dirtied it) and said nothing. The three
+        things the precedent does: unlink the tmp, re-arm dirty, say it once."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+        p = km._tick_seen_path(); p.parent.mkdir(parents=True, exist_ok=True)
+        err = io.StringIO()
+        def broken_replace(a, b):                                          # the fault on the REPLACE (1610 round three, medium 3):
+            raise OSError("EIO: replace refused")                          #  the tmp was written, so the unlink leg has power
+        with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err), \
+             mock.patch("os.replace", side_effect=broken_replace):
+            self.assertFalse(km._persist_tick_seen(), "the replace failed")
+            with km._TICK_SEEN_LOCK:
+                self.assertTrue(km._TICK_SEEN_DIRTY[0], "the memo is dirty again: the next persist retries")
+            self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "the written tmp was unlinked")
+            self.assertFalse(km._persist_tick_seen(), "still failing")
+            self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "and unlinked again")
+        self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 1, "said once: %r" % err.getvalue())
+        self.assertTrue(km._persist_tick_seen(), "the fault gone: the retried persist writes")
+
+    def test_an_unserializable_entry_raises_with_the_flag_still_dirty_and_is_said_once(self):
+        """1610 round two, medium 3: json.dumps sat after the flag cleared, so an unserializable entry raised with the memo left
+        clean and no later persist retried. The dumps runs before the clear; the failure is said once; the memo stays dirty."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+        key = ("interrupt-block", "99999999-2222-4333-8444-0000000000b9")
+        err = io.StringIO()
+        with km._TICK_SEEN_LOCK:
+            km._TICK_SEEN[key] = [{1, 2}]                                   # a set inside the entry: not JSON
+        try:
+            with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
+                with self.assertRaises(TypeError):
+                    km._persist_tick_seen()
+                with km._TICK_SEEN_LOCK:
+                    self.assertTrue(km._TICK_SEEN_DIRTY[0], "the flag is still dirty: the next persist retries")
+                with self.assertRaises(TypeError):
+                    km._persist_tick_seen()
+                self.assertEqual(err.getvalue().count("tick-seen memo: not serialized"), 1, "said once: %r" % err.getvalue())
+        finally:
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(key, None)
+        self.assertTrue(km._persist_tick_seen(), "the entry gone: the retried persist writes")
+
+    def test_the_say_once_latch_re_arms_on_a_clean_write(self):
+        """1610 round two, low 8: the latch never re-armed, so a second fault episode hours later was silent."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        p = km._tick_seen_path(); p.parent.mkdir(parents=True, exist_ok=True)
+        blocker = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+        err = io.StringIO()
+        with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
+            skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+            blocker.mkdir(); self.assertFalse(km._persist_tick_seen()); blocker.rmdir()      # episode one
+            self.assertTrue(km._persist_tick_seen(), "a clean write")
+            km._tick_job_done("interrupt-block", r, st)
+            blocker.mkdir(); self.assertFalse(km._persist_tick_seen()); blocker.rmdir()      # episode two, hours later
+        self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 2, "each episode said once: %r" % err.getvalue())
+
+    def test_the_jobs_pass_persists_each_memo_on_its_own(self):
+        """1610 low 2: the per-cycle persist road on the jobs thread had no pin; the exit drain's has one. Each persist stage
+        in its own try, the failure written under its own name."""
+        import inspect
+        src = inspect.getsource(km._jobs_pass)
+        for stage, name in (("persistTickSeen", "tick-seen"), ("persistIntrMarks", "interrupt-marks"), ("persistSpendTrees", "spend-tree")):
+            i = src.index("_job_stage('%s'" % stage)
+            tail = src[i:i + 400]
+            self.assertIn('sys.stderr.write("%s: %%s\\n" %% traceback.format_exc())' % name, tail, "%s is logged under its own name" % stage)
+        a, b, c = (src.index("_job_stage('%s'" % s_) for s_ in ("persistTickSeen", "persistIntrMarks", "persistSpendTrees"))
+        self.assertIn("except Exception", src[a:b], "tick-seen's try closes before the marks persist")
+        self.assertIn("except Exception", src[b:c], "the marks persist's try closes before the spend-tree persist")
+
+    def test_the_exit_drain_persists_each_memo_on_its_own(self):
+        """1610 round two, medium 3: the exit drain wrapped the three persists in one bare except, so one memo's raise silently
+        cost the other two. A source pin: each persist in its own try, the failure logged by name."""
+        import inspect
+        src = inspect.getsource(km._drain_and_exit)
+        for name in ("tick-seen", "interrupt-marks", "spend-tree", "planner-seen"):
+            self.assertIn('_exit_log("romp-kernel: the %s memo was not persisted at exit' % name, src, name)
+        self.assertEqual(src.count('    except Exception as _e:\n        _exit_log("romp-kernel: the '), 4, "each persist in its own try")
+        self.assertNotIn("        _persist_tick_seen(force=True)\n        _persist_intr_marks(force=True)", src, "no shared try")
 
     def test_the_memo_persists_and_the_next_kernel_starts_from_it(self):
         d = tempfile.mkdtemp()

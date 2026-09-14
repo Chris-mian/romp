@@ -50,7 +50,7 @@ var sessionStorage = {
   removeItem: function (k) { delete STORE[k]; }
 };
 var VERSION = null;
-function fetch(u) { FETCHES.push(u); return Promise.resolve({ json: function () { return Promise.resolve(VERSION); } }); }
+function fetch(u) { FETCHES.push(u); return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(VERSION); } }); }   // ok and status: the core checks them before the body
 function emit(t) { (LISTENERS[t] || []).forEach(function (f) { f({}); }); }
 function wemit(t) { (WLISTENERS[t] || []).forEach(function (f) { f({}); }); }
 function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }

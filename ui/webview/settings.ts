@@ -1,5 +1,6 @@
 import { effectiveDefaultBackend } from "./backend-names";
 import { tabWidgetPrefs, tabCtxOfPrefs, type TabWidgetPrefs } from "./tab-widgets";
+import { statusWidgetPrefs, legacyOfStatusPrefs, type StatusWidgetPrefs } from "./status-widgets";
 // Shared, persisted webview settings (the user 2026-06-14): one global settings store, surfaced via a
 // gear → modal. localStorage-backed so same-origin views (the browser's /chat, /feed, /timeline tabs)
 // share ONE setting, and a `storage` event live-syncs a change across the other open tabs. Keep this
@@ -17,7 +18,7 @@ export interface RompSettings {
   debug?: boolean;    // LEGACY (the user 2026-06-17): the old single judging-band toggle; read as the migration fallback for the two judge-set toggles when those are unset. The ↻ restart button is always-visible (decoupled).
   backend: "sdk" | "codex";   // which backend a NEWLY-created session uses (the user 2026-06-22): "sdk" (Claude Code through the Agent SDK), "codex" (OpenAI Codex, docs/codex.md); a stored value of the retired terminal backend reads as sdk (loadSettings). Both coexist; this is only the default for the + button. Read at createSession time (render.ts). Default sdk (the user 2026-07-13).
   defaultDir: string;        // default working directory PREFILLED in the new-session field (the user 2026-06-22). A session starts there; the tab menu's "Move to folder…" can change it later. Empty → the kernel's serve dir. ~ / $VAR expanded server-side.
-  showBranch: boolean;       // chat bottom-bar: show the session's git branch (if any) beside the dir (the user 2026-06-23). OFF by default (the user 2026-08-10, trimming the statusline for narrow panes; an explicit stored true keeps showing it).
+  showBranch: boolean;       // the MIRROR of the status line's branch widget (T409; the key the toggle used from 2026-06-23 to 2026-09-13): written from statusWidgets on every load and save, read by no one (a pre-widgets store's value was the gear's injected default: the one-shot migration discards it); the widget defaults on (the user 2026-09-13). OFF by default (the user 2026-08-10, trimming the statusline for narrow panes; an explicit stored true keeps showing it).
   showSessionBadge: boolean; // chat bottom-bar: a small badge with the session's NAME on its identity colour before Awaiting / Ready / Working (session-badge.ts). OFF by default (the maintainers via the user, 2026-09-10: the composer's placeholder already names the session; the badge is an opt-in second reading of it where the state shows).
   tabCtx: TabCtxMode;        // chat tabs: WHEN the context gauge shows beside each session name (the user 2026-08-08) — "over50" (default: only once half full, so quiet tabs stay clean), "always", or "never".
   stripGroupRows: boolean;   // chat tabs, grouped by tag: start EVERY tag group on its own row (T264, the row breaks in render.ts). ON by default; off, the groups follow one another across the strip and wrap as they need, the untagged trail behind its divider. Per browser profile, like every setting here. Read by renderTabs and part of the strip's rebuild signature, so a gear flip repaints at once.
@@ -28,6 +29,7 @@ export interface RompSettings {
   panes: PaneSet;   // which OPTIONAL dashboard panes this browser shows at all (the user 2026-09-10): Sessions (key timeline), Outline (key fleet) and Feed. Per browser, like the rail's romp-panes toggle, but a different thing: the rail hides a loaded pane; a pane off HERE is not in the dashboard at all (no rail button, no phone tab, no palette command, its iframe never given a src, so no socket and nothing built for it). The chat is required and not listed; the Files pane keeps its rail toggle. The shell (_LANDING_COLLAPSE_JS) reads it at boot and on the storage event; the kernel keeps judging and tracking regardless, this is a view setting.
   denseChrome: boolean;   // chat page: COMPACT TABS AND AGENTS (the user 2026-09-08: on a phone, the tab strip and the background-work panel left about three lines of transcript in view). Density only, as a body class (dense-chrome.ts applyDenseChrome, run with the scheme and theme appliers): smaller tabs and group headers in the strip, tighter rows in the #bg-tasks panel with its list capped at about four rows. OFF by default: the strip and the panel are unchanged until the gear opts in. Distinct from `compact`, the transcript's own tidy-up (tool runs collapsed, thinking hidden).
   tabWidgets: TabWidgetPrefs;   // the tab-title WIDGETS (T379, the user 2026-09-12): which of the registered marks a tab carries (the status dot, the context bar, the hot-key keycap), their order and their options, set from the gear's Tab widgets section on the Chat tab. `tabCtx` above stays the context bar's MIRROR: a store with no tabWidgets derives them from it, and every save writes it back from them (tab-widgets.ts).
+  statusWidgets: StatusWidgetPrefs;   // the status line's WIDGETS (T409, the user 2026-09-13): which of the registered items the line above the composer carries (the folder and the branch by default, the session name and the host on request), in what order, with which options. showBranch and showSessionBadge above are its MIRRORS: written back on every save, never read (a store without this key reads the widget defaults: the one-shot migration).
   tabsLocked: boolean;   // chat tab strip: THE LOCK (T395, the user 2026-09-12): on, no tab moves (the drag reorder, a drag into another column or the split's edge, the tab menu's Move to rows) until the lock is clicked again. Per browser like every gear setting and fanned out the same way (settingsSync). OFF by default; only the literal true locks.
 }
 // Solarized LIGHT is deliberately absent (the user allowed skipping it): its text tiers are designed
@@ -54,8 +56,6 @@ export function theme(v: unknown): Theme {
 export function chatScheme(v: unknown): ChatScheme {
   return v === "high-contrast" || v === "solarized-dark" ? v : "default";
 }
-// Where a chat file-link click opens on the web while the Files pane is closed. tabCtxMode's normalization
-// idiom: only the literal "pane" is the opt-in; anything else a store might hold reads as the default, so
 // When the tab strip's context gauge shows. "over50" is the default (the user 2026-08-08): a gauge
 // on every tab is clutter while nothing is filling up — it should appear only when it has news.
 export type TabCtxMode = "always" | "over50" | "never";
@@ -70,7 +70,7 @@ export function tabCtxMode(v: unknown): TabCtxMode {
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
 // compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
 // (thinking hidden, tool runs folded); the gear opts back into the full stream.
-export const DEFAULT_SETTINGS: RompSettings = { tabsLocked: false, compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: false, showSessionBadge: false, tabCtx: "over50", stripGroupRows: true, showFilesControl: false, chatScheme: "default", chatTabTheme: "classic", theme: "classic", denseChrome: false, panes: { timeline: true, fleet: true, feed: true }, tabWidgets: { on: {}, order: [], opts: {} } };
+export const DEFAULT_SETTINGS: RompSettings = { tabsLocked: false, compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true, showSessionBadge: false, tabCtx: "over50", stripGroupRows: true, showFilesControl: false, chatScheme: "default", chatTabTheme: "classic", theme: "classic", denseChrome: false, panes: { timeline: true, fleet: true, feed: true }, statusWidgets: { on: {}, order: [], opts: {} }, tabWidgets: { on: {}, order: [], opts: {} } };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
@@ -97,6 +97,14 @@ export function loadSettings(): RompSettings {
       // writes tabCtx back as their MIRROR, so the skeleton tab and every older reader keep their meaning
       s.tabWidgets = tabWidgetPrefs("tabWidgets" in parsed ? parsed.tabWidgets : undefined, s.tabCtx);
       s.tabCtx = tabCtxOfPrefs(s.tabWidgets);
+      // the status line's widgets (T409): a store with them normalizes them and carries the two keys they replace,
+      // showBranch and showSessionBadge, as MIRRORS (so an older reader keeps its meaning); a store from before them
+      // reads the widgets' DEFAULTS whatever those two keys say, the one-shot migration (the user's open call, decided
+      // through the manager 2026-09-13): the gear's whole-object saves had merged its own default into every store, so
+      // the stored value is no choice. Like the theme migration above, a load writes nothing; the first save of the
+      // prefs writes the key, and the two mirrors with it
+      s.statusWidgets = statusWidgetPrefs("statusWidgets" in parsed ? parsed.statusWidgets : undefined);
+      Object.assign(s, legacyOfStatusPrefs(s.statusWidgets));
       return s;
     }
   } catch { /* corrupt / unavailable → defaults */ }
@@ -114,6 +122,15 @@ export function saveSettings(patch: Partial<RompSettings>): RompSettings {
   }
   next.tabWidgets = tabWidgetPrefs(next.tabWidgets, next.tabCtx);
   next.tabCtx = tabCtxOfPrefs(next.tabWidgets);   // the mirror follows the widgets on every save
+  if (("showBranch" in patch || "showSessionBadge" in patch) && !("statusWidgets" in patch)) {
+    // an older writer setting a legacy key alone: the widget's switch follows it (the mirror runs both ways)
+    const on = { ...next.statusWidgets.on };
+    if ("showBranch" in patch) on.branch = patch.showBranch === true;
+    if ("showSessionBadge" in patch) on.name = patch.showSessionBadge === true;
+    next.statusWidgets = statusWidgetPrefs({ ...next.statusWidgets, on });
+  }
+  next.statusWidgets = statusWidgetPrefs(next.statusWidgets);
+  Object.assign(next, legacyOfStatusPrefs(next.statusWidgets));   // both mirrors follow the widgets on every save
   try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* ignore */ }
   return next;
 }

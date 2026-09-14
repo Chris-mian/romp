@@ -198,7 +198,7 @@ class PassHoist(_Memo):
             calls.append(1)
             return real()
 
-        def walk(s, now, live, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None):
+        def walk(s, now, live, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None, reminders=None):
             seen.append(cleared)
             return False
         saved = {n: getattr(km, n) for n in

@@ -100,7 +100,7 @@ const naming = () => page.evaluate(() => {
 });
 const shot = async (name) => { if (!cfg.shots) return; fs.mkdirSync(cfg.shots, { recursive: true }); const box = await (await page.$("#f-chat")).boundingBox();
   await page.screenshot({ path: cfg.shots + "/" + name + (cfg.shotSuffix || "") + ".png", clip: { x: box.x, y: box.y, width: box.width, height: box.height } }); };
-const setBadge = (on) => page.evaluate((on) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.showSessionBadge = on; localStorage.setItem("romp:settings", JSON.stringify(s)); }, on);
+const setBadge = (on) => page.evaluate((on) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); const p = Object.assign({ on: {}, order: [], opts: {} }, s.statusWidgets || {}); p.on = Object.assign({}, p.on, { name: on }); s.statusWidgets = p; s.showSessionBadge = on; localStorage.setItem("romp:settings", JSON.stringify(s)); }, on);   // the name widget's prefs with its mirror alongside: the legacy key alone is never read since the one-shot migration
 const badgeIs = (want, why) => waitFn((want) => !!document.getElementById("f-chat").contentDocument.querySelector("#statusline .chip-session") === want, want, why);
 
 await page.goto(cfg.url);

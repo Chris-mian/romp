@@ -49,7 +49,7 @@ test("create + connect push the ONE session directly instead of waiting out a fu
   assert.ok(KERNEL.includes("def _push_session_now(sid):"), "the targeted push exists");
   assert.match(KERNEL, /_mark_views_dirty\(\)\s*\n\s*_push_session_now\(sid\)/,
     "an SDK create pushes its tab at once");
-  assert.ok(KERNEL.includes("push_session=_push_session_now,"), "the backend is wired to it");
+  assert.ok(KERNEL.includes('push_session=_stage_default("push.session")(_push_session_now),'), "the backend is wired to it, push.session as the thread's default mark at the hand-off (the SDK backend runs it on a thread of its own; the Codex backend calls it under a request's route, T401 (5a) follow-up)");
   assert.match(SDK, /self\.client = client\s*\n(\s*#[^\n]*\n)*\s*self\.backend\._push_session\(self\.sid\)/,
     "the handshake — the flip the opening chip stands down on — pushes immediately");
 });

@@ -18,7 +18,7 @@ hook table (the T303 probe).
 The socket protocol is newline-delimited JSON frames, field `t` naming the frame:
   kernel → host: attach {kernel:{pid,start,version}, ack:N}, in {data}, ack {offset}, signal {sig},
                  end {grace}, detach, ping
-  host → kernel: hello {host, cli, journal:{next}, parked:[ids]}, out {offset, data}, stderr {line},
+  host → kernel: hello {host, cli:{pid, start, fsid, spawnedAt, login}, journal:{next}, parked:[ids]}, out {offset, data}, stderr {line},
                  exit {code, signal, cause}, fault {kind, text}, busy {kernel}, pong
 One kernel is attached at a time. Connection loss without `detach` is a kernel death to the host; a
 `detach` is not (the host keeps running). An unattached host whose CLI is idle past the grace ends it.
@@ -81,7 +81,10 @@ SPEC_FIELDS = ("cli_path", "cwd", "env", "permission_mode", "permission_prompt_t
                "max_turns", "continue_conversation", "fallback_model", "thinking", "max_thinking_tokens")
 # Spec keys that are the host's own, not option fields
 SPEC_HOST_KEYS = ("sid", "name", "version", "hook_timeout_s", "hook_self_answer_s", "unattached_grace_s",
-                  "state_dir", "protocol", "reader_behind_records")
+                  "state_dir", "protocol", "reader_behind_records",
+                  "login")    # the IDENTIFIER of the stored login the launch bills ("" = the machine's own), echoed in the
+#                               hello's cli.login so an attaching kernel stamps the login the launch USED, not the one
+#                               today's availability would pick (2026-09-14); never a token, key or other credential value
 # Testing seams the spec may carry (never set by the kernel): a delay per journal write, an offset whose
 # write raises. They exist so the reader-behind fault and the journal-fault path can be driven in a test.
 SPEC_TEST_KEYS = ("_test_journal_delay_s", "_test_journal_fault_at", "_test_journal_gap_fault")
@@ -538,6 +541,8 @@ class SessionHost:
         self.transport = None
         self.cli_pid = None
         self.cli_start = None
+        self.cli_spawned_at = None      # the CLI's spawn time, set ONCE in _spawn: the lease and the hello carry it as the CLI's
+        #                                 epoch (before 2026-09-14 the lease stamped the beat's time under the same name)
         self.fsid = str(self.spec.get("resume") or self.spec.get("session_id") or "")
         self.attached = None            # the attached kernel's writer, or None
         self.kernel = None
@@ -584,7 +589,7 @@ class SessionHost:
         lease = {"sid": self.sid, "fsid": self.fsid or self.sid, "name": self.name, "pid": int(self.cli_pid),
                  "start": self.cli_start, "holder": {"pid": os.getpid(), "start": self.lease_api["proc_start"](os.getpid()) or "",
                                                      "kind": "host"},
-                 "version": self.version, "spawnedAt": int(self.now()), "t": self.now()}
+                 "version": self.version, "spawnedAt": self.cli_spawned_at, "t": self.now()}
         try:
             self.lease_api["write_lease"](self.state_dir, lease)
         except Exception as e:
@@ -617,6 +622,7 @@ class SessionHost:
             self.cli_pid = self.transport.pid
             self.log("cli-spawned", transport="pipe-fallback", cliPid=self.cli_pid)
         self.cli_start = self.lease_api["proc_start"](self.cli_pid)
+        self.cli_spawned_at = int(self.now())
         self._write_lease()
 
     async def _read_cli(self) -> None:
@@ -866,7 +872,9 @@ class SessionHost:
         self.log("attached", kernelPid=self.kernel.get("pid"), ack=ack, next=read_at_attach)
         self._send(writer, {"t": "hello", "protocol": PROTOCOL_VERSION,
                             "host": {"pid": os.getpid(), "start": self.lease_api["proc_start"](os.getpid()) or "", "version": self.version},
-                            "cli": {"pid": self.cli_pid, "start": self.cli_start, "fsid": self.fsid},
+                            "cli": {"pid": self.cli_pid, "start": self.cli_start, "fsid": self.fsid,
+                                    "spawnedAt": self.cli_spawned_at,                 # the CLI's epoch, the kernel's reg copies it
+                                    "login": str(self.spec.get("login") or "")},       # the login identifier the launch billed
                             "journal": {"next": read_at_attach}, "parked": self.parked.ids(),
                             "inflight": self.inflight,      # the open turns, so an attaching kernel knows it is mid-turn
                             "exited": self.exit_info is not None})

@@ -100,7 +100,10 @@ class SourcePins(unittest.TestCase):
         self.assertIn("nothing to signal", self.src)
 
     def test_fresh_cli_spawn_stamps_and_heals(self):
-        self.assertIn("spawnedAt=int(time.time())", self.src)
+        # the block stamps the epoch it is handed with the CLI's identity (a host's spawn time at the hello; now for a kernel
+        # child at the connect, 2026-09-14), and heals the stale awaiting
+        self.assertIn('spawnedAt=int(spawned_at), spawnedAtCli=str(cli_ident or "")', self.src)
+        self.assertIn('self._fresh_cli_stamp(int(time.time()), "", mark_echoes=not deliberate)', self.src)
         self.assertIn("self.backend._heal_stale_awaiting(self.sid)", self.src)
 
 

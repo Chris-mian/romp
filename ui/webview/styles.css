@@ -588,15 +588,19 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    that change drops its copy when it lands on this one */
 .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); border: 1px solid var(--box-border);
   border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
-/* the strip's gear (T379; T405, the user 2026-09-13): the shell's own settings glyph (icons.ts GEAR_GLYPH, the rail's
-   character), in a box of its own at the strip's FARTHEST RIGHT: the box is appended last and margin-left auto pushes it
-   to the right edge of the last flex line, whatever wraps before it; the box has the tags box's floor so a controls-only
-   line stays as tall as one the + is on. The button keeps the tag button's dress; the character is sized to the row. */
-.tab-gearbox { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; }
-.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; padding: 2px 6px; cursor: pointer;
-  font-size: 16px; line-height: 20px; background: transparent; border: 1px solid var(--card-border); border-radius: 6px; color: var(--dim);
-  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
-.tab-widgets-gear:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+/* THE STRIP'S RIGHT END (T412, the user 2026-09-13): the tags button and the gear ride one invisible wrapper pushed to the
+   right edge of the last flex line by the auto margin, with the + tab's rendered height as its floor so a controls-only
+   wrapped line stands as tall as one the + is on. The gear is a bare glyph dressed exactly as the rail's settings gear at the
+   bottom right of every romp page (kernel.py .rail-act and #rail-gear, which strip-chrome.test.ts reads value for value):
+   no border, no background at rest, the 19px glyph, the rail's rest colour, its 5px radius and its hover wash. */
+.tab-strip-end { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; }
+.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: 1px 4px; padding: 4px 0; cursor: pointer;
+  font-size: 19px; line-height: 1; border: 0; border-radius: 5px; background: transparent; color: #8a8a8a; user-select: none;
+  transition: color 0.1s, background 0.1s; }
+.tab-widgets-gear:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.tab-widgets-gear:active { transform: scale(0.92); }   /* the rail action's press */
+body.theme-light .tab-widgets-gear { color: var(--dim); }   /* the rail's light rest colour is the light theme's --dim value */
+body.theme-light .tab-widgets-gear:hover { color: var(--fg); background: rgba(0, 0, 0, 0.06); }   /* the rail's light hover: the --fg value on its wash */
 /* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
    upright — fills bottom-up with the context-used %, in the SAME global-colormap colour (fill set
    inline by the context bar widget, tab-widgets.ts tabCtxGauge), no % text. A faint track so an empty gauge still reads as
@@ -1589,6 +1593,8 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   color: var(--dim); font-family: var(--mono); font-size: 0.92em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* the folder widget's Full path option (T409): the whole path, with room for it; still ellipsized before the controls */
+.status-dir.status-dir-full { max-width: 380px; }
 /* the monochrome folder glyph (folderIcon) leading the dir basename — sits on the text row, inherits the dim
    tint via currentColor, and brightens with the rest on the .folder-link hover */
 .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
@@ -1754,20 +1760,22 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .tx-spacer { width: 100%; pointer-events: none; }
 /* "Loading earlier messages…" cue while a window expand/jump renders un-rendered history (render.ts). Pinned
    top-center of the chat pane, above the transcript, non-interactive. */
-/* T365 (the user 2026-09-12): the loading pill is anchored to the CHAT SECTION, never the viewport. showLoadingPill
-   inserts a zero-height .tx-loading-anchor right before #content in the page's flex column (tab bar, its resize grip,
-   the ledger box, then the transcript), so the pill's top edge follows the tab strip's bottom by layout alone, however
-   many rows the strip wraps into and however that changes while the pill shows; the viewport-fixed top:10px it had
-   sat on the tabs, and on the tabs themselves once the strip wrapped. The surface rides the menu tokens so it reads
-   on cream as on the dark page. */
+/* T365 (the user 2026-09-12), kept by the ONE landing notice (T386 stage 2): the notice is anchored to the CHAT SECTION, never
+   the viewport. The page inserts a zero-height .tx-loading-anchor right before #content in its flex column (tab bar, its resize
+   grip, the ledger box, then the transcript), so the notice's top edge follows the tab strip's bottom by layout alone, however
+   many rows the strip wraps into and however that changes while the notice shows; a viewport-fixed top sat on the tabs. The
+   surface rides the menu tokens so it reads on cream as on the dark page; the notice takes the only cancel click, so it shows
+   a pointer and an accent border on hover. */
 .tx-loading-anchor { position: relative; flex: 0 0 auto; height: 0; width: 100%; overflow: visible; z-index: 50; pointer-events: none; }
-.tx-loading-pill {
+.tx-landing-notice {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
   background: var(--vscode-menu-background, var(--surface-raised)); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: auto; cursor: pointer; white-space: nowrap;   /* clickable (T402): the click cancels the wait; the anchor around it stays pointer-events none */
+  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: auto; cursor: pointer; white-space: nowrap;   /* the ONE cancel (T386 stage 2): the notice takes the click; its anchor stays inert */
   box-shadow: var(--shadow-toast); border: 1px solid var(--menu-border);
 }
-.tx-loading-pill:hover { border-color: var(--accent); }
+.tx-landing-notice:hover { border-color: var(--accent); }
+.tx-landing-notice.pulse { animation: tx-notice-pulse 500ms ease-out; }   /* a second click on the same anchor while its window is on the wire: the one cue the page has for it (round eleven) */
+@keyframes tx-notice-pulse { 0% { transform: translateX(-50%) scale(1); } 40% { transform: translateX(-50%) scale(1.08); } 100% { transform: translateX(-50%) scale(1); } }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup { padding-top: 4px; padding-bottom: 4px; }
 /* (the compaction boundary is THE notice — compact severity, "COMPACTION · Context compacted · auto · 142k → 38k") */
@@ -3128,6 +3136,15 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 /* the Billing row's single-choice text: written out where the buttons would sit (the user 2026-08-09) —
    the buttons' 0.82em, plain, no button chrome (it is a fact, not a control) */
 .picker-auth-fixed { flex: 0 0 auto; color: var(--fg); font-size: 0.82em; padding: 4px 0; }
+/* several logins (T346): the Billing row's options shrink with an ellipsis so three long labels share the row (the
+   whole label is the hover); an unavailable one is greyed and inert; past three choices the row is one dropdown in
+   the menu vocabulary (the theme's menu tokens, the dark literals only as var() fallbacks) */
+.picker-auth .picker-be-opt { flex: 0 1 auto; min-width: 0; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-auth .picker-be-opt[disabled] { opacity: 0.45; cursor: default; }
+.picker-auth .picker-be-opt[disabled]:hover { background: transparent; color: var(--dim); }
+.picker-auth-select { flex: 0 1 auto; min-width: 0; max-width: 70%; font: inherit; font-size: 0.82em; padding: 3px 6px;
+  background: var(--menu-bg, #252526); color: var(--menu-fg, #cccccc); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-menu, 6px); }
 /* the picker's Tags row (tab groups, the user 2026-09-04): one option per tag; several may be selected, a session
    can hold several tags. Each option IS the tag chip every surface draws (T321, the user 2026-09-10): the thin
    border in the tag's colour, so the button around it carries no chrome: no border, no padding, the page's typeface
@@ -3273,15 +3290,17 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 #jump-bottom[hidden] { display: none; }   /* author display:flex defeats [hidden] — the login-modal lesson */
 /* live updates paused (T323 stage 4b): a proto-2 reader on an older window gets no live delta; the strip says so and
    offers the return. The jump chip's dress: menu-card background, the hairline border, the toast shadow, pill radius. */
-#live-paused {
-  position: fixed; left: 14px; z-index: 40; display: flex; align-items: center; gap: 10px;
-  padding: 4px 10px; border-radius: var(--radius-pill); font-size: 12px; color: var(--dim);
-  background: var(--vscode-menu-background, var(--surface-raised)); border: 1px solid var(--menu-border); box-shadow: var(--shadow-toast);
-}
-#live-paused[hidden] { display: none; }
-#live-paused .live-paused-btn { cursor: pointer; border: 1px solid var(--menu-border); border-radius: var(--radius-pill); padding: 2px 10px;
-  background: transparent; color: var(--accent); font: inherit; }
-#live-paused .live-paused-btn:hover { border-color: var(--accent); }
+/* a GAP in the thread (T386 stage 2): history the page does not hold, as empty space of an estimated height; overflow-anchor none
+   so the browser never anchors on it (the first visible turn holds when a gap above the viewport fills or re-sizes); the romp
+   loading glyph, large enough to read at a glance, while a page of it is on the wire, sticky so it stays in view through a tall gap */
+.tx-gap { position: relative; width: 100%; overflow-anchor: none; pointer-events: none; }
+.tx-gap-glyph { position: sticky; top: 40%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 0;
+  font-family: var(--sans); font-size: 21px; font-weight: 650; color: var(--fg); opacity: 0.85; }
+.tx-gap-glyph .tx-gap-r { color: #1EA1EB; }
+.tx-gap-glyph .tx-gap-mp { color: #54B204; }
+.tx-gap-glyph .tx-gap-swirl { width: 30px; height: 30px; animation: tx-swirl-spin 1.6s linear infinite reverse; }
+.tx-gap-glyph .tx-loading-dots { margin-left: 8px; }
+.tx-gap-glyph .tx-loading-dots i { width: 7px; height: 7px; }
 @media (pointer: coarse) { #jump-bottom { width: 64px; height: 32px; } }   /* the phone half: WIDEN for the hit area, never heighten — the compact look is the ask */
 /* replies ready (the user 2026-09-08): two chips stacked ABOVE the jump chip in the SAME slot and dress —
    "↑ 2 replies unread" / "↓ 1 reply unread" — for the unread landed replies whose marks sit off-screen in
@@ -4449,11 +4468,11 @@ body.dense-chrome .tab-add { padding: 3px 8px; font-size: 1.1em; }              
    the 18px line + 2 x 3px dense padding + the 1px border; #tabs stretches every item on a row to the tallest, so
    without this the row holding the + and the tag control would stay 31px beside 25px rows */
 body.dense-chrome .tab-tagbox { min-height: 25px; }                                     /* 31px */
-body.dense-chrome .tab-gearbox { min-height: 25px; }                                    /* 31px; the gear box follows the tags box (T405) */
-/* the gear button itself under compact tabs (T405 round two): its 20px line, 2 x 2px padding and the border made 26px, taller
-   than the 25px row, and #tabs stretches every item on a row to the tallest, so every dense tab grew to 26px and the transcript's
-   top moved a pixel; an 18px line makes the button 24px (the old lock's height), inside the 25px box */
-body.dense-chrome .tab-widgets-gear { line-height: 18px; }                              /* 20px */
+body.dense-chrome .tab-strip-end { min-height: 25px; }                                  /* 31px; the right-end wrapper follows the tags box (T405, T412) */
+/* the gear glyph under compact tabs (T405 round two found a 26px button stretching the 25px row: #tabs stretches every item on a
+   row to the tallest, and the transcript's top moved a pixel): the 19px glyph with 3px above and below makes the row's 25px
+   exactly, no border to count (T412) */
+body.dense-chrome .tab-widgets-gear { margin: 0 4px; padding: 3px 0; }                  /* 1px 4px; 4px 0: the rail's vertical margin would carry the glyph's box past the 25px row */
 body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }                       /* 5px; 6px 7px — the dense tab's own padding, so the row keeps a tab's box here too (T322) */
 /* the untagged trail's divider (the inline layout, stripGroupRows off): its 1px line is the content area under fixed
    gutters, so the 8px gutters sized for the 32px row would leave a 9px line in the 25px row; 6px keeps the default's

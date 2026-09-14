@@ -14,6 +14,7 @@ CLI:
   romp-judge --test <transcript>  # caption one transcript's recent units, print them (no write)
 """
 import collections
+import shlex
 import contextlib, copy, hashlib, json, os, re, secrets, shutil, signal, stat, sys, time, subprocess, threading, traceback, importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -54,13 +55,19 @@ class _TimedPool(ThreadPoolExecutor):
         super().__init__(*args, **kwargs)                 #  stack sample keys them by tier, never as an anonymous pool (T401)
 
     def submit(self, fn, /, *args, **kwargs):
+        stage = em._read_stage()                          # the submitter's stage mark (judge.<tier> on a tier thread) rides the submit
+        #                                                   the same way the pass frame does: a build or a hydration inside the worker
+        #                                                   counts under the tier, never under `none` (T401 (5a) round two)
         def run():
             _judge_ctx.in_pass = True
+            prev = em._read_stage()
+            em._set_stage_mark(stage)
             c0 = time.thread_time()
             try:
                 return fn(*args, **kwargs)
             finally:
                 _judge_cpu_add(time.thread_time() - c0)
+                em._set_stage_mark(prev)                  # the worker's previous mark restored on every exit
         return super().submit(run)
 
 
@@ -75,6 +82,9 @@ em = load_source("romp_event_model", HERE / "event_model.py")
 em.set_checkpoint_dir(lambda: STATE / "checkpoints")   # T323 stage 3: the fold checkpoints live under the state root, read at
 #                                                        call time so _rebind_state moves them with everything else
 _cred = sys.modules.get("romp_credentials") or load_source("romp_credentials", HERE / "credentials.py")
+# the stored Claude logins' registry (T346): a judge call for a session billed to one names that login's helper,
+# and never runs as a login the registry holds refused
+_logins = sys.modules.get("romp_logins") or load_source("romp_logins", HERE / "logins.py")
 
 HOME     = Path.home()
 STATE    = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root override (plans/multi-kernel.md)
@@ -185,7 +195,10 @@ def _rebind_state(path):
     _CHAIN_MEMO.clear()     # the write-moment chain memo keys on paths under STATESDIR; a new root is a new world
     parse_cache_clear()      # the parses belong to the old root too
     _COURIER_SEEN.clear()   # the courier gate keys on the old root's files
-    _PLANNER_SEEN.clear()   # ...and the planner gate
+    _PLANNER_SEEN.clear(); _PLANNER_SEEN_LOADED[0] = False; _PLANNER_SEEN_DIRTY[0] = False; _PLANNER_SEEN_READ_FAULT[0] = False   # ...and the planner gate, its load latch
+    #                                                                                          with it: the new root's rows load on
+    #                                                                                          the next pass, and a forced persist
+    #                                                                                          before that writes nothing (T401 (5c) round three)
     _BACKREF_MEMO["slot"] = None   # ...and so does the sender-board walk's map
     _CAPTIONS_MEMO.clear(); _GOALARCH_MEMO.clear()   # ...and the per-file read memos
     _episode_memo.clear()   # ...and so are the episode-log reads
@@ -921,6 +934,11 @@ def _judge_cmd(model, sys_prompt, effort=None, auth=None, tier="triage"):
         # the CLI takes as unset (null falls through to the settings files; verified on 2.1.257), the same
         # lever a login-picked session's launch uses (sdk_backend.flag_settings_path).
         overlay["apiKeyHelper"] = ""
+    elif str(auth or "").startswith("login:"):
+        # a call for a session billed to a STORED login (T346) carries that login's own helper instead: the
+        # judges bill the same account as the session they judge, and the machine's tokens stay out of the
+        # child (_judge_env restores them for the machine's login only)
+        overlay["apiKeyHelper"] = _login_helper_cmd(str(auth)[6:])
     if overlay:
         cmd += ["--settings", json.dumps(overlay)]
     return cmd
@@ -1529,7 +1547,7 @@ def _prune_usage_log():
         pass
 
 
-def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None, err=False):
+def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None, err=False, auth=None):
     """Append ONE per-call usage line to USAGE for the kernel/UI cost rollup (judge_ui 2026-06-17).
     `wrap` is the claude -p JSON envelope. `sent`/`recv` are the LITERAL wall-clock floats bracketing the
     actual API call — when the judge's prompt went out and when its response came back (the user
@@ -1552,6 +1570,10 @@ def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None, err=F
                                 "fastReason": wrap.get("fast_mode_disabled_reason"),   # why not, when the CLI says
                                 **({"err": True} if err else {}),   # an error envelope's row: kept for its readback,
                                 #   zero cost, skipped by the cost rollup's call and cost counts
+                                # which account the call billed (T346): 'key', 'login' (the machine's own) or
+                                # 'login:<id>' (a stored login), so the cost rollups split by login; absent on rows
+                                # written before the stamp existed
+                                **({"auth": auth} if auth else {}),
                                 "cost": wrap.get("total_cost_usd")}) + "\n")
     except Exception:
         pass
@@ -1693,7 +1715,8 @@ def _judge_auth(fsid):
     box can bill it (T380; auth_unavailable_why: a logged-out login, a managed helper, an expired account
     file all move the launch, the status and the flyout to the other side, and the judges with them — the
     round-3 review found a seed re-read here that kept billing the login alone), else the helper rule. A
-    call with no session (rows with no session) takes the same default a fresh session would. Standalone
+    call with no session (rows with no session) takes the same default a fresh session would. A session billed to a STORED login (T346) is decided here first, from the reg's
+    own pick: the resolver names sides, and a stored login is a pick, never a default. Standalone
     (tests, no kernel wiring) the registry file and the helper rule stand in: an explicit 'login' or 'key'
     pick → that side; else the key when Claude Code's settings carry an apiKeyHelper, else login."""
     reg = {}
@@ -1703,6 +1726,23 @@ def _judge_auth(fsid):
             reg = reg if isinstance(reg, dict) else {}
         except Exception:
             reg = {}
+    a = reg.get("auth") or ""
+    lid = reg.get("authLogin") if isinstance(reg.get("authLogin"), str) else ""
+    if a == "login" and lid and re.fullmatch(r"[0-9a-f]{12}", lid):
+        # a session billed to a STORED login (T346): its judges bill that same login, carried as the pick value
+        # 'login:<id>' so _judge_cmd names the login's helper and every latch and row says WHICH login. A stored
+        # login the registry holds REFUSED (or expired, or gone) is never run as: the call takes the session's own
+        # fallback (the key when a helper is configured, else the machine's login), said once per session, and a
+        # judge call never clears a refusal (its envelope carries no evidence of which login answered).
+        why = _logins.why_unavailable(_logins.record_state(STATE, lid))
+        if not why:
+            return "login:" + lid
+        fall = "key" if _key_available() else "login"
+        if (fsid, lid) not in _LOGIN_FALL_SAID:
+            _LOGIN_FALL_SAID.add((fsid, lid))
+            sys.stderr.write("romp-judge: session %s bills a stored login that is unavailable (%s); its judge calls bill "
+                             "the %s instead\n" % (str(fsid or "")[:8], why, "API key" if fall == "key" else "machine's login"))
+        return fall
     if _DEFAULT_AUTH_FN is not None:
         try:
             side = str(_DEFAULT_AUTH_FN(reg) or "")
@@ -1710,10 +1750,41 @@ def _judge_auth(fsid):
                 return side
         except Exception:
             pass   # the resolver failed: the standalone rule below decides, never a raise inside a judge call
-    a = reg.get("auth") or ""
     if a in ("login", "key"):
         return a
     return "key" if _key_available() else "login"
+
+
+def _is_login_auth(auth) -> bool:
+    """A login-side pick, the machine's own ('login') or a stored one ('login:<id>')."""
+    return auth == "login" or str(auth or "").startswith("login:")
+
+
+def _login_helper_cmd(login_id):
+    """The apiKeyHelper for a judge call billed to a STORED login (T346): bin/romp-login-helper with the record
+    id and this state directory, the same command the session's own launch carries (sdk_backend
+    flag_settings_path's helper_cmd), so the judge runs the login's own token command per request (a secret
+    manager's read command, typically) and nothing rides this process's files or environment."""
+    return "%s %s %s" % (shlex.quote(str(HERE.parent / "bin" / "romp-login-helper")), login_id, shlex.quote(str(STATE)))
+
+
+_LOGIN_FALL_SAID = set()       # (fsid, login id) pairs whose judge fall off a refused stored login was said (once each)
+_API_HEALTH_NOTE_FN = None     # the kernel wires the API-health ring's judge source (T346, the user 2026-09-11: one
+                               # accounting per login, the judges included): fn(kind, auth, model, msg, fsid) with kind
+                               # 'ok' | 'gaveup'; standalone judges note nothing
+
+
+def _note_api_health(kind, auth, model, msg, fsid):
+    """File ONE judge call's outcome into the API-health ring through the kernel's hook: an 'ok' for a served
+    reply, a 'gaveup' with the envelope's message for an error envelope. Never for a codex call (another
+    vendor), never raising into the call."""
+    fn = _API_HEALTH_NOTE_FN
+    if fn is None or auth == "codex":
+        return
+    try:
+        fn(kind, auth, model, msg, fsid)
+    except Exception:
+        pass
 
 
 def _is_auth_error(text):
@@ -1771,12 +1842,16 @@ def _auth_down_mark(fsid, mode, note):
     if not fsid:
         return
     note = str(note or "")[:300]
+    mode = str(mode or "")
+    login = mode[6:] if mode.startswith("login:") else ""    # a stored login's id (T346); the mode stays the side word
+    if login:
+        mode = "login"
     with _auth_lock:
         d = dict(_auth_down_map())
         row = d.get(fsid) or {}
-        if row.get("mode") == mode and row.get("note") == note:
+        if row.get("mode") == mode and row.get("note") == note and (row.get("login") or "") == login:
             return
-        d[fsid] = {"t": int(row.get("t") or time.time()), "mode": mode, "note": note}
+        d[fsid] = {"t": int(row.get("t") or time.time()), "mode": mode, "note": note, **({"login": login} if login else {})}
         _auth_write_locked(d)
 
 
@@ -1937,6 +2012,8 @@ def _judge_env(tier, auth="login", model=None):
     unconditionally, and a KEY-billed call injects nothing back (2026-09-08: romp holds no key; the child
     resolves Claude Code's apiKeyHelper itself, and the first pass after boot runs exactly like every later
     one). A LOGIN-billed call gets the claimed login tokens back and, in _judge_cmd, the helper suppression.
+    A call billed to a STORED login ('login:<id>', T346) gets NEITHER: its credential is that login's own
+    helper in _judge_cmd's overlay, and a machine token beside it would outrank the helper.
     Removal, not blanking: the CLI treats even an empty var as key-mode-without-a-key and refuses with
     "Not logged in"."""
     env = dict(os.environ)
@@ -2027,6 +2104,40 @@ _KILL_RC = -signal.SIGALRM               # the other kill shape: the perl `alarm
 #                                          install would have tombstoned every turn it touched after three passes).
 
 
+# ── the Task tracking master switch's census (T404, the user 2026-09-13) ─────────────────────────
+# Every kernel-initiated model call goes through _judge_run, and every caller names its judge. MODEL_CALLERS
+# lists each judge name with its relation to the kernel's master switch: "tracking" stands down while the
+# switch is off (the producer starts no tier; this gate catches any path that still asks, the nudge's
+# redundancy check among them). A judge with NO entry is REFUSED, with a judge-errors row saying why (T404 round
+# two, low 3: letting it out defeated the switch for any caller that forgot the table), and
+# tests/test_task_tracking_switch.py holds this table to an ast census of _judge_run's call sites, so a new
+# caller cannot ship undeclared; a call that names no judge at all (a harness, a direct probe) is not gated.
+# The kernel installs its _task_tracking_on as TASK_TRACKING_ON at boot; the romp-judge CLI runs with the
+# default (on): a pass the user starts by hand is the user's.
+TASK_TRACKING_ON = lambda: True
+MODEL_CALLERS = {
+    "captioner": "tracking", "archiver": "tracking", "gister": "tracking", "titler": "tracking",   # the index tier and its title work
+    "planner": "tracking", "opener": "tracking", "placer": "tracking", "grouper": "tracking", "consolidator": "tracking",
+    "closer": "tracking", "unblocker": "tracking", "courier": "tracking",                          # the triage tier
+    "distiller": "tracking", "briefer": "tracking", "staller": "tracking",                          # the distill tier
+    "nudge-check": "tracking",                                                                     # the auto-nudge's redundancy read
+}
+
+
+def _model_call_allowed(judge):
+    """Whether a model call by `judge` may go out now: a declared "tracking" judge only while the Task tracking switch
+    is on; a declared "user" judge always; an undeclared NAME is refused and files a judge-errors row (the census test
+    catches it at merge time; this is the running kernel's belt); an unnamed call is not this gate's business."""
+    if judge is None:
+        return True
+    rel = MODEL_CALLERS.get(judge)
+    if rel is None:
+        _log_judge_error(judge, getattr(_judge_ctx, "fsid", None), "unregistered-caller",
+                         note="judge %r is not in judge.py MODEL_CALLERS: declare its relation to the Task tracking switch; the call was refused" % (judge,))
+        return False
+    return rel != "tracking" or bool(TASK_TRACKING_ON())
+
+
 def _call_shape(model, sys_prompt, user, sent):
     """The grep-able shape of a FAILED call for its 'call' row: the model, the prompt size in chars
     (system + user — the SIZE only, never the text) and the wall-clock ms since it was sent. 2026-09-03:
@@ -2061,6 +2172,9 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
             return ""                                 # from a real call failure — event-based, no time window
     except Exception:
         pass
+    if not _model_call_allowed(judge):                # the Task tracking switch off for a declared tracking judge (T404):
+        _judge_ctx.paused = True                      # a stand-down like a pause, never a failure to count
+        return ""
     fsid = getattr(_judge_ctx, "fsid", None)
     engine = _judge_engine()                          # "claude" | "codex" (docs/codex.md §judges)
     try:
@@ -2234,7 +2348,7 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
             return ""
         try:
             fast_asked = _tier_fast(tier, model)
-            if fast_asked and auth != "login":
+            if fast_asked and not _is_login_auth(auth):
                 env = dict(env, **_fast_org_env())    # permission follows billing (the sessions' rule, T300)
             p = subprocess.run(_judge_cmd(model, sys_prompt, effort, auth=auth, tier=tier), input=user,
                                capture_output=True, text=True, cwd=JUDGE_SCRATCH, env=env,
@@ -2274,7 +2388,7 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
                 if fast_asked and "fast_mode_state" in wrap:
                     # the call asked for fast and the CLI's refusal envelope still says whether fast engaged: keep
                     # that readback (a zero-cost row marked err, which the cost rollup skips) and judge it below
-                    _log_judge_usage(judge or tier, tier, model, fsid, dict(wrap, total_cost_usd=0), sent, recv, err=True)
+                    _log_judge_usage(judge or tier, tier, model, fsid, dict(wrap, total_cost_usd=0), sent, recv, err=True, auth=auth)
                     _note_fast_readback(tier, model, wrap, judge or tier, fsid)
                 if _LIMIT_ENVELOPE_RE.search(msg):
                     # a limit-shaped envelope is the EVENT that says usage.json is stale (get_usage
@@ -2296,10 +2410,12 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
                     # credential-class: only the user can fix it — latch, so build_feed floors this
                     # session's focus card instead of leaving the board silently frozen (2026-08-12)
                     _auth_down_mark(fsid, auth, msg[:160])
+                _note_api_health("gaveup", auth, model, msg, fsid)   # the judges' half of the login's bucket (T346)
                 return ""
             if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
                 _judge_ctx.last["reply"] = _mid_elide(wrap["result"])
-                _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
+                _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv, auth=auth)
+                _note_api_health("ok", auth, model, "", fsid)          # the judges' half of the login's bucket (T346)
                 if fast_asked and "fast_mode_state" in wrap:   # no answer is no information (never a fabricated refusal)
                     _note_fast_readback(tier, model, wrap, judge or tier, fsid)
                 _note_served_model(model, wrap)       # the envelope names the model a bare alias resolved to;
@@ -3054,23 +3170,198 @@ _COURIER_SEEN = {}         # fsid -> the scan key of its last pass that found no
 # the leaf fsid's directory, which a /clear forks away from an SDK session's sid), the reg file's key, the
 # captions file's key (the floor-title heal reads it), each running background launch with whether it has
 # crossed its deadline under the pass clock (the settle's one input no file records; see _bg_expiry_key),
-# and the transcript path. Recorded only when the pass did nothing, the store's key after the pass
+# the transcript path, and (T401 (5c) round two) the death marker's key (_cli_epoch), cleared.jsonl's key
+# (plan_units through _live_anchor_gone) and auto-nudge.json's key (rollup_status): every file the plan
+# tier's inventory (_sig_inputs) names, held by a completeness pin. Recorded only when the pass did nothing, the store's key after the pass
 # equals the one before it (a heal, a mint, a retirement or a rollup change moves it), and the pass was
 # COMPLETE by the evidence gate's bit (_judge_ctx.stage_incomplete, reset by _gated before the run: a
 # deferral without a write or a side file that exists and did not read sets it); a pass with units,
 # placements, a moved store or that bit is planned again next pass whatever the key says. A parse the cache
 # does not hold is never keyed, nor is an expiry view that cannot be computed. Pruned to the sessions the
 # pass discovered; a rebound root clears. This gate sits INSIDE _plan_session; the evidence gate
-# (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on a superset of these inputs
-# (cleared.jsonl, the death marker, the reg's spawnedAt value and the stall slice as well), so most skips
-# happen there and this table sees the sessions it let through.
-_PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do
-_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0}
+# (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on the same files by identity
+# plus derived VALUES this key does not read (the reg's spawnedAt and backend, the stall slice's value, the
+# task-store fingerprint), so most skips happen there and this table sees the sessions it let through.
+_PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do (JSON-normalized: lists, not tuples)
+_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "refused": 0, "persisted": 0, "mismatchByTerm": {}}
+#                            mismatchByTerm: for every row that stood in the table (restored or recorded this boot) and compared
+#                            unequal at a pass, the INDEXES of the key terms that differed, counted (str(index) -> count, reset per
+#                            boot with the process): the instrument that names a term moving at boot instead of leaving it to a
+#                            guess (the 5c follow-up: the second deploy boot read restored 20 and skipped 0 because the reg's and the
+#                            stall slice's STATS moved at every boot; this histogram would have read {"5": 20, "10": 20})
+#                            restored: rows a boot loaded (served only when their key stands); refused: rows the load would not
+#                            trust; persisted: the rows on disk after the last write (T401 (5c): every boot re-planned every
+#                            session because this memo lived in memory alone: plannerSkip skipped 0, planned 20 on 2026-09-14)
+_PLANNER_SEEN_FILE = "planner-seen.json"   # STATE/planner-seen.json: {"v": 1, "derivation": [<_PLANNER_SEEN_DERIVATION_V>, <PLACEMENTS_V>],
+#                                                                  "rows": {fsid: <the normalized plan key>}}
+_PLANNER_SEEN_V = 1                        # the DOCUMENT's shape (a reader of another shape loads nothing)
+_PLANNER_SEEN_DERIVATION_V = 2             # the PLANNER's derivation under which a row means "nothing to do": a persisted row asserts
+#                                            that under the code that wrote it, and before T401 (5c) every restart discarded the
+#                                            assertion; now a file whose derivation pair differs from the running code's is refused
+#                                            whole (every row counted refused), so the first pass after the change plans every
+#                                            session once and the rows are rewritten under the new derivation. PLACEMENTS_V rides
+#                                            beside it: the store's placementsV seal sits below the skip return in _plan_session, so
+#                                            a seg-id migration must invalidate the rows or a standing row would keep a store at the
+#                                            old placementsV. BUMP THIS when a change to _plan_session's reads or writes would make
+#                                            a pass that had nothing to do under the old code have something under the new (a heal,
+#                                            a new unit shape, a retire rule), or when the KEY's shape changes (the rows would compare
+#                                            unequal anyway; the bump refuses them once, explicitly, and rewrites them).
+#                                            v1 = the memo's first persisted shape (2026-09-14); v2 = the reg (index 5) and the stall
+#                                            slice (index 10) keyed by value instead of by stat, since both files are rewritten at
+#                                            every boot and no v1 row stood across one (2026-09-14, the second deploy boot's read).
+_PLANNER_SEEN_LOCK = threading.Lock()
+_PLANNER_SEEN_DIRTY = [False]
+_PLANNER_SEEN_LOADED = [False]
+_PLANNER_SEEN_SAID = [False]               # the persist's failure said once per fault episode (re-armed by a clean write)
+_PLANNER_SEEN_READ_FAULT = [False]         # the load's read or decode fault, counted ONCE per fault spell (re-armed by a successful load):
+#                                            the latch stays unset on a fault so the next pass retries the read, and a file that stays
+#                                            unreadable must not count a refusal per pass (the 5c follow-up, the manager's refinement)
+_PLANNER_FSID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _planner_key_norm(pkey):
+    """The plan key as JSON carries it (tuples to lists, ints and floats kept), or None for a key that cannot be persisted: a
+    _file_key sentinel (a fresh object() for a file that exists but cannot be read) is never equal to anything, so such a key is
+    neither recorded nor compared (the in-memory memo never matched it either). Both sides of every comparison go through here."""
+    try:
+        return json.loads(json.dumps(pkey))
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_planner_seen():
+    """The previous kernel's planner memo into _PLANNER_SEEN, once per boot (best-effort; a missing or torn file is an empty memo).
+    Every row is checked: a uuid-shaped fsid and a list value, else refused (counted, never trusted); a row is an ANSWER only when
+    its key, recomputed at the next pass, equals the persisted one (the tick-seen rule: recompute and compare, never trust).
+    The load LATCHES only after a successful read and parse (a missing file is a successful empty load and latches too): a read or
+    decode fault leaves the latch unset, so the next pass retries the read and the exit drain's forced persist declines meanwhile
+    (the previous kernel's rows stand on disk); the fault counts one refusal per fault spell, said once until a load succeeds.
+    Before the 5c follow-up the latch was set before the read, so a present-but-unreadable file latched an empty table and a
+    kernel exiting before any pass emptied the file through the drain."""
+    if _PLANNER_SEEN_LOADED[0]:
+        return 0
+    try:
+        raw = (STATE / _PLANNER_SEEN_FILE).read_bytes()
+    except FileNotFoundError:
+        _PLANNER_SEEN_LOADED[0] = True                                 # a fresh root: an empty memo, nothing to refuse, latched
+        _PLANNER_SEEN_READ_FAULT[0] = False
+        return 0
+    except OSError:
+        if not _PLANNER_SEEN_READ_FAULT[0]:                            # a file that exists and cannot be read: one refusal per fault
+            _PLANNER_SEEN_READ_FAULT[0] = True                         #  spell; the latch stays unset (the next pass retries)
+            _PLANNER_STATS["refused"] += 1
+        return 0
+    try:
+        d = json.loads(raw.decode("utf-8"))                            # the decode under the parse try: a UnicodeDecodeError is a
+    except ValueError:                                                 #  ValueError, and round two's read_text let it out of run_plan
+        if not _PLANNER_SEEN_READ_FAULT[0]:                            #  (round three, medium 2); torn or not UTF-8: one refusal per
+            _PLANNER_SEEN_READ_FAULT[0] = True                         #  fault spell, the latch unset (a rewrite by the previous
+            _PLANNER_STATS["refused"] += 1                             #  kernel's tail cannot happen, but a torn write's retry can)
+        return 0
+    _PLANNER_SEEN_LOADED[0] = True                                     # read and parsed: this boot's load, whatever the rows say
+    _PLANNER_SEEN_READ_FAULT[0] = False
+    rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _PLANNER_SEEN_V else None
+    if not isinstance(rows, dict):
+        _PLANNER_STATS["refused"] += 1                                 # empty, null, another shape or version: one refusal
+        return 0
+    if d.get("derivation") != [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V]:
+        _PLANNER_STATS["refused"] += len(rows)                         # written under another derivation: every row refused, the
+        return 0                                                       #  first pass plans everything once (round two, medium 3)
+    n = 0
+    with _PLANNER_SEEN_LOCK:
+        for fsid, v in rows.items():
+            if not (isinstance(fsid, str) and _PLANNER_FSID_RE.match(fsid) and isinstance(v, list)):
+                _PLANNER_STATS["refused"] += 1
+                continue
+            _PLANNER_SEEN[fsid] = v; n += 1
+    _PLANNER_STATS["restored"] = n
+    return n
+
+
+def _planner_seen_set(fsid, norm):
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN.get(fsid) != norm:
+            _PLANNER_SEEN[fsid] = norm; _PLANNER_SEEN_DIRTY[0] = True       # dirty by CHANGE only
+
+
+def _planner_seen_pop(fsid):
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN.pop(fsid, None) is not None:
+            _PLANNER_SEEN_DIRTY[0] = True
+
+
+def _planner_seen_drop(alive):
+    """Drop every row whose fsid is not in `alive`: bounded by the sessions this pass discovered."""
+    with _PLANNER_SEEN_LOCK:
+        for gone in [f for f in _PLANNER_SEEN if f not in alive]:
+            _PLANNER_SEEN.pop(gone, None); _PLANNER_SEEN_DIRTY[0] = True
+
+
+def persist_planner_seen(force=False):
+    """Write the memo when a row changed since the last write (or `force`, the kernel's exit): serialized under the lock before the
+    flag clears, staged under a per-writer tmp (pid and thread id), the tmp unlinked and the flag re-armed on a failed replace,
+    the failure said once per episode; best-effort, never raises for a write fault."""
+    with _PLANNER_SEEN_LOCK:
+        if not (_PLANNER_SEEN_DIRTY[0] or force):
+            return False
+        if not _PLANNER_SEEN_DIRTY[0] and not _PLANNER_SEEN and not _PLANNER_SEEN_LOADED[0]:
+            return False                                               # a forced write over a memo NO pass has loaded (a kernel that
+        #                                                                took SIGTERM before its first planner pass) would replace the
+        #                                                                previous kernel's rows with an empty document (T401 (5c) round
+        #                                                                three, medium 1: 3 rows to 0, the next boot restored 0)
+        snap = {"v": _PLANNER_SEEN_V, "derivation": [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V], "rows": {k: v for k, v in _PLANNER_SEEN.items()}}
+        try:
+            body = json.dumps(snap)                                        # every row went through _planner_key_norm: JSON-native;
+        except (TypeError, ValueError) as e:                               #  serialized BEFORE the flag clears, under the lock
+            if not _PLANNER_SEEN_SAID[0]:                                  #  (the tick-seen shape): an unserializable row is a bug,
+                _PLANNER_SEEN_SAID[0] = True                               #  said once, re-raised with the flag still dirty so the
+                sys.stderr.write("planner-seen memo: not serialized: %s: %s (said once per episode; retried by the next persist)\n"
+                                 % (type(e).__name__, str(e)[:120]))       #  next persist retries once the row is gone (round two, low 2)
+            raise
+        _PLANNER_SEEN_DIRTY[0] = False
+    p = STATE / _PLANNER_SEEN_FILE
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, p)
+        _PLANNER_STATS["persisted"] = len(snap["rows"])
+        _PLANNER_SEEN_SAID[0] = False
+        return True
+    except Exception as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        with _PLANNER_SEEN_LOCK:
+            _PLANNER_SEEN_DIRTY[0] = True
+        if not _PLANNER_SEEN_SAID[0]:
+            _PLANNER_SEEN_SAID[0] = True
+            sys.stderr.write("planner-seen memo: not written: %s: %s (said once per episode; retried by the next persist)\n" % (type(e).__name__, str(e)[:120]))
+        return False
 
 
 def planner_skip_stats():
-    """A copy of the planner gate's counters for /perf (memos.plannerSkip)."""
-    return dict(_PLANNER_STATS)
+    """A copy of the planner gate's counters for /perf (memos.plannerSkip); the histogram copied too."""
+    d = dict(_PLANNER_STATS); d["mismatchByTerm"] = dict(_PLANNER_STATS["mismatchByTerm"]); return d
+
+
+def _planner_seen_stands(fsid, norm):
+    """Whether the row the table holds for fsid equals `norm`, the key recomputed this pass. A row that stands skips the pass; a
+    row that does not is counted by the indexes of the terms that differed (mismatchByTerm), so a read boot names the moving term."""
+    row = _PLANNER_SEEN.get(fsid)
+    if row is None:
+        return False
+    if row == norm:
+        return True
+    hist = _PLANNER_STATS["mismatchByTerm"]
+    if isinstance(row, list) and isinstance(norm, list):
+        for i in range(max(len(row), len(norm))):
+            if i >= len(row) or i >= len(norm) or row[i] != norm[i]:
+                hist[str(i)] = hist.get(str(i), 0) + 1
+    else:
+        hist["shape"] = hist.get("shape", 0) + 1
+    return False
 
 
 def _task_store_key(fsid):
@@ -3092,17 +3383,37 @@ def _task_store_key(fsid):
 def _plan_key(fsid, path, session, now):
     """Every input _plan_session reads, or None when the parse is not the cache's own (never skip what cannot
     be keyed). Taken before the store read. Index 2 is the store key: the record rule compares it after the
-    pass, so new terms go after the existing ones. Three terms beyond the files the pass opens by sid: the
-    LEAF's task store (the directory the declared-plan sync reads, which differs from the sid's for every SDK
-    session after a /clear), the captions file (the floor-title heal reads it), and each running background
-    launch with whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle
-    reads that crossing and no file records it)."""
+    pass, so new terms go after the existing ones. Beyond the files the pass opens by sid: the LEAF's task
+    store (the directory the declared-plan sync reads, which differs from the sid's for every SDK session
+    after a /clear), the captions file (the floor-title heal reads it), each running background launch with
+    whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle reads that
+    crossing and no file records it), and every file the plan tier's inventory names (_sig_inputs("plan")):
+    the death marker and cleared.jsonl by stat, the reg and the stall slice by the VALUES the pass reads
+    (spawnedAt and the SDK-owned bit; this session's stall records), as the outer gate keys them. THE RULE
+    (the 5c follow-up, from the second deploy boot's read: restored 20, skipped 0): a persisted key term
+    must be stable across the event it persists over, and a file rewritten at every boot (the reg at attach,
+    the stall slice by the jobs pass) is keyed by the values the pass reads, never by its stat."""
     pk = _parse_entry(fsid, session)
     if pk is None or pk[1] is not session:
         return None
     return (str(path), pk[0], _store_key(fsid), _file_key(str(EPIDIR / (fsid + ".jsonl"))),
-            _task_store_key(session.get("leafFsid") or fsid), _file_key(str(SDKDIR / (fsid + ".json"))),
-            _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now))
+            _task_store_key(session.get("leafFsid") or fsid), [_reg_spawned_at(fsid), _sdk_owned(fsid)],
+            _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now),
+            # T401 (5c) round two: the three files of the plan tier's inventory (_sig_inputs) this key lacked: the death marker
+            # (_cli_epoch), cleared.jsonl (plan_units through _live_anchor_gone) and the stall slice (rollup_status). The in-memory
+            # memo forgot every row at each restart, so a move between boots was planned by that amnesty; a persisted row must
+            # carry every input the pass reads (the completeness pin holds this tuple against _sig_inputs("plan")).
+            _file_key(str(GONEDIR / (fsid + ".json"))), _file_key(str(STATE / "cleared.jsonl")), _stall_slice_key(fsid))
+
+
+def _stall_slice_key(fsid):
+    """This session's stall records by value (_stall_slice, the outer gate's term), or a fresh sentinel when auto-nudge.json exists
+    and does not read (the strict raise): a sentinel key is never recorded and never compared, so a session whose slice cannot be
+    read is planned, as the outer gate runs its stage without a stamp."""
+    try:
+        return _stall_slice(fsid)
+    except Exception:
+        return object()
 
 
 def _store_key(fsid):
@@ -11258,8 +11569,9 @@ def _plan_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     pkey = _plan_key(fsid, path, session, now)        # BEFORE the store read (the chain-memo rule)
-    if pkey is not None and _PLANNER_SEEN.get(fsid) == pkey:
-        _PLANNER_STATS["skipped"] += 1               # nothing moved since a pass that had nothing to do
+    norm = _planner_key_norm(pkey) if pkey is not None else None
+    if norm is not None and _planner_seen_stands(fsid, norm):   # the persisted or in-memory row stands: recomputed and compared,
+        _PLANNER_STATS["skipped"] += 1               # never trusted (T401 (5c)); nothing moved since a pass that had nothing to do
         return 0
     _PLANNER_STATS["planned"] += 1
     store = load_goals(fsid)
@@ -11781,11 +12093,11 @@ def _plan_session(fsid, path, now):
     save_goals(fsid, store)
     if pkey is not None:
         if placed == 0 and not units and not retired and _store_key(fsid) == pkey[2] \
-                and not getattr(_judge_ctx, "stage_incomplete", False):
-            _PLANNER_SEEN[fsid] = pkey               # nothing to do and nothing written: skipped until an input moves
+                and not getattr(_judge_ctx, "stage_incomplete", False) and norm is not None:
+            _planner_seen_set(fsid, norm)            # nothing to do and nothing written: skipped until an input moves (persisted)
             _PLANNER_STATS["recorded"] += 1
         else:
-            _PLANNER_SEEN.pop(fsid, None)            # work done, the store moved, or the pass was INCOMPLETE (the
+            _planner_seen_pop(fsid)                  # work done, the store moved, or the pass was INCOMPLETE (the
             #                                          completeness bit the evidence gate reads, _gated: a stand-down
             #                                          without a write, or a side file that exists and did not read):
             #                                          planned again next pass. A recorded incomplete pass would skip
@@ -11838,8 +12150,13 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
         except Exception as e:
             _log_judge_error("peer-wait-sweep", "-", "the store-side peer-wait pass raised: %r" % (e,))
     fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]   # muted sessions are out of task tracking
-    for _gone in [f for f in _PLANNER_SEEN if f not in {s[0] for s in fleet}]:
-        _PLANNER_SEEN.pop(_gone, None)                # the planner gate, bounded by the sessions this pass discovered
+    _load_planner_seen()                              # T401 (5c): the previous kernel's rows, once per boot, before the first gate check
+    if fleet:
+        _planner_seen_drop({s[0] for s in fleet})     # the planner gate, bounded by the sessions this pass discovered. An EMPTY
+    #                                                   discovery is unknown, not every session gone (discover reads an unreadable
+    #                                                   names root as no sessions): the rows stay until the next non-empty pass,
+    #                                                   which costs nothing, since a stale row never serves without its key
+    #                                                   (the 5c follow-up; before it one such pass rewrote the file empty)
     placed = 0
     with ThreadPoolExecutor(max_workers=_conc(concurrency)) as ex:
         futs = {}
@@ -11857,6 +12174,7 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
     if verbose:
         sys.stderr.write("romp-judge: planner placed %d segments across %d sessions\n" % (placed, len(fleet)))
     _wrap_index_save()                                # T333: the negative memo grew this pass? persist it
+    persist_planner_seen()                            # T401 (5c): a row changed this pass? persist it
     return placed
 
 

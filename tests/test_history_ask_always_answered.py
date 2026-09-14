@@ -40,7 +40,8 @@ class HistoryAskAlwaysAnswered(unittest.TestCase):
     def test_an_ask_with_no_session_to_answer_from_is_answered_missing_with_the_reason(self):
         for kind, reply_type, extra in (("loadOlder", "chatHead", {"before": "22222222-3333-4444-5555-000000000010"}),
                                         ("loadAround", "chatWindow", {"uuid": "22222222-3333-4444-5555-000000000010"}),
-                                        ("loadNewer", "chatMore", {"after": "22222222-3333-4444-5555-000000000010"})):
+                                        ("loadNewer", "chatMore", {"after": "22222222-3333-4444-5555-000000000010"}),
+                                        ("loadTurns", "chatTurns", {"lo": 3, "hi": 9})):          # the span ask (T386 stage 2)
             client, sent = self.client()
             km.Handler._dispatch_ws(None, {"type": kind, "id": UNKNOWN, **extra}, client)
             fr = [f for f in self.frames(sent) if f.get("type") == reply_type]
@@ -76,6 +77,14 @@ class HistoryAskAlwaysAnswered(unittest.TestCase):
             self.assertEqual(len(fr), 1, kind)
             self.assertTrue(fr[0].get("fault"), "%s: a fault, not a verdict on the anchor: %r" % (kind, fr[0]))
             self.assertEqual(fr[0].get(reply_key), "22222222-3333-4444-5555-000000000010", "%s: the ask's key rides back as %s: %r" % (kind, reply_key, fr[0]))
+        # the span ask's key is its [lo, hi]: the page frees the gap it asked for by that span (T386 stage 2; the wrapper's dictionaries
+        # named only the three uuid-keyed asks, so a loadTurns raised KeyError before any reply and the page's gap loaded for good)
+        client, sent = self.client()
+        km.Handler._dispatch_ws(None, {"type": "loadTurns", "id": UNKNOWN, "lo": 3, "hi": 9}, client)
+        fr = [f for f in self.frames(sent) if f.get("type") == "chatTurns"]
+        self.assertEqual(len(fr), 1, "loadTurns: one chatTurns reply: %r" % self.frames(sent))
+        self.assertTrue(fr[0].get("fault") or fr[0].get("missing"), "loadTurns: a fault or missing, never silence: %r" % fr[0])
+        self.assertEqual(fr[0].get("span"), [3, 9], "loadTurns: the asked span rides back: %r" % fr[0])
 
     def test_the_index_wire_answers_every_ask_too(self):
         # the legacy loadOlder (an integer `before`, the index wire): a head already reached is an empty chunk from 0; an empty build

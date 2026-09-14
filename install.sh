@@ -34,10 +34,35 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
         echo "  macOS:  brew install node    Linux: your distro's nodejs package" >&2
         preflight_missing=1
     fi
-    if ! command -v python3 >/dev/null 2>&1; then
+    # A ROMP_PYTHON pin IS the interpreter: with one set, python3's presence on PATH says nothing, and the pin goes
+    # straight to the floor check below (round three of issue 1600; a valid pin with no python3 on PATH was refused
+    # as python3 not found).
+    if [[ -z "${ROMP_PYTHON:-}" ]] && ! command -v python3 >/dev/null 2>&1; then
         echo "install.sh: python3 not found — the kernel is a Python process." >&2
         echo "  macOS:  brew install python@3.13    or:  uv python install 3.13" >&2
         preflight_missing=1
+    # The floor (issue 1600): the kernel and the Agent SDK need 3.10 or newer. This used to sit only in
+    # romp-sdk-setup, whose failure is a banner (the install still exited 0), and ROMP_NO_SDK=1 skipped it,
+    # so a fresh install on a machine whose python3 is 3.9 finished, and the manager then crash-looped
+    # the kernel on it. The interpreter checked is the one the kernel will run (bin/romp-serve's pick:
+    # ROMP_PYTHON, then the SDK venv's, then the newest python3.X), and romp-serve says which and why.
+    else
+        # romp-serve exits 2 for the floor alone; its other refusals (the two port spellings disagreeing, a kernel
+        # binary that is not there, an unrunnable ROMP_PYTHON pin) exit 1 with their own line, and are passed
+        # through as what they are: the kernel would not start on this machine as configured, but the python is
+        # not the reason (round two of issue 1600: every non-zero exit used to be blamed on the python).
+        _py_rc=0
+        # The pick is CAPTURED, not just checked (round four of issue 1600): every python this script runs after the
+        # preflight is this interpreter, so a pinned interpreter with no python3 on PATH carries the install through,
+        # where a bare python3 in the hook block failed under set -e with the hooks half wired.
+        ROMP_INSTALL_PY="$("$ROMP_DIR/bin/romp-serve" --print-python)" || _py_rc=$?
+        if [[ "$_py_rc" -eq 2 ]]; then
+            echo "install.sh: the python romp would run is below the floor (the line above names it, its version and the install command); the kernel and the Agent SDK need 3.10 or newer." >&2
+            preflight_missing=1
+        elif [[ "$_py_rc" -ne 0 ]]; then
+            echo "install.sh: bin/romp-serve --print-python stopped (the line above says why); the kernel would not start on this machine as configured, so nothing is installed." >&2
+            preflight_missing=1
+        fi
     fi
     [[ "$preflight_missing" -eq 0 ]] || exit 1
 fi
@@ -112,8 +137,10 @@ fi
 # them. Idempotent merge: adds only missing romp entries, never touches any
 # other hooks you have registered. Retired romp hooks (RETIRED below) are
 # de-registered on the way, so an upgrade never leaves Claude Code calling a
-# path this repo no longer ships.
-python3 - <<'PYEOF'
+# path this repo no longer ships. The interpreter is the preflight's capture; under ROMP_SKIP_PREFLIGHT there is
+# none, and the pin (ROMP_PYTHON) is carried instead of falling to a bare python3 that a pinned machine may not have
+# on PATH (round five of issue 1600).
+"${ROMP_INSTALL_PY:-${ROMP_PYTHON:-python3}}" - <<'PYEOF'
 import json, os
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
@@ -273,7 +300,16 @@ if [[ -z "${ROMP_NO_SERVICE:-}" ]]; then
             echo "  romp-manager already running — leaving it up (a webview deploy needs no restart)"
         else
             echo "  Installing the romp login service (romp-manager)..."
-            if ! "$_svc" install; then
+            _svc_rc=0
+            "$_svc" install || _svc_rc=$?
+            if [[ "$_svc_rc" -eq 3 ]]; then
+                # romp-service's own code for one state: the agent is installed but its manager exited with the refusal code
+                # because a manager already serves on the control port, most likely a hand-run romp up outside the service.
+                # romp IS serving, so the run goes on to the link and the end-of-run banner (round two of the install-wording
+                # fix: it used to exit here, before both) and exits non-zero at the end: the service is not the one running.
+                echo "install.sh: the login service is installed, but a manager already serving on the control port holds it (the line above), most likely a hand-run romp up outside the service. It retries once a minute and takes over when that manager stops; to hand over now, stop it (Ctrl+C in its terminal, or romp down then romp up) and re-run this install to verify." >&2
+                _svc_held=1
+            elif [[ "$_svc_rc" -ne 0 ]]; then
                 echo "install.sh: romp-service install FAILED — romp-manager is NOT running; the dashboard will be dead on :29855." >&2
                 echo "  Retry by hand:  $_svc install" >&2
                 exit 1
@@ -370,4 +406,8 @@ elif [[ -n "${ROMP_NO_SERVICE:-}" ]]; then
     echo "  then open the dashboard link:  romp url"
 else
     echo "  romp is still starting; print the dashboard link in a moment:  romp url"
+fi
+if [[ -n "${_svc_held:-}" ]]; then
+    echo "install.sh: exiting non-zero: the login service is installed but is not the manager that is serving (see the service's line above)." >&2
+    exit 1
 fi

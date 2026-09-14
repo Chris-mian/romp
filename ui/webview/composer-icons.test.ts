@@ -19,11 +19,14 @@ test("the attach button renders a monochrome paperclip SVG, not the 📎 emoji",
 test("the statusline directory shows a monochrome folder icon (folderIcon), not the 📁 emoji", () => {
   // folderIcon() builds a currentColor line-SVG in the ctxIcon style; the statusline prepends it before the
   // dir basename text node (so it inherits the dim tint and brightens on the .folder-link hover)
+  // the glyph's markup and the folder widget live in status-widgets.ts since T409; render.ts keeps folderIcon() for its other callers
+  const SW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-widgets.ts"), "utf8");
   assert.match(RENDER, /function folderIcon\(\): HTMLElement \{/);
-  assert.match(RENDER, /"status-dir-icon"/);
-  assert.match(RENDER, /<svg viewBox="0 0 16 16"[^>]*stroke="currentColor"/);
-  assert.match(RENDER, /dir\.appendChild\(folderIcon\(\)\);/);
-  assert.match(RENDER, /dir\.appendChild\(document\.createTextNode\(" " \+ \(s\.cwd/);
+  assert.match(RENDER, /return folderIconNode\(\);/);
+  assert.match(SW, /"status-dir-icon"/);
+  assert.match(SW, /<svg viewBox="0 0 16 16"[^>]*stroke="currentColor"/);
+  assert.match(SW, /dir\.appendChild\(folderIconNode\(\)\);/);
+  assert.match(SW, /dir\.appendChild\(document\.createTextNode\(" " \+ \(opts\.show === "path" \? cwd : \(cwd\.split\("\/"\)\.pop\(\) \|\| cwd\)\)\)\);/);
   // the emoji is no longer set as the statusline dir text
   assert.doesNotMatch(RENDER, /dir\.textContent = "📁/);
   // and the icon has an alignment rule

@@ -23,8 +23,8 @@ km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class SettingsSectionsTest(unittest.TestCase):
-    """The panel is in TABS since T379 (the user 2026-09-12): seven pills (General, Chat, Feed, Sessions, Task tracking,
-    Appearance, Debug: T400's cut, the user 2026-09-12), one pane each (the tab widgets are a section of Chat); every row keeps its id and its key; each pane opens with a first section head and keeps its
+    """The panel is in TABS since T379 (the user 2026-09-12): seven pills (General, Chat, Feed, Sessions, Automation, Task
+    tracking, Debug: T404's cut, the user 2026-09-13; Appearance is a section of General), one pane each (the tab widgets are a section of Chat); every row keeps its id and its key; each pane opens with a first section head and keeps its
     sub-heads in the approved order; the version footer stays last."""
     PANES = ("general", "chat", "feed", "sessions", "automation", "tasks", "debug")   # T404: Automation new, Appearance a General section
 
@@ -32,7 +32,7 @@ class SettingsSectionsTest(unittest.TestCase):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
         for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Tab widgets"]),
-                            ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges"]), ("tasks", ["Judges"]),
+                            ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges"]), ("tasks", ["Task tracking", "Judges"]),
                             ("debug", ["Judging bands", "Diagnostics"])):
             p = _pane(h, pane)
             self.assertIn("<div class='rs-sec rs-sec-first'>%s</div>" % heads[0], p, pane + " opens with its first head")
@@ -48,11 +48,11 @@ class SettingsSectionsTest(unittest.TestCase):
         h = _gear_src()
         where = {
             "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
-            "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets"],
+            "chat": ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-swidgets"],
             "feed": ["rs-feedcollapsed"],
             "sessions": ["rs-defaultdir", "rs-backend"],
             "automation": ["rs-autonudge", "rs-suggestcompact"],
-            "tasks": ["rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+            "tasks": ["rs-tasktrack", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
             "debug": ["rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
         }
         panes = {k: _pane(h, k) for k in self.PANES}
@@ -64,7 +64,7 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("+ SHORTCUT_ROWS +", panes["general"])
         # Panes (the user 2026-09-10): three rows, one hint each, Sessions before Outline before Feed; the chat is required, Files keeps its rail toggle
         pn = panes["general"]   # the Panes section moved to General (T400)
-        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 3)
+        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 4)   # Sessions, Outline, Feed, and the Files row since the T404 tidy
         self.assertLess(pn.index("<b>Sessions</b>"), pn.index("<b>Outline</b>"))
         self.assertLess(pn.index("<b>Outline</b>"), pn.index("<b>Feed</b>"))
         self.assertNotIn("id=rs-pane-chat", h, "the chat is required")
@@ -73,7 +73,7 @@ class SettingsSectionsTest(unittest.TestCase):
         am = panes["automation"]
         self.assertTrue(am.index(">Nudges<") < am.index("id=rs-autonudge") < am.index("id=rs-suggestcompact"))
         au = panes["tasks"]
-        self.assertTrue(au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort") < au.index("id=rs-judgeconc"))
+        self.assertTrue(au.index(">Task tracking<") < au.index("id=rs-tasktrack") < au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort") < au.index("id=rs-judgeconc"))   # the master switch first (T404 PR 2)
         for gone in ("id=rs-autonudge", "id=rs-conserve", "id=rs-thinksum", ">Sessions<"):
             self.assertNotIn(gone, au, gone + " left Task tracking (T404)")
         # General (T404): the login leads, then the panes with the Files control, Appearance, Permissions (Allow file editing), This machine
@@ -87,8 +87,11 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("<b>Updates install automatically <span class=rs-mixed hidden></span></b>", ge)
         # Chat (T404): Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets
         ch = panes["chat"]
-        self.assertTrue(ch.index(">Display<") < ch.index("id=rs-compact") < ch.index("id=rs-branch") < ch.index("id=rs-chatscheme") < ch.index("id=rs-striprows") < ch.index(">Comments<")
-                        < ch.index("id=rs-cmtmodel") < ch.index("id=rs-cmtfast") < ch.index(">Thinking<") < ch.index("id=rs-thinksum") < ch.index("data-section=tabwidgets"))
+        self.assertTrue(ch.index(">Display<") < ch.index("id=rs-compact") < ch.index("id=rs-dense") < ch.index("id=rs-chatscheme") < ch.index("id=rs-striprows") < ch.index(">Comments<")
+                        < ch.index("id=rs-cmtmodel") < ch.index("id=rs-cmtfast") < ch.index(">Thinking<") < ch.index("id=rs-thinksum") < ch.index("data-section=tabwidgets")
+                        < ch.index("data-section=statusline"))   # the Status line section follows Tab widgets (T409); the badge and branch checkboxes left Display for it
+        for gone in ("id=rs-badge", "id=rs-branch"):
+            self.assertNotIn(gone, ch, gone + " left the Chat tab: the Status line section's rows are the controls (T409)")
         for gone in ("id=rs-filelink", "File links open in", "id=rs-activeonly", "id=rs-collapsegaps", ">Sessions pane<", "data-pane=appearance"):
             self.assertNotIn(gone, h, gone + " is gone from the gear (T404)")
         de = panes["debug"]

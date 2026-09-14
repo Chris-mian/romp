@@ -591,14 +591,17 @@ class TheClockDecidedBooleansAreComponents(_Board):
             self.assertNotIn("capOffer", self._cards(f)[WEB + ":g1"]["blocked"])
 
     def test_the_offer_is_keyed_only_for_the_session_that_read_usage(self):
-        self._cap_death(WEB, max(NOW, int(time.time())) + 600)
+        # one clock read: the cap and the assertion below must name the same second, and two reads of time.time()
+        # straddled a boundary on a CI job (1789348898 in the key against 1789348899 expected)
+        reset = max(NOW, int(time.time())) + 600
+        self._cap_death(WEB, reset)
         with mock.patch.object(km, "_auth_key_present", lambda: True), \
                 mock.patch.object(km, "_live_map", lambda: self.live):
             self._build()
             k_web = km._feed_memo_get(WEB)[0]
             k_api = km._feed_memo_get(API)[0]
             at = km._FEED_MEMO_LABELS.index("offer")
-            self.assertEqual(k_web[at], ("five_hour", max(NOW, int(time.time())) + 600),
+            self.assertEqual(k_web[at], ("five_hour", reset),
                              "web read usage.json: its key carries the open window and its reset")
             self.assertIsNone(k_api[at], "api did not: the crossing is no input of its card")
 

@@ -127,6 +127,12 @@ _service_env_override() {
     fi
 }
 
+# ThrottleInterval (issue 1600): KeepAlive respawns the manager whenever it exits, and launchd's default
+# throttle is ten seconds, so a manager that dies at once (a node copy that cannot load its library, a
+# python the kernel cannot run on) was restarted six times a minute forever, filling the log and the
+# process table. Sixty seconds bounds the loop to once a minute; a manager that ran longer than that
+# before exiting (its own stale-self refresh) is respawned at once as before, since the throttle counts
+# from the job's last START. The status below tells a loaded-but-dying job from a running one.
 write_plist() {
     mkdir -p "$LAUNCHD_DIR" "$STATE"
     # $() eats the trailing newline; put it back so </dict> keeps its own line. Empty → the
@@ -155,6 +161,7 @@ write_plist() {
 ${_plist_envf}${_plist_env}  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict>
@@ -199,7 +206,95 @@ EOF
 # so it runs standalone; skipped when node isn't found. ROMP_NODE_SRC overrides
 # the source (tests). Never fatal — a copy failure just leaves romp-node-launch
 # to fall back to the system node.
+#
+# The copy is PROBED once made (issue 1600): a node whose shared libnode is referenced relative to its
+# own install (Homebrew's build, a version manager's shim) cannot run from the copy; dyld aborts it at
+# exec, and the login agent's KeepAlive respawned that abort forever, the launcher remaking the same copy
+# each time. A copy that cannot run is removed here, with the consequence said (the manager runs on the
+# system node, so the Full Disk Access grant reads "node"); romp-node-launch probes too, so a copy that
+# stops running later never takes the manager down. ROMP_NO_NODE_COPY=1 skips the copy altogether.
+# The probe runs in a subshell that ends in an explicit exit: a node killed by a signal (the real dyld abort; timeout
+# re-raises the child's signal on itself) as the subshell's LAST command would kill the subshell by that signal too,
+# and the reaping shell would print "Aborted (core dumped)" into the install's output; ended with exit, the death is
+# an exit code. The watchdog subshell traps TERM and kills its own sleep, so a fast probe leaves no ten-second sleep
+# behind (round two of issue 1600).
+# Everything under a pid, TERM then KILL: the same shape as the launcher's (round four of issue 1600). A version
+# manager's shim RUNS node instead of exec'ing it, so the hung process is a child of the pid the wrapper holds, and
+# killing that pid alone leaked the child on the watchdog path while the timeout path signals the whole group.
+# pgrep -P lists a pid's children on Linux and a stock mac alike; without it the pid alone is signalled. The KILL a
+# second later, and timeout's -k 1, are for a node that ignores TERM.
+_tree_of() {
+    local t
+    for t in "$@"; do echo "$t"; _tree_of $(pgrep -P "$t" 2>/dev/null || true); done
+}
+_kill_tree() {
+    local all; all="$(_tree_of "$@")"
+    kill -TERM $all 2>/dev/null || true
+    sleep 1
+    kill -KILL $all 2>/dev/null || true
+}
+_end_sleep() {   # the watchdog's sleep: TERM, a bounded check (up to a second in tenths), KILL if still there, waited on; the launcher's rule
+    local p="$1" i=0
+    [[ -n "$p" ]] || return 0
+    kill -TERM "$p" 2>/dev/null || true
+    while kill -0 "$p" 2>/dev/null && (( i < 10 )); do sleep 0.1; i=$((i + 1)); done
+    kill -KILL "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+}
+_node_runs() {   # $1 a node binary: exit 0 when it can run an empty program from where it sits, under a bound
+    local bound="${ROMP_NODE_PROBE_BOUND:-10}"   # ten seconds; the tests shorten it to run the hang shapes in two
+    [[ "$bound" =~ ^[0-9]+$ ]] || bound=10
+    [[ ${#bound} -le 6 ]] || bound=3600   # seven digits or more: the integer test below would refuse it and clamp to one second
+    [ "$bound" -ge 1 ] || bound=1   # 0 would be no bound for timeout and an instant kill for the watchdog's sleep; test's
+                                    # decimal compare, never (( )), which reads 08 as octal and errors on stderr
+    if command -v timeout >/dev/null 2>&1; then
+        ( timeout -k 1 "$bound" "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null
+        return
+    fi
+    # the wrapper runs the node in its background, traps TERM to kill its tree, waits and exits with its status, so the
+    # watchdog's kill of the wrapper takes a hung node down too (round three of issue 1600: it leaked before)
+    # both traps wait for what they killed before exiting, so nothing of the probe outlives the install (the launcher's rule)
+    ( trap '_kill_tree "$n"; wait "$n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & n=$!; wait "$n"; exit $? ) 2>/dev/null &
+    local pp=$! wd rc=0
+    ( trap '_end_sleep "${s:-}"; exit 0' TERM; sleep "$bound" & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
+    wd=$!
+    wait "$pp" || rc=$?
+    kill "$wd" 2>/dev/null || true
+    wait "$wd" 2>/dev/null || true
+    return $rc
+}
+# The escape hatch, from the environment OR from service.env (round two of issue 1600): the install never parsed
+# that file (it bakes the path into the unit and the plist), so the line the messages name did nothing for the
+# install's own copy. Read the way the launcher reads it: KEY=VALUE, whitespace trimmed, one layer of matching
+# quotes off, the LAST assignment winning (round three: a file that set the variable and cleared it below made the
+# install skip while the launcher copied), and 0, false, no and off reading as off, any other non-empty value as on.
+# A case pattern, as the launcher's: the ${1,,} lowercase expansion is bash 4, and a stock mac's /bin/bash is 3.2, where
+# an expansion it does not know is a fatal bad substitution; the install died on it after writing the plist and before
+# bootstrapping the agent (round four of issue 1600; tests/shell-portability.bats pins the construct out of every script).
+_hatch_on() {   # $1 a value of ROMP_NO_NODE_COPY: on unless empty, 0, false, no or off (any case)
+    case "${1:-}" in
+        ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+_no_node_copy() {
+    local val="${ROMP_NO_NODE_COPY:-}" line found=""
+    if [[ -f "$SERVICE_ENV_FILE" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" == ROMP_NO_NODE_COPY=* ]] || continue
+            found="${line#*=}"
+            found="${found#"${found%%[![:space:]]*}"}"; found="${found%"${found##*[![:space:]]}"}"
+            case "$found" in \"*\") found="${found#\"}"; found="${found%\"}" ;; \'*\') found="${found#\'}"; found="${found%\'}" ;; esac
+            val="$found"          # the file's last assignment wins, over the environment too, as the launcher's export does
+        done < "$SERVICE_ENV_FILE"
+    fi
+    _hatch_on "$val"
+}
 ensure_romp_node() {
+    if _no_node_copy; then
+        rm -f "$ROMP_NODE" "$ROMP_NODE.tmp" 2>/dev/null || true   # a stale copy would still be exec'd by an older launcher
+        return 0
+    fi
     local src="${ROMP_NODE_SRC:-$(command -v node 2>/dev/null || true)}"
     [[ -n "$src" ]] || return 0
     mkdir -p "$STATE"
@@ -209,6 +304,11 @@ ensure_romp_node() {
         else
             rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
         fi
+    fi
+    if [[ -x "$ROMP_NODE" ]] && ! _node_runs "$ROMP_NODE"; then
+        rm -f "$ROMP_NODE" 2>/dev/null || true
+        echo "  romp-node: the copied node cannot run from $ROMP_NODE (node's shared library is likely referenced relative to its install, as Homebrew's and version managers' builds do)." >&2
+        echo "  The manager runs on the system node instead, so the Full Disk Access grant reads 'node'. Set ROMP_NO_NODE_COPY=1 in $SERVICE_ENV_FILE to skip the copy." >&2
     fi
     return 0
 }
@@ -232,7 +332,54 @@ audit_install() {
 }
 
 _linux_active() { "$SYSTEMCTL" --user is-active romp-manager.service 2>/dev/null || true; }
-_darwin_loaded() { "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+# launchctl print of a LOADED job succeeds whether or not its process is alive: a job crash-looping under
+# KeepAlive is loaded the whole time (issue 1600: status said running, install.sh trusted it, and the
+# fresh install exited 0 over a manager that had never lived). The job's record names its process, so the
+# distinction is read from it: a `pid = N` line while the process runs, none while launchd waits to
+# respawn it, and `last exit code = N` (or "(never exited)") from the previous run.
+_darwin_print() { "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" 2>/dev/null; }
+_darwin_loaded() { _darwin_print >/dev/null; }
+# The record's readers (round two of issue 1600): the print's own failure (the job not loaded at all) is not an error
+# here, no record and no exit code, so the head of each pipeline swallows it; and each reader lets sed quit itself
+# on its match (p;q) rather than piping into head -1, which under set -e plus pipefail left sed with SIGPIPE once its
+# output passed the pipe buffer and made the assignment, and the script, exit 141 with no status line (executed at
+# 3000 matching lines). The last exit code is captured whole, so "(signal: 6)" reads as itself and not as "(signal:".
+# The value of a variable as the agent's manager sees it: the environment's, unless service.env assigns it, whose
+# LAST assignment wins (the launcher exports the file over the environment). KEY=VALUE, whitespace trimmed, one layer
+# of matching quotes off: the launcher's reading (round two of the install-wording fix; a ROMP_MANAGER_PORT line in
+# the file moved the agent's port but not the probe's, so the held-port wording never fired there).
+_env_file_value() {   # $1 name, $2 the value without the file; prints the value
+    local val="$2" line found
+    if [[ -f "$SERVICE_ENV_FILE" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" == "$1="* ]] || continue
+            found="${line#*=}"
+            found="${found#"${found%%[![:space:]]*}"}"; found="${found%"${found##*[![:space:]]}"}"
+            case "$found" in \"*\") found="${found#\"}"; found="${found%\"}" ;; \'*\') found="${found#\'}"; found="${found%\'}" ;; esac
+            val="$found"
+        done < "$SERVICE_ENV_FILE"
+    fi
+    printf '%s' "$val"
+}
+_manager_port() {   # the control port the agent's manager binds: service.env, else the environment, else the manager's default
+    local p; p="$(_env_file_value ROMP_MANAGER_PORT "${ROMP_MANAGER_PORT:-}")"
+    [[ "$p" =~ ^[0-9]+$ ]] || p=7432
+    printf '%s' "$p"
+}
+# Does a manager answer on that control port? Probed the way the manager probes itself, GET /status (unauthenticated,
+# a 200 with the manager's own record); ROMP_MANAGER_PROBE is the test seam (a command given the port; exit 0 when
+# something answers). curl alone otherwise: a mac always has it, and Apple's bash 3.2 has no /dev/tcp redirections, so
+# there is no shell-only fallback (nothing is taken to answer where curl is missing, and the plain verdict stands).
+# The probe cannot tell whose manager answers, so the wording says "most likely outside the login service".
+_manager_answers() {   # $1 port
+    if [[ -n "${ROMP_MANAGER_PROBE:-}" ]]; then "$ROMP_MANAGER_PROBE" "$1"; return; fi
+    if command -v curl >/dev/null 2>&1; then curl -fsS -m 2 "http://127.0.0.1:$1/status" >/dev/null 2>&1; return; fi
+    return 1
+}
+_darwin_record() { _darwin_print || true; }
+_darwin_pid() { _darwin_record | sed -nE '/^[[:space:]]*pid = [0-9]+/{s/^[[:space:]]*pid = ([0-9]+).*$/\1/p;q;}'; }
+_darwin_running() { [[ -n "$(_darwin_pid)" ]]; }
+_darwin_last_exit() { _darwin_record | sed -nE '/^[[:space:]]*last exit code = /{s/^[[:space:]]*last exit code = (.*[^[:space:]])[[:space:]]*$/\1/p;q;}'; }
 
 # The marker's one line for a status listing: when it was stopped and how to bring it back. Nothing
 # when there is no marker. python3 renders the time (a plain `date -d @` is GNU-only).
@@ -380,13 +527,37 @@ case "${1:-status}" in
             # the spawn (bad launcher path, env). Verify the service actually reports itself
             # before exiting 0 — an install that "succeeded" onto a dead agent is exactly the
             # silent outage this script keeps causing.
+            # A live pid alone is not enough (round two of issue 1600): a manager that aborts at start is alive for
+            # its first 50 to 200 ms, and a read milliseconds after bootstrap saw exactly that spawn, while the
+            # throttle kept the next one out of a six-second loop. The pid must be the SAME pid a second later.
             running=""
             for _ in $(seq 1 20); do
-                if "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then running=1; break; fi
+                _pid="$(_darwin_pid)"
+                if [[ -n "$_pid" ]]; then
+                    sleep 1
+                    if [[ "$(_darwin_pid)" == "$_pid" ]]; then running=1; break; fi
+                fi
                 sleep 0.3
             done
             if [[ -z "$running" ]]; then
-                echo "romp-service: agent loaded but is NOT running — check $LOG" >&2
+                _le="$(_darwin_last_exit)"
+                _port="$(_manager_port)"
+                if _manager_answers "$_port"; then
+                    if [[ "$_le" == 1 ]]; then
+                        # bin/romp-manager exits 1 at once when another manager holds the control port: that code AND a manager
+                        # answering there make the held port the cause. Any other code (134 or a signal: the node copy aborting at
+                        # exec, issue 1600's own shape) is the agent's own death, and the answering manager, most likely a hand-run
+                        # romp up the user started meanwhile, is a second fact, not the cause (round two of the install-wording fix).
+                        echo "romp-service: the agent's manager exited at once with code 1, bin/romp-manager's refusal to start beside another: a manager is ALREADY serving on :$_port, most likely outside the login service (a hand-run romp up); check $LOG for its line." >&2
+                        # KeepAlive with the 60 s throttle above: the agent retries once a minute, so it takes over on its own once
+                        # that manager stops. A romp down boots the agent out too (a deliberate stop), so romp up is what follows it.
+                        echo "  Leave it and the agent, retrying once a minute, takes over when that manager stops; or stop it now (Ctrl+C in its terminal, or romp down followed by romp up) and re-run this install to verify." >&2
+                        exit 3
+                    fi
+                    echo "romp-service: agent loaded but is NOT running (last exit code: ${_le:-unknown}); check $LOG. A manager is also serving on :$_port, most likely outside the login service (a hand-run romp up), but the agent's code is not the manager's refusal to start beside another (1), so that is not why it died." >&2
+                    exit 1
+                fi
+                echo "romp-service: agent loaded but is NOT running (last exit code: ${_le:-unknown}) — check $LOG" >&2
                 exit 1
             fi
         fi
@@ -437,7 +608,12 @@ case "${1:-status}" in
     case "$os" in
       Darwin)
         if [[ -f "$PLIST" ]]; then echo "installed: $PLIST"; else echo "not installed"; fi
-        if [[ -z "$NO_LOAD" ]] && _darwin_loaded; then echo "running"; else _down_marker_line; fi ;;
+        if [[ -n "$NO_LOAD" ]]; then _down_marker_line
+        elif _darwin_running; then echo "running"
+        elif _darwin_loaded; then
+            _le="$(_darwin_last_exit)"
+            echo "loaded but not running (last exit code: ${_le:-unknown}); launchd keeps respawning it — check $LOG"
+        else _down_marker_line; fi ;;
       Linux)
         if [[ -f "$UNIT" ]]; then echo "installed: $UNIT"; else echo "not installed"; fi
         if [[ -z "$NO_LOAD" ]] && [[ "$(_linux_active)" == "active" ]]; then echo "running"; else _down_marker_line; fi ;;

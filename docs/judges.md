@@ -620,10 +620,10 @@ permission/API-error floors: one interrupt at a time, the present event first.
   restart is a full walk. The planner has a second gate inside
   `_plan_session`: a session whose inputs have not moved since a pass that
   placed nothing, left the store's key where it was and ran to completion
-  returns before the store read. The evidence gate keys on the same inputs
-  (the reg by its `spawnedAt` and backend values rather than by identity) and
-  on `cleared.jsonl`, the death marker and the stall records besides, so an
-  idle session stops at the evidence gate; the inner gate's counters
+  returns before the store read. The evidence gate keys on the same files by
+  identity plus derived values the inner key does not read (the reg's
+  `spawnedAt` and backend, the stall slice's value, the task-store
+  fingerprint), so an idle session stops at the evidence gate; the inner gate's counters
   (`memos.plannerSkip` on `GET /perf`, see `docs/reference.md`) count only
   the sessions the evidence gate ran. Outside
   a pass frame (`romp-judge --plan`) the evidence gate stamps nothing, and

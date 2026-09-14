@@ -142,25 +142,15 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     let pendingAnchor = null, pendingAnchorIntent = null, pendingAnchorT = null, pendingAnchorKind = null, pendingAnchorKeepY = null, flashedAnchor = null;
     let anchorPendingOlder = false;
     let seek = null;
-    const loadingOlder = new Set(), pendingOlderAnchor = new Map(), pendingOlderKeepY = new Map();
+    const loadingOlder = new Set(), pendingOlderAnchor = new Map(), pendingOlderKeepY = new Map(), windowAsks = new Map();   // windowAsks: the per-ask records revealProgressTick reads (round eight)
     const H = HOOKS;
     const vscodeApi = { postMessage: (m) => H.posts.push(m) };
     let loadingPillEl = null;
     const hideLoadingPill = () => { H.pillHidden++; };
     const showLoadingPill = () => { H.pillShown++; };
-    const readerWaits = new Map(), askedGen = new Map(); let askGen = 0;   // the per-tab wait set (T402 round two): the slices call noteAsk/endAsk
-    const olderCancelled = new Map();   // the click's latch (round three): the deep-link ask clears it
-    const liveAskKey = { get: () => ({ kind: "older" }), set() {}, delete() {} };   // the live ask's identity (round five/six): these slices drive one older ask, so chatHead's keyless branch matches it by kind
-    // the deferred re-base (round nine) is NOT exercised here: baseStale answers false and settleReattach is a no-op, so the executed
-    // chatHead slice can never run the settle; that road (case c, a scroll-back reply firing the deferred re-base) is covered by the
-    // served pill lab only, with the kernel's own replies
-    const baseStale = { has: () => false, add() {}, delete: () => false };
-    const reattachLive = () => {};
-    const settleReattach = () => {};
-    const matchAsk = () => "live";      // the reply answers the ask on the books
-    const syncLoadingPill = () => { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); };
-    const noteAsk = (sid, reader) => { loadingOlder.add(sid); askedGen.set(sid, askGen); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); };
-    const endAsk = (sid) => { loadingOlder.delete(sid); askedGen.delete(sid); readerWaits.delete(sid); syncLoadingPill(); };
+    let landingNoticeEl = null;   // the ONE landing notice (T386 stage 2) replaced the per-fetch pill; the reveal hides it the same way
+    const hideLandingNotice = () => { H.pillHidden++; };
+    const showLandingNotice = () => { H.pillShown++; };
     const olderOnServer = (s) => s.proto === 2 ? !s.headKnown : (s.headFrom ?? 0) > 0;   // the guard's helper (T323 stage 4b), outside the lift
     const showActive = () => { H.shows++; };
     const cancelSeek = () => { H.cancels++; };
@@ -192,7 +182,7 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
         if ("anchorPendingOlder" in p) anchorPendingOlder = p.anchorPendingOlder; if ("pendingAnchor" in p) pendingAnchor = p.pendingAnchor;
         if ("clearInFlight" in p) { loadingOlder.clear(); pendingOlderAnchor.clear(); }
       },
-      get: (k) => ({ pendingAnchor, anchorPendingOlder, loadingOlder, pendingOlderAnchor, seek })[k],
+      get: (k) => ({ pendingAnchor, anchorPendingOlder, loadingOlder, pendingOlderAnchor, seek, windowAsks })[k],
     };
   `;
   return new Function("HOOKS", "MOD", "document", prelude + release + note + region + head + fetch + epilogue) as any;
@@ -427,7 +417,7 @@ test("the seams: the tick sits on the landing pass BEFORE the seek block, the se
   assert.match(RENDER, /const from0 = seek && seek\.uuid === p\.uuid && seek\.from0 != null \? seek\.from0 : p\.from0;\n\s*const loaded = messageCount\(s\.events\.slice\(0, Math\.max\(0, from0 - \(s\.headFrom \?\? 0\)\)\)\);/);
   assert.match(RENDER, /if \(revealProgress && revealProgress\.uuid === seek\.uuid\) \{ existing\?\.remove\(\); return; \}/, "showSeekNote yields the slot");
   assert.match(RENDER, /document\.getElementById\("seek-note"\)\?\.remove\(\);\n\s*revealProgressEnd\(\);/, "every end of the seek ends the line");
-  assert.match(RENDER, /function showLoadingPill\(\): void \{\n\s*if \(revealProgress\) return;/, "the per-fetch pill yields while the line shows");
+  assert.match(RENDER, /function showLandingNotice\(sid: string, t: number \| null \| undefined\): void \{\n\s*if \(revealProgress\) return;/, "the landing notice yields while the line shows (T386 stage 2)");
   // the start guard reads the index wire's own count, never a version
   assert.match(RENDER, /if \(anchorPendingOlder && pendingAnchor && s && \(s\.headFrom \?\? 0\) > 0\) \{/);
   // the end: this loop's own anchor, the tab, or a loop that neither kicked nor waits
