@@ -299,7 +299,7 @@ class PlannerSkip(_World):
         (T401 (5c)). Before the persisted memo every restart was an amnesty that re-planned every session."""
         self.assertTrue(jd.persist_planner_seen(force=True))
         jd._PLANNER_SEEN.clear(); jd._PLANNER_SEEN_LOADED[0] = False
-        jd._PARSE_CACHE.clear(); jd._discover_cache["fp"] = None; jd._discover_cache["result"] = None
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._discover_cache["fp"] = None; jd._discover_cache["result"] = None   # both memos share an identity
 
     def test_a_persisted_row_skips_through_the_pass_after_a_reboot_and_a_moved_transcript_does_not(self):
         """T401 (5c) round two, low 3: the skip reached through run_plan itself, not the table."""
