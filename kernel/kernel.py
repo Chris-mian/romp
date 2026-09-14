@@ -44820,20 +44820,55 @@ def _release_skeleton(c, sid):
         return _release_skeleton_locked(c, sid)
 
 
-def _light_status(sid, tm, now):
-    """A skeleton tab's status without a build, from the backend's live row alone: the chip state the live row can
-    state on its own (the row's live prompt, retrying and working states are what _session_chip reads from it; the
-    transcript-derived legs, an open turn, an awaited task, an api error, need the parse and wait for the build),
-    the row's since as the timer base, and the backend, model, effort and mode the row carries. `provisional` says
-    so to a reader; the built status replaces it on the tab's first build. None with no live row: the gate then
-    builds, as before, rather than send a status the kernel cannot state."""
+def _light_status(sid, path, tm, now):
+    """A skeleton tab's status without a build, from the sources the built chip reads that need no parse: the backend's live
+    row (its live-prompt, retrying, working and compacting words, its since, backend, model, effort, mode), the api-error
+    tail read (_api_error: cached, tail-first, the same call build_session makes, so blocked and its on-you legs paint as
+    they would built), the awaiting stamps and rows (_session_awaiting with the judge's stamp, the built chip's own call),
+    the backend's compaction bracket, and the retry ladder. What it cannot state is the transcript-derived open turn: the
+    row's `working` stands in for it. Round two of the gate (2026-09-14): the first cut collapsed blocked, awaiting and
+    compacting to ready for the whole spread; the diet's contract is a chip that stays honest, so the legs ride here from
+    their cheap sources. `provisional` says so to a reader; the built status replaces it on the tab's first build. None
+    with no live row: the gate then builds, as before, rather than send a status the kernel cannot state."""
     if not tm or not isinstance(tm, dict):
         return None
     st = tm.get("state", "") or ""
-    chip = ("needsInput" if st in _NEEDS_INPUT_STATES else "retrying" if st == "retrying"
-            else "working" if st == "working" else "ready")
+    working = st == "working"
+    try:
+        be = Sessions.backend_for(sid)
+        bc = be.compacting(sid) if be is not None else None
+    except Exception:
+        bc = None
+    compacting = bool(bc) if bc is not None else st == "compacting"
+    aw = None
+    if not working:
+        try:
+            aw = _session_awaiting(sid, path, True, stamp=True)
+        except Exception:
+            aw = None
+    aerr = None
+    if not (working or aw):
+        try:
+            aerr = _api_error(path)
+        except Exception:
+            aerr = None
+    chip = ("compacting" if compacting else
+            "blocked" if aerr else
+            "needsInput" if st in _NEEDS_INPUT_STATES else
+            "retrying" if st == "retrying" else
+            "working" if working else
+            "awaitingBg" if aw else "ready")
     since = tm.get("since")
+    tries, next_at = _retry_gate_state(sid)
     return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "faded": False, "provisional": True,
+            "awaitingWhy": (aw or {}).get("why") or None, "awaitingKind": (aw or {}).get("kind"),
+            "awaitingPeers": (aw or {}).get("peers") or None,
+            "awaitingCount": (aw or {}).get("count") if isinstance((aw or {}).get("count"), int) else None,
+            "awaitingItems": (aw or {}).get("items") or [], "awaitingTasks": [], "awaitingTaskIds": [], "bgServiceIds": [],
+            "apiTooLong": bool(aerr and aerr.get("tooLong")), "apiSpendLimit": bool(aerr and aerr.get("spendLimit")),
+            "apiModelLimit": bool(aerr and aerr.get("modelLimit")), "apiAuthErr": bool(aerr and aerr.get("authErr")),
+            "apiRefusal": bool(aerr and aerr.get("refusal")),
+            "retrySuppressed": _session_retry_suppressed(sid), "retryNextAt": int(next_at) or None, "retryTries": tries or None,
             "backend": _session_backend(sid, tm), "model": tm.get("model", ""), "effort": tm.get("effort", ""),
             "mode": tm.get("mode", "")}
 
@@ -44848,8 +44883,16 @@ def _held_as_skeleton_by_all(sid, clients):
         return False
     for c in clients:
         with _client_lock(c):
-            if sid not in (c.get("skeleton") or ()):
-                return False
+            if sid in (c.get("skeleton") or ()):
+                continue
+            # A client that declared the diet but whose set is not resolved yet (its redial or skeleton dial armed
+            # `reconnect`, and no strip sender has reached it: round two, low 2, a connect push targeting another column)
+            # will hold every tab but its watched one as a skeleton once it is (_resolve_reconnect's rule), so it is read
+            # that way here; a client with no diet, or no watched tab, holds nothing as a skeleton.
+            if (c.get("reconnect") or c.get("skeletonOnReady")) and c.get("active") and sid != str(c.get("active")) \
+                    and sid not in (c.get("echat") or {}):
+                continue
+            return False
     return True
 
 
@@ -48685,7 +48728,10 @@ def _push(targets, connect=False, live_map=None):
             # tab's floor and the next cycle flipped it back, review find E); which clients count is _chat_floor0_of's
             with _clients_lock:
                 _all_chat = [c for c in _clients if c.get("app") == "chat"]
+                _any_sessions_pane = any(c.get("app") == "fleet" for c in _clients)   # the pane's existing wire id
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
+            _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
+            #                                                                          not this push's targets alone (round two, low 2)
             for s in build_order:
                 is_active = s["sid"] in active           # the watched tab(s): served like any tab while the key holds
                 # THE COLD-TAB GATE (2026-09-14; the user, after the boot review): on the 3:58 PM PT restart the first
@@ -48699,9 +48745,10 @@ def _push(targets, connect=False, live_map=None):
                 # no set and is served whole, as today.
                 _tm = live_map.get(s["sid"])
                 _light = None
-                if (not is_active and not want_fleet and s["sid"] not in _built_chat and os.path.exists(s["path"])
-                        and _held_as_skeleton_by_all(s["sid"], chat_clients)):
-                    _light = _light_status(s["sid"], _tm, now)   # no live row: no status to state, so build as before
+                if (not is_active and s["sid"] not in _all_active and not want_fleet and not _any_sessions_pane
+                        and s["sid"] not in _built_chat and os.path.exists(s["path"])
+                        and _held_as_skeleton_by_all(s["sid"], _all_chat)):   # every CONNECTED chat client, as the floor reads
+                    _light = _light_status(s["sid"], s["path"], _tm, now)   # no live row: no status to state, so build as before
                 if _light is not None:
                     for c in chat_clients:               # a status per skeleton tab still goes (the diet's contract),
                         with _client_lock(c):            #  the live row's word until the tab's first build
@@ -49215,8 +49262,13 @@ def _push_session_now(sid):
         # 27 attach handshakes ran this push, a cold build per session, for tabs the page holds as skeletons; a full
         # here would also release the skeleton and hand the page a tab it did not ask for. Not built: the click or the
         # prefetch releases first and asks again. A tab some page holds whole, or a transcript-less one, builds as before.
+        for c in targets:                                # the set FIRST (round two, low 1): a skeleton client whose redial the
+            redialed = _resolve_reconnect(c, chat_list)   # pusher has not reached yet has no set at the handshake push, and the
+            _send_tab_order(c, tab_order, tab_meta, live_map)   # gate below would read it as holding nothing and hand it a full
+            if redialed:                                 # it never asked for; the strip goes before any full anyway
+                _consume_pending_reveal(c, why="the pane's redial")
         _path = next((s.get("path") or "" for s in chat_list if s["sid"] == sid), "")
-        _light = (_light_status(sid, live_map.get(sid), now) if sid not in _built_chat and _path and os.path.exists(_path)
+        _light = (_light_status(sid, _path, live_map.get(sid), now) if sid not in _built_chat and _path and os.path.exists(_path)
                   and _held_as_skeleton_by_all(sid, targets) else None)
         if _light is not None:
             for c in targets:                            # the live row's status, so the chip this push exists for still flips
@@ -49236,11 +49288,7 @@ def _push_session_now(sid):
                               len(_prev_chat_events.get(sid) or ()))
             return                                   # the periodic pusher owns the sid until content returns
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
-        for c in targets:
-            redialed = _resolve_reconnect(c, chat_list)   # a redialing page must never see a strip before its set exists
-            _send_tab_order(c, tab_order, tab_meta, live_map)
-            if redialed:                             # this strip is the redial's first: a reveal parked for its window lands behind it
-                _consume_pending_reveal(c, why="the pane's redial")
+        for c in targets:                            # the strip went above, before the gate; here the session frame
             ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form (…and releases a skeleton)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
