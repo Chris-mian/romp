@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { usageColor, fmtAgo, fmtReset, fmtUsd, fmtTok, usageWindows, apiCell, STRIP_PANES, fillHostSelect, droppedRowsNote } from "./strip";
+import { usageColor, fmtAgo, fmtReset, fmtUsd, fmtTok, usageWindows, apiCell, STRIP_PANES, fillHostSelect, droppedRowsNote, asFetchError, hostPickerVerdict, tunnelsFailureLine } from "./strip";
 
 test("fmtTok: 3 significant figures at every magnitude (the user 2026-08-13)", () => {
   assert.equal(fmtTok(1_318_619_909), "1.32B");
@@ -89,14 +89,13 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
   assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
-  assert.ok(src.includes("const keep = !!lastHosts && !(err && err.network);"), "a non-ok or unparseable answer keeps the last good list; a rejected fetch does not");
-  assert.equal(src.split('.catch((e: any) => { e = e instanceof Error ? e : new Error(String(e)); (e as any).network = true; throw e; })').length - 1, 2,
-    "both /ssh-hosts and /tunnels mark a rejected fetch before the status check, wrapping a reason that is not an object");
+  // the rule itself is executed below (hostPickerVerdict, tunnelsFailureLine, asFetchError); these pin that the two reads call it
+  assert.equal(src.split(".catch((e: unknown) => { const f = asFetchError(e); f.network = true; throw f; })").length - 1, 2,
+    "both /ssh-hosts and /tunnels wrap a rejected fetch's reason and mark it before the status check");
+  assert.ok(src.includes("const v = hostPickerVerdict(err, lastHosts);"), "the picker's catch takes its verdict from the executed rule");
   assert.ok(src.includes("lastHosts = null;"), "nothing kept means the list is forgotten too, so a stale list never repaints after the unreachable signal");
-  assert.ok(src.includes('else if (err && err.httpStatus) fillHostSelect(sel, [], `(the kernel answered HTTP ${err.httpStatus})`)'), "a first load's 500 names the status, not an unreachable kernel");
-  assert.ok(src.includes(": err && err.network ? `Couldn't reach the kernel ("), "the popover's refresh calls only a rejected fetch unreachable");
-  assert.ok(src.includes(": `The kernel's answer to /tunnels could not be read; retrying…`"), "a 200 whose body will not parse is named as such");
-  assert.ok(src.includes('if (err && err.network) fillHostSelect(sel, [], "(kernel unreachable)")'), "a rejected fetch keeps the kernel-unreachable signal, whatever was read before");
+  assert.ok(src.includes("e.textContent = tunnelsFailureLine(err,"), "the popover's refresh takes its line from the executed rule");
+  assert.ok(src.includes("fillHostSelect(sel, [], v.label);   // loud, never silently empty"), "nothing kept paints the verdict's label on an empty list");
   assert.ok(src.includes('console.error("romp: ssh hosts could not be read"'), "every failure shape says so in the console");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
 });
@@ -334,4 +333,38 @@ test("loadHosts routes both outcomes through fillHostSelect — no innerHTML hos
   assert.match(src, /fillHostSelect\(sel, lastHosts, "\(no ~\/\.ssh\/config hosts\)"\)/);   // the list read, kept across a failed refresh
   assert.match(src, /fillHostSelect\(sel, \[\], "\(kernel unreachable\)"\)/);
   assert.doesNotMatch(src, /<option value="\$\{h\}">/, "the template that rendered an alias as markup");
+});
+
+// The pickers' failure rule, EXECUTED over every shape (the fifth tidy: the rule was pinned by source text alone, which a
+// semantically equivalent rewrite could hollow out with every pin green). hostPickerVerdict is the one rule both surfaces
+// use; asFetchError is the rejection wrap; tunnelsFailureLine the popover's three wordings.
+test("asFetchError keeps an Error, an object's message or its JSON, names null, and strings the rest", () => {
+  const e = new Error("boom");
+  assert.equal(asFetchError(e), e);
+  assert.equal(asFetchError({ message: "socket closed" }).message, "socket closed");
+  assert.equal(asFetchError({ code: 7 }).message, '{"code":7}');
+  assert.equal(asFetchError(null).message, "fetch rejected");
+  assert.equal(asFetchError(undefined).message, "fetch rejected");
+  assert.equal(asFetchError("down").message, "down");
+});
+
+test("hostPickerVerdict: a status or a parse fault keeps the list once read; a rejected fetch never does; a first failure is named by kind", () => {
+  const status500 = Object.assign(new Error("HTTP 500"), { httpStatus: 500 });
+  const network = Object.assign(new Error("down"), { network: true });
+  const parse = new SyntaxError("Unexpected token <");
+  const list = ["web", "api"];
+  assert.deepEqual(hostPickerVerdict(status500, list), { keep: true, label: "(no ~/.ssh/config hosts)" });
+  assert.deepEqual(hostPickerVerdict(parse, list), { keep: true, label: "(no ~/.ssh/config hosts)" });
+  assert.deepEqual(hostPickerVerdict(network, list), { keep: false, label: "(kernel unreachable)" }, "a dead kernel never hides behind a stale list");
+  assert.deepEqual(hostPickerVerdict(network, null), { keep: false, label: "(kernel unreachable)" });
+  assert.deepEqual(hostPickerVerdict(status500, null), { keep: false, label: "(the kernel answered HTTP 500)" }, "a first load's 500 is not an unreachable kernel");
+  assert.deepEqual(hostPickerVerdict(parse, null), { keep: false, label: "(the kernel's answer could not be read)" });
+  assert.deepEqual(hostPickerVerdict(status500, []), { keep: true, label: "(no ~/.ssh/config hosts)" }, "an empty list read is a list: a later 500 keeps it and shows the no-hosts label");
+});
+
+test("tunnelsFailureLine names a status, an unreachable kernel, or an answer that would not parse", () => {
+  assert.equal(tunnelsFailureLine(Object.assign(new Error("x"), { httpStatus: 502 }), "same origin"), "The kernel answered HTTP 502 to /tunnels; retrying…");
+  assert.match(tunnelsFailureLine(Object.assign(new Error("x"), { network: true }), "http://127.0.0.1:1"), /^Couldn't reach the kernel \(http:\/\/127\.0\.0\.1:1\)/);
+  assert.equal(tunnelsFailureLine(new SyntaxError("bad json"), "same origin"), "The kernel's answer to /tunnels could not be read; retrying…");
+  assert.equal(tunnelsFailureLine(null, "same origin"), "The kernel's answer to /tunnels could not be read; retrying…");
 });
