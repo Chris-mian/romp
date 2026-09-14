@@ -4545,9 +4545,14 @@ def _state_quarantine(p, st, reason):
     # speaks exactly once. Guarded like _note_state_fault: a notice never turns a successful move
     # into a raise.
     try:
-        _sync_notice("%s could not be parsed and was moved aside to %s; %s it held start over "
-                     "empty until you set them again"
-                     % (p.name, aside.name, _STATE_FILE_HOLDS.get(p.name, "the settings")), ok=False, kind="refused")
+        if p.name == "session-flags.json":
+            # the flags carry DENY boundaries (postal isolation): a quarantine does not reset them to empty (2026-09-14,
+            # the lows PR's round two); the readers keep the last cleanly read flags, or hold mail when none are known
+            tail = ("the flags it held (mail isolation included) are unknown: the last cleanly read ones stand, and with "
+                    "none known mail is held for every session and flag changes are refused until the file is written again")
+        else:
+            tail = "%s it held start over empty until you set them again" % _STATE_FILE_HOLDS.get(p.name, "the settings")
+        _sync_notice("%s could not be parsed and was moved aside to %s; %s" % (p.name, aside.name, tail), ok=False, kind="refused")
     except Exception:
         pass
     return None
@@ -7055,9 +7060,23 @@ def _session_flags_proved():
     """The MUTATION snapshot of the per-session flags: a read fault RAISES (_StateUnreadable) so
     _set_session_flag / _set_notify_session refuse rather than writing a fabricated {} back over
     every session's flags -- including the postalServiceOff isolation boundaries -- under a success
-    ack (the state-readers audit). Only a missing (or freshly-quarantined) file reads as empty."""
-    raw = _read_state_json(jd.STATE / "session-flags.json", expect=dict)
-    return raw if isinstance(raw, dict) else {}
+    ack (the state-readers audit). Only a missing file with no quarantine sidecar beside it reads as
+    empty. A QUARANTINE (torn or wrong-shaped bytes moved aside by _read_state_json, now or on an
+    earlier read: a sidecar beside a missing file) is not an empty store (2026-09-14): the snapshot is
+    the LAST cleanly read flags this process holds (_flags_cache, the same value the mail door reads),
+    so a toggle after a quarantine keeps every other boundary and its write makes the sidecar history;
+    with nothing known the write is REFUSED, loudly, and the store is never rebuilt from empty."""
+    p = jd.STATE / "session-flags.json"
+    hit = _flags_cache.get(str(p))
+    raw = _read_state_json(p, expect=dict)
+    if isinstance(raw, dict):
+        return raw
+    if raw is None and not _flags_quarantined(p):
+        return {}                                    # missing, never quarantined: a fresh install, legitimately empty
+    if hit is not None:
+        return dict(hit[1])                          # the last cleanly read flags: the toggle applies on top of them
+    raise _StateUnreadable(p, "the session settings file was moved aside (torn bytes) and no flags are known; "
+                              "set the flag again once it is repaired")
 
 
 _FLAGS_UNKNOWN_TEXT = ("torn or wrong-shaped bytes were moved aside, so the flags are unknown: %s until the file is "

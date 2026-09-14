@@ -175,11 +175,51 @@ class FlagsStoreUnreadableRefuses(unittest.TestCase):
         torn = b'{"sid": {"hideFromFeed": true'
         self._path().write_bytes(torn)
         km._flags_cache.clear()
-        self.assertEqual(km._session_flags_proved(), {}, "the store starts empty only after the bytes are saved")
+        # 2026-09-14 (the lows PR's round two): the quarantine is not an empty store; with nothing known the proved
+        # read REFUSES (the writers refuse with it), the bytes are still saved aside
+        with self.assertRaises(km._StateUnreadable):
+            km._session_flags_proved()
         q = list(jd.STATE.glob("session-flags.json.corrupt-*"))
         self.assertEqual(len(q), 1)
         self.assertEqual(q[0].read_bytes(), torn, "the quarantine holds the ORIGINAL bytes")
         self.assertFalse(self._path().exists())
+
+    def test_a_toggle_after_a_quarantine_starts_from_the_last_known_flags_and_keeps_every_other_boundary(self):
+        # the manager's rule (2026-09-14): the first write after a quarantine must not rebuild the store from empty
+        km._set_session_flag(self.OTHER, "postalServiceOff", True)     # an isolation boundary another session relies on
+        km._set_session_flag("cccccccc-2222-4333-8444-0000000000c3", "hideFromFeed", True)
+        self.assertEqual(km._session_flags().get(self.OTHER), {"postalServiceOff": True}, "read cleanly: known")
+        self._path().write_bytes(b'{"torn": ')
+        self.assertEqual(km._session_flags().get(self.OTHER), {"postalServiceOff": True},
+                         "the display read quarantines the torn bytes and keeps the last cleanly read flags")
+        self.assertFalse(self._path().exists(), "moved aside")
+        self.assertEqual(km._mail_off_why_k(self.OTHER), "isolation", "the boundary holds across the quarantine")
+        km._set_session_flag(self.SID, "hideFromFeed", True)           # the first toggle after the quarantine
+        stored = json.loads(self._path().read_text())
+        self.assertEqual(stored.get(self.OTHER), {"postalServiceOff": True}, "rebuilt from the last known flags, not from empty")
+        self.assertEqual(stored.get("cccccccc-2222-4333-8444-0000000000c3"), {"hideFromFeed": True})
+        self.assertEqual(stored.get(self.SID), {"hideFromFeed": True}, "plus the one flag")
+        km._flags_cache.clear()
+        self.assertEqual(km._mail_off_why_k(self.OTHER), "isolation", "and the door reads the rebuilt store cleanly")
+        self.assertNotIn(str(self._path()), km._state_fault_seen, "the sidecar is history once the store is written")
+
+    def test_a_cold_toggle_after_a_quarantine_is_refused_and_says_so(self):
+        # nothing known (a restart after the quarantine): the write is refused with a notice, never a fresh store
+        self._path().write_bytes(b'{"torn": ')
+        km._flags_cache.clear()
+        self.assertEqual(km._session_flags(), {}, "the display read quarantines and answers the unproved empty default")
+        self.assertFalse(self._path().exists())
+        self.assertEqual(km._mail_off_why_k(self.SID), "flags", "mail held: nothing is known")
+        raised = None
+        try:
+            km._set_session_flag(self.SID, "hideFromFeed", True)
+        except Exception as e:                                          # noqa: BLE001
+            raised = e
+        self.assertEqual(type(raised).__name__, "_StateUnreadable", "refused loudly (got %r)" % raised)
+        self.assertIn("moved aside", str(raised)); self.assertIn("set the flag again", str(raised))
+        self.assertFalse(self._path().exists(), "no fresh store was written")
+        self.assertEqual(len(list(jd.STATE.glob("session-flags.json.corrupt-*"))), 1, "the sidecar still stands")
+        self.assertEqual(km._mail_off_why_k(self.SID), "flags", "the door stays closed")
 
     def test_enoent_flags_still_reads_empty_with_no_quarantine(self):
         self.assertEqual(km._session_flags(), {}, "a missing store is legitimately empty")
@@ -340,24 +380,36 @@ class FlagsDisplayReaderServesUnproved(unittest.TestCase):
         # from the dashboard every flag (postal isolation included) simply reset itself
         torn = b'{"' + self.OTHER.encode() + b'": {"postalServiceOff": tr'
         self._path().write_bytes(torn)
-        self.assertEqual(km._session_flags_proved(), {})
+        # 2026-09-14 (the lows PR's round two): the quarantine is not an empty store; the proved read cold RAISES (the
+        # writers refuse with it) and the notice says what is held, never that the settings start over
+        with self.assertRaises(km._StateUnreadable):
+            km._session_flags_proved()
         self.assertEqual(len(self.notices), 1, "one notice for the move")
         text, ok, kind = self.notices[0]
         self.assertEqual((ok, kind), (False, "refused"))
         self.assertIn("session-flags.json could not be parsed and was moved aside to session-flags.json.corrupt-", text)
-        self.assertIn("start over empty", text)
+        self.assertIn("mail isolation included", text); self.assertIn("mail is held for every session", text)
+        self.assertNotIn("start over empty", text, "the flags never start over empty")
         aside = list(jd.STATE.glob("session-flags.json.corrupt-*"))
         self.assertEqual(len(aside), 1)
         self.assertIn(aside[0].name, text, "the notice names the sidecar, so the bytes can be found")
-        self.assertEqual(km._session_flags_proved(), {})                # the next read is an ENOENT …
-        self.assertEqual(len(self.notices), 1, "… and files nothing more: a corrupt file speaks exactly once")
+        with self.assertRaises(km._StateUnreadable):
+            km._session_flags_proved()                                  # the next read is an ENOENT beside the sidecar: still refused
+        self.assertEqual(len(self.notices), 1, "… and the quarantine files nothing more: a corrupt file speaks exactly once")
+        km._flags_cache.clear()
+        self.assertEqual(km._session_flags(), {}, "the display reader answers the unproved empty default")
+        self.assertEqual(len(self.notices), 2, "…and files the hold once (the fault notice)")
+        self.assertIn("mail is held for every session", self.notices[1][0])
+        km._session_flags()
+        self.assertEqual(len(self.notices), 2, "one notice per episode")
 
     def test_valid_json_of_the_wrong_shape_is_quarantined_not_read_as_empty(self):
         # review find, 2026-09-08: a LIST where the flags dict belongs read as a proved empty store and
         # was overwritten by the next writer -- a file none of our writers produce, gone without a trace
         wrong = b'["' + self.OTHER.encode() + b'"]'
         self._path().write_bytes(wrong)
-        self.assertEqual(km._session_flags_proved(), {}, "empty only AFTER the bytes are moved aside")
+        with self.assertRaises(km._StateUnreadable):                     # 2026-09-14: quarantined, and cold the proved read refuses
+            km._session_flags_proved()
         aside = list(jd.STATE.glob("session-flags.json.corrupt-*"))
         self.assertEqual(len(aside), 1, "quarantined like torn bytes")
         self.assertEqual(aside[0].read_bytes(), wrong)
