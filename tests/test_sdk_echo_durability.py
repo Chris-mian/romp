@@ -354,11 +354,11 @@ class DroppedSendsAnnounceThemselves(unittest.TestCase):
         import inspect
         tree = ast.parse(inspect.getsource(sb))
         def calls_of(name):
-            fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+            fn = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
             return [n.func.attr for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
         # the spawn half moved into _fresh_cli_stamp (2026-09-14: a connect that ATTACHES to a live host keeps the CLI's epoch,
         # its awaiting and its held sends, so the whole fresh-CLI block runs on a spawn only); _run calls it, it calls the marking
-        self.assertIn("_fresh_cli_stamp", calls_of("_run"), "_run no longer runs the fresh-CLI block")
+        self.assertIn("_fresh_cli_stamp", calls_of("_amain"), "the connect loop no longer runs the fresh-CLI block at the transport's outcome")
         self.assertIn("_mark_dropped_echoes", calls_of("_fresh_cli_stamp"),
                       "the fresh-CLI block no longer marks orphaned echoes when a fresh CLI spawns")
 
