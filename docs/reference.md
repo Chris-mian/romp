@@ -627,7 +627,9 @@ For `./install.sh`:
 - `ROMP_NO_SERVICE=1` skips the login service.
 - `ROMP_NO_EXT=1` skips the VS Code / Cursor extension.
 - `ROMP_NO_SDK=1` skips the Agent SDK venv. Claude Code sessions need it, so
-  run `bin/romp-sdk-setup` before starting one.
+  run `bin/romp-sdk-setup` before starting one. Notifications to a phone or
+  browser read the `cryptography` package from the same venv, so they stay off
+  until it runs too.
 
 For the one-line installer (`bootstrap.sh`), which passes all of the above
 through to `install.sh`:
