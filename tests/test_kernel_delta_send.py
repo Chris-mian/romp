@@ -74,6 +74,38 @@ class SendChatTest(unittest.TestCase):
         self.assertEqual(tail["from"], 1)
         self.assertEqual([e.get("output") for e in tail["events"]], ["done", None])
 
+    def test_a_flag_only_change_rides_an_empty_tail_carrying_the_flags(self):
+        # the user 2026-09-11: a bell flipped in one split column reached the other only with its next FULL frame.
+        # Unchanged events diff to len(prev) → an empty suffix; the flags ride it as the status does
+        c, sent = _client()
+        a = [{"uuid": "1"}, {"uuid": "2"}]
+        km._send_chat(c, self._m("S", a), None, 0, False)             # full
+        m2 = dict(self._m("S", a), notify=True, hideFromFeed=False, postalServiceOff=True)
+        km._send_chat(c, m2, None, km._chat_diff(a, a), False)
+        t = _last(sent)
+        self.assertEqual((t["type"], t["from"], t["events"]), ("chatTail", 2, []), "an empty suffix: nothing in the events changed")
+        self.assertEqual((t["notify"], t["hideFromFeed"], t["postalServiceOff"]), (True, False, True), "the flags ride the tail")
+        n = len(sent)
+        km._send_chat(c, dict(m2, notify=False), None, km._chat_diff(a, a), False)
+        self.assertEqual((len(sent), _last(sent)["notify"]), (n + 1, False), "the flip alone is a new frame: the dedup signature reads the flags")
+
+    def test_a_flag_only_change_reaches_an_index_client_on_its_uuid_anchored_tail_too(self):
+        # the shell's pages speak the uuid-anchored wire (proto 2, T323): the same flip has to ride THAT delta, or another
+        # window on the same kernel learns a bell only with the session's next full frame (2026-09-13, found by the served
+        # split story's second window)
+        c, sent = _client(); c["proto"] = 2
+        a = [{"uuid": "1"}, {"uuid": "2"}]
+        km._send_chat(c, self._m("S", a), None, 0, False)             # the full frame: the client's base is {first, last}
+        self.assertEqual((_last(sent)["type"], _last(sent)["proto"]), ("session", 2))
+        m2 = dict(self._m("S", a), notify=True, hideFromFeed=False, postalServiceOff=True)
+        km._send_chat(c, m2, None, km._chat_diff(a, a), False)
+        t = _last(sent)
+        self.assertEqual((t["type"], t["afterUuid"], t["events"]), ("chatTail", "2", []), "an empty suffix after the newest held event")
+        self.assertEqual((t["notify"], t["hideFromFeed"], t["postalServiceOff"]), (True, False, True), "the flags ride the uuid-anchored tail")
+        n = len(sent)
+        km._send_chat(c, dict(m2, notify=False), None, km._chat_diff(a, a), False)
+        self.assertEqual((len(sent), _last(sent)["notify"]), (n + 1, False), "the flip alone is a new frame here too")
+
     def test_a_fork_new_head_uuid_forces_a_full_resend(self):
         c, sent = _client()
         km._send_chat(c, self._m("S", [{"uuid": "1"}, {"uuid": "2"}]), None, 0, False)   # full

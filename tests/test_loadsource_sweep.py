@@ -20,12 +20,11 @@ import shutil
 import tempfile
 import unittest
 
+from romp_load import load_source
 # Hermetic state BEFORE the loads (the ratchet's rule; neither module loaded below reads romp state,
 # and the two lines cost nothing).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-
-from romp_load import load_source  # noqa: E402
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)

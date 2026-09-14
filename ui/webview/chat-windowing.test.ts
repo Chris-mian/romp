@@ -276,9 +276,18 @@ test("the spacer is invisible, non-interactive vertical space", () => {
 });
 
 test("the landing notice's pulse is one-shot (the follow-up after PR 1584, low 1): the class leaves on animationend and a re-shown notice never carries a stale one", () => {
-  assert.match(RENDER, /function pulseLandingNotice\(\): void \{\s*\n\s*const n = landingNoticeEl; if \(!n \|\| n\.style\.display === "none"\) return;\s*\n\s*n\.classList\.remove\("pulse"\); void n\.offsetWidth; n\.classList\.add\("pulse"\);\s*\n\s*n\.addEventListener\("animationend", \(\) => n\.classList\.remove\("pulse"\), \{ once: true \}\);/,
-    "the pulse removes its own class on the animation's end, one listener per pulse, the composer note flash's way");
+  assert.match(RENDER, /function pulseLandingNotice\(\): void \{\s*\n\s*const n = landingNoticeEl; if \(!n \|\| n\.style\.display === "none"\) return;\s*\n\s*if \(pulseEnd\) \{ n\.removeEventListener\("animationend", pulseEnd\); pulseEnd = null; \}\s*\n\s*n\.classList\.remove\("pulse"\); void n\.offsetWidth; n\.classList\.add\("pulse"\);\s*\n\s*const end = \(\) => \{ n\.classList\.remove\("pulse"\); if \(pulseEnd === end\) pulseEnd = null; \};\s*\n\s*pulseEnd = end;\s*\n\s*n\.addEventListener\("animationend", end, \{ once: true \}\);/,
+    "the pulse removes its own class on the animation's end, one listener per pulse, held in pulseEnd so a hide can remove it (the tidy after PR 1642, low 2)");
+  assert.match(RENDER, /function hideLandingNotice\(\): void \{\s*\n\s*if \(landingNoticeEl\) \{\s*\n\s*if \(pulseEnd\) \{ landingNoticeEl\.removeEventListener\("animationend", pulseEnd\); pulseEnd = null; \}[^\n]*\n\s*landingNoticeEl\.classList\.remove\("pulse"\);\s*\n\s*landingNoticeEl\.style\.display = "none";/,
+    "the hide path removes a cut pulse's handler and its class: no dead closure stays on the reused element");
   assert.match(RENDER, /landingNoticeEl\.classList\.remove\("pulse"\);[^\n]*\n\s*landingNoticeEl\.style\.display = "";/,
     "the show path drops a pulse the hide cut short before the element is shown again");
   assert.match(CSS, /\.tx-landing-notice\.pulse \{ animation: tx-notice-pulse 500ms ease-out; \}/, "the animation itself is unchanged: one short pulse");
+});
+
+
+test("the skeleton prefetch never builds a tab the strip does not show (the user 2026-09-14): tabInView and the #only= filter gate it", () => {
+  assert.match(RENDER, /const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), \(id\) => stripShows\(id\)\);/,
+    "the idle prefetch's in-view gate is the strip's own predicate, stripShows (it begins with tabInView and adds the #only= filter)");
+  assert.match(RENDER, /const onOnlyHashChange = \(\): void => \{ renderTabs\(\); schedulePrebuild\(\); \};/, "the filter's reveal re-arms the idle prefetch (round two of PR 1661, medium 3)");
 });

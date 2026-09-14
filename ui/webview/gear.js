@@ -197,13 +197,25 @@ var GEAR_HTML =
   '<span><b>Thinking summaries</b>' +
   '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display. Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
   '</span></label>' +
-  // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own): the strip's gear opens the
-  // panel here (data-section is the anchor showSection scrolls the card to), then the strip's own controls follow
+  // TAB STRIP (T415, the user 2026-09-14): the strip's gear jumps the panel here (data-section is the anchor showSection scrolls
+  // the card to), a small section of the strip's own settings ABOVE Tab widgets; the tab lock (T395; a row in the gear's menu
+  // since T405) is its checkbox row, the house grammar of every other row, saved through the one gear save the strip hears
+  "<div class='rs-sec' data-section=tabstrip>Tab strip</div>" +
+  "<label class='rs-row'><input type=checkbox id=rs-tablock>" +
+  '<span><b>Lock the tabs in place</b>' +
+  '<span class=rs-sub>No drag or move of the tabs, and no lane drag in the Sessions pane, until unlocked. The order stays as it is.</span>' +
+  '</span></label>' +
+  // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own), following the strip's section
   "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +
   // the widget rows are built by initGear from the registry (tab-widgets.ts): a live demo, the name and what it does, the
   // sliding switch and the widget's own options; every control built once and re-filled in place (click-safe)
   '<div class=rs-hint>What a tab title carries, in this order. Each row shows the widget live.</div>' +
   '<div id=rs-widgets class=rs-widgets></div>' +
+  // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets too, each with
+  // its own switch, listed as their own group under the title's rows and their preview (the preview box lands between
+  // the two hosts at build). No grip: their order is the precedence, red over yellow over amber, and is the registry's
+  '<div class=rs-hint>Rings around the tab. One at a time: the first that applies wins, in this order.</div>' +
+  '<div id=rs-rings class=rs-widgets></div>' +
   // STATUS LINE (T409, the user 2026-09-13): the items the line above the composer carries besides its fixed parts, one
   // row per registered widget (status-widgets.ts); the rows are the whole entry point (the user: no gear on the line,
   // no new menu row). The same builder as the Tab widgets rows; the demo is the widget alone, as the line draws it.
@@ -339,7 +351,7 @@ function initGear(post, opts) {
   document.body.insertAdjacentHTML('beforeend', GEAR_HTML);
 
   var g = document.getElementById('rgear'), p = document.getElementById('rsettings'),
-    b = document.getElementById('rsver'), cc = document.getElementById('rs-compact'),
+    b = document.getElementById('rsver'), cc = document.getElementById('rs-compact'), tl = document.getElementById('rs-tablock'),
     jix = document.getElementById('rs-judges-index'), jtr = document.getElementById('rs-judges-triage'),
     an = document.getElementById('rs-autonudge'), bk = document.getElementById('rs-backend'),
     cvm = document.getElementById('rs-conserve'),
@@ -391,6 +403,7 @@ function initGear(post, opts) {
     post({ type: 'settingsSync', settings: s });
   }
   cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
+  tl.addEventListener('change', function () { var s = load(); s.tabsLocked = tl.checked; save(s); });   // the tab lock (T415): the strip hears the save (tabsLocked is in its signature)
   // one tag group per row in the tab strip (on by default); render.ts repaints the strip on the save
   if (sr) sr.addEventListener('change', function () { var s = load(); s.stripGroupRows = sr.checked; save(s); });
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
@@ -691,7 +704,8 @@ function initGear(post, opts) {
   function widgetOptRowHTML(o) { return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>'; }
   function widgetSection(cfg) {   // cfg: host, list(), order(prefs) -> ids in visual order (a divider's id among them), divider {id, label} or null,
                                   //      group(id) -> a key rows may not leave (null: none), prefs(store), save(prefs), on(prefs, w), opts(prefs, w),
-                                  //      demo(w, prefs) -> node or null, preview(prefs) -> node, pickPrefix
+                                  //      demo(w, prefs) -> node or null, preview(prefs) -> node, pickPrefix,
+                                  //      reorder: false -> no grip and no drag (the rings, 2026-09-14: the order is the precedence and the registry's)
     var rows = {}, dividerRow = null, previewBody = null;
     // REORDER (the user's addition to T409): the rows drag by their grip (pointer events on the document for the drag's life,
     // one drag per pointer, each ended when the card hides; Escape cancels) and move by the arrow keys on the focused grip; the order is the render order on
@@ -812,6 +826,7 @@ function initGear(post, opts) {
         var row = document.createElement('div'); row.className = 'rs-widget'; row.setAttribute('data-widget', w.id);
         var grip = document.createElement('button'); grip.type = 'button'; grip.className = 'rs-grip'; grip.textContent = '⠿';   // the six-dot grip glyph
         grip.setAttribute('aria-label', 'Drag to reorder: ' + w.label); grip.title = 'Drag to reorder, or press the arrow keys';
+        if (cfg.reorder === false) { grip = document.createElement('span'); grip.className = 'rs-grip-none'; }   // a section that does not reorder: an empty cell in the grip's column keeps the grid's columns aligned
         var demo = document.createElement('span'); demo.className = 'rs-widget-demo';
         var name = document.createElement('span'); name.className = 'rs-widget-name';
         var b = document.createElement('b'); b.textContent = w.label; name.appendChild(b);
@@ -827,7 +842,7 @@ function initGear(post, opts) {
           paints.push(function (prefs) { if (drop) drop(o.choices.map(function (c) { return { id: c.value, name: c.label }; }), cfg.opts(prefs, w)[o.key]); });
         });
         row.appendChild(grip); row.appendChild(demo); row.appendChild(name); row.appendChild(sw); row.appendChild(opts);
-        wireGrip(grip, row, w.id);
+        if (cfg.reorder !== false) wireGrip(grip, row, w.id);
         cfg.host.appendChild(row);
         rows[w.id] = { row: row, demo: demo, sw: sw, paints: paints };
       });
@@ -861,13 +876,13 @@ function initGear(post, opts) {
       });
       if (previewBody) { var pv = cfg.preview(prefs); if (pv) previewBody.replaceChildren(pv); else previewBody.replaceChildren(); }
     }
-    return { paint: paint };
+    return { paint: paint, save: cfg.save };   // save exposed: a second section over the same store (the rings) writes through the first's
   }
   // the tab widgets: settings.tabWidgets with tabCtx as the mirror; the demo is a miniature tab with the widget's node
   // where the strip would put it (before the name or after it)
   function widgetPrefs(s) { return TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); }
   var tabSection = widgetSection({
-    host: document.getElementById('rs-widgets'), list: TW.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',
+    host: document.getElementById('rs-widgets'), list: TW.titleWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',   // the widgets that render INTO the title; the rings have their own rows below
     order: TW.tabListOrder, divider: { id: TW.NAME_DIVIDER, label: 'session name' }, group: null, groupLabel: null,
     save: function (prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); },
     on: TW.widgetOn, opts: TW.widgetOpts,
@@ -884,6 +899,22 @@ function initGear(post, opts) {
       var node = TW.renderWidgetDemo(w, prefs);
       if (w.slot === 'before') { if (node) tab.appendChild(node); tab.appendChild(label); }
       else { tab.appendChild(label); if (node) tab.appendChild(node); }
+      return tab;
+    },
+  });
+  // THE RINGS (the rings-as-widgets change, 2026-09-14): the same builder over the registry's rings, the same store
+  // (settings.tabWidgets, through the tab section's own save, so the tabCtx mirror and the repaint come with it) and the
+  // same switch; no divider, no grip, no drag (the order is the precedence: red over yellow over amber, the registry's).
+  // The demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off.
+  var ringSection = widgetSection({
+    host: document.getElementById('rs-rings'), list: TW.ringWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',
+    order: function () { return TW.ringWidgets().map(function (w) { return w.id; }); }, divider: null, group: null, groupLabel: null, reorder: false,
+    save: tabSection.save,
+    on: TW.widgetOn, opts: TW.widgetOpts,
+    demo: function (w, prefs) {
+      var tab = document.createElement('span'); tab.className = 'tab';
+      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web'; tab.appendChild(label);
+      var cls = TW.ringDemoClass(w, prefs); if (cls) tab.classList.add(cls);
       return tab;
     },
   });
@@ -912,7 +943,7 @@ function initGear(post, opts) {
     on: SW.statusWidgetOn, opts: SW.statusWidgetOpts,
     demo: function (w, prefs) { return SW.renderStatusWidgetDemo(w, prefs); },
   });
-  function paintWidgets() { tabSection.paint(); statusSection.paint(); }
+  function paintWidgets() { tabSection.paint(); ringSection.paint(); statusSection.paint(); }
   // The remaining native selects sweep onto the same builder (the user 2026-08-27, closing the
   // 3-house/3-native split the gauge migration left): a generic adapter over ANY hidden select —
   // options snapshot from sel.options (so the effort selects, whose options arrive from /models
@@ -1848,7 +1879,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

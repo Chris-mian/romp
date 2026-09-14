@@ -65,6 +65,7 @@ test("no white focus ring on tabs: .tab suppresses the UA outline and nothing re
   assert.match(tabRule, /outline: none/, ".tab clears the UA focus ring");
   // and NO rule re-adds a solid focus outline on a tab (that was the white border)
   assert.doesNotMatch(CSS, /\.tab:focus(-visible)?\s*\{[^}]*outline:\s*[0-9]/, "no solid focus outline re-added");
-  // the dashed STATE outlines (awaiting/blocked/retrying) are untouched
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+  // the dashed RING outlines (the red and the amber; the yellow has its own rule) are untouched: they key on the ring class the
+  // strip composes (the rings are widgets since 2026-09-14), still above the base .tab rule's specificity
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed/);
 });

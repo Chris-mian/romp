@@ -5830,21 +5830,29 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 if "toolUseResult" in a:
                     row["tur"] = a["toolUseResult"]
             pre_atoms.append(row)
-        # the pre-cut spine, root to cut
-        chain, u, guard_n, bound = [], ad.leaf_uuid, 0, len(ad.by_uuid) + 1
-        while u is not None and guard_n < bound:              # a walk longer than the record count is a cycle in the resolved
-            if ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid:   #  graph (a reused uuid can make one): no document for it
+        # the pre-cut spine, root to cut: the leaf's parent chain as the PARSE resolves it (repeated uuids last-wins, a
+        # self-link a root), walked with a visited set that ends at the first revisit exactly as active_path does, so the
+        # document's spine is the spine the chat shows. Until 2026-09-14 the walk was hop-bounded and a cycle in the
+        # resolved graph (a reused uuid closing a ring 3 to 50 records long, real in 34 of the 76 live transcripts over
+        # 10 MB) refused the WHOLE document, retried at every settle; every chat build of those sessions was a cold parse
+        chain, u, seen = [], ad.leaf_uuid, set()
+        while u is not None and u not in seen:
+            seen.add(u)
+            if ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid:
                 chain.append(u)
-            u = ad.parent_of.get(u); guard_n += 1
-        if u is not None:
-            return skip("cycle")
+            u = ad.parent_of.get(u)
         spine = [row_of[u] for u in reversed(chain) if u in row_of]   # record indexes, root to cut
         tip = chain[0] if chain else None                 # the pre-cut spine's tip: the first pre-cut record on the leaf's path
+        on_spine = set(chain)
         tip_childless = tip is not None and not any(    # decided HERE from the RESOLVED graph (parentUuid or logicalParentUuid,
-            p == tip and ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid   #  the stitch repair applied): a pre-cut child of
-            for u, p in ad.parent_of.items())           #  the tip, a compaction anchored on it included, means a tail child would
-        #                                                   decide the fork (T402 round five, medium 1); the restore reads this
-        #                                                   bit, never the rows' raw parents
+            p == tip and ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid and u not in on_spine   # the stitch repair
+            for u, p in ad.parent_of.items())           #  applied): a pre-cut child of the tip OFF the spine, a compaction
+        #                                                   anchored on it included, means a tail child would decide the fork
+        #                                                   (T402 round five, medium 1); the restore reads this bit, never the
+        #                                                   rows' raw parents. A child of the tip that is ON the spine is the
+        #                                                   ring closing on the tip (a reused uuid): a tail chaining onto it
+        #                                                   reaches the tip through the same spine nodes with the same verdicts,
+        #                                                   so it decides no fork and does not make the tip a fork (2026-09-14)
         seq_ts = None
         i = bisect.bisect_left(ad._seq_ts, (cut_seq,)) - 1
         if i >= 0:

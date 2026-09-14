@@ -19,22 +19,33 @@
 // The store's shape and rules (normalize, the switch, the options, the order) live in widget-prefs.ts since T409, shared
 // with the status line's widgets; the names below stay as this module's, re-exported, so callers and pins stand.
 import { tabDotClass, tabDotTitle } from "./tab-state";
+import { RING_ORDER, RING_TEST, type RingId, type TabStateLike } from "./tab-state";   // the rings' pure twin (2026-09-14): the precedence, the predicates and the status shape they read
 import { ctxFallbackColor, pickTone } from "./ctx-color";
 import { effectiveChord, loadOverrides, resolveChord } from "./keybindings";
 import { type WidgetChoice, type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder,
          widgetOn as prefOn, widgetOpts as prefOpts } from "./widget-prefs";
 
 export type { WidgetChoice, WidgetOption };
-export type WidgetSlot = "before" | "after";
-export interface WidgetStatus { state?: string; ctx?: string; ctxColor?: number[]; ctxTone?: number[]; faded?: boolean }
+// THE RING SLOT (the rings-as-widgets change, 2026-09-14): a widget of slot "ring" renders no element; it names the
+// CLASS the tab wears (`ring`) and a PREDICATE (`on`) that says when. The strip removes every registered ring class from
+// the tab on each paint, then adds the first ring's, in registration order, that is switched on and whose predicate
+// holds (composeTabRing), so a tab wears ONE ring at a time, a ring never outlives the state that lit it, and the CSS
+// pins can name the classes. Rings have no position: the divider and the stored order never carry one (widgetSlot,
+// orderedWidgets, tabWidgetPrefs), and the settings list them as their own group with the same switch as the others.
+export type WidgetSlot = "before" | "after" | "ring";
+// the status a widget reads: the state and the gauge inputs, plus the fields the ring predicates read (tab-state.ts's
+// TabStateLike: the on-you API flags and the feed's needsYou)
+export interface WidgetStatus extends TabStateLike { ctx?: string; ctxColor?: number[]; ctxTone?: number[]; faded?: boolean }
 export interface TabWidget {
-  id: string;                 // "dot" | "ctx" | "hotkey" | a contributor's id
+  id: string;                 // "dot" | "ctx" | "hotkey" | a ring's id | a contributor's id
   label: string;              // the settings row's name
   description: string;        // one line: what it shows and when
   defaultOn: boolean;         // the default set
-  slot: WidgetSlot;           // before the name, after the name
+  slot: WidgetSlot;           // before the name, after the name, or a ring around the tab
+  ring?: string;              // slot "ring": the class the tab wears while `on` holds (the CSS keys the outline on it)
+  on?(sid: string, status: WidgetStatus, opts: Record<string, string>): boolean;   // slot "ring": the predicate
   options?: WidgetOption[];
-  render(sid: string, status: WidgetStatus, opts: Record<string, string>): HTMLElement | null;   // null = nothing on this tab
+  render(sid: string, status: WidgetStatus, opts: Record<string, string>): HTMLElement | null;   // null = nothing on this tab (a ring's always is)
   demo?: WidgetStatus;        // the settings row's live rendering renders over this status (else DEMO_STATUS)
   demoSid?: string;           // …for this sid (a widget that reads a per-session store answers for it)
 }
@@ -52,12 +63,16 @@ export function registerTabWidget(w: TabWidget): void {
 }
 export function tabWidgets(): TabWidget[] { return REGISTRY.slice(); }
 export function tabWidget(id: string): TabWidget | undefined { return REGISTRY.find((w) => w.id === id); }
+/** The widgets that render INTO the title (before or after the name): the settings' Tab widgets rows and the divider list. */
+export function titleWidgets(): TabWidget[] { return REGISTRY.filter((w) => w.slot !== "ring"); }
+/** The ring widgets in registration order, which IS their precedence: rings take no stored order. */
+export function ringWidgets(): TabWidget[] { return REGISTRY.filter((w) => w.slot === "ring"); }
 
 /** The stored prefs, normalized: every field present, junk dropped. With no stored object the ctx widget's prefs
  *  derive from the older tabCtx mode (the mirror), so a store from before the widgets keeps its gauge setting. */
 export function tabWidgetPrefs(v: unknown, tabCtx?: unknown): TabWidgetPrefs {
   const o = normalizeWidgetPrefs(v);
-  if (o) { o.order = sanitizeOrder(o.order, (id) => id === NAME_DIVIDER || REGISTRY.some((w) => w.id === id)); return o; }   // the divider's id is an order entry too
+  if (o) { o.order = sanitizeOrder(o.order, (id) => id === NAME_DIVIDER || REGISTRY.some((w) => w.id === id && w.slot !== "ring")); return o; }   // the divider's id is an order entry too; a ring's never is (rings have no position)
   const out = emptyWidgetPrefs();
   if (tabCtx === "never") out.on.ctx = false;
   else if (tabCtx === "always") out.opts.ctx = { show: "always" };
@@ -82,6 +97,7 @@ export function widgetOpts(prefs: TabWidgetPrefs, w: TabWidget): Record<string, 
  *  widget the order does not name, renders the widget's registered slot, so nothing moves until the user drags. */
 export const NAME_DIVIDER = "name";
 export function widgetSlot(prefs: TabWidgetPrefs, w: TabWidget): WidgetSlot {
+  if (w.slot === "ring") return "ring";   // a ring is on neither side of the name, whatever a stored order says
   const at = prefs.order.indexOf(NAME_DIVIDER), i = prefs.order.indexOf(w.id);
   if (at < 0 || i < 0) return w.slot;
   return i < at ? "before" : "after";
@@ -91,6 +107,7 @@ export function widgetSlot(prefs: TabWidgetPrefs, w: TabWidget): WidgetSlot {
  *  registration order; an id the registry does not know is not drawn. Filtered to one slot when asked, the slot being
  *  the widget's side of the divider (widgetSlot). */
 export function orderedWidgets(prefs: TabWidgetPrefs, slot?: WidgetSlot): TabWidget[] {
+  if (slot === "ring") return ringWidgets();   // registration order, never the stored one
   const out = orderWidgets(prefs, REGISTRY);
   return slot ? out.filter((w) => widgetSlot(prefs, w) === slot) : out;
 }
@@ -120,6 +137,36 @@ export function composeTabWidgets(tab: HTMLElement, slot: WidgetSlot, sid: strin
 /** A settings row's live rendering: the widget over its demo status, as the strip would draw it. */
 export function renderWidgetDemo(w: TabWidget, prefs: TabWidgetPrefs): HTMLElement | null {
   try { return w.render(w.demoSid || DEMO_SID, w.demo || DEMO_STATUS, widgetOpts(prefs, w)); } catch { return null; }
+}
+
+/** A ring's predicate, guarded: a switched-off ring, a ring without one, and a predicate that throws all read false. */
+function ringOn(w: TabWidget, sid: string, status: WidgetStatus, prefs: TabWidgetPrefs): boolean {
+  if (w.slot !== "ring" || !w.ring || !w.on || !widgetOn(prefs, w)) return false;
+  try { return !!w.on(sid, status, widgetOpts(prefs, w)); } catch { return false; }
+}
+/** The ring a tab wears: the FIRST registered ring that is switched on and whose predicate holds, or null. */
+export function tabRing(sid: string, status: WidgetStatus, prefs: TabWidgetPrefs): TabWidget | null {
+  for (const w of ringWidgets()) if (ringOn(w, sid, status, prefs)) return w;
+  return null;
+}
+/** Compose the ring onto a tab: EVERY registered ring class comes off first, then the winner's goes on, so a ring never
+ *  survives the state that ended it and two rings never paint at once. Returns the class applied, or null. */
+export function composeTabRing(tab: HTMLElement, sid: string, status: WidgetStatus, prefs: TabWidgetPrefs): string | null {
+  for (const w of ringWidgets()) if (w.ring) tab.classList.remove(w.ring);
+  const win = tabRing(sid, status, prefs);
+  if (!win || !win.ring) return null;
+  tab.classList.add(win.ring);
+  return win.ring;
+}
+/** A settings row's live rendering of a ring: its class when its predicate lights on its demo status and its switch is
+ *  on, else null (the row's demo is a plain tab). */
+export function ringDemoClass(w: TabWidget, prefs: TabWidgetPrefs): string | null {
+  return ringOn(w, w.demoSid || DEMO_SID, w.demo || DEMO_STATUS, prefs) ? w.ring! : null;
+}
+/** The rings' switches as a predicate on the id, for the pure twin in tab-state.ts (the folded header's pip): a ring the
+ *  registry does not know reads as on, so the twin's own order still decides. */
+export function ringSwitch(prefs: TabWidgetPrefs): (id: string) => boolean {
+  return (id) => { const w = tabWidget(id); return !w || widgetOn(prefs, w); };
 }
 
 // ── the built-in widgets ──────────────────────────────────────────────────────────────────────────────────────────
@@ -181,8 +228,9 @@ registerTabWidget({
 
 // The HOT KEY keycap (the user 2026-09-12, amending T379): the chord that switches to this tab, at its shortest, after
 // the name. The per-tab hot keys live under romp:tabkeys (a set of sids) with a keybinding override per sid under
-// session.hotkey.<sid>; nothing in this tree writes them yet, so the keycap composes the day an assignment ships, and
-// renders nothing until a hot key is assigned. No options.
+// session.hotkey.<sid>; the tab menu's Hot key… row assigns one (render.ts, through the shell's shortcuts recorder) and
+// palette-main.ts registers the "Switch to <name>" command per sid from the set (tab-keys.ts owns the set's rules); the
+// keycap renders nothing until a hot key is assigned. No options.
 export const TABKEYS_KEY = "romp:tabkeys";
 export const HOTKEY_PREFIX = "session.hotkey.";
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test((navigator as { platform?: string }).platform || "");
@@ -214,3 +262,22 @@ registerTabWidget({
     return k;
   },
 });
+
+// THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets of slot "ring",
+// each with its own switch in the settings' Tab widgets section, registered in PRECEDENCE order, red over yellow over
+// amber (composeTabRing paints the first that is switched on and applies; a stored order never moves a ring). The
+// predicates are tab-state.ts's RING_TEST, the pure twin the folded header's pip reads, so the strip and the pip cannot
+// disagree. The colours are the tokens the tab already wears (styles.css: the red and the amber rings read the state's
+// --state, the yellow its own --st-ask-bg); the rows' demos wear the same classes through gear.css. No options.
+const RING_ROWS: Record<RingId, { label: string; description: string; demo: WidgetStatus }> = {
+  "ring-needs-you": { label: "Needs you", demo: { state: "awaiting" },
+                      description: "a dashed red ring while the session is stopped on a prompt, or on an API error only you can clear" },
+  "ring-waiting-on-you": { label: "Waiting on you", demo: { state: "working", needsYou: true },
+                           description: "a dashed yellow ring while something of the session's is waiting on you, even as it goes on working; a red ring outranks it" },
+  "ring-retrying": { label: "Retrying", demo: { state: "retrying" },
+                     description: "a dashed amber ring while the session retries an API error on its own; a red or yellow ring outranks it" },
+};
+for (const id of RING_ORDER) {
+  registerTabWidget({ id, label: RING_ROWS[id].label, description: RING_ROWS[id].description, defaultOn: true, slot: "ring", ring: id,
+                      on: (_sid, status) => RING_TEST[id](status), render: () => null, demo: RING_ROWS[id].demo });
+}

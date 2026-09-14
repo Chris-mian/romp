@@ -21,8 +21,9 @@ test("MENU_STYLE is the chat menu spec, with the font stack DECLARED (never inhe
   assert.match(SRC, /hairline: 'rgba\(255,255,255,0\.12\)',/);
   assert.match(SRC, /menuShadow: 'rgba\(0,0,0,0\.35\)',/);
   // the ✓-in-circle current mark, same as the chat meta menus
-  assert.match(SRC, /menuCheckStyleFor = \(p\) => 'position:absolute;right:6px;top:50%;transform:translateY\(-50%\);'/);
-  assert.match(SRC, /\+ 'background:' \+ p\.accentSolid \+ ';color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'/);
+  // the ✓ mark: one box shared with the ring (MENU_MARK_BOX, the shared checkMark's declaration set, the strip tidy round two), the accent behind the glyph
+  assert.match(SRC, /const MENU_MARK_BOX = 'position:absolute;right:6px;top:50%;transform:translateY\(-50%\);width:13px;height:13px;border-radius:50%;box-sizing:border-box;'\s*\n\s*\+ 'display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;';/);
+  assert.match(SRC, /menuCheckStyleFor = \(p\) => MENU_MARK_BOX \+ 'background:' \+ p\.accentSolid \+ ';color:#fff;';/);
   assert.match(SRC, /accentSolid: '#1EA1EB',/);
 });
 

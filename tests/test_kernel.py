@@ -983,34 +983,57 @@ class ViewBuilder(unittest.TestCase):
         build's own payload, never re-derived; a muted session has no cards. The section-at-a-glance row's
         "needs you" reads it so the two panes agree. The goal store this rewrites, and the override journal
         load_goals replays over it, live under the fixture's own temp root (setUp rebinds jd.GOALDIR and
-        jd.STATE), so no other module's journaled gesture on the shared placeholder sid reaches it."""
+        jd.STATE), so no other module's journaled gesture on the shared placeholder sid reaches it.
+
+        The STATUS carries the same verdict as needsYou (2026-09-13): the tab strip's ask ring reads it there —
+        a skeleton tab gets status frames alone, and the rule reads one object — so the two fields must move
+        together at every step; the chip state stays what the live state says (the idle main thread's "ready"
+        here), since the ring rides beside the state class rather than replacing it. And a feed build that MOVES
+        the set wakes the pusher (the _mark_views_dirty pattern): a push builds the chat sessions before the feed,
+        so the verdict ships on the next cycle, and the wake makes that cycle now; a rebuild that moves no verdict
+        wakes nothing, so cycles cannot chain."""
         live_map = km._live_map()
         saved = (list(km._built_feed), km._feed_needs_input[0], km._views_dirty[0])
         km._built_feed[:] = [None, None, 0.0, 0.0]; km._feed_needs_input[0] = None; km._views_dirty[0] = 0.0
         try:
-            self.assertIsNone(km.build_session(SID, NOW)["ledger"]["needsInput"], "no feed build yet: None, not a verdict")
+            m = km.build_session(SID, NOW)
+            self.assertIsNone(m["ledger"]["needsInput"], "no feed build yet: None, not a verdict")
+            self.assertIsNone(m["status"]["needsYou"], "…and the status says the same nothing")
+            km._pusher_wake.clear()
             feed = km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
             self.assertTrue(any(a["sid"] == SID and a["column"] == "needs_input" for a in feed["asks"]),
                             "the fixture's blocked goal files a needs_input card for the idle session")
+            self.assertTrue(km._pusher_wake.is_set(), "the set moved (None → a card): the build wakes the pusher so the ring ships now")
+            km._mark_views_dirty(); km._pusher_wake.clear()
+            km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
+            self.assertFalse(km._pusher_wake.is_set(), "a rebuild that moves no verdict wakes nothing: no chained cycles")
             self.assertEqual(live_map[SID]["state"], "idle", "while the chip is idle: the tab's rule alone shows nothing")
-            self.assertIs(km.build_session(SID, NOW)["ledger"]["needsInput"], True, "the row's needs-you = the feed's column")
+            m = km.build_session(SID, NOW)
+            self.assertIs(m["ledger"]["needsInput"], True, "the row's needs-you = the feed's column")
+            self.assertIs(m["status"]["needsYou"], True, "the tab's ask ring = the same column, on the status")
+            self.assertEqual(m["status"]["state"], "ready", "the chip is still the live state (an idle main thread reads ready): the ring composes with it, never replaces it")
             # the judges rule the block answered: the store now holds the goal working; a dirty mark bypasses
             # the rebuild throttle the way the reply handler does
             store = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
             g2 = "%s:g2" % SID
             store["nodes"][g2]["blocked"] = False; store["status"][g2] = "working"
             (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
-            km._mark_views_dirty()
+            km._mark_views_dirty(); km._pusher_wake.clear()
             feed = km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
             self.assertFalse(any(a["sid"] == SID and a["column"] == "needs_input" for a in feed["asks"]))
-            self.assertIs(km.build_session(SID, NOW)["ledger"]["needsInput"], False, "no card under needs-you: False")
+            self.assertTrue(km._pusher_wake.is_set(), "the card left the column: the ring comes off on the cycle the wake starts")
+            m = km.build_session(SID, NOW)
+            self.assertIs(m["ledger"]["needsInput"], False, "no card under needs-you: False")
+            self.assertIs(m["status"]["needsYou"], False, "the ring goes with the card")
             # muted: out of the feed altogether, so no cards, so False, whatever the store says
             store["nodes"][g2]["blocked"] = True; store["status"][g2] = "blocked"
             (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
             km._set_session_flag(SID, "hideFromFeed", True); km._flags_cache.clear()
             km._mark_views_dirty()
             km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
-            self.assertIs(km.build_session(SID, NOW)["ledger"]["needsInput"], False, "a muted session is out of task tracking")
+            m = km.build_session(SID, NOW)
+            self.assertIs(m["ledger"]["needsInput"], False, "a muted session is out of task tracking")
+            self.assertIs(m["status"]["needsYou"], False, "…so no ring either")
         finally:
             km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
             km._built_feed[:], km._feed_needs_input[0], km._views_dirty[0] = saved

@@ -12,6 +12,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -243,7 +244,11 @@ def run(coro):
 
 class TransportOverSocket(unittest.TestCase):
     def _path(self):
+        # under the system temp dir the tests package recorded (ROMP_TESTS_SYSTEM_TMPDIR), outside the run's private
+        # root, so the AF_UNIX path fits sun_path under xdist nesting; outside the root is outside the exit sweep's
+        # scope too, so the dir is removed here, when its test is (six per run leaked before this cleanup)
         d = tempfile.mkdtemp(dir=os.environ.get("ROMP_TESTS_SYSTEM_TMPDIR") or None)
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         return os.path.join(d, "h.sock")
 
     def test_attach_replays_from_the_ack_then_acks_and_side_frames_reach_their_callbacks(self):
@@ -391,8 +396,10 @@ class BackendHostRules(unittest.TestCase):
 
     def _be(self, short=False):
         # short: the state dir under the system temp dir (tests/README.md's ROMP_TESTS_SYSTEM_TMPDIR), so a fake host's
-        # AF_UNIX socket path under it stays inside sun_path's 104 bytes on every platform and xdist nesting
+        # AF_UNIX socket path under it stays inside sun_path's 104 bytes on every platform and xdist nesting. A short
+        # dir is outside the run's private root and so outside the exit sweep's scope: removed here, when its test is
         d = tempfile.mkdtemp(dir=(os.environ.get("ROMP_TESTS_SYSTEM_TMPDIR") or None) if short else None); logs = []
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None, log=logs.append); be._test_logs = logs
         return d, be
 

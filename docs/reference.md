@@ -816,7 +816,11 @@ line works for a manager launchd started. The value rule is the same in both
 readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
 value is on (`disabled` and `none` included: only those four words turn it off),
 and the last assignment in the file wins. The copy is probed under a ten-second
-bound (`ROMP_NODE_PROBE_BOUND`, never below one second), and a probe that hangs is
+bound (`ROMP_NODE_PROBE_BOUND`, in whole seconds, read the same way by both
+scripts: a value with no digits, or a digit among other characters, is the default
+ten; leading zeros are dropped; zero is one second; a value of seven digits or more
+after that folds to 3600; anything from 1 to 999999 is taken as given), and a probe
+that hangs is
 killed with everything under it, TERM then KILL, so a version manager's shim that
 runs `node` without replacing itself leaks nothing.
 
@@ -1725,6 +1729,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the kernel sample, the API health frame) against `_jobs_pass`.
 - `pusher`: `cycles`, `wakes` (every wake call; a burst of wakes runs one
   cycle), `wakes_event` and `wakes_backstop` (how the loop's wait ended),
+  `connectPush` (a fresh client's full push on its handler thread, the
+  browser's own first draw after a reload or a restart: `count`, `ms_sum`,
+  `ms_max`, `ms_last`, and the same per app under `byApp`; the pusher's
+  cycles never see this push, so before it the restart's logo phase had no
+  number),
   `cycle_ms_sum`, `cycle_ms_max` (since start), `cycle_ms_last`,
   `cycle_cpu_ms_sum` (the pusher thread's own CPU time), `cycle_ms_p50`,
   `cycle_ms_p90`, `cycle_ms_ring_max`, `ring_n` from the last 256 cycles,
@@ -1809,8 +1818,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the key lock, re-read after the write), and while that stat stands every
   road goes straight to the whole or cold parse with no proof and no rewrite
   (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
-  the leaf moves or a write the writer accepts replaces the sidecar; a whole parse whose resolved graph is cyclic writes no
-  document (`skipped.cycle`); a record without a uuid is not a node of the
+  the leaf moves or a write the writer accepts replaces the sidecar; a cyclic resolved
+  graph (a reused uuid closing a ring) no longer refuses the document: the
+  writer's spine walk ends at the first revisit as the parse's own walk does,
+  so the document's spine is the one the chat shows (until 2026-09-14 a
+  hop-bounded walk refused the whole document under `skipped.cycle`, retried
+  at every settle); a record without a uuid is not a node of the
   chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
@@ -2058,7 +2071,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the retry state, the live background-task rows, the watches, the awaiting
   stamp, the shared files, the cwd's branch and repository, the instruction
   files, and the files and postal values the last build embedded). `chat`
-  also carries `active_built` and `bg_built` (rebuilds of the watched tab
+  also carries `coldSkipped` (one count per tab per push the cold-tab gate skipped:
+  a tab with a transcript, not built since the boot, watched by no connected chat client,
+  held as a skeleton by every connected chat client, with no Sessions pane connected, and with
+  a live row to state its status from (a tab with no live row is built, not skipped); the
+  same tab counts again on every later push until the page asks for it, 2026-09-14),
+  `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
   an input moved while they ran; the next cycle builds them again) and
   `bg_miss`, a map from each labelled component of that signature
