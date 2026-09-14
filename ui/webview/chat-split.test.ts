@@ -75,12 +75,26 @@ test("a pick of a session another column holds is shown where it lives: the setA
     "the fallback yields to an active tab, a tab that left on its own, and a wanted tab this column holds (T357 keeps the pane unfocused for its return); a wanted tab held elsewhere is retired");
   // …a member the kernel's live set still affirms counts as present unless this page's own cross removed it (T258 on a fresh
   // column), and the post names the crossed members, the only ones the shell holds back (the vanishing tab, 2026-09-12)
-  assert.match(RENDER, /function noteColumnEmptiness\(ids: readonly string\[\]\): void \{\n\s*if \(!COL \|\| !colSets \|\| !tabOrderSeen\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(provisionalId \|\| failedProvisionals\.size\) return;\n\s*const mine = colSets\[COL\] \|\| \[\];\n\s*const present = \(id: string\) => ids\.includes\(id\) \|\| \(boardLive\.has\(id\) && !closingTabs\.has\(id\)\);\n\s*const empty = mine\.length > 0 && !mine\.some\(present\);[\s\S]*?const crossed = mine\.filter\(\(id\) => closingTabs\.has\(id\)\);\n\s*try \{ window\.parent\.postMessage\(\{ romp: "colEmpty", gone: mine\.slice\(\), crossed \}, "\*"\);/);
+  // …through the pure verdict (chat-columns.ts columnEmptiness, run in chat-columns.test.ts): the strip's ids, the live set, the
+  // closing map and the hosts whose own strip has landed — `held` resets the latch, `unknown` says nothing and leaves it, `empty` is
+  // said once. A member whose host has not reported is unknown, never gone (the user 2026-09-14: a host-prefixed tab dragged into a new
+  // column, folded ~250 ms later on the local kernel's first strip, before its own host's strip had landed)
+  assert.match(RENDER, /function noteColumnEmptiness\(ids: readonly string\[\]\): void \{\n\s*if \(!COL \|\| !colSets \|\| !tabOrderSeen\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(provisionalId \|\| failedProvisionals\.size\) return;\n\s*const mine = colSets\[COL\] \|\| \[\];\n(?:\s*\/\/[^\n]*\n)*\s*const verdict = columnEmptiness\(mine, ids, boardLive, closingTabs, hostsSeen\);\n\s*if \(verdict === "held"\) \{ colEmptyPosted = false; return; \}\n\s*if \(verdict === "unknown" \|\| colEmptyPosted\) return;\n\s*colEmptyPosted = true;[\s\S]*?const crossed = mine\.filter\(\(id\) => closingTabs\.has\(id\)\);\n\s*try \{ window\.parent\.postMessage\(\{ romp: "colEmpty", gone: mine\.slice\(\), crossed \}, "\*"\);/);
+  assert.match(RENDER, /import \{ colFromSearch, columnHolds, columnEmptiness, type ColSets \} from "\.\/chat-columns";/);
   assert.match(RENDER, /boardLive = liveSet;/, "applyTabOrder keeps the frame's live set for the emptiness post");
+  // the hosts-seen set: filled in applyTabOrder from the frame's provenance (tab-order.ts stripHost — "" for the local kernel's own
+  // strip, the host for a remote's fresh push, nothing for a re-emission), right before the local flag, and never emptied: a host
+  // that reported stays reported (its later strips speak through `order`); the shell's hostsPending traffic is the manager's and
+  // touches no page-side set
+  assert.match(RENDER, /const hostsSeen = new Set<string>\(\);/);
+  assert.match(RENDER, /const stripFrom = stripHost\(report\);[^\n]*\n\s*if \(stripFrom !== null\) hostsSeen\.add\(stripFrom\);\n\s*if \(localStrip\(report\)\) tabOrderSeen = true;/, "populated per host in applyTabOrder, on the same frame that arms the local flag");
+  assert.equal((RENDER.match(/hostsSeen\.add\(/g) || []).length, 1, "one writer: applyTabOrder");
+  assert.doesNotMatch(RENDER, /hostsSeen\.(delete|clear)\(/, "add-only for the page's life");
+  assert.ok(!RENDER.includes("hostsPending"), "the page never reads the shell-bound hostsPending message, so nothing there can clear the set");
   // the flag is armed by the LOCAL kernel's own strip only (tab-order.ts localStrip): a synthetic re-emission — on a fresh
   // page served from an EMPTY store, order [] — or another host's fresh push is never the board (the vanishing tab, 2026-09-12)
   assert.match(RENDER, /if \(localStrip\(report\)\) tabOrderSeen = true;\n\s*renderTabs\(\);\n\s*syncTabKeysWithStrip\(\);\n\}/, "set in applyTabOrder on the kernel's own strip, ahead of its render (the hot-key set follows the painted strip, 2026-09-10)");
-  assert.match(RENDER, /import \{ localStrip, readCloseAckMs \} from "\.\/tab-order";/);
+  assert.match(RENDER, /import \{ localStrip, stripHost, readCloseAckMs \} from "\.\/tab-order";/);
   // the shell's two questions before it moves a tab or closes a column (kernel.py moveTab / close; tests/test_chat_split.py
   // runs the refusals): an id a column can hold, and a create in flight here
   assert.match(RENDER, /\(window as any\)\.__rompMovableSession = \(sid: unknown\): boolean => typeof sid === "string" && !!sid && !isProvisionalId\(sid\) && !isSubId\(sid\) && !settings\.tabsLocked;/);   // …and no while the tabs are locked (T395)

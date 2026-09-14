@@ -102,9 +102,23 @@ export type StripReport = { reemit?: boolean; freshHost?: string } | undefined;
  * No provenance at all (a frame the kernel sent directly) is the kernel's own.
  */
 export function localStrip(report: StripReport): boolean {
-  if (!report) return true;
-  if (report.reemit) return false;
-  return report.freshHost === undefined || report.freshHost === "";
+  return stripHost(report) === "";
+}
+
+/**
+ * The host whose OWN strip a tabOrder frame carries fresh — the one host this frame is evidence about: `""` for the local
+ * kernel (its push under federation names `freshHost` "", and a frame with no provenance is the kernel's own), the named
+ * host for a remote kernel's fresh push, and null for a synthetic re-emission, which re-serves every stored slice and is
+ * nobody's fresh word. The chat's emptiness post keys on this (render.ts hostsSeen): a column may call a member ABSENT
+ * only once the member's host has reported on this socket, because the local kernel's strip lands first and says nothing
+ * about a remote host's sessions — a tab dragged into a new column under a host prefix was judged gone the instant that
+ * first strip landed, ~250 ms before its own host's strip arrived, and the column folded under it (the user 2026-09-14).
+ * `localStrip(report)` is `stripHost(report) === ""`.
+ */
+export function stripHost(report: StripReport): string | null {
+  if (!report) return "";
+  if (report.reemit) return null;
+  return typeof report.freshHost === "string" ? report.freshHost : "";
 }
 
 /** The close backstop (render.ts CLOSE_ACK_MS): how long a ✕'d tab the kernel keeps listing stays hidden before the page
