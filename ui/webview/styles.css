@@ -837,6 +837,12 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    pill and landed nearly flush under the tab row above, while a line the + shared had air (the
    user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
 .tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
+/* the selected tags as chips LEFT of the tags button (T413, the user 2026-09-14), outside group mode: the shared chips with
+   their crosses, the run bounded to three and a plain "+N more" chip (tag-menu.ts chipRun); the host shrinks before the
+   controls do, an empty host takes no room, and render.ts fitStripChips hides a run that alone would add a row */
+.tab-tagchips { display: inline-flex; gap: 5px; align-items: center; margin-right: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.tab-tagchips:empty { display: none; }
+.tab-tagchips .tag-chip-more { cursor: pointer; }
 /* (the tab lock's strip button and its box left with T405, the user 2026-09-13: the lock is a row in the strip's gear menu) */
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's

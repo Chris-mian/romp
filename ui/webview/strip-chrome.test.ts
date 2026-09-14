@@ -54,10 +54,10 @@ test("the tab lock is a row in the gear's menu with the button's two titles, tog
   assert.doesNotMatch(RENDER, /focusedLock/, "the lock's own focus rule went with the button");
 });
 
-test("the strip's tag control displays no chips: the host is built for the shared sync and never appended", () => {
-  assert.doesNotMatch(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "no detached chips host: nothing is built to be dropped (round two, low 3)");
-  assert.doesNotMatch(RENDER, /tagBox\.appendChild\(tagChipsHost\);/, "and nothing is appended to the strip's tag box");
-  assert.match(RENDER, /syncTagFilter\(tagBtn, null, surfaceLens\(v, "chat"\)/, "the shared sync still runs with no host, so the button's accent says it filters and no chip is built");
+test("the strip's tag control shows the selected tags as chips left of the button outside group mode (T413), none for the no-tags pick (T405 stands)", () => {
+  assert.match(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "the chips host is back (T413)");
+  assert.match(RENDER, /tagBox\.append\(tagChipsHost, tagBtn\);/, "left of the button in the strip's tag box");
+  assert.match(RENDER, /syncTagFilter\(tagBtn, plan\.sectioned \? null : tagChipsHost, surfaceLens\(v, "chat"\)/, "grouping: the headings carry the tags and no host is fed; otherwise the chips");
   assert.match(RENDER, /syncTagFilter\(mslot\.children\[0\] as HTMLElement, phoneLayout\(\) \? \(mslot\.children\[1\] as HTMLElement\) : null,/, "the phone header's mount builds its chips only in the phone layout: on the desktop no chip is built per paint anywhere (the T405 read)");
   assert.match(TAGMENU, /export function syncTagFilter\(btn: HTMLElement, chipsHost: HTMLElement \| null,/);
   assert.match(TAGMENU, /btn\.setAttribute\("aria-pressed", narrowed \? "true" : "false"\);\s*\n\s*if \(!chipsHost\) return;/, "the sync skips the chip loop with no host");
@@ -194,7 +194,8 @@ test("the shared rows menu is the tag menu's card and ✓-row grammar, stated on
   assert.match(TAGMENU, /if \(anchor\.isConnected !== false\) return anchor;/, "Escape refocuses the anchor's live replacement after the strip rebuilt");
   assert.match(TAGMENU, /closeTagMenu\(\); liveAnchor\(\)\?\.focus\(\); \}/);
   assert.match(TAGMENU, /menu\.dataset\.rowsMenu = "1"; menu\.dataset\.tagMenu = "1";/);
-  assert.equal((TAGMENU.match(/background:var\(--check-bg, #1EA1EB\);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;/g) || []).length, 2, "the ✓ badge, the tag menu's and the rows menu's, one text");
+  assert.equal((TAGMENU.match(/background:var\(--check-bg, #1EA1EB\);color:#fff;/g) || []).length, 1, "the ✓ badge stated ONCE: checkMark serves the tag menu and the rows menu (T413)");
+  assert.match(TAGMENU, /if \(spec\.current\) r\.appendChild\(checkMark\(true\)\);/, "the rows menu's ✓ through the shared builder");
 });
 
 test("the gear's title names the widgets row only where a settings gear can be reached (round two, low 1)", () => {

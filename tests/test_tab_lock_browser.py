@@ -440,7 +440,7 @@ class ServedTabLock(unittest.TestCase):
         un = r["themes"]["dark"]["lock"]["row"] if r["themes"]["dark"]["lock"]["on"] else None
         st = r["start"]
         self.assertEqual(st["tagCtl"]["pressed"], "true", "the chat lens is narrowed (to no tags): the tag button says so with the accent" + json.dumps(st["tagCtl"]))
-        self.assertFalse(st["tagCtl"]["chipsInDom"], "and displays no chips, no (no tags), on the strip (T405)" + json.dumps(st["tagCtl"]))
+        self.assertEqual(st["tagCtl"]["chipCount"], 0, "and displays no chip for the no-tags pick (T405 stands; T413 draws the selected TAGS only)" + json.dumps(st["tagCtl"]))
 
     def test_the_phone_layout_hides_the_strip_and_the_gear_with_it(self):
         p = self._run()["phone"]

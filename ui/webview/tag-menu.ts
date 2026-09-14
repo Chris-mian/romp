@@ -97,38 +97,36 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
     // surface, so it is the ONE scope carrier and the menu opens straight onto its rows)
     // a plain row (All, (no tags), the group switch, Configure tags…): the label, the ✓ when current; the
     // tags are not rows any more but chips (below), so the colour dot the tag rows wore is gone (T283)
-    const row = (label: string, current: boolean, dim?: boolean) => {
+    // a plain row (All, the group switch, Configure tags…): the label, the ✓ when current; `checkbox` makes it the house switch
+    // (role menuitemcheckbox, aria-checked, the two-state mark), which (no tags), a selection member, is
+    const row = (label: string, current: boolean, dim?: boolean, checkbox?: boolean) => {
       const r = document.createElement("div");
       r.setAttribute("style", "padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;"
         + (dim ? "opacity:0.85;" : ""));
       r.appendChild(document.createTextNode(label));
-      if (current) {
-        const c = document.createElement("span");
-        c.textContent = "✓";
-        c.setAttribute("style", "position:absolute;right:6px;top:50%;transform:translateY(-50%);"
-          + "background:var(--check-bg, #1EA1EB);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;"
-          + "font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;");
-      r.appendChild(c);
-      }
+      if (checkbox) { r.setAttribute("role", "menuitemcheckbox"); r.setAttribute("aria-checked", current ? "true" : "false"); r.appendChild(checkMark(current)); }
+      else if (current) r.appendChild(checkMark(true));
       r.addEventListener("mouseenter", () => { r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))"; });
       r.addEventListener("mouseleave", () => { r.style.background = "transparent"; });
       menu.appendChild(r);
       return r;
     };
     row("All", lensAll(lens)).addEventListener("click", () => opts.onApply({ all: true }, true));
-    row("(no tags)", !lensAll(lens) && !!lens.none)
+    row("(no tags)", !lensAll(lens) && !!lens.none, false, true)
       .addEventListener("click", () => { opts.onApply(toggleLens(lens, "none"), false); build(); });
     for (const u of opts.unions()) {
-      // one tag per line, the chip at the left: the chip IS the toggle (aria-pressed), full colour when
-      // selected, faded when not — the same pill tagChip builds for every other surface
+      // one tag per line, the chip at the left, lit when selected and faded when not (the same pill tagChip builds for every
+      // other surface); the ROW is the control, the house switch with the two-state mark at its right (T413, the user
+      // 2026-09-14: a checkbox beside each tag, the lit state kept), so a reader hears one checkbox per tag
       const on = !lensAll(lens) && (lens.tags || []).includes(u.name);
       const r = document.createElement("div");
-      r.setAttribute("style", "padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;");
+      r.setAttribute("style", "padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;");
+      r.setAttribute("role", "menuitemcheckbox");
+      r.setAttribute("aria-checked", on ? "true" : "false");
+      r.setAttribute("title", on ? "selected: click to drop it from the filter" : "click to add it to the filter");
       const chip = tagChip(u.name, u.color || null, { off: !on });
-      chip.setAttribute("role", "button");
-      chip.setAttribute("aria-pressed", on ? "true" : "false");
-      chip.setAttribute("title", on ? "selected — click to drop it from the filter" : "click to add it to the filter");
       r.appendChild(chip);
+      r.appendChild(checkMark(on));
       r.addEventListener("mouseenter", () => { r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))"; });
       r.addEventListener("mouseleave", () => { r.style.background = "transparent"; });
       r.addEventListener("click", () => { opts.onApply(toggleLens(lens, { tag: u.name }), false); build(); });
@@ -149,9 +147,34 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
   const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth || 200;
   menu.style.left = Math.max(6, Math.min(Math.round(r.left), window.innerWidth - mw - 8)) + "px";
+  // the many-tags case (T413; the rule of 2026-09-09): dozens of tags make a menu taller than the room, and one placed over its
+  // own button took the release, so the click, fired at the common ancestor, closed it. The menu opens BELOW the button and caps
+  // its height to the room there (above only when there is more room above), scrolling within itself; it never covers the button.
   const mh = menu.offsetHeight || 0;
-  menu.style.top = (r.bottom + 4 + mh > window.innerHeight - 8 ? Math.max(8, Math.round(r.top) - mh - 4) : Math.round(r.bottom + 4)) + "px";
+  const below = window.innerHeight - 8 - (r.bottom + 4), above = r.top - 4 - 8;
+  if (mh <= below || below >= above) { menu.style.top = Math.round(r.bottom + 4) + "px"; menu.style.maxHeight = Math.max(120, Math.floor(below)) + "px"; }
+  else { const h = Math.min(mh, Math.max(120, Math.floor(above))); menu.style.top = Math.max(8, Math.round(r.top) - h - 4) + "px"; menu.style.maxHeight = h + "px"; }
+  menu.style.overflowY = "auto";
   openMenu = menu;
+}
+
+/** The bounded run for a many-tags selection (T413): the first `limit` items and how many follow; 0 = no limit. */
+export function chipRun<T>(items: T[], limit: number): { shown: T[]; more: number } {
+  if (!limit || items.length <= limit) return { shown: items.slice(), more: 0 };
+  return { shown: items.slice(0, limit), more: items.length - limit };
+}
+
+/** The menus' mark, stated once (the tag menu and the rows menu): the house ✓-in-circle from --check-bg when on; off, an empty
+ *  ring in the menu's hairline, so a CHECKBOX row reads in both states (T413, the user 2026-09-14). An exclusive pick (All) or
+ *  an action row shows the ✓ alone when current and nothing otherwise. `data-check` carries the state for a reader of the DOM. */
+function checkMark(on: boolean): HTMLElement {
+  const c = document.createElement("span");
+  c.setAttribute("data-check", on ? "true" : "false");
+  c.textContent = on ? "✓" : "";
+  c.setAttribute("style", "position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;"
+    + "display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;"
+    + (on ? "background:var(--check-bg, #1EA1EB);color:#fff;" : "border:1px solid var(--menu-border, rgba(255,255,255,0.12));background:transparent;"));
+  return c;
 }
 
 /** A menu of plain ROWS in the house vocabulary (T405, the user 2026-09-13: the tab lock moved off the strip into the
@@ -198,14 +221,7 @@ export function openRowsMenu(anchor: HTMLElement, rows: () => RowsMenuRow[]): vo
       if (spec.title) r.title = spec.title;
       if (spec.glyph) { const g = document.createElement("span"); g.innerHTML = spec.glyph; g.setAttribute("style", "display:inline-flex;align-items:center;"); g.setAttribute("aria-hidden", "true"); r.appendChild(g); }
       r.appendChild(document.createTextNode(spec.label));
-      if (spec.current) {
-        const c = document.createElement("span");
-        c.textContent = "✓";
-        c.setAttribute("style", "position:absolute;right:6px;top:50%;transform:translateY(-50%);"
-          + "background:var(--check-bg, #1EA1EB);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;"
-          + "font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;");
-        r.appendChild(c);
-      }
+      if (spec.current) r.appendChild(checkMark(true));
       const press = () => { const keep = spec.press() === false; if (keep) build(i); else closeTagMenu(); };
       r.addEventListener("click", press);
       r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); press(); } });
@@ -299,7 +315,8 @@ export function tagChip(label: string, color?: string | null, opts?: { inheritSi
 export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
                               lens: TagLens, unions: { name: string; color?: string | null; members: string[]; }[],
                               onApply: (l: TagLens) => void,
-                              mode: "inline" | "class" = "inline"): void {
+                              mode: "inline" | "class" = "inline",
+                              opts?: { limit?: number; tagsOnly?: boolean }): void {   // T413, the strip: the first `limit` chips then one "+N more"; tagsOnly draws no chip for the none pick
   const narrowed = !lensAll(lens);
   if (mode === "class") btn.classList.toggle("on", narrowed);
   else {
@@ -309,9 +326,11 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
     btn.style.background = narrowed ? TAG_BTN_WASH : "transparent";
   }
   btn.setAttribute("aria-pressed", narrowed ? "true" : "false");
-  if (!chipsHost) return;   // the button's state alone (the chat strip since T405, which displays no chips): nothing built, nothing to drop
+  if (!chipsHost) return;   // the button's state alone (the strip in group mode: the headings carry the tags): nothing built, nothing to drop
   chipsHost.textContent = "";
-  for (const c of lensChips(lens, unions as never)) {
+  const all = lensChips(lens, unions as never).filter((c) => !(opts && opts.tagsOnly && c.pick === "none"));
+  const run = chipRun(all, (opts && opts.limit) || 0);
+  for (const c of run.shown) {
     const chip = tagChip(c.label, c.color);
     const x = document.createElement("span");
     x.textContent = "✕";
@@ -320,6 +339,15 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
     x.addEventListener("click", (e) => { e.stopPropagation(); onApply(toggleLens(lens, c.pick)); });
     chip.appendChild(x);
     chipsHost.appendChild(chip);
+  }
+  if (run.more) {
+    // the rest as one count in the user's terms, the plain chip (no colour: the dim), its title naming them; a press opens the
+    // menu through the button, which opens on the pointer's press (its click is swallowed), so the press is what is dispatched
+    const more = tagChip("+" + run.more + " more", null);
+    more.setAttribute("class", "tag-chip-more");
+    more.title = all.slice(run.shown.length).map((c) => c.label).join(", ");
+    more.addEventListener("click", (e) => { e.stopPropagation(); if (typeof PointerEvent === "function") btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true })); else (btn as HTMLButtonElement).click(); });
+    chipsHost.appendChild(more);
   }
 }
 
