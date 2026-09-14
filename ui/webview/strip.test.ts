@@ -81,13 +81,13 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
     assert.ok(src.includes(ep), `the network popover must drive ${ep} (the rail twin)`);
   // the popover's /tunnels read checks the status before the body (the fourth reader of that route to gain the rule: a
   // JSON-bodied 5xx read as "No remotes attached" with the autoUpdate box mirrored off and a clientDiag filed as ok)
-  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: any = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: FetchFault = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /tunnels answer throws, with its status on the error, instead of reading as an empty host list");
   // the popover's refresh says which failure it had, as the host picker does: a status for a non-ok answer, unreachable for a rejected fetch, a console line for both
   assert.ok(src.includes('console.error("romp: /tunnels could not be read", err)'), "the popover's refresh says its failure in the console");
   assert.ok(src.includes("err && err.httpStatus ? `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`"), "a non-ok answer is named by its status, not called an unreachable kernel");
   // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
-  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: FetchFault = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
   // the rule itself is executed below (hostPickerVerdict, tunnelsFailureLine, asFetchError); these pin that the two reads call it
   assert.equal(src.split(".catch((e: unknown) => { const f = asFetchError(e); f.network = true; throw f; })").length - 1, 2,
@@ -331,7 +331,7 @@ test("loadHosts routes both outcomes through fillHostSelect — no innerHTML hos
   const ROOT = path.resolve(process.cwd(), "..");
   const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
   assert.match(src, /fillHostSelect\(sel, lastHosts, "\(no ~\/\.ssh\/config hosts\)"\)/);   // the list read, kept across a failed refresh
-  assert.match(src, /fillHostSelect\(sel, \[\], "\(kernel unreachable\)"\)/);
+  assert.match(src, /fillHostSelect\(sel, \[\], v\.label\)/);   // the failure label comes from the executed verdict (kernel unreachable among them)
   assert.doesNotMatch(src, /<option value="\$\{h\}">/, "the template that rendered an alias as markup");
 });
 
