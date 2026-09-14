@@ -4987,27 +4987,28 @@ class UpdateRegDroppingUnreadable(unittest.TestCase):
 
 
 def _sdk_module_for_the_road_pins():
-    """The module the connect loop imports ClaudeSDKClient from: the installed SDK when there is one, else a stand-in with the
-    five names the import asks for. The road pins stub the transport and fake the client, so they need no package; CI installs
-    none, and a gate on the package would let a re-key on the pre-read go green on every Python (the follow-up's item a)."""
+    """The module the connect loop imports ClaudeSDKClient from, and whether this call installed it: the installed SDK when
+    there is one, else a stand-in with an inert class for any name the backend imports. The road pins stub the transport and
+    fake the client, so they need no package; CI installs none, and a gate on the package would let a re-key on the pre-read
+    go green on every Python (the follow-up's item a). The stand-in lives in sys.modules only for the test that asked (its
+    tearDown removes it): left behind, it made every later import of the SDK succeed with inert classes, and the kernel's own
+    wiring took roads it never takes without the package (two shared-parse tests red under the whole suite)."""
     if _HAVE_SDK:
-        return _sdk
+        return _sdk, False
     import types
     m = sys.modules.get("claude_agent_sdk")
-    if m is None:
-        class _StandIn(types.ModuleType):
-            """Any name the backend imports from the SDK (ClaudeSDKClient, ClaudeAgentOptions, HookMatcher, the message classes,
-            the permission results) answers as an inert class: the road pins never call into the SDK, they stub the transport
-            and the client."""
-            def __getattr__(self, name):
-                if name.startswith("__"):
-                    raise AttributeError(name)
-                cls = type(name, (), {"__init__": lambda self, *a, **k: None})
-                setattr(self, name, cls)
-                return cls
-        m = _StandIn("claude_agent_sdk")
-        sys.modules["claude_agent_sdk"] = m
-    return m
+    if m is not None:
+        return m, False
+    class _StandIn(types.ModuleType):
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            cls = type(name, (), {"__init__": lambda self, *a, **k: None})
+            setattr(self, name, cls)
+            return cls
+    m = _StandIn("claude_agent_sdk")
+    sys.modules["claude_agent_sdk"] = m
+    return m, True
 
 
 class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
@@ -5022,11 +5023,13 @@ class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
     T0 = 1700000000
 
     def setUp(self):
-        self._mod = _sdk_module_for_the_road_pins()
+        self._mod, self._installed = _sdk_module_for_the_road_pins()
         self._orig_client = self._mod.ClaudeSDKClient
 
     def tearDown(self):
         self._mod.ClaudeSDKClient = self._orig_client
+        if self._installed:
+            sys.modules.pop("claude_agent_sdk", None)     # the stand-in never outlives the test that needed it
 
     def _world(self, hosts):
         root = tempfile.mkdtemp()
