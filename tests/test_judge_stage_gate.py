@@ -1872,6 +1872,56 @@ class StoreCompleteness(_Gate):
         self._pass(tiers=("distill",))
         self.assertEqual(len(self._rows("stall-unreadable")), 4, "a fourth row")
 
+    def test_an_unreadable_reg_never_stamps_the_planner_and_the_session_is_planned(self):
+        # the planner memo tidy's round two: the gate's reg term was lenient (an unreadable or unparseable reg read as None,
+        # the same as a reg with no spawnedAt), so a plan stamp taken while the reg was readable skipped the session for as
+        # long as the reg stayed unreadable, and _plan_key's sentinel for the same fault was never computed. Strict now, like
+        # the stall slice: the gate answers run (skip False, no signature), the stage runs without a stamp and the session
+        # is planned; one row per failure episode; readable again, the run stamps
+        path = self._session(SID)
+        reg = jd.STATE / "sdk" / (SID + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
+        reg.write_text(json.dumps({"sid": SID, "alive": True}))        # readable, spawnedAt-less: the gate's reg term is None
+        self._converge(tiers=("plan",))
+        self.assertIsNotNone(self._stamp("plan"), "the sig stamped while the reg was readable")
+        own = jd.begin_pass_frame()
+        try:
+            self.assertEqual(jd._gate_check("plan", SID, str(path), NOW)[0], True, "the framed gate skips over the readable reg")
+            reg.write_text("{ not a document")
+            self.assertEqual(jd._gate_check("plan", SID, str(path), NOW), (False, None), "corrupt bytes: run, no signature")
+            if os.geteuid() != 0:
+                os.chmod(reg, 0)
+                try:
+                    self.assertEqual(jd._gate_check("plan", SID, str(path), NOW), (False, None), "mode 000: run, no signature")
+                finally:
+                    os.chmod(reg, 0o644)
+        finally:
+            jd.end_pass_frame(own)
+        planned = jd._PLANNER_STATS["planned"]
+        for _ in range(2):
+            self._reset()
+            self._pass(tiers=("plan",))
+            s = self._st("plan")
+            self.assertEqual((s["ran"], s["bypassed"], s["stamped"]), (1, 1, 0), "the stage ran without a stamp over the unreadable reg")
+            self.assertEqual(len(self._rows("reg-unreadable")), 1, "one row per failure episode, not per pass")
+        self.assertEqual(jd._PLANNER_STATS["planned"], planned + 2, "the session was planned on both passes (the memo's sentinel, never a row)")
+        self.assertNotIn(SID, jd._PLANNER_SEEN, "a sentinel key is never recorded")
+        reg.write_text(json.dumps({"sid": SID, "alive": True}))
+        self._reset()
+        self._pass(tiers=("plan",))
+        self.assertEqual((self._st("plan")["ran"], self._st("plan")["skipped"]), (0, 1),
+                         "readable again with the same content: the stamp survived the episode (as the stall slice's does) and the pass skips")
+        reg.write_text(json.dumps({"sid": SID, "alive": True, "spawnedAt": T0 + 5}))   # the reg's value moved: due, and the run stamps
+        self._reset()
+        self._pass(tiers=("plan",))
+        self.assertEqual((self._st("plan")["ran"], self._st("plan")["stamped"]), (1, 1), "a moved value: the run stamps")
+        self._reset()
+        self._pass(tiers=("plan",))
+        self.assertEqual((self._st("plan")["ran"], self._st("plan")["skipped"]), (0, 1), "and the next pass skips")
+        reg.write_text("{ not a document")
+        self._reset()
+        self._pass(tiers=("plan",))
+        self.assertEqual(len(self._rows("reg-unreadable")), 2, "a new failure episode after a good read: a second row")
+
     @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file")
     def test_a_stall_read_failing_after_a_good_signature_read_marks_the_run(self):
         # the other half of the strict rule: the signature's read succeeded (the file was readable at gate
