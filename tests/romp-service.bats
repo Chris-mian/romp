@@ -213,7 +213,11 @@ _install_hang_asserts() {   # the copy is removed with the reason said, and noth
 @test "install (macOS), the timeout path: a node that IGNORES TERM is killed by -k a second after the bound instead of holding the install for good" { _run_install_hang deaf timeout; _install_hang_asserts; }
 
 @test "install (macOS): ROMP_NODE_PROBE_BOUND=0 is clamped to one second, so a good copy is kept instead of failed at once" {
-    ROMP_NODE_PROBE_BOUND=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    # on the watchdog path (a bare PATH without timeout, a stock mac's): the base's sleep 0 killed the probe before the copy answered
+    local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm sleep ps pgrep id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 0 ]
     [ -x "$XDG_STATE_HOME/romp/romp-node" ]
     [[ "$output" != *"cannot run from"* ]]

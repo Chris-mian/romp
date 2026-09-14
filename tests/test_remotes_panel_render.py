@@ -48,17 +48,20 @@ HARNESS = r"""
 const HTML_SETS = [];           // every string any element was given as innerHTML, in order (the markup sinks)
 const DROPS = [];               // every rn-drop class added, by element id: the rail's host-fell-off flash, one per drop
 function mkEl(id){
-  return {id:id, hidden:true, _text:'', title:'', style:{}, value:'', className:'',
-    children:[], _listeners:{}, _html:'',
+  const cls = new Set();   // ONE class set behind classList and className, so contains() answers what the DOM would
+  return {id:id, hidden:true, _text:'', title:'', style:{}, value:'',
+    get className(){return Array.from(cls).join(' ');},
+    set className(v){cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(function(c){cls.add(c);});},
+    children:[], _listeners:{}, _html:'',   // innerHTML stays a string sink: markup inside it is never parsed into children or classes here
     // Assigning innerHTML replaces an element's contents, so it must drop appended children too. Without
     // that, render()'s opening `list.innerHTML=''` left the previous pass's rows in place and every
     // refresh doubled the list.
     get innerHTML(){return this._html;}, set innerHTML(v){this._html=v; this.children=[]; HTML_SETS.push(String(v));},
     // …and so does assigning textContent (the DOM's rule) — the option lists clear themselves that way
     get textContent(){return this._text;}, set textContent(v){this._text=v; this.children=[];},
-    // classes are RECORDED (the drop cue is a class the icon gains), the DOM's toggle rule included
-    classList:{_s:new Set(), add(c){this._s.add(c); if(c==='rn-drop') DROPS.push(id);}, remove(c){this._s.delete(c);},
-      toggle(c,v){ if(v===undefined) v=!this._s.has(c); if(v) this._s.add(c); else this._s.delete(c); return v; }, contains(c){return this._s.has(c);}},
+    // classes are RECORDED (the drop cue is a class the icon gains), the DOM's toggle rule included, over the same set className reads and writes
+    classList:{add(c){cls.add(c); if(c==='rn-drop') DROPS.push(id);}, remove(c){cls.delete(c);},
+      toggle(c,v){ if(v===undefined) v=!cls.has(c); if(v) cls.add(c); else cls.delete(c); return v; }, contains(c){return cls.has(c);}},
     appendChild(c){this.children.push(c); return c;},
     querySelector(){return null;}, querySelectorAll(){return [];},
     addEventListener(k,f){this._listeners[k]=f;}, removeEventListener(){},
@@ -125,7 +128,7 @@ setTimeout_(() => {
     const rows = list.children.length;
     const html = list.children.map(collect).join(' | ');
     const add = ELS['rnet-add'], plus = ELS['rnet-plus'], dl = ELS['rnet-hosts'], fs = ELS['rnet-from'];
-    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS,
+    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS, tqLeft:TQ.length,
       addHidden:!!add.hidden, plusHidden:!!plus.hidden,
       hosts:dl.children.map(function(o){return o.value;}), hostsHtml:String(dl.innerHTML||''),
       hostsLastDisabled:!!(dl.children.length&&dl.children[dl.children.length-1].disabled),
@@ -163,12 +166,17 @@ class RemotesPanelRender(_PanelHarness, unittest.TestCase):
         # poll had the same class of bug). Three polls: the host up, the 502, the host down. The 502 is a failed refresh
         # (named in the console, the loud road) and the drop on the third poll flashes exactly once.
         down = json.loads(json.dumps(TUNNELS)); down["tunnels"][0]["status"] = "down"
+        # four answers for the four reads the drive makes (the panel's own open, then two opens from the drive, and the
+        # pairs refresh's re-read behind the third): the queue is asserted EMPTY at the end, so a read the harness default
+        # answered would show as a leftover, never as a silent pass on TUNNELS
         tq = [{"ok": True, "status": 200, "body": TUNNELS},
               {"ok": False, "status": 502, "body": {"error": "upstream timeout"}},
+              {"ok": True, "status": 200, "body": down},
               {"ok": True, "status": 200, "body": down}]
         out = self._run(drive="window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); }, 10);", tq=tq)
         self.assertTrue(any("remotes refresh failed" in e and "HTTP 502" in e for e in out["errors"]), out["errors"])
         self.assertEqual(out["drops"], ["rail-net"], "one flash, on the real drop; the 502 neither flashed nor forgot")
+        self.assertEqual(out["tqLeft"], 0, "every queued answer was read: the queue matches the reads")
 
     def test_both_shell_side_tunnels_reads_check_the_status_before_the_body(self):
         pin = "then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();})"

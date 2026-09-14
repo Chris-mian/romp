@@ -1210,7 +1210,7 @@ class ShellPopover(unittest.TestCase):
                       "Escape closes it through the shell's shared chain")
         self.assertIn("if(e.target===back)close()", h, "an outside tap lands on the backdrop and closes")
         self.assertIn("m.type==='notifyTurns'&&window.__rompNotifyTurnsPaint", h)
-        self.assertIn("fetch('/notify-turns')", h)
+        self.assertIn("readSwitch('/notify-turns',function(on){turnsOn=on;},3);", h, "the switch is read through readSwitch: a status check, a bounded retry")
         self.assertIn("z-index:205", h)
 
     def test_the_menu_tokens_with_their_dark_fallbacks(self):
