@@ -64,7 +64,7 @@ test("through start(): a view-order storage event on a fresh page (the window th
   g.document = Object.assign(new EventTarget(), { visibilityState: "visible" });
   g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
   g.setInterval = () => 0;
-  g.fetch = () => Promise.reject(new Error("no kernel"));
+  g.fetch = () => new Promise(() => {});   // start()'s first /tunnels poll never answers here: a rejection files a crumb after the finally below restored the globals
   try {
     const fm: any = new FederationManager();
     fm.start();

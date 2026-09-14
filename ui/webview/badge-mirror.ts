@@ -53,7 +53,8 @@ export function sigHost(sig: string): string {
   return i < 0 ? "" : sig.slice(i + SIG_HOST_SEP.length);
 }
 
-/** …and PER HOST since round seven: every card mark when `hosts` is true (the switch's own off frame: nothing was built),
+/** …and PER HOST since round seven: every card mark when `hosts` is true (the switch's own off frame, where nothing was
+ *  built; and a frame whose host list is not read yet, `hostsUnread`, where which hosts exist is unknown),
  *  else the marks of the hosts named (a merged frame carrying an off host's stand-in, or missing a pending host's frame,
  *  beside the others'), plus every mark with no host segment at all (stored before round seven: its host cannot be told,
  *  so it is kept while any host's cards are unknown and rewritten with its host the next time its card is seen; a
