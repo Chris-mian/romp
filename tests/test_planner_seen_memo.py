@@ -246,7 +246,7 @@ class PlannerSeenMemo(unittest.TestCase):
         finally:
             jd._rebind_state(self.root)
 
-    PLAN_SESSION_TOKENS_SHA16 = "169d37751d9f879d"   # v2: the skip check counts mismatches by term (the derivation bumped with it)
+    PLAN_SESSION_TOKENS_SHA16 = "37e9193b948d4430"   # 2026-09-14: the skipped and planned bumps under the memo lock (counters only, no derivation change)   # v2: the skip check counts mismatches by term (the derivation bumped with it)
 
     def test_a_change_to_the_plan_session_bumps_the_derivation_or_this_pin(self):
         """Round three, low 3: the derivation bump rule made mechanical. A persisted row asserts the planner had nothing to do
@@ -337,6 +337,15 @@ class PlannerSeenMemo(unittest.TestCase):
         ts = [threading.Thread(target=bump, args=(f, 500)) for f in (FSID, FSID2) for _ in range(3)]
         [t.start() for t in ts]; [t.join(10) for t in ts]
         self.assertEqual(jd._PLANNER_STATS["mismatchByTerm"], {"0": 3000, "1": 3000}, "every bump counted")
+        # round two of the tidy: the sibling counters (skipped, planned, recorded) and the read-fault check-and-set with its
+        # refused bump go through the same lock; no bare += on them stays in run_plan
+        import inspect
+        self.assertIn("with _PLANNER_SEEN_LOCK:", inspect.getsource(jd._planner_bump))
+        self.assertIn("with _PLANNER_SEEN_LOCK:", inspect.getsource(jd._planner_seen_read_fault))
+        for key, fn in (("skipped", jd._plan_session), ("planned", jd._plan_session), ("recorded", jd._plan_session)):
+            fn_src = inspect.getsource(fn)
+            self.assertIn('_planner_bump("%s")' % key, fn_src, key)
+            self.assertNotIn('_PLANNER_STATS["%s"] += 1' % key, fn_src, "a bare bump outside the lock")
 
     def test_the_perf_row_carries_the_three_new_counters(self):
         self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted", "mismatchByTerm"})
