@@ -228,6 +228,16 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
    a STATUS colour (the accent/status split), so it is the same literal on every surface */
 .rs-log-n { color: #ff6b6b; font-weight: 600; }
 
+/* the stored logins under the Account row (T346): one line per login (its label, its state, a Remove), the
+   sub-line's size; a refused or expired one wears the blocked red, an expiring one the working amber */
+.rs-logins .rs-login-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 0.82em; }
+.rs-logins .rs-login-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-logins .rs-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 0; }
+.rs-logins .rs-login-bad { color: var(--err, #F85B5A); }   /* the blocked red, through the token */
+.rs-logins .rs-login-warn { color: var(--st-working-bg, #e5c07b); }
+.rs-logins .rs-login-rm { flex: 0 0 auto; cursor: pointer; font: inherit; background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc);
+  border: 1px solid var(--hairline, #3a3a3a); border-radius: 5px; padding: 2px 8px; }
+.rs-logins .rs-login-rm[disabled] { opacity: 0.5; cursor: default; }
 /* THE TABS (T379, the user 2026-09-12; re-cut T400): the settings grouped by surface, seven pills under the title in the menu vocabulary,
    8px of side padding so the seven fit the 560px card's one row (at 10px they needed 528px against 518 and Debug wrapped)
    (menu tokens, the accent wash on the current one); one pane shows at a time ([hidden] restored against the flex rules) */
@@ -270,3 +280,9 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget-demo .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
 #rsettings .rs-widget-demo .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
   border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+/* the Status line section's demos (T409): the widget alone, as the line draws it (status-widgets.ts renders the row's
+   node through the same function as the line), in the line's own dim mono; the name chip on its identity colour */
+#rsettings .rs-widget-demo .status-dir, #rsettings .rs-widget-demo .status-branch { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#rsettings .rs-widget-demo .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
+#rsettings .rs-widget-demo .status-dir-icon svg { display: block; }
+#rsettings .rs-widget-demo .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

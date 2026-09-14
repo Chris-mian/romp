@@ -176,6 +176,9 @@ const out = {};
     await page.setViewportSize({ width: 1200, height: 300 }); await page.waitForTimeout(200);
     await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeout(150);
     await setF.evaluate(() => document.getElementById("rs-thinksum").closest("label").scrollIntoView({ block: "center" })); await setF.waitForTimeout(80);
+    // the case wants MORE room above than below: a centred row sits within a pixel of even, and the Chat tab grew below this row
+    // (the Status line section, T409) enough to tip it; two pixels of scroll back keep the premise the assertions state
+    await setF.evaluate(() => { document.querySelector("#rsettings .rs-card").scrollTop -= 2; }); await setF.waitForTimeout(60);
     await setF.hover("label:has(#rs-thinksum)"); await setF.waitForTimeout(160);
     out.noRoom = await setF.evaluate(() => { const row = document.getElementById("rs-thinksum").closest("label"), sub = row.querySelector(".rs-sub"), card = document.querySelector("#rsettings .rs-card");
       const sr = sub.getBoundingClientRect(), cr = card.getBoundingClientRect(), rr = row.getBoundingClientRect();
@@ -345,7 +348,7 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual([x["text"] for x in g["pills"]], ["General", "Chat", "Feed", "Sessions", "Automation", "Task tracking", "Debug"], table)
         self.assertEqual(g["shown"], ["general"], "the ask for General shows General alone" + table)
         self.assertEqual(g["heads"]["general"], ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"], table)
-        self.assertEqual(g["heads"]["chat"], ["Display", "Comments", "Thinking", "Tab widgets"], "Transcript is Display; the text scheme and the strip row joined it; Thinking creates, so it is Chat's" + table)
+        self.assertEqual(g["heads"]["chat"], ["Display", "Comments", "Thinking", "Tab widgets", "Status line"], "Transcript is Display; the text scheme and the strip row joined it; Thinking creates, so it is Chat's; the Status line section follows Tab widgets (T409)" + table)
         self.assertEqual(g["heads"]["debug"], ["Judging bands", "Diagnostics"], "Updates went to General" + table)
         self.assertEqual(g["heads"]["tasks"], ["Judges"], "Task tracking keeps the judges alone" + table)
         self.assertEqual(g["heads"]["automation"], ["Nudges"], table)
