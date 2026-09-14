@@ -19940,6 +19940,28 @@ def _peer_shape_complain(host, field, value, note=None):
           file=sys.stderr, flush=True)
 
 
+_PEER_COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{6}|[a-z]{1,20})$")   # an identity color: #rrggbb, or a CSS color word (fg is often "white")
+_PEER_SESSION_ROWS_MAX = 512
+
+
+def _remote_session_public_row(raw):
+    """ONE row of a peer's /sessions answer, re-read through the shape /remote/<host>/sessions publishes: the
+    session id (a _PEER_KEY_RE id, fullmatch, else the row is dropped: it is what a client sends back to POST
+    /send {id}), the name, its live state and directory as inert bounded text, and the two identity colors
+    (#rrggbb or a CSS color word, else ''). Nothing else the peer sent passes: not its lastSid, not its backend,
+    never a credential."""
+    if not isinstance(raw, dict):
+        return None
+    sid = raw.get("id")
+    if not isinstance(sid, str) or not _PEER_KEY_RE.fullmatch(sid):
+        return None
+
+    def _color(v):
+        return v if isinstance(v, str) and _PEER_COLOR_RE.fullmatch(v) else ""
+    return {"id": sid, "name": _peer_text(raw.get("name"), 128), "state": _peer_text(raw.get("state"), 32),
+            "dir": _peer_text(raw.get("dir"), 512), "bg": _color(raw.get("bg")), "fg": _color(raw.get("fg"))}
+
+
 def _remote_payload_public_row(raw):
     """ONE row of a peer's /tunnels answer, re-read through the shape _remote_public publishes — the
     whitelist tunnels_of applies before the page sees a peer's rows. Every key the panel's sub-row and
@@ -58613,6 +58635,10 @@ class Handler(BaseHTTPRequestHandler):
                 # the API-health signal of an attached host, relayed (T301): one JSON read, that kernel's own
                 # token rewritten in, its document passed through as it answered it
                 return self._remote_api_health(unquote(p[len("/remote/"):-len("/api-health")]))
+            if p.startswith("/remote/") and p.endswith("/sessions"):
+                # an attached host's session roster with its identity colors, re-read through a whitelist: the
+                # same-machine session picker's read, now that a peer's token never rides /tunnels
+                return self._remote_sessions(unquote(p[len("/remote/"):-len("/sessions")]))
             if p.startswith("/remote/") and p.endswith("/ws"):
                 # federated dashboard, viewed off this machine: relay to the attached host's kernel
                 return self._remote_ws(unquote(p[len("/remote/"):-len("/ws")]), u.query)
@@ -62065,6 +62091,48 @@ class Handler(BaseHTTPRequestHandler):
             # the remote's verdict in prose (an older build's 404, its 401, its 503): the shell names it per host
             return self._send(status, body[:2000].decode("utf-8", "replace") or ("HTTP %d" % status), "text/plain")
         return self._send(200, body, "application/json", cache="no-cache")
+
+    def _remote_sessions(self, host):
+        """GET /remote/<host>/sessions: relay ONE read of an attached host's own /sessions through this kernel's
+        tunnel, in the /api-health relay's shape (the local auth gate has run, the remote's own token goes in the
+        forwarded request, a dead tunnel is a 502 and a redial). The rows come back re-read through
+        _remote_session_public_row: id, name, state, dir and the two identity colors, nothing else. This is how a
+        same-machine client (an editor plugin's session picker) lists a peer's sessions with the colors that host's
+        dashboard draws: since 2026-09-08 a peer's serve token never leaves its machine (/tunnels publishes only
+        hasToken), so the direct read such clients used to make is gone, and the postal bus's roster carries names
+        but no colors. A peer that refused, or an older build without the route, answers in prose with its status
+        mirrored, as /api-health does; a body that is not a list is a 502 naming the host."""
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, "no attached host %r" % host, "text/plain")
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        try:
+            conn.request("GET", "/sessions", headers=({"X-Romp-Token": rtok} if rtok else {}))
+            resp = conn.getresponse()
+            body = resp.read(1 << 22)
+            status = resp.status
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, "tunnel to %s is not answering: re-dialing now" % host, "text/plain")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if status != 200:
+            return self._send(status, body[:2000].decode("utf-8", "replace") or ("HTTP %d" % status), "text/plain")
+        try:
+            rows = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            rows = None
+        if not isinstance(rows, list):
+            return self._send(502, "%s answered /sessions with something other than a list of rows" % host,
+                              "text/plain")
+        pub = [x for x in (_remote_session_public_row(x) for x in rows[:_PEER_SESSION_ROWS_MAX]) if x]
+        return self._send(200, json.dumps({"ok": True, "host": host, "sessions": pub}), "application/json",
+                          cache="no-cache")
 
     def _remote_file(self, host, query, head=False):
         """GET/HEAD /remote/<host>/file — relay ONE preview request to an attached host's kernel
