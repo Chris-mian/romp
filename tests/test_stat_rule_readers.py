@@ -355,31 +355,52 @@ class TheQueuedLows(unittest.TestCase):
         self.assertEqual([p.name for p in cur.iterdir()], [mid], "claimed again under the same id")
 
     def test_the_two_clients_say_an_inbox_fault_as_what_it_is(self):
-        """Lows 2 and 3: the Stop hook's drain (stdout is what the hook wraps; its stderr and exit code are dropped) and the MCP
-        check_inbox tool say the 503's reason, never a swallowed nothing or an internal error."""
-        saved = pm._http
-        def boom(method, path, payload=None):
-            raise pm.BusError("inbox of x cannot be listed (PermissionError: denied)")
-        pm._http = boom
-        self.addCleanup(setattr, pm, "_http", saved)
+        """Lows 2 and 3, and round five: the Stop hook's drain (stdout is what the hook wraps; its stderr and exit code are
+        dropped) and the MCP check_inbox tool never swallow a BusError or call it an internal error. The bus's own 503 for an
+        unlistable inbox (the reason in the bus's log once per spell) gives the inbox sentence and no client line; a bus that
+        could not be reached, another status or a decode fault (faults the bus never saw) give the SERVICE sentence and one
+        client line carrying the reason, since otherwise the reason would be recorded nowhere."""
         saved_ident, saved_local = pm._self_identity, pm._LOCAL_CONFIRMED[0]
         pm._self_identity = lambda: ("11111111-2222-4333-8444-0000000000e1", "web"); pm._LOCAL_CONFIRMED[0] = True
         self.addCleanup(setattr, pm, "_self_identity", saved_ident)
         self.addCleanup(lambda: pm._LOCAL_CONFIRMED.__setitem__(0, saved_local))
-        text, is_err = pm._mcp_call("check_inbox", {})
-        self.assertTrue(is_err); self.assertIn("cannot be read right now", text)
-        self.assertNotIn("cannot be listed", text); self.assertNotIn("PermissionError", text); self.assertNotIn("/", text,
-                         "the person hears the plain sentence: no exception repr, no path (the reason is the BUS log's, round four)")
-        import io, contextlib
-        saved_ensure, saved_my = pm.ensure, pm.my_id
+        saved_ensure, saved_my, saved_http, saved_log = pm.ensure, pm.my_id, pm._http, pm._log
         pm.ensure = lambda: True; pm.my_id = lambda: "11111111-2222-4333-8444-0000000000e1"
-        self.addCleanup(setattr, pm, "ensure", saved_ensure); self.addCleanup(setattr, pm, "my_id", saved_my)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = pm.cli_drain([])
-        self.assertEqual(rc, 0, "the hook's command exits clean")
-        self.assertIn("could not be checked this turn", out.getvalue())
-        self.assertNotIn("cannot be listed", out.getvalue()); self.assertNotIn("/", out.getvalue(), "no repr, no path in the turn-end block")
+        for name, val in (("ensure", saved_ensure), ("my_id", saved_my), ("_http", saved_http), ("_log", saved_log)):
+            self.addCleanup(setattr, pm, name, val)
+        import io, contextlib
+        def make(text, status=None):
+            def boom(method, path, payload=None):
+                e = pm.BusError(text)
+                if status is not None:
+                    e.status = status
+                raise e
+            return boom
+        roads = (("503 inbox", make("inbox of x cannot be listed (PermissionError: denied)", 503), "inbox"),
+                 ("unreachable", make("can't reach the Romp Postal Service bus at http://127.0.0.1:1 ([Errno 111] refused)"), "service"),
+                 ("500", make("internal error", 500), "service"),
+                 ("decode", make("Expecting value: line 1 column 1 (char 0)"), "service"))
+        for label, boom, kind in roads:
+            with self.subTest(road=label):
+                logs = []; pm._log = logs.append; pm._http = boom
+                text, is_err = pm._mcp_call("check_inbox", {})
+                self.assertTrue(is_err)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    rc = pm.cli_drain([])
+                self.assertEqual(rc, 0, "the hook's command exits clean")
+                for spoken in (text, out.getvalue()):
+                    self.assertNotIn("cannot be listed", spoken); self.assertNotIn("Errno", spoken); self.assertNotIn("/", spoken,
+                                     "the person hears a plain sentence: no exception repr, no path, no URL")
+                if kind == "inbox":
+                    self.assertIn("inbox cannot be read right now", text); self.assertIn("mail could not be checked", out.getvalue())
+                    self.assertEqual(logs, [], "the bus logged the 503's reason itself, once per spell; no client line")
+                else:
+                    self.assertIn("mail service could not be reached", text); self.assertIn("mail service could not be reached", out.getvalue())
+                    self.assertNotIn("inbox", text, "a dead bus is not blamed on the inbox")
+                    self.assertEqual(len(logs), 2, "each client recorded the reason once: %r" % logs)
+                    self.assertTrue(all("gave no answer" in m for m in logs), logs)
+                    self.assertTrue(any("refused" in m or "internal error" in m or "Expecting value" in m for m in logs), logs)
 
 
 class TaskPlanLoudOnUnreadable(unittest.TestCase):

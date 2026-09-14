@@ -774,6 +774,12 @@ def _mail_unreadable(f, sid, exc):
                                   "why": "%s (errno %s)" % (WHY_INBOX_UNREADABLE, exc.errno)})
     _mark_pending(sid)                               # new/ may be empty now → drop the marker
 
+def _inbox_fault(err):
+    """Whether a BusError is the bus's own 503 for an inbox that cannot be listed (the reason already in the bus's log, once
+    per spell), as opposed to a fault the bus never saw: unreachable, another status, a decode fault (round five)."""
+    return getattr(err, "status", None) == 503 and "cannot be listed" in str(err)
+
+
 class InboxUnreadable(Exception):
     """A mailbox whose new/ cannot be listed: /inbox and /drain answer this as a fault the client can show (a 503 with
     the reason and an `unreadable` field beside empty rows), never as an empty inbox where mail sits unread; the push
@@ -3395,7 +3401,9 @@ def _http(method, path, payload=None):
             msg = json.loads(e.read().decode()).get("error", str(e))
         except Exception:
             msg = str(e)
-        raise BusError(msg)
+        err = BusError(msg)
+        err.status = e.code                          # the bus ANSWERED: its status rides the error, so a client can tell an
+        raise err                                    #  inbox fault the bus already logged (503) from a fault it never saw
     except urllib.error.URLError as e:
         raise BusError("can't reach the Romp Postal Service bus at %s (%s)" % (BASE, getattr(e, "reason", e)))
     except Exception as e:
@@ -5287,11 +5295,16 @@ def _mcp_call(name, args):
             return "Not inside a romp session.", True
         try:
             msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
-        except BusError:
+        except BusError as e:
             # an inbox that cannot be listed answers 503 with the reason (2026-09-14): said as what it is, never an
-            # internal error and never "no new messages" where mail sits unread. The person hears the plain sentence;
-            # the reason (a path, an errno) is in the BUS log, said once per fault spell when it answered the 503
-            return "Your inbox cannot be read right now; your mail waits unread and the next check retries.", True
+            # internal error and never "no new messages" where mail sits unread. The person hears a plain sentence; the
+            # reason (a path, an errno) is recorded ONCE: by the bus's own log when it answered the 503, else here (a bus
+            # that could not be reached, another status, a decode fault: the bus never saw it; this process's stderr is
+            # the harness log's), and the sentence names the right thing, the service or the inbox (round five)
+            if _inbox_fault(e):
+                return "Your inbox cannot be read right now; your mail waits unread and the next check retries.", True
+            _log("check_inbox for %s: the mail service gave no answer: %s" % (mid, e))
+            return "The mail service could not be reached just now; your mail waits and the next check retries.", True
         return (format_inbox(msgs, mid) or "No new messages."), False
     if name == "list_agents":
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
@@ -5560,13 +5573,18 @@ def cli_drain(argv):
         return 0
     try:
         res = _http("GET", "/drain?id=%s" % urllib.parse.quote(sid))
-    except BusError:
+    except BusError as e:
         # the Stop hook wraps this command's STDOUT into the turn-end block and drops its stderr and exit code, so the
-        # one automatic /drain client says the fault where the mail would have appeared (an unlistable inbox answers
-        # 503 with the reason since 2026-09-14); the mail waits unread and the next drain retries. The reason has its
-        # reader in the BUS log, where the bus said it once per fault spell as it answered; nothing is written here
-        # to a channel nobody reads
-        print("Your mail could not be checked this turn; it waits unread and the next check retries.")
+        # one automatic /drain client says the fault where the mail would have appeared; the mail waits unread and the
+        # next drain retries. An unlistable inbox answers 503 with the reason (2026-09-14), which the bus logged once per
+        # spell as it answered. Every other BusError (a bus that could not be reached, another status, a decode fault)
+        # the bus never saw: the reason is written to stderr here, honestly the only channel this client has, read
+        # when the command runs by hand and dropped by the hook; and the sentence names the service, not the inbox
+        if _inbox_fault(e):
+            print("Your mail could not be checked this turn; it waits unread and the next check retries.")
+        else:
+            _log("drain for %s: the mail service gave no answer: %s" % (sid, e))
+            print("The mail service could not be reached this turn; your mail waits and the next check retries.")
         return 0
     except Exception:
         return 0

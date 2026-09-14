@@ -645,6 +645,7 @@ class _LiveBus(unittest.TestCase):
         if hasattr(ps, "_TL_FAULT"):
             ps._TL_FAULT[0] = False
         getattr(ps, "_UNREADABLE_SAID", set()).clear()
+        getattr(ps, "_INBOX_UNREADABLE_SAID", set()).clear()      # the once-per-spell sentinel the unlistable-inbox test counts
 
     def tearDown(self):
         ps.TLDIR, ps._log, ps.resolve_recipient = self._saved

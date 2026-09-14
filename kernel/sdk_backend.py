@@ -5830,7 +5830,10 @@ class SdkSession:
         The bus's put-back is its `restore` — the roll-back its not-injected push already takes: cur/<mid> moves
         back to new/, the exec row is retracted, the session is woken. It is reached through
         SdkBackend.postal_restore, which the kernel installs (a POST to the bus's /restore). The answer is the set
-        of ids the bus put back, and it is AUTHORITATIVE about the bus's own files: a PARTIAL answer names the ids
+        of ids the bus HOLDS: the ones it put back, plus (2026-09-14) the ones it could not answer for (its cur/ could
+        not be read; the claim stands and its own retry puts them back), named in the answer's `.held` (a set subclass;
+        set arithmetic drops the attribute, so it is read off the answer before any `set(res)`). AUTHORITATIVE about
+        the bus's own files: a PARTIAL answer names the ids
         gone from the bus's box (recalled by its sender, swept), which are never re-fed on this side's say-so. An
         answer that put back NONE of them means this bus never held the banner: nothing removes a live session's
         cur/ file (recall reads new/ only; the orphan sweep skips live boxes), so the ids are a session's whose
@@ -5890,14 +5893,15 @@ class SdkSession:
                                   "bus holds none of its ids (%s); re-heading it so the new client is fed it"
                                   % (self.name, ", ".join(mids)), problem=True)
                 continue
-            self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted; handed back "
-                              "to the bus by id for re-delivery (%s)%s%s"
-                              % (self.name, ", ".join(m for m in mids if m in back and m not in held_by_bus),
+            put_back = [m for m in mids if m in back and m not in held_by_bus]
+            held_here = [m for m in mids if m in held_by_bus]
+            self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted%s%s%s"
+                              % (self.name,
+                                 ("; handed back to the bus by id for re-delivery (%s)" % ", ".join(put_back)) if put_back else "",
                                  ("; held by the bus under a PENDING fault (its cur/ cannot be read; the sender's receipt reads "
-                                  "pending, the bus's retry puts them back once it reads): %s"
-                                  % ", ".join(m for m in mids if m in held_by_bus)) if held_by_bus & set(mids) else "",
+                                  "pending, the bus's retry puts them back once it reads): %s" % ", ".join(held_here)) if held_here else "",
                                  ("; no longer in the bus's box, not re-fed: %s" % ", ".join(gone)) if gone else ""),
-                              problem=bool(held_by_bus & set(mids)))
+                              problem=bool(held_here))
         if rehead:
             with self._lock:
                 self._q_prepend(rehead, self._unfeed_locked(rehead))   # back at the head under their own ids
@@ -9465,8 +9469,10 @@ class SdkBackend:
         self.thread_wake_model = None      # kernel-installed: model_id -> replacement or None, consulted
         #                                    ONLY when a comment THREAD is explicitly woken (T223 rider) —
         #                                    the catalog lives in the kernel; the backend never imports it
-        self.postal_restore = None         # kernel-installed: (sid, [mid, ...]) -> the set of ids the bus put back in
-        #                                    the session's new/ (kernel._bus_restore_mail → the bus's POST /restore);
+        self.postal_restore = None         # kernel-installed: (sid, [mid, ...]) -> the set of ids the bus HOLDS: put back in
+        #                                    the session's new/, plus those held under an unreadable cur/, named in the
+        #                                    answer's `.held` (set arithmetic drops the attribute; read it off the answer
+        #                                    first) (kernel._bus_restore_mail → the bus's POST /restore);
         #                                    raises when the bus could not be asked. Consulted ONLY by a resumable
         #                                    reconnect that stranded a fed postal banner (_return_stranded_mail,
         #                                    2026-09-12); None (a stand-in, an older kernel) → the banner is re-headed

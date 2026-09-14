@@ -131,6 +131,18 @@ class StrandedMailGoesBackToTheBus(_StrandWorld):
         self.assertIn(MID1, line.split("PENDING fault")[0], "the put-back id is named as handed back")
         self.assertIn("held by the bus under a PENDING fault", line); self.assertIn(MID2, line.split("PENDING fault")[1])
         self.assertIn("receipt reads pending", line)
+        # round five, low (a): the one shape a real unlistable cur/ produces, every claim held at once: no empty "handed back ()"
+        s2 = self._sess(); self.logged.clear()
+        def hook_all(sid, mids):
+            out = _Held(mids); out.held = set(mids)
+            return out
+        self.be.postal_restore = hook_all
+        self._strand(s2, _banner(MID1, MID2))
+        self.assertEqual(s2.pending(), [], "held, not re-fed, not re-headed")
+        line = next(ln for ln in self.logged if "stranded mail" in ln and "PENDING fault" in ln)
+        self.assertNotIn("handed back to the bus by id", line, "nothing was put back: the clause is suppressed")
+        self.assertNotIn("()", line)
+        self.assertIn(MID1, line); self.assertIn(MID2, line)
 
     def test_a_banner_the_bus_cannot_take_back_is_re_headed_not_dropped(self):
         s = self._sess()
