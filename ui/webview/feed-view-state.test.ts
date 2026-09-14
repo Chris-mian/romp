@@ -22,6 +22,7 @@ function sample(): FeedViewState {
     threads: [],   // the card-prune tests below assert on CARD state; the thread exemption has its own
     cols: ["completed"], order: ["asks", "completed", "needsInput"],
     focused: false,
+    focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,   // the focused section's own block layout and fold (T410), at their defaults
   };
 }
 
@@ -62,7 +63,7 @@ test("an itemId containing a colon is not mis-attributed by the prune", () => {
   // its FIRST colon would read this card as "blocked" and prune state that is very much live.
   const s: FeedViewState = {
     v: 1, sec: { "blocked:sess-7": "bg" }, tree: ["blocked:sess-7:n1"], nodes: [], logs: [], asks: [],
-    threads: [], cols: [], order: [], focused: false,
+    threads: [], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,
   };
   const pruned = pruneViewState(s, new Set(["blocked:sess-7"]));
   assert.deepEqual(pruned.sec, { "blocked:sess-7": "bg" }, "the colon-bearing id survives");
@@ -93,7 +94,7 @@ test("the cap is a backstop that trims cheap state first and section choices las
     nodes: Array.from({ length: 10 }, (_, i) => `a:n${i}`),
     logs: Array.from({ length: 10 }, (_, i) => `a:l${i}`),
     asks: ["a"],
-    threads: ["sid-1"], cols: [], order: [], focused: false,
+    threads: ["sid-1"], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,
   };
   const capped = capViewState(big, 20);
   assert.equal(viewStateSize(capped), 20);
@@ -109,7 +110,7 @@ test("a folded thread SURVIVES the card prune — that is the whole point of it"
   // card would silently re-expand the thread and the next card would arrive unfolded.
   const s: FeedViewState = {
     v: 1, sec: { "card-a": "bg" }, tree: [], nodes: [], logs: [], asks: [], threads: ["sid-quiet"], cols: [], order: [],
-    focused: false,
+    focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,
   };
   const pruned = pruneViewState(s, new Set<string>());   // no live cards at all
   assert.deepEqual(pruned.threads, ["sid-quiet"]);
@@ -262,4 +263,72 @@ test("executed: threadKey names one session's run in one column; a stored bare s
   const st = { ...sample(), threads: [k, threadKey("sid-3", "asks")] };
   assert.deepEqual(parseViewState(serializeViewState(st)).threads, [k, threadKey("sid-3", "asks")]);
   assert.deepEqual(pruneViewState(st, new Set()).threads, [k, threadKey("sid-3", "asks")], "prune-exempt like before");
+});
+
+// ── T410 (the user 2026-09-13 / 2026-09-14): the focused section's own block layout and its fold ──────────────
+// focusOrder (the section's dragged block order, [] = follow the board), focusW (flex weights by column key),
+// focusCols (the collapsed block keys, for whichever session is focused) and focusFolded (the whole section folded
+// to its "Current session:" label). Layout state like cols/order: prune-exempt, never counted by the cap.
+test("executed: the four section fields default to follow-the-board, equal split, nothing folded, unfolded", () => {
+  const e = emptyViewState();
+  assert.deepEqual(e.focusOrder, []);
+  assert.deepEqual(e.focusW, {});
+  assert.deepEqual(e.focusCols, []);
+  assert.equal(e.focusFolded, false);
+  const s = { ...sample(), focusOrder: ["needsInput", "asks", "completed"], focusW: { asks: 1.25, needsInput: 0.75 },
+              focusCols: ["completed"], focusFolded: true };
+  assert.deepEqual(parseViewState(serializeViewState(s)), s, "all four round-trip with the rest");
+});
+
+test("executed: a blob saved before T410 (the T347 fields only) reads as the four defaults, everything else kept", () => {
+  const old = JSON.stringify({ v: 1, sec: { a: "bg" }, tree: [], nodes: [], logs: [], asks: ["a"], threads: ["sid-1"],
+                               cols: ["completed"], order: ["completed", "asks", "needsInput"], focused: true });
+  const s = parseViewState(old);
+  assert.deepEqual([s.focusOrder, s.focusW, s.focusCols, s.focusFolded], [[], {}, [], false], "follow the board, equal widths, nothing folded, unfolded");
+  assert.equal(s.focused, true, "the switch the blob saved stays on");
+  assert.deepEqual(s.order, ["completed", "asks", "needsInput"], "…and the board's order stands, which the section then follows");
+  assert.deepEqual(s.sec, { a: "bg" });
+  assert.equal(s.v, 1, "no version bump");
+});
+
+test("executed: the weights gate keeps the three known keys with finite positive numbers and drops the rest", () => {
+  const base = { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [] };
+  const junk = parseViewState(JSON.stringify({ ...base,
+    focusW: { asks: 1.5, needsInput: "2", completed: -1, evil: 3, other: 0.5 }, focusOrder: ["asks", "x", 4, "completed"], focusCols: ["evil", "needsInput"] }));
+  assert.deepEqual(junk.focusW, { asks: 1.5 }, "a string, a negative and unknown keys are dropped at the gate; the block reads as weight 1");
+  assert.deepEqual(junk.focusOrder, ["asks", "completed"], "unknown keys drop out of the order (a two-key order is not three, so the section follows the board)");
+  assert.deepEqual(junk.focusCols, ["needsInput"]);
+  for (const bad of [{ asks: 0 }, { asks: Infinity }, { asks: NaN }, { asks: null }, "1", 5, [1, 2, 3], null]) {
+    assert.deepEqual(parseViewState(JSON.stringify({ ...base, focusW: bad })).focusW, {}, `focusW=${JSON.stringify(bad)} reads as the equal split`);
+  }
+});
+
+test("executed: only the literal true folds the section; a wrong-typed focusFolded reads unfolded", () => {
+  const base = { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [] };
+  for (const junk of ["yes", "true", 1, 0, null, {}, [], "false"]) {
+    assert.equal(parseViewState(JSON.stringify({ ...base, focusFolded: junk })).focusFolded, false, `focusFolded=${JSON.stringify(junk)} is not the literal true`);
+  }
+  assert.equal(parseViewState(JSON.stringify({ ...base, focusFolded: true })).focusFolded, true);
+  assert.ok(serializeViewState({ ...sample(), focusFolded: true }).includes('"focusFolded":true'), "the key is written, not implied");
+});
+
+test("executed: prune and cap leave the four section fields untouched, and the cap never counts them", () => {
+  const s: FeedViewState = { ...sample(), focusOrder: ["completed", "needsInput", "asks"], focusW: { asks: 0.35, needsInput: 1.65 },
+                             focusCols: ["asks", "completed"], focusFolded: true };
+  for (const live of [new Set<string>(), new Set(["card-a"])]) {
+    const p = pruneViewState(s, live);
+    assert.deepEqual([p.focusOrder, p.focusW, p.focusCols, p.focusFolded], [s.focusOrder, s.focusW, s.focusCols, true], "a card prune (even a full one) keeps the section's layout");
+  }
+  const big = { ...s, logs: Array.from({ length: 30 }, (_, i) => `card-a:l${i}`) };
+  const capped = capViewState(big, 10);
+  assert.equal(viewStateSize(capped), 10, "the trim happened");
+  assert.deepEqual([capped.focusOrder, capped.focusW, capped.focusCols, capped.focusFolded], [s.focusOrder, s.focusW, s.focusCols, true], "…and the section's layout rode through the copy");
+  assert.equal(viewStateSize(s), viewStateSize({ ...sample(), focusOrder: [], focusW: {}, focusCols: [], focusFolded: false }), "not entries: the size the cap measures ignores all four");
+});
+
+test("feed.ts hydrates the four section fields and currentViewState writes them", () => {
+  for (const c of ["focusOrder = st.focusOrder.slice();", "focusW = { ...st.focusW };", "for (const k of st.focusCols) collapsedFocusCols.add(k);", "focusFolded = st.focusFolded;"]) {
+    assert.ok(FEED.includes(c), `hydrate restores ${c}`);
+  }
+  assert.match(FEED, /focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded \};/);
 });

@@ -39,6 +39,19 @@ export interface FeedViewState {
   // on top): whether the feed shows the chat pane's active session as a miniature above a divider. OFF by
   // default. A view switch, not a card: prune-EXEMPT like `cols`/`order`, and not counted by the cap.
   focused: boolean;
+  // The focused-session section's OWN block layout (T410, the user 2026-09-13, who wanted the section's blocks
+  // movable, resizable and collapsible on their own): `focusOrder` is the section's dragged block order ([] =
+  // follow the board's arrangement, as before); `focusW` the blocks' flex weights by column key (a missing key
+  // = 1, the equal split); `focusCols` the collapsed block keys, applied to WHICHEVER session is focused (a
+  // block folded on one focused session is folded for the next). Layout state, not card state: all three are
+  // prune-EXEMPT like `cols`/`order`, bounded by the three known keys, and never counted by the cap.
+  focusOrder: string[];
+  focusW: Record<string, number>;
+  focusCols: string[];
+  // The whole section folded to its label (T410b, the user 2026-09-14): "Current session: <name>" alone, the
+  // blocks and their cards hidden under it. A view switch like `focused`: prune-EXEMPT, not counted by the cap,
+  // false by default, and only the literal `true` folds it.
+  focusFolded: boolean;
 }
 
 export const VIEW_STATE_KEY = "romp:feedview";
@@ -61,7 +74,7 @@ export const VIEW_STATE_CAP = 4000;
 
 export function emptyViewState(): FeedViewState {
   return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [],
-           focused: false };
+           focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false };
 }
 
 /** Parse a stored blob. ANY malformed/foreign/old-version value reads as empty rather than throwing — a
@@ -83,8 +96,23 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
     // literal `true` switches it on.
     const col = (x: unknown): string[] =>
       arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed");
+    // the section's block weights (T410): the three known keys only, each a finite positive number; anything
+    // else is dropped at the gate and that block reads as weight 1. A blob saved before T410 reads as the
+    // defaults for all three fields (follow the board, equal split, nothing folded), same shape as `focused`.
+    const weights = (x: unknown): Record<string, number> => {
+      const w: Record<string, number> = {};
+      if (x && typeof x === "object") {
+        for (const k of FEED_COLUMNS) {
+          const v = (x as Record<string, unknown>)[k];
+          if (typeof v === "number" && Number.isFinite(v) && v > 0) w[k] = v;
+        }
+      }
+      return w;
+    };
     return { v: 1, sec, tree: arr(o.tree), nodes: arr(o.nodes), logs: arr(o.logs), asks: arr(o.asks),
-             threads: arr(o.threads), cols: col(o.cols), order: col(o.order), focused: o.focused === true };
+             threads: arr(o.threads), cols: col(o.cols), order: col(o.order), focused: o.focused === true,
+             focusOrder: col(o.focusOrder), focusW: weights(o.focusW), focusCols: col(o.focusCols),
+             focusFolded: o.focusFolded === true };
   } catch {
     return emptyViewState();
   }
@@ -128,18 +156,21 @@ export function keyIsLive(key: string, liveIds: Set<string>): boolean {
  *  would silently re-expand a thread the moment its last card cleared — exactly the "collapse it and it
  *  stays collapsed" the feature is for. It is bounded by the cap instead.
  *
- *  `cols`, `order` and `focused` are exempt for the plainer reason that they describe the VIEW (the column
- *  layout, the focused-session switch) and name no card at all; there is nothing to prune them against. */
+ *  `cols`, `order`, `focused` and the section's `focusOrder`/`focusW`/`focusCols`/`focusFolded` are exempt for
+ *  the plainer reason that they describe the VIEW (the column layout, the focused-session switch, its block
+ *  layout and its fold) and name no card at all; there is nothing to prune them against. */
 export function pruneViewState(s: FeedViewState, liveIds: Set<string>): FeedViewState {
   const sec: Record<string, string> = {};
   for (const [k, v] of Object.entries(s.sec)) if (keyIsLive(k, liveIds)) sec[k] = v;
   const keep = (xs: string[]) => xs.filter((k) => keyIsLive(k, liveIds));
   return capViewState({ v: 1, sec, tree: keep(s.tree), nodes: keep(s.nodes), logs: keep(s.logs),
                         asks: keep(s.asks), threads: s.threads, cols: s.cols, order: s.order,
-                        focused: s.focused });
+                        focused: s.focused, focusOrder: s.focusOrder, focusW: s.focusW, focusCols: s.focusCols,
+                        focusFolded: s.focusFolded });
 }
 
-// `cols`/`order` (three known keys) and `focused` (one boolean) are fixed-size view state and never count.
+// `cols`/`order`/`focusOrder`/`focusCols` (three known keys each), `focusW` (three weights) and `focused` /
+// `focusFolded` (one boolean each) are fixed-size view state and never count.
 export function viewStateSize(s: FeedViewState): number {
   return Object.keys(s.sec).length + s.tree.length + s.nodes.length + s.logs.length + s.asks.length
     + s.threads.length;
@@ -149,7 +180,8 @@ export function viewStateSize(s: FeedViewState): number {
  *  it is trimmed last; the per-node tree/log expansions are cheap to re-open and go first. Collapsed
  *  THREADS sit just above sec — they are few (one per session, not per card) and the most durable choice
  *  here, so they are the last thing to give before the sections do. The view fields (`cols`, `order`,
- *  `focused`) ride through the spread untouched: they are not entries and the cap never trims them. */
+ *  `focused`, `focusOrder`, `focusW`, `focusCols`, `focusFolded`) ride through the spread untouched: they are
+ *  not entries and the cap never trims them. */
 export function capViewState(s: FeedViewState, cap: number = VIEW_STATE_CAP): FeedViewState {
   let over = viewStateSize(s) - cap;
   if (over <= 0) return s;

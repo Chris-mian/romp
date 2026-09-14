@@ -1444,7 +1444,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // clear if none pinned.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
-    freezeEnter(it.itemId);                            // hover-freeze: pointer truth, no debounce
+    freezeEnter(it.itemId, isFocusCopy(card));         // hover-freeze: pointer truth, no debounce; which twin holds it (T410)
     if (it.provisional) return;                        // no timeline path for a placeholder
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
@@ -1453,7 +1453,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
-    freezeLeave(it.itemId);                            // hover-freeze: leaving the card flushes queued payloads
+    freezeLeave(it.itemId, isFocusCopy(card));         // hover-freeze: leaving the card flushes queued payloads
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = undefined; }
     if (hoverAskId === it.itemId) {
       hoverAskId = null; applyFocus();
@@ -1570,6 +1570,18 @@ let colOrder: string[] = [];                         // [] = each layout's own C
 // OFF by default); the sid is not persisted — a reloaded feed registers and is told again.
 let focusedSid: string | null = null;
 let showFocused = false;
+// The section's OWN block layout (T410, the user 2026-09-13, who wanted the section's blocks movable, resizable
+// and collapsible on their own, none leaving the section): its dragged block order ([] = follow the board's
+// arrangement, as the section did from T347), the blocks' flex weights by column key (a missing key = 1, the
+// equal split) and the collapsed block keys, applied to WHICHEVER session is focused. Layout state like
+// collapsedCols/colOrder: persisted with the rest, prune-exempt, painted by applyFocusLayout.
+let focusOrder: string[] = [];
+let focusW: Record<string, number> = {};
+const collapsedFocusCols = new Set<string>();
+// The whole section folded to its LABEL (T410b, the user 2026-09-14): "Current session: <name>" alone, the blocks,
+// their cards and the quiet line hidden under it, the divider standing. A view switch like showFocused: persisted
+// with the rest, prune-exempt; painted by paintFocusFold.
+let focusFolded = false;
 
 (function hydrateViewState() {
   let st;
@@ -1583,6 +1595,10 @@ let showFocused = false;
   for (const k of st.cols) collapsedCols.add(k);
   colOrder = st.order.slice();
   showFocused = st.focused;   // the focused-session section's switch (T347); a blob saved before it reads OFF
+  focusOrder = st.focusOrder.slice();   // the section's own block layout (T410); a blob saved before it reads as the defaults
+  focusW = { ...st.focusW };
+  for (const k of st.focusCols) collapsedFocusCols.add(k);
+  focusFolded = st.focusFolded;   // the section's fold (T410b); a blob saved before it reads unfolded
 })();
 
 function currentViewState(): FeedViewState {
@@ -1590,7 +1606,8 @@ function currentViewState(): FeedViewState {
   secChoice.forEach((v, k) => { sec[k] = v; });
   return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen],
            asks: [...expandedAsks], threads: [...collapsedThreads], cols: [...collapsedCols],
-           order: colOrder.slice(), focused: showFocused };
+           order: colOrder.slice(), focused: showFocused,
+           focusOrder: focusOrder.slice(), focusW: { ...focusW }, focusCols: [...collapsedFocusCols], focusFolded };
 }
 
 // Written at the END of every render rather than from each toggle handler: the feed re-renders on every
@@ -2746,7 +2763,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   // (first member). leave → restore the pin (ask OR group) or clear.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
-    freezeEnter(fkey);                                 // hover-freeze: pointer truth, no debounce
+    freezeEnter(fkey, isFocusCopy(card));              // hover-freeze: pointer truth, no debounce; which twin holds it (T410)
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
       hoverAskId = fkey; applyFocus();
@@ -2754,7 +2771,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
-    freezeLeave(fkey);                                 // hover-freeze: leaving the card flushes queued payloads
+    freezeLeave(fkey, isFocusCopy(card));              // hover-freeze: leaving the card flushes queued payloads
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = undefined; }
     if (hoverAskId === fkey) {
       hoverAskId = null; applyFocus();
@@ -4307,24 +4324,123 @@ function applyColStack(): void {
   const custom = colOrder.length === 3 ? colOrder : null;
   for (const key of ["asks", "needsInput", "completed"]) {
     // the BOARD's column, under #feed-cols: the focused-session section above it carries the same column
-    // classes (T347), and a bare query would land on that copy first. The dragged order reaches BOTH — the
-    // section mirrors the arrangement below — the fold only the board's (the section has no caret to reopen with).
+    // classes (T347), and a bare query would land on that copy first. The fold is the board's alone; the
+    // section's blocks take their order from applyFocusLayout below (the board's, until the user drags THERE).
     const col = document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + key);
     if (!col) continue;
     const folded = collapsedCols.has(key);
     col.classList.toggle("col-collapsed", folded);
     if (custom) col.style.setProperty("--col-order", String(custom.indexOf(key) + 1));
     else col.style.removeProperty("--col-order");
-    // …and the focused-session section's column of the same key (T347) wears the same order, so the miniature
-    // above mirrors the arrangement below — one dragged order, two renderings
-    const twin = document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + key);
-    if (twin) { if (custom) twin.style.setProperty("--col-order", String(custom.indexOf(key) + 1)); else twin.style.removeProperty("--col-order"); }
     const fold = col.querySelector<HTMLElement>(".fcol-fold");
     if (fold) {
       fold.textContent = folded ? "▸" : "▾";
       fold.setAttribute("aria-expanded", String(!folded));
     }
   }
+  applyFocusLayout();   // the section mirrors the board's arrangement until it has an order of its own (T410)
+}
+
+// The focused-session section's BLOCK LAYOUT (T410, the user 2026-09-13, who wanted the section's blocks
+// movable, resizable and collapsible on their own, none leaving the section). ORDER: the section's own
+// focusOrder once it holds three keys, else the board's arrangement exactly as before (colOrder, or each
+// layout's CSS default with the var off) — so nothing changes for anyone who never drags in the section.
+// WIDTH: each block's weight (focusW, 1 = the equal split) as its flex-grow; the blocks' flex-basis is 0, so the
+// weights ARE the split. FOLD: a collapsed block wears col-collapsed (its list hidden, the block shrunk to its
+// head — the inline weight cleared so the class's flex: 0 0 auto stands — and the others take the room). The
+// gutter is hidden on a collapsed block and on the last expanded block in visual order (nothing to its right
+// to trade width with; in the stacked layout the CSS hides every gutter). HEIGHT is never resized: the section
+// grows with what the focused session holds. Idempotent; runs at build, per fold, per drag re-slot, per resize.
+function applyFocusLayout(): void {
+  if (!document.getElementById("feed-focus")) return;
+  const order = focusOrder.length === 3 ? focusOrder : colOrder.length === 3 ? colOrder : null;
+  const visual = (order || ROW_DEFAULT).filter((k) => !collapsedFocusCols.has(k));
+  for (const key of ["asks", "needsInput", "completed"]) {
+    const twin = document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + key);
+    if (!twin) continue;
+    if (order) twin.style.setProperty("--col-order", String(order.indexOf(key) + 1));
+    else twin.style.removeProperty("--col-order");
+    const folded = collapsedFocusCols.has(key);
+    twin.classList.toggle("col-collapsed", folded);
+    twin.style.flexGrow = folded ? "" : String(focusW[key] ?? 1);
+    const fold = twin.querySelector<HTMLElement>(".fcol-fold");
+    if (fold) {
+      fold.textContent = folded ? "▸" : "▾";
+      fold.setAttribute("aria-expanded", String(!folded));
+      fold.setAttribute("aria-label", (folded ? "Expand " : "Collapse ") + (fold.dataset.label || ""));
+    }
+    const gutter = twin.querySelector<HTMLElement>(".focus-gutter");
+    if (gutter) gutter.hidden = folded || visual[visual.length - 1] === key;
+  }
+}
+
+// The GUTTER on a section block's right edge (T410): dragging it trades width between this block and the next
+// expanded block in visual order. The two weights move as a pair — sum preserved, floor 0.35 each — so a drag
+// can never empty a block or spill past its neighbour; the weights paint live as flex-grow and persist on
+// release. Pointer capture, like the block drag, so the drag survives leaving the 8px zone. Width only: the
+// section's height follows its content and is never resized (see applyFocusLayout).
+function wireFocusGutter(gutter: HTMLElement, key: string): void {
+  gutter.addEventListener("pointerdown", (down) => {
+    const col = FOCUS_SLOTS.col(key);
+    const order = focusOrder.length === 3 ? focusOrder : colOrder.length === 3 ? colOrder : ROW_DEFAULT;
+    const visual = order.filter((k) => !collapsedFocusCols.has(k));
+    const next = visual[visual.indexOf(key) + 1];
+    const other = next ? FOCUS_SLOTS.col(next) : null;
+    if (!col || !next || !other) return;
+    down.preventDefault();
+    down.stopPropagation();
+    gutter.setPointerCapture(down.pointerId);
+    gutter.classList.add("active");
+    const w0 = focusW[key] ?? 1, sum = w0 + (focusW[next] ?? 1);
+    const px = col.getBoundingClientRect().width + other.getBoundingClientRect().width;   // the pair's pixels = the pair's weights
+    const startX = down.clientX;
+    const MIN_W = 0.35;
+    const move = (ev: PointerEvent) => {
+      if (!px) return;
+      const w = Math.min(sum - MIN_W, Math.max(MIN_W, w0 + (ev.clientX - startX) * sum / px));
+      focusW = { ...focusW, [key]: w, [next]: sum - w };
+      applyFocusLayout();
+    };
+    const up = () => {
+      gutter.removeEventListener("pointermove", move);
+      gutter.removeEventListener("pointerup", up);
+      gutter.removeEventListener("pointercancel", up);
+      gutter.classList.remove("active");
+      for (const k of Object.keys(focusW)) focusW[k] = Math.round(focusW[k] * 1000) / 1000;   // three decimals in the blob
+      persistViewState();
+    };
+    gutter.addEventListener("pointermove", move);
+    gutter.addEventListener("pointerup", up);
+    gutter.addEventListener("pointercancel", up);
+  });
+}
+
+// The GRIP's KEYS (T410b; T409's grip promises them in its title): ArrowLeft / ArrowRight on a focused grip move
+// its block one slot within the section (ArrowUp / ArrowDown the same, the stacked layout's axis), persisted at
+// once — the keyboard's road to the drag. The order it moves from is the one on screen: the section's own, else
+// what the section follows (the board's, or the layout's default), exactly as the drag seeds itself.
+function wireGripKeys(grip: HTMLElement, key: string): void {
+  grip.addEventListener("keydown", (e) => {
+    const delta = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
+    if (!delta) return;
+    const colsEl = FOCUS_SLOTS.container();
+    if (!colsEl) return;
+    e.preventDefault();
+    e.stopPropagation();   // the grip's key, not the card cursor's (kbMode listens on the document for the same arrows)
+    const vertical = getComputedStyle(colsEl).flexDirection === "column";
+    const cur = FOCUS_SLOTS.get();
+    const fallback = FOCUS_SLOTS.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);
+    const hadCustom = cur.length === 3;
+    const order = (hadCustom ? cur : fallback).slice();
+    const from = order.indexOf(key), to = from + delta;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    order.splice(from, 1);
+    order.splice(to, 0, key);
+    // the drag's no-trace rule: a keyboard move that lands back on the arrangement the section follows keeps it
+    // FOLLOWING the board rather than pinning that arrangement as its own
+    FOCUS_SLOTS.set(!hadCustom && order.join() === fallback.join() ? [] : order);
+    persistViewState();
+  });
 }
 
 // Drag a section by its CATEGORY CHIP — in BOTH layouts now (the user 2026-08-24, reversing the
@@ -4335,9 +4451,36 @@ function applyColStack(): void {
 // section FOLLOWS the pointer along the drag axis (a transform, so nothing reflows under the hand)
 // and the displaced sections FLIP-animate into their provisional slots — the arrangement you see
 // mid-drag is the arrangement you get on drop.
-function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
+//
+// ONE implementation for two containers (T410): the BOARD (the chip drags a column of #feed-cols; colOrder,
+// the default `slots`) and the focused-session SECTION (the grip drags a block of #feed-focus; focusOrder). A
+// SlotDrag names the container (the drag axis is read from it), the order it reads and writes, the element per
+// key and the order a drag starts from when none is stored — so the BOUND is the container: a section drag
+// never touches a board column, and a board drag never reaches the section.
+type SlotDrag = {
+  container: () => HTMLElement | null;
+  col: (key: string) => HTMLElement | null;
+  get: () => string[];
+  set: (order: string[]) => void;
+  fallback: (layoutDefault: string[]) => string[];   // the seed order with nothing stored
+};
+const BOARD_SLOTS: SlotDrag = {
+  container: () => document.getElementById("feed-cols"),
+  col: (k) => document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + k),   // the board's, not the focused section's copy (T347)
+  get: () => colOrder,
+  set: (o) => { colOrder = o; applyColStack(); },
+  fallback: (d) => d,   // each layout's own CSS default
+};
+const FOCUS_SLOTS: SlotDrag = {
+  container: () => document.querySelector<HTMLElement>("#feed-focus .feed-focus-cols"),
+  col: (k) => document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + k),
+  get: () => focusOrder,
+  set: (o) => { focusOrder = o; applyFocusLayout(); },
+  fallback: (d) => (colOrder.length === 3 ? colOrder : d),   // the section follows the board until it has an order of its own
+};
+function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: SlotDrag = BOARD_SLOTS): void {
   chip.addEventListener("pointerdown", (down) => {
-    const colsEl = document.getElementById("feed-cols");
+    const colsEl = slots.container();
     if (!colsEl) return;
     const vertical = getComputedStyle(colsEl).flexDirection === "column";   // the drag AXIS, per layout
     down.preventDefault();
@@ -4348,20 +4491,19 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
     const edge = (r: DOMRect) => (vertical ? r.top : r.left);
     const midOf = (r: DOMRect) => (vertical ? r.top + r.height / 2 : r.left + r.width / 2);
     const translate = (d: number) => (vertical ? "translateY(" + d + "px)" : "translateX(" + d + "px)");
-    const fallback = vertical ? STACK_DEFAULT : ROW_DEFAULT;
-    const hadCustom = colOrder.length === 3;   // for the no-trace rule in up()
+    const fallback = slots.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);   // each layout's own default, or what the container follows
+    const hadCustom = slots.get().length === 3;   // for the no-trace rule in up()
     const start = pos(down);
     let slotShift = 0;   // the dragged section's own accumulated slot movement — folded into its
     //                      follow-transform so a re-slot never yanks it out from under the pointer
     const applyOrderFlip = (order: string[]) => {
       const els: Array<[string, HTMLElement]> = [];
       for (const k of ["asks", "needsInput", "completed"]) {
-        const e = document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + k);   // the board's, not the focused section's copy (T347)
+        const e = slots.col(k);   // this container's element for the key, never the other container's
         if (e) els.push([k, e]);
       }
       const before = new Map(els.map(([k, e]) => [k, edge(e.getBoundingClientRect())]));
-      colOrder = order;
-      applyColStack();
+      slots.set(order);
       for (const [k, e] of els) {
         const d = (before.get(k) || 0) - edge(e.getBoundingClientRect());
         if (!d) continue;
@@ -4371,13 +4513,14 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
       }
     };
     const move = (ev: PointerEvent) => {
-      const order = (colOrder.length === 3 ? colOrder : fallback).slice();
+      const cur = slots.get();
+      const order = (cur.length === 3 ? cur : fallback).slice();
       const from = order.indexOf(key);
       // the slot whose axis midpoint the pointer is past — walk the OTHER two sections' rects
       let to = from;
       for (const other of order) {
         if (other === key) continue;
-        const oc = document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + other);
+        const oc = slots.col(other);
         if (!oc) continue;
         const m = midOf(oc.getBoundingClientRect());
         const oi = order.indexOf(other);
@@ -4405,11 +4548,10 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
       col.classList.remove("col-dragging");
       // a drag dropped back where it started leaves NO trace (review 2026-08-24): without a
       // pre-existing custom order, ending on this layout's own default must not mint an EXPLICIT
-      // order — that would silently re-arrange the OTHER layout, which keeps a different default
-      if (!hadCustom && colOrder.length === 3 && colOrder.join() === fallback.join()) {
-        colOrder = [];
-        applyColStack();
-      }
+      // order — that would silently re-arrange the OTHER layout, which keeps a different default (and in
+      // the section, dropping back on the board's arrangement keeps FOLLOWING the board rather than pinning it)
+      const cur = slots.get();
+      if (!hadCustom && cur.length === 3 && cur.join() === fallback.join()) slots.set([]);
       persistViewState();
     };
     chip.addEventListener("pointermove", move);
@@ -4641,29 +4783,64 @@ function ensureFocusSection(list: HTMLElement): HTMLElement {
     sec = el("section", "");
     sec.id = "feed-focus";
     sec.setAttribute("aria-label", "the chat's focused session");
+    // the LABEL (T410b, the user 2026-09-14): "Current session: <name>", the section's own fold control. The label
+    // text is a button carrying the accessible name and aria-expanded; the NAME keeps the session headers' click
+    // (open, or offer to revive) and its hover title; a click anywhere else on the row folds the whole section to
+    // this row (the blocks, their cards and the quiet line hidden, the divider standing) and back. The caret is the
+    // block carets' vocabulary (▾ open, ▸ folded) and sits at the END of the label line (the user's word); folded,
+    // the focused session's card count follows the name in the column count's dress, before the caret (paintFocusFold).
     const head = el("div", "feed-focus-head");
+    const fold = el("button", "feed-focus-fold") as HTMLButtonElement; fold.type = "button"; fold.textContent = "Current session:";
+    fold.setAttribute("aria-expanded", "true"); fold.setAttribute("aria-controls", "feed-focus-cols");
     const nm = el("a", "fname"); nm.title = "open this session";
-    const cap = el("span", "feed-focus-cap"); cap.textContent = "focused";   // the one word that says why this session sits on top
-    head.append(nm, cap);
+    const caret = el("span", "feed-focus-caret"); caret.textContent = "▾"; caret.setAttribute("aria-hidden", "true");
+    const ncount = el("span", "feed-col-count feed-focus-count");
+    head.append(fold, nm, ncount, caret);
+    head.addEventListener("click", (ev) => {
+      if ((ev.target as HTMLElement).closest(".fname")) return;   // the name's own click (it stops propagation too)
+      focusFolded = !focusFolded;
+      paintFocusFold();
+      persistViewState();
+    });
     const empty = el("div", "feed-focus-empty");
-    const cols = el("div", "feed-cols feed-focus-cols");
+    const cols = el("div", "feed-cols feed-focus-cols"); cols.id = "feed-focus-cols";   // what the label's aria-controls names
     const lists: Partial<Record<Column, HTMLElement>> = {}, counts: Partial<Record<Column, HTMLElement>> = {};
-    // the board's own column chips and labels (ensureCols), minus the fold caret and the drag: the section's
-    // columns follow the board's order (applyColStack writes --col-order to both) and never fold on their own
+    // the board's own column chips and labels (ensureCols), with the section's OWN furniture (T410): a GRIP left of
+    // the chip drags the block within the section (the chip itself stays inert here — a chip drag is the board's,
+    // and a block never crosses the divider), a fold caret folds the block to its head in BOTH layouts, and a
+    // gutter on the block's right edge resizes it against its neighbour. Order, widths and folds are the
+    // section's own state (applyFocusLayout), never the board's. Build-once nodes, click-safe across renders.
     for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
       const col = el("div", "feed-col col-" + key);
       const h = el("div", "feed-col-head");
+      // the grip is a BUTTON (T409's vocabulary, shared with the settings' widget rows): the six-dot glyph, named for
+      // assistive tech, and the keyboard's handle too — the arrow keys move the block a slot (wireGripKeys)
+      const grip = el("button", "drag-grip") as HTMLButtonElement; grip.type = "button"; grip.textContent = "⠿";   // the six-dot grip glyph
+      grip.setAttribute("aria-label", "Drag to reorder: " + label); grip.title = "Drag to reorder, or press the arrow keys";
       const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
+      const fold = el("button", "fcol-fold"); fold.dataset.label = label;
+      fold.setAttribute("aria-label", "Collapse " + label);
+      fold.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (collapsedFocusCols.has(key)) collapsedFocusCols.delete(key); else collapsedFocusCols.add(key);
+        applyFocusLayout();
+        persistViewState();
+      });
       const count = el("span", "feed-col-count");
-      h.append(name, count);
+      h.append(grip, name, fold, count);
+      wireColDrag(grip, col, key, FOCUS_SLOTS);   // the grip drags, within the section only
+      wireGripKeys(grip, key);                    // …and, focused, the arrow keys move the block a slot
       const body = el("div", "feed-col-list");
-      col.append(h, body);
+      const gutter = el("div", "focus-gutter"); gutter.title = "drag to resize";
+      wireFocusGutter(gutter, key);
+      col.append(h, body, gutter);
       cols.appendChild(col);
       lists[key] = body; counts[key] = count;
     }
     const rule = el("hr", "feed-focus-divider");
     sec.append(head, empty, cols, rule);
     (sec as any)._head = head; (sec as any)._name = nm; (sec as any)._empty = empty; (sec as any)._cols = cols;
+    (sec as any)._fold = fold; (sec as any)._caret = caret; (sec as any)._count = ncount;
     (sec as any)._lists = lists; (sec as any)._counts = counts;
   }
   // directly above the board, every render: right before #feed-cols (the host loading strip, which announces
@@ -4685,7 +4862,7 @@ function focusedIdentity(sid: string): { name: string; color: { bg: string; fg: 
 }
 function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>, gate: GateEnv): void {
   const sec = ensureFocusSection(list) as any;
-  const head = sec._head as HTMLElement, nm = sec._name as HTMLElement, empty = sec._empty as HTMLElement, cols = sec._cols as HTMLElement;
+  const head = sec._head as HTMLElement, nm = sec._name as HTMLElement, empty = sec._empty as HTMLElement;
   const lists = sec._lists as Record<Column, HTMLElement>, counts = sec._counts as Record<Column, HTMLElement>;
   const total = focusedCardCount(buckets, entryCards);
   const sid = focusedSid;
@@ -4694,7 +4871,10 @@ function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>,
     // the name nodes are minted only when what they show changes (the session headers' rule): a Text-node
     // replacement per render is the churn the card gate exists to avoid
     const sig = who.name + "\u0000" + sid + "\u0000" + (hostIsDown(sid) ? "d" : "");
-    if (sec._nmSig !== sig) { sec._nmSig = sig; nm.replaceChildren(...hostNameNodes(who.name, sid)); }
+    if (sec._nmSig !== sig) {
+      sec._nmSig = sig; nm.replaceChildren(...hostNameNodes(who.name, sid));
+      (sec._fold as HTMLElement).setAttribute("aria-label", "Current session: " + who.name);   // the label's accessible name (T410b)
+    }
     nm.style.color = who.color ? who.color.bg : "";
     nm.classList.toggle("dead", !who.live);
     nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(sid, who.live, who.name); };   // the session headers' click: open, or offer to revive
@@ -4704,10 +4884,11 @@ function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>,
     setText(empty, "No session is focused in the chat");
   }
   // the two quiet states: no tab focused → the line stands in for the head; a focused session with no cards →
-  // the head stays and the line says so. The rule stays in both, so the section still reads as a section.
+  // the head stays and the line says so. The rule stays in both, so the section still reads as a section. The
+  // fold (T410b) hides the blocks and the line under the label: paintFocusFold owns those two displays.
   head.style.display = sid ? "" : "none";
-  empty.style.display = sid && total ? "none" : "";
-  cols.style.display = total ? "" : "none";
+  sec._total = total;
+  paintFocusFold();
   const desired = new Set<string>();
   for (const k of Object.keys(buckets) as Column[]) {
     reconcileFocusCol(lists[k], buckets[k], gate, desired);
@@ -4760,6 +4941,24 @@ function reconcileFocusCol(listEl: HTMLElement, entries: Entry[], gate: GateEnv,
     if (cur === node) { cur = cur.nextSibling; continue; }
     listEl.insertBefore(node, cur);
   }
+}
+// The section's FOLD (T410b): folded, the label row stands alone — the blocks (and their cards) and the quiet line
+// hidden, the divider standing — with the focused session's card count after the name; the caret reads the state
+// and the label button says it to assistive tech. Only while a session is focused (no focus: the quiet line, as
+// ever). Idempotent; runs per render (the count follows the cards) and per click on the label.
+function paintFocusFold(): void {
+  const sec = document.getElementById("feed-focus") as any;
+  if (!sec) return;
+  const total: number = sec._total || 0;
+  const folded = !!focusedSid && focusFolded;
+  sec.classList.toggle("folded", folded);
+  (sec._empty as HTMLElement).style.display = focusedSid && (total || folded) ? "none" : "";
+  (sec._cols as HTMLElement).style.display = total && !folded ? "" : "none";
+  (sec._caret as HTMLElement).textContent = folded ? "▸" : "▾";
+  (sec._fold as HTMLElement).setAttribute("aria-expanded", String(!folded));
+  const count = sec._count as HTMLElement;
+  setText(count, folded && total ? String(total) : "");   // the board's rule: a number only when there are cards
+  count.style.display = folded && total ? "" : "none";
 }
 function removeFocusSection(): void {
   document.getElementById("feed-focus")?.remove();
@@ -5371,7 +5570,7 @@ function render() {
     // a card OR a session header under the pointer (T285): both hold the gate
     const hov = document.querySelector<HTMLElement>(".feed-cols .fitem:hover, .feed-sess-head:hover");
     if (!hov) { freezeKey = null; flushFreeze(); }
-    else { const k = hov.classList.contains("feed-sess-head") ? sessFreezeKey(hov) : kbHoverId(hov); if (k && k !== freezeKey) freezeKey = k; }
+    else { const k = hov.classList.contains("feed-sess-head") ? sessFreezeKey(hov) : kbHoverId(hov); if (k && k !== freezeKey) freezeKey = k; freezeCopy = isFocusCopy(hov); }
   }
   paintFreezeBadges();   // hover-freeze: local renders while frozen re-sync the +N/-N hints (no-op unfrozen)
   // stale-ring heal: releaseTabScope sweeps the DOCUMENT, but a card DETACHED at release (filtered
@@ -5599,12 +5798,16 @@ function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNotice
 // (repo rule, no timers): the hovered card's mouseleave applies everything at once — a card CLEARED
 // under the pointer flushes too, via its synthetic mouseleave — and window blur is the backstop.
 let freezeKey: string | null = null;     // the hovered card's focus key, or null — pointer truth, no debounce
+let freezeCopy = false;                  // which twin holds it: the focused section's copy or the board's element (T410)
 let pendingFeedPayload: any = null;      // newest queued payload; older ones are superseded unseen
 let focusStale = false;                  // an activeChat frame landed while the gate was held: the section repaints on release (T347)
-function freezeEnter(key: string): void { freezeKey = key; }
-function freezeLeave(key: string): void {
-  if (tabScopeKey === key) releaseTabScope();   // hover-away releases the keyboard scope too
-  if (freezeKey !== key) return;
+function freezeEnter(key: string, copy = false): void { freezeKey = key; freezeCopy = copy; }
+function freezeLeave(key: string, copy = false): void {
+  if (tabScopeKey === key && tabScopeCopy === copy) releaseTabScope();   // hover-away releases the keyboard scope too, and
+  //                                                                        only the scope held on THIS twin (T347b low, T410)
+  // both twins of a card share the bare key (T347), so the pair (key, copy) is the hold: leaving one twin never
+  // releases a hold taken on the other (the pointer crossing from the board's card to its copy above)
+  if (freezeKey !== key || freezeCopy !== copy) return;
   freezeKey = null;
   flushFreeze();
 }
@@ -5729,7 +5932,7 @@ function paintFreezeBadges(): void {
   // (both show when both are true). Body-mounted and pointer-inert: it must never affect hover,
   // and the frozen card's rect is stable by construction (that is the freeze's whole contract).
   const selfKey = freezeKey || tabScopeKey;
-  const selfCard = selfKey ? cardElByKey(selfKey) : null;
+  const selfCard = selfKey ? cardElByKey(selfKey, freezeKey ? freezeCopy : tabScopeCopy) : null;   // the HELD twin's rect (T410)
   let selfNote = document.getElementById("freeze-selfnote");
   if (!selfKey || !selfCard || !pendingSelfChanged(selfKey)) {
     selfNote?.remove();

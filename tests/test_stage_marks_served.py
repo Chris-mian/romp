@@ -3,8 +3,11 @@
 document (written by a first kernel's exit drain), a second kernel over the same state root: the judge tiers' first pass
 builds through their per-session pools, a proto-2 chat client drives one real history request over the socket, and /perf
 then reads NO `none` key in asmIndex.materializedByStage or asmCheckpoint.hydratedByStage, a pool build under
-`judge.triage:<caller>`, and the socket request's build under `http.GET.ws:<caller>`. Synthetic only: invented text,
-placeholder uuids, TESTHOST. Counts only under ROMP_SERVED_TESTS_REQUIRE=1 (a served module never skips conditionally there)."""
+`judge.triage:<caller>`, and the socket request's build under `http.GET.ws:<caller>`. The request comes AFTER the judge's pass
+and the push, the race a slower runner produced staged on purpose, and the second kernel's resident index cap is tiny, so the
+request rebuilds the rows it reads whoever built them first (2026-09-14: the lab had assumed the request was the first to need
+them and read red in CI when it was not). Synthetic only: invented text, placeholder uuids, TESTHOST. Counts only under
+ROMP_SERVED_TESTS_REQUIRE=1 (a served module never skips conditionally there)."""
 import json
 import os
 import re
@@ -68,9 +71,13 @@ class StageMarksOnAServedBoot(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.lab, ignore_errors=True)
 
-    def _boot(self):
+    def _boot(self, index_cap=None):
         port = _free_port()
-        env = _lab.kernel_env(self.lab, self.claude, self.dist, port, self.token, ROMP_HOST_NAME="TESTHOST", ROMP_PERF_STACKS="1")
+        seams = {"ROMP_HOST_NAME": "TESTHOST", "ROMP_PERF_STACKS": "1"}
+        if index_cap is not None:
+            seams["ROMP_ASM_INDEX_CAP"] = str(index_cap)   # a tiny resident cap: every reader rebuilds what an earlier one built and the LRU
+        #                                                    dropped, so the socket request mints rows under ITS mark whoever built them first
+        env = _lab.kernel_env(self.lab, self.claude, self.dist, port, self.token, **seams)
         logp = os.path.join(self.lab, "kernel-%d.log" % port)
         k = subprocess.Popen([os.path.join(BIN, "romp-kernel")], stdout=open(logp, "w"), stderr=subprocess.STDOUT, env=env)
         for _ in range(200):
@@ -131,11 +138,18 @@ class StageMarksOnAServedBoot(unittest.TestCase):
             self._stop(k1)
         docs = [f for f in os.listdir(os.path.join(self.state, "checkpoints")) if f.endswith(".asm.json.gz")]
         self.assertGreaterEqual(len(docs), 1, "the exit wrote at least one assembly document; wrote: %s" % docs)
-        k2, p2, log2 = self._boot()
+        k2, p2, log2 = self._boot(index_cap=200)
         try:
-            # the socket request FIRST, before the judge's first pass (held BOOT_JUDGE_HOLD_S after boot) has built the documents'
-            # rows: the history window it asks for, anchored deep in the pre-cut part, is rendered from rows nobody has built yet,
-            # so the request itself mints a build or a hydration key under http.GET.ws (round three, low 5)
+            # The judge's first pass and the pusher's cycle FIRST: the race staged on purpose. Round three's form sent the socket
+            # request before the judge's pass (held BOOT_JUDGE_HOLD_S after boot) so the request would be the first to need the
+            # documents' rows and mint them under http.GET.ws; on a slower runner the pass and the push had built and memoized them
+            # before the request arrived, and the request minted nothing of its own (CI 2026-09-14: builds under judge.triage and
+            # push only, none under http.GET.ws). With the pre-warm staged here and the resident cap tiny (index_cap above), the
+            # rows the request reads were built by the pass and dropped by the LRU since, so the request rebuilds them under its own
+            # mark deterministically; without the cap this staged order reads no http.GET.ws key (the red the race produced).
+            self._wait_for(p2, lambda pf: (pf.get("judge") or {}).get("passes", 0) >= 1
+                           and any(k.startswith("judge.triage:") for k in ((pf.get("asmIndex") or {}).get("materializedByStage") or {})),
+                           90, "the judge's first pass built through its pools under judge.triage")
             c = ChatClient(p2, self.token, WEB)
             try:
                 self._session_frame(c, log2)
@@ -157,9 +171,6 @@ class StageMarksOnAServedBoot(unittest.TestCase):
                                 % (by_ws, hy_ws, self._log_tail(log2)))
             finally:
                 c.close()
-            self._wait_for(p2, lambda pf: (pf.get("judge") or {}).get("passes", 0) >= 1
-                           and any(k.startswith("judge.triage:") for k in ((pf.get("asmIndex") or {}).get("materializedByStage") or {})),
-                           90, "the judge's first pass built through its pools under judge.triage")
             perf = self._get(p2, "/perf")
             by_stage = (perf.get("asmIndex") or {}).get("materializedByStage") or {}
             hy_stage = (perf.get("asmCheckpoint") or {}).get("hydratedByStage") or {}
