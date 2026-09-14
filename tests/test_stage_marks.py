@@ -37,8 +37,17 @@ em = km.em
 KERNEL_DIR = os.path.join(os.path.dirname(HERE), "kernel")
 SOURCES = {"kernel.py": open(os.path.join(KERNEL_DIR, "kernel.py"), encoding="utf-8").read(),
            "judge.py": open(os.path.join(KERNEL_DIR, "judge.py"), encoding="utf-8").read()}
+_TREES = {}                                                  # module text -> its parsed tree: kernel.py is parsed once per module (item 5)
+
+
+def _parse(text):
+    tree = _TREES.get(text)
+    if tree is None:
+        tree = _TREES[text] = ast.parse(text)
+    return tree
 SID = "11111111-2222-4333-8444-0000000000d5"
 CTORS = ("Thread", "Timer", "ThreadPoolExecutor", "_TimedPool")
+POOL_SHAPED = ("ThreadPoolExecutor", "ProcessPoolExecutor", "Executor", "_TimedPool", "Pool")   # any pool-shaped name is a row
 
 # Threads that can build no atom and hydrate no body: pure I/O helpers, keyed by SITE (file, the enclosing function of the
 # Thread line, the target's name), each with the reason it is left unmarked. A name that recurs (go, run, work, one, _ask,
@@ -81,7 +90,23 @@ ALLOW = {
 def _ctor_of(call):
     f = call.func
     n = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
-    return n if n in CTORS else None
+    return n if (n in CTORS or n in POOL_SHAPED or (n or "").endswith("Pool")) else None
+
+
+def _pool_bindings(tree):
+    """What the module's own names mean for pools: `timed` holds the bare names that ARE the judge's timed pool (its class and any
+    bare name assigned to it), `imported` the names bound by an import of a raw executor (aliases included). Only a bare name may
+    inherit the rebinding; an attribute spelling (concurrent.futures.ThreadPoolExecutor) or an alias never does (item 1)."""
+    timed, imported = set(), {}
+    for n in tree.body:
+        if isinstance(n, ast.ClassDef) and n.name == "_TimedPool":
+            timed.add("_TimedPool")
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Name) and n.value.id in timed:
+            timed.update(t.id for t in n.targets if isinstance(t, ast.Name))
+        if isinstance(n, ast.ImportFrom) and n.module == "concurrent.futures":
+            for a in n.names:
+                imported[a.asname or a.name] = a.name
+    return timed, imported
 
 
 def _names_in(node):
@@ -101,7 +126,13 @@ def _def_marked(fn):
     for d in fn.decorator_list:
         if isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id == "_stage_marked":
             return True
-    for n in ast.walk(fn):
+    def own_body(node):                                   # the def's own statements: a nested def's body is that def's, not this one's
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            yield child
+            yield from own_body(child)
+    for n in own_body(fn):
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_set_stage":
             return True
     return False
@@ -112,15 +143,14 @@ def census(fname, text):
     name, verdict) where the verdict is "marked", "allowed", "pool", or a reason it is UNMARKED. Targets are resolved by
     scope: the def of that name inside the enclosing function (the last one defined before the site), else the module-level
     def; a bare pool (any constructor that is not the judge's timed one, whose submit carries the mark) is unmarked."""
-    tree = ast.parse(text)
+    tree = _parse(text)
     module_defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     for n in tree.body:                                          # decorated module-level defs and class bodies (the handler)
         if isinstance(n, ast.ClassDef):
             for m in n.body:
                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     module_defs.setdefault(m.name, m)
-    timed = {"_TimedPool"} | ({"ThreadPoolExecutor"} if any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ThreadPoolExecutor" for t in n.targets)
-                                                           and isinstance(n.value, ast.Name) and n.value.id == "_TimedPool" for n in tree.body) else set())
+    timed, imported = _pool_bindings(tree)
     funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     def enclosing(line):
         best = None
@@ -132,7 +162,7 @@ def census(fname, text):
         local = [n for n in (ast.walk(enc) if enc is not None else ()) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                  and n.name == name and n is not enc and n.lineno < line]
         if local:
-            return local[-1]
+            return max(local, key=lambda n: n.lineno)     # the last def before the site by LINE, not by ast.walk's breadth order (item 2)
         return module_defs.get(name)
     rows = []
     for node in ast.walk(tree):
@@ -141,8 +171,14 @@ def census(fname, text):
         ctor = _ctor_of(node)
         enc = enclosing(node.lineno)
         enc_name = enc.name if enc is not None else "<module>"
-        if ctor in ("ThreadPoolExecutor", "_TimedPool"):
-            rows.append((node.lineno, ctor, enc_name, None, "pool" if ctor in timed else "a bare pool: its submit carries no mark"))
+        if ctor not in ("Thread", "Timer"):
+            bare_name = isinstance(node.func, ast.Name)
+            if bare_name and ctor in timed:
+                rows.append((node.lineno, ctor, enc_name, None, "pool"))                     # the judge's timed pool: its submit rides
+            elif ctor in CTORS or ctor in imported or ctor in POOL_SHAPED:
+                rows.append((node.lineno, ctor, enc_name, None, "a bare pool: its submit carries no mark"))
+            else:
+                rows.append((node.lineno, ctor, enc_name, None, "an unrecognised pool-shaped call the census cannot vouch for"))
             continue
         kw = next((k for k in node.keywords if k.arg == ("target" if ctor == "Thread" else "function")), None)
         target = kw.value if kw is not None else (node.args[1] if len(node.args) > 1 else None)
@@ -185,7 +221,8 @@ class StageMarksCensus(unittest.TestCase):
 
     def test_every_listed_helper_site_still_exists(self):
         """A stale ALLOW entry would silently vouch for nothing: every key names a site the census saw."""
-        sites = {(f, enc, t) for f, text in SOURCES.items() for _, _, enc, t, _ in census(f, text) if t}
+        sites = {(f, enc, t) for f, text in SOURCES.items() for _, _, enc, t, v in census(f, text)
+                 if t and v in ("marked", "allowed") or (t and v.startswith("unmarked"))}   # rows whose target resolved to a def (item 3)
         stale = sorted(k for k in ALLOW if k not in sites)
         self.assertEqual(stale, [], "ALLOW entries with no site behind them")
 
@@ -245,11 +282,54 @@ def _start():
     def test_a_bare_pool_is_flagged_where_the_judges_timed_pool_is_covered_by_its_submit(self):
         """Round three, low 4: only _TimedPool.submit carries the mark; a bare ThreadPoolExecutor is not covered."""
         self.assertEqual(self._verdicts(self.SNIPPET_POOL), [("_fan", None, "a bare pool")])
-        self.assertEqual(self._verdicts("ThreadPoolExecutor = _TimedPool\n" + self.SNIPPET_POOL), [("_fan", None, "pool")])
+        self.assertEqual(self._verdicts("class _TimedPool:\n    pass\nThreadPoolExecutor = _TimedPool\n" + self.SNIPPET_POOL), [("_fan", None, "pool")])
 
     def test_a_generic_closure_name_outside_its_listed_site_is_flagged(self):
         """Round three, medium 2: ALLOW is keyed by site, so a new `go` closure in an unlisted function is not vouched for."""
         self.assertEqual(self._verdicts(self.SNIPPET_CLOSURE), [("_elsewhere", "go", "unmarked")])
+
+    SNIPPET_NESTED = '''
+def _outer():
+    def _inner():
+        _set_stage("x")
+    pass
+
+def _start():
+    threading.Thread(target=_outer).start()
+'''
+    SNIPPET_ORDER = '''
+def _dispatch():
+    def _deep_holder():
+        def _go():
+            pass
+    def _go():
+        _set_stage("y")
+    threading.Thread(target=_go).start()
+'''
+    SNIPPET_ALIAS = '''
+from concurrent.futures import ThreadPoolExecutor as _RawPool
+class _TimedPool:
+    pass
+ThreadPoolExecutor = _TimedPool
+def _fan():
+    with _RawPool(max_workers=2) as ex:
+        ex.submit(print)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex2:
+        ex2.submit(print)
+'''
+
+    def test_an_inner_closures_set_stage_does_not_mark_its_outer_def(self):
+        """Item 2: _def_marked walked into nested defs, so an unmarked def whose inner closure sets a stage read as marked."""
+        self.assertEqual(self._verdicts(self.SNIPPET_NESTED), [("_start", "_outer", "unmarked")])
+
+    def test_the_scope_binds_the_last_def_by_line_not_by_walk_order(self):
+        """Item 2: a deeper earlier def must not win over the shallower later one the scope binds."""
+        self.assertEqual(self._verdicts(self.SNIPPET_ORDER), [("_dispatch", "_go", "marked")])
+
+    def test_an_aliased_or_attribute_spelled_raw_pool_is_flagged_where_only_a_bare_rebound_name_inherits(self):
+        """Item 1: judge.py rebinds ThreadPoolExecutor to its timed pool; an alias of the raw executor and an attribute spelling
+        are pools whose submit carries no mark, and neither inherits the rebinding."""
+        self.assertEqual(self._verdicts(self.SNIPPET_ALIAS), [("_fan", None, "a bare pool"), ("_fan", None, "a bare pool")])
 
     def test_a_set_stage_in_the_defs_own_body_and_a_wrapper_at_the_site_both_mark(self):
         self.assertEqual(self._verdicts(self.SNIPPET_MARKED), [("_start", "_tier", "marked"), ("_start", '_stage_marked("warm")(_tier)', "marked")])
