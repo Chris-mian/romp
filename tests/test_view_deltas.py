@@ -857,6 +857,7 @@ class TwoThreadsOneClient(unittest.TestCase):
         # client's dedup dict while the pusher's _send_client inserted keys into it — "dictionary changed size during
         # iteration", the ready dispatch dying in the handler's generic except, and the _push_one repair skipped.
         client, _q, _lock = km._new_ws_client("chat", "w1", object(), start_sender=False)
+        client["handshake"] = True   # its ready has run: a socket before its ready is served no chat frame (T386 stage 2, round eleven)
         client["send"] = lambda s: None
         client.setdefault("sent", {})[("chat", S1)] = ("sig", 0.0); client["echat"] = {S1: 1}
         client["dlock"].acquire()                       # "another thread" holds the client's lock…
@@ -911,6 +912,7 @@ class TwoThreadsOneClient(unittest.TestCase):
         # holder) and the lock is released — the fold sends the FULL session; a lock only around the inner
         # _send_client would have read echat first and sent the chatTail.
         client, _q, _lock = km._new_ws_client("chat", "w1", object(), start_sender=False)
+        client["handshake"] = True   # its ready has run: a socket before its ready is served no chat frame (T386 stage 2, round eleven)
         frames = []
         client["send"] = lambda s: frames.append(json.loads(s)["type"])
         client["echat"] = {S1: ("u1", 0)}
@@ -937,6 +939,7 @@ class TwoThreadsOneClient(unittest.TestCase):
         # ready reset, and worse on the client: render.ts latches awaitingFull until a full session lands, so a
         # chatTail sent instead left the tab frozen until reconnect. It now runs under the client's slot lock.
         client, _q, _lock = km._new_ws_client("chat", "w1", object(), start_sender=False)
+        client["handshake"] = True   # its ready has run: a socket before its ready is served no chat frame (T386 stage 2, round eleven)
         frames = []
         client["send"] = lambda s: frames.append(json.loads(s)["type"])
         client["echat"] = {S1: ("u1", 0), S2: ("x1", 0)}
@@ -965,6 +968,7 @@ class TwoThreadsOneClient(unittest.TestCase):
         # Here the sender has already DECIDED the tail and is parked inside _send_client: a reset arriving now must
         # still wait, or the tail lands after the pops, echat is written back, and the repair push finds a held tail.
         client, _q, _lock = km._new_ws_client("chat", "w1", object(), start_sender=False)
+        client["handshake"] = True   # its ready has run: a socket before its ready is served no chat frame (T386 stage 2, round eleven)
         client["send"] = lambda s: None
         client["echat"] = {S1: ("u1", 0)}
         client.setdefault("sent", {})[("chat", S1)] = ("sig", time.time())

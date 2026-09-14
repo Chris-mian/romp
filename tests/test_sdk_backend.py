@@ -12,6 +12,7 @@ Two layers:
 """
 import asyncio
 import inspect
+import contextlib
 import io
 import os
 import json
@@ -4911,6 +4912,195 @@ class RegListCache(unittest.TestCase):
         sb.list_regs(self.sd)              # warm
         (self.sd / "sdk" / "bbbb.json").unlink()
         self.assertEqual([r["sid"] for r in sb.list_regs(self.sd)], ["aaaa"])
+
+
+class UpdateRegDroppingUnreadable(unittest.TestCase):
+    """_update_reg_dropping tells an unreadable reg from an absent one by an explicit stat (2026-09-14): under a mode-000 sdk/
+    CPython 3.14's Path.exists() answered False, so the guard read absent and the write below it would have gutted a reg the
+    backend could not read. The real fault staged, never a stub of the call that would raise."""
+
+    SID = "11111111-2222-3333-4444-555555555577"
+
+    def test_a_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwdPending": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        err = io.StringIO()
+        try:                                                    # restored in a finally, as every staged-fault test here
+            with contextlib.redirect_stderr(err):
+                be._update_reg_dropping(self.SID, drop=("cwdPending",), cwd="/tmp/x")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), "the refusal is said: %r" % err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "cwdPending": True}, "the reg untouched, never gutted")
+
+    def test_update_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        """Round two's medium 1: _update_reg kept the exists() guard its twin dropped; under a mode-000 sdk/ the guard read absent
+        and the write raised PermissionError out of the caller from inside write_reg on 3.14 (raised out of the guard on 3.13)."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "alive": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                be._update_reg(self.SID, cwd="/tmp/x")          # must not raise, must not write
+        finally:
+            os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "alive": True}, "name and alive stand")
+
+    def test_a_symlink_loop_reg_path_is_never_a_writable_absence(self):
+        """ELOOP: Path.exists() answered False on every interpreter, so _update_reg built {sid}+fields over a path that cannot hold
+        a reg and the session lost name and alive (the 2026-08-31 blink class); read_reg_for_rmw answered {} there, the
+        writable-empty base its docstring forbids. A writer may build a fresh record only on ENOENT."""
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        p = sb._reg_path(root, self.SID); p.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(p.name, p)                                   # a loop: the path names itself
+        self.assertIsNone(sb.read_reg_for_rmw(root, self.SID), "a loop is not an absent reg: None, the caller skips its write")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            be._update_reg(self.SID, name="x")
+            be._update_reg_dropping(self.SID, drop=("cwdPending",), name="y")
+        self.assertEqual(err.getvalue().count("unreadable"), 2, err.getvalue())
+        self.assertTrue(os.path.islink(p) and not os.path.exists(p), "the loop stands, nothing was written through it")
+        self.assertEqual(sb.read_reg_for_rmw(root, "11111111-2222-3333-4444-555555555599"), {}, "a genuinely absent reg: the empty base")
+
+    def test_read_reg_for_rmw_answers_none_under_an_unlistable_directory(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "bgLedger": [1, 2, 3]})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        try:
+            self.assertIsNone(sb.read_reg_for_rmw(root, self.SID), "unreadable: None, never the writable-empty base")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual(sb.read_reg_for_rmw(root, self.SID)["bgLedger"], [1, 2, 3])
+
+
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
+    """spawnedAt is the CLI's epoch (judge _cli_epoch, the bg-tasks ghost gate, the evidence gate, the planner's persisted
+    memo): a connect that ATTACHES to a live host keeps it, a connect that spawns moves it (2026-09-14: every kernel boot
+    under session hosts re-stamped every attached session). The decision is made at the transport's OUTCOME inside the
+    connect loop, never at the lease pre-read (round two: a host ending between the pre-read and the transport read, or a
+    live lease under hosts off, spawns a fresh CLI the prediction called an attach, and the reverse race attaches to a
+    survivor the prediction called a spawn). The pins drive the REAL connect loop (`_run` -> `_amain`) with the transport
+    road stubbed to each shape and a fake SDK client that records the reg at the connect and ends the thread."""
+
+    SID = "11111111-2222-3333-4444-555555555588"
+    T0 = 1700000000
+
+    def setUp(self):
+        self._orig_client = _sdk.ClaudeSDKClient
+
+    def tearDown(self):
+        _sdk.ClaudeSDKClient = self._orig_client
+
+    def _world(self, hosts):
+        root = tempfile.mkdtemp()
+        open(os.path.join(root, "session-hosts"), "w").write(hosts)
+        self.logs = []
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None, log=self.logs.append)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwd": "/tmp", "spawnedAt": self.T0})
+        return root, be, sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+
+    def _live_host_lease(self, root):
+        """A lease that reads 'attach' at the pre-read: its CLI pid and holder are THIS process (alive, start time matching),
+        the holder a host, the beat now."""
+        pid = os.getpid(); start = sb.proc_start(pid); now = time.time()
+        sb.write_lease(root, {"sid": self.SID, "fsid": self.SID, "name": "web", "pid": pid, "start": start,
+                              "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": self.T0, "t": now})
+
+    def _drive(self, be, s, root, roads, incomplete_first=False):
+        """Run the real connect loop: `roads` is the transport's answer per iteration ("attach", "spawn-host", "child"); the fake
+        client records the reg's spawnedAt at each connect, then ends the thread (an incomplete attach on the first iteration
+        when asked, which the loop retries on its next iteration as a respawn). Returns the recorded stamps per iteration."""
+        seen = []; calls = {"n": 0}; sid = self.SID
+        class FakeTransport:
+            pass
+        async def transport_for(sess, opts, msg_classes):
+            road = roads[min(calls["n"], len(roads) - 1)]
+            if road == "attach":
+                sess._host_is_attach = True
+                return FakeTransport()
+            if road == "spawn-host":
+                return FakeTransport()
+            return None                                      # a kernel child
+        class FakeHost:                                       # an attach that reached the host (hello) but did not complete
+            hello = {"ok": True}; _init_pending = True; exit_info = None
+        class FakeClient:
+            def __init__(self, options=None, transport=None):
+                pass
+            async def __aenter__(self):
+                calls["n"] += 1
+                seen.append(sb.read_reg(root, sid).get("spawnedAt"))
+                if incomplete_first and calls["n"] == 1:
+                    s._host = FakeHost()                     # the loop's incomplete-attach branch: _reconnect and retry
+                    raise TimeoutError("initialize timed out")
+                s.ended = True                               # the last connect: the thread ends on this raise
+                raise RuntimeError("stop: the connect point was reached")
+            async def __aexit__(self, *a):
+                return False
+        be._host_transport_for = transport_for
+        _sdk.ClaudeSDKClient = FakeClient
+        s._run()
+        self.assertTrue(seen, "the connect point was never reached; the backend said: %s" % "\n".join(str(m) for m in self.logs[-6:]))
+        return seen
+
+    def test_a_host_ending_between_the_pre_read_and_the_transport_read_spawns_and_stamps(self):
+        """Road one: the pre-read says attach (a live lease), the transport finds the host gone and spawns a fresh host and
+        CLI; the fresh CLI takes a fresh epoch (the base kept the dead CLI's)."""
+        root, be, s = self._world("on"); self._live_host_lease(root)
+        self.assertTrue(be._connect_would_attach(s), "the pre-read: attach")
+        seen = self._drive(be, s, root, ["spawn-host"])
+        self.assertEqual(len(seen), 1); self.assertGreater(seen[0], self.T0, "stamped at the outcome, the prediction notwithstanding")
+
+    def test_hosts_off_with_a_live_lease_spawns_a_kernel_child_and_stamps(self):
+        """Road two: hosts OFF with a live host lease (the rollback shape): the pre-read says attach, the transport returns
+        no host transport, a plain kernel-child CLI spawns; its epoch is fresh."""
+        root, be, s = self._world("off"); self._live_host_lease(root)
+        self.assertTrue(be._host_lease_applies(s) and be._connect_would_attach(s), "the pre-read: attach through the live lease")
+        seen = self._drive(be, s, root, ["child"])
+        self.assertEqual(len(seen), 1); self.assertGreater(seen[0], self.T0)
+
+    def test_a_respawn_after_an_incomplete_attach_stamps_on_its_own_iteration(self):
+        """Road three: the first iteration attaches and the connect does not complete (the loop arms _reconnect and retries);
+        the second iteration spawns; the stamp fires on the second, not once at the thread top."""
+        root, be, s = self._world("on"); self._live_host_lease(root)
+        seen = self._drive(be, s, root, ["attach", "spawn-host"], incomplete_first=True)
+        self.assertEqual(len(seen), 2, "two connects: the incomplete attach and the respawn")
+        self.assertEqual(seen[0], self.T0, "the attach kept the epoch")
+        self.assertGreater(seen[1], self.T0, "the respawn stamped")
+
+    def test_the_reverse_race_attaches_to_a_survivor_and_keeps_its_epoch(self):
+        """The mirror: the pre-read says spawn (no lease yet), the transport attaches to a surviving CLI whose host wrote its
+        lease in between; the epoch stands (the pre-read decision had moved it)."""
+        root, be, s = self._world("on")
+        self.assertFalse(be._connect_would_attach(s), "the pre-read: spawn")
+        seen = self._drive(be, s, root, ["attach"])
+        self.assertEqual(seen, [self.T0], "an attach at the outcome keeps the epoch")
+
+    def test_the_four_plain_roads_as_controls(self):
+        for hosts, lease, roads, moves in (("on", True, ["attach"], False), ("on", False, ["spawn-host"], True),
+                                           ("off", False, ["child"], True), ("on", False, ["child"], True)):
+            with self.subTest(hosts=hosts, lease=lease, roads=roads):
+                root, be, s = self._world(hosts)
+                if lease:
+                    self._live_host_lease(root)
+                seen = self._drive(be, s, root, roads)
+                self.assertEqual(len(seen), 1)
+                if moves:
+                    self.assertGreater(seen[0], self.T0, "a spawn stamps")
+                else:
+                    self.assertEqual(seen[0], self.T0, "an attach keeps")
 
 
 class PushSessionCallback(unittest.TestCase):

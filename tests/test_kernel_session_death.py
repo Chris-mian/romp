@@ -146,6 +146,22 @@ class CodexRecordsBlind(unittest.TestCase):
         (jd.STATE / "codex" / "registry.json").write_text("{}")
         self.assertTrue(km._codex_records_blind(None), "records exist that this kernel cannot read")
 
+    def test_no_module_and_a_codex_directory_the_kernel_cannot_read_is_blind(self):
+        """The real fault staged, not a stub: a mode-000 codex/ makes the registry's stat raise EACCES; the check answers
+        blind on every interpreter (CPython 3.14's Path.exists() answers False on EACCES, 2026-09-14)."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        d = jd.STATE / "codex"; d.mkdir(parents=True, exist_ok=True); (d / "registry.json").write_text("{}")
+        os.chmod(d, 0)
+        try:
+            self.assertTrue(km._codex_records_blind(None), "a registry directory this kernel cannot read: blind, never absent")
+        finally:                                          # the shared root: leave no registry behind for the next test
+            os.chmod(d, 0o755); (d / "registry.json").unlink()
+            try:
+                d.rmdir()                                 # only when this test's file was the directory's whole content
+            except OSError:
+                pass
+
 
 class DeathSweepTick(unittest.TestCase):
     def setUp(self):

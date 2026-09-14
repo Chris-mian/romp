@@ -3060,6 +3060,20 @@ def read_reg(state_dir: Path, sid: str) -> dict | None:
         return None
 
 
+def _reg_absent_for_write(path) -> bool:
+    """Whether a reg WRITER may build a fresh {sid} record at `path`: only when the stat says ENOENT, a genuinely absent
+    file. Every other stat error (EACCES on sdk/, ELOOP on a symlink-loop path, ENOTDIR, EIO) is a reg that exists or a
+    path that cannot hold one, and a write there guts the record or lands in the wrong place; never Path.exists(), which
+    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14)."""
+    try:
+        path.stat()
+        return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     """read_reg for a READ-MODIFY-WRITE on one reg FIELD: {} when the reg genuinely does not
     exist (a fresh session — an empty base is correct), None when the reg EXISTS but would not
@@ -3071,7 +3085,7 @@ def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     reg = read_reg(state_dir, sid)
     if reg is not None:
         return reg
-    return None if _reg_path(state_dir, sid).exists() else {}
+    return {} if _reg_absent_for_write(_reg_path(state_dir, sid)) else None
 
 
 def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
@@ -6290,21 +6304,37 @@ class SdkSession:
         finally:
             self._cur_ask_fut = None
 
+    def _fresh_cli_stamp(self, attached, mark_echoes=True) -> bool:
+        """The FRESH-CLI stamp, when this connect SPAWNED a CLI and not when it ATTACHED to a live host: stamp spawnedAt
+        (the kernel's bg-tasks box drops unfinished tasks that predate the live CLI, they died with the old one and their
+        completion notifications can never arrive; the judge's _cli_epoch is the same gate), clear any stale awaiting overlay
+        the old CLI's death stranded (the Stop hook that clears it died too), and mark the dropped echoes (the SPAWN half;
+        boot half: _reseed_echoes): a fresh CLI means whatever held any earlier send is gone. Both heals previously ran only
+        at KERNEL boot, so a session restart inside a live kernel kept ghost '25 background tasks' / waiting displays that
+        read as a wedged session (the user 2026-07-10). Under session hosts a kernel restart RE-ATTACHES to the CLI still
+        running under its host: the CLI did not respawn, its epoch did not change, its background launches and awaiting did
+        not die, and its held sends are still held, so nothing here applies. `attached` is the transport's OWN answer, read
+        at the outcome in the connect loop (the attach branch of _host_transport_for sets it; a spawned host, a kernel
+        child and a respawn after an incomplete attach all read False), never the lease pre-read: a host that ends between
+        the pre-read and the transport read, or a live lease under hosts off, spawns a fresh CLI the prediction called an
+        attach, and the reverse race attaches to a survivor the prediction called a spawn (round two of the fix, 2026-09-14;
+        the T346 launch stamp has the same correction at the transport). 2026-09-14: every kernel boot re-stamped every
+        attached session, so the planner's persisted memo and the evidence gate, both keyed on spawnedAt, re-armed every
+        session at every boot, and the live CLIs' running background tasks read as ghosts. `mark_echoes` is False on a
+        DELIBERATE reconnect inside a live thread (the waker's effort or model change), whose forwarded sends land through the
+        resume; before this fix the block ran once at the thread top, so a deliberate reconnect never marked, and the loop
+        placement keeps that. Returns True when it stamped."""
+        if attached:
+            return False
+        self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
+        self.backend._heal_stale_awaiting(self.sid)
+        if mark_echoes:
+            self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending())
+        return True
+
     def _run(self):
         try:
-            # A FRESH CLI is about to spawn for this sid: stamp when (the kernel's bg-tasks box drops
-            # unfinished tasks that predate the live CLI — they died with the old one, their completion
-            # notifications can never arrive) and clear any stale awaiting overlay the old CLI's death
-            # stranded (the Stop hook that clears it died too). Both previously healed only at KERNEL
-            # boot, so a session restart inside a live kernel kept ghost '25 background tasks' /
-            # waiting displays that read as a wedged session (nimbus, the user 2026-07-10).
-            self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
-            self.backend._heal_stale_awaiting(self.sid)
-            # The SPAWN half of the dropped-echo marking (boot half: _reseed_echoes): a fresh CLI means
-            # whatever held any earlier send is gone. An echo neither in self._pending (delivered to the
-            # new CLI) nor landed has no holder left — flag it so the chat says "never delivered".
-            self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending())
-            asyncio.run(self._amain())
+            asyncio.run(self._amain())               # the fresh-CLI stamp runs inside, at the transport's outcome
         except Exception as e:                       # surfaced for debugging; never crash kernel
             # The TRACEBACK too, not just the type and message: a bare "KeyError: <uuid>" names no line,
             # so a crash that killed a session left nothing to fix it by. The error center shows the
@@ -6409,6 +6439,12 @@ class SdkSession:
         # incoming message, leaking the client + its claude subprocess).
         while not self.ended:
             self._wake.clear()
+            # a DELIBERATE reconnect (the waker tore the last client down for an effort or model change: _reconnect armed and
+            # no attach retry pending) hands the same conversation to a fresh client and its forwarded sends land through the
+            # resume, so the fresh-CLI block below stamps the epoch and heals the awaiting but does NOT mark held echoes
+            # dropped; a thread-top spawn, a crash heal (a new thread) and a respawn after an incomplete attach have no
+            # holder left for an unlanded send, and mark (round two of the spawnedAt fix, 2026-09-14)
+            deliberate = bool(self._reconnect) and not self._host_attach_retries
             self._reconnect = False
             self._ping_feeding = False   # a reconnect restarts the feed — a stale hold must not wedge it
             # the abandoned client's live subagents and background tasks died with it — retire them on
@@ -6440,6 +6476,7 @@ class SdkSession:
             connected = False
             try:
                 transport = None
+                self._host_is_attach = False             # the transport's attach branch alone sets it True (every other road spawns)
                 if self.backend.session_hosts_on() or self.backend._host_lease_applies(self):
                     # T315: the CLI runs under a per-session host; this client speaks to it over the host's
                     # socket (attach to a live host, or spawn one), never to a child of its own. A LIVE host lease
@@ -6449,6 +6486,10 @@ class SdkSession:
                     transport = await self.backend._host_transport_for(self, opts, (AssistantMessage, ResultMessage, SystemMessage))
                     if transport is None:
                         self._host_intent = False        # the setting is off: a kernel child after all
+                # the fresh-CLI block at the OUTCOME: a spawned host, a kernel child or a respawn after an incomplete attach
+                # stamps; an attach to a surviving CLI keeps its epoch, its awaiting and its held sends (round two, 2026-09-14)
+                self._fresh_cli_stamp(attached=transport is not None and bool(getattr(self, "_host_is_attach", False)),
+                                      mark_echoes=not deliberate)
                 async with ClaudeSDKClient(options=opts, transport=transport) as client:
                     connected = True
                     self._host_attach_retries = 0   # consecutive incomplete attaches, as the stand-down's docstring
@@ -13730,7 +13771,7 @@ class SdkBackend:
         with self._reg_lock:
             reg = read_reg(self.state_dir, sid)
             if reg is None:
-                if _reg_path(self.state_dir, sid).exists():
+                if not _reg_absent_for_write(_reg_path(self.state_dir, sid)):   # the writers' one rule (2026-09-14)
                     sys.stderr.write("update_reg: %s unreadable — skipping a %s write rather than "
                                      "gutting the reg\n" % (sid[:8], "/".join(sorted(fields) + list(drop))))
                     return
@@ -15124,7 +15165,7 @@ class SdkBackend:
         with self._reg_lock:                       # kernel + loop threads both write (queue mirror);
             reg = read_reg(self.state_dir, sid)    # unserialized RMWs would drop fields
             if reg is None:
-                if _reg_path(self.state_dir, sid).exists():
+                if not _reg_absent_for_write(_reg_path(self.state_dir, sid)):
                     # the reg EXISTS but would not read: writing {sid}+fields here GUTS it — no
                     # alive, no name — and a gutted reg vanishes from every listing until a full
                     # rewrite (the 2026-08-31 blink class). Losing one mirror update is the far
