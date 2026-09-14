@@ -358,6 +358,9 @@ class _PerfStats:
                            "cycle_ms_sum": 0.0, "cycle_ms_max": 0.0, "cycle_ms_last": 0.0,
                            "cycle_cpu_ms_sum": 0.0, "sends": 0,
                            "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0, "cycleFailed": 0}
+            # a fresh client's full push on its handler thread (2026-09-14): the browser's own first draw after a reload or a
+            # restart, per app; the pusher's cycles never see it, so the restart's logo phase had no number before this
+            self.connect_push_stats = {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0, "byApp": {}}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -427,6 +430,19 @@ class _PerfStats:
     def wake_kind(self, by_event):
         with self.lock:
             self.pusher["wakes_event" if by_event else "wakes_backstop"] += 1
+
+    def connect_push(self, app, dt):
+        """One connect push (a fresh client's full state on its handler thread): its wall seconds, per app too."""
+        ms = dt * 1000.0
+        with self.lock:
+            c = self.connect_push_stats
+            c["count"] += 1; c["ms_sum"] += ms; c["ms_last"] = ms
+            if ms > c["ms_max"]:
+                c["ms_max"] = ms
+            a = c["byApp"].setdefault(str(app or "?"), {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0})
+            a["count"] += 1; a["ms_sum"] += ms; a["ms_last"] = ms
+            if ms > a["ms_max"]:
+                a["ms_max"] = ms
 
     def cycle_failed(self):
         """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
@@ -707,6 +723,8 @@ class _PerfStats:
         with self.lock:
             ring = sorted(self.ring)
             pusher = dict(self.pusher)
+            pusher["connectPush"] = {k: (dict(v) if k != "byApp" else {a: dict(row) for a, row in v.items()}) if isinstance(v, dict) else v
+                                     for k, v in self.connect_push_stats.items()}
             pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
             sr = list(self.stage_ring) if self.stage_ring is not None else []                           #  first cycle's split
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
@@ -48334,13 +48352,16 @@ def _push(targets, connect=False, live_map=None):
     want_tl = any(c["app"] == "timeline" for c in targets)
     chat_clients = [c for c in targets if c["app"] == "chat"]
     # CARDS FIRST on a cold kernel (the user 2026-09-12: after a restart the sessions load fast now and the cards still
-    # wait): the first push after a boot builds every chat page (cold parses, ~25 s of a 37 s first cycle on the devbox)
-    # and the timeline before the feed frame leaves at the send stage. With no feed built since start and a feed pane
-    # among the targets, the feed is built and sent to those panes FIRST (_feed_first); the regular feed section below
-    # serves the same build from the cache with the ledgers attached, and the send stage's delta path carries only what
-    # that added. A warm kernel (a feed already built, or any cycle after the first) takes no extra step.
-    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS and _PERF_STATS.pusher.get("cycles", 0) == 0
-            and any(c["app"] == "feed" for c in targets)):      # the boot's FIRST pusher cycle, and only it
+    # wait): the first push with a feed pane after a boot builds every chat page (cold parses: 55 s of a 72 s refresh
+    # for 27 tabs on the devbox, 2026-09-13 3:58 PM PT) and the timeline before the feed frame leaves at the send stage.
+    # With no feed built since start and a feed pane among the targets, the feed is built and sent to those panes FIRST
+    # (_feed_first); the regular feed section below serves the same build from the cache with the ledgers attached, and
+    # the send stage's delta path carries only what that added. A warm kernel (a feed already built) takes no extra step.
+    # ANY cold refresh, not the boot's first cycle alone (2026-09-14): the pusher's first cycle runs before a browser has
+    # reconnected (0.6 to 0.9 s after the split of the housekeeping), so a guard on cycle zero never held on a real boot
+    # (a 24 h watch on push.feedFirst saw nothing); the cold state the shortcut is for is "no feed built yet".
+    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS
+            and any(c["app"] == "feed" for c in targets)):      # no feed built since the boot, a feed pane to serve
         try:
             _feed_first(now, live_map, targets, connect)
         except Exception:
@@ -61934,8 +61955,13 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _push_one(self, client):
-        _push([client], connect=True)             # full state to a fresh client (its per-client dedup is empty);
-        #                                           serves the pusher-warmed feed/timeline (no rebuild) → instant
+        _t0 = time.monotonic()
+        try:
+            _push([client], connect=True)         # full state to a fresh client (its per-client dedup is empty);
+            #                                       serves the pusher-warmed feed/timeline (no rebuild) → instant
+        finally:                                  # the browser's own first draw, timed (2026-09-14): the ledger and the stage
+            _PERF_STATS.connect_push(client.get("app"), time.monotonic() - _t0)   # rings time the pusher's cycles alone, so
+            #                                       the logo phase after a restart had no number
 
 
 def _ensure_bundles():
