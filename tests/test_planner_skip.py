@@ -287,7 +287,7 @@ class PlannerSkip(_World):
             other.cleanup()
 
     def test_the_counters(self):
-        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded"})
+        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted"})   # T401 (5c): the persisted memo's three
         s = jd.planner_skip_stats(); s["skipped"] = 99
         self.assertNotEqual(jd.planner_skip_stats()["skipped"], 99)
 
