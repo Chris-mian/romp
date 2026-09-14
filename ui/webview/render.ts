@@ -12556,6 +12556,9 @@ function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): numbe
 // timeline (which outlines the open lane). activeId may be null (no session).
 function notifyActive() {
   if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId });
+  // the same fact to the shell, which hands it to this page's feed pane (T416): the feed's current-session section
+  // moves on it at once, ahead of the kernel's relay of the post above, which then reconciles
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "activeTab", id: activeId }, "*"); } catch (e) { /* standalone page — no shell */ }
 }
 
 // Move id to the front of the recency stack (most-recently-active).
@@ -18707,6 +18710,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (m.own) { const copy = { ...m }; delete copy.own; forwardToOwner(copy); }
   }
   else if (m.type === "confirmRevive" && m.id) {
+    notifyActive();   // the jump reached a closed session and no tab changed: the tab standing is re-announced, so a pane that moved on the jump (the feed's section, T416) comes back
     revealSelfPane();   // the dead-session prompt is drawn in THIS pane — useless if the pane isn't showing
     const nm = String(m.name || "");
     showConfirm(`“${nm}” is closed — revive it?`,

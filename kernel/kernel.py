@@ -18838,6 +18838,8 @@ def _reveal_or_confirm(sid, focus_msg, client=None):
     dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
     if sid and sid not in _live_map():
         _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
+        if client:
+            _reaffirm_active_chat(client)   # the asking window's feeds learn that no tab changed (T416)
     else:
         # a LIVE session's anchored focus also carries the anchor turn's own moment for the chat's reveal progress line
         # (T336), resolved here and only here: a dead session's card never pays for it (the confirm goes out without it)
@@ -50224,7 +50226,7 @@ def _active_chat_wid(client):
     return str(client.get("wid") or "")
 
 
-def _send_active_chat(client):
+def _send_active_chat(client, reaffirm=False):
     """Tell ONE feed client which session the chat pane of its window shows — {type: "activeChat", id: sid|null},
     the value recorded for its wid — on the ("activeChat",) dedup slot, so an unchanged value is not re-sent
     (_send_client, within _DEDUP_REPOST_S). Nothing when no chat of that window has reported yet: the feed keeps
@@ -50239,11 +50241,30 @@ def _send_active_chat(client):
     wid = _active_chat_wid(client)
     if wid not in _ACTIVE_CHAT_BY_WID:
         return False
+    frame = {"type": "activeChat", "id": _ACTIVE_CHAT_BY_WID[wid]}
+    if reaffirm:
+        # the kernel's ANSWER to a jump that reached a closed session (T416): the feed moved its section on the click it
+        # made and holds that against the relay's stale frames; this frame, marked, is the one it yields to. A nonce, so
+        # the slot's dedup never swallows a second answer within its window (the same record answered twice is two answers)
+        frame["reaffirm"] = True
+        frame["nonce"] = _next_nonce()
     try:
-        _send_client(client, ("activeChat",), {"type": "activeChat", "id": _ACTIVE_CHAT_BY_WID[wid]})
+        _send_client(client, ("activeChat",), frame)
     except Exception:
         return False
     return True
+
+
+def _reaffirm_active_chat(client):
+    """A jump from `client`'s window reached a closed session (the chat got confirmRevive, no tab changed): tell the
+    window's feeds which session the chat still shows, marked as the answer (T416: the feed's focused-session section
+    moved on the click it made and holds that against the relay's stale frames; the marked frame is the one it yields
+    to). Nothing when no chat of the window has reported yet, as _send_active_chat."""
+    wid = _active_chat_wid(client)
+    with _clients_lock:
+        feeds = [c for c in _clients if c.get("alive") and c.get("app") == "feed" and _active_chat_wid(c) == wid]
+    for c in feeds:
+        _send_active_chat(c, reaffirm=True)
 
 
 def _forget_active_chat_if_last(client):
@@ -53116,6 +53137,11 @@ function visCols(){return allCols().filter(paneVisible);}
 function focusPane(id,dir){var f=document.getElementById(id);if(!f)return;
 try{f.contentWindow.focus();}catch(e){}setFocus(id);
 try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');}catch(e){}}
+// The chat pane's active tab, handed to the feed pane on this page (T416): the chat posts {romp:'activeTab',id} to its
+// parent on every switch, and the feed's current-session section moves on it at once, ahead of the kernel's relay of
+// the same post over the sockets, which then reconciles. From a child frame of this page only (a chat column).
+window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
+var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null)},'*');}catch(x){}});
 function moveFocus(dir){
   if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
     if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
