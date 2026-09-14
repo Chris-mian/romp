@@ -307,6 +307,37 @@ class PlannerSeenMemo(unittest.TestCase):
         self.assertEqual(jd._load_planner_seen(), 0); self.assertTrue(jd._PLANNER_SEEN_LOADED[0], "a missing file is a successful empty load: latched")
         self.assertEqual(jd._PLANNER_STATS["refused"], 2, "and no refusal")
 
+    def test_a_read_fault_is_said_once_per_spell_on_stderr_like_the_persists(self):
+        """The tidy's low 2: the load's fault was counted but never said though its docstring promised 'said once'."""
+        p = self.root / jd._PLANNER_SEEN_FILE; p.write_bytes(b"\xff\xfe torn")
+        err = io.StringIO()
+        with mock.patch.object(jd.sys, "stderr", err):
+            for _ in range(3):
+                jd._load_planner_seen()
+        self.assertEqual(err.getvalue().count("planner-seen memo: not decoded"), 1, err.getvalue())
+        p.write_text(json.dumps({"v": 1, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {}}))
+        self.assertEqual(jd._load_planner_seen(), 0); self.assertTrue(jd._PLANNER_SEEN_LOADED[0])
+        jd._PLANNER_SEEN_LOADED[0] = False; p.write_bytes(b"{torn")
+        with mock.patch.object(jd.sys, "stderr", err):
+            jd._load_planner_seen()
+        self.assertEqual(err.getvalue().count("planner-seen memo: not decoded"), 2, "a new spell is said again")
+
+    def test_the_mismatch_histogram_bumps_under_the_memo_lock(self):
+        """The tidy's low 4: the pool workers bump mismatchByTerm together; unlocked, a boot read under-counted."""
+        import inspect
+        src = inspect.getsource(jd._planner_seen_stands)
+        self.assertIn("with _PLANNER_SEEN_LOCK:", src)
+        self.assertLess(src.index("with _PLANNER_SEEN_LOCK:"), src.index('hist = _PLANNER_STATS["mismatchByTerm"]'))
+        jd._planner_seen_set(FSID, ["a", 1, 2]); jd._planner_seen_set(FSID2, ["b", 1, 2])
+        for k in list(jd._PLANNER_STATS["mismatchByTerm"]):
+            del jd._PLANNER_STATS["mismatchByTerm"][k]
+        def bump(fsid, n):
+            for _ in range(n):
+                jd._planner_seen_stands(fsid, ["x", 9, 2])
+        ts = [threading.Thread(target=bump, args=(f, 500)) for f in (FSID, FSID2) for _ in range(3)]
+        [t.start() for t in ts]; [t.join(10) for t in ts]
+        self.assertEqual(jd._PLANNER_STATS["mismatchByTerm"], {"0": 3000, "1": 3000}, "every bump counted")
+
     def test_the_perf_row_carries_the_three_new_counters(self):
         self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted", "mismatchByTerm"})
         s = jd.planner_skip_stats(); s["mismatchByTerm"]["9"] = 5
