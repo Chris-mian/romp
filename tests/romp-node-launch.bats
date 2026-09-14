@@ -432,7 +432,8 @@ _hang_asserts() {   # the fallback happened at the bound, and nothing of the pro
     ROMP_NODE_PROBE_BOUND=99999999999999999999 run "$tmo" 20 "$LAUNCH" "$MANAGER" up
     [ "$status" -eq 0 ]
     [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
-    [[ "$output" != *"integer expression expected"* ]]
+    [[ "$output" != *"integer expression expected"* ]]   # bash's test, when sh is bash
+    [[ "$output" != *"Illegal number"* ]]                 # dash's test, when sh is dash (the devbox's)
     [[ "$output" != *"cannot run here"* ]]
 }
 
