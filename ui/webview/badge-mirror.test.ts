@@ -145,9 +145,16 @@ test("keepCardSigs keeps the store's card-side marks and none of the rings' (T40
   const seen = new Set(["n|c1", "w|c2|1700000000|judge", "r|c3|5", "e|c4|500|sl", "sync|9", "sdk|3", "c|s1|7", "x|odd"]);
   assert.deepEqual(keepCardSigs!(seen).sort(), ["e|c4|500|sl", "n|c1", "r|c3|5", "w|c2|1700000000|judge"], "the four card prefixes, verbatim");
   assert.deepEqual(keepCardSigs!([]), []);
-  assert.deepEqual((badgeMirror as any).CARD_SIG_PREFIXES, ["w|", "n|", "r|", "e|"], "the prefixes badgeNotices mints, named once");
+  // round six: the list is pinned against the minter it tracks, never a literal: the prefixes badgeNotices mints over one item
+  // carrying every trouble kind, so a fifth kind cannot slip past keepCardSigs unnamed
+  const minted = badgeNotices([base({
+    warns: [{ kind: "distill", t: 100, msg: "the summarizer gave up" }], nudgeFailed: true, retrying: { since: 300 }, blocked: { state: "apiError", status: 529 },
+  })], new Set());
+  const mintedPrefixes = Array.from(new Set(Array.from(minted.active, (sig) => sig.slice(0, sig.indexOf("|") + 1)))).sort();
+  assert.equal(mintedPrefixes.length, 4, "four kinds, four prefixes");
+  assert.deepEqual([...((badgeMirror as any).CARD_SIG_PREFIXES as string[])].sort(), mintedPrefixes, "the prefixes badgeNotices mints, named once");
   // the mirror's off-frame call keeps them: a source pin on the feed's wrapper
   const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-  assert.match(FEED, /const badges = opts\?\.cardsUnknown \? \{ notices: \[\], active: new Set\(keepCardSigs\(seenSet\)\) \} : badgeNotices\(items, seenSet\);/);
+  assert.match(FEED, /const badges = badgeCardHalf\(items, seenSet, !!opts\?\.cardsUnknown\);/, "one card half for both branches (round six)");
   assert.match(FEED, /mirrorBadges\(\[\], Array\.isArray\(m\.clearNotices\)[^\n]*\{ cardsUnknown: true \}\);/, "the off branch says the cards are unknown");
 });

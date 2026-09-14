@@ -554,10 +554,18 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // of uptime, "outranked" the remote ack's small post-restart buildId on the first merged emission,
   // dropping the prediction while the cached remote frame still predated the reopen).
   const buildIds: Record<string, number> = {};
+  // The Task tracking switch (T404 round six): a host whose frame is the switch's stand-in (off, no cards built) is
+  // NAMED here beside its counter. `merged.off` stays the local kernel's word (the spread above), so the notice and
+  // the gear row agree, both reading the kernel this dashboard belongs to; a remote host's off frame contributes no
+  // cards while the local frame is a normal one, and without this list the pane would read that host's cards as
+  // gone and drop their seen marks by absence. The mesh converges the switch across hosts on the supervisor's
+  // steady pass, so a mixed state is a short one; the pane keeps every card mark while any host is named here.
+  const offHosts: string[] = [];
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
     if (typeof f.buildId === "number") buildIds[h] = f.buildId;
+    if (f.off === true) offHosts.push(h);
     if (Array.isArray(f.syncNotices)) {
       for (const r of f.syncNotices) {
         if (!r || !r.sig) continue;
@@ -598,6 +606,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   if (syncs.length) merged.syncNotices = syncs;
   else delete merged.syncNotices;
   merged.buildIds = buildIds;
+  merged.offHosts = offHosts;
   // Hosts ATTACHED but yet to contribute a feed payload (the user 2026-08-25: after attaching, the
   // sessions land via the faster tabOrder/timeline channels while the cards trail with no cue) —
   // the sessions-shown/cards-pending window, named per host so the board can say cards are coming.

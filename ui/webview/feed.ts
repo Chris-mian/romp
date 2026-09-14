@@ -27,7 +27,7 @@ import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
 import { liveNow, liveRefresher, refreshAges, stampAge } from "./feed-age";
-import { badgeNotices, clearBoundaryNotices, keepCardSigs, sdkProblemNotices, syncNotices,
+import { badgeCardHalf, clearBoundaryNotices, frameCardsUnknown, sdkProblemNotices, syncNotices,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
@@ -5569,10 +5569,11 @@ function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNotice
   let seen: string[] = [];
   try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
   const seenSet = new Set(seen);
-  // cardsUnknown (the Task tracking switch's off frame, T404 round five): the frame carries no cards because none was built,
-  // not because they left, so the card-side marks already in the store are kept as this write's card half, and no card
-  // notice is minted; the rings' half below is the frame's own. A stand-in frame never feeds a writer that prunes by absence
-  const badges = opts?.cardsUnknown ? { notices: [], active: new Set(keepCardSigs(seenSet)) } : badgeNotices(items, seenSet);
+  // cardsUnknown (the Task tracking switch, T404 rounds five and six): not every card in the frame was built (the frame is
+  // the switch's own off frame, or a merged frame naming an off host), so an absent card may sit behind a stand-in rather
+  // than have left; the card half then keeps the stored card marks, and mints the on hosts' notices either way
+  // (badge-mirror.ts). A stand-in frame never feeds a writer that prunes by absence
+  const badges = badgeCardHalf(items, seenSet, !!opts?.cardsUnknown);
   // /clear boundary settles share the same seen-set + bell (the user 2026-07-27): a clear that
   // dropped open cards logs one durable entry naming them, so the drop is never silent.
   const boundary = clearBoundaryNotices(clears, seenSet);
@@ -5913,7 +5914,7 @@ function applyFeedPayload(m: any): void {
   }
   mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
     Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
-    Array.isArray(m.syncNotices) ? m.syncNotices : []);   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
+    Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown: frameCardsUnknown(m) });   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
   if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
   clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
   if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;

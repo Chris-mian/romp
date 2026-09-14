@@ -44,6 +44,26 @@ export function keepCardSigs(seen: Iterable<string>): string[] {
   return Array.from(seen).filter((sig) => CARD_SIG_PREFIXES.some((p) => sig.startsWith(p)));
 }
 
+/** The pane's reading of a frame's cards (T404 round six): unknown when the frame is the switch's stand-in (`off`: a
+ *  single kernel's, or the local kernel's word over a merged frame) or when any host named in `offHosts` sent one
+ *  (mergeHostFeeds). A host's cards unknown means its marks are kept; the store's card sigs do not name their host,
+ *  so every card mark is kept while any host is off. */
+export function frameCardsUnknown(m: { off?: unknown; offHosts?: unknown } | null | undefined): boolean {
+  if (!m) return false;
+  if (m.off === true) return true;
+  return Array.isArray(m.offHosts) && m.offHosts.length > 0;
+}
+
+/** The card half of one mirror write: the notices minted from the cards on screen and the marks the store keeps. With
+ *  the cards known, the live cards' marks alone (a mark whose card left the frame is pruned by absence); with them
+ *  unknown, the live cards' marks plus every card-side mark already stored, since an absent card may sit behind an
+ *  off host's stand-in frame rather than have left. */
+export function badgeCardHalf(items: BadgeItem[], seen: Set<string>, cardsUnknown: boolean): ReturnType<typeof badgeNotices> {
+  const minted = badgeNotices(items, seen);
+  if (!cardsUnknown) return minted;
+  return { notices: minted.notices, active: new Set([...minted.active, ...keepCardSigs(seen)]) };
+}
+
 export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: BadgeNotice[]; active: Set<string> } {
   const notices: BadgeNotice[] = [];
   const active = new Set<string>();
