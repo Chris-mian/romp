@@ -5942,6 +5942,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
   rows.push(["Mail", !s.postalServiceOff ? "on"
     : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
+    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
     : s.mailOffWhy === "thread" ? "off until the thread is broken out"
     : "off: this session neither sends nor receives peer mail"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
@@ -10825,6 +10826,7 @@ function renderCommentPopover(): void {
     mailOn.textContent = !th.mailOff
       ? "Its mail is on now: peers can reach it and it can send." + (held ? " " + held + (held === 1 ? " held message lands" : " held messages land") + " in a moment." : "")
       : th.mailOffWhy === "unreadable" ? "Its mail is held: this session's record cannot be read, and mail flows again once the record is repaired."
+      : th.mailOffWhy === "flags" ? "Its mail is held: the session settings file cannot be read, and mail flows again once it is written."
       : "Its mailbox is off: the lane's mailbox toggle turns peer mail back on.";   // the reason rides the frame: a remedy that fits (T356)
     pop.appendChild(mailOn);
     const row = el("div", "cmt-actions");
@@ -17338,7 +17340,7 @@ function upsert(msg: any) {
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
     hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
-    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record
+    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record, the settings file unreadable (flags)
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
   };
   sessions.set(msg.id, s);
