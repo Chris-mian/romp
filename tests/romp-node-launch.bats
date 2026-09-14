@@ -159,6 +159,33 @@ EOF
     [ -z "$output" ]
 }
 
+@test "the watchdog path: the kill of the sleep is waited on, so a sleep that takes a moment to die never outlives the launcher" {
+    # CI 2026-09-14 (a tree that did not touch the launcher): the check above saw one leftover sleep pid once, a race the
+    # watchdog's trap left open by exiting right after its kill. The sleep here is a stand-in that lingers a second after
+    # its TERM (killing the real sleep it wraps), so at the base the launcher exits with the stand-in still alive, every
+    # time; with the trap waiting for it, the session is empty when the launcher has exec'd the manager.
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local bare="$TEST_DIR/bare-linger"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    cat > "$bare/sleep" <<EOF
+#!/bin/sh
+trap 'kill "\$p" 2>/dev/null; "$real" 1; exit 143' TERM
+"$real" "\$@" & p=\$!
+wait "\$p"
+EOF
+    chmod +x "$bare/sleep"
+    ln -s "$BIN/node" "$bare/node"
+    PATH="$bare" run setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    [ -n "$pgid" ]
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
 @test "the watchdog path: a copy that HANGS is killed at the bound, the manager comes up on the system node, and no node is leaked" {
     # round three of issue 1600: the watchdog could only signal the probe's wrapper subshell, and a wrapper that ran the node
     # in its foreground survived the kill while the hung node did not die; one hung node leaked per launch (the launcher's

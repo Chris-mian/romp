@@ -244,9 +244,10 @@ _node_runs() {   # $1 a node binary: exit 0 when it can run an empty program fro
     fi
     # the wrapper runs the node in its background, traps TERM to kill its tree, waits and exits with its status, so the
     # watchdog's kill of the wrapper takes a hung node down too (round three of issue 1600: it leaked before)
-    ( trap '_kill_tree "$n"; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & n=$!; wait "$n"; exit $? ) 2>/dev/null &
+    # both traps wait for what they killed before exiting, so nothing of the probe outlives the install (the launcher's rule)
+    ( trap '_kill_tree "$n"; wait "$n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & n=$!; wait "$n"; exit $? ) 2>/dev/null &
     local pp=$! wd rc=0
-    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "$bound" & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
+    ( trap 'kill "$s" 2>/dev/null; wait "$s" 2>/dev/null; exit 0' TERM; sleep "$bound" & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
     wd=$!
     wait "$pp" || rc=$?
     kill "$wd" 2>/dev/null || true
