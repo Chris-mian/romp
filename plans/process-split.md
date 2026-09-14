@@ -28,6 +28,10 @@ Two measures beside the counts (romp_metrics, 2026-09-14): correctness, a docume
 
 Measurement: `asmCheckpoint.parse` at the first refresh with a browser (`full` against `restore`), `checkpoints.readBytes`, and the count of documents on disk that restore cleanly.
 
+## Stage one b: documents that carry the settled tail (romp_metrics, design line first)
+
+A document today carries only the part of a transcript before its last compaction boundary; the tail after it is decoded whole at every cold parse, and a session that never compacted has no document at all by design (the writer's `noBoundary` refusal is structural). The review measured 1.24 GB of the 4.5 GB in large transcripts lying after the last boundary. So a decode worker that writes today's documents takes off the interpreter only the pre-boundary decoding stage one already makes restorable; the tail's decoding stays in-process until a document can be cut at the last settled turn instead of only at a compaction. That cut is romp_metrics's queued item (high risk: the record cache then holds tails only; the restore-equality oracle must hold over a cut that moves at every settle); it is the enabler of stage two's full value and comes before it. Quantified along the way: after stage one, `checkpoints.readBytes` and `asmCheckpoint.parse` at a browser-attached boot say how much decoding is left, and that number decides whether stage two is built against today's cut or waits for stage one b.
+
 ## Stage two: a decode worker process that writes documents (romp_perf with romp_metrics)
 
 The transfer form is the document the kernel already restores from: all 44 sessions together are 26 MB compressed, the largest 4.4 MB, one restores in 0.2 seconds. A worker process parses a cold transcript and writes its document; the kernel restores. JSON decoding, 85 to 90 percent of the cold parse, leaves the interpreter the browser waits on.
