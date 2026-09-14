@@ -20,8 +20,8 @@ test("a failed tool folds onto the head (one line) instead of an always-shown io
 
 test("a collapsed error's toggle is RED so it stays loud at a glance", () => {
   assert.match(CSS, /\.turn-tool\.tool-err \.tool-fold-toggle \{[^}]*color: var\(--err\)/);
-  // the tool name is already red on error (kept), and the rail dot is the red ✗ disc
-  assert.match(CSS, /\.tool-err \.tool-name \{[^}]*color: var\(--err\)/);
+  // the tool name (and the row's label, T418) is already red on error (kept), and the rail dot is the red ✗ disc
+  assert.match(CSS, /\.tool-err \.tool-name, \.tool-err \.tool-label \{[^}]*color: var\(--err\)/);
 });
 
 test("the dead io-clamp helper + CSS are removed (errors fold like every tool now)", () => {

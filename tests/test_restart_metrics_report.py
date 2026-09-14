@@ -14,10 +14,10 @@ from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
-os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
-os.environ.pop("ROMP_STATE_DIR", None)
 sys.path.insert(0, HERE)
 from romp_load import load_source   # noqa: E402
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)
 
 rep = load_source("romp_restart_metrics_report", os.path.join(ROOT, "scripts", "restart_metrics_report.py"))
 rm = load_source("romp_restart_metrics_for_report", os.path.join(ROOT, "bin", "romp-restart-metrics"))

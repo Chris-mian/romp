@@ -54,10 +54,10 @@ test("the strip's gear opens the settings' Tab strip section directly (T415): no
   assert.doesNotMatch(RENDER, /focusedLock/, "the lock's own focus rule went with the button");
 });
 
-test("the strip's tag control displays no chips: the host is built for the shared sync and never appended", () => {
-  assert.doesNotMatch(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "no detached chips host: nothing is built to be dropped (round two, low 3)");
-  assert.doesNotMatch(RENDER, /tagBox\.appendChild\(tagChipsHost\);/, "and nothing is appended to the strip's tag box");
-  assert.match(RENDER, /syncTagFilter\(tagBtn, null, surfaceLens\(v, "chat"\)/, "the shared sync still runs with no host, so the button's accent says it filters and no chip is built");
+test("the strip's tag control shows the selected tags as chips left of the button outside group mode (T413), none for the no-tags pick (T405 stands)", () => {
+  assert.match(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "the chips host is back (T413)");
+  assert.match(RENDER, /tagBox\.append\(tagChipsHost, tagBtn\);/, "left of the button in the strip's tag box");
+  assert.match(RENDER, /syncTagFilter\(tagBtn, plan\.sectioned \? null : tagChipsHost, surfaceLens\(v, "chat"\)/, "grouping: the headings carry the tags and no host is fed; otherwise the chips");
   assert.match(RENDER, /syncTagFilter\(mslot\.children\[0\] as HTMLElement, phoneLayout\(\) \? \(mslot\.children\[1\] as HTMLElement\) : null,/, "the phone header's mount builds its chips only in the phone layout: on the desktop no chip is built per paint anywhere (the T405 read)");
   assert.match(TAGMENU, /export function syncTagFilter\(btn: HTMLElement, chipsHost: HTMLElement \| null,/);
   assert.match(TAGMENU, /btn\.setAttribute\("aria-pressed", narrowed \? "true" : "false"\);\s*\n\s*if \(!chipsHost\) return;/, "the sync skips the chip loop with no host");
@@ -147,6 +147,10 @@ const label = (n: Node): string => n.kids.map((k) => k.tag === "#text" ? (k.text
 test("the rows-menu helper is gone with its one caller (T415): the tag menu's card and ✓ grammar stay for the tags menu", () => {
   assert.doesNotMatch(TAGMENU, /openRowsMenu|RowsMenuRow|rowsMenu/, "no rows menu in the menu module");
   assert.match(TAGMENU, /background:var\(--check-bg, #1EA1EB\)/, "the ✓ badge serves the tags menu");
+});
+
+test("the ✓ badge is stated once in tag-menu.ts: checkMark draws it for every row that is current (T413)", () => {
+  assert.equal((TAGMENU.match(/background:var\(--check-bg, #1EA1EB\);color:#fff;/g) || []).length, 1, "one builder for the mark");
 });
 
 test("the gear's title and label name the settings, and the gear is drawn only where a settings card can open (T415)", () => {

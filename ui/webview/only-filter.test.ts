@@ -145,10 +145,11 @@ test("the hash listener is a named handler and comes off the shell's window on p
     removeEventListener(t: string, f: unknown) { this.removed.push(t + (f === this.f ? ":same" : ":other")); } };
   const paneHandlers: Record<string, () => void> = {};
   const pane: any = { addEventListener(t: string, f: () => void) { paneHandlers[t] = f; } };
-  let repaints = 0;
-  new Function("onlyWindow", "renderTabs", "window", js)(() => shell, () => { repaints++; }, pane);
+  let repaints = 0, rearms = 0;
+  new Function("onlyWindow", "renderTabs", "schedulePrebuild", "window", js)(() => shell, () => { repaints++; }, () => { rearms++; }, pane);
   assert.deepEqual(shell.added, ["hashchange"], "one listener on the window the filter is read from");
   assert.deepEqual(Object.keys(paneHandlers), ["pagehide"], "the pane's own window carries only the pagehide belt");
   shell.f(); assert.equal(repaints, 1, "the named handler repaints the strip");
+  assert.equal(rearms, 1, "…and re-arms the idle prefetch for the tabs the filter now shows (PR 1661 round two, medium 3)");
   paneHandlers.pagehide(); assert.deepEqual(shell.removed, ["hashchange:same"], "the same handler comes off on pagehide");
 });

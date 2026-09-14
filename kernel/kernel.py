@@ -358,6 +358,9 @@ class _PerfStats:
                            "cycle_ms_sum": 0.0, "cycle_ms_max": 0.0, "cycle_ms_last": 0.0,
                            "cycle_cpu_ms_sum": 0.0, "sends": 0,
                            "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0, "cycleFailed": 0}
+            # a fresh client's full push on its handler thread (2026-09-14): the browser's own first draw after a reload or a
+            # restart, per app; the pusher's cycles never see it, so the restart's logo phase had no number before this
+            self.connect_push_stats = {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0, "byApp": {}}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -377,7 +380,7 @@ class _PerfStats:
             self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
             self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
-            self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
+            self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
@@ -427,6 +430,19 @@ class _PerfStats:
     def wake_kind(self, by_event):
         with self.lock:
             self.pusher["wakes_event" if by_event else "wakes_backstop"] += 1
+
+    def connect_push(self, app, dt):
+        """One connect push (a fresh client's full state on its handler thread): its wall seconds, per app too."""
+        ms = dt * 1000.0
+        with self.lock:
+            c = self.connect_push_stats
+            c["count"] += 1; c["ms_sum"] += ms; c["ms_last"] = ms
+            if ms > c["ms_max"]:
+                c["ms_max"] = ms
+            a = c["byApp"].setdefault(str(app or "?"), {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0})
+            a["count"] += 1; a["ms_sum"] += ms; a["ms_last"] = ms
+            if ms > a["ms_max"]:
+                a["ms_max"] = ms
 
     def cycle_failed(self):
         """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
@@ -643,6 +659,13 @@ class _PerfStats:
             for lab in miss:
                 bm[lab] = bm.get(lab, 0) + 1
 
+    def build_chat_cold_skip(self):
+        """A cold tab (no build since the boot) that every connected chat page holds as a skeleton was not built (the
+        cold-tab gate in _push and _push_session_now, 2026-09-14): the user's ruling that tabs nobody is looking at are
+        built last, on the page's click or its idle prefetch, never in the boot's first refresh."""
+        with self.lock:
+            self.builds["chat"]["coldSkipped"] += 1
+
     def build_chat_moved(self):
         """A chat build whose signature moved while it ran (the post-build signature differs from the
         pre-build one on a static component): the payload is not cached, the next cycle builds it again,
@@ -712,6 +735,8 @@ class _PerfStats:
         with self.lock:
             ring = sorted(self.ring)
             pusher = dict(self.pusher)
+            pusher["connectPush"] = {k: (dict(v) if k != "byApp" else {a: dict(row) for a, row in v.items()}) if isinstance(v, dict) else v
+                                     for k, v in self.connect_push_stats.items()}
             pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
             sr = list(self.stage_ring) if self.stage_ring is not None else []                           #  first cycle's split
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
@@ -4298,11 +4323,51 @@ def _path_of(sid, now=None):
     if memo is not None and sid in memo:
         return memo[sid]
     now = int(time.time()) if now is None else now
-    s = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    s = _session_row(sid, now)
     p = s["path"] if s else None
     if memo is not None:
         memo[sid] = p
     return p
+
+
+def _session_row(sid, now=None):
+    """The _sessions()-shaped row for ONE sid — {sid, name, anchor, path, mtime} — or None. For the doors
+    that ACT on a named session (fork, comment, promote, rewind/rollback, _path_of) rather than list every
+    session. _sessions(now) reaches back only discover's 48h caption horizon (jd.WINDOW), so a session idle
+    longer than that — still on the tab strip through _alive_sessions' wide walk, its chat still rendering
+    — was refused by every one of those doors as "no transcript for this session yet" (the user
+    2026-09-14: a 4-day-idle session took no comment and no fork while its tab sat right there). Same
+    fallbacks _alive_sessions and build_session already use, in the same order: an SDK session resolves
+    through its registry (cwd + lastSid name the CURRENT transcript, a /clear'd one included; no walk) and
+    is accepted only when that file EXISTS, so a never-run session still reads as transcriptless; anything
+    else (a session no SDK registry names, a Codex one) through discover's cached wide walk, as
+    _alive_sessions resolves a live sid idle past the window. Age owns caption/walk cost, never whether a
+    session can be acted on."""
+    now = int(time.time()) if now is None else now
+    s = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if s is not None:
+        return s
+    be = _sdk()
+    if be and be.owns(sid):
+        reg = _thread_reg(sid)           # any SDK reg, thread or board session: cwd + lastSid are authoritative
+        if reg.get("cwd"):               # an unreadable reg is no authority: fall through, never probe a ~-derived guess
+            path = _thread_transcript_path(reg, sid)
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                mtime = None             # a registry without a transcript file IS "no transcript yet"
+            if mtime is not None:
+                return {"sid": sid, "name": _name_of(sid) or reg.get("name") or sid[:8], "anchor": sid,
+                        "path": path, "mtime": mtime}
+    ent = _discover_wide(now, jd.DEATH_BACKFILL_WINDOW).get(sid)
+    if ent is not None:
+        fsid, path, anchor, name = ent
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            mtime = 0
+        return {"sid": fsid, "name": name or fsid[:8], "anchor": anchor, "path": str(path), "mtime": mtime}
+    return None
 
 
 # ── a LIVE session survives a transient transcript-read failure on the tab list (T258) ─────────────────────
@@ -15598,7 +15663,7 @@ def _fork_session_inner(parent_sid, cut_msg_uuid, new_name, now=None, client=Non
     if not (hasattr(be, "fork") and _sdk_ready()):
         return "fork needs a Claude Code session — this one runs on another backend, so there is nothing to fork from."
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # idle > 48h is still forkable (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet — nothing to fork."
     cut_uuid = ""
@@ -16767,7 +16832,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     if not str(exact or "").strip() or not str(text or "").strip():
         return "nothing to send: highlight a passage and write a comment.", None
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # idle > 48h still takes a comment (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet, so nothing to comment on.", None
     if str(anchor_uuid or ""):
@@ -17095,7 +17160,7 @@ def _comment_promote_inner(parent_sid, tid, new_name, now=None, client=None):
     tpath = _thread_transcript_path(reg, tsid)
     if not os.path.exists(tpath):
         return _revert("this thread hasn't written its conversation yet; try again in a moment.")
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # the parent may be idle > 48h by promote time
     parent_path = sess["path"] if sess else str(jd._proj_dir(reg.get("cwd") or "~") / (parent_sid + ".jsonl"))
     err = _seed_fork_stores(parent_sid, tsid, parent_path, str(th.get("cutUuid") or ""))
     if err:
@@ -30515,6 +30580,7 @@ def _chat_push_scopes_close():
     for k in getattr(_live_scope, "chat_push_owned", None) or ():
         setattr(_live_scope, k, None)
     _live_scope.chat_push_owned = None
+    _chat_inflight_release_all()                      # ...and the chat tab claims a raise left on this thread (single-flight)
 
 
 def _claudemd_key(cwd):
@@ -30992,7 +31058,7 @@ def _rewind_send(sid, user_uuid, text, now=None):
     if _ops_gate(sid):
         return "the session is busy — wait for the current turn to finish, then edit"
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    sess = _session_row(sid, now)            # idle > 48h can still be rewound (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet"
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
@@ -31038,7 +31104,7 @@ def _rewind_rollback(sid, user_uuid, now=None):
     # delete on an in-flight turn interrupts it and arms the rewind at the turn's actual end;
     # compacting and queued-strangers keep their honest refusals inside _arm_rewind.
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    sess = _session_row(sid, now)            # idle > 48h can still be rolled back (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet"
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
@@ -44833,6 +44899,165 @@ def _release_skeleton(c, sid):
         return _release_skeleton_locked(c, sid)
 
 
+COMPACT_TAIL_WINDOW = 256 * 1024                   # the tail read's first window for _compact_boundary_since; widened 4x while
+#                                                    the window's oldest stamped record is still after the moment asked about
+
+
+def _compact_boundary_since(path, since):
+    """Whether the transcript carries a compact_boundary record stamped at or after `since` (epoch seconds): the built
+    chip's compaction disproof (_compacting), as a tail-first read that needs no parse (round four, low c). Records are
+    appended in order, so the read widens back from the end only while the window's oldest stamped record is still at
+    or after `since`; the whole file is the bound. False on any read fault (the caller then trusts the row's word)."""
+    if not since:
+        return False
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    win = COMPACT_TAIL_WINDOW
+    try:
+        with open(path, "rb") as f:
+            while True:
+                start = max(0, size - win)
+                f.seek(start)
+                chunk = f.read(size - start)
+                lines = chunk.split(b"\n")
+                if start > 0:
+                    lines = lines[1:]                     # the first piece is a torn line
+                oldest = None
+                for ln in lines:
+                    if b'"compact_boundary"' in ln:
+                        try:
+                            rec = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+                            t = em.parse_z(rec.get("timestamp"))
+                            if t is not None and t >= since:
+                                return True
+                    if oldest is None and b'"timestamp"' in ln:
+                        try:
+                            oldest = em.parse_z(json.loads(ln).get("timestamp"))
+                        except ValueError:
+                            oldest = None
+                if start == 0 or (oldest is not None and oldest < since):
+                    return False
+                win *= 4
+    except OSError:
+        return False
+
+
+def _light_status(sid, path, tm, now):
+    """A skeleton tab's status without a build, from the sources the built chip reads that need no parse: the backend's live
+    row (its live-prompt, retrying, working and compacting words, its since, backend, model, effort, mode), the api-error
+    tail read (_api_error: cached, tail-first, the same call build_session makes, so blocked and its on-you legs paint as
+    they would built), the awaiting stamps and rows (_session_awaiting with the judge's stamp, the built chip's own call),
+    the backend's compaction bracket, and the retry ladder. What it cannot state is the transcript-derived open turn: the
+    row's `working` stands in for it. Round two of the gate (2026-09-14): the first cut collapsed blocked, awaiting and
+    compacting to ready for the whole spread; the diet's contract is a chip that stays honest, so the legs ride here from
+    their cheap sources. `provisional` says so to a reader; the built status replaces it on the tab's first build. None
+    with no live row: the gate then builds, as before, rather than send a status the kernel cannot state."""
+    if not tm or not isinstance(tm, dict):
+        return None
+    st = tm.get("state", "") or ""
+    working = st == "working"
+    try:
+        be = Sessions.backend_for(sid)
+        bc = be.compacting(sid) if be is not None else None
+    except Exception:
+        bc = None
+    # Compacting in the built chip's order (round four, low c): the backend's bracket when it states one; else the row's
+    # word or the kernel's own /compact click, disproved by the cheap reads this status has: a compact_boundary at or
+    # after the row's since is a tail read (_compact_boundary_since), and the open turn's disproof stands in by the
+    # row's working. The residual: a row that says compacting while the transcript's last turn is open with no
+    # boundary since reads compacting here and working built, until the tab's first build.
+    since_s = tm.get("since")
+    if bc is not None:
+        compacting = bool(bc)
+    else:
+        compacting = bool((st == "compacting" or _compact_clicked.get(sid) is not None) and not working
+                          and not _compact_boundary_since(path, since_s))
+    aw = None
+    if not working:
+        try:
+            aw = _session_awaiting(sid, path, True, stamp=True)
+        except Exception:
+            aw = None
+    aerr = None
+    if not (working or aw):
+        try:
+            aerr = _api_error(path)
+        except Exception:
+            aerr = None
+    chip = ("compacting" if compacting else
+            "blocked" if aerr else
+            "needsInput" if st in _NEEDS_INPUT_STATES else
+            "retrying" if st == "retrying" else
+            "working" if working else
+            "awaitingBg" if aw else "ready")
+    since = tm.get("since")
+    tries, next_at = _retry_gate_state(sid)
+    ctx = tm.get("context")
+    stops = cm.stops_for(_colormap())
+    return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
+            "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
+            "needsYou": _feed_needs_input_of(sid),       # the yellow ask ring's one input (round four): the feed's verdict, a membership read
+            # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
+            # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
+            # its model and effort tints paint as built for as long as the tab stays unbuilt
+            "ctx": str(ctx) if ctx is not None else "", "ctxOver": bool(tm.get("ctxOver")),
+            "ctxColor": (list(cm.ramp(ctx / 100.0, stops)) if ctx is not None else None),
+            "ctxTone": (list(cm.context_rgb(ctx)) if ctx is not None else None),
+            "modelColor": _model_color(tm.get("model", ""), stops), "effortColor": _effort_color(tm.get("effort", ""), stops),
+            "modelTone": _model_tone(tm.get("model", "")), "effortTone": _effort_tone(tm.get("effort", "")),
+            "awaitingWhy": (aw or {}).get("why") or None, "awaitingKind": (aw or {}).get("kind"),
+            "awaitingPeers": (aw or {}).get("peers") or None,
+            "awaitingCount": (aw or {}).get("count") if isinstance((aw or {}).get("count"), int) else None,
+            "awaitingItems": (aw or {}).get("items") or [], "awaitingTasks": [], "awaitingTaskIds": [], "bgServiceIds": [],
+            "apiTooLong": bool(aerr and aerr.get("tooLong")), "apiSpendLimit": bool(aerr and aerr.get("spendLimit")),
+            "apiModelLimit": bool(aerr and aerr.get("modelLimit")), "apiAuthErr": bool(aerr and aerr.get("authErr")),
+            "apiRefusal": bool(aerr and aerr.get("refusal")),
+            "retrySuppressed": _session_retry_suppressed(sid), "retryNextAt": int(next_at) or None, "retryTries": tries or None,
+            "backend": _session_backend(sid, tm), "model": tm.get("model", ""), "effort": tm.get("effort", ""),
+            "mode": tm.get("mode", "")}
+
+
+def _send_light_status(c, sid, light):
+    """The gate's status frame to one client, membership re-checked UNDER the client's lock right before the send (round
+    three, low b): a click between the gate's decision and this send drops the tab from the set and the full goes out on
+    the same slot; a provisional status landing after it would replace the just-built status of the now-active tab. Only a
+    tab the client still holds as a skeleton gets the provisional word; the built full is the answer for the rest. Returns
+    whether it was sent."""
+    with _client_lock(c):
+        if sid not in (c.get("skeleton") or ()):
+            return False
+        _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": light})
+        return True
+
+
+def _held_as_skeleton_by_all(sid, clients):
+    """Whether EVERY chat client in `clients` holds `sid` as a skeleton tab (each set read under its own slot lock), and
+    there is at least one. The cold-tab gate's question (2026-09-14): a tab no connected page is looking at, on a kernel
+    that has not built it since the boot, is not built by the pusher's loop or the per-session push; the page's click
+    (activeTab) or idle prefetch (needFull) releases the skeleton first, and the very next push builds it. The user's
+    ruling: the selected tab first, tabs present in the strip next over later refreshes, hidden tabs never until shown."""
+    if not clients:
+        return False
+    for c in clients:
+        with _client_lock(c):
+            if sid in (c.get("skeleton") or ()):
+                continue
+            # A client that declared the diet but whose set is not resolved yet (its redial or skeleton dial armed
+            # `reconnect`, and no strip sender has reached it: round two, low 2, a connect push targeting another column)
+            # will hold every tab but its watched one as a skeleton once it is (_resolve_reconnect's rule), so it is read
+            # that way here; a client with no diet, or no watched tab, holds nothing as a skeleton.
+            if (c.get("reconnect") or c.get("skeletonOnReady")) and c.get("active") and sid != str(c.get("active")) \
+                    and sid not in (c.get("echat") or {}):
+                continue
+            return False
+    return True
+
+
 def _skeleton_for(c, act, chat_list):
     """The sids a reconnecting client is NOT looking at, ascending by transcript size — a free stat, the byte
     proxy the kernel has before building anything (the tail length ties at WIRE_TAIL for every busy session,
@@ -48600,13 +48825,19 @@ def _push(targets, connect=False, live_map=None):
     want_tl = any(c["app"] == "timeline" for c in targets)
     chat_clients = [c for c in targets if c["app"] == "chat"]
     # CARDS FIRST on a cold kernel (the user 2026-09-12: after a restart the sessions load fast now and the cards still
-    # wait): the first push after a boot builds every chat page (cold parses, ~25 s of a 37 s first cycle on the devbox)
-    # and the timeline before the feed frame leaves at the send stage. With no feed built since start and a feed pane
-    # among the targets, the feed is built and sent to those panes FIRST (_feed_first); the regular feed section below
-    # serves the same build from the cache with the ledgers attached, and the send stage's delta path carries only what
-    # that added. A warm kernel (a feed already built, or any cycle after the first) takes no extra step.
-    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS and _PERF_STATS.pusher.get("cycles", 0) == 0
-            and any(c["app"] == "feed" for c in targets)):      # the boot's FIRST pusher cycle, and only it
+    # wait): the first push with a feed pane after a boot builds every chat page (cold parses: 55 s of a 72 s refresh
+    # for 27 tabs on the devbox, 2026-09-13 3:58 PM PT) and the timeline before the feed frame leaves at the send stage.
+    # With no feed built since start and a feed pane among the targets, the feed is built and sent to those panes FIRST
+    # (_feed_first); the regular feed section below serves the same build from the cache with the ledgers attached, and
+    # the send stage's delta path carries only what that added. A warm kernel (a feed already built) takes no extra step.
+    # ANY cold refresh, not the boot's first cycle alone (re-applied 2026-09-14, step three of the agreed order): the pusher's
+    # first cycle runs before a browser reconnects (0.6 to 1.0 s after the boot since the housekeeping split), so a guard on
+    # cycle zero fired on no real boot. The first cut of this guard (12:06 PM PT) made the first refresh 131 s because six
+    # redialing panes each built the same cold feed on their own thread beside this one; builds are single-flight across
+    # threads now (_cached_feed's lock), so the connect pushes wait for this build and serve it. The cold state the
+    # shortcut is for is "no feed built yet".
+    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS
+            and any(c["app"] == "feed" for c in targets)):      # no feed built since the boot, a feed pane to serve
         try:
             _feed_first(now, live_map, targets, connect)
         except Exception:
@@ -48665,10 +48896,33 @@ def _push(targets, connect=False, live_map=None):
             # tab's floor and the next cycle flipped it back, review find E); which clients count is _chat_floor0_of's
             with _clients_lock:
                 _all_chat = [c for c in _clients if c.get("app") == "chat"]
+                _any_sessions_pane = any(c.get("app") == "fleet" for c in _clients)   # the pane's existing wire id
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
+            _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
+            #                                                                          not this push's targets alone (round two, low 2)
             for s in build_order:
                 is_active = s["sid"] in active           # the watched tab(s): served like any tab while the key holds
+                # THE COLD-TAB GATE (2026-09-14; the user, after the boot review): on the 3:58 PM PT restart the first
+                # refresh with a browser built the chat of all 27 tabs (54.6 s of a 72.4 s refresh) before the cards
+                # and the timeline left, for one tab on screen. A tab with a transcript that this kernel has not built
+                # since the boot, that no watching client names active, and that EVERY connected chat page holds as a
+                # skeleton (the restart reload dials the skeleton diet since the client half of this change) is not
+                # built here: the page's click or its idle prefetch releases the skeleton, and that push builds it.
+                # A warm tab (a cached build) is served and status-framed as before; a Sessions pane needs every
+                # session's ledger slice, so with one connected nothing is skipped; a page that declared no diet holds
+                # no set and is served whole, as today.
                 _tm = live_map.get(s["sid"])
+                _light = None
+                if (not is_active and s["sid"] not in _all_active and not want_fleet and not _any_sessions_pane
+                        and s["sid"] not in _built_chat and os.path.exists(s["path"])
+                        and _held_as_skeleton_by_all(s["sid"], _all_chat)):   # every CONNECTED chat client, as the floor reads
+                    _light = _light_status(s["sid"], s["path"], _tm, now)   # no live row: no status to state, so build as before
+                if _light is not None:
+                    for c in chat_clients:               # a status per skeleton tab still goes (the diet's contract),
+                        _send_light_status(c, s["sid"], _light)   # the live row's word until the tab's first build
+                    _VIEW_STATS["chatSkipCold"] += 1
+                    _PERF_STATS.build_chat_cold_skip()
+                    continue
                 try:
                     sig = _chat_build_sig(s, _tm, now, live_map=live_map)
                     _chat_sig_ok(s["sid"])               # a signature that was taken ends its fault episode
@@ -48676,8 +48930,26 @@ def _push(targets, connect=False, live_map=None):
                     _chat_sig_fault(s, e)                # once per fault episode: stderr and a bell row
                     sig = None                           # an input that cannot be keyed: build, never cache
                 hit = _built_chat.get(s["sid"])
+                _claimed = False
+                if not (hit is not None and sig is not None and hit[0] == sig):
+                    _ev = _chat_inflight_claim(s["sid"])            # single-flight (2026-09-14): another thread building this tab?
+                    if _ev is not None:
+                        _ev.wait(CHAT_INFLIGHT_WAIT_S)              # wait for it, then re-read what it stored
+                        hit = _built_chat.get(s["sid"])
+                        if hit is not None and sig is not None and hit[0] == sig:
+                            _VIEW_STATS["chatWaited"] += 1
+                        else:
+                            _claimed = _chat_inflight_claim(s["sid"]) is None   # nothing usable stored: build, as before
+                    else:
+                        _claimed = True
+                    if _claimed:
+                        hit = _built_chat.get(s["sid"])             # re-read under the claim (round two, low c): a builder that
+                        #                                             stored between the first read and the claim is served, as
+                        #                                             _cached_feed re-checks under its lock
                 post, served, _rec = None, False, None
                 if hit is not None and sig is not None and hit[0] == sig:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])                # the re-read's road: claimed, then found stored
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
@@ -48696,6 +48968,8 @@ def _push(targets, connect=False, live_map=None):
                         # that stopped updating is not a silent degrade (review find, 2026-09-08).
                         _chat_build_fault(s, e)
                         _chat_dep_scope.deps = None      # the failed build's record is nobody's
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])   # the waiters build their own, as before this change
                         continue
                     _chat_build_ok(s["sid"])             # a build that succeeds ends its fault episode
                     # The full serialization is LAZY (the 2026-08-10 CPU fix, round two): steady state
@@ -48730,6 +49004,8 @@ def _push(targets, connect=False, live_map=None):
                               prefix=_chat_fold_last_info().get("prefix", 0),   # events reused from the sealed prefix
                               why=_chat_fold_last_info().get("why", ""))         # the demote reason on a full build
                 if not m:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])
                     continue
                 if _empty_build_regresses(m, _prev_chat_events.get(m["id"])):
                     # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
@@ -48737,6 +49013,8 @@ def _push(targets, connect=False, live_map=None):
                     # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds
                     _note_empty_build(s["sid"], s.get("path"), len(_prev_chat_events.get(m["id"]) or ()))
                     if hit is None:
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])
                         continue
                     m, ms, _rec = hit[1], hit[2], hit[3]   # the stand-in payload keeps its own dependency record
                 else:
@@ -48784,6 +49062,8 @@ def _push(targets, connect=False, live_map=None):
                         if _PERF:
                             _perf("chatsig", sid=str(s["sid"])[:8],
                                   moved=",".join(l for l in _chat_sig_miss(sig, post) if l not in _CHAT_SIG_DEPS))
+                if _claimed:
+                    _chat_inflight_done(s["sid"])        # stored (or not cacheable): the waiters re-read the cache now
             shown_sids = {s["sid"] for s in chat_list}
             for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
                 if sid not in shown_sids:
@@ -48920,6 +49200,10 @@ def _push(targets, connect=False, live_map=None):
             tl_clients = [c for c in targets if c["app"] == "timeline"]
             live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
             if live_first:
+                # Outside any lock (round two, medium 2): this is the pane's FIRST frame, the cheap live-only partial, and
+                # holding the full build's lock across it serialised two cold connects and blocked the pusher's whole
+                # timeline stage (the cards for every pane behind it). The single-flight lock covers the FULL build alone
+                # (_cached_timeline); a connect racing it still gets its partial at once and the full on the next cycle.
                 skel = build_timeline(now, live_map, with_bars=False, live_only=True)
                 for c in tl_clients:
                     _send_client(c, ("timeline",), {"type": "data", "data": skel})
@@ -49171,6 +49455,24 @@ def _push_session_now(sid):
             return                                   # hidden / raced a teardown — the periodic pusher owns the rest
         tab_order = [s["sid"] for s in chat_list]
         tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
+        # The cold-tab gate (2026-09-14; see _held_as_skeleton_by_all): at a boot with a browser connected, each of the
+        # 27 attach handshakes ran this push, a cold build per session, for tabs the page holds as skeletons; a full
+        # here would also release the skeleton and hand the page a tab it did not ask for. Not built: the click or the
+        # prefetch releases first and asks again. A tab some page holds whole, or a transcript-less one, builds as before.
+        for c in targets:                                # the set FIRST (round two, low 1): a skeleton client whose redial the
+            redialed = _resolve_reconnect(c, chat_list)   # pusher has not reached yet has no set at the handshake push, and the
+            _send_tab_order(c, tab_order, tab_meta, live_map)   # gate below would read it as holding nothing and hand it a full
+            if redialed:                                 # it never asked for; the strip goes before any full anyway
+                _consume_pending_reveal(c, why="the pane's redial")
+        _path = next((s.get("path") or "" for s in chat_list if s["sid"] == sid), "")
+        _light = (_light_status(sid, _path, live_map.get(sid), now) if sid not in _built_chat and _path and os.path.exists(_path)
+                  and _held_as_skeleton_by_all(sid, targets) else None)
+        if _light is not None:
+            for c in targets:                            # the live row's status, so the chip this push exists for still flips
+                _send_light_status(c, sid, _light)
+            _VIEW_STATS["chatSkipCold"] += 1
+            _PERF_STATS.build_chat_cold_skip()
+            return
         try:
             m = build_session(sid, now, live_map)
         finally:
@@ -49182,11 +49484,7 @@ def _push_session_now(sid):
                               len(_prev_chat_events.get(sid) or ()))
             return                                   # the periodic pusher owns the sid until content returns
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
-        for c in targets:
-            redialed = _resolve_reconnect(c, chat_list)   # a redialing page must never see a strip before its set exists
-            _send_tab_order(c, tab_order, tab_meta, live_map)
-            if redialed:                             # this strip is the redial's first: a reveal parked for its window lands behind it
-                _consume_pending_reveal(c, why="the pane's redial")
+        for c in targets:                            # the strip went above, before the gate; here the session frame
             ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form (…and releases a skeleton)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
@@ -49315,12 +49613,69 @@ def _producer_sig(browser):
 # dashboard re-does it every tick. Cache each payload, keyed on a fleet fingerprint; an UNCHANGED fleet (a
 # reload, an idle tick) reuses the last build instead of rebuilding.
 _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_at, build_started_at]
+# SINGLE-FLIGHT BUILDS (2026-09-14). The first browser-attached boot on the cards-first code (12:06 PM PT): every pane's
+# socket redialed after the outage and each connect push built its own copy of the same cold work on its handler thread
+# while the pusher built it too: five to seven cold builders of one feed, one timeline and the same 27 chat tabs on one
+# interpreter, each five to seven times slower for it (push.feedFirst 106 s; connect pushes 109 to 130 s each; cards at
+# 131 s against 72 s the day before). A build in flight is the build every later caller wants: the feed and the timeline
+# take one lock each around their build, and a caller that finds the lock held waits for the builder and serves its
+# result; a chat tab in flight on another thread is waited for the same way (_chat_inflight_*), and the waiter re-reads
+# the cache the builder stored. The review's item (review-push 7): three threads under one interpreter lock gain little
+# from concurrency; ordering and de-duplication do. Counted under _VIEW_STATS feedWaited / tlWaited / chatWaited.
+_FEED_BUILD_LOCK = threading.RLock()
+_TL_BUILD_LOCK = threading.RLock()
+_CHAT_INFLIGHT = {}                                # sid -> (Event set when that sid's build and its cache store ended, claimed at)
+_CHAT_INFLIGHT_LOCK = threading.Lock()
+CHAT_INFLIGHT_WAIT_S = 30.0                        # a waiter's bound, near the per-tab worst case (about 2.4 s a tab cold, 66 s for
+#                                                    27 on the measured day): the waiter is the pusher, and its fallback, building its
+#                                                    own copy, is the behaviour before this change (round two, medium 1)
+
+
+def _chat_inflight_claim(sid):
+    """Claim `sid`'s build for this thread. Returns None when claimed, else the Event of the thread already building it.
+    The claim is recorded on THIS thread's scope (_live_scope.chat_claims) so _chat_push_scopes_close, the push's and the
+    cycle's finally, releases whatever a raise left claimed: the same handler, for the same reason, as the chat scopes
+    (round two, medium 1: a raise between the claim and the store left the Event unset for the kernel's life, and every
+    later rebuild of that tab waited the whole bound). An entry older than the bound is stale by definition (its builder
+    would have released it); a new claim replaces it and releases anyone waiting on it."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.get(sid)
+        if ent is not None and time.monotonic() - ent[1] <= CHAT_INFLIGHT_WAIT_S:
+            return ent[0]
+        stale = ent
+        _CHAT_INFLIGHT[sid] = (threading.Event(), time.monotonic())
+    if stale is not None:
+        stale[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims is None:
+        claims = _live_scope.chat_claims = []
+    claims.append(sid)
+    return None
+
+
+def _chat_inflight_done(sid):
+    """The claimed build ended (stored, faulted or skipped): release the waiters and forget the claim on this thread."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.pop(sid, None)
+    if ent is not None:
+        ent[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims and sid in claims:
+        claims.remove(sid)
+
+
+def _chat_inflight_release_all():
+    """Every claim this thread still holds, released: the push's and the cycle's finally (via _chat_push_scopes_close)."""
+    for sid in list(getattr(_live_scope, "chat_claims", None) or ()):
+        _chat_inflight_done(sid)
+    _live_scope.chat_claims = None
 # How often each view is REBUILT vs SERVED from its cache — the pusher's cost, as numbers (2026-09-03).
 # Exposed on the version route beside the parse counters, so "the kernel is pegged" can be read as
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
 # rebuild is justified only by a changed input; a rising build count on a quiet board is a bug signature.
 _VIEW_STATS = {"feedBuild": 0, "feedServe": 0, "tlBuild": 0, "tlServe": 0,
-               "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0,
+               "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0, "chatSkipCold": 0,
+               "feedWaited": 0, "tlWaited": 0, "chatWaited": 0,   # served a build another thread had in flight (single-flight)
                # GET /feed.json's reads (_pure_feed), apart: a poller's builds under the pusher's numbers
                # would forge the bug signature above, or bury a pusher regression (review find, 2026-09-08)
                "feedJsonBuild": 0, "feedJsonServe": 0}
@@ -49510,6 +49865,22 @@ def _cached_feed(now, live_map, sig, connect=False):
     # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild —
     # UNLESS an optimistic kernel-side mutation postdates the build (_views_dirty): that state is invisible
     # to the sig AND must not wait out REBUILD_MIN_S, or the push meant to show it serves the stale payload.
+    if _feed_servable(sig, connect):
+        _VIEW_STATS["feedServe"] += 1
+        _PERF_STATS.build("feed", True)
+        return _built_feed[1]
+    with _FEED_BUILD_LOCK:                                # single-flight: a build in flight on another thread is the one we want
+        if _feed_servable(sig, connect):                  # ...and it landed while we waited for the lock
+            _VIEW_STATS["feedServe"] += 1
+            _VIEW_STATS["feedWaited"] += 1
+            _PERF_STATS.build("feed", True)
+            return _built_feed[1]
+        return _build_feed_locked(now, live_map, sig)
+
+
+def _feed_servable(sig, connect):
+    """Whether the built feed stands for this caller: a connect serves any warmed build (never rebuilds); the pusher
+    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark newer than its start."""
     e = _built_feed
     # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
     # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
@@ -49519,11 +49890,13 @@ def _cached_feed(now, live_map, sig, connect=False):
     # until the next sig bust — the window a client fallback needs to bounce a just-replied card
     # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
     # so back-to-back starts must not shrink its window.
-    dirty = not connect and _views_dirty[0] > e[3]        # connect still serves the warmed build (never rebuilds)
-    if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
-        _VIEW_STATS["feedServe"] += 1
-        _PERF_STATS.build("feed", True)
-        return e[1]
+    dirty = not connect and _views_dirty[0] > e[3]
+    return e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S)
+
+
+def _build_feed_locked(now, live_map, sig):
+    """The feed build proper, under _FEED_BUILD_LOCK (the caller holds it): the build, the cache store, the needs-you set,
+    the bells."""
     _VIEW_STATS["feedBuild"] += 1
     bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
     started = time.time()                # …and the dirty floor for the NEXT check: mutations after this
@@ -51424,13 +51797,20 @@ def _cached_timeline(now, live_map, sig, connect=False):
         _VIEW_STATS["tlServe"] += 1
         _PERF_STATS.build("timeline", True)
         return built
-    _VIEW_STATS["tlBuild"] += 1
-    started = time.time()
-    _t0 = time.monotonic()
-    tl = build_timeline(now, live_map)
-    _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
-    _built_timeline[:] = [sig, tl, time.time(), started]
-    return tl
+    with _TL_BUILD_LOCK:                                  # single-flight: a build in flight on another thread is the one we want
+        built = _built_timeline[1]
+        if built is not None and (connect or _timeline_cache_fresh(sig)):   # ...and it landed while we waited for the lock
+            _VIEW_STATS["tlServe"] += 1
+            _VIEW_STATS["tlWaited"] += 1
+            _PERF_STATS.build("timeline", True)
+            return built
+        _VIEW_STATS["tlBuild"] += 1
+        started = time.time()
+        _t0 = time.monotonic()
+        tl = build_timeline(now, live_map)
+        _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
+        _built_timeline[:] = [sig, tl, time.time(), started]
+        return tl
 
 
 def _timeline_cache_fresh(sig):
@@ -51994,6 +52374,7 @@ function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
+try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}));}catch(e){}   /* kept for the panes' first dial (the chat diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
@@ -52086,6 +52467,14 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // (Handler._ws → _resolve_reconnect: the redial diet, for a fresh page that has a hint). false everywhere else: the
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
+// The RESTART DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
+// until shown): a main chat pane whose page was just reloaded by a kernel RESTART dials its first socket as a skeleton client, the later
+// column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab, and the
+// page's idle prefetch fills the rest. The reason is the reload core's durable record (romp:reloadReason; the announce record is consumed
+// before this shim dials), CONSUMED here on the read that acts on it, as the announce record is by announce() (round two, medium 1: a
+// plain reload two seconds after a restart reload dialed the diet on the same record); a build reload, a column, a fresh open and every
+// redial dial as before. Emitted for the chat app alone (round two, medium 2): every other pane's shim carries the false alone.
+%s
 // This PAGE's instance id — minted once per load, never stored: every connect of this page carries it, so the
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
@@ -52239,7 +52628,7 @@ function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // on
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
-ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+(SKEL?"&skeleton=1":""));   // skeleton=1: a later chat column, served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
+ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after a kernel restart's reload (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
@@ -52428,7 +52817,14 @@ pendingWhy="foreground";freshPending=true;   // the reconnect's arm reads "foreg
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v), app, int(v), "true" if no_stale else "false", app, app)
+""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, int(v), "true" if no_stale else "false", app, app)
+
+
+# The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
+# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet only when it named a kernel restart. A
+# column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
+_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||\"null\");"
+                    "if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}")
 
 
 def _shim_core_js(app="test", v=0):
@@ -55024,11 +55420,14 @@ if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026
 // a REJECTED fetch, the kernel gone, empties the suggestions instead, so a dead kernel is never hidden behind a stale
 // list once one was read; the console says which, and names the kept list only when there is one (the strip's rule)
 var _cfgRead=false;
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=e||new Error('fetch rejected');e.network=true;throw e;})
+// a rejection's reason as an Error: an Error as it is, an object by its message or its JSON (the old wrap flattened
+// it to [object Object]), null as fetch rejected, anything else by its string; the caller marks it as a network fault
+function asErr(e){if(e instanceof Error)return e;if(e&&typeof e==='object'){var m=(typeof e.message==='string'&&e.message)?e.message:'';if(!m){try{m=JSON.stringify(e);}catch(_){m=String(e);}}return new Error(m);}return new Error(e==null?'fetch rejected':String(e));}
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){var x=asErr(e);x.network=true;throw x;})
 .then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];_cfgRead=true;fillHosts();}).catch(function(e){var keep=_cfgRead&&!(e&&e.network);
 try{console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e);}catch(_){}
-if(!keep){_cfg=[];fillHosts();}});}
+if(!keep){_cfg=[];_cfgRead=false;fillHosts();}});}   // the flag goes with the list: the next failure cannot claim to keep one
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
@@ -61917,7 +62316,7 @@ class Handler(BaseHTTPRequestHandler):
         iid = (q.get("iid") or [""])[0]         # which page INSTANCE: a reconnect carrying it retires its old socket
         active = (q.get("active") or [""])[0]   # the tab this client is looking at → _push builds it FIRST
         reconnect = (q.get("reconnect") or [""])[0] == "1"   # the shim's own statement: this page opened a socket before and its bundle has said ready, with no ready waiting in its queue
-        skeleton = (q.get("skeleton") or [""])[0] == "1"     # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names
+        skeleton = (q.get("skeleton") or [""])[0] == "1" and app == "chat"   # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names; a chat socket's alone (round two of PR 1661: the term is meaningless for a feed or a timeline client)
         col = (q.get("col") or [""])[0]         # which chat COLUMN of that dashboard (split screen, 2026-09-08) — for the logs;
         #                                         the columns arbitrate a dashboard-aimed focus among themselves (render.ts focusIsOurs)
         self.send_response(101)
@@ -62355,8 +62754,13 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _push_one(self, client):
-        _push([client], connect=True)             # full state to a fresh client (its per-client dedup is empty);
-        #                                           serves the pusher-warmed feed/timeline (no rebuild) → instant
+        _t0 = time.monotonic()
+        try:
+            _push([client], connect=True)         # full state to a fresh client (its per-client dedup is empty);
+            #                                       serves the pusher-warmed feed/timeline (no rebuild) → instant
+        finally:                                  # the browser's own first draw, timed (2026-09-14): the ledger and the stage
+            _PERF_STATS.connect_push(client.get("app"), time.monotonic() - _t0)   # rings time the pusher's cycles alone, so
+            #                                       the logo phase after a restart had no number
 
 
 def _ensure_bundles():

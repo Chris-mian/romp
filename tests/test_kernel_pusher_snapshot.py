@@ -327,12 +327,14 @@ class OneDiscoverPerCycle(_CycleFixture):
 
 
 class TickReadsTheRowsPath(_CycleFixture):
-    """_interrupt_block_tick hands _compacting_now the row's own path and live meta. Beyond the saved
-    _path_of sweep, this is a behaviour change for a LIVE session idle longer than 48h: _path_of searched
-    only the 48h set and answered None, so the gate read an empty parse, and an optimistic compact click
-    could not be disproved by the session's own compact_boundary for the 180 s cap — the tick skipped the
-    row that long. With the row's path the gate reads the cached parse, and the boundary (the event)
-    retires the click."""
+    """_interrupt_block_tick hands _compacting_now the row's own path and live meta. When the hoist landed it
+    was also a behaviour change for a LIVE session idle longer than 48h: _path_of searched only the 48h set
+    and answered None, so the gate read an empty parse, and an optimistic compact click could not be
+    disproved by the session's own compact_boundary for the 180 s cap — the tick skipped the row that long.
+    With the row's path the gate reads the cached parse, and the boundary (the event) retires the click.
+    Since _session_row (the single-session resolver behind the fork/comment/rewind doors, 2026-09-14) the
+    default _path_of read resolves that idle session through discover's wide walk too, so the two reads
+    agree and the hoist is what it was always for: the saved per-row discover sweep."""
 
     def _boundary_transcript(self, offset=0):
         """SID2's transcript with a compact_boundary at now + offset (its mtime set idle longer than the caption
@@ -359,8 +361,10 @@ class TickReadsTheRowsPath(_CycleFixture):
         path, t = self._boundary_transcript()
         km.Sessions.live = lambda: dict(self.row)
         km._compact_clicked[SID2] = t - 10               # the kernel sent /compact just before the boundary
-        self.assertTrue(km._compacting_now(SID2), "without the row's path the 48h search finds no transcript: "
-                                                 "the click stands unproven for the whole cap (the old read)")
+        self.assertFalse(km._compacting_now(SID2), "the default read resolves the idle session's own transcript "
+                                                  "(_path_of via _session_row's wide walk), so the boundary retires "
+                                                  "the click here too; before _session_row the 48h search found no "
+                                                  "transcript and the click stood unproven for the whole cap")
         km._compact_clicked[SID2] = t - 10
         self.assertFalse(km._compacting_now(SID2, tm=self.row[SID2], path=path),
                          "with the row's path the cached parse's boundary retires the click")

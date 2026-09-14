@@ -1,33 +1,44 @@
-"""A pytest run leaves nothing in the system temp dir, and its git reads none of the developer's
+"""A test run leaves nothing in the system temp dir, and its git reads none of the developer's
 configuration (2026-09-06).
 
-Two mechanisms, one per half. tests/__init__.py wraps tempfile.mkdtemp so every directory the test
-process mints is recorded and removed when the run ends (under pytest at session end, under
-`python -m unittest` at exit): that is the in-process half, and it covers the 300-odd module
-preambles and the per-test mkdtemp calls nobody cleans up. tests/conftest.py covers what the hook
-cannot see — directories made by child processes (kernels, git, a shell's `mktemp -d`), mkstemp
-files, os.mkdir paths — by pointing the process temp dir (tempfile.tempdir and TMPDIR, so children
-inherit it) at one private `romp-tests-*` root and removing the root when the run ends; the
-package's state dir, minted before the redirect, goes with it. Before both, a full run left ~5,600
-entries in /tmp and over a million had piled up. The same conftest points git at no global or
-system config (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM) with a synthetic identity: the seed commits
-had been running the developer's global pre-commit hook.
+Two mechanisms, one per half, both in tests/__init__.py (the second was conftest.py's until
+2026-09-14). The package wraps tempfile.mkdtemp so every directory the test process mints is
+recorded and removed when the run ends (under pytest at session end, under `python -m unittest` at
+exit): that is the in-process half, and it covers the 300-odd module preambles and the per-test
+mkdtemp calls nobody cleans up. And it covers what the hook cannot see — directories made by child
+processes (kernels, git, a shell's `mktemp -d`), mkstemp files, os.mkdir paths — by pointing the
+process temp dir (tempfile.tempdir and TMPDIR, so children inherit it) at one private
+`romp-tests-*` root, minted before its own state dir so that dir sits inside, marked with the
+owning pid for the kernel's dead-run sweep, and removed whole at exit; tests/conftest.py keeps the
+pytest side of that removal, at run end with a survivor named. Before both, a full run left ~5,600
+entries in /tmp and over a million had piled up; while the root was conftest's, a bare run
+(`python -m unittest tests.test_x`) had no redirect and no marker, so every child's `mktemp -d`
+and every mkstemp file landed loose in the system temp dir, and a run killed mid-test left
+everything it made there, unsweepable. The same conftest points git at no global or system config
+(GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM) with a synthetic identity: the seed commits had been
+running the developer's global pre-commit hook.
 
-Pinned four ways. Hygiene (the hook): it is installed, and a child run of this module under pytest
+Pinned five ways. Hygiene (the hook): it is installed, and a child run of this module under pytest
 and under unittest leaves neither the directory it made nor its state root (ROMP_HYGIENE_MARKER
-names the file where the child writes both paths). From inside a run: the floors are in place and
-children inherit them; no test pins a temp path to a literal directory; a root that survives
-removal is named on stderr; a global and a system hooksPath cannot reach a fixture commit. End to
-end: a nested pytest on a leaking module leaves the system temp dir it was given exactly as it
-found it, serial and under xdist. The in-run and end-to-end classes skip under a bare unittest run,
-where conftest never loaded and there is nothing to pin; the hook checks run either way. This
-module loads no romp code, so it needs no state-root preamble.
+names the file where the child writes both paths). From inside a run, under either entry point:
+the floors are in place and children inherit them, and no test pins a temp path to a literal
+directory; under pytest, a root that survives removal is named on stderr, and a global and a
+system hooksPath cannot reach a fixture commit. End to end: a nested pytest on a leaking module
+leaves the system temp dir it was given exactly as it found it, serial and under xdist. Bare, end
+to end, in both shapes: a child run of a leaking module shaped like `python -m unittest tests.test_x`
+(the package first) and one shaped like `python3 tests/test_x.py` (nothing before the module; its
+`from romp_load import load_source` is where the direct run's floor comes from, since 2026-09-14) each
+leave their system temp dir as they found it, and killed mid-test each leave exactly one marked root,
+which the kernel's sweep removes. The conftest-only
+classes skip under a bare unittest run, where conftest never loaded and there is nothing to pin;
+the rest run either way. This module loads romp code in one test only (the sweep), never at import.
 """
 import ast
 import contextlib
 import glob
 import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -35,6 +46,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +54,21 @@ from git_fixture import git, init_repo
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
+if "tests" not in sys.modules:
+    # A direct script run (`python3 tests/test_tempdir_hygiene.py`) never imports the tests package, so
+    # the mkdtemp hook and the temp root would be absent: the first Hygiene check failed and the child
+    # runs left two romp-hygiene-* directories behind (the #944 review). Since 2026-09-14 a direct run
+    # gets the package from the module's `from romp_load import load_source` (tests/romp_load.py), but
+    # this module makes that import inside one test only, after every module-level line, so it imports
+    # the package here itself, ahead of the preamble below, so that preamble's directory is tracked and
+    # inside the root rather than the one leak this module makes itself; the package also floors
+    # XDG_STATE_HOME, as for a unittest run.
+    sys.path.insert(0, ROOT)
+    import tests  # noqa: F401
+# Hermetic state BEFORE the one load this module makes (kernel/sdk_backend.py, inside BareRunLeavesNothing):
+# never at import, but tests/test_state_isolation_order.py reads the file, not the run, and these cost nothing.
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 IDENT = "romp tests <tests@example.invalid>"
 
 under_conftest = unittest.skipUnless("tests.conftest" in sys.modules,
@@ -97,8 +124,9 @@ class Hygiene(unittest.TestCase):
                          "tests.test_tempdir_hygiene.Hygiene.test_mkdtemp_is_tracked_in_process"])
 
 
-@under_conftest
 class PrivateTempRoot(unittest.TestCase):
+    """Not under_conftest: the root is the package's, so these hold under `python -m unittest` too."""
+
     def test_the_process_temp_dir_is_the_private_root(self):
         root = tempfile.gettempdir()
         self.assertTrue(os.path.basename(root).startswith("romp-tests-"), root)
@@ -107,10 +135,14 @@ class PrivateTempRoot(unittest.TestCase):
 
     def test_module_level_state_roots_land_inside_it(self):
         # Whichever module's preamble wrote XDG_STATE_HOME last at collection, it minted the dir
-        # after conftest redirected the temp root, so it sits inside.
+        # after the package redirected the temp root, so it sits inside; so does the package's own.
         root = tempfile.gettempdir()
         xdg = os.environ["XDG_STATE_HOME"]
         self.assertEqual(os.path.commonpath([root, xdg]), root, xdg)
+        pkg = sys.modules["tests"]
+        self.assertEqual(os.path.realpath(root), os.path.realpath(pkg.TMP_ROOT))
+        self.assertEqual(os.path.commonpath([root, pkg.STATE_DIR]), root, pkg.STATE_DIR)
+        self.assertTrue(os.path.isdir(pkg.STATE_DIR), pkg.STATE_DIR)
 
     def test_children_inherit_the_root(self):
         root = tempfile.gettempdir()
@@ -127,7 +159,7 @@ class PrivateTempRoot(unittest.TestCase):
         # above both — a worker that re-recorded its own gettempdir() would name the controller's
         # root, one level too deep for the socket under a long TMPDIR.
         handed = os.environ.get("ROMP_TESTS_SYSTEM_TMPDIR")
-        self.assertTrue(handed, "conftest records the temp dir it replaced")
+        self.assertTrue(handed, "the package records the temp dir it replaced")
         handed, root = os.path.realpath(handed), os.path.realpath(tempfile.gettempdir())
         self.assertFalse(os.path.basename(handed).startswith("romp-tests-"), handed)
         self.assertEqual(os.path.commonpath([handed, root]), handed, root)
@@ -369,19 +401,18 @@ class RunEndNotice(unittest.TestCase):
     the root and a 000-mode directory a test left behind (shutil's fd-based walk cannot open it, so
     the root's rmdir is never reached); the stand-in here is the latter."""
 
-    def test_the_package_state_dir_is_removed_with_the_root(self):
-        # tests/__init__.py minted it before conftest redirected the temp root, so it is the one
-        # thing outside the root; conftest holds it for the run-end removal rather than leaving it
-        # to __init__'s atexit alone.
-        conftest = sys.modules["tests.conftest"]
-        pkg_dir = conftest._PACKAGE_STATE_DIR
-        self.assertEqual(pkg_dir, sys.modules["tests"].STATE_DIR)
-        self.assertTrue(os.path.isdir(pkg_dir), pkg_dir)
+    def test_conftest_removes_the_packages_root_which_holds_the_state_dir(self):
+        # One root per process, the package's: conftest imports it rather than minting a second, and the
+        # package's state dir sits INSIDE it (minted after the redirect), so the root is the one thing a
+        # run puts in the system temp dir and the one thing conftest removes (BareRunLeavesNothing counts
+        # it, in a system temp dir of its own). Until 2026-09-14 the state dir was minted before conftest's
+        # redirect and sat BESIDE the root, a second top-level entry conftest held (and marked) for the
+        # run-end removal on its own.
+        conftest, pkg = sys.modules["tests.conftest"], sys.modules["tests"]
         root = tempfile.gettempdir()
-        # A sibling of the root, not a child: both were minted in the dir this process started with
-        # (the system temp dir, or the controller's root in an xdist worker) before the redirect.
-        self.assertEqual(os.path.realpath(os.path.dirname(pkg_dir)), os.path.realpath(os.path.dirname(root)))
-        self.assertNotEqual(os.path.commonpath([root, pkg_dir]), root)
+        self.assertEqual(os.path.realpath(root), os.path.realpath(pkg.TMP_ROOT))
+        self.assertEqual(conftest._TMP_ROOT, pkg.TMP_ROOT, "conftest removes the package's root, not one of its own")
+        self.assertEqual(os.path.commonpath([root, pkg.STATE_DIR]), root, pkg.STATE_DIR)
 
     @unittest.skipIf(os.geteuid() == 0, "root can remove a 000-mode directory")
     def test_a_root_that_survives_removal_is_named_on_stderr(self):
@@ -394,8 +425,8 @@ class RunEndNotice(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         self.addCleanup(lambda: os.path.isdir(locked) and os.chmod(locked, 0o700))
 
-        # The real hook, on the stand-in only (the package state dir is live and not this test's).
-        with patch.object(conftest, "_TMP_ROOT", root), patch.object(conftest, "_PACKAGE_STATE_DIR", None):
+        # The real hook, on the stand-in only (the run's own root is live and not this test's).
+        with patch.object(conftest, "_TMP_ROOT", root):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 conftest.pytest_unconfigure(None)
@@ -530,7 +561,7 @@ class RunLeavesNothing(unittest.TestCase):
         env = dict(os.environ, TMPDIR=fresh, PYTHONDONTWRITEBYTECODE="1")
         for var in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_CURRENT_TEST",
             "PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT",
-            "ROMP_TESTS_SYSTEM_TMPDIR"):        # a fresh run records its own handed dir (conftest setdefaults it)
+            "ROMP_TESTS_SYSTEM_TMPDIR"):        # a fresh run records its own handed dir (the package setdefaults it)
             env.pop(var, None)
         r = subprocess.run([sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider",
                             "-q", *extra, os.path.join(case, "test_leak.py")],
@@ -550,10 +581,146 @@ class RunLeavesNothing(unittest.TestCase):
         self._nested("-n", "2")
 
 
+BARE_LEAKY_MODULE = textwrap.dedent('''\
+    import os, subprocess, sys, tempfile, time, unittest
+    FIRST_IMPORTS
+    os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()   # the module preamble's state root, AFTER the import as in every module
+    os.environ.pop("ROMP_STATE_DIR", None)
+    READY = os.environ.get("ROMP_HYGIENE_READY")
+
+    class Leak(unittest.TestCase):
+        def test_leaks_every_way_a_bare_run_can(self):
+            tempfile.mkdtemp()                                                  # tracked: the hook's exit sweep removes it
+            fd, _ = tempfile.mkstemp()                                          # a file: the hook never sees it
+            os.close(fd)
+            subprocess.run(["mktemp", "-d"], check=True, capture_output=True)   # a child's directory: nor that
+            if READY:                                                           # the killed leg: say so, then wait for the kill
+                open(READY, "w").close()
+                time.sleep(600)
+
+    if __name__ == "__main__":
+        unittest.main()
+''')
+# The module's first imports, one set per shape of bare run. `python -m unittest tests.test_x` imports the
+# package before the module, so the module's own `from romp_load import load_source` finds the name the
+# package registered; a direct `python3 tests/test_x.py` imports nothing before the module, and that same
+# line is where the package comes from (tests/romp_load.py's bootstrap, 2026-09-14).
+UNITTEST_SHAPED_IMPORTS = ("import tests   # noqa: F401  the package first, then the module: the order `python -m unittest tests.test_x` runs them in\n"
+                           "from romp_load import load_source   # noqa: F401  every module's one import; here the package's registration")
+DIRECT_SHAPED_IMPORTS = "from romp_load import load_source   # noqa: F401  every module's one import, and here the first thing that runs"
+
+
+class BareRunLeavesNothing(unittest.TestCase):
+    """A bare run, handed a fresh directory as its system temp dir, runs a module that leaks every way a bare
+    run can: a module preamble's mkdtemp, a tracked mkdtemp in a test, a mkstemp file, a child's `mktemp -d`.
+    Finished, it leaves the directory as it found it; killed mid-test (SIGKILL, as a kernel restart cutting
+    the tool shell does: no atexit, no sweep, no removal), it leaves exactly one entry, a `romp-tests-*` root
+    whose marker names the dead pid, and the kernel's boot sweep removes it. Two shapes of bare run, each
+    both ways: the tests package imported before the module and no conftest, which is what `python -m
+    unittest tests.test_x` is; and the module alone, which is what `python3 tests/test_x.py` is, where
+    nothing imports the package and the module's `from romp_load import load_source`, its first import as in
+    every module, is where the floor comes from (tests/romp_load.py's bootstrap). Until 2026-09-14 the root
+    and the marker were conftest's, so a bare run of either shape left the mkstemp file and the `mktemp -d`
+    directory loose on a normal exit and, killed, everything it made plus an unmarked romp-tests-state-* dir
+    the sweep had to refuse; the package took them the same day, and the direct run still had nothing, not
+    even the hook: `python3 tests/test_credentials.py` left 86 loose tmp* directories in a fresh TMPDIR where
+    `python3 -m unittest tests.test_credentials` left none. The child is the subject, so this runs under
+    pytest and under a bare run of this module alike. The kill waits on the child's own ready-file, never on
+    a timer."""
+
+    def _bare_child(self, kill=False, direct=False):
+        """(Popen, fresh, ready): the leaky module, `test_bare_leak.py` (a test module's name), written OUTSIDE
+        `fresh` and run as a script with TMPDIR at `fresh`, none of the parent run's own names, and a
+        ready-file to write before it sleeps when `kill` is asked. Two shapes. The unittest-shaped child (the
+        default) has the checkout on its PYTHONPATH and imports the package first, as `python -m unittest
+        tests.test_x` does before the module. The direct-shaped child has the checkout's tests/ directory on
+        its PYTHONPATH instead, the stand-in for sys.path[0], which a module IN tests/ gets for free: its
+        `from romp_load import load_source` resolves the file under its bare name as `python3 tests/test_x.py`
+        does, nothing has imported the package, and this test puts the checkout root on no path (the loader
+        does). Its cwd is a directory of its own: a script run never has the cwd on sys.path, and the floor
+        must not depend on where the run started."""
+        scratch = tempfile.mkdtemp(prefix="romp-hygiene-bare-")      # tracked: inside this run's root
+        fresh = os.path.join(scratch, "systmp")
+        os.mkdir(fresh)
+        module = os.path.join(scratch, "test_bare_leak.py")
+        with open(module, "w") as fh:
+            fh.write(BARE_LEAKY_MODULE.replace("FIRST_IMPORTS", DIRECT_SHAPED_IMPORTS if direct else UNITTEST_SHAPED_IMPORTS))
+        on_path = HERE if direct else ROOT
+        env = dict(os.environ, TMPDIR=fresh, PYTHONDONTWRITEBYTECODE="1",
+                   PYTHONPATH=os.pathsep.join(p for p in (on_path, os.environ.get("PYTHONPATH")) if p))
+        for var in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_CURRENT_TEST",
+                    "PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT", MARKER_ENV,
+                    "ROMP_TESTS_SYSTEM_TMPDIR"):        # a fresh run records its own handed dir (the package setdefaults it)
+            env.pop(var, None)
+        ready = os.path.join(scratch, "ready")
+        if kill:
+            env["ROMP_HYGIENE_READY"] = ready
+        cwd = ROOT
+        if direct:
+            cwd = os.path.join(scratch, "cwd")
+            os.mkdir(cwd)
+        proc = subprocess.Popen([sys.executable, module], cwd=cwd, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        def _reap():
+            # kill a child still running on a failure path, then reap it: a killed child left unwaited
+            # is a zombie until this process exits. Drain the pipe only while it is still open (a test
+            # that already read the child to its end has closed it, and a second communicate raises)
+            if proc.poll() is None:
+                proc.kill()
+            if proc.stdout is not None and not proc.stdout.closed:
+                proc.communicate()
+            else:
+                proc.wait()
+        self.addCleanup(_reap)
+        return proc, fresh, ready
+
+    def _finished_run_leaves_nothing(self, direct):
+        proc, fresh, _ = self._bare_child(direct=direct)
+        out, _ = proc.communicate(timeout=120)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertIn("Ran 1 test", out)
+        self.assertEqual(os.listdir(fresh), [], "a %s run must leave the system temp dir as it found it"
+                         % ("direct" if direct else "bare"))
+
+    def _killed_run_leaves_one_marked_root_the_sweep_removes(self, direct):
+        proc, fresh, ready = self._bare_child(kill=True, direct=direct)
+        deadline = time.monotonic() + 60
+        while not os.path.exists(ready):           # loop-ok: bounded wait on the child's ready-file, the event itself
+            if proc.poll() is not None:
+                self.fail("the child ended before it was ready:\n" + proc.communicate()[0])
+            self.assertLess(time.monotonic(), deadline, "the child never said it was ready")
+            time.sleep(0.02)
+        proc.kill()
+        proc.communicate()
+        entries = os.listdir(fresh)
+        self.assertEqual(len(entries), 1, "a killed %s run leaves exactly its root, marked: %r"
+                         % ("direct" if direct else "bare", entries))
+        root = os.path.join(fresh, entries[0])
+        self.assertTrue(entries[0].startswith("romp-tests-") and os.path.isdir(root), entries)
+        with open(os.path.join(root, "romp-tests-owner.json")) as fh:
+            self.assertEqual(json.load(fh)["pid"], proc.pid, "the marker names the dead run")
+        # ...and the kernel's boot sweep over that system temp dir sees a dead owner and removes it. Loaded
+        # here, not at import: this module loads no romp code until this line (a private name, as the
+        # siblings that load the backend do).
+        from romp_load import load_source
+        sb = load_source("romp_sdk_backend_hygiene", os.path.join(ROOT, "bin", "romp_sdk_backend.py"))
+        self.assertEqual(sb.sweep_dead_test_roots(fresh), 1)
+        self.assertEqual(os.listdir(fresh), [])
+
+    def test_a_finished_bare_run_leaves_the_system_temp_dir_as_it_found_it(self):
+        self._finished_run_leaves_nothing(direct=False)
+
+    def test_a_bare_run_killed_mid_test_leaves_one_marked_root_the_sweep_removes(self):
+        self._killed_run_leaves_one_marked_root_the_sweep_removes(direct=False)
+
+    def test_a_finished_direct_run_leaves_the_system_temp_dir_as_it_found_it(self):
+        # Red before the loader's bootstrap: the direct child had no hook, no root and no redirect, so the
+        # preamble's dir, the test's mkdtemp, the mkstemp file and the `mktemp -d` dir all survived, loose.
+        self._finished_run_leaves_nothing(direct=True)
+
+    def test_a_direct_run_killed_mid_test_leaves_one_marked_root_the_sweep_removes(self):
+        # Red before it too: the same four entries, none of them a marked root the sweep would take.
+        self._killed_run_leaves_one_marked_root_the_sweep_removes(direct=True)
+
 if __name__ == "__main__":
-    # A direct script run never imports the tests package, so the mkdtemp hook would be absent: the
-    # first Hygiene check failed and the child runs left two romp-hygiene-* directories behind (the
-    # #944 review). Import it here; the package also floors XDG_STATE_HOME, as for a unittest run.
-    sys.path.insert(0, ROOT)
-    import tests  # noqa: F401
-    unittest.main()
+    unittest.main()      # the package import for a direct run is at the top of the module, with the reason

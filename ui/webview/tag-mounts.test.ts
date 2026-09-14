@@ -52,8 +52,8 @@ test("the phone gets the chat tag control too — the SHARED button mounted into
   assert.match(KERNEL, /hdr\.appendChild\(cur\);hdr\.appendChild\(tslot\);hdr\.appendChild\(add\);/);
   assert.match(RENDER, /const mslot = document\.getElementById\("mtag-slot"\);/);
   assert.match(RENDER, /if \(!mslot\.firstChild\) \{/, "ensure-once — the slot never rebuilds");
-  const mnt = RENDER.slice(RENDER.indexOf('const mslot = document.getElementById("mtag-slot")'),
-                           RENDER.indexOf("paintTabRowLines(bar);"));
+  const mntAt = RENDER.indexOf('const mslot = document.getElementById("mtag-slot")');
+  const mnt = RENDER.slice(mntAt, RENDER.indexOf("paintTabRowLines(bar);", mntAt));   // the paint after the mount (the strip's observer paints earlier in the file, T413 round two)
   assert.match(mnt, /tagMenuButton\("filter sessions by tag"/, "the SHARED component, never a copy");
   assert.match(mnt, /postLens\(\{ actives: Object\.assign\(\{\}, \(effViews\(\) \|\| \{\}\)\.actives, \{ chat: l \}\) \}\)/, "writes land on the chat lens — per-surface semantics — as a lens write on the store's blob (the 2026-09-05 review)");
   assert.match(mnt, /syncTagFilter\(mslot\.children\[0\] as HTMLElement, phoneLayout\(\) \? \(mslot\.children\[1\] as HTMLElement\) : null,/,
@@ -80,7 +80,8 @@ test("the chat's menu carries the 'Group tabs by tag' switch at its foot; the ph
   // as an optional foot row beside Configure tags… — the chat strip passes it, the outline does not
   const desktop = RENDER.slice(RENDER.indexOf('tagMenuButton("filter these tabs by tag"'), RENDER.indexOf('tagBtn.classList.add("tab-tagfilter");'));
   assert.match(desktop, /groupToggle: \{ label: "Group tabs by tag"/);
-  const mobile = RENDER.slice(RENDER.indexOf('const mslot = document.getElementById("mtag-slot")'), RENDER.indexOf("paintTabRowLines(bar);"));
+  const mobileAt = RENDER.indexOf('const mslot = document.getElementById("mtag-slot")');
+  const mobile = RENDER.slice(mobileAt, RENDER.indexOf("paintTabRowLines(bar);", mobileAt));
   assert.ok(!mobile.includes("groupToggle"), "the kernel's mobile page hides #tabs (_CHAT_MOBILE_CSS) — nothing to section there");
   assert.ok(!FLEET.includes("groupToggle"), "the outline filters; it has no strip to section");
   assert.match(MENU, /if \(opts\.groupToggle \|\| opts\.onConfigure\) \{/, "the foot divider appears for either entry");

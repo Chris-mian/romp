@@ -32,7 +32,7 @@ import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTa
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
-import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
+import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
 import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
@@ -68,6 +68,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional,
 import { colFromSearch, columnHolds, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
 import { onlyTag, matchesOnly, onlyWindow } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
+import { actionParts, toolRowLabel, toolInputText } from "./compact";
 import { parseAgentNotif, notifHead, type AgentNotif } from "./agent-notif";
 import { injectedHead, type InjectedSource } from "./injected-source";
 import { subTabId, isSubId, subParts, subLabel, gistLines, stepLines, stepsNote, agentFoldLabel, subHeadParts, subWaitTail, openIconSvg, pinIconSvg, type SubMeta, type AgentGist, type AgentGistRow, type GistLine } from "./subagent-view";
@@ -5232,10 +5233,16 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   turn.appendChild(d);
 
   const head = el("div", "tool-head");
-  const name = el("span", "tool-name"); name.textContent = ev.name;
+  // the row's label in the user's terms (T418): the model's description when it wrote one, else a phrase derived from the tool's
+  // input ("Read .../kernel/kernel.py", "Edited .../ui/feed.ts +12 -3", "Searched for foo"); a bare Bash shows its command in the
+  // code face; the tool's name is secondary, kept only where no phrase names the action ("Used a tool · Skill")
+  const lbl = toolRowLabel(ev);
+  const name = el("span", "tool-label" + (lbl.code ? " tool-label-code" : "")); name.textContent = lbl.text;
   head.appendChild(name);
-  if (ev.file) head.appendChild(fileLink(ev.file));
-  else if (ev.desc) { const c = el("span", "tool-desc"); c.textContent = ev.desc; head.appendChild(c); }
+  if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
+  if (ev.file) head.appendChild(fileLink(ev.file));   // EVERY event with a file keeps its link (round two, medium 2); a label that names the path names it as this link, never twice
+  // An edit's totals are the diff fold's toggle below (+A -R), printed once per row (round two, medium 1); a FAILED edit's error fold
+  // replaces that fold and prints no totals: a failed edit changed nothing (round three, low d). The head carries no totals span.
 
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
@@ -5247,7 +5254,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     // "error" toggle, the IN/OUT hanging below. The red ✗ rail dot + red tool name (.tool-err) keep it loud.
     if (ev.input || ev.output) {
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, true));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), true));
       if (ev.output) io.appendChild(ioRow("OUT", ev.output, true));
       const n = ev.output ? countLines(ev.output) : 0;
       inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
@@ -5271,9 +5278,9 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       row.append(og, ng, sign, txt);
       pre.appendChild(row);
     }
-    inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
+    inlineFold(head, turn, `+${add} -${del}`, pre, fkey);   // the row's one totals text, the approved shape (+A -R, a hyphen minus); the head prints none beside it (T418 round two)
   } else if (ev.name === "Read") {
-    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output, fkey && fkey + ":out"), fkey);
+    if (ev.output) { const n = countLines(ev.output); inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, preEl(ev.output, fkey && fkey + ":out"), fkey); }   // "1 line", not "1 lines" (T418, seen in the lab)
   } else if (ev.name === "Skill") {
     // A Skill invocation (the user 2026-07-08): the head names the skill, and the skill's INSTRUCTIONS
     // (ev.skillMd, kernel-joined) are the fold body — DEFAULT COLLAPSED like every tool body. They used
@@ -5334,14 +5341,14 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       // user expand survives the running→done re-render.
       if (ev.input) {
         const io = el("div", "tool-io tool-io-fold");
-        io.appendChild(ioRow("IN", ev.input, false));
+        io.appendChild(ioRow("IN", toolInputText(ev), false));
         inlineFold(head, turn, ev.resultUuid ? "no output" : "running…", io, fkey);
       }
     } else {
       // Bash/Grep/Glob/…: output line-count on the head line (right of the command);
       // the command + full output hang below, hidden until clicked.
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, false));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), false));
       io.appendChild(ioRow("OUT", ev.output, false));
       const n = countLines(ev.output);
       inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io, fkey);
@@ -6516,9 +6523,10 @@ function paintTabRowLines(bar: HTMLElement): void {
   }
 }
 let tabRowObserver: ResizeObserver | null = null;
+let stripFit: (() => void) | null = null;   // the last strip paint's fit of the chip run (fitStripChips), re-run on the strip's resize (T413 round two)
 function ensureTabRowObserver(bar: HTMLElement): void {
   if (tabRowObserver) return;
-  tabRowObserver = new ResizeObserver(() => paintTabRowLines(bar));
+  tabRowObserver = new ResizeObserver(() => { stripFit?.(); paintTabRowLines(bar); });   // the fit first: its verdict can change the rows the lines follow
   tabRowObserver.observe(bar);
 }
 
@@ -6819,7 +6827,12 @@ function renderTabs() {
   // flush under the row above (the user 2026-08-25); the box makes every line the controls form
   // as tall as a line the + is on, wherever the strip wraps them
   const tagBox = el("span", "tab-tagbox");
-  tagBox.appendChild(tagBtn);
+  // T413 (the user 2026-09-14): when the strip is not sectioned by tag (the group switch off, or no tag holding a visible tab)
+  // the selected tags show as chips just LEFT of the button (the shared sync builds them, bounded to three and a "+N more" chip;
+  // the none pick draws none, T405 standing); sectioned, the headings carry the tags and the host is fed nothing (the plan's
+  // own reading, no second store read). fitStripChips below hides a run that alone would add a row.
+  const tagChipsHost = el("span", "tab-tagchips");
+  tagBox.append(tagChipsHost, tagBtn);
   // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
   // everything selected when narrowed — the shared renderer, identical on every mount
   // T405 (the user 2026-09-13): the strip's control no longer DISPLAYS what it filters to, no "(no tags)" and no tag chips
@@ -6853,10 +6866,14 @@ function renderTabs() {
   bar.appendChild(end);
   {
     const v = effViews();
-    syncTagFilter(tagBtn, null, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
+    // the run is the fit's to feed (round two): three chips, then fewer where the row is short (fitStripChips); the button's own
+    // state syncs in the same call, host or none
+    const feed = (limit: number) => syncTagFilter(tagBtn, plan.sectioned ? null : tagChipsHost, surfaceLens(v, "chat"), unions, (l) => {   // sectioned: the headings carry the tags, no host; else the chips
       postLens({ actives: Object.assign({}, (v || {}).actives, { chat: l }) });
-    });
+    }, "inline", { limit, tagsOnly: true });
+    stripFit = () => fitStripChips(end, tagChipsHost, feed);
   }
+  stripFit();
   // T161 (the user 2026-08-28, Android: no tag control on mobile): the phone chat page hides the whole
   // #tabs strip — and the mount above with it. The kernel's mobile header carries an empty #mtag-slot
   // (left of +); mount the SAME shared button + chips into it ONCE — the slot is kernel-built and never
@@ -6907,6 +6924,28 @@ function renderTabs() {
  *  its working note), and the all-hidden blank. All are idempotent, and all read live state a skipped
  *  rebuild must not leave behind: the active view is built lazily, so it can appear between two renders
  *  whose strips are equal. */
+// the run of selected tags yields rather than add a row (T413): the right end's row is read with the host out of the flow
+// ([hidden], its own display rule in styles.css) and with the run fed at each count from the full three down to one, and the
+// first that keeps the right end on that row with no chip clipped stands; a run that cannot is hidden. The button's accent still
+// says the strip is narrowed. Round two (the manager's read, 2026-09-14): the attribute alone proved inert against the host's
+// author display, so the run added a row at narrow widths and never shrank; and the verdict now follows a resize (the strip's
+// ResizeObserver re-runs stripFit), where before it stood until some other input rebuilt the strip.
+const STRIP_CHIP_LIMIT = 3;
+function fitStripChips(end: HTMLElement, host: HTMLElement, feed: (limit: number) => void): void {
+  if (!end.isConnected) return;   // a paint the observer outlived
+  feed(STRIP_CHIP_LIMIT);
+  if (!host.childElementCount) { host.hidden = false; return; }
+  host.hidden = true;
+  const without = end.offsetTop;
+  host.hidden = false;
+  const fits = () => end.offsetTop === without && host.scrollWidth <= host.clientWidth + 1;
+  if (fits()) return;
+  for (let limit = STRIP_CHIP_LIMIT - 1; limit >= 1; limit--) {
+    feed(limit);
+    if (fits()) return;
+  }
+  host.hidden = true;
+}
 function stripAftermath(visibleIds: readonly string[], ids: readonly string[]): void {
   syncNoSessionsPlaceholder(visibleIds.length, ids.length, ids.filter(heldHere).length);   // …and how many this column holds (the chat split's copy)
   // the section view follows the push (renderTabs runs on every one): a no-op when nothing a row shows has
@@ -7667,7 +7706,7 @@ window.addEventListener("romp:hostDial", () => { syncHostOfflineFoot(); repaintE
 // this pane is a same-origin iframe of the shell and the filter lives on the SHELL's URL (only-filter.ts reads
 // window.top), so the listener binds to the window onlyTag reads: the shell's there, this pane's own on a top-level
 // page or under a cross-origin top (the review: the pane's own hash never changes on the dashboard)
-const onOnlyHashChange = (): void => renderTabs();
+const onOnlyHashChange = (): void => { renderTabs(); schedulePrebuild(); };   // a reveal is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows (round two of PR 1661, medium 3: the repaint alone left them skeletons until an unrelated push)
 const onlyHashWindow = onlyWindow();
 onlyHashWindow.addEventListener("hashchange", onOnlyHashChange);
 // a closed split column: the shell removes this pane's iframe, and a listener left on the shell's window would hold the
@@ -12412,10 +12451,20 @@ function unitAtScroll(v: View, content: HTMLElement): number {
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
 function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || String(eventEpoch(first) ?? "")); }
 
-// A collapsed run of consecutive tool uses → one rail line: a caret + "3 Edits, 2 Reads" with each
-// tool word bold (matching the non-compact .tool-name, so it reads AS tools). Clicking the line toggles
-// expand → the full non-compact cards (the user 2026-06-14). Carries the rail dot + time-marker + hover
-// wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any errored.
+// A collapsed run of consecutive tool uses → one rail line: a caret + the head in the user's terms (T418, the user 2026-09-14,
+// the desktop app's shape): "Ran 11 commands, read 4 files, edited 3 files, created 2 files" with the edits' totals ONCE at the
+// end in the diff colours (+37 -0). Clicking the line toggles expand → the full non-compact rows (the user 2026-06-14). Carries
+// the rail dot + time-marker + hover wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any
+// errored.
+/** The edits' totals of a head, summed over every edit in the group, appended once in the diff colours. */
+function appendTotals(line: HTMLElement, add: number, del: number): void {
+  if (!add && !del) return;
+  const tot = el("span", "tool-totals");
+  const plus = el("span", "tool-plus"); plus.textContent = "+" + add;
+  const minus = el("span", "tool-minus"); minus.textContent = "-" + del;
+  tot.append(" ", plus, " ", minus);
+  line.appendChild(tot);
+}
 function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoch: number | null, key: string, open: boolean): HTMLElement {
   const turn = el("div", "turn turn-toolgroup" + (open ? " expanded" : ""));
   const anyErr = tools.some((t) => t.isError);
@@ -12428,11 +12477,11 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   line.dataset.act = "noticetoggle"; line.dataset.gkey = key;
   setTip(line, open ? "click to collapse" : "click to expand");
   const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
-  if (!open) {   // collapsed → the "3 Edits, 2 Reads" summary; expanded → just the open arrow (the cards say it)
-    toolCounts(tools.map((t) => t.name)).forEach((c, i) => {
-      line.appendChild(document.createTextNode((i ? ", " : " ") + c.count + " "));
-      const w = el("span", "toolgroup-tool"); w.textContent = c.label; line.appendChild(w);   // bold, like .tool-name
-    });
+  if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14, who wanted the rows to read as the desktop app's do): the phrases ordered by the number each prints, the edits' totals once at the end; expanded → just the open arrow (the rows say it)
+    const parts = actionParts(tools);
+    line.appendChild(document.createTextNode(" "));
+    const w = el("span", "toolgroup-head"); w.textContent = parts.text; line.appendChild(w);   // the phrases; the summed totals follow once, in the diff colours
+    appendTotals(line, parts.add, parts.del);
   }
   turn.appendChild(line);
   const epoch = eventEpoch(tools[0]);
@@ -12631,7 +12680,10 @@ function runPrebuild(deadline: IdleDeadline): void {
   // is already in flight (a 1 MB full ahead of the active tab's 2 KB tail on a slow link delays that tail;
   // one at a time bounds it). The upsert that lands it calls schedulePrebuild, so the chain re-arms itself
   // one tab per idle until the set is empty. A click always wins: same message, awaitingFull dedups.
-  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), tabInView);
+  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): stripShows is the one predicate
+  // the strip itself lists by (it begins with tabInView, the views and another column's holds, and adds the #only= filter on top); a tab
+  // the filter reveals later is prefetched when the reveal re-arms this chain (onOnlyHashChange), or loads on the switch that shows it
+  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), (id) => stripShows(id));
   if (next) requestFullSession(next, "prefetch");
   const viewState = (id: string): ViewState | null => {
     if (skeletonTabs.ids.has(id)) return null;   // a skeleton's stale session must never get its DOM pre-built
@@ -15305,6 +15357,14 @@ const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[
 // run: an empty model menu beats offering another vendor's models (docs/codex.md).
 const CODEX_MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 const CODEX_EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+// The effort menus list the ladder TOP-DOWN (the user 2026-09-14): the highest effort first, the lowest
+// last, the way the model menu already leads with the most capable family. The kernel serves `efforts`
+// low→high because its rank ramp (position → colour) and the gear's settings selects read that order, and
+// neither moves; the display order is derived HERE, once, for every menu these arrays feed (the statusline,
+// a thread's popover, the comment-create chips). Each row carries its own color/tone, so nothing recolours,
+// and the ✓ matches by value (isCurrentMeta), so it follows its row.
+const effortDisplayOrder = (efforts: { label: string; value: string; color?: number[] | null }[]): { label: string; value: string; color?: number[] | null }[] =>
+  [...efforts].reverse();
 // Why the Codex list is empty, when it is: the payload's `codex.error` (the app-server client not up yet,
 // a failed model list, no live Codex session). A Codex menu with no list shows it in place of a
 // blank menu. "" while a list is held or the field is absent.
@@ -15329,9 +15389,9 @@ function loadModelChoices(): void {
   fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then((d) => {
     if (typeof d.rev === "number") { if (d.rev < modelChoicesRev) return; modelChoicesRev = d.rev; }
     if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
-    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
+    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...effortDisplayOrder(d.efforts)); }
     if (d.codex && Array.isArray(d.codex.models)) { CODEX_MODEL_CHOICES.length = 0; CODEX_MODEL_CHOICES.push(...d.codex.models); }
-    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...d.codex.efforts); }
+    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...effortDisplayOrder(d.codex.efforts)); }
     if (d.codex) CODEX_MODELS_ERROR = typeof d.codex.error === "string" ? d.codex.error : "";
     if (d.commentDefaults) adoptCommentDefaults(d.commentDefaults);
     if (onModelChoicesLoaded) onModelChoicesLoaded();   // once per APPLIED read: a response the rev check dropped never fires it

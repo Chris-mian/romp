@@ -380,11 +380,12 @@ test("dragging a header reorders tagOrder through the views path — the store t
 
 test("the switch lives at the foot of the chat tag-lens menu beside Configure tags…, desktop mount only", () => {
   assert.match(MENU, /groupToggle\?: \{ label: string; on: \(\) => boolean; toggle: \(\) => void \};/);
-  assert.match(MENU, /if \(opts\.groupToggle\)\s*\n\s*row\(opts\.groupToggle\.label, opts\.groupToggle\.on\(\), true\)\.addEventListener\("click", \(\) => \{ opts\.groupToggle!\.toggle\(\); build\(\); \}\);/,
+  assert.match(MENU, /if \(opts\.groupToggle\)\s*\n\s*row\(opts\.groupToggle\.label, opts\.groupToggle\.on\(\), true, true\)\.addEventListener\("click", \(\) => \{ opts\.groupToggle!\.toggle\(\); build\(\); \}\);/,   // the checkbox row (menuitemcheckbox, aria-checked, the two-state mark), the strip tidy after T413
     "✓-marked when on; flips and repaints in place like the tag rows");
   assert.ok(MENU.indexOf("if (opts.groupToggle)") < MENU.indexOf('row("Configure tags…"'), "beside — above — Configure tags…");
   assert.match(RENDER, /groupToggle: \{ label: "Group tabs by tag", on: \(\) => readTabGroups\(\)\.on,/);
-  const mobile = RENDER.slice(RENDER.indexOf('const mslot = document.getElementById("mtag-slot")'), RENDER.indexOf("paintTabRowLines(bar);"));
+  const mobileAt = RENDER.indexOf('const mslot = document.getElementById("mtag-slot")');
+  const mobile = RENDER.slice(mobileAt, RENDER.indexOf("paintTabRowLines(bar);", mobileAt));   // the paint after the mount (the strip's observer paints earlier in the file, T413 round two)
   assert.ok(!mobile.includes("groupToggle"), "the phone page hides the strip itself, so its mount offers no switch");
 });
 

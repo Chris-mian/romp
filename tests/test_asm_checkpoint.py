@@ -452,6 +452,103 @@ class RestoredEqualsWhole(Harness):
         self.assertEqual(_strip(tree), self.cold(path))
 
 
+
+def _ring_records():
+    """A conversation whose resolved pre-cut graph holds a RING: the uuid u1 is reused by a later record whose parent is a2, so
+    last-wins the leaf's chain reads a2 -> u2 -> a1 -> u1 -> a2 -> (revisit). Real transcripts do this (a reused uuid closing a
+    ring 3 to 50 records long, 50 or more hops above the leaf; 34 of the 76 live transcripts over 10 MB on 2026-09-14). The
+    compaction then cuts, and two turns follow."""
+    t = NOW - 3600
+    recs = [G.uline(t, "start the plan", "u1", None), G.aline(t + 5, "the plan has two steps", "a1", "u1", stop="end_turn"),
+            G.uline(t + 10, "do the first", "u2", "a1"), G.aline(t + 15, "the first is done", "a2", "u2", stop="end_turn"),
+            G.uline(t + 20, "start the plan", "u1", "a2")]                  # the REUSED uuid: last-wins, its parent closes the ring
+    return compacting_variant(recs, "ring")
+
+
+def _self_link_records():
+    """A pre-cut record whose parentUuid is its own uuid: the parse resolves it as a root."""
+    t = NOW - 3600
+    recs = [G.uline(t, "a self-linked opener", "u1", "u1"), G.aline(t + 5, "answered anyway", "a1", "u1", stop="end_turn"),
+            G.uline(t + 10, "and on", "u2", "a1"), G.aline(t + 15, "onward", "a2", "u2", stop="end_turn")]
+    return compacting_variant(recs, "self")
+
+
+class CyclesInThePreCutGraph(Harness):
+    """Stage one of the process split (2026-09-14, plans/checkpoint-cycle-walk.md): the writer's pre-cut spine walk ends at the
+    first revisit as the parse's active_path does, so a ring in the resolved graph no longer refuses the whole document and the
+    document's spine is the spine the chat shows; the restore's tail proof (T402 round eight) still refuses a tail that
+    re-roots the graph."""
+
+    def _round_trip(self, name, recs):
+        path = self.write(name, recs)
+        whole = self.cold(path)
+        self.fresh(); self.parse(path)
+        em._ASM_CKPT_STATS["skipped"] = {}
+        wrote = self.doc(path)
+        return path, whole, wrote
+
+    def test_a_ring_in_the_pre_cut_graph_writes_a_document_that_restores_to_the_live_parses_world(self):
+        path, whole, wrote = self._round_trip("ring", _ring_records())
+        self.assertTrue(wrote, "a resolved cycle no longer refuses the document: %s" % em.asm_checkpoint_stats()["skipped"])
+        self.assertNotIn("cycle", em.asm_checkpoint_stats()["skipped"])
+        doc = _doc(path)
+        self.assertGreater(len(doc["spine"]), 0, "the spine is the chain up to the first revisit")
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"], em.asm_checkpoint_stats())
+        self.assertGreater(n_lazy, 0)
+        self.assertEqual(got, whole, "restored and hydrated equals the whole parse: the writer walked the ring as active_path does")
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"], {})
+
+    def test_a_tail_re_rooted_onto_the_ring_child_refuses_the_standing_document_and_the_cold_parse_rules(self):
+        # the tip's fork guard (tipChildless, T402 round five) excludes a child of the tip that is ON the spine, the ring's own
+        # member, so the ring's document is written and restores. The guard's worry, a tail re-rooting onto that child: the
+        # tail then leaves the tail into the pre-cut interior, the restore's reachability proof refuses the standing document,
+        # and the parse walks the file cold (whose spine now bypasses the boundary: no document by design, noBoundary)
+        path, whole, wrote = self._round_trip("ring-rerooted", _ring_records())
+        self.assertTrue(wrote); self.assertTrue(_doc(path).get("tipChildless"), "the ring child does not make the tip a fork")
+        extra = [G.uline(NOW + 200, "re-rooted onto the ring's child", "u_late", "a1"),
+                 G.aline(NOW + 205, "answered from there", "a_late", "u_late", stop="end_turn")]
+        pp = Path(path); pp.write_text(pp.read_text() + "".join(json.dumps(r) + "\n" for r in extra))
+        cold = self.cold(path)
+        self.fresh(); modes = []
+        got = _strip(self.parse(path, modes))
+        self.assertNotEqual(modes, ["restore"], "the standing document is refused: the tail left into the pre-cut interior (%s)" % em.asm_checkpoint_stats())
+        self.assertEqual(got, cold, "the cold parse rules")
+        self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertFalse(self.doc(path)); self.assertIn("noBoundary", em.asm_checkpoint_stats()["skipped"],
+                                                         "the leaf's spine now bypasses the boundary: no document by design")
+
+    def test_a_self_linked_pre_cut_record_is_a_root_and_the_document_restores_identical(self):
+        path, whole, wrote = self._round_trip("self-link", _self_link_records())
+        self.assertTrue(wrote, em.asm_checkpoint_stats()["skipped"])
+        got, modes, _n = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], whole), "a self-link is the root the parse makes of it, on both sides")
+
+    def test_the_tail_shapes_that_re_root_the_graph_still_refuse_the_standing_document(self):
+        # the controls (round eight of the checkpoint's reviews): the RESTORE's tail proof is untouched, so a tail record that
+        # self-links or reuses a pre-cut uuid still refuses the document and the parse walks the file cold
+        base = compacting_variant([G.uline(NOW - 3600, "hello", "u1", None), G.aline(NOW - 3595, "hi", "a1", "u1", stop="end_turn")], "ctl")
+        for label, extra in (("self-link", [G.uline(NOW + 100, "a self-linked tail record", "u9", "u9")]),
+                             ("reuse", [G.uline(NOW + 100, "reusing a pre-cut uuid in the tail", "u1", "a_ctl_2")])):
+            with self.subTest(shape=label):
+                name = "ctl-" + label
+                path, whole, wrote = self._round_trip(name, base)
+                self.assertTrue(wrote)
+                p = Path(path)
+                p.write_text(p.read_text() + "".join(json.dumps(r) + "\n" for r in extra))     # the tail grows the shape
+                self.fresh()
+                modes = []
+                self.parse(path, modes)
+                self.assertNotEqual(modes, ["restore"], "%s: the standing document is refused at restore, the parse walks cold (%s)"
+                                    % (label, em.asm_checkpoint_stats()))
+
+    def test_the_cycle_reason_is_gone_from_the_writer(self):
+        import inspect
+        src = inspect.getsource(em.asm_checkpoint_write)
+        self.assertNotIn('skip("cycle")', src, "no document is refused for a cycle any more")
+        self.assertIn("u not in seen", src, "the walk ends at the first revisit (a visited set, as active_path)")
+        self.assertNotIn("cycle", em._ASM_SKIP_STRUCTURAL)
+
 class Fallbacks(Harness):
     def _armed(self, tag):
         records, _ = G.SINGLE_FILE["compaction_atom"]
