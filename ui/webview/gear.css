@@ -270,15 +270,15 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
    fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
 #rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; }
-#rsettings .rs-widget-demo .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
-#rsettings .rs-widget-demo .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
-#rsettings .rs-widget-demo .tab-dot.none { visibility: hidden; }
-#rsettings .rs-widget-demo .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
-#rsettings .rs-widget-demo .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
-#rsettings .rs-widget-demo .tab-dot.opening { background: var(--accent, #9cd2ff); }
-#rsettings .rs-widget-demo .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
-#rsettings .rs-widget-demo .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
-#rsettings .rs-widget-demo .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
+#rsettings .rs-widget-demo .tab-dot, #rsettings .rs-preview .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
+#rsettings .rs-widget-demo .tab-dot.await, #rsettings .rs-preview .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
+#rsettings .rs-widget-demo .tab-dot.none, #rsettings .rs-preview .tab-dot.none { visibility: hidden; }
+#rsettings .rs-widget-demo .tab-dot.idle, #rsettings .rs-preview .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
+#rsettings .rs-widget-demo .tab-dot.unknown, #rsettings .rs-preview .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
+#rsettings .rs-widget-demo .tab-dot.opening, #rsettings .rs-preview .tab-dot.opening { background: var(--accent, #9cd2ff); }
+#rsettings .rs-widget-demo .tab-ctx, #rsettings .rs-preview .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
+#rsettings .rs-widget-demo .tab-ctx-fill, #rsettings .rs-preview .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
+#rsettings .rs-widget-demo .tab-key, #rsettings .rs-preview .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
   border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
 /* the Status line section's demos (T409): the widget alone, as the line draws it (status-widgets.ts renders the row's
    node through the same function as the line), in the line's own dim mono; the name chip on its identity colour */

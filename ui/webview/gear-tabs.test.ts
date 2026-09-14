@@ -253,7 +253,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.equal(pkg.engines.vscode, "^1.88.0", "the declared floor carries subgrid (117) and oklch(from) (119)");
   const lock = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "..", "vscode-extension", "package-lock.json"), "utf8"));
   assert.equal(lock.packages[""].engines.vscode, "^1.88.0", "the lockfile's root agrees, so the first install after the merge rewrites nothing (LOW 2)");
-  assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab-dot \{ flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var\(--st-working-bg, #e0b020\); \}/, "the demo wears the strip's vocabulary in this sheet's fallbacks");
+  assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab-dot, #rsettings \.rs-preview \.tab-dot \{ flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var\(--st-working-bg, #e0b020\); \}/, "the demo wears the strip's vocabulary in this sheet's fallbacks (the section's preview tab beside it, T409)");
 });
 
 test("the strip's gear glyph opens the Chat tab at its Tab widgets section through the shell (or this window's own gear), and the shell relays the tab and the section", () => {
