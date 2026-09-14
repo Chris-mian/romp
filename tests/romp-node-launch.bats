@@ -155,6 +155,71 @@ EOF
     [ -z "$output" ]
 }
 
+@test "the watchdog path: a copy that HANGS is killed at the bound, the manager comes up on the system node, and no node is leaked" {
+    # round three of issue 1600: the watchdog could only signal the probe's wrapper subshell, and a wrapper that ran the node
+    # in its foreground survived the kill while the hung node did not die; one hung node leaked per launch (the launcher's
+    # only platform, a stock mac, has no timeout). The wrapper now runs the node in its background and kills it on TERM.
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    # the stand-in hangs when run FROM THE COPY's path alone: the launcher execs the system node through the bare
+    # PATH's symlink, so a stand-in keyed on its original path would hang as the manager too and hold the capture
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") exec sleep 600 ;;                          # the copy hangs
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm sleep ps setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    ln -s "$BIN/node" "$bare/node"
+    # bounded from outside by an absolute-path timeout (the bare PATH must stay without one, or the launcher takes the
+    # timeout path instead of the watchdog's): a leak that hung the launcher would be a clean failure, not a stuck suite
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    PATH="$bare" run "$tmo" 60 setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]          # the fallback happened, at the bound
+    [[ "$output" == *"cannot run here"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [[ "$output" != *"sleep 600"* ]]                          # the hung node is gone with the launcher
+    [ -z "$output" ]
+}
+
+@test "ROMP_NO_NODE_COPY: 0, false and no are off, the last assignment in service.env wins, and an export-prefixed line is skipped, not fatal" {
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/service.env"
+    unset ROMP_NO_NODE_COPY
+    # off values keep the copy
+    for v in 0 false FALSE no; do
+        rm -f "$RN"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$ROMP_SERVICE_ENV_FILE"
+        run "$LAUNCH" "$MANAGER" up
+        [ "$status" -eq 0 ]
+        [ -x "$RN" ]
+    done
+    # set then cleared below: the last assignment wins (a copy is made)
+    rm -f "$RN"
+    printf 'ROMP_NO_NODE_COPY=1\nROMP_NO_NODE_COPY=\n' > "$ROMP_SERVICE_ENV_FILE"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [ -x "$RN" ]
+    # cleared then set below: on
+    rm -f "$RN"
+    printf 'ROMP_NO_NODE_COPY=\nROMP_NO_NODE_COPY=yes\n' > "$ROMP_SERVICE_ENV_FILE"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [ ! -e "$RN" ]
+    # an export-prefixed line: skipped as malformed (under dash it took the launcher down), the good line still exported
+    printf 'export ROMP_TEST_BAD=1\nROMP_TEST_GOOD=fine\n' > "$ROMP_SERVICE_ENV_FILE"
+    printf '#!/bin/sh\necho "GOOD=[$ROMP_TEST_GOOD] BAD=[${ROMP_TEST_BAD-unset}] ran: $*"\n' > "$BIN/node"
+    chmod +x "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"GOOD=[fine] BAD=[unset] ran: $MANAGER up"* ]]
+}
+
 @test "service.env: KEY=VALUE lines reach the manager; comments and junk skipped" {
     # Parity with the systemd unit's EnvironmentFile=- : the launcher parses
     # (never sources) ~/.config/romp/service.env before exec'ing the manager.

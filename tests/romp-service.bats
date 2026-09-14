@@ -114,6 +114,57 @@ EOF
     [ ! -e "$rn" ]
 }
 
+@test "install (macOS): a node copy that HANGS from the state dir is killed at the bound and removed, and no node is leaked" {
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local src="$TEST_DIR/hang-node"
+    cat > "$src" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$src") exit 0 ;;
+  *) exec sleep 600 ;;
+esac
+EOF
+    chmod +x "$src"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t
+    for t in bash sh cmp cp chmod mv mkdir rm sleep ps setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    PATH="$bare" ROMP_NODE_SRC="$src" ROMP_OS_OVERRIDE=Darwin run "$tmo" 60 setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [[ "$output" != *"sleep 600"* ]]
+    [ -z "$output" ]
+}
+
+@test "install (macOS): the hatch reads 0, false and no as off, and the file's last assignment wins" {
+    mkdir -p "$HOME/.config/romp"
+    local rn="$XDG_STATE_HOME/romp/romp-node"
+    unset ROMP_NO_NODE_COPY
+    for v in 0 false No; do
+        rm -f "$rn"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$HOME/.config/romp/service.env"
+        ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+        [ "$status" -eq 0 ]
+        [ -x "$rn" ]
+    done
+    printf 'ROMP_NO_NODE_COPY=1\nROMP_NO_NODE_COPY=\n' > "$HOME/.config/romp/service.env"   # set, then cleared below: the copy is made
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$rn" ]
+    printf 'ROMP_NO_NODE_COPY=\nROMP_NO_NODE_COPY=1\n' > "$HOME/.config/romp/service.env"   # cleared, then set: skipped and removed
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$rn" ]
+    printf 'ROMP_NO_NODE_COPY=0\n' > "$HOME/.config/romp/service.env"                            # the file's last word wins over the environment: it says off here
+    ROMP_NO_NODE_COPY=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install                              # 0 in the environment is off too
+    [ "$status" -eq 0 ]
+    [ -x "$rn" ]
+}
+
 @test "install (macOS): ROMP_NO_NODE_COPY=1 in the environment makes no copy either (the second route)" {
     ROMP_NO_NODE_COPY=1 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 0 ]

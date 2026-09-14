@@ -216,7 +216,9 @@ _node_runs() {   # $1 a node binary: exit 0 when it can run an empty program fro
         ( timeout 10 "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null
         return
     fi
-    ( "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null &
+    # the wrapper runs the node in its background, traps TERM to kill it, waits and exits with its status, so the
+    # watchdog's kill of the wrapper takes a hung node down too (round three of issue 1600: it leaked before)
+    ( trap 'kill "$n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & n=$!; wait "$n"; exit $? ) 2>/dev/null &
     local pp=$! wd rc=0
     ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep 10 & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
     wd=$!
@@ -228,19 +230,24 @@ _node_runs() {   # $1 a node binary: exit 0 when it can run an empty program fro
 # The escape hatch, from the environment OR from service.env (round two of issue 1600): the install never parsed
 # that file (it bakes the path into the unit and the plist), so the line the messages name did nothing for the
 # install's own copy. Read the way the launcher reads it: KEY=VALUE, whitespace trimmed, one layer of matching
-# quotes off; any non-empty value is on.
+# quotes off, the LAST assignment winning (round three: a file that set the variable and cleared it below made the
+# install skip while the launcher copied), and 0, false and no reading as off, any other non-empty value as on.
+_hatch_on() {   # $1 a value of ROMP_NO_NODE_COPY: on unless empty, 0, false or no (any case)
+    local v="${1,,}"
+    [[ -n "$v" && "$v" != 0 && "$v" != false && "$v" != no ]]
+}
 _no_node_copy() {
-    [[ -n "${ROMP_NO_NODE_COPY:-}" ]] && return 0
-    [[ -f "$SERVICE_ENV_FILE" ]] || return 1
-    local line val
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ "$line" == ROMP_NO_NODE_COPY=* ]] || continue
-        val="${line#*=}"
-        val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
-        case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
-        [[ -n "$val" ]] && return 0
-    done < "$SERVICE_ENV_FILE"
-    return 1
+    local val="${ROMP_NO_NODE_COPY:-}" line found=""
+    if [[ -f "$SERVICE_ENV_FILE" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" == ROMP_NO_NODE_COPY=* ]] || continue
+            found="${line#*=}"
+            found="${found#"${found%%[![:space:]]*}"}"; found="${found%"${found##*[![:space:]]}"}"
+            case "$found" in \"*\") found="${found#\"}"; found="${found%\"}" ;; \'*\') found="${found#\'}"; found="${found%\'}" ;; esac
+            val="$found"          # the file's last assignment wins, over the environment too, as the launcher's export does
+        done < "$SERVICE_ENV_FILE"
+    fi
+    _hatch_on "$val"
 }
 ensure_romp_node() {
     if _no_node_copy; then

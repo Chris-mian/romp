@@ -781,7 +781,9 @@ before using it and runs the manager on the system `node` instead, saying so onc
 in the manager log, and `romp-service install` removes such a copy rather than
 leave it. `ROMP_NO_NODE_COPY=1` in `service.env` skips the copy altogether (the
 grant then reads `node`); the launcher reads the file before it decides, so the
-line works for a manager launchd started.
+line works for a manager launchd started. The value rule is the same in both
+readers: `0`, `false` and `no` (in any case) are off, any other non-empty value
+is on, and the last assignment in the file wins.
 
 The installed unit also sets `MALLOC_ARENA_MAX=2` for the manager and every kernel it spawns (2026-09-11): the kernel is a many-threaded Python process that rebuilds large record lists, and the allocator's per-thread arenas kept hundreds of megabytes of freed memory between restarts; two arenas return it. A line in `service.env` overrides it.
 

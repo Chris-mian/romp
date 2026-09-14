@@ -58,7 +58,8 @@ On macOS the login agent runs the manager under its own copy of `node`
 (`romp-node`, in the state directory), so Full Disk Access can be granted to romp
 alone; a `node` that cannot run from a copy (Homebrew's build is one) is
 detected and the system `node` used instead, and `ROMP_NO_NODE_COPY=1` in
-`~/.config/romp/service.env` skips the copy. See the
+`~/.config/romp/service.env` skips the copy (`0`, `false` and `no` are off; any
+other non-empty value is on). See the
 [reference](reference.md#service-environment-and-credentials).
 
 The same command updates Romp later. To remove Romp, run `romp uninstall` (add
