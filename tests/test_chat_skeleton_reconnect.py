@@ -358,7 +358,8 @@ class SkeletonReconnect(unittest.TestCase):
         for path, expect, view, flag in (("/ws?app=chat&delta=1&iid=page-9&active=%s&reconnect=1" % S1, True, False, False),
                                          ("/ws?app=chat&delta=1&iid=page-9&active=%s" % S1, False, False, False),
                                          ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&skeleton=1" % S1, True, True, True),
-                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&reconnect=1&skeleton=1" % S1, True, True, False)):
+                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&reconnect=1&skeleton=1" % S1, True, True, False),
+                                         ("/ws?app=feed&delta=1&iid=page-9&active=%s&skeleton=1" % S1, False, False, False)):   # a non-chat socket carrying the term arms nothing (PR 1661 round two; the follow-up's executed row)
             got = []
             real_reg, real_recv = km._register_ws_client, km._ws_recv
             km._register_ws_client = lambda c: (got.append(c), km._clients.append(c))
@@ -815,21 +816,26 @@ class SkeletonReconnect(unittest.TestCase):
 
 
 class RestartDiet(unittest.TestCase):
-    """The user's ruling (2026-09-14): after a kernel restart's reload the selected tab builds first, the strip's other tabs spread over later
-    refreshes, hidden tabs not until shown. The client half: the main chat pane's FIRST dial after a restart reload is a skeleton dial
-    (the later column's shape), so the kernel's existing handshake serves the strip with the skeleton set, one full for the active tab and
-    a status per other tab. Pinned in the served shim's source: the reload core keeps the reason in a durable record (announce() removes
-    the announce record before a pane dials, and a pane inside the shell never announces), the shim reads it fresh within two minutes for
-    a main pane that is not a column, and the dial carries skeleton=1 on the first socket alone (a redial dials as before)."""
+    """The user's ruling (2026-09-14): after a reload the selected tab builds first, the strip's other tabs spread over later refreshes,
+    hidden tabs not until shown; and restarts are invisible, so the one reload the reload core still fires is a changed build, a fresh
+    page on a kernel that just restarted. The client half: the main chat pane's FIRST dial after any reload the core fired is a skeleton
+    dial (the later column's shape), so the kernel's existing handshake serves the strip with the skeleton set, one full for the active
+    tab and a status per other tab; a redial carries the diet through reconnect=1 as before. Pinned in the served shim's source: the
+    reload core keeps the reason and the document's path in a durable record (announce() removes the announce record before a pane
+    dials, and a pane inside the shell never announces); the chat shim alone reads it, removes it BEFORE parsing (a malformed record is
+    consumed too), and dials skeleton=1 on its first socket when the record names the shell or a chat document; a column and a skeleton
+    view leave the record alone; every other pane's shim carries the false alone; the kernel arms the term for a chat socket only."""
 
     def test_the_first_dial_after_a_restart_reload_is_a_skeleton_dial(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         fire = src[src.index("function fire(){"):src.index("var heldFor=null;")]
-        self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}))", fire,
-                      "the reload core keeps the reason durably when it fires (the announce record is consumed before the panes dial)")
+        self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}))", fire,
+                      "the reload core keeps the reason and the document's path durably when it fires (the announce record is consumed before the panes dial)")
         chat, feed = km._shim("chat"), km._shim("feed")
-        self.assertIn("""var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||"null");if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}""", chat,
-                      "the chat shim reads the durable reason ONCE and consumes it on that read (round two, medium 1): a main pane, not a column, not a skeleton view; no age window")
+        self.assertIn("""var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');rr=raw?JSON.parse(raw):null;}catch(e){}RESTART_DIET=!!(rr&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}""", chat,
+                      "the chat shim removes the record BEFORE parsing it and dials the diet on any reload the core fired for the shell or a chat document (the follow-up after PR 1661): a main pane, not a column, not a skeleton view")
+        self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}))", src,
+                      "the reload core's record names the document that reloaded, so a standalone feed page's reload steers no chat dial")
         read = "sessionStorage.getItem('romp:reloadReason')"   # the READ; the reload core's write of the record rides every page's shim
         self.assertNotIn(read, feed, "a non-chat pane's shim never reads the record (round two, medium 2)")
         self.assertIn("var RESTART_DIET=false;", feed, "…it carries the false alone, so the shared dial line still compiles")

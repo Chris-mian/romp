@@ -1067,6 +1067,10 @@ let draggedGroup: string | null = null;   // a section header mid-drag (reorders
 // named from the first paint (planStrip's `pending`), instead of landing loose and jumping on the frame
 let provisionalTags: string[] = [];
 function visibleOrder(): string[] { return order.filter((id) => tabInView(id) && !collapsedTabIds.has(id)); }
+/** The strip SHOWS this tab right now: in view (the views, another column's holds), not hidden by the #only= filter, and not folded under
+ *  a collapsed section header. The idle prefetch's gate (the user 2026-09-14: hidden tabs are not built until shown; the follow-up after
+ *  PR 1661, low 3, for the folded ones). */
+function stripShowsTab(id: string): boolean { return stripShows(id) && !collapsedTabIds.has(id); }
 // THE PHONE LAYOUT: the kernel's chat page swaps the tab strip for its own session list (#mhdr/#mlist,
 // built by scraping every rendered tab) under EXACTLY this media rule (_CHAT_MOBILE_CSS in kernel.py)
 // — the same string here, so what the CSS hides and what the plan flattens cannot disagree. Sections
@@ -12665,10 +12669,10 @@ function runPrebuild(deadline: IdleDeadline): void {
   // is already in flight (a 1 MB full ahead of the active tab's 2 KB tail on a slow link delays that tail;
   // one at a time bounds it). The upsert that lands it calls schedulePrebuild, so the chain re-arms itself
   // one tab per idle until the set is empty. A click always wins: same message, awaitingFull dedups.
-  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): stripShows is the one predicate
-  // the strip itself lists by (it begins with tabInView, the views and another column's holds, and adds the #only= filter on top); a tab
-  // the filter reveals later is prefetched when the reveal re-arms this chain (onOnlyHashChange), or loads on the switch that shows it
-  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), (id) => stripShows(id));
+  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): stripShowsTab is the strip's own
+  // visibility (tabInView for the views and another column's holds, the #only= filter, and a collapsed section's fold); a tab the filter
+  // reveals later is prefetched when the reveal re-arms this chain (onOnlyHashChange), or loads on the switch that shows it
+  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), stripShowsTab);
   if (next) requestFullSession(next, "prefetch");
   const viewState = (id: string): ViewState | null => {
     if (skeletonTabs.ids.has(id)) return null;   // a skeleton's stale session must never get its DOM pre-built

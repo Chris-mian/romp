@@ -52130,7 +52130,7 @@ function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
-try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}));}catch(e){}   /* kept for the panes' first dial (the chat diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces */
+try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}));}catch(e){}   /* kept for the chat pane's first dial (the diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces; the path says which document reloaded, so a standalone feed page's reload never steers the next chat document's dial */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
@@ -52579,8 +52579,13 @@ returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial s
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
 # ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet only when it named a kernel restart. A
 # column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
-_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||\"null\");"
-                    "if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}")
+_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');"
+                    "rr=raw?JSON.parse(raw):null;}catch(e){}"
+                    "RESTART_DIET=!!(rr&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}")
+# The record is REMOVED before it is parsed (a malformed one is consumed too, as announce() does), and any reload the reload core fired
+# dials the diet (the user's ruling of 2026-09-14: restarts invisible, so the one reload left is a changed build, a fresh page on a kernel
+# that just restarted): the record's presence decides, not its reason. A record written by a standalone feed or timeline page's own
+# reload names that path and steers nothing (path === undefined only for a record an older core wrote).
 
 
 def _shim_core_js(app="test", v=0):

@@ -169,12 +169,23 @@ const paneDials = [];
 for (const fr of page.frames()) { try { const ds = await fr.evaluate(() => (window.__dials || []).slice()); for (const d of ds) paneDials.push(d.replace(/token=[^&]*/, "token=X")); } catch (e) { /* a frame without the hook */ } }
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-// ROAD 1b: a BUILD reload dials as before
-await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "newer build", t: Date.now() })); });
+// ROAD 1b: a BUILD reload dials the diet too (the follow-up after PR 1661: restarts are invisible, so the one reload the core fires is a
+// changed build, a fresh page on a kernel that just restarted)
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "newer build", path: "/chat", t: Date.now() })); });
 await page.reload();
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 const build = { dial: (await page.evaluate(() => window.__dials[0] || null)) };
-process.stdout.write("RESULT:" + JSON.stringify({ fresh, restart, spread, hidden, revealed, build, webIds, restart2, plain, beforeReveal, afterReveal, revealFilled, paneDials }) + "\n");
+// ROAD 8a (low 1): a record a standalone FEED page's own reload wrote (its path) lingers in the tab and must not steer the next chat document's dial; it is consumed
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", path: "/feed", t: Date.now() })); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+const feedRecord = { dial: (await page.evaluate(() => window.__dials[0] || null)), recordLeft: await page.evaluate(() => sessionStorage.getItem("romp:reloadReason")) };
+// ROAD 8b (low 6): a malformed record is consumed too
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", "{not json"); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+const malformed = { dial: (await page.evaluate(() => window.__dials[0] || null)), recordLeft: await page.evaluate(() => sessionStorage.getItem("romp:reloadReason")) };
+process.stdout.write("RESULT:" + JSON.stringify({ fresh, restart, spread, hidden, revealed, build, webIds, restart2, plain, beforeReveal, afterReveal, revealFilled, paneDials, feedRecord, malformed }) + "\n");
 await browser.close();
 """
 
@@ -280,7 +291,7 @@ class ColdBootDiet(unittest.TestCase):
         self.assertIsNotNone(r["restart"]["dial"], "the page dialed after the restart reload")
         self.assertIn("&skeleton=1", r["restart"]["dial"], "the first dial after a kernel restart's reload declares the diet: %r" % r["restart"]["dial"])
         self.assertIn("&active=" + self.sids[2], r["restart"]["dial"], "…beside the selected tab: %r" % r["restart"]["dial"])
-        self.assertNotIn("skeleton=1", r["build"]["dial"] or "", "a build reload dials as before: %r" % r["build"]["dial"])
+        self.assertIn("&skeleton=1", r["build"]["dial"] or "", "a build reload dials the diet too: the one reload the core fires lands a fresh page on a kernel that just restarted (the follow-up after PR 1661): %r" % r["build"]["dial"])
         self.assertNotIn("skeleton=1", r["fresh"]["dial"] or "", "a fresh open dials as before (the kernel half's case): %r" % r["fresh"]["dial"])
 
     def test_the_first_refresh_after_a_restart_reload_builds_the_selected_tab_first_and_the_rest_as_skeletons(self):
@@ -312,6 +323,16 @@ class ColdBootDiet(unittest.TestCase):
         self.assertIsNone(r["restart2"]["recordLeft"], "the read that acted on the record consumed it: %r" % r["restart2"])
         self.assertNotIn("skeleton=1", r["plain"]["dial"] or "", "the plain reload right after dials as before: %r" % r["plain"])
 
+    def test_a_feed_pages_record_steers_no_chat_dial_and_a_malformed_record_is_consumed(self):
+        # the follow-up after PR 1661, lows 1 and 6
+        r = self._result()
+        f = r["feedRecord"]
+        self.assertNotIn("skeleton=1", f["dial"] or "", "a record a standalone feed page's reload wrote steers no chat dial: %r" % f)
+        self.assertIsNone(f["recordLeft"], "…and is consumed, so it lingers for no later document: %r" % f)
+        m = r["malformed"]
+        self.assertNotIn("skeleton=1", m["dial"] or "", "a malformed record dials no diet: %r" % m)
+        self.assertIsNone(m["recordLeft"], "…and is consumed (removed before it is parsed): %r" % m)
+
     def test_only_the_chat_panes_dial_carries_the_term_after_a_restart_record(self):
         # round two, medium 2: the served dashboard's shell opens every pane; the term is the chat pane's alone
         r = self._result()
@@ -319,7 +340,8 @@ class ColdBootDiet(unittest.TestCase):
         apps = sorted(set(re.search(r"app=([a-z]+)", d).group(1) for d in dials if re.search(r"app=([a-z]+)", d)))
         self.assertGreaterEqual(len(apps), 2, "the shell dialed more than one pane: %r" % dials)
         with_term = sorted(set(re.search(r"app=([a-z]+)", d).group(1) for d in dials if "skeleton=1" in d))
-        self.assertEqual(with_term, ["chat"] if "chat" in apps else [], "the term rides the chat pane's dial alone: %r" % dials)
+        self.assertIn("chat", apps, "the chat pane dialed: %r" % dials)
+        self.assertEqual(with_term, ["chat"], "the term rides the chat pane's dial alone: %r" % dials)
 
     def test_lifting_the_filter_re_arms_the_idle_prefetch_with_no_push_in_between(self):
         # round two, medium 3
