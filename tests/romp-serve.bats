@@ -350,8 +350,8 @@ OLD
     [[ "$output" == *"python 3.9"* ]]
     ROMP_PYTHON="$TEST_DIR/nuls-64-python" run "$ROMP_SERVE" --print-python
     [ "$status" -eq 1 ]
-    [[ "$output" == *"more than 64 NUL-separated chunks"* ]]
-    [[ "$output" != *"$TEST_DIR/nuls-64-python"* ]]              # the pick is not printed: the interpreter is refused
+    [[ "$output" == *"more than 64 NUL-separated chunks"* ]]     # the refusal names the interpreter in its line
+    [[ "${lines[${#lines[@]}-1]}" != "$TEST_DIR/nuls-64-python" ]]   # but the pick is not printed as the answer: the interpreter is refused
 }
 
 @test "romp-serve: a TERM mid-probe leaves no probe file behind" {

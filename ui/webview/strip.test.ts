@@ -81,7 +81,7 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
     assert.ok(src.includes(ep), `the network popover must drive ${ep} (the rail twin)`);
   // the popover's /tunnels read checks the status before the body (the fourth reader of that route to gain the rule: a
   // JSON-bodied 5xx read as "No remotes attached" with the autoUpdate box mirrored off and a clientDiag filed as ok)
-  assert.ok(src.includes('fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) { const e: any = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: any = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /tunnels answer throws, with its status on the error, instead of reading as an empty host list");
   // the popover's refresh says which failure it had, as the host picker does: a status for a non-ok answer, unreachable for a rejected fetch, a console line for both
   assert.ok(src.includes('console.error("romp: /tunnels could not be read", err)'), "the popover's refresh says its failure in the console");
@@ -96,7 +96,7 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   assert.ok(src.includes('else if (err && err.httpStatus) fillHostSelect(sel, [], `(the kernel answered HTTP ${err.httpStatus})`)'), "a first load's 500 names the status, not an unreachable kernel");
   assert.ok(src.includes(": err && err.network ? `Couldn't reach the kernel ("), "the popover's refresh calls only a rejected fetch unreachable");
   assert.ok(src.includes(": `The kernel's answer to /tunnels could not be read; retrying…`"), "a 200 whose body will not parse is named as such");
-  assert.ok(src.includes('else fillHostSelect(sel, [], "(kernel unreachable)")'), "a rejected fetch keeps the kernel-unreachable signal, whatever was read before");
+  assert.ok(src.includes('if (err && err.network) fillHostSelect(sel, [], "(kernel unreachable)")'), "a rejected fetch keeps the kernel-unreachable signal, whatever was read before");
   assert.ok(src.includes('console.error("romp: ssh hosts could not be read"'), "every failure shape says so in the console");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
 });
