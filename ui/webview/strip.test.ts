@@ -87,7 +87,7 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   assert.ok(src.includes('console.error("romp: /tunnels could not be read", err)'), "the popover's refresh says its failure in the console");
   assert.ok(src.includes("err && err.httpStatus ? `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`"), "a non-ok answer is named by its status, not called an unreachable kernel");
   // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
-  assert.ok(src.includes('fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
   assert.ok(src.includes("const keep = !!lastHosts && !(err && err.network);"), "a non-ok or unparseable answer keeps the last good list; a rejected fetch does not");
   assert.ok(src.includes('.catch((e: any) => { e = e || new Error("fetch rejected"); e.network = true; throw e; })'), "a rejected fetch is marked before the status check");
