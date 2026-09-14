@@ -48,6 +48,18 @@ test("Backspace unbinds, Reset returns the default, the chips read the EFFECTIVE
   assert.match(MODAL, /textContent = "not bound";/);
 });
 
+test("the solo recording row's Remove shows WITHOUT a hover (review 2026-09-14): the keyboard flow never hovers, and the tab menu's sub-line promises the button", () => {
+  // the full dialog's per-row buttons (Change, Reset) still wait for the pointer: dozens of rows, one hovered
+  assert.match(MODAL, /"\.rkeys-act\{flex:0 0 auto;visibility:hidden;/);
+  assert.match(MODAL, /"\.rkeys-row:hover \.rkeys-act\{visibility:visible\}"/);
+  // …but the listening row's own button is visible at once: openFor's row is reached from the tab menu with no
+  // pointer on it, and a hidden Remove made the sub-line's promise ("or remove it") a lie
+  assert.match(MODAL, /"\.rkeys-row\.recording \.rkeys-act\{visibility:visible\}"/,
+    "the recording row's buttons show (three class selectors: it wins the base rule's visibility:hidden on specificity, whatever the order)");
+  // the Remove IS an .rkeys-act on that row
+  assert.match(MODAL, /row\.className = "rkeys-row" \+ \(c\.id === recId \? " recording" : ""\);[\s\S]{0,1400}?if \(c\.id === recId\) \{[\s\S]{0,1400}?rm\.className = "rkeys-act";\s*rm\.textContent = "Remove";/);
+});
+
 test("Escape is one level at a time and owned by the shell chain: recording → cancel, open → close", () => {
   // the recorder deliberately does NOT handle Escape; the shell's Escape chain calls close(),
   // whose first level cancels the recording and reports consumed

@@ -36,6 +36,11 @@ const CSS =
   ".rkeys-act:hover{background:#333;color:#e8eaed}" +
   // recording / conflict states: the accent marks "the dialog is listening", never a status color
   ".rkeys-row.recording{background:rgba(156,210,255,0.12);outline:1px solid var(--accent,#9cd2ff)}" +
+  // the listening row's button (a bound command's Remove) shows without a hover: the tab menu's flow reaches this row
+  // by keyboard, with no pointer on it, and its sub-line promises the removal (review 2026-09-14). Three classes deep,
+  // so it wins the base rule's visibility:hidden on specificity wherever it sits; the full dialog's other rows keep
+  // the hover reveal above
+  ".rkeys-row.recording .rkeys-act{visibility:visible}" +
   ".rkeys-hint{flex:0 0 auto;color:var(--accent,#9cd2ff);font-size:11px}" +
   ".rkeys-conflict{flex:0 0 auto;color:var(--warn,#d7a23a);font-size:11px}" +
   "#rkeys-fixed{flex:0 0 auto;margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.08)}" +
