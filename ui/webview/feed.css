@@ -415,23 +415,34 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    board has not got — grip, an always-on fold caret, a resize gutter — and the rule. Both themes read
    through the variables. */
 #feed-focus { display: flex; flex-direction: column; gap: 8px; }
-/* the head wears the session headers' typography (.feed-sess-head): 600, the name at the card titles' size */
-.feed-focus-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 3px 0; font-weight: 600; }
-.feed-focus-head .fname { font-size: inherit; }
-/* "focused", after the name — why this session sits on top. The fold count's own dress (.feed-sess-foldn):
-   the column head's 0.72em, weight 400, dim; no new size */
-.feed-focus-cap { flex: none; font-weight: 400; font-size: 0.72em; color: var(--dim); }
+/* the LABEL (T410b): "Current session: <name>", the section's fold control. The board's column heads' size
+   (0.72em — no new size) at the session headers' weight (600); the label text dim like the column heads, the
+   name bold in its identity colour (set inline, as the session headers do); the whole row folds on click, so
+   it wears the pointer. The caret is the block carets' glyph at their compensated size (1.389em, back to the
+   feed's base); the folded count rides .feed-col-count. */
+.feed-focus-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 2px 3px 0;
+  font-size: 0.72em; font-weight: 600; cursor: pointer; }
+.feed-focus-head .fname { font-size: inherit; font-weight: 600; }
+.feed-focus-fold { flex: none; padding: 0; border: 0; background: transparent; font: inherit; color: var(--dim);
+  cursor: pointer; transition: color 0.12s ease; }
+.feed-focus-head:hover .feed-focus-fold, .feed-focus-fold:focus-visible { color: var(--fg); }
+.feed-focus-caret { flex: none; padding: 0 3px; color: var(--dim); font-size: 1.389em; font-weight: 400; line-height: 1;
+  transition: color 0.12s ease; }
+.feed-focus-head:hover .feed-focus-caret { color: var(--fg); }
 .feed-focus-cols { align-items: stretch; }   /* the blocks share the row's height, so a gutter spans the row */
 .feed-focus-cols .feed-col { position: relative; }   /* the gutter's positioned ancestor */
 .feed-focus-cols .feed-col-head { position: static; }
 .feed-focus-cols .feed-col-head .fcol-chip { cursor: default; }
-/* the GRIP (T410): six dots left of the chip, the section's drag handle — the chip stays inert here, because
-   the board's chip drag would carry a block across the divider. Dim and half-faded at rest, full on the head's
-   hover, grab cursor. The glyph rides the fold caret's size compensation (1.389em against the head's 0.72em),
-   so it paints at the feed's base size rather than shrinking with the label. */
-.drag-grip { flex: none; color: var(--dim); opacity: 0.55; cursor: grab; touch-action: none; user-select: none;
-  font-size: 1.389em; line-height: 1; transition: opacity 0.12s ease; }
-.feed-col-head:hover .drag-grip, .feed-col.col-dragging .drag-grip { opacity: 1; }
+/* the GRIP (T410; T409's vocabulary, shared with the settings' widget rows): a BUTTON with the six-dot glyph
+   left of the chip, the section's drag handle — the chip stays inert here, because the board's chip drag would
+   carry a block across the divider — and, focused, its keyboard handle (the arrow keys). 18 px wide, dim at
+   rest, full on its hover, its focus and the head's hover, grab cursor; touch-action none so a finger drags
+   the block, not the page. The glyph rides the fold caret's size compensation (1.389em against the head's
+   0.72em), so it paints at the feed's base size rather than shrinking with the label. */
+.drag-grip { flex: none; width: 18px; padding: 0; border: 0; background: transparent; color: var(--dim);
+  font: inherit; font-size: 1.389em; line-height: 1; border-radius: 4px; cursor: grab; touch-action: none;
+  user-select: none; -webkit-user-select: none; transition: color 0.12s ease; }
+.drag-grip:hover, .drag-grip:focus-visible, .feed-col-head:hover .drag-grip, .feed-col.col-dragging .drag-grip { color: var(--fg); }
 .feed-col.col-dragging .drag-grip { cursor: grabbing; }
 /* the fold caret shows in the section in BOTH layouts (the stacked rule's dress, copied; this selector outranks
    the base `display: none`): folding is how a block gives its room back, since height is never resized */

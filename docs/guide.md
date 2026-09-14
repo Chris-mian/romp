@@ -293,6 +293,24 @@ tasks, and a task can be handed from one session to another.
 Press <span class="romp-btn">Clear</span> on a card when you are done with it. A
 cleared card is archived, and no more work is added to it.
 
+The **View** button in the feed's footer holds the layout choices: the sort
+direction, a single-column layout, grouping each column's cards by session, and
+**Show focused session**. That last switch puts the session you are reading in
+the chat at the top of the feed, above a divider (a two-pixel rule, a step
+up from the hairlines), under a label reading
+**Current session:** followed by the session's name. Clicking the name opens the
+session; clicking the label or its caret folds the whole section to that one
+line, which then shows the session's card count, and clicking again unfolds it.
+Under the label the session's cards sit in the same three blocks as the board
+below, which stays as it is. The blocks have their own controls: the six-dot
+grip on each block drags it to another slot within the section (the arrow keys
+move a focused grip's block the same way), the gutter between two blocks resizes
+them against each other (width only; the section's height follows its cards),
+and each block's caret folds it to its head, a choice that holds for whichever
+session is focused next. The section's blocks follow the board's arrangement
+until the first drag in the section; from then on the two are arranged
+independently.
+
 ### The timeline
 
 Each row is one session. A bar is a stretch where the session was working, and a
