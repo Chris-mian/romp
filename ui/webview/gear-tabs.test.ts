@@ -228,7 +228,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   // the STATUS LINE section (T409): the same builder over the status registry, its prefs read through the two legacy keys as
   // mirrors, its save writing both mirrors back, its pickers under their own prefix; no injected default for any of the three
   assert.match(GEAR, /var SW = require\('\.\/status-widgets\.ts'\);/);
-  assert.match(GEAR, /function statusPrefs\(s\) \{ return SW\.statusWidgetPrefs\(s\.statusWidgets, \{ showBranch: s\.showBranch, showSessionBadge: s\.showSessionBadge \}\); \}/);
+  assert.match(GEAR, /function statusPrefs\(s\) \{ return SW\.statusWidgetPrefs\(s\.statusWidgets\); \}/);
   assert.match(GEAR, /host: document\.getElementById\('rs-swidgets'\), list: SW\.statusWidgets, prefs: statusPrefs, pickPrefix: 'swopt-',/);
   assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.statusWidgets = prefs; var m = SW\.legacyOfStatusPrefs\(prefs\); s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\); paintWidgets\(\); \},/);
   assert.match(GEAR, /demo: function \(w, prefs\) \{ return SW\.renderStatusWidgetDemo\(w, prefs\); \},/, "the status demo is the widget alone, as the line draws it");

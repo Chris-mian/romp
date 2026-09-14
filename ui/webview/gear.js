@@ -375,7 +375,7 @@ function initGear(post, opts) {
     // settings.ts's saveSettings does, so a malformed order in either section is rewritten clean by any save (review round
     // two, low 7); the mirrors follow the normalized prefs
     if ('tabWidgets' in s) { s.tabWidgets = TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); s.tabCtx = TW.tabCtxOfPrefs(s.tabWidgets); }
-    if ('statusWidgets' in s) { s.statusWidgets = SW.statusWidgetPrefs(s.statusWidgets, { showBranch: s.showBranch, showSessionBadge: s.showSessionBadge }); var m2 = SW.legacyOfStatusPrefs(s.statusWidgets); s.showBranch = m2.showBranch; s.showSessionBadge = m2.showSessionBadge; }
+    if ('statusWidgets' in s) { s.statusWidgets = SW.statusWidgetPrefs(s.statusWidgets); var m2 = SW.legacyOfStatusPrefs(s.statusWidgets); s.showBranch = m2.showBranch; s.showSessionBadge = m2.showSessionBadge; }
     try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {}
     try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {}
     post({ type: 'settingsSync', settings: s });
@@ -870,9 +870,10 @@ function initGear(post, opts) {
     },
   });
   // the status line's widgets (T409): settings.statusWidgets with showBranch and showSessionBadge as the mirrors (no
-  // default injected by load() for any of the three: a store from before the widgets derives at read, and only a
-  // change here writes the key); the demo is the widget alone, as the line draws it
-  function statusPrefs(s) { return SW.statusWidgetPrefs(s.statusWidgets, { showBranch: s.showBranch, showSessionBadge: s.showSessionBadge }); }
+  // default injected by load() for any of the three: a store from before the widgets reads the widget defaults, its two
+  // old keys being the gear's own injected default and no choice (the one-shot migration), and only a change here writes
+  // the key); the demo is the widget alone, as the line draws it
+  function statusPrefs(s) { return SW.statusWidgetPrefs(s.statusWidgets); }
   var statusSection = widgetSection({
     host: document.getElementById('rs-swidgets'), list: SW.statusWidgets, prefs: statusPrefs, pickPrefix: 'swopt-',
     order: SW.statusListOrder, divider: null,

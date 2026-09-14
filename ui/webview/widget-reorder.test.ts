@@ -89,7 +89,7 @@ test("the order is stored whole by one writer, the divider's id among the tab wi
   assert.match(GEAR_CSS, /#rsettings \.rs-widget\.rs-nudge \{ animation: rs-nudge 0\.3s ease; \}/);
   // round two, low 7: the gear's own save normalizes both keys when the store carries them, never injecting either
   assert.match(GEAR, /if \('tabWidgets' in s\) \{ s\.tabWidgets = TW\.tabWidgetPrefs\(s\.tabWidgets, s\.tabCtx\); s\.tabCtx = TW\.tabCtxOfPrefs\(s\.tabWidgets\); \}/);
-  assert.match(GEAR, /if \('statusWidgets' in s\) \{ s\.statusWidgets = SW\.statusWidgetPrefs\(s\.statusWidgets, \{ showBranch: s\.showBranch, showSessionBadge: s\.showSessionBadge \}\);/);
+  assert.match(GEAR, /if \('statusWidgets' in s\) \{ s\.statusWidgets = SW\.statusWidgetPrefs\(s\.statusWidgets\); var m2 = SW\.legacyOfStatusPrefs\(s\.statusWidgets\);/);
   // round two, low 4: a preview is inert
   assert.match(GEAR, /return SW\.makeInert\(line\);/);
 });

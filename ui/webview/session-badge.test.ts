@@ -45,7 +45,7 @@ test("styles.css: the badge is a chip with black text on the session's colour, c
 });
 
 // The badge is an OPT-IN (the maintainers via the user, 2026-09-10; the user again on T409): the name widget defaults off.
-// showSessionBadge stays in the store as the widget's MIRROR (settings.ts derives from it when statusWidgets is absent and
+// showSessionBadge stays in the store as the widget's MIRROR (settings.ts never reads it since the one-shot migration and
 // writes it back on every save); the gear injects no default for it and has no row of its own for it any more: the
 // Status line section's Session name row is the control.
 test("settings carry showSessionBadge as the name widget's mirror, defaulting OFF, and the gear injects no default and keeps no row", () => {
@@ -54,7 +54,7 @@ test("settings carry showSessionBadge as the name widget's mirror, defaulting OF
   assert.match(SETTINGS, /showSessionBadge: boolean;/);
   assert.match(SETTINGS, /DEFAULT_SETTINGS[^;]*showSessionBadge: false/);
   assert.match(SETTINGS, /Object\.assign\(s, legacyOfStatusPrefs\(s\.statusWidgets\)\);/, "the mirror is written from the widgets on load");
-  assert.doesNotMatch(GEAR, /showSessionBadge: (true|false)/, "no injected default: a store from before the widgets derives at read (the fresh-key rule)");
+  assert.doesNotMatch(GEAR, /showSessionBadge: (true|false)/, "no injected default (the fresh-key rule); a store from before the widgets reads the widget defaults (the one-shot migration)");
   assert.doesNotMatch(GEAR, /id=rs-badge|Show session badge|sbg = document/, "the checkbox row is gone");
   assert.match(GEAR, /data-section=statusline>Status line</, "the Status line section is the control");
   assert.match(GEAR, /s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\);/, "a section save writes both mirrors");

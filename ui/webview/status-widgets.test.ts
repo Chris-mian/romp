@@ -1,6 +1,6 @@
 // The status-line widget registry (T409, the user 2026-09-13): registration order is the default composition order,
 // the stored prefs decide which widgets the line carries and with which options, the two keys the widgets replaced
-// (showBranch, showSessionBadge) are their MIRRORS both ways, and the line and the settings row draw a widget through
+// (showBranch, showSessionBadge) are their MIRRORS, written at every save and never read since the one-shot migration, and the line and the settings row draw a widget through
 // the same render. Executed on a tiny DOM (document.createElement stubbed), so a widget's DOM is read, never inferred
 // from source.
 import { test } from "node:test";
@@ -116,14 +116,12 @@ test("the settings row's demo renders the widget over its demo record through th
   assert.equal((W.renderStatusWidgetDemo(W.statusWidget("name")!, P()) as unknown as El).textContent, "web");
 });
 
-test("statusWidgetPrefs: a stored object normalizes; with none, the two legacy keys derive the branch and the name when present and stay unset when absent", () => {
-  assert.deepEqual(W.statusWidgetPrefs(undefined), { on: {}, order: [], opts: {} });
-  assert.deepEqual(W.statusWidgetPrefs(undefined, { showBranch: false }), { on: { branch: false }, order: [], opts: {} }, "a reader who turned the branch off stays off");
-  assert.deepEqual(W.statusWidgetPrefs(undefined, { showBranch: true, showSessionBadge: true }), { on: { branch: true, name: true }, order: [], opts: {} });
-  assert.deepEqual(W.statusWidgetPrefs(undefined, { showBranch: "yes", showSessionBadge: 1 }), { on: {}, order: [], opts: {} }, "junk in the legacy keys is no choice");
-  assert.deepEqual(W.statusWidgetPrefs({ on: { folder: false, host: "yes" }, order: ["host", 3], opts: { folder: { show: "path", n: 2 } } }, { showBranch: false }),
-                   { on: { folder: false }, order: ["host"], opts: { folder: { show: "path" } } }, "a stored object wins over the legacy keys");
-  assert.deepEqual(W.statusWidgetPrefs("junk", { showBranch: false }), { on: { branch: false }, order: [], opts: {} }, "a non-object store is no store");
+test("statusWidgetPrefs: a stored object normalizes; with none the widget defaults rule, whatever the store's legacy keys say (the one-shot migration: those keys were the gear's injected default, not a choice)", () => {
+  assert.deepEqual(W.statusWidgetPrefs(undefined), { on: {}, order: [], opts: {} }, "no store: nothing set, the defaults rule");
+  assert.deepEqual(W.statusWidgetPrefs({ on: { folder: false, host: "yes" }, order: ["host", 3], opts: { folder: { show: "path", n: 2 } } }),
+                   { on: { folder: false }, order: ["host"], opts: { folder: { show: "path" } } }, "a stored object normalizes: junk dropped");
+  assert.deepEqual(W.statusWidgetPrefs("junk"), { on: {}, order: [], opts: {} }, "a non-object store is no store");
+  assert.equal(W.statusWidgetPrefs.length, 1, "the resolver takes the stored object alone: no legacy argument to derive from");
 });
 
 test("legacyOfStatusPrefs: the mirror follows the switches, the widget defaults included (the branch on, the name off)", () => {
@@ -131,25 +129,33 @@ test("legacyOfStatusPrefs: the mirror follows the switches, the widget defaults 
   assert.deepEqual(W.legacyOfStatusPrefs(P({ on: { branch: false, name: true } })), { showBranch: false, showSessionBadge: true });
 });
 
-test("settings: a store from before the widgets reads its legacy keys into the prefs and the mirrors; a fresh store reads the branch on; a save writes both mirrors back", () => {
-  store.clear();
-  store.set("romp:settings", JSON.stringify({ compact: true, showBranch: false }));
-  let s = S.loadSettings();
-  assert.deepEqual(s.statusWidgets, { on: { branch: false }, order: [], opts: {} });
-  assert.equal(s.showBranch, false); assert.equal(s.showSessionBadge, false);
-  store.set("romp:settings", JSON.stringify({ compact: true }));
-  s = S.loadSettings();
-  assert.deepEqual(s.statusWidgets, { on: {}, order: [], opts: {} }, "no legacy key: nothing derived, the defaults rule");
-  assert.equal(s.showBranch, true, "the mirror of the branch widget's default");
+test("settings, the four store shapes (the one-shot migration, the user's call through the manager): no keys, a legacy false, a legacy true, a stored prefs object; the legacy keys never read, written as mirrors from the first save", () => {
+  const load = (raw: Record<string, unknown>) => { store.clear(); store.set("romp:settings", JSON.stringify(raw)); return S.loadSettings(); };
+  let s = load({ compact: true });
+  assert.deepEqual(s.statusWidgets, { on: {}, order: [], opts: {} }, "no keys: the defaults");
+  assert.equal(s.showBranch, true, "the mirror of the branch widget's default"); assert.equal(s.showSessionBadge, false);
   assert.equal(S.DEFAULT_SETTINGS.showBranch, true); assert.equal(S.DEFAULT_SETTINGS.showSessionBadge, false);
-  const saved = S.saveSettings({ statusWidgets: { on: { branch: false, name: true }, order: ["branch"], opts: {} } });
-  assert.deepEqual([saved.showBranch, saved.showSessionBadge], [false, true]);
+  s = load({ compact: true, showBranch: false });
+  assert.deepEqual(s.statusWidgets, { on: {}, order: [], opts: {} }, "a legacy false and no statusWidgets: the gear's injected default, not a choice; the branch shows");
+  assert.equal(s.showBranch, true, "the in-memory mirror follows the widget, not the stored key");
+  assert.deepEqual(JSON.parse(store.get("romp:settings")!), { compact: true, showBranch: false }, "a load writes nothing: the store upgrades at the first save");
+  s = load({ compact: true, showBranch: true, showSessionBadge: true });
+  assert.deepEqual(s.statusWidgets, { on: {}, order: [], opts: {} }, "a legacy true reads the same: the name stays off, its default");
+  assert.equal(s.showSessionBadge, false);
+  s = load({ compact: true, showBranch: true, statusWidgets: { on: { branch: false, name: true }, order: ["branch"], opts: {} } });
+  assert.deepEqual(s.statusWidgets, { on: { branch: false, name: true }, order: ["branch"], opts: {} }, "a stored prefs object is the user's choice and wins over any legacy key");
+  assert.deepEqual([s.showBranch, s.showSessionBadge], [false, true], "the mirrors follow the prefs");
+  // the first save of the prefs writes the key and both mirrors; from then on the store carries the user's choice
+  load({ compact: true, showBranch: false });
+  const saved = S.saveSettings({ statusWidgets: { on: { branch: false }, order: [], opts: {} } });
+  assert.deepEqual([saved.showBranch, saved.showSessionBadge], [false, false]);
   const raw = JSON.parse(store.get("romp:settings")!);
-  assert.deepEqual([raw.showBranch, raw.showSessionBadge, raw.statusWidgets.order], [false, true, ["branch"]], "both mirrors and the prefs in the store");
-  // an older writer patching a legacy key alone: the widget follows (the mirror runs both ways)
+  assert.deepEqual([raw.showBranch, raw.statusWidgets.on], [false, { branch: false }], "the mirror and the prefs in the store: switched off after the upgrade, it stays off");
+  assert.equal(S.loadSettings().statusWidgets.on.branch, false, "and reads off on the next load");
+  // an older writer patching a legacy key alone through saveSettings is an explicit act, not a stored value of unknown
+  // provenance: the widget follows it (the mirror runs both ways for a patch)
   const legacy = S.saveSettings({ showBranch: true });
-  assert.equal(legacy.statusWidgets.on.branch, true);
-  assert.equal(legacy.showBranch, true);
+  assert.equal(legacy.statusWidgets.on.branch, true); assert.equal(legacy.showBranch, true);
   store.clear();
 });
 
