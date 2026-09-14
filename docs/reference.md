@@ -1929,7 +1929,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   come from: `materialized` atoms built from the document's rows since boot,
   `materializedBy` (per consumer), `materializedByStage` (the same builds
   under the calling thread's stage mark beside the consumer, as
-  `hydratedByStage` does for bodies: `push`, `connect`, `jobs.<job>`,
+  `hydratedByStage` does for bodies: `push`, `connect`, `push.session`
+  (the backend's targeted one-session push on a session's connect
+  handshake, run on a thread of the backend's own), `jobs.<job>`,
   `judge.<tier>` for a tier thread and every worker of the pools it
   submits to (the mark rides the submit, as the pass frame does, since a
   thread-local does not cross into a pool worker), `http.<METHOD>.<route>`
@@ -1940,9 +1942,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `remote-ws`, `federation.push`, `federation.pull`, `federation.ask`,
   `ask-poll`; `none` means the build ran on a thread with no mark, which
   should not happen: the kernel's thread census (every Thread, Timer and
-  pool construction site in the kernel and the judge, walked by the ast)
-  holds every thread marked or listed as a pure I/O helper, and a `none`
-  row on a live `/perf` names a thread the census missed), `resident` (the
+  pool construction site in the kernel, the judge and the two session
+  backends, walked by the ast, and every kernel callback the backends are
+  handed, since a backend runs those on threads of its own) holds every
+  thread marked or listed as a pure I/O helper and every handed callback
+  marked or listed, and a `none` row on a live `/perf` names a thread or a
+  callback the census missed), `resident` (the
   process-wide LRU, `cap` atoms across every session: the machine's memory
   over 32 KiB, never under 500,000; eviction drops the memo, never a field in
   place), `evictions`, and `restoredTurns`.

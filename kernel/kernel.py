@@ -17228,7 +17228,10 @@ def _sdk_locked():
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
-                push_session=_push_session_now,   # targeted one-session push for per-session chip events (connect)
+                push_session=_stage_marked("push.session")(_push_session_now),   # targeted one-session push for per-session chip
+                #   events (connect); marked at the hand-off: the backend runs it on a thread of its own (the read boot of
+                #   2026-09-14 counted 3,312 builds and 9.4 MB under `none:` from that thread), and a decorator on the def would
+                #   overwrite the WS-handler and spawn callers' own marks for the call's length (T401 (5a) follow-up)
                 mcp_config=(str(_SDK_MCP) if _SDK_MCP.exists() else None),
                 append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
                 log=_backend_log,   # best-effort, through _exit_log: SdkBackend.drain logs its summary after
@@ -17343,7 +17346,7 @@ def _codex():
                 _codex_backend = cxmod.CodexBackend(
                     jd.STATE, notify=_send_to_app,
                     poke=_wake_kernel, push=_pusher_wake.set,
-                    push_session=_push_session_now,
+                    push_session=_stage_marked("push.session")(_push_session_now),   # marked at the hand-off, as the SDK's above
                     # Let the backend choose ROMP's managed runtime and helpers.
                     # A separately installed CLI on PATH may use a different protocol.
                     # …but honour the one EXPLICIT knob romp already has — ROMP_CODEX_BIN, which the judges read

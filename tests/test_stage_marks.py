@@ -32,11 +32,22 @@ Path(_ROOT, "romp", "session-hosts").write_text("off\n")      # a fresh state ro
 load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 km = load_source("romp_kernel_stage_marks", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend", os.path.join(BIN, "romp_sdk_backend.py"))   # the real backend: its push thread is a row here
 
 em = km.em
 KERNEL_DIR = os.path.join(os.path.dirname(HERE), "kernel")
 SOURCES = {"kernel.py": open(os.path.join(KERNEL_DIR, "kernel.py"), encoding="utf-8").read(),
            "judge.py": open(os.path.join(KERNEL_DIR, "judge.py"), encoding="utf-8").read()}
+BACKEND_SOURCES = {"sdk_backend.py": open(os.path.join(KERNEL_DIR, "sdk_backend.py"), encoding="utf-8").read(),
+                   "codex_backend.py": open(os.path.join(KERNEL_DIR, "codex_backend.py"), encoding="utf-8").read()}
+BACKEND_CTORS = ("SdkBackend", "CodexBackend")               # the kernel hands these its callbacks (kwargs and positionals)
+BUILD_MODULES = ("romp_event_model", "romp_judge", "event_model.py", "judge.py", "romp-event-model", "romp-judge")
+# The event model's names a session backend may use without building: per-record readers of ONE raw transcript line (the
+# author rule for the boot scan, the command and skill wrappers' regexes, a record's text), none of which parses a session,
+# builds an atom or hydrates a body. A backend that uses any other name on its event-model binding (a parse, the lazy
+# index, a hydrate) builds directly, and every thread it starts turns unmarked until marked or listed.
+EM_READ_ONLY = {"author_of", "is_interrupt_record", "is_skill_load_wrapper", "_record_origin", "_text_of",
+                "CMD_WRAP_RE", "COMMAND_NAME_RE", "COMMAND_NAME_ANY_RE", "SKILL_CONTENT_RE"}
 _TREES = {}                                                  # module text -> its parsed tree: kernel.py is parsed once per module (item 5)
 
 
@@ -53,9 +64,12 @@ POOL_SHAPED = ("ThreadPoolExecutor", "ProcessPoolExecutor", "Executor", "_TimedP
 # Thread line, the target's name), each with the reason it is left unmarked. A name that recurs (go, run, work, one, _ask,
 # _pf, _gl, _bd) is keyed to its real enclosing function, so a new closure of the same name elsewhere is flagged.
 ALLOW = {
-    ("kernel.py", "main", "_sdk"): "constructs the SDK backend, whose boot reconcile reads raw records through the backend, never the "
-                                   "index or hydrate (sdk_backend.py makes no event-model parse or hydrate call); two wiring pins hold "
-                                   "its Thread line literal",
+    ("kernel.py", "main", "_sdk"): "constructs the SDK backend, whose own work (the boot reconcile, the CLI streams) reads raw records "
+                                   "through the backend and never the index or a hydrate; the KERNEL callbacks it hands the backend run "
+                                   "on threads of the backend's own, so each is marked at the hand-off or listed in CALLBACK_ALLOW "
+                                   "(the callback census below; the 2026-09-14 read boot counted 3,312 builds under `none:` from the "
+                                   "backend's push-session thread while this reason said the backend built nothing); two wiring pins "
+                                   "hold its Thread line literal",
     ("kernel.py", "main", "_pusher"): "marks inside: push and connect through _push's decorator",
     ("kernel.py", "main", "_jobs_loop"): "marks inside: jobs.<name> through _job_stage",
     ("kernel.py", "main", "_heartbeat"): "WS keepalive frames",
@@ -85,6 +99,24 @@ ALLOW = {
     ("kernel.py", "_push_forward", "run"): "the peer relay POST",
     ("kernel.py", "_refresh_model_catalog", "go"): "the models frame notice",
 }
+
+# Kernel callables handed to a session backend's constructor that can build no atom and hydrate no body, keyed (constructor,
+# parameter, the callable's source), each with its reason; a handed callable that builds (the one-session push) is marked at
+# the hand-off instead. A backend runs these on threads of its own (sdk_backend.py's "sdk-push-session" Thread), which the
+# kernel-file census cannot see, so a pure-I/O claim about the backend thread has to cover them one by one.
+CALLBACK_ALLOW = {
+    ("SdkBackend", "notify", "_send_to_app"): "a frame to the app over its socket",
+    ("SdkBackend", "poke", "_wake_kernel"): "sets the kernel's wake event",
+    ("SdkBackend", "push", "_pusher_wake.set"): "sets the pusher's wake event",
+    ("SdkBackend", "log", "_backend_log"): "a stderr line through the exit log",
+    ("SdkBackend", "boot_phase", "_mark_boot"): "a boot-row stamp (censusDone, attachDone)",
+    ("CodexBackend", "notify", "_send_to_app"): "a frame to the app over its socket",
+    ("CodexBackend", "poke", "_wake_kernel"): "sets the kernel's wake event",
+    ("CodexBackend", "push", "_pusher_wake.set"): "sets the pusher's wake event",
+    ("CodexBackend", "log", "<lambda>"): "a stderr line",
+}
+# The backend constructors' positional parameters, so a callable passed by position is keyed by its parameter's name.
+CTOR_POSITIONALS = {"SdkBackend": ("state_dir", "claude_bin", "notify"), "CodexBackend": ("state_dir",)}
 
 
 def _ctor_of(call):
@@ -201,6 +233,90 @@ def census(fname, text):
     return rows
 
 
+def _reaches_builds(tree):
+    """The names a module uses on the event model or the judge that can build or hydrate, sorted: empty when the module can
+    build nothing on its own. A binding of the judge counts whole (every surface of it parses); a binding of the event
+    model counts by the attributes read on it, less EM_READ_ONLY (the SDK backend binds it for the author rule of its
+    boot scan). The two session backends read no building name today, so every thread they start can build only through
+    a kernel callback (the rows of callback_census); a backend that starts to turns every one of its thread rows unmarked."""
+    bound = {}                                                   # name -> "judge" | "em"
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if any(m in a.name for m in BUILD_MODULES):
+                    bound[a.asname or a.name] = "judge" if "judge" in a.name else "em"
+        elif isinstance(n, ast.ImportFrom) and n.module and any(m in n.module for m in BUILD_MODULES):
+            return sorted(a.asname or a.name for a in n.names)   # a from-import of either module names the surface itself
+        elif isinstance(n, ast.Assign) and isinstance(n.value, (ast.Call, ast.BoolOp)):
+            d = ast.dump(n.value)
+            if "load_source" in d and any(m in d for m in BUILD_MODULES):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        bound[t.id] = "judge" if "judge" in d else "em"
+    used = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in bound:
+            if bound[n.value.id] == "judge" or n.attr not in EM_READ_ONLY:
+                used.add("%s.%s" % (n.value.id, n.attr))
+    return sorted(used)
+
+
+def backend_census(fname, text):
+    """Every Thread, Timer and pool construction in a session backend: (line, ctor, enclosing function, verdict), the verdict
+    "callback-only" while the module reaches no event model or judge (its threads run kernel callbacks, covered by
+    callback_census, or the backend's own I/O), else unmarked: a backend that builds directly has to mark or list its threads."""
+    tree = _parse(text)
+    reaches = _reaches_builds(tree)
+    funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    rows = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _ctor_of(node) is None:
+            continue
+        enc = [fn for fn in funcs if fn.lineno <= node.lineno <= (fn.end_lineno or fn.lineno)]
+        enc_name = min(enc, key=lambda fn: fn.end_lineno - fn.lineno).name if enc else "<module>"
+        rows.append((node.lineno, _ctor_of(node), enc_name,
+                     "callback-only" if not reaches else "unmarked: %s reads %s on the event model or the judge, so its threads can "
+                     "build directly; mark them or list them" % (fname, ", ".join(reaches))))
+    return rows
+
+
+def callback_census(text):
+    """Every kernel callable handed to a session backend's constructor: (line, ctor, parameter, source, verdict) for each
+    positional or keyword argument that IS a callable the census can read: a `_stage_marked(<name>)(<fn>)` wrapper ("marked"),
+    a name bound to a module-level def, a bound method (an attribute spelled in lower case; an upper-case attribute is a
+    constant, `jd.STATE`), or a lambda; a value (a constant, a call's result, a module attribute in upper case) is no row. An
+    unwrapped callable is "allowed" only on CALLBACK_ALLOW with its reason, else unmarked."""
+    tree = _parse(text)
+    module_defs = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    rows = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        ctor = node.func.attr if isinstance(node.func, ast.Attribute) else (node.func.id if isinstance(node.func, ast.Name) else None)
+        if ctor not in BACKEND_CTORS:
+            continue
+        params = list(CTOR_POSITIONALS.get(ctor, ()))
+        handed = [(params[i] if i < len(params) else "arg%d" % i, a) for i, a in enumerate(node.args)] + \
+                 [(k.arg, k.value) for k in node.keywords]
+        for param, value in handed:
+            if _wrapped_at_site(value):
+                rows.append((value.lineno, ctor, param, ast.get_source_segment(text, value), "marked")); continue
+            if isinstance(value, ast.Name) and value.id in module_defs:
+                src = value.id
+            elif isinstance(value, ast.Attribute) and value.attr == value.attr.lower():
+                src = ast.get_source_segment(text, value)
+            elif isinstance(value, ast.Lambda):
+                src = "<lambda>"
+            else:
+                continue                                                          # a value, not a callable
+            if (ctor, param, src) in CALLBACK_ALLOW:
+                rows.append((value.lineno, ctor, param, src, "allowed"))
+            else:
+                rows.append((value.lineno, ctor, param, src, "unmarked: a kernel callable the backend runs on a thread of its own, "
+                             "neither wrapped `_stage_marked(<name>)(<fn>)` at the hand-off nor listed in CALLBACK_ALLOW"))
+    return rows
+
+
 class StageMarksCensus(unittest.TestCase):
     def test_every_thread_and_pool_site_in_the_kernel_and_the_judge_is_marked_allowed_or_a_riding_pool(self):
         """T401 (5a): every construction site in kernel.py and judge.py is marked (by the ast: a _stage_marked decorator on
@@ -225,6 +341,40 @@ class StageMarksCensus(unittest.TestCase):
                  if t and v in ("marked", "allowed") or (t and v.startswith("unmarked"))}   # rows whose target resolved to a def (item 3)
         stale = sorted(k for k in ALLOW if k not in sites)
         self.assertEqual(stale, [], "ALLOW entries with no site behind them")
+
+    def test_every_callable_the_kernel_hands_a_backend_is_marked_at_the_hand_off_or_listed_with_a_reason(self):
+        """The 2026-09-14 read boot (the first after 5b's merge) counted 3,312 builds and 9.4 MB of hydration under `none:`,
+        all from `_push_session_now` run on sdk_backend.py's own "sdk-push-session" Thread, a thread no kernel-file census can
+        see: the census covers the callables the kernel HANDS a backend instead. The one that builds (the one-session push)
+        is wrapped `_stage_marked("push.session")` at both hand-off sites, never decorated on the def (its WS-handler and
+        spawn callers keep their own marks); every other handed callable is listed with the reason it can build nothing."""
+        rows = callback_census(SOURCES["kernel.py"])
+        bad = [r for r in rows if r[4] not in ("marked", "allowed")]
+        self.assertEqual(bad, [], "callables handed to a backend that can build or hydrate under no mark")
+        marked = sorted((ctor, param, src) for _, ctor, param, src, v in rows if v == "marked")
+        self.assertEqual(marked, [("CodexBackend", "push_session", '_stage_marked("push.session")(_push_session_now)'),
+                                  ("SdkBackend", "push_session", '_stage_marked("push.session")(_push_session_now)')],
+                         "the one-session push is the callable that builds: marked push.session at both hand-offs")
+        self.assertGreaterEqual(len(rows), 10, "the census read the handed callables: %s" % rows)
+
+    def test_every_listed_callback_still_has_a_hand_off_behind_it(self):
+        seen = {(ctor, param, src) for _, ctor, param, src, _ in callback_census(SOURCES["kernel.py"])}
+        stale = sorted(k for k in CALLBACK_ALLOW if k not in seen)
+        self.assertEqual(stale, [], "CALLBACK_ALLOW entries with no hand-off behind them")
+
+    def test_the_backends_threads_run_callbacks_only_while_neither_backend_reaches_the_event_model_or_the_judge(self):
+        """A backend thread that builds DIRECTLY (not through a kernel callback) in a later change is seen here: the walk
+        over sdk_backend.py and codex_backend.py reads every Thread, Timer and pool site, and every row is "callback-only"
+        exactly while the module reads no building name on the event model or the judge (the SDK backend binds the event
+        model for the per-record author rule of its boot scan, listed in EM_READ_ONLY); the day one does, every row turns
+        unmarked."""
+        seen = 0
+        for fname, text in BACKEND_SOURCES.items():
+            self.assertEqual(_reaches_builds(_parse(text)), [], "%s reads a building name on the event model or the judge" % fname)
+            rows = backend_census(fname, text)
+            seen += len(rows)
+            self.assertEqual([r for r in rows if r[3] != "callback-only"], [], fname)
+        self.assertGreaterEqual(seen, 8, "the walk read the backends' thread sites: %d" % seen)
 
     # The census's own rules, proven on synthetic snippets: what round one and round two got wrong.
     SNIPPET_SHADOW = '''
@@ -331,6 +481,49 @@ def _fan():
         are pools whose submit carries no mark, and neither inherits the rebinding."""
         self.assertEqual(self._verdicts(self.SNIPPET_ALIAS), [("_fan", None, "a bare pool"), ("_fan", None, "a bare pool")])
 
+    SNIPPET_HANDOFF = '''
+def _push_now(sid): pass
+def _wake(): pass
+def _send(msg): pass
+def _sdk():
+    b = sbmod.SdkBackend(jd.STATE, _bin(), _send, poke=_wake, push=_ev.set, push_session=_push_now, log=lambda m: None,
+                         boot_at=_STARTED, code_version=_sha())
+    c = cxmod.CodexBackend(jd.STATE, notify=_send, push_session=_stage_marked("push.session")(_push_now))
+'''
+
+    def test_the_callback_census_reads_every_handed_callable_and_no_value(self):
+        rows = {(ctor, param, src): v for _, ctor, param, src, v in callback_census(self.SNIPPET_HANDOFF)}
+        self.assertEqual(rows[("SdkBackend", "notify", "_send")][:8], "unmarked", "a positional callable is keyed by its parameter")
+        self.assertEqual(rows[("SdkBackend", "push", "_ev.set")][:8], "unmarked", "a bound method is a callable")
+        self.assertEqual(rows[("SdkBackend", "log", "<lambda>")][:8], "unmarked")
+        self.assertEqual(rows[("SdkBackend", "push_session", "_push_now")][:8], "unmarked", "the unwrapped hand-off: the read boot's row")
+        self.assertEqual(rows[("CodexBackend", "push_session", '_stage_marked("push.session")(_push_now)')], "marked")
+        self.assertEqual(rows[("CodexBackend", "notify", "_send")][:8], "unmarked")
+        self.assertNotIn(("SdkBackend", "state_dir", "jd.STATE"), rows, "an upper-case attribute is a constant, not a callable")
+        self.assertEqual({k[1] for k in rows} & {"claude_bin", "boot_at", "code_version"}, set(), "calls and plain names are values")
+
+    SNIPPET_BACKEND_IO = '''
+import threading
+def _push_session(self, sid):
+    threading.Thread(target=run, name="sdk-push-session", daemon=True).start()
+'''
+    SNIPPET_BACKEND_READS = SNIPPET_BACKEND_IO + '''
+_em = sys.modules.get("romp_event_model") or load_source("romp_event_model_echo", _HERE / "event_model.py")
+def _scan(rec): return _em.author_of(rec), _em.is_interrupt_record(rec)
+'''
+    SNIPPET_BACKEND_BUILDS = SNIPPET_BACKEND_READS + '''
+def _tail(path): return _em.parse_events(path)
+'''
+
+    def test_a_backend_thread_is_callback_only_until_the_backend_reads_a_building_name_on_the_event_model(self):
+        self.assertEqual([r[3] for r in backend_census("x.py", self.SNIPPET_BACKEND_IO)], ["callback-only"])
+        self.assertEqual([r[3] for r in backend_census("x.py", self.SNIPPET_BACKEND_READS)], ["callback-only"],
+                         "the author rule and the interrupt bit read one record each: no build")
+        self.assertEqual(_reaches_builds(_parse(self.SNIPPET_BACKEND_BUILDS)), ["_em.parse_events"])
+        self.assertEqual(backend_census("x.py", self.SNIPPET_BACKEND_BUILDS)[0][3],
+                         "unmarked: x.py reads _em.parse_events on the event model or the judge, so its threads can build directly; "
+                         "mark them or list them")
+
     def test_a_set_stage_in_the_defs_own_body_and_a_wrapper_at_the_site_both_mark(self):
         self.assertEqual(self._verdicts(self.SNIPPET_MARKED), [("_start", "_tier", "marked"), ("_start", '_stage_marked("warm")(_tier)', "marked")])
 
@@ -410,6 +603,36 @@ class BuildsCountUnderTheThreadsStage(unittest.TestCase):
                 seen.append(ex.submit(lambda: km._current_read_stage()).result(10))
         th = threading.Thread(target=lambda: km._run_tier(tier), name="index"); th.start(); th.join(10)
         self.assertEqual(seen, ["judge.index", "judge.index", "judge.index"], seen)
+
+    def _push_through_the_backend(self, handed):
+        """The REAL backend's one-session push: `handed` is what the kernel passes as push_session; the backend runs it on its
+        own "sdk-push-session" Thread (sdk_backend.py _push_session), where it builds one lazy row; the stage that build lands
+        under and the stage the thread read while it ran come back."""
+        la = self._index()
+        seen, done = [], threading.Event()
+        def _push_session_now(sid):
+            seen.append(em._read_stage()); la[0]; done.set()
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None, push_session=handed(_push_session_now))
+        before = dict(em.asm_index_stats()["materializedByStage"])
+        be._push_session(SID)
+        self.assertTrue(done.wait(5), "the backend ran the callable on its own thread")
+        after = em.asm_index_stats()["materializedByStage"]
+        return seen, {k: v - before.get(k, 0) for k, v in after.items() if v - before.get(k, 0)}
+
+    def test_the_backends_push_thread_builds_under_push_session_through_the_wrapper_the_kernel_hands_it(self):
+        """The 2026-09-14 read boot's row, fixed: the backend's "sdk-push-session" Thread carries no mark of its own, and the
+        `_stage_marked("push.session")` wrapper the kernel puts on `_push_session_now` at the hand-off (the census pins the two
+        sites) marks the call for its length, so the row lands under push.session; the thread's previous mark is restored after."""
+        seen, delta = self._push_through_the_backend(lambda fn: km._stage_marked("push.session")(fn))
+        self.assertEqual(seen, ["push.session"], seen)
+        self.assertEqual(list(delta), ["push.session:_push_session_now"], delta)
+
+    def test_the_backends_push_thread_reads_none_when_the_callable_is_handed_bare(self):
+        """The read boot's face at the base: handed bare, the same callable on the same backend thread builds under `none:`,
+        which is why the mark rides the hand-off and no census of the kernel's own Thread lines could see it."""
+        seen, delta = self._push_through_the_backend(lambda fn: fn)
+        self.assertEqual(seen, [None], seen)
+        self.assertEqual(list(delta), ["none:_push_session_now"], delta)
 
     def test_an_unmarked_threads_build_reads_none_the_read_boots_face(self):
         delta = self._build_on(lambda build: build())
