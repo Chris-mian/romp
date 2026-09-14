@@ -1,31 +1,8 @@
-#!/usr/bin/env python3
-"""T366 (the user 2026-09-12): the chat's "live updates are paused" strip appeared while they scrolled DOWN toward
-the bottom of a live session. The landing audit named the pass behind it: a NAVIGATION frame (a card's or a lane's,
-carrying a message's uuid and its time far back in history) whose window reply landed in the middle of a flick, so the
-jump read as the scroll pausing the page; two page requests later the reader reached the tail and the strip went away.
-Two things follow. The strip now names such a detach ("Showing the message from <clock> you opened; live updates are
-paused") instead of the plain sentence. And the one window ask that is NO navigation, the re-land of the reader's own
-row across a rebuild, which would produce the same landing with nothing to name, is refused: it never detaches an
-attached reader. Whether a landing that arrives after the reader has scrolled since the click should still land is
-held for the user.
-
-The served guard drives the real /chat page over a transcript longer than the wire tail (older history stays on the
-server) and lands proto-2 window frames on it through window.postMessage, the kernel's own frame shape:
-
-  1. a reader attached to the live run, scrolled above the bottom, receives a window NOBODY navigated to (no
-     request of theirs is in flight) whose verdict would detach: the window is not adopted, no strip shows, the
-     resident tail stays on screen, and the client asks the kernel to re-base it on the tail (needFull, reattach).
-     Red on main: the window replaced the run and the strip showed.
-  2. the same page when the reader DID navigate (a focus frame with an anchor and its time into history the page does
-     not hold, a card's road): the client asks for the window, the reply lands and detaches, and the strip names the
-     jump and the opened message's time instead of the plain sentence: the rule refuses only the window nobody asked
-     for.
-  3. a one-write jump to the top of the resident run asks for older history exactly once, and the downward flick that
-     follows asks for none: the direction is the reader's own gesture, never the page's compensating write (verifier
-     medium 2: the re-window's write read as downward and refused the ask the base always made).
-
-Skips LOUDLY without the extension deps or a Playwright browser (CI installs none); the executed rules and the
-wiring pins ride ui/webview/chat-window.test.ts. All fixtures synthetic.
+"""The served WINDOW LAB base (T366; T386 stage 2): a hermetic kernel over a synthetic transcript long enough that older history
+stays on the server and the page's run is a tail, driven by Playwright through the driver head below (DRIVER_HEAD: the pad, sentOf,
+state and frame hooks). The regions labs (test_history_regions_browser.py, test_landing_notice_browser.py)
+build on WindowLab; this module holds no tests of its own since stage 2 retired the paused strip and the detached client (the tail
+run is always resident and live, so no window ever pauses live updates: plans/chat-history-regions.md Part B).
 """
 import json
 import os
@@ -53,6 +30,10 @@ TURNS = 320   # 640 events: past the wire tail, so older history stays on the se
 TOOL_TURN = 40   # the turn whose reply opens with four tool calls and ends with the words (T386's card-anchor road)
 TOOL_TURN_TEXT = ("The four checks passed. Two questions for you: which bound do we keep for the retry curve, "
                   "and do we drop the second plot?")
+AUQ_TURN = 100   # the turn whose reply asks the user a question and gets its answer (AskUserQuestion): the page anchors that row on
+                 # the ANSWER's uuid, a tool_result line no event carries as its own uuid (T386 stage 2, round six: the fill's anchor road)
+AUQ_RESULT_UUID = "66666666-7777-8888-9999-%012d" % (2 * AUQ_TURN)
+AUQ_QUESTION = "Which bound do we keep for the retry curve?"
 
 
 def _free_port():
@@ -82,21 +63,36 @@ await page.addInitScript(() => {
     return send.call(this, d);
   };
 });
+const pageEvents = [];   // the page's own errors, printed with a boot that fails (a lab's red should name the page's fault, not a bare timeout)
+page.on("pageerror", (e) => pageEvents.push("pageerror:" + String(e).slice(0, 300)));
+page.on("console", (m) => { if (m.type() === "error") pageEvents.push("console:" + m.text().slice(0, 300)); });
+await page.addInitScript(() => {   // the session frames the page receives, for a boot that stalls: how many events each carried, and its tail start
+  window.__bootFrames = [];
+  window.addEventListener("message", (e) => { const m = e.data; if (m && (m.type === "session" || m.type === "chatTail" || m.type === "chatWindow" || m.type === "chatTurns")) window.__bootFrames.push({ type: m.type, id: String(m.id || "").slice(0, 8), n: Array.isArray(m.events) ? m.events.length : null, tailLo: m.tailLo, headKnown: m.headKnown, skeleton: m.skeleton, proto: m.proto, first: m.firstUuid, last: m.lastUuid, keys: Object.keys(m).slice(0, 14), source: e.source === window ? "page" : "socket" }); });
+});
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-await page.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 40, null, { timeout: 30000 });
+try { await page.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 40, null, { timeout: 30000 }); }
+catch (e) {
+  const seen = await page.evaluate(() => ({ turns: document.querySelectorAll("#content .turn[data-uuid]").length, units: document.querySelectorAll("#content [data-unit]").length, gaps: document.querySelectorAll("#content .tx-gap").length, regions: typeof window.__rompRegions === "function" ? window.__rompRegions() : null, sh: (document.getElementById("content") || {}).scrollHeight, frames: (window.__bootFrames || []).slice(0, 12), sent: (window.__sent || []).slice(0, 16).map((m) => m.type + (m.why ? ":" + m.why : "")) })).catch(() => null);
+  console.error("boot did not reach forty rows: " + JSON.stringify(seen) + " page events: " + JSON.stringify(pageEvents.slice(0, 6)));
+  throw e;
+}
 await page.waitForTimeout(500);
 const state = () => page.evaluate(() => {
   const c = document.getElementById("content");
-  const strip = document.getElementById("live-paused");
+  const notice = document.querySelector(".tx-landing-notice");   // the ONE landing notice (T386 stage 2); the paused strip is retired
   // the run's rendered EVENT turns: a notice unit at the tail (an api-error note) carries a word, not a uuid
   const turns = Array.from(document.querySelectorAll("#content .turn[data-uuid]")).filter((t) => /^[0-9a-f-]{36}$/.test(t.dataset.uuid));
   return { top: c.scrollTop, sh: c.scrollHeight, ch: c.clientHeight,
            atBottom: c.scrollHeight - c.scrollTop - c.clientHeight <= 2,
-           strip: !!strip && !strip.hidden && getComputedStyle(strip).display !== "none",   // fixed-position: no offsetParent to read
+           strip: !!document.getElementById("live-paused"),   // must stay absent: no window ever pauses live updates (T386 stage 2)
+           notice: !!notice && getComputedStyle(notice).display !== "none", noticeText: notice ? notice.textContent : "",
+           gaps: Array.from(document.querySelectorAll("#content .tx-gap")).map((g) => ({ lo: Number(g.dataset.lo), hi: Number(g.dataset.hi), h: g.offsetHeight, loading: g.classList.contains("tx-gap-loading") })),
            firstUuid: turns.length ? turns[0].dataset.uuid : null, lastUuid: turns.length ? turns[turns.length - 1].dataset.uuid : null,
            turns: turns.length,
-           sent: window.__sent.map((m) => m.type + (m.why ? ":" + m.why : "") + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") + (m.what === "windowask" && m.data ? ":nav=" + m.data.nav + ":reland=" + m.data.reland : "") : "")) };
+           frames: (window.__bootFrames || []).slice(-8),   // the last frames the page received (type, id, event count, tail start, source)
+           sent: window.__sent.map((m) => m.type + (m.why ? ":" + m.why : "") + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") + (m.what === "regionask" && m.data ? ":nav=" + m.data.nav + ":reland=" + m.data.reland : "") : "")) };
 });
 const sentOf = (type) => page.evaluate((t) => window.__sent.filter((m) => m.type === t).length, type);
 const boot = await state();
@@ -110,61 +106,6 @@ const older = (k0, k1) => Array.from({ length: k1 - k0 }, (_, i) => k0 + i).flat
 """
 
 # road 1 and road 2 in one page: the unasked window first (the reader attached, above the bottom), then the deep link
-DRIVER_LANDING = DRIVER_HEAD + r"""
-// the reader scrolls up a screen and a half: attached (nothing asked), above the bottom
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop - Math.round(c.clientHeight * 1.5); });
-await page.waitForTimeout(400);
-const before = await state();
-const olderAsksBefore = await sentOf("loadOlder");
-const fullBefore = await sentOf("needFull");
-// a window NOBODY asked for lands: the kernel's frame shape, a verdict that would detach (nothing of the run in it,
-// more after it, not connected to the client's base); sixty turns, so an adopted window overflows the viewport and no
-// edge check walks it back to the tail on its own
-await page.evaluate((frame) => window.postMessage(frame, "*"), {
-  type: "chatWindow", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 60), events: older(30, 90),
-  moreBefore: true, moreAfter: true, connected: false });
-await page.waitForTimeout(800);
-const after = await state();
-const fullAfter = await sentOf("needFull");
-const reattach = await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length);
-// road 2: the reader NAVIGATES into history the page does not hold (a focus frame with an anchor kind, the deep-link
-// road): the page asks for a window around it and the kernel's reply lands
-const deep = cfg.deepUuid;
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep, anchorT: cfg.deepT });
-try { await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep, { timeout: 20000 }); }
-catch (e) { const st = await state(); console.error("the deep link never landed: " + JSON.stringify(st)); process.exit(1); }
-await page.waitForTimeout(600);
-const navigated = await state();
-navigated.stripText = await page.evaluate(() => (document.querySelector("#live-paused .live-paused-text") || {}).textContent || "");
-const windowAsks = await sentOf("loadAround");
-if (cfg.shots) await page.screenshot({ path: cfg.shots + "-landing.png" });
-fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, before, after, navigated, olderAsksBefore, fullBefore, fullAfter, reattach, windowAsks }) + "\n");
-await browser.close();
-process.exit(0);
-"""
-
-# road 3: a fast downward flick from the top band of the resident run
-DRIVER_FLICK = DRIVER_HEAD + r"""
-// to the top band of the resident run in ONE write (an upward move: the one older ask it may make is allowed), then
-// wait for that ask's reply to settle the view
-const olderAtBoot = await sentOf("loadOlder");
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
-await page.waitForTimeout(1500);
-const settled = await state();
-const olderAfterUp = await sentOf("loadOlder");
-// the flick DOWN: forty wheel steps over the transcript, each a downward move, from wherever the reply left the reader
-const box = await page.evaluate(() => { const r = document.getElementById("content").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
-await page.mouse.move(box.x, box.y);
-for (let i = 0; i < 40; i++) { await page.mouse.wheel(0, 240); await page.waitForTimeout(16); }
-await page.waitForTimeout(600);
-const flicked = await state();
-const olderAfterDown = await sentOf("loadOlder");
-fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, flicked, olderDuringJump: olderAfterUp - olderAtBoot, olderDuringFlick: olderAfterDown - olderAfterUp }) + "\n");
-await browser.close();
-process.exit(0);
-"""
-
-
 class WindowLab(unittest.TestCase):
     """The boot: a hermetic kernel over a synthetic transcript longer than the wire tail, the real /chat page served
     from a copy of the built bundle. Subclassed by this module's tests and by the landing lab (T386,
@@ -172,13 +113,19 @@ class WindowLab(unittest.TestCase):
     maxDiff = None
 
     @classmethod
+    def _skip(cls, why):
+        if os.environ.get("ROMP_SERVED_TESTS_REQUIRE") == "1":
+            raise AssertionError("ROMP_SERVED_TESTS_REQUIRE=1 but the served lab could not run: " + why)
+        raise unittest.SkipTest(why)
+
+    @classmethod
     def setUpClass(cls):
         if not os.path.isdir(os.path.join(EXT, "node_modules", "playwright")):
-            raise unittest.SkipTest("extension deps absent (npm ci not run here) — the served guard needs them")
+            cls._skip("extension deps absent (npm ci not run here) — the served guard needs them")
         cls.lab = tempfile.mkdtemp(prefix="live-paused-window-")
         b = subprocess.run(["node", "esbuild.js"], cwd=EXT, capture_output=True, text=True)
         if b.returncode != 0:
-            raise unittest.SkipTest("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
+            cls._skip("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
         dist = os.path.join(cls.lab, "dist")
         copy_dist(os.path.join(EXT, "dist"), dist)
         cls.state = os.path.join(cls.lab, "xdg", "romp")
@@ -222,6 +169,22 @@ class WindowLab(unittest.TestCase):
                                  "toolUseResult": {"stdout": "ok", "stderr": "", "interrupted": False, "isImage": False}})
                     pa = tru
                 text = TOOL_TURN_TEXT
+            if k == AUQ_TURN:
+                # one turn whose reply asks the user a question, answered: the answer is a tool_result line whose uuid the kernel
+                # files on the tool event as resultUuid, and the page anchors the row on it (the timeline's deep-link anchor)
+                tu_id = "toolu_auq_%03d" % k
+                tuu = "44444444-5555-6666-7777-%012d" % (10 * k)
+                recs.append({"type": "assistant", "uuid": tuu, "parentUuid": pa, "timestamp": ta, "sessionId": SID,
+                             "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "tool_use",
+                                         "content": [{"type": "tool_use", "id": tu_id, "name": "AskUserQuestion",
+                                                      "input": {"questions": [{"question": AUQ_QUESTION, "header": "Bound", "multiSelect": False,
+                                                                               "options": [{"label": "upper", "description": "the upper bound"},
+                                                                                           {"label": "lower", "description": "the lower bound"}]}]}}]}})
+                recs.append({"type": "user", "uuid": AUQ_RESULT_UUID, "parentUuid": tuu, "timestamp": ta, "sessionId": SID,
+                             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tu_id, "content": "User answered: upper"}]},
+                             "toolUseResult": {"questions": [{"question": AUQ_QUESTION}], "answers": {AUQ_QUESTION: "upper"}}})
+                pa = AUQ_RESULT_UUID
+                text = "Upper it is: the retry curve keeps its upper bound."
             recs.append({"type": "assistant", "uuid": a, "parentUuid": pa, "timestamp": ta, "sessionId": SID,
                          "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn",
                                      "content": [{"type": "text", "text": text}]}})
@@ -233,6 +196,7 @@ class WindowLab(unittest.TestCase):
         cls.tool_uuid = "44444444-5555-6666-7777-%012d" % (10 * TOOL_TURN)   # the tool turn's FIRST atom: a card's anchor (T386)
         cls.tool_t = base + 2 * TOOL_TURN + 1
         cls.tool_quote = "which bound do we keep for the retry curve"
+        cls.auq_result_uuid = AUQ_RESULT_UUID                     # the answered question's row anchor (round six)
         cls.base = base
         cls.port = _free_port()
         cls.token = "testtok-livepaused"
@@ -249,7 +213,7 @@ class WindowLab(unittest.TestCase):
                 time.sleep(0.5)
         else:
             cls.kernel.kill()
-            raise unittest.SkipTest("hermetic kernel never served /healthz here")
+            cls._skip("hermetic kernel never served /healthz here")
 
     @classmethod
     def tearDownClass(cls):
@@ -271,39 +235,22 @@ class WindowLab(unittest.TestCase):
         p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=240,
                            env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
         if p.returncode == 3:
+            if os.environ.get("ROMP_SERVED_TESTS_REQUIRE") == "1":
+                raise AssertionError("ROMP_SERVED_TESTS_REQUIRE=1 but no playwright browser to run the served lab")
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
-        self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:])
+        klog = ""
+        try:
+            with open(self.klog) as f:
+                klog = f.read()[-2500:]
+        except OSError:
+            pass
+        self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + klog)
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
-        return json.loads(line[len("RESULT:"):])
-
-
-class ServedWindowLanding(WindowLab):
-    def test_a_window_nobody_asked_for_never_detaches_an_attached_reader_and_a_deep_link_still_lands(self):
-        r = self._drive(DRIVER_LANDING, "landing")
-        print("RESULT:" + json.dumps(r), file=sys.stderr)   # the whole measurement rides a failure's captured stderr
-        before, after, nav = r["before"], r["after"], r["navigated"]
-        self.assertFalse(before["strip"], "attached before the window: no strip: %r" % before)
-        self.assertFalse(before["atBottom"], "the reader is above the bottom: %r" % before)
-        # road 1: the unasked window
-        self.assertFalse(after["strip"], "a window nobody asked for showed the paused strip: %r" % after)
-        self.assertEqual(after["lastUuid"], before["lastUuid"], "the resident tail left the screen: %r → %r" % (before["lastUuid"], after["lastUuid"]))
-        self.assertNotEqual(after["firstUuid"], "11111111-2222-3333-4444-%012d" % 60, "the window's events were adopted: %r" % after)
-        self.assertEqual(after["turns"], before["turns"], "the rendered run changed under the reader: %r" % after)
-        self.assertGreaterEqual(r["reattach"], 1, "the kernel was not asked to re-base this client on the tail (needFull reattach): %r" % after["sent"])
-        self.assertEqual(r["fullAfter"] - r["fullBefore"], r["reattach"], "the only full ask the window caused is the re-attach: %r" % after["sent"])
-        # road 2: the reader's own navigation lands, detaches and says so
-        self.assertGreaterEqual(r["windowAsks"], 1, "the deep link asked for no window: %r" % nav["sent"])
-        self.assertTrue(nav["strip"], "a window the reader navigated to must land and show the strip: %r" % nav)
-        self.assertTrue(nav["stripText"].startswith("Showing the message from ") and nav["stripText"].endswith(" you opened; live updates are paused."),
-                        "the strip names the navigation and the opened message's time: %r" % nav["stripText"])
-
-    def test_a_jump_to_the_top_asks_once_and_the_downward_flick_asks_for_no_older_history(self):
-        r = self._drive(DRIVER_FLICK, "flick")
-        print("RESULT:" + json.dumps(r), file=sys.stderr)
-        self.assertEqual(r["olderDuringJump"], 1, "a one-write jump to the top asks once at the head, as the base did: %r" % r)
-        self.assertEqual(r["olderDuringFlick"], 0, "the downward flick asked for older history: %r" % r)
-        self.assertGreater(r["flicked"]["top"], r["settled"]["top"], "the flick moved down: %r" % r)
+        r = json.loads(line[len("RESULT:"):])
+        if isinstance(r, dict):
+            r["_klog"] = klog[-1500:]   # the kernel's own words for the run, beside the measure (a passing run's log is otherwise lost with the lab dir)
+        return r
 
 
 if __name__ == "__main__":

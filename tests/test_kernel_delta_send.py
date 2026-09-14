@@ -168,12 +168,11 @@ class RenderHandlesTheTail(unittest.TestCase):
         # transcript keeps the resident window instead (T249b, frame-merge.ts)
         self.assertIn("headFrom: kept && prev ? prev.headFrom : (msg.headFrom ?? 0),", r)
         # scroll to the top of the resident tail with older on the server → request the previous chunk
-        self.assertIn('const before = s.proto === 2 ? s.firstUuid : s.headFrom;', r)   # T402 round five: the ask's key, recorded for its reply
-        self.assertIn('vscodeApi?.postMessage({ type: "loadOlder", id: sid, before });', r)
+        self.assertIn('vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });', r)
         # …only on an upward or unchanged move of the view (T366: a downward flick inside the estimate's top band never asks)
         self.assertIn("if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);", r)
         self.assertIn("const upward = v.edgeUp !== false;", r)
-        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward && !olderLatched(activeId)) { requestOlder(", r)   # T402 round three: a pill click's cancel latches the edge until the reader's own move
+        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(", r)
         # chatHead PREPENDS the chunk + lowers headFrom + re-anchors
         self.assertIn('else if (m.type === "chatHead") chatHead(m);', r)
         self.assertIn("if (older.length) s.events = older.concat(s.events);", r)

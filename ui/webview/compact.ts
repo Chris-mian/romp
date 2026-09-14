@@ -26,7 +26,8 @@ export function isFoldableNoticeShape(ev: { kind: string; interruptMarker?: unkn
 export type DisplayItem =
   | { kind: "event"; index: number }            // a pass-through event, by its index in the source array
   | { kind: "toolgroup"; indices: number[] }    // a collapsed run of ≥2 consecutive tool uses (a lone tool is an "event")
-  | { kind: "noticegroup"; indices: number[] }; // a collapsed run of ≥2 consecutive foldable notices (was the "retried"-only retrygroup)
+  | { kind: "noticegroup"; indices: number[] }  // a collapsed run of ≥2 consecutive foldable notices (was the "retried"-only retrygroup)
+  | { kind: "gap"; lo: number; hi: number; before: number };   // turns [lo, hi) the page does not hold (T386 stage 2): empty space before event `before`
 
 // Tools that are an EXCEPTION to collapsing: they render FIRST-CLASS even in compact mode, never swept
 // into a toolgroup (the user 2026-06-17). AskUserQuestion is the "↳ You answered Claude's question" box —
@@ -82,6 +83,7 @@ export function compactDisplay(kinds: readonly string[], names?: readonly (strin
  *  `epochAt(i)` is event i's epoch or null. */
 export function itemAnchor(it: DisplayItem, epochAt: (i: number) => number | null): number {
   if (it.kind === "event") return it.index;
+  if (it.kind === "gap") return it.before;   // a gap has no member: the event below it stands for its place
   if (it.kind === "toolgroup") return it.indices[0];
   let best = it.indices[0], bestEp: number | null = null;
   for (const i of it.indices) {

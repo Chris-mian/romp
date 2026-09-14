@@ -114,7 +114,7 @@ test("the kernel's never-delivered verdict ends the entry — its bubble carries
 
 test("a connection drop marks unconfirmed sends 'not confirmed' — an event, and reversible by a confirmation", () => {
   assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => markPendingLost\("connection"\)\);/);
-  assert.match(RENDER, /if \(m\.type === "pipeState"\) \{ if \(!m\.up\) \{ markPendingLost\("connection"\); onPipeDown\(\); \}/,
+  assert.match(RENDER, /if \(m\.type === "pipeState"\) \{ if \(!m\.up\) \{ markPendingLost\("connection"\); onWireDown\(\); \}/,
     "the VS Code pipe's down edge too — it never fires romp:wsdown");
   assert.match(RENDER, /function markPendingLost\(why: string\): void \{[\s\S]{0,600}?for \(const p of list\) if \(!p\.lost && !p\.received\) \{ p\.lost = why; changed = true; \}/);
   // the bubble says so, in the bare group's own label and on the bubble; ✕ stays the way back

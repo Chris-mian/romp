@@ -89,7 +89,7 @@ test("every non-tool event owns exactly one display unit — the scroll-mark tra
   const seen = new Map<number, number>();
   items.forEach((it, u) => {
     if (it.kind === "toolgroup" || it.kind === "noticegroup") for (const i of it.indices) seen.set(i, u);   // noticegroup since 2026-09-08
-    else seen.set(it.index, u);
+    else if (it.kind === "event") seen.set(it.index, u);
   });
   for (let i = 0; i < kinds.length; i++) {
     assert.ok(seen.has(i), "event " + i + " (" + kinds[i] + ") maps to a unit");

@@ -71,15 +71,16 @@ await page.waitForFunction(() => document.querySelectorAll("#content .turn[data-
 await page.waitForTimeout(500);
 const state = () => page.evaluate(() => {
   const c = document.getElementById("content");
-  const strip = document.getElementById("live-paused");
+  const notice = document.querySelector(".tx-landing-notice");   // the ONE landing notice (T386 stage 2); the paused strip is gone
   // the run's rendered EVENT turns: a notice unit at the tail (an api-error note) carries a word, not a uuid
   const turns = Array.from(document.querySelectorAll("#content .turn[data-uuid]")).filter((t) => /^[0-9a-f-]{36}$/.test(t.dataset.uuid));
   return { top: c.scrollTop, sh: c.scrollHeight, ch: c.clientHeight,
            atBottom: c.scrollHeight - c.scrollTop - c.clientHeight <= 2,
-           strip: !!strip && !strip.hidden && getComputedStyle(strip).display !== "none",   // fixed-position: no offsetParent to read
+           strip: !!document.getElementById("live-paused"),   // must stay absent: no window ever pauses live updates (T386 stage 2)
+           notice: !!notice && getComputedStyle(notice).display !== "none",
            firstUuid: turns.length ? turns[0].dataset.uuid : null, lastUuid: turns.length ? turns[turns.length - 1].dataset.uuid : null,
            turns: turns.length,
-           sent: window.__sent.map((m) => m.type + (m.why ? ":" + m.why : "") + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") + (m.what === "windowask" && m.data ? ":nav=" + m.data.nav + ":reland=" + m.data.reland : "") : "")) };
+           sent: window.__sent.map((m) => m.type + (m.why ? ":" + m.why : "") + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") + (m.what === "regionask" && m.data ? ":nav=" + m.data.nav + ":reland=" + m.data.reland : "") : "")) };
 });
 const sentOf = (type) => page.evaluate((t) => window.__sent.filter((m) => m.type === t).length, type);
 const boot = await state();
@@ -93,16 +94,19 @@ const older = (k0, k1) => Array.from({ length: k1 - k0 }, (_, i) => k0 + i).flat
 """
 
 
-# the verifier's road: two older fetches (a walk toward the transcript head), a settle MID-run, a persist through the shell's
-# hook, a reload; the saved row must be back on screen through one window ask
+# the verifier's road: the head page filled into place (T386 stage 2: the gap asks for its page when its edge meets the viewport), a
+# settle MID-run on one of its rows, a persist through the shell's hook, a reload; the saved row must be back on screen through one
+# window ask (the reload's restore is a navigation: the one notice shows for the ask and is gone at the landing)
 DRIVER_RESTORE = DRIVER_HEAD + r"""
-const olderAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadOlder").length >= k, n, { timeout: 20000 });
+// T386 stage 2: older history is a GAP the page asks for by page (loadTurns) when its edge meets the viewport; a jump to scrollTop 1 meets the
+// head gap's top edge and asks for the head page, which fills in place and becomes a run from turn 0
+const pagesAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadTurns").length >= k, n, { timeout: 20000 }).catch(() => {});   // bounded: at the base nothing asks by page, and the road runs on to its own red
+const headFilled = () => page.waitForFunction(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return !!rs && rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 15000 }).catch(() => {});
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
-await olderAt(1); await page.waitForTimeout(800);
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
-await olderAt(2); await page.waitForTimeout(800);
-// settle mid-run: three screens below the head, off the top band, on a row far above the tail window a fresh page holds
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.clientHeight * 3; });
+await pagesAt(1); await headFilled();
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+// settle mid-run: one screen below the head, off the top band, on a row of the head page, far above the tail a fresh page holds
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.clientHeight; });
 await page.waitForTimeout(600);
 const settled = await state();
 const savedRow = await page.evaluate(() => {
@@ -124,6 +128,7 @@ try {
 await page.waitForTimeout(500);
 const reloaded = await state();
 reloaded.landed = landed;
+reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));   // the landing trail: which branch the restore took (round eight, CI diagnostics)
 reloaded.saved = saved;
 reloaded.savedRow = savedRow;
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
@@ -133,14 +138,16 @@ process.exit(0);
 """
 
 
-# the verifier's second road (T366 round two): a reader walked to the transcript HEAD over two older fetches, persisted through
-# the shell's hook and reloaded lands back on their saved row at offset 0, through one window ask, with the plain strip
+# the verifier's second road (T366 round two; T386 stage 2): a reader at the transcript HEAD (its page filled into place), persisted
+# through the shell's hook and reloaded lands back on their saved row at offset 0, through one window ask, and nothing pauses
 DRIVER_RESTORE_HEAD = DRIVER_HEAD + r"""
-const olderAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadOlder").length >= k, n, { timeout: 20000 });
+// T386 stage 2: older history is a GAP the page asks for by page (loadTurns) when its edge meets the viewport; a jump to scrollTop 1 meets the
+// head gap's top edge and asks for the head page, which fills in place and becomes a run from turn 0
+const pagesAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadTurns").length >= k, n, { timeout: 20000 }).catch(() => {});   // bounded: at the base nothing asks by page, and the road runs on to its own red
+const headFilled = () => page.waitForFunction(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return !!rs && rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 15000 }).catch(() => {});
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
-await olderAt(1); await page.waitForTimeout(800);
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
-await olderAt(2); await page.waitForTimeout(800);
+await pagesAt(1); await headFilled();
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
 await page.waitForTimeout(600);
 const atHead = await state();
@@ -162,10 +169,61 @@ try {
 await page.waitForTimeout(500);
 const reloaded = await state();
 reloaded.landed = landed;
+reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));   // the landing trail: which branch the restore took (round eight, CI diagnostics)
 reloaded.savedRow = savedRow;
-reloaded.stripText = await page.evaluate(() => (document.querySelector("#live-paused .live-paused-text") || {}).textContent || "");
+reloaded.stripText = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return n ? n.textContent : ""; });
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
 fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, atHead, reloaded }) + "\n");
+await browser.close();
+process.exit(0);
+"""
+
+
+DRIVER_RESTORE_LATEREADY = DRIVER_HEAD + r"""
+// T386 stage 2: older history is a GAP the page asks for by page (loadTurns) when its edge meets the viewport; a jump to scrollTop 1 meets the
+// head gap's top edge and asks for the head page, which fills in place and becomes a run from turn 0
+const pagesAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadTurns").length >= k, n, { timeout: 20000 }).catch(() => {});   // bounded: at the base nothing asks by page, and the road runs on to its own red
+const headFilled = () => page.waitForFunction(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return !!rs && rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 15000 }).catch(() => {});
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
+await pagesAt(1); await headFilled();
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+// settle mid-run: one screen below the head, off the top band, on a row of the head page, far above the tail a fresh page holds
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.clientHeight; });
+await page.waitForTimeout(600);
+const settled = await state();
+const savedRow = await page.evaluate(() => {
+  const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top;
+  for (const t of Array.from(c.querySelectorAll(".turn[data-uuid]"))) { const r = t.getBoundingClientRect(); if (r.bottom > cTop + 1) return { uuid: t.dataset.uuid, y: r.top - cTop }; }
+  return null;
+});
+await page.evaluate(() => window.__rompPersistForReload());
+const saved = await page.evaluate(() => { const raw = sessionStorage.getItem("romp:reloadScroll"); return raw ? JSON.parse(raw) : null; });
+// the verifier's road (round eleven): the page's own `ready` is DELAYED three seconds at the socket (an init script wraps send before the
+// page's scripts run; a flag in sessionStorage survives the reload), so the kernel serves an INDEX frame to the client before its ready
+// and the reload restore's first frame is proto-less. The restore must land the same way as the fast case: through one window ask
+// once the kernel has answered the ready, never through the older wire.
+await page.evaluate(() => sessionStorage.setItem("lab:delayReady", "1"));
+await page.addInitScript(() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type === "ready" && sessionStorage.getItem("lab:delayReady") === "1") { const ws = this; window.__readyDelayed = (window.__readyDelayed || 0) + 1; setTimeout(() => { try { send.call(ws, d); } catch (e) { /* the socket closed */ } }, 3000); return; } } catch (e) { /* not a frame */ } return send.call(this, d); }; });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await page.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 40, null, { timeout: 30000 });
+const early = { delayed: await page.evaluate(() => window.__readyDelayed || 0), trail: await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null)), asks: await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, ready: window.__sent.filter((m) => m.type === "ready").length })) };
+let landed = false;
+try {
+  await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false;
+    const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, savedRow ? savedRow.uuid : "none", { timeout: 20000 });
+  landed = true;
+} catch (e) { landed = false; }
+await page.waitForTimeout(500);
+await page.evaluate(() => sessionStorage.removeItem("lab:delayReady"));
+const reloaded = await state();
+reloaded.landed = landed;
+reloaded.early = early;
+reloaded.saved = saved;
+reloaded.savedRow = savedRow;
+reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));
+reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length, ready: window.__sent.filter((m) => m.type === "ready").length }));
+fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -269,15 +327,28 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
         self.assertEqual(rl["asks"]["loadAround"], 1, "the row outside the fresh window is fetched through ONE window ask: %r" % rl["asks"])
         self.assertEqual(rl["asks"]["needFull"], 0, "no forced re-attach: %r" % rl["asks"])
 
-    def test_a_reload_from_the_transcript_head_lands_the_saved_row_at_offset_zero_with_the_plain_strip(self):
+    def test_a_reload_whose_ready_loses_the_race_to_the_kernels_push_still_lands_through_one_window_ask(self):
+        # round eleven, the verifier's road: the page's ready delayed three seconds at the socket, so the kernel serves an index frame first
+        # (proto absent); the restore must wait for the kernel's answer to the ready and land the saved row through ONE window ask, as the
+        # fast case does, never through the older wire (the mid-run red on CI: a reload-restore write, then loadOlder, loadAround 0)
+        r = self._drive(DRIVER_RESTORE_LATEREADY, "restore-lateready")
+        rl = r["reloaded"]
+        self.assertIsNotNone(rl["savedRow"], "a row sat under the viewport top when the page was persisted")
+        self.assertGreaterEqual(rl["early"]["delayed"], 1, "the page's ready was parked for three seconds: %r" % rl["early"])
+        self.assertTrue(rl["landed"], "the saved row is back on screen: %r" % {k: rl[k] for k in ("top", "asks", "trail")})
+        self.assertEqual(rl["asks"]["loadAround"], 1, "the row outside the fresh window is fetched through ONE window ask, as in the fast case: %r (trail %r)" % (rl["asks"], rl["trail"]))
+        self.assertEqual(rl["asks"]["loadOlder"], 0, "…never through the older wire: %r (trail %r)" % (rl["asks"], rl["trail"]))
+        self.assertEqual(rl["early"]["asks"]["loadOlder"], 0, "no older ask went out while the ready was parked (the kernel serves no chat frame before the handshake): %r" % rl["early"])
+
+    def test_a_reload_from_the_transcript_head_lands_the_saved_row_at_offset_zero_and_pauses_nothing(self):
         r = self._drive(DRIVER_RESTORE_HEAD, "restore-head")
         print("RESULT:" + json.dumps(r), file=sys.stderr)
         rl = r["reloaded"]
         self.assertIsNotNone(rl["savedRow"], "a row sat at the viewport top before the reload: %r" % r["atHead"])
         self.assertTrue(rl["landed"], "the saved row is not back at offset 0 after the reload: %r" % {k: rl[k] for k in ("top", "sh", "asks", "strip", "stripText")})
         self.assertEqual(rl["asks"], {"loadAround": 1, "needFull": 0}, "one window ask for the row, no forced re-attach: %r" % rl["asks"])
-        self.assertTrue(rl["strip"], "restored into older history: the strip shows: %r" % rl)
-        self.assertEqual(rl["stripText"], "Live updates are paused while you read older history.", "a restore is no click: the plain sentence: %r" % rl["stripText"])
+        self.assertFalse(rl["strip"], "the paused strip is retired: a reader restored into older history keeps live updates (T386 stage 2): %r" % rl)
+        self.assertFalse(rl["notice"], "the landing notice is gone once the saved row landed: %r" % rl)
 
 
 if __name__ == "__main__":

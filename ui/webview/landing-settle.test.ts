@@ -73,7 +73,7 @@ test("the census names every writer render.ts gives the write family, and nothin
   for (const w of c.literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
   for (const w of classified) assert.ok(c.literals.includes(w), "a census entry render.ts no longer writes: " + w);
   assert.deepEqual(c.literals, classified, "the census IS the set of writers");
-  assert.equal(classified.length, 24, "the census: 24 writers (round five)");
+  assert.equal(classified.length, 27, "the census: 27 writers (round five; gap-fill, land-guess and land-cancel joined with the history regions, T386 stage 2)");
   assert.deepEqual(LS.WRITER_WRAPPERS, { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 });
 });
 
@@ -121,8 +121,7 @@ test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's 
   assert.match(RENDER, /window\.addEventListener\("blur", \(\) => \{ settleScrollerHeld = false; \}\);\s*\n\s*document\.addEventListener\("visibilitychange", \(\) => \{ settleScrollerHeld = false; \}\);/, "the hold ends with the page's focus or visibility (round four, low 1)");
   assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) \{/, "another writer's move during the settle is a sample, so the rule re-lands");
   assert.match(RENDER, /if \(scrolled && landSettling && !landSettling\.done && landTrail\[landTrail\.length - 1\] === "pointer-exact"\) \{ landSettling\.row = row; settleSample\(\); \}[^\n]*\n\s*else vscodeApi\?\.postMessage\(row\);/, "an exact landing's row waits for the settle; every other outcome files at once");
-  assert.match(RENDER, /if \(landSettling && !landSettling\.done\) \{ afterSettle\.push\(\(\) => edgeCheckAfterWindow\(sid\)\); return; \}/, "the walk-forward of a detached window that fits waits for the landing to settle");
-  assert.match(RENDER, /pendingAnchorT = ask\?\.t \?\? null; pendingAnchorKind = ask\?\.kind \?\? null;/, "the click's time and kind ride through the window's adoption");
+  assert.match(RENDER, /pendingAnchorT = ask\.t; pendingAnchorKind = ask\.kind;/, "the click's time and kind ride through the window's adoption");
 });
 
 test("render.ts wiring, round one: the gesture verdict ends the settle by any input; a superseded landing files its row; the clamp is measured", () => {
