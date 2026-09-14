@@ -575,10 +575,11 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    bottom right of every romp page (kernel.py .rail-act and #rail-gear, which strip-chrome.test.ts reads value for value):
    no border, no background at rest, the 19px glyph, the rail's rest colour, its 5px radius and its hover wash. */
 .tab-strip-end { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; }
-.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: 0 0 0 4px; padding: 4px 0; cursor: pointer;
+.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: 1px 4px; padding: 4px 0; cursor: pointer;
   font-size: 19px; line-height: 1; border: 0; border-radius: 5px; background: transparent; color: #8a8a8a; user-select: none;
   transition: color 0.1s, background 0.1s; }
 .tab-widgets-gear:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.tab-widgets-gear:active { transform: scale(0.92); }   /* the rail action's press */
 body.theme-light .tab-widgets-gear { color: var(--dim); }   /* the rail's light rest colour is the light theme's --dim value */
 body.theme-light .tab-widgets-gear:hover { color: var(--fg); background: rgba(0, 0, 0, 0.06); }   /* the rail's light hover: the --fg value on its wash */
 /* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
@@ -4448,7 +4449,7 @@ body.dense-chrome .tab-strip-end { min-height: 25px; }                          
 /* the gear glyph under compact tabs (T405 round two found a 26px button stretching the 25px row: #tabs stretches every item on a
    row to the tallest, and the transcript's top moved a pixel): the 19px glyph with 3px above and below makes the row's 25px
    exactly, no border to count (T412) */
-body.dense-chrome .tab-widgets-gear { padding: 3px 0; }                                 /* 4px 0 */
+body.dense-chrome .tab-widgets-gear { margin: 0 4px; padding: 3px 0; }                  /* 1px 4px; 4px 0: the rail's vertical margin would carry the glyph's box past the 25px row */
 body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }                       /* 5px; 6px 7px — the dense tab's own padding, so the row keeps a tab's box here too (T322) */
 /* the untagged trail's divider (the inline layout, stripGroupRows off): its 1px line is the content area under fixed
    gutters, so the 8px gutters sized for the 32px row would leave a 9px line in the 25px row; 6px keeps the default's

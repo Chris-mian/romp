@@ -86,7 +86,7 @@ const layout = () => page.evaluate(() => {
   const r1 = (v) => Math.round(v * 10) / 10;
   const tabs = Array.from(bar.querySelectorAll(".tab[data-id]")).map((t) => { const r = t.getBoundingClientRect();
     return { id: t.dataset.id, name: (t.querySelector(".tab-label") || t).textContent.trim(), left: r1(r.left - b.left), top: r1(r.top - b.top), w: r1(r.width), h: r1(r.height), draggable: !!t.draggable }; });
-  const end = bar.querySelector(".tab-strip-end") || bar.querySelector(".tab-gearbox");   // T412: one right-end wrapper, the tags button and the gear (the base's gear box as the fallback, so a red run against the base's bundle measures the dress and the places, not a missing class)
+  const end = bar.querySelector(".tab-strip-end");   // T412: one right-end wrapper, the tags button and the gear
   const btn = end && end.querySelector(".tab-widgets-gear");
   const menu = document.querySelector('[data-rows-menu="1"]');
   const rowsOf = (m) => Array.from(m.children).map((r) => ({ label: Array.from(r.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim(), checked: r.getAttribute("aria-checked"), title: r.title, role: r.getAttribute("role"),
@@ -225,7 +225,7 @@ for (const theme of ["dark", "light"]) {
   // compact tabs (round two, the medium): the dense row is 25px, and the gear must stand inside it, not stretch it
   await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150);
   out.themes[theme].dense = await page.evaluate(() => { const h = (el) => el ? el.getBoundingClientRect().height : null;
-    return { tab: h(document.querySelector("#tabs .tab[data-id]")), gear: h(document.querySelector("#tabs .tab-widgets-gear")), end: h(document.querySelector("#tabs .tab-strip-end") || document.querySelector("#tabs .tab-gearbox")),
+    return { tab: h(document.querySelector("#tabs .tab[data-id]")), gear: h(document.querySelector("#tabs .tab-widgets-gear")), end: h(document.querySelector("#tabs .tab-strip-end")),
              tagbox: h(document.querySelector("#tabs .tab-tagbox")), contentTop: document.getElementById("content") ? document.getElementById("content").getBoundingClientRect().top : null }; });
   if (cfg.shots) {
     const dbar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: window.innerWidth, height: Math.min(window.innerHeight - b.top, b.height + 120) }; });
@@ -382,7 +382,8 @@ class ServedTabLock(unittest.TestCase):
         self.assertTrue(s["gear"]["present"], "the strip carries the gear box" + table)
         g = s["gear"]
         self.assertTrue(g["last"], "the last thing on the bar" + table)
-        self.assertLessEqual(g["rightGap"], 2.0, "its right edge is the strip's right edge" + table)
+        self.assertLessEqual(g["endRightGap"], 2.0, "the right-end wrapper is flush with the strip's right edge" + table)
+        self.assertLessEqual(abs(g["rightGap"] - 4), 0.6, "the gear keeps the rail action's 4px from the strip's end, its margin (T412 round two)" + table)
         self.assertGreaterEqual(g["endH"], 31 - 0.5, "the tags box's floor" + table)
         self.assertLessEqual(g["tagBoxH"], g["endH"] + 0.5, "the tags box stands inside the wrapper (which #tabs stretches to the row)" + table)
         self.assertEqual((g["text"], g["svg"]), ("\u26ed", False), "the shell's own glyph, a character, no drawing" + table)
@@ -427,13 +428,6 @@ class ServedTabLock(unittest.TestCase):
             self.assertLessEqual(abs(d["tagbox"] - d["tab"]), 0.6, theme + ": the tags box too" + td)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)
 
-    def test_the_phone_layout_hides_the_strip_with_both_right_end_controls_and_keeps_its_own_tag_mount(self):
-        r = self._run(); p = r["phone"]; tp = "\n  phone=" + json.dumps(p)
-        self.assertTrue(p["phoneLayout"], "the coarse pointer under 1024px is the phone layout" + tp)
-        self.assertFalse(p["stripVisible"], "the kernel's page hides the strip" + tp)
-        self.assertFalse(p["gearVisible"] or p["tagVisible"] or p["endVisible"], "the gear, the tags button and their wrapper go with it (T412)" + tp)
-        self.assertTrue(p["mslot"], "the phone header's own tag mount stands" + tp)
-
     def test_the_gears_menu_offers_the_lock_row_with_the_buttons_two_titles_and_the_tab_widgets_row(self):
         r = self._run(); m = r["pressedMenu"]
         table = "\n  " + json.dumps(m)
@@ -455,6 +449,7 @@ class ServedTabLock(unittest.TestCase):
             self.assertGreaterEqual(p["mslotChips"], 1, "phone: the mount builds its chips (the lens is narrowed to none, one chip says so): " + json.dumps(p))
         self.assertFalse(p["stripVisible"], "the phone page hides the whole strip (T161)" + json.dumps(p))
         self.assertFalse(p["gearVisible"], "so there is no gear to place" + json.dumps(p))
+        self.assertFalse(p["tagVisible"] or p["endVisible"], "nor a tags button or the right-end wrapper: the strip's two right-end controls go with it (T412)" + json.dumps(p))
 
     def test_locked_the_drag_moves_nothing_and_unlocked_the_same_drag_moves_the_tab(self):
         r = self._run()

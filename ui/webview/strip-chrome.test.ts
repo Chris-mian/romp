@@ -83,7 +83,8 @@ test("the strip's right end (T412): the tags button and the gear share one invis
   const railAct = KERNEL.match(/"\.rail-act\{([^"]*)"\s*\n\s*"([^"]*)\}"/);
   assert.ok(railAct, "the kernel's .rail-act rule located");
   const rail = railAct![1] + railAct![2];
-  const railColor = rail.match(/color:(#[0-9a-f]+)/i)![1], railRadius = rail.match(/border-radius:(\d+px)/)![1], railPad = rail.match(/padding:([^;]+);/)![1];
+  const railColor = rail.match(/color:(#[0-9a-f]+)/i)![1], railRadius = rail.match(/border-radius:(\d+px)/)![1], railPad = rail.match(/padding:([^;]+);/)![1], railMargin = rail.match(/margin:([^;]+);/)![1];
+  const railActive = KERNEL.match(/"\.rail-act:active\{transform:(scale\([0-9.]+\))\}"/)![1];
   const railSize = KERNEL.match(/"#rail-gear\{font-size:(\d+px)\}"/)![1];
   const railHover = KERNEL.match(/"\.rail-act:hover\{color:(#[0-9a-f]+);background:(rgba\([^)]*\))\}"/i)!;
   const railLight = KERNEL.match(/"body\.theme-light \.rail-act\{color:(#[0-9A-Fa-f]+)\}"/)!, railLightHover = KERNEL.match(/"body\.theme-light \.rail-act:hover\{color:(#[0-9A-Fa-f]+);background:(rgba\([^)]*\))\}"/)!;
@@ -91,6 +92,8 @@ test("the strip's right end (T412): the tags button and the gear share one invis
   assert.match(gear, new RegExp("font-size: " + railSize + ";"), "the rail gear's glyph size");
   assert.match(gear, /line-height: 1;/); assert.match(gear, new RegExp("padding: " + railPad.replace(/(\d+)px/g, "$1px").replace(" ", " ") + ";"), "the rail action's padding");
   assert.match(gear, /border: 0;/); assert.match(gear, /background: transparent;/); assert.match(gear, new RegExp("border-radius: " + railRadius + ";"));
+  assert.match(gear, new RegExp("margin: " + railMargin + ";"), "the rail action's margin, 4px from its bar's end (round two, low 1)");
+  assert.match(CSS, new RegExp("\\n\\.tab-widgets-gear:active \\{ transform: " + railActive.replace(/[()]/g, "\\$&") + "; \\}"), "the rail action's press");
   assert.match(gear, new RegExp("color: " + railColor + ";"), "the rail action's rest colour, the same literal");
   assert.doesNotMatch(gear, /var\(--card-border\)|var\(--dim\)/, "no card border, no dim token: the rail's own values");
   const hover = CSS.match(/\n\.tab-widgets-gear:hover \{[^}]*\}/)![0];
@@ -104,7 +107,7 @@ test("the strip's right end (T412): the tags button and the gear share one invis
   assert.match(light, /color: var\(--dim\);/); assert.match(lightHover, /color: var\(--fg\);/);
   assert.match(lightHover, new RegExp("background: " + railLightHover[2].replace(/[()]/g, "\\$&").replace(/,/g, ", ?") + ";"));
   // dense: the 19px glyph inside the 25px row by the padding alone (19 + 3 + 3), no border to count
-  assert.match(CSS, /\nbody\.dense-chrome \.tab-widgets-gear \{ padding: 3px 0; \}/, "dense-chrome-layout.test.ts measures it");
+  assert.match(CSS, /\nbody\.dense-chrome \.tab-widgets-gear \{ margin: 0 4px; padding: 3px 0; \}/, "dense restates the margin: the rail's 1px above and below would carry the box past the 25px row; dense-chrome-layout.test.ts measures it");
   assert.doesNotMatch(CSS, /\.tab-lockbox|\n\.tab-lock \{|\n\.tab-lock\.on \{/, "the lock button's rules are gone");
 });
 
