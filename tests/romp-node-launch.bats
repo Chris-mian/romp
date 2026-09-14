@@ -28,7 +28,11 @@ setup() {
     RN="$XDG_STATE_HOME/romp/romp-node"
 }
 
-teardown() { rm -rf "$TEST_DIR"; }
+teardown() {
+    # the hang shapes record their pids: whatever a failing case left alive dies here, never in the suite's wake
+    local p; for p in node sleeper; do [ -s "$TEST_DIR/$p.pid" ] && kill -KILL "$(cat "$TEST_DIR/$p.pid")" 2>/dev/null; done
+    rm -rf "$TEST_DIR"
+}
 
 @test "creates a romp-node copy of the system node and execs the manager under it" {
     run "$LAUNCH" "$MANAGER" up
@@ -63,6 +67,225 @@ teardown() { rm -rf "$TEST_DIR"; }
     chmod 755 "$XDG_STATE_HOME/romp"               # restore for teardown
     [ "$status" -eq 0 ]
     [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]] # ran via the kept v1 copy, not aborted
+}
+
+# ── the copy that cannot run (issue 1600) ──────────────────────────────────────────────────
+# A node whose shared libnode is referenced relative to its own install (Homebrew's build, a version
+# manager's shim) copies fine and then dies at exec from the copy; the launcher trusted "executable" and
+# exec'd it, and the login agent's KeepAlive respawned that abort forever. The copy is probed first.
+_path_bound_node() {   # $1 the path the fake node must be run FROM; anywhere else it dies like dyld would
+    cat > "$1" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$1") echo "NODE_V1 ran: \$*" ;;
+  *) echo "dyld[4242]: Library not loaded: @rpath/libnode.dylib" >&2; exit 134 ;;
+esac
+EOF
+    chmod +x "$1"
+}
+
+@test "a copy that cannot run from its new path never takes the manager down: the system node runs it, and the log says why" {
+    _path_bound_node "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]          # the manager came up, on the system node
+    [[ "$output" == *"cannot run here"* ]]                    # said once on stderr (the manager log)
+    [[ "$output" == *"ROMP_NO_NODE_COPY=1"* ]]                # with the way to stop the copy attempts
+    [[ "$output" != *"Library not loaded"* ]]                 # the probe's own noise is dropped
+}
+
+@test "ROMP_NO_NODE_COPY=1 in service.env, the route the message names, skips the copy: the manager runs on the system node" {
+    # round two of issue 1600: the launcher read the variable before it parsed service.env, so the one route a
+    # launchd-started launcher has did nothing; the file is parsed first now. The environment is UNSET here.
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/service.env"
+    printf 'ROMP_NO_NODE_COPY=1\n' > "$ROMP_SERVICE_ENV_FILE"
+    unset ROMP_NO_NODE_COPY
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [ ! -e "$RN" ]                                            # no copy was made
+    [[ "$output" != *"cannot run here"* ]]                    # and nothing to say about one
+    # …and a quoted value, the shape the kernel's reader and systemd accept, reads the same
+    printf 'ROMP_NO_NODE_COPY="1"\n' > "$ROMP_SERVICE_ENV_FILE"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [ ! -e "$RN" ]
+}
+
+@test "ROMP_NO_NODE_COPY=1 in the environment skips the copy too (the second route)" {
+    ROMP_NO_NODE_COPY=1 run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [ ! -e "$RN" ]
+}
+
+@test "a copy that dies by SIGNAL from its new path (the real dyld abort) leaves no job-status line in the log" {
+    # dyld kills the process with SIGABRT, and coreutils timeout re-raises a child's signal on itself; a subshell
+    # whose last command dies by a signal dies by it too, and the launcher's shell then printed "Aborted (core
+    # dumped)" on its stderr, the manager log. The probe's subshell ends in an explicit exit, so the death is a
+    # code, and only the launcher's own message remains.
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$BIN/node") echo "NODE_V1 ran: \$*" ;;
+  *) kill -ABRT \$\$ ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [[ "$output" == *"cannot run here"* ]]
+    [[ "$output" != *"Aborted"* ]]
+    [[ "$output" != *"core dumped"* ]]
+}
+
+@test "the watchdog path (no timeout on PATH) leaves no ten-second sleep behind after a fast probe" {
+    # a stock mac has no coreutils timeout, so the launcher's watchdog subshell is the normal path there; killed
+    # after a fast probe, it used to leave its sleep 10 orphaned, one per launch. The launcher runs in its own
+    # session (setsid), so the orphan, if any, would still be in that process group after the launcher exits.
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm sleep ps setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    ln -s "$BIN/node" "$bare/node"
+    PATH="$bare" run setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    [ -n "$pgid" ]
+    # nothing of the launcher's session survives it: no sleep, no watchdog subshell
+    run bash -c 'ps -eo pgid=,comm= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
+@test "the watchdog path: a copy that HANGS is killed at the bound, the manager comes up on the system node, and no node is leaked" {
+    # round three of issue 1600: the watchdog could only signal the probe's wrapper subshell, and a wrapper that ran the node
+    # in its foreground survived the kill while the hung node did not die; one hung node leaked per launch (the launcher's
+    # only platform, a stock mac, has no timeout). The wrapper now runs the node in its background and kills it on TERM.
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    # the stand-in hangs when run FROM THE COPY's path alone: the launcher execs the system node through the bare
+    # PATH's symlink, so a stand-in keyed on its original path would hang as the manager too and hold the capture
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") exec sleep 600 ;;                          # the copy hangs
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm sleep ps setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    ln -s "$BIN/node" "$bare/node"
+    # bounded from outside by an absolute-path timeout (the bare PATH must stay without one, or the launcher takes the
+    # timeout path instead of the watchdog's): a leak that hung the launcher would be a clean failure, not a stuck suite
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    PATH="$bare" run "$tmo" 60 setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]          # the fallback happened, at the bound
+    [[ "$output" == *"cannot run here"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [[ "$output" != *"sleep 600"* ]]                          # the hung node is gone with the launcher
+    [ -z "$output" ]
+}
+
+# The hang shapes on both probe paths (round four of issue 1600). exec: the copy IS the hung process. fork: a version
+# manager's shim that RUNS node instead of exec'ing it, so the hung process is a child of the pid the wrapper holds, and
+# killing that pid alone leaked the child on the watchdog path. deaf: a node that ignores TERM, which only KILL ends; a
+# timeout without -k, or a wrapper without the escalation, waited on it for good. Every shape is keyed on the COPY's path
+# alone, so the system node the launcher falls back to runs the manager stand-in. The bound is two seconds here
+# (ROMP_NODE_PROBE_BOUND); the hung pids go to files, so the leak check names them whatever else runs on the machine.
+_hang_node() {   # $1 shape: exec | fork | deaf; writes the node stand-in
+    local body
+    case "$1" in
+      exec) body='exec sleep 60' ;;
+      fork) body='sleep 60 & echo $! > "'"$TEST_DIR"'/sleeper.pid"; wait' ;;
+      deaf) body='trap "" TERM; exec sleep 60' ;;
+    esac
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") echo \$\$ > "$TEST_DIR/node.pid"; $body ;;
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+}
+_dead() {   # $1 pid: gone, or a zombie awaiting its reap
+    local st; st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')"
+    [ -z "$st" ] || [ "${st#Z}" != "$st" ]
+}
+_run_hang() {   # $1 shape, $2 path: bare (the watchdog) | timeout; the launcher in its own session under a 20 s outer bound
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    _hang_node "$1"
+    local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm sleep ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    if [ "$2" = timeout ]; then ln -s "$tmo" "$bare/timeout"; fi
+    ln -s "$BIN/node" "$bare/node"
+    rm -f "$TEST_DIR/node.pid" "$TEST_DIR/sleeper.pid" "$TEST_DIR/pgid"
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=2 run "$tmo" 20 setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+}
+_hang_asserts() {   # the fallback happened at the bound, and nothing of the probe survives: not the node, not its child, nothing in the session
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [[ "$output" == *"cannot run here"* ]]
+    [ -s "$TEST_DIR/node.pid" ]
+    _dead "$(cat "$TEST_DIR/node.pid")"
+    [ ! -s "$TEST_DIR/sleeper.pid" ] || _dead "$(cat "$TEST_DIR/sleeper.pid")"
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+@test "the watchdog path: a shim that FORKS the hung node (a version manager's) leaks nothing: the tree under the wrapper's pid is killed" { _run_hang fork bare; _hang_asserts; }
+@test "the watchdog path: a node that IGNORES TERM is killed a second later, and the manager comes up on the system node" { _run_hang deaf bare; _hang_asserts; }
+@test "the timeout path: a hung copy is killed at the bound (control: so it was before this round)" { _run_hang exec timeout; _hang_asserts; }
+@test "the timeout path: a shim that FORKS the hung node leaks nothing (control: timeout signals the whole group)" { _run_hang fork timeout; _hang_asserts; }
+@test "the timeout path: a node that IGNORES TERM is killed by -k a second after the bound instead of holding the launch for good" { _run_hang deaf timeout; _hang_asserts; }
+
+@test "ROMP_NO_NODE_COPY: 0, false, no and off are off, the last assignment in service.env wins, and an export-prefixed line is skipped, not fatal" {
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/service.env"
+    unset ROMP_NO_NODE_COPY
+    # off values keep the copy
+    for v in 0 false FALSE no off OFF; do
+        rm -f "$RN"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$ROMP_SERVICE_ENV_FILE"
+        run "$LAUNCH" "$MANAGER" up
+        [ "$status" -eq 0 ]
+        [ -x "$RN" ]
+    done
+    # any other non-empty value is on, disabled and none included: the docs say so
+    for v in disabled none; do
+        rm -f "$RN"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$ROMP_SERVICE_ENV_FILE"
+        run "$LAUNCH" "$MANAGER" up
+        [ "$status" -eq 0 ]
+        [ ! -e "$RN" ]
+    done
+    # set then cleared below: the last assignment wins (a copy is made)
+    rm -f "$RN"
+    printf 'ROMP_NO_NODE_COPY=1\nROMP_NO_NODE_COPY=\n' > "$ROMP_SERVICE_ENV_FILE"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [ -x "$RN" ]
+    # cleared then set below: on
+    rm -f "$RN"
+    printf 'ROMP_NO_NODE_COPY=\nROMP_NO_NODE_COPY=yes\n' > "$ROMP_SERVICE_ENV_FILE"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [ ! -e "$RN" ]
+    # an export-prefixed line: skipped as malformed (under dash it took the launcher down), the good line still exported
+    printf 'export ROMP_TEST_BAD=1\nROMP_TEST_GOOD=fine\n' > "$ROMP_SERVICE_ENV_FILE"
+    printf '#!/bin/sh\necho "GOOD=[$ROMP_TEST_GOOD] BAD=[${ROMP_TEST_BAD-unset}] ran: $*"\n' > "$BIN/node"
+    chmod +x "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"GOOD=[fine] BAD=[unset] ran: $MANAGER up"* ]]
 }
 
 @test "service.env: KEY=VALUE lines reach the manager; comments and junk skipped" {
@@ -118,4 +341,23 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$status" -eq 0 ]
     want="DQ=[two words] SQ=[x y] ONE=[\"abc] EMPTY=[] INNER=[a\"b\"c] NESTED=['q'] TWO=[\"a\"] MIX=[\"abc'] APOS=[it's] TSP=[a b] CRLF=[c d] BARECR=[plain]"
     [[ "$output" == *"$want"* ]]
+}
+
+@test "service.env: a name that is readonly in the shell (UID, PPID: the .env idiom) is skipped, not fatal, under sh in POSIX mode" {
+    # round four of issue 1600: under macOS's /bin/sh (bash in POSIX mode) an assignment error in the special builtin
+    # export exits the shell in spite of the or-true, before any exec and with nothing in the manager log, and KeepAlive
+    # respawned that silent exit every ThrottleInterval. bash --posix is that shell's shape here; dash, where the names
+    # are plain, is the control.
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/service.env"
+    printf 'ROMP_TEST_BEFORE=one\nUID=1000\nPPID=1\nROMP_TEST_AFTER=two\n' > "$ROMP_SERVICE_ENV_FILE"
+    printf '#!/bin/sh\necho "BEFORE=[$ROMP_TEST_BEFORE] AFTER=[$ROMP_TEST_AFTER] ran: $*"\n' > "$BIN/node"
+    chmod +x "$BIN/node"
+    run bash --posix "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"BEFORE=[one] AFTER=[two] ran: $MANAGER up"* ]]
+    if command -v dash >/dev/null 2>&1; then
+        run dash "$LAUNCH" "$MANAGER" up
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"BEFORE=[one] AFTER=[two] ran: $MANAGER up"* ]]
+    fi
 }

@@ -796,7 +796,24 @@ owner-only permissions (`chmod 600`). The file carries the billing declaration
 (`ROMP_EXPECTED_AUTH`, below) and the service knobs (the ports, the CLI scopes
 and their memory limits, the perf log), never a key. The service reads the file
 at manager startup, so a change needs a manager restart. `ROMP_SERVICE_ENV_FILE`
-overrides the file's path.
+overrides the file's path. The launcher reads the file line by line and never
+sources it: a line that is not `KEY=VALUE`, or whose name the shell refuses to
+assign (`UID`, `PPID`), is skipped and the rest reach the manager.
+
+On macOS the login agent runs the manager under a copy of `node` named
+`romp-node` in the state directory, so that Full Disk Access can be granted to
+romp alone rather than to every script the shared `node` runs; the copy is
+refreshed when `node` changes (a re-grant follows a node upgrade). A `node` whose
+shared library is referenced relative to its own install (Homebrew's build, a
+version manager's shim) cannot run from the copy: the launcher probes the copy
+before using it and runs the manager on the system `node` instead, saying so once
+in the manager log, and `romp-service install` removes such a copy rather than
+leave it. `ROMP_NO_NODE_COPY=1` in `service.env` skips the copy altogether (the
+grant then reads `node`); the launcher reads the file before it decides, so the
+line works for a manager launchd started. The value rule is the same in both
+readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
+value is on (`disabled` and `none` included: only those four words turn it off),
+and the last assignment in the file wins.
 
 The installed unit also sets `MALLOC_ARENA_MAX=2` for the manager and every kernel it spawns (2026-09-11): the kernel is a many-threaded Python process that rebuilds large record lists, and the allocator's per-thread arenas kept hundreds of megabytes of freed memory between restarts; two arenas return it. A line in `service.env` overrides it.
 
