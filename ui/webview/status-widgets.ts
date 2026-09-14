@@ -15,9 +15,10 @@
 // Two SLOTS: `left`, before the state chip; `right`, leading the right cluster ahead of the controls. The store is
 // settings.statusWidgets = { on, order, opts } (widget-prefs.ts, the tab widgets' shape and rules), per browser like
 // every gear setting. The two keys the widgets replace, showBranch and showSessionBadge, stay in the store as MIRRORS
-// (settings.ts): a store with no statusWidgets derives the branch and the name from them when they are present, from
-// the widgets' defaults when absent (the branch's default flipped on under a fresh key, never under the old one, since
-// the gear's whole-object saves had merged the old default into every store); every save writes them back.
+// (settings.ts): every save writes them from the prefs, and nobody reads them. A store with no statusWidgets reads the
+// widgets' defaults whatever those keys say (the one-shot migration, see statusWidgetPrefs): the branch's default
+// flipped on under a fresh key, never under the old one, since the gear's whole-object saves had merged the old default
+// into every store, which is also why the old value is no choice.
 import { badgeSpec } from "./session-badge";
 import { type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder, widgetOn, widgetOpts } from "./widget-prefs";
 
@@ -59,21 +60,18 @@ export function registerStatusWidget(w: StatusWidget): void {
 export function statusWidgets(): StatusWidget[] { return REGISTRY.slice(); }
 export function statusWidget(id: string): StatusWidget | undefined { return REGISTRY.find((w) => w.id === id); }
 
-/** The two keys the widgets replaced, as a store from before them carries them. */
-export interface StatusLegacy { showBranch?: unknown; showSessionBadge?: unknown }
-
-/** The stored prefs, normalized. With no stored object the branch's and the name's switches derive from the legacy
- *  keys when those are present (true or false: a reader who chose keeps the choice), and stay unset (the widget's
- *  default) when absent: a fresh install shows the branch, an install that turned it off keeps it off. */
-export function statusWidgetPrefs(v: unknown, legacy?: StatusLegacy): StatusWidgetPrefs {
+/** The stored prefs, normalized; with no stored object, nothing set, so every widget's own default rules (the branch
+ *  on, the session name off). The two keys the widgets replaced, showBranch and showSessionBadge, are NOT read here or
+ *  anywhere: the one-shot migration (the user's open call, decided through the manager 2026-09-13). A store that carries
+ *  them without statusWidgets got them from a gear whose whole-object save merged its own default into every store
+ *  (true for stores first saved 2026-06-23 to 2026-08-10, false after), so the value is no choice; the widget defaults
+ *  apply, and the keys become mirrors (legacyOfStatusPrefs) from the first save of the prefs. A reader who had turned
+ *  the branch off deliberately sees it return once and turns it off again: the store cannot tell that gesture from the
+ *  gear's default, which is why it was the user's call. */
+export function statusWidgetPrefs(v: unknown): StatusWidgetPrefs {
   const o = normalizeWidgetPrefs(v);
   if (o) { o.order = sanitizeOrder(o.order, (id) => REGISTRY.some((w) => w.id === id)); return o; }
-  const out = emptyWidgetPrefs();
-  if (legacy) {
-    if (typeof legacy.showBranch === "boolean") out.on.branch = legacy.showBranch;
-    if (typeof legacy.showSessionBadge === "boolean") out.on.name = legacy.showSessionBadge;
-  }
-  return out;
+  return emptyWidgetPrefs();
 }
 
 /** The prefs as the two legacy keys, for the mirror older readers keep reading. */

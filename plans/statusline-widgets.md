@@ -87,13 +87,21 @@ Storage is per browser in `romp:settings` as `settings.statusWidgets = { on, ord
 
 The default flip (the manager's addendum): the branch is off today under `showBranch`, and the user's word makes its
 widget default on. Per the fresh-key rule, the widget's preference is a NEW key with its own default and `showBranch`
-is its mirror. A store with no `statusWidgets` derives `on.branch` from `showBranch` when that key is present (true:
-on; false: off, a reader who turned the branch off stays off), and from the widget's default when it is absent (a
-fresh install shows it); every save of the new prefs writes `showBranch` back from `on.branch`, so an older reader
-keeps its meaning. The same pair holds for the session name and `showSessionBadge` (present: its value; absent: the
-widget's default, off). render.ts reads ONE resolver, `statusWidgetPrefs(settings)`, which applies both mirrors; its
-direct reads of `showBranch` and `showSessionBadge` go away, and `settings.ts` normalizes the pair in `loadSettings`
-and `saveSettings` exactly as it does `tabWidgets` and `tabCtx`.
+is its mirror, written from `on.branch` at every save of the prefs so an older reader keeps its meaning. The same pair
+holds for the session name and `showSessionBadge`. render.ts reads ONE resolver, `statusWidgetPrefs`, over the new key
+alone; its direct reads of `showBranch` and `showSessionBadge` go away, and `settings.ts` normalizes the pair in
+`loadSettings` and `saveSettings` exactly as it does `tabWidgets` and `tabCtx`.
+
+The one-shot migration (the user handed the open call to the manager, who decided it on 2026-09-13 PT; its own pull
+request after part two): a store that carries `showBranch` or `showSessionBadge` but no `statusWidgets` was written by
+a gear whose whole-object save merged its own default into every store (true for stores first saved between
+2026-06-23 and 2026-08-10, false after), so the value is not the user's choice. Such a store reads the widget defaults
+(branch on, session name off, folder on, host off), and the two keys become mirrors from the first save of the prefs.
+The rule is a read rule, per browser because the store is, and it runs once in effect: a load writes nothing (the
+theme migration's precedent), and the first save writes the key, after which the stored prefs are the user's choice
+and the legacy keys are mirrors nobody reads. The risk, stated plainly: anyone who deliberately turned the branch off
+after 2026-08-10 sees it return once and switches it off again, a gesture the store cannot tell from the gear's
+default, which is why the user decided it.
 
 The section: a Status line section under the Chat tab, right after Tab widgets (`data-section=statusline`), the
 same row grammar (a live demo, the name, the sliding switch, the widget's options as house pickers), one grid across
@@ -109,9 +117,9 @@ and the line has no room to give.
 
 ## 5. The rules the tab widgets learned, applied
 
-- No injected default in the gear's `load()` for `statusWidgets`: the reader derives from the mirrors at read time,
-  and only a change in the Status line section writes the key (an empty object seeded by `load()` would beat a store
-  that carries `showBranch: false`, the T379 round-one high).
+- No injected default in the gear's `load()` for `statusWidgets`: a store without the key reads the widget defaults
+  (the one-shot migration above), and only a change in the Status line section writes it (the fresh-key rule from
+  T379's round one, kept: a literal in `load()` would be the very injected default the migration discards).
 - One grid across the widget rows (the `.rs-widgets` rules, reused as they are).
 - Descriptions behind the panel's hover popover, placed by the tidy's rule.
 - The lab drives the settings through the shell relay (`window.__rompOpenSettings("chat", "statusline")`), never a
@@ -123,11 +131,11 @@ and the line has no room to give.
 
 - `ui/webview/status-widgets.test.ts`: the registry and prefs on a tiny DOM (defaults, an unknown id not drawn, the
   order rule, null renders adding nothing, the host widget on a local record).
-- `ui/webview/settings.test.ts` additions: the two mirrors in both directions (a store with `showBranch: false` and
-  no `statusWidgets` reads the branch off; a save of the prefs writes `showBranch` back; an absent key reads the
-  default on).
+- `ui/webview/status-widgets.test.ts`: the four store shapes (no keys; a legacy false and no `statusWidgets`; a legacy
+  true; a stored prefs object), the legacy keys never read, both mirrors written from the first save.
 - `tests/test_statusline_widgets_browser.py`: the served shell, a section reached by the strip gear's row and by the
-  relay, a switch off reaching the chat frame's line live, the legacy stores (`showBranch` true, false and absent),
+  relay, a switch off reaching the chat frame's line live, the legacy stores (`showBranch` true, false and absent, each
+  showing the branch after the upgrade; the false store's row switched off stays off across a reload),
   and the screenshots (`STATUSLINE_SHOTS=<prefix>`) in both themes.
 - Pins moved: the T379 helper pins follow the pure move into `widget-prefs.ts`; `session-badge.test.ts` keeps its
   spec.

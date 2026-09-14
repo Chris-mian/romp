@@ -22,8 +22,9 @@ const GEAR = fs.readFileSync(path.join(W, "gear.js"), "utf8");
 test("settings carry showBranch as the branch widget's MIRROR (default on since T409); the gear injects no default and has no row of its own", () => {
   assert.match(SETTINGS, /showBranch: boolean/);
   assert.match(SETTINGS, /DEFAULT_SETTINGS[^;]*showBranch: true/);
-  assert.match(SETTINGS, /statusWidgetPrefs\("statusWidgets" in parsed \? parsed\.statusWidgets : undefined,\n\s*\{ showBranch: parsed\.showBranch, showSessionBadge: parsed\.showSessionBadge \}\);/,
-    "derived from the legacy keys only when the new key is absent");
+  assert.match(SETTINGS, /s\.statusWidgets = statusWidgetPrefs\("statusWidgets" in parsed \? parsed\.statusWidgets : undefined\);/,
+    "the legacy keys are never read (the one-shot migration): a pre-widgets store's value was the gear's injected default, not a choice");
+  assert.doesNotMatch(SETTINGS, /statusWidgetPrefs\([^)]*showBranch/, "no derivation from the legacy keys anywhere in settings.ts");
   assert.doesNotMatch(GEAR, /showBranch: (true|false)/, "no injected default (the fresh-key rule: a merged-in literal would beat a pre-widgets store)");
   assert.doesNotMatch(GEAR, /id=rs-branch|Show git branch|gb = document/, "the checkbox row is gone: the Status line section's Git branch row is the control");
   assert.match(SW, /id: "branch", label: "Git branch", defaultOn: true, slot: "right",/);

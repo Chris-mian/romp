@@ -375,7 +375,7 @@ function initGear(post, opts) {
     // settings.ts's saveSettings does, so a malformed order in either section is rewritten clean by any save (review round
     // two, low 7); the mirrors follow the normalized prefs
     if ('tabWidgets' in s) { s.tabWidgets = TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); s.tabCtx = TW.tabCtxOfPrefs(s.tabWidgets); }
-    if ('statusWidgets' in s) { s.statusWidgets = SW.statusWidgetPrefs(s.statusWidgets, { showBranch: s.showBranch, showSessionBadge: s.showSessionBadge }); var m2 = SW.legacyOfStatusPrefs(s.statusWidgets); s.showBranch = m2.showBranch; s.showSessionBadge = m2.showSessionBadge; }
+    if ('statusWidgets' in s) { s.statusWidgets = SW.statusWidgetPrefs(s.statusWidgets); var m2 = SW.legacyOfStatusPrefs(s.statusWidgets); s.showBranch = m2.showBranch; s.showSessionBadge = m2.showSessionBadge; }
     try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {}
     try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {}
     post({ type: 'settingsSync', settings: s });
@@ -415,6 +415,8 @@ function initGear(post, opts) {
   // what a pick does.
   var openHousePick = null;   // at most one of the card's dropdowns is open (a click that opens one closes the other)
   var widgetDrag = false;   // a widget row in flight (the reorder, T409): the drag takes the Escape itself, so the shell's Escape-to-close stands down while it is on
+  var dragAbort = null;     // the drag in flight's teardown, set at the press and cleared at the end: closeSettings ends the drag first (rows restored, listeners gone, nothing armed), because a
+                            // release under a hidden card never reaches this document, and the listeners would survive the reopen (part two's third read)
   function housePick(wrap, attr, rowHTML, pick) {
     if (!wrap) return null;
     var btn = document.createElement('button');
@@ -767,7 +769,7 @@ function initGear(post, opts) {
         var end = function (ev) {
           if (ev && ev.pointerId !== undefined && ev.pointerId !== pid) return;
           document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', cancel); document.removeEventListener('keydown', esc, true);
-          row.classList.remove('rs-dragging'); widgetDrag = false;
+          row.classList.remove('rs-dragging'); widgetDrag = false; dragAbort = null;
           if (ev && ev.type === 'pointerup') armSwallow();
           else if (!ev) {
             // Escape ended the drag under a held pointer: its release is still to come, and the click that release synthesizes
@@ -782,6 +784,8 @@ function initGear(post, opts) {
           if (now.join() !== before.join()) commit(now, id); else paint();
         };
         var cancel = function (ev) { if (ev.pointerId !== pid) return; placeRows(before); end(ev); };
+        // the panel closing under the held pointer: the same teardown as a cancel (rows back, listeners off, nothing armed)
+        dragAbort = function () { placeRows(before); end({ type: 'abort', pointerId: pid }); };
         // Escape is the drag's own while a drag is on (heard first, in the capture phase, and stopped there: the panel's
         // Escape-to-close must not fire under a cancelled drag)
         var esc = function (ev) { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); placeRows(before); end(); } };
@@ -870,9 +874,10 @@ function initGear(post, opts) {
     },
   });
   // the status line's widgets (T409): settings.statusWidgets with showBranch and showSessionBadge as the mirrors (no
-  // default injected by load() for any of the three: a store from before the widgets derives at read, and only a
-  // change here writes the key); the demo is the widget alone, as the line draws it
-  function statusPrefs(s) { return SW.statusWidgetPrefs(s.statusWidgets, { showBranch: s.showBranch, showSessionBadge: s.showSessionBadge }); }
+  // default injected by load() for any of the three: a store from before the widgets reads the widget defaults, its two
+  // old keys being the gear's own injected default and no choice (the one-shot migration), and only a change here writes
+  // the key); the demo is the widget alone, as the line draws it
+  function statusPrefs(s) { return SW.statusWidgetPrefs(s.statusWidgets); }
   var statusSection = widgetSection({
     host: document.getElementById('rs-swidgets'), list: SW.statusWidgets, prefs: statusPrefs, pickPrefix: 'swopt-',
     order: SW.statusListOrder, divider: null,
@@ -1789,7 +1794,7 @@ function initGear(post, opts) {
     pcard.addEventListener('mouseover', function (e) { var host = hostOf(e.target); if (host) placeSub(host); });
     pcard.addEventListener('mouseout', function (e) { var host = hostOf(e.target); if (host && !(e.relatedTarget && host.contains(e.relatedTarget))) host.classList.remove('rs-up'); });
   }
-  function closeSettings() { clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
+  function closeSettings() { if (dragAbort) dragAbort(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
     if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)
     if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)

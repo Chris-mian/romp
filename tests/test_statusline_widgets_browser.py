@@ -170,11 +170,14 @@ for (const theme of ["dark", "light"]) {
   }
 }
 await page.close(); await ctx.close();
-// ── LEGACY STORES: a browser from before the widgets holds showBranch and no statusWidgets ──
+// ── LEGACY STORES: a browser from before the widgets holds showBranch and no statusWidgets (the one-shot migration: the
+// key was the gear's injected default, not a choice, so the branch shows whatever it says; the first widget save writes
+// the prefs and the mirror, and a page opened afresh in the same browser reads that choice) ──
 out.legacy = {};
 for (const mode of ["off", "on", "absent"]) {
   const c2 = await browser.newContext({ viewport: { width: 1440, height: 800 } });
-  await c2.addInitScript(([m]) => { try { const s = { compact: true }; if (m === "off") s.showBranch = false; if (m === "on") s.showBranch = true; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} }, [mode]);
+  // seeded ONCE per browser context: a later page (the reload leg below) keeps whatever the gear saved
+  await c2.addInitScript(([m]) => { try { if (localStorage.getItem("romp:settings") !== null) return; const s = { compact: true }; if (m === "off") s.showBranch = false; if (m === "on") s.showBranch = true; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} }, [mode]);
   const { page: p2, chatF: cf } = await openShell(c2);
   const before = await readLine(cf);
   await p2.evaluate(() => window.__rompOpenSettings("chat", "statusline"));
@@ -184,7 +187,17 @@ for (const mode of ["off", "on", "absent"]) {
   const panelBefore = await readPanel(sf);
   await sf.click("#rs-compact"); await sf.waitForTimeout(500);   // an unrelated setting's save
   out.legacy[mode] = { before, panelBefore, after: await readLine(cf), panelAfter: await readPanel(sf) };
-  await p2.close(); await c2.close();
+  if (mode === "off") {
+    // the upgraded browser switches the branch off in the Status line section: the line drops it at once, and a page
+    // opened afresh in the same context (the browser's next load) reads the choice from the prefs
+    await sf.click('#rs-swidgets .rs-widget[data-widget="branch"] .rs-switch'); await sf.waitForTimeout(500);
+    out.legacy.offSwitched = await readLine(cf);
+    await p2.close();
+    const { page: p3, chatF: cf3 } = await openShell(c2);
+    out.legacy.offReloaded = await readLine(cf3);
+    await p3.close();
+  } else await p2.close();
+  await c2.close();
 }
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 console.log("RESULT: ok");
@@ -350,18 +363,27 @@ class ServedStatusLineWidgets(unittest.TestCase):
         self.assertEqual(self.out["pathOn"]["line"]["store"]["statusWidgets"]["opts"], {"folder": {"show": "path"}})
         self.assertEqual(self.out["pathBack"]["line"]["right"][0]["cls"], "status-dir folder-link")
 
-    def test_a_store_from_before_the_widgets_reads_its_branch_key_shows_the_branch_when_absent_and_an_unrelated_save_leaves_it_alone(self):
+    def test_a_store_from_before_the_widgets_shows_the_branch_whatever_its_key_says_and_an_unrelated_save_leaves_the_store_alone(self):
+        # the one-shot migration (the user's call through the manager, 2026-09-13): the legacy key was the gear's injected
+        # default, not a choice, so every pre-widgets store reads the widget defaults; a load writes nothing
         L = self.out["legacy"]
-        self.assertNotIn("status-branch", " ".join(self._right_classes(L["off"]["before"])), "showBranch false: the branch stays off")
-        self.assertIn("status-branch", " ".join(self._right_classes(L["on"]["before"])), "showBranch true: shown")
-        self.assertIn("status-branch", " ".join(self._right_classes(L["absent"]["before"])), "no key: the widget's default, on (a fresh install shows it)")
-        self.assertEqual([r["sw"]["checked"] for r in L["off"]["panelBefore"]["rows"] if r["id"] == "branch"], ["false"], "the row reads the legacy key")
-        self.assertEqual([r["sw"]["checked"] for r in L["absent"]["panelBefore"]["rows"] if r["id"] == "branch"], ["true"])
+        for mode in ("off", "on", "absent"):
+            self.assertIn("status-branch", " ".join(self._right_classes(L[mode]["before"])), "%s: the branch shows after the upgrade (the widget's default)" % mode)
+            self.assertEqual([r["sw"]["checked"] for r in L[mode]["panelBefore"]["rows"] if r["id"] == "branch"], ["true"], "%s: the row reads the widget's default, never the legacy key" % mode)
         for mode, want in (("off", False), ("on", True), ("absent", "absent")):
             after = L[mode]["after"]["store"]
             self.assertEqual(after["statusWidgets"], "absent", "%s: an unrelated save writes no statusWidgets" % mode)
-            self.assertEqual(after["showBranch"], want, "%s: showBranch as it was" % mode)
+            self.assertEqual(after["showBranch"], want, "%s: showBranch as it was (a mirror only from the first widget save)" % mode)
             self.assertEqual(self._right_classes(L[mode]["after"]), self._right_classes(L[mode]["before"]), "%s: the line unchanged" % mode)
+
+    def test_the_upgraded_browsers_row_switched_off_stays_off_across_a_reload(self):
+        L = self.out["legacy"]
+        sw = L["offSwitched"]
+        self.assertNotIn("status-branch", " ".join(self._right_classes(sw)), "the switch off dropped the branch from the line at once")
+        self.assertEqual((sw["store"]["statusWidgets"]["on"], sw["store"]["showBranch"]), ({"branch": False}, False), "the first widget save wrote the prefs and the mirror")
+        rl = L["offReloaded"]
+        self.assertNotIn("status-branch", " ".join(self._right_classes(rl)), "a page opened afresh reads the choice: the branch stays off")
+        self.assertEqual((rl["store"]["statusWidgets"]["on"], rl["store"]["showBranch"]), ({"branch": False}, False))
 
 
 if __name__ == "__main__":
