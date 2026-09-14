@@ -18710,8 +18710,8 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (m.own) { const copy = { ...m }; delete copy.own; forwardToOwner(copy); }
   }
   else if (m.type === "confirmRevive" && m.id) {
-    notifyActive();   // the jump reached a closed session and no tab changed: the tab standing is re-announced, so a pane that moved on the jump (the feed's section, T416) comes back
     revealSelfPane();   // the dead-session prompt is drawn in THIS pane — useless if the pane isn't showing
+    notifyActive();   // the jump reached a closed session and no tab changed: the tab standing is re-announced, so a pane that moved on the jump (the feed's section, T416) comes back
     const nm = String(m.name || "");
     showConfirm(`“${nm}” is closed — revive it?`,
       "Revive restarts the session and resumes its conversation. Read-only just shows the transcript.",

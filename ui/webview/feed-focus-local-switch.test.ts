@@ -67,8 +67,8 @@ test("the chat tells the shell its tab on every switch, and re-announces it when
   const fn = slice(RENDER, "function notifyActive() {", "// Move id to the front of the recency stack");
   assert.match(fn, /if \(vscodeApi\) vscodeApi\.postMessage\(\{ type: "activeTab", id: activeId \}\);/, "the kernel's copy, unchanged");
   assert.match(fn, /window\.parent\.postMessage\(\{ romp: "activeTab", id: activeId \}, "\*"\)/, "the shell's copy, for the feed pane on the same page");
-  assert.match(RENDER, /else if \(m\.type === "confirmRevive" && m\.id\) \{\s*\n\s*notifyActive\(\);/,
-    "no tab changed: the standing tab is re-announced, so a section that moved on the click comes back");
+  assert.match(RENDER, /else if \(m\.type === "confirmRevive" && m\.id\) \{\s*\n\s*revealSelfPane\(\);[^\n]*\n\s*notifyActive\(\);/,
+    "no tab changed: the standing tab is re-announced (after the pane's own reveal, whose pin in tests/test_per_viewer_focus.py opens the branch), so a section that moved on the click comes back");
 });
 
 test("the shell hands the chat's tab to the feed pane, from a child frame of this page only", () => {
