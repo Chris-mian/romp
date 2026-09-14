@@ -1112,9 +1112,6 @@ let pendingAnchor: string | null = null; // deep-link target waiting to be scrol
 let pendingAnchorIntent: string | null = null; // kind the uuid anchor must honor — sticks with pendingAnchor across render-pass retries (pendingAnchorKind is cleared each pass, this isn't)
 let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
 let pendingAnchorKind: string | null = null; // intent for the time fallback: "user" = land on the user's own turn
-// a landing attempted before the session's proto-2 frame arrived (a skeleton tab at a reload restore, round ten): re-armed by the session
-// handler when that frame comes, so the restore's caller and the pass keep it instead of dropping it on the not-rendered path
-let awaitingFrameAnchor: { sid: string; uuid: string; keepY: number | null } | null = null;
 let anchorPendingOlder = false; // scrollToAnchor kicked off a loadOlder fetch for an anchor past the resident tail → don't toast "couldn't locate"; chatHead re-lands when the chunk arrives (the user 2026-06-27)
 // ── the SEEK (the user 2026-08-25): a card/summary click sometimes needed a second press ──
 // The give-up underneath: landActive runs ONE scrollToAnchor attempt per pass and then nulls
@@ -11297,15 +11294,13 @@ function scrollToAnchor(uuid: string): boolean {
     }
   }
   if (!target) {
-    // no branch could decide (round ten): the diagnostic row names the state the attempt saw, so a CI red on this path identifies itself
-    // (the mid-run reload-restore red carried a reload-restore write, then a loadOlder, no regionask row: an attempt that fell out of the
-    // proto-2 branch, which this row would have said). With NO proto-2 frame yet (a skeleton tab, the boot frame still on the wire) the
-    // landing waits for the frame that makes the session proto 2: the session handler re-arms it then, and the restore's caller keeps it
+    // no branch could decide (round ten): the diagnostic row names the state the attempt saw, so a CI red on this path identifies itself.
+    // CI's mid-run reload-restore red carried a reload-restore write, then a loadOlder, and no regionask row: an attempt that reached
+    // neither the window branch nor the older wire, whose cause this row would have named; it is unexplained (a reload with its boot frame
+    // parked across it runs no attempt before the frame and lands once it arrives, at both heads)
     const sm = activeId ? liveSession(activeId) : null;   // the active tab's live session (the display paths read through liveSession)
-    const noframe = !sm || sm.proto == null;
-    scrollDiagRow("landmiss", { sid: activeId, anchor: uuid.slice(-12), proto: sm ? (sm.proto ?? null) : null, events: sm ? sm.events.length : -1, regions: !!(sm && sm.regions), headKnown: sm ? (sm.headKnown ?? null) : null, headFrom: sm ? (sm.headFrom ?? 0) : null, older: !!(sm && olderOnServer(sm)), noframe, trail: landTrail.slice(-4) });
-    if (noframe && activeId) { awaitingFrameAnchor = { sid: activeId, uuid, keepY: pendingAnchorKeepY }; anchorPendingOlder = true; }
-    pendingAnchor = uuid; landTrail.push(noframe ? "pointer-no-frame" : "pointer-not-rendered"); return false;
+    scrollDiagRow("landmiss", { sid: activeId, anchor: uuid.slice(-12), proto: sm ? (sm.proto ?? null) : null, events: sm ? sm.events.length : -1, regions: !!(sm && sm.regions), headKnown: sm ? (sm.headKnown ?? null) : null, headFrom: sm ? (sm.headFrom ?? 0) : null, older: !!(sm && olderOnServer(sm)), noframe: !sm || sm.proto == null, trail: landTrail.slice(-4) });
+    pendingAnchor = uuid; landTrail.push("pointer-not-rendered"); return false;
   }
   // KIND GUARD — the robust half of "title clicks always land on the originating
   // message". Upstream producers substitute a reply uuid when the prompt line is
@@ -18281,11 +18276,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the relay's own onopen re-shipped correctly. romp:hostRelayUp IS that onopen — the one exact event.
   if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
-  if (m.type === "session") {
-    upsert(m);
-    const w = awaitingFrameAnchor;
-    if (w && w.sid === String(m.id) && sessions.get(w.sid)?.proto === 2) { awaitingFrameAnchor = null; if (!pendingAnchor) { pendingAnchor = w.uuid; pendingAnchorKeepY = w.keepY; } landTrail.push("frame-rearm"); }   // the frame the landing waited for (round ten)
-  }
+  if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;
     // limit-driven pause → the usage window's reset epoch (seconds); manual pause / unknown → null

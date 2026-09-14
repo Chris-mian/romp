@@ -179,6 +179,56 @@ process.exit(0);
 """
 
 
+DRIVER_RESTORE_NOFRAME = DRIVER_HEAD + r"""
+// T386 stage 2: older history is a GAP the page asks for by page (loadTurns) when its edge meets the viewport; a jump to scrollTop 1 meets the
+// head gap's top edge and asks for the head page, which fills in place and becomes a run from turn 0
+const pagesAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadTurns").length >= k, n, { timeout: 20000 }).catch(() => {});   // bounded: at the base nothing asks by page, and the road runs on to its own red
+const headFilled = () => page.waitForFunction(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return !!rs && rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 15000 }).catch(() => {});
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 1; });
+await pagesAt(1); await headFilled();
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+// settle mid-run: one screen below the head, off the top band, on a row of the head page, far above the tail a fresh page holds
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.clientHeight; });
+await page.waitForTimeout(600);
+const settled = await state();
+const savedRow = await page.evaluate(() => {
+  const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top;
+  for (const t of Array.from(c.querySelectorAll(".turn[data-uuid]"))) { const r = t.getBoundingClientRect(); if (r.bottom > cTop + 1) return { uuid: t.dataset.uuid, y: r.top - cTop }; }
+  return null;
+});
+await page.evaluate(() => window.__rompPersistForReload());
+const saved = await page.evaluate(() => { const raw = sessionStorage.getItem("romp:reloadScroll"); return raw ? JSON.parse(raw) : null; });
+// CI's mid-run shape (round ten): the boot's session frame is PARKED at the page across the reload (a capturing listener registered before
+// the page's scripts, a flag in sessionStorage that survives the reload), so the restore's first attempt runs on the skeleton tab, before
+// the session is proto 2; the frame is let through afterwards and the saved row must still land
+await page.evaluate(() => sessionStorage.setItem("lab:holdSession", "1"));
+await page.addInitScript(() => { window.__heldFrames = []; window.addEventListener("message", (e) => { const m = e.data; if (m && m.type === "session" && !m.__lab && sessionStorage.getItem("lab:holdSession") === "1") { window.__heldFrames.push(m); e.stopImmediatePropagation(); } }, true); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await page.waitForTimeout(800);   // the first render passes run with the frame parked
+const early = { held: await page.evaluate(() => (window.__heldFrames || []).length), trail: await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null)), rows: await page.evaluate(() => document.querySelectorAll("#content .turn[data-uuid]").length), asks: await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length })), sent: await page.evaluate(() => window.__sent.map((m) => m.type + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") : "")).slice(-12)) };
+await page.evaluate(() => { sessionStorage.removeItem("lab:holdSession"); const held = (window.__heldFrames || []).slice(); window.__heldFrames = []; for (const m of held) { m.__lab = true; window.postMessage(m, "*"); } });   // the frame arrives now
+await page.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 40, null, { timeout: 30000 });
+let landed = false;
+try {
+  await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false;
+    const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, savedRow ? savedRow.uuid : "none", { timeout: 15000 });
+  landed = true;
+} catch (e) { landed = false; }
+await page.waitForTimeout(500);
+const reloaded = await state();
+reloaded.landed = landed;
+reloaded.early = early;
+reloaded.saved = saved;
+reloaded.savedRow = savedRow;
+reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));
+reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
+fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded }) + "\n");
+await browser.close();
+process.exit(0);
+"""
+
+
 class ServedReloadRestoreMidRun(unittest.TestCase):
     maxDiff = None
 
@@ -276,6 +326,20 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
         self.assertTrue(rl["landed"], "the saved row is not back on screen after the reload: %r" % {k: rl[k] for k in ("top", "sh", "asks", "strip")})
         self.assertEqual(rl["asks"]["loadAround"], 1, "the row outside the fresh window is fetched through ONE window ask: %r" % rl["asks"])
         self.assertEqual(rl["asks"]["needFull"], 0, "no forced re-attach: %r" % rl["asks"])
+
+    def test_a_reload_whose_session_frame_arrives_late_runs_no_landing_attempt_before_it_and_lands_the_saved_row_after(self):
+        # round ten: CI's mid-run red was read as a restore attempt before the session's proto-2 frame; with the boot frame parked across the
+        # reload the page runs NO landing attempt before the frame (an empty trail, no rows, one full-frame ask) and lands once it arrives,
+        # at both heads. This road guards that: the restore waits for its frame. The shape the verifier read is not reproduced this way.
+        r = self._drive(DRIVER_RESTORE_NOFRAME, "restore-noframe")
+        rl = r["reloaded"]
+        self.assertIsNotNone(rl["savedRow"], "a row sat under the viewport top when the page was persisted")
+        self.assertGreaterEqual(rl["early"]["held"], 1, "the boot's session frame was parked across the reload: %r" % rl["early"])
+        self.assertEqual(rl["early"]["rows"], 0, "no rows rendered while the frame was parked: %r" % rl["early"])
+        self.assertEqual(rl["early"]["trail"] or [], [], "no landing attempt ran before a frame was on the tab (the restore waits for it): %r" % rl["early"])
+        self.assertEqual(rl["early"]["asks"]["loadAround"], 0, "…and no window was asked before it: %r" % rl["early"])
+        self.assertTrue(rl["landed"], "the saved row is back on screen once the frame arrived: %r" % {k: rl[k] for k in ("top", "asks", "trail")})
+        self.assertEqual(rl["asks"]["loadAround"], 1, "one window ask once the frame made the session proto 2: %r" % rl["asks"])
 
     def test_a_reload_from_the_transcript_head_lands_the_saved_row_at_offset_zero_and_pauses_nothing(self):
         r = self._drive(DRIVER_RESTORE_HEAD, "restore-head")

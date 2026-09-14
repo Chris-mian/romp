@@ -38,7 +38,7 @@ test("render.ts holds ONE skeleton set, declared beside tabMeta, and reads the a
 test("the tabOrder frame applies the skeleton list BEFORE applyTabOrder, so its one renderTabs paints the final set", () => {
   // the dispatch's own tabOrder branch is pinned byte-for-byte by tab-meta.test.ts, so the pre-step is a
   // statement AHEAD of the chain — it runs first, and applyTabOrder's renderTabs sees the final state
-  assert.match(RENDER, /if \(m\.type === "tabOrder"\) noteSkeletonTabOrder\(m\);[^\n]*\n\s*if \(m\.type === "session"\) \{\s*\n\s*upsert\(m\);/);
+  assert.match(RENDER, /if \(m\.type === "tabOrder"\) noteSkeletonTabOrder\(m\);[^\n]*\n\s*if \(m\.type === "session"\) upsert\(m\);/);
   const note = fn("noteSkeletonTabOrder");
   assert.match(note, /const kernelOrder: string\[\] = Array\.isArray\(m\.order\) \? m\.order\.filter\(\(x: any\) => typeof x === "string"\) : \[\];/,
     "the same string-only kernel order applyTabOrder adopts");
