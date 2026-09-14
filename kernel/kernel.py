@@ -57228,7 +57228,8 @@ def _landing():
             "#rbp-test:hover{background:var(--menu-hover,rgba(255,255,255,0.09))}"
             "#rbp-test[disabled]{opacity:.55;cursor:default}"
             "#rbp-test-out{padding-top:4px}#rbp-test-out:empty{display:none}"
-            "#rbp-test-out.bad,#rbp-dev-sub.bad{color:#e5484d;opacity:1}"    # a refusal is a STATUS, so it wears the status red, not the accent (the This-device row's, too: the kernel's missing-package answer)
+            "#rbp-test-out.bad{color:#e5484d;opacity:1}"    # a refusal is a STATUS, so it wears the status red, not the accent
+            "#rbp-dev-sub.bad{color:#e5484d;opacity:1}"     # the This-device row's refusal (the kernel's missing-package answer) is a status too: the same red. Its own line: the string above is the END marker of ui/webview/menu-theme-tokens.test.ts's popover slice
             # Per-node fleet colour on the network glyph (the user 2026-07-29). The nodes carry their own
             # fill, so they override the icon's currentColor: accent = connected and on this build,
             # grey = attached but not answering (romp is dialing), red = needs you (drift, no kernel, or
