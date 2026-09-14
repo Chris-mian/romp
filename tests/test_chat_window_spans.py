@@ -5,6 +5,7 @@ moves the client's base only when its span reaches the tail run, so the kernel n
 history (no client is ever detached). Over the render-floor fixture (a restored parse whose pre-cut turns are lazy) the pages
 before the floor and the floor'd list equal the whole build, so a span's events are checked against the whole. Synthetic
 transcripts only (the stage 4a served fixture's builder)."""
+import json
 import os
 import sys
 import unittest
@@ -122,6 +123,22 @@ class WindowSpans(Harness):
         self.assertEqual([e["uuid"] for e in n["events"]], [e["uuid"] for e in whole[:end]],
                          "the head page at floor 0 starts at the list's first event, the head cards riding along, through turn 15")
         self.assertEqual(n["events"][0]["uuid"], whole[0]["uuid"], "the first event served is the first card")
+
+    def test_a_socket_before_its_ready_gets_no_chat_frame_and_its_ready_brings_the_declared_wire(self):
+        # round eleven: the kernel used to serve INDEX frames to a socket that had not yet sent `ready` (the pusher fires from the socket's
+        # open, the bundle evaluates later), so a proto-2 page whose ready lost that race held an index frame at its reload restore and
+        # landed through the older wire (the mid-run reload red on CI: a reload-restore write, then loadOlder, loadAround 0)
+        whole, m, frame, c = self._boot()
+        fresh = {"send": (lambda s: sent.append(json.loads(s))), "echat": {}, "handshake": False}   # a real socket before its ready, as the accept marks it
+        sent = []
+        km._send_chat_locked(fresh, m, None, 0, False)
+        self.assertEqual(sent, [], "a socket before its ready gets no chat frame: %r" % [f.get("type") for f in sent])
+        self.assertNotIn(SID, fresh["echat"], "…and the kernel believes it holds nothing")
+        fresh["proto"] = 2; fresh["handshake"] = True                               # the handshake declares the uuid wire
+        km._send_chat_locked(fresh, m, None, 0, False)
+        self.assertEqual([f.get("type") for f in sent], ["session"], "the first frame after the handshake is the session")
+        self.assertEqual(sent[0].get("proto"), 2, "…in the wire the handshake declared: %r" % {k: sent[0].get(k) for k in ("proto", "tailLo", "headFrom")})
+        self.assertIsInstance(sent[0].get("tailLo"), int, "a proto-2 frame names the tail run's first turn")
 
     def test_load_newer_is_retired(self):
         self._boot()

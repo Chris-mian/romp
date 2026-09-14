@@ -179,7 +179,7 @@ process.exit(0);
 """
 
 
-DRIVER_RESTORE_NOFRAME = DRIVER_HEAD + r"""
+DRIVER_RESTORE_LATEREADY = DRIVER_HEAD + r"""
 // T386 stage 2: older history is a GAP the page asks for by page (loadTurns) when its edge meets the viewport; a jump to scrollTop 1 meets the
 // head gap's top edge and asks for the head page, which fills in place and becomes a run from turn 0
 const pagesAt = async (n) => page.waitForFunction((k) => window.__sent.filter((m) => m.type === "loadTurns").length >= k, n, { timeout: 20000 }).catch(() => {});   // bounded: at the base nothing asks by page, and the road runs on to its own red
@@ -198,31 +198,31 @@ const savedRow = await page.evaluate(() => {
 });
 await page.evaluate(() => window.__rompPersistForReload());
 const saved = await page.evaluate(() => { const raw = sessionStorage.getItem("romp:reloadScroll"); return raw ? JSON.parse(raw) : null; });
-// CI's mid-run shape (round ten): the boot's session frame is PARKED at the page across the reload (a capturing listener registered before
-// the page's scripts, a flag in sessionStorage that survives the reload), so the restore's first attempt runs on the skeleton tab, before
-// the session is proto 2; the frame is let through afterwards and the saved row must still land
-await page.evaluate(() => sessionStorage.setItem("lab:holdSession", "1"));
-await page.addInitScript(() => { window.__heldFrames = []; window.addEventListener("message", (e) => { const m = e.data; if (m && m.type === "session" && !m.__lab && sessionStorage.getItem("lab:holdSession") === "1") { window.__heldFrames.push(m); e.stopImmediatePropagation(); } }, true); });
+// the verifier's road (round eleven): the page's own `ready` is DELAYED three seconds at the socket (an init script wraps send before the
+// page's scripts run; a flag in sessionStorage survives the reload), so the kernel serves an INDEX frame to the client before its ready
+// and the reload restore's first frame is proto-less. The restore must land the same way as the fast case: through one window ask
+// once the kernel has answered the ready, never through the older wire.
+await page.evaluate(() => sessionStorage.setItem("lab:delayReady", "1"));
+await page.addInitScript(() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type === "ready" && sessionStorage.getItem("lab:delayReady") === "1") { const ws = this; window.__readyDelayed = (window.__readyDelayed || 0) + 1; setTimeout(() => { try { send.call(ws, d); } catch (e) { /* the socket closed */ } }, 3000); return; } } catch (e) { /* not a frame */ } return send.call(this, d); }; });
 await page.reload();
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-await page.waitForTimeout(800);   // the first render passes run with the frame parked
-const early = { held: await page.evaluate(() => (window.__heldFrames || []).length), trail: await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null)), rows: await page.evaluate(() => document.querySelectorAll("#content .turn[data-uuid]").length), asks: await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length })), sent: await page.evaluate(() => window.__sent.map((m) => m.type + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") : "")).slice(-12)) };
-await page.evaluate(() => { sessionStorage.removeItem("lab:holdSession"); const held = (window.__heldFrames || []).slice(); window.__heldFrames = []; for (const m of held) { m.__lab = true; window.postMessage(m, "*"); } });   // the frame arrives now
 await page.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 40, null, { timeout: 30000 });
+const early = { delayed: await page.evaluate(() => window.__readyDelayed || 0), trail: await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null)), asks: await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, ready: window.__sent.filter((m) => m.type === "ready").length })) };
 let landed = false;
 try {
   await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false;
-    const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, savedRow ? savedRow.uuid : "none", { timeout: 15000 });
+    const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, savedRow ? savedRow.uuid : "none", { timeout: 20000 });
   landed = true;
 } catch (e) { landed = false; }
 await page.waitForTimeout(500);
+await page.evaluate(() => sessionStorage.removeItem("lab:delayReady"));
 const reloaded = await state();
 reloaded.landed = landed;
 reloaded.early = early;
 reloaded.saved = saved;
 reloaded.savedRow = savedRow;
 reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));
-reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
+reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length, ready: window.__sent.filter((m) => m.type === "ready").length }));
 fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded }) + "\n");
 await browser.close();
 process.exit(0);
@@ -327,19 +327,18 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
         self.assertEqual(rl["asks"]["loadAround"], 1, "the row outside the fresh window is fetched through ONE window ask: %r" % rl["asks"])
         self.assertEqual(rl["asks"]["needFull"], 0, "no forced re-attach: %r" % rl["asks"])
 
-    def test_a_reload_whose_session_frame_arrives_late_runs_no_landing_attempt_before_it_and_lands_the_saved_row_after(self):
-        # round ten: CI's mid-run red was read as a restore attempt before the session's proto-2 frame; with the boot frame parked across the
-        # reload the page runs NO landing attempt before the frame (an empty trail, no rows, one full-frame ask) and lands once it arrives,
-        # at both heads. This road guards that: the restore waits for its frame. The shape the verifier read is not reproduced this way.
-        r = self._drive(DRIVER_RESTORE_NOFRAME, "restore-noframe")
+    def test_a_reload_whose_ready_loses_the_race_to_the_kernels_push_still_lands_through_one_window_ask(self):
+        # round eleven, the verifier's road: the page's ready delayed three seconds at the socket, so the kernel serves an index frame first
+        # (proto absent); the restore must wait for the kernel's answer to the ready and land the saved row through ONE window ask, as the
+        # fast case does, never through the older wire (the mid-run red on CI: a reload-restore write, then loadOlder, loadAround 0)
+        r = self._drive(DRIVER_RESTORE_LATEREADY, "restore-lateready")
         rl = r["reloaded"]
         self.assertIsNotNone(rl["savedRow"], "a row sat under the viewport top when the page was persisted")
-        self.assertGreaterEqual(rl["early"]["held"], 1, "the boot's session frame was parked across the reload: %r" % rl["early"])
-        self.assertEqual(rl["early"]["rows"], 0, "no rows rendered while the frame was parked: %r" % rl["early"])
-        self.assertEqual(rl["early"]["trail"] or [], [], "no landing attempt ran before a frame was on the tab (the restore waits for it): %r" % rl["early"])
-        self.assertEqual(rl["early"]["asks"]["loadAround"], 0, "…and no window was asked before it: %r" % rl["early"])
-        self.assertTrue(rl["landed"], "the saved row is back on screen once the frame arrived: %r" % {k: rl[k] for k in ("top", "asks", "trail")})
-        self.assertEqual(rl["asks"]["loadAround"], 1, "one window ask once the frame made the session proto 2: %r" % rl["asks"])
+        self.assertGreaterEqual(rl["early"]["delayed"], 1, "the page's ready was parked for three seconds: %r" % rl["early"])
+        self.assertTrue(rl["landed"], "the saved row is back on screen: %r" % {k: rl[k] for k in ("top", "asks", "trail")})
+        self.assertEqual(rl["asks"]["loadAround"], 1, "the row outside the fresh window is fetched through ONE window ask, as in the fast case: %r (trail %r)" % (rl["asks"], rl["trail"]))
+        self.assertEqual(rl["asks"]["loadOlder"], 0, "…never through the older wire: %r (trail %r)" % (rl["asks"], rl["trail"]))
+        self.assertEqual(rl["early"]["asks"]["loadOlder"], 0, "no older ask went out while the ready was parked (the kernel serves no chat frame before the handshake): %r" % rl["early"])
 
     def test_a_reload_from_the_transcript_head_lands_the_saved_row_at_offset_zero_and_pauses_nothing(self):
         r = self._drive(DRIVER_RESTORE_HEAD, "restore-head")

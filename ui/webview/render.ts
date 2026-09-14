@@ -13273,10 +13273,7 @@ function landActive(content: HTMLElement | null, v: View): void {
   if (!scrolled) {
     // a page reload's one-shot restore (T265): the tab that was active when the page went down lands where its
     // reader was — the bottom for a follow-mode reader, else their anchor turn, else the raw saved scrollTop
-    const sRestore = activeId ? liveSession(activeId) : null;   // the active tab's live session (the display paths read through liveSession)
-    const restoreWaits = !!(pendingReloadScroll && activeId && pendingReloadScroll.id === activeId && sRestore && sRestore.proto !== 2 && !frameAfterReady.has(activeId));
-    if (restoreWaits) landTrail.push("restore-waits-frame");   // an index frame from before our ready: the kernel re-serves the session for proto 2 next (round eleven)
-    const rs = restoreWaits ? null : takeReloadScroll(pendingReloadScroll, activeId);
+    const rs = takeReloadScroll(pendingReloadScroll, activeId);
     if (rs) {
       pendingReloadScroll = null;
       v.stick = rs.stick;
@@ -13325,15 +13322,10 @@ function landActive(content: HTMLElement | null, v: View): void {
 // one tab on another's position; review find, 2026-09-08) — is taken out the moment the page loads (one reload,
 // one restore) and is consumed by landActive's first show of that tab.
 const RELOAD_SCROLL_KEY = "romp:reloadScroll";
-// The page's `ready` (proto 2) can LOSE the race to the kernel's connect push: the pusher fires from the socket's open, the bundle
-// evaluates later, and a socket before its ready is served an INDEX frame (proto absent, headFrom the tail's start). A reload restore
-// attempted on that frame takes the older wire (fetchOlderForAnchor: a loadOlder, no window ask), which CI's mid-run reload road showed
-// twice (a reload-restore write, then loadOlder, loadAround 0, no regionask row; the verifier reproduced it by delaying ready three
-// seconds at the socket, round eleven). On ready the kernel resets the client's base and re-serves the session for the wire the
-// handshake declared, so the restore waits for the first frame AFTER our ready: proto 2 from this kernel (the window branch), still
-// an index frame from an old kernel (the legacy wire is then right). The event, not a timer.
-let readySent = false;
-const frameAfterReady = new Set<string>();   // sids whose session frame arrived after our ready went out
+// A page's `ready` (proto 2) can lose the race to the kernel's connect push (the pusher fires from the socket's open, the bundle evaluates
+// later); the KERNEL serves no chat frame to a socket before its ready since round eleven, so the first frame here is in the wire the
+// handshake declared and the reload restore's attempt reaches the window branch. (A page-side wait keyed on the page's own send was tried
+// and misjudged a ready delayed below the page as an old kernel's silence.)
 let pendingReloadScroll: ReloadScroll | null = (() => {
   try {
     const raw = sessionStorage.getItem(RELOAD_SCROLL_KEY);
@@ -18360,7 +18352,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the relay's own onopen re-shipped correctly. romp:hostRelayUp IS that onopen — the one exact event.
   if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
-  if (m.type === "session") { upsert(m); if (readySent) frameAfterReady.add(String(m.id)); }   // a frame after our ready is the kernel's answer to a proto-2 client: proto 2 from this kernel, an index frame from an old one (round eleven)
+  if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;
     // limit-driven pause → the usage window's reset epoch (seconds); manual pause / unknown → null
@@ -20612,4 +20604,4 @@ setFileViewIdentity((id) => {
   const s = sessions.get(id) ?? tabMeta.get(id);
   return s && s.name ? { name: s.name, color: s.color ?? null } : hostStub(id);
 });
-if (vscodeApi) { vscodeApi.postMessage({ type: "ready", proto: 2 }); readySent = true; }   // …and from here a session frame is the kernel's answer to a proto-2 client (round eleven: the reload restore waits for one)   // proto 2: the uuid-anchored chat wire (T323 stage 4b); an older kernel ignores the field and sends index frames
+if (vscodeApi) vscodeApi.postMessage({ type: "ready", proto: 2 });   // proto 2: the uuid-anchored chat wire (T323 stage 4b); an older kernel ignores the field and sends index frames

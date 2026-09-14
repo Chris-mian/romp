@@ -262,10 +262,8 @@ test("round ten fixes each carry a pin (T386 stage 2): a re-attempt waits on its
   assert.match(RENDER, /\| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/, "the row kind is budgeted with the other scroll rows");
 });
 
-test("round eleven fixes each carry a pin (T386 stage 2): the reload restore waits for the kernel's answer to ready; a real second click re-pulses the notice", () => {
-  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "ready", proto: 2 \}\); readySent = true; \}/, "the page marks its ready as sent");
-  assert.match(RENDER, /if \(m\.type === "session"\) \{ upsert\(m\); if \(readySent\) frameAfterReady\.add\(String\(m\.id\)\); \}/, "a session frame after our ready is the kernel's answer to a proto-2 client");
-  assert.match(RENDER, /const restoreWaits = !!\(pendingReloadScroll && activeId && pendingReloadScroll\.id === activeId && sRestore && sRestore\.proto !== 2 && !frameAfterReady\.has\(activeId\)\);\s*\n\s*if \(restoreWaits\) landTrail\.push\("restore-waits-frame"\);[^\n]*\n\s*const rs = restoreWaits \? null : takeReloadScroll\(pendingReloadScroll, activeId\);/, "the restore holds on an index frame from before our ready and runs on the first frame after it: the event, not a timer");
+test("round eleven fixes each carry a pin (T386 stage 2): a real second click re-pulses the notice; no page-side wait for the handshake remains (the kernel serves no chat frame before it)", () => {
+  assert.doesNotMatch(RENDER, /readySent|frameAfterReady|restore-waits-frame/, "the wait for the kernel's answer to ready lives in the kernel (no chat frame before the handshake), not in the page");
   const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
   assert.match(sca, /if \(live && live\.anchor === uuid\) \{ anchorPendingOlder = true; landTrail\.push\("pointer-fetch-waiting"\); if \(pendingAnchorClick\) pulseLandingNotice\(\); return false; \}/, "a real second click on the anchor a landing is on the wire for pulses the notice; a pass's re-attempt does not");
   assert.match(RENDER, /pendingAnchorClick = typeof m\.anchor === "string";/, "the focus frame marks the click");

@@ -43953,7 +43953,7 @@ def _new_ws_client(app, wid, sock, lock=None, q=None, start_sender=True):
     q = q if q is not None else queue.Queue()
     lock = lock if lock is not None else threading.Lock()
     now = _ws_clock()
-    client = {"app": app, "wid": wid, "alive": True, "qbytes": 0, "qlock": threading.Lock(), "t0": now,
+    client = {"app": app, "wid": wid, "alive": True, "qbytes": 0, "qlock": threading.Lock(), "t0": now, "handshake": False,   # no `ready` yet: no chat frame until it declares its wire (T386 stage 2, round eleven)
               "cid": uuid.uuid4().hex[:12],   # this connection's id
               "dlock": threading.RLock(),   # serializes _send_slot per client: the handler's connect push and the
               #                               pusher both send slots to one client (see _send_slot)
@@ -46011,9 +46011,14 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     total = len(evs)
     st = c.setdefault("echat", {})
     pc = st.get(sid)                                  # (tail_head_uuid, headFrom) the client currently holds
-    if c.get("proto") == 2:                           # a client with no protocol yet (a socket before its ready, an older
-        return _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc)   # remote page) gets index frames: its ready
-    #                                                    resets its base, and the floor decision leaves it out until then
+    if c.get("handshake") is False:                  # a real socket before its `ready` (marked at accept) has declared no wire: it gets NO chat frame
+        return ms                                     # (T386 stage 2, round eleven). It used to get index frames, and a proto-2 page whose ready lost the
+    #                                                    race to this push (the pusher fires from the socket's open; the bundle evaluates later) held an
+    #                                                    index frame at its reload restore and took the older wire for a landing the window wire owns.
+    #                                                    The ready handler resets the base and pushes the wire the handshake declared. A client record
+    #                                                    without the mark (the kernel's own in-process clients, the tests' dicts) keeps the index wire.
+    if c.get("proto") == 2:
+        return _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc)
     if isinstance(pc, dict):
         pc = None                                     # a proto-2 base cannot serve an index client (a reconnect resets anyway)
     if (pc is not None and change_from > 0 and pc[1] <= change_from <= total
@@ -60776,6 +60781,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if msg and msg.get("type") == "ready":
             client["proto"] = 2 if msg.get("proto") == 2 else 1   # the chat wire it speaks (T323 stage 4b): 2 = uuid frames; absent = index frames
+            client["handshake"] = True                            # …and the socket may be served chat frames from here (round eleven)
             # `ready` = the render bundle JUST evaluated, so this renderer holds NOTHING — but this
             # socket may already have been served: the pusher fires from the moment the WS opens
             # (the inline shim dials during HTML parse), while the 1.4MB bundle can still be
@@ -61833,6 +61839,7 @@ class Handler(BaseHTTPRequestHandler):
             _rp = (q.get("proto") or [""])[0]           # the chat wire the page's bundle declared at its ready, carried on the
             if _rp in ("1", "2"):                       #  redial's dial term (round 2, item 4): a redial posts no ready of its own,
                 client["proto"] = int(_rp)              #  so nothing else could tell this socket's client the protocol
+                client["handshake"] = True              #  …and that term IS the redial's handshake: its connect push serves the wire it names (round eleven)
         if skeleton:
             # A later chat column dials as a SKELETON client (the user 2026-09-11, who found a new column slow to open):
             # the shell seeded the column's state blob with the session it opens on, so `active` names it, and the
