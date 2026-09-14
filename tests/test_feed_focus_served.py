@@ -28,7 +28,7 @@ path (a MessageEvent, exactly what the socket shim dispatches), then walks the w
   (g) both themes: the divider (T410: 2px in --rule-strong, 0.22 alpha in each theme) and the quiet line take
       their colours from the theme's tokens, so the light theme (the classes the feed's theme switch sets)
       recolours them.
-The section's own block layout (grip drag, gutter resize, per-block collapse, the label's fold) is
+The section's own block layout (the chip's drag and arrow keys, gutter resize, per-block collapse, the label's fold) is
 tests/test_feed_focus_blocks_served.py's lab.
 Screenshots with FEED_FOCUS_SHOTS=<path-prefix>: -off-dark, -off-light, -on-dark, -on-light (the "on" pair with web
 focused). Skips LOUDLY without the extension deps or a Playwright browser (CI's Python jobs install none;

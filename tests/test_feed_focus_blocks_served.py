@@ -446,6 +446,23 @@ await deliver(payload);
 await deliver({ type: "activeChat", id: cfg.web });
 await frame(); await park();
 out.rowAgain = await survey();
+// (o) a there-and-back keyboard move from a FOLLOWING state (no order of its own) stores nothing (review, low 1)
+await boot(T347_BLOB);
+await page.focus("#feed-focus .col-asks .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowRight");
+await frame(); await park();
+out.keyThere = await survey();
+await page.focus("#feed-focus .col-asks .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowLeft");
+await frame(); await park();
+out.keyBack = await survey();
+// (p) a CLICK on the chip focuses it, so the arrow keys its tooltip promises need no Tab first (review, low 2)
+await page.click("#feed-focus .col-needsInput .feed-col-head .fcol-chip");
+await frame();
+out.clickFocused = await page.evaluate(() => { const a = document.activeElement; return a ? (a.className.split(" ").slice(0, 2).join(" ") + "|" + a.textContent) : null; });
+await page.keyboard.press("ArrowRight");
+await frame(); await park();
+out.clickArrow = await survey();
 out.errors = errors;
 fs.writeFileSync(cfg.out, JSON.stringify(out));   // a file, not stdout: the survey record is past the size one pipe write carries whole
 await browser.close();
@@ -518,9 +535,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         out_path = os.path.join(self.lab, "result.json")
         self.assertTrue(os.path.exists(out_path), "driver wrote no result file:\n" + p.stdout[-3000:] + p.stderr[-3000:])
         with open(out_path) as fh:
-            line = "RESULT:" + fh.read()
-        self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
-        r = json.loads(line[len("RESULT:"):])
+            r = json.load(fh)
         self.assertEqual(r.get("errors"), [], "the page threw nothing (an exception mid-render would skip the view-state write): %r" % r.get("errors"))
         web_keys = {"f:a:" + IDS[k] for k in ("webWork1", "webWork2", "webBlocked", "webDone1", "webDone2")}
 
@@ -611,7 +626,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertAlmostEqual(wd["rects"]["needsInput"]["width"] - before["rects"]["needsInput"]["width"], -180, delta=6, msg="…and Blocked gave it: %r" % wd["rects"])
         self.assertAlmostEqual(wd["rects"]["completed"]["width"], before["rects"]["completed"]["width"], delta=2, msg="Completed untouched: %r" % wd["rects"])
 
-        # ── (a) the Blocked grip to the first slot: the section reorders, the board keeps its order ──
+        # ── (a) the Blocked chip dragged to the first slot: the section reorders, the board keeps its order ──
         ro = r["reordered"]
         self.assertEqual(ro["secOrder"], ["needsInput", "asks", "completed"], "Blocked first in the section: %r" % ro["secOrder"])
         self.assertEqual(ro["boardOrder"], ROW_DEFAULT, "the board's columns keep their order: %r" % ro["boardOrder"])
@@ -684,6 +699,13 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
             self.assertLess(abs((ca["top"] + ca["bottom"]) / 2 - (nm["top"] + nm["bottom"]) / 2), nm["height"] / 2, "%s px: the caret on the name's line: %r" % (w, g))
             self.assertLess(nm["right"], hd["right"] + 0.5, "%s px: the name is clamped inside the head: %r" % (w, g))
             self.assertLess(hd["height"], nm["height"] * 1.6, "%s px: the head is one line: %r" % (w, g))
+        # ── (o) a there-and-back keyboard move from a following state stores nothing (review, low 1) ──
+        self.assertEqual(r["keyThere"]["stored"]["focusOrder"], ["needsInput", "asks", "completed"], "ArrowRight on Working: one slot on: %r" % r["keyThere"]["stored"])
+        self.assertEqual(r["keyBack"]["stored"]["focusOrder"], [], "ArrowLeft back: the section FOLLOWS the board again, nothing stored: %r" % r["keyBack"]["stored"])
+        self.assertEqual(r["keyBack"]["secOrder"], ["asks", "needsInput", "completed"], "…and on screen the board's arrangement: %r" % r["keyBack"]["secOrder"])
+        # ── (p) a click on the chip focuses it; the arrow keys then work without a Tab (review, low 2) ──
+        self.assertEqual(r["clickFocused"], "feed-col-name fcol-chip|Blocked", "the clicked chip holds focus: %r" % r["clickFocused"])
+        self.assertEqual(r["clickArrow"]["stored"]["focusOrder"], ["asks", "completed", "needsInput"], "ArrowRight right after the click moves Blocked one slot on: %r" % r["clickArrow"]["stored"])
         f2, fb = r["fresh2"], r["freshBoardDragged"]
         self.assertEqual((f2["secOrder"], f2["stored"].get("focusOrder")), (ROW_DEFAULT, []), "the reseeded state follows the board: %r" % f2["stored"])
         self.assertEqual((fb["boardOrder"], fb["secOrder"]), (["completed", "asks", "needsInput"], ["completed", "asks", "needsInput"]), "the section followed the board's drag: %r" % {k: fb[k] for k in ("boardOrder", "secOrder")})

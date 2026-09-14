@@ -4444,9 +4444,11 @@ function wireBlockKeys(chip: HTMLElement, key: string): void {
     nv.splice(from, 1);
     nv.splice(to, 0, key);
     const next = placeVisible(order, visible, nv);
-    // the drag's no-trace rule: a keyboard move that lands back on the arrangement the section follows keeps it
-    // FOLLOWING the board rather than pinning that arrangement as its own
-    FOCUS_SLOTS.set(!hadCustom && next.join() === fallback.join() ? [] : next);
+    // the no-trace rule, for the keys WHETHER OR NOT an order was stored (T410 review): a move that lands on the
+    // arrangement the section follows leaves it FOLLOWING the board rather than pinning that arrangement as its own,
+    // so a there-and-back (ArrowDown, then ArrowUp) from a following state stores nothing; guarding on a stored
+    // order, as the drag does, made the second press pin the followed arrangement explicitly
+    FOCUS_SLOTS.set(next.join() === fallback.join() ? [] : next);
     persistViewState();
   });
 }
@@ -4513,6 +4515,8 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
     const vertical = getComputedStyle(colsEl).flexDirection === "column";   // the drag AXIS, per layout
     down.preventDefault();
     down.stopPropagation();
+    if (chip.tabIndex >= 0) chip.focus();   // the section's chip takes focus on the click itself (T410 review): the arrow keys
+    //                                         its tooltip promises need no Tab first; preventDefault above withheld the browser's
     chip.setPointerCapture(down.pointerId);
     col.classList.add("col-dragging");
     const pos = (ev: PointerEvent) => (vertical ? ev.clientY : ev.clientX);
