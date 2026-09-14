@@ -46,8 +46,8 @@ test("the tab hover and the Sessions pane show a session's mail state", () => {
 test("the kernel and the bus derive the same default from the thread's reg and the fresh key", () => {
   assert.match(KERNEL, /def _thread_mail_off\(sid\):[\s\S]*?if not sid or not _thread_reg\(sid\)\.get\("threadOf"\):\s*\n\s*return False\s*\n\s*f = _session_flags\(\)\.get\(sid\)\s*\n\s*return not \(isinstance\(f, dict\) and f\.get\("threadMail"\) is True\)/,
                "literal True only (the flip-a-default rule)");
-  assert.match(KERNEL, /def _mail_off_why_k\(sid\):[\s\S]*?if _reg_unreadable\(sid\):\s*\n\s*return "unreadable"\s*\n\s*if _thread_mail_off\(sid\):\s*\n\s*return "thread"\s*\n\s*return "isolation" if \(_session_flag\(sid, "postalServiceOff"\) or _session_flag\(sid, "postalOff"\)\) else ""/,
-               "the kernel's reasons: unreadable first (the bus holds everything for it), then the thread default, then the mailbox flag");
+  assert.match(KERNEL, /def _mail_off_why_k\(sid\):[\s\S]*?if _reg_unreadable\(sid\):\s*\n\s*return "unreadable"\s*\n\s*if _thread_mail_off\(sid\):\s*\n\s*return "thread"\s*\n\s*iso = _session_flag\(sid, "postalServiceOff"\) or _session_flag\(sid, "postalOff"\)[^\n]*\n\s*if _flags_unknown_cold\(\):\s*\n\s*return "unreadable"[^\n]*\n\s*return "isolation" if iso else ""/,
+               "the kernel's reasons: unreadable first (the bus holds everything for it), then the thread default, then the mailbox flag, read before the flags-unknown door closes (2026-09-14)");
   assert.match(KERNEL, /def _postal_isolated\(sid\):[\s\S]*?return bool\(_mail_off_why_k\(sid\)\)/);
   assert.match(KERNEL, /"mailOff": bool\(mail_why\),/, "the comments frame carries it (one derivation with the reason)");
   assert.match(KERNEL, /\*\*_mail_off_fields\(m\["id"\]\),/, "the Sessions pane rows carry it, with the reason, from one derivation (T356 fifth follow-up)");
