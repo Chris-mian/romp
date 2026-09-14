@@ -56,6 +56,43 @@ def _transcript(path, n=2, t0=1_700_000_000):
     Path(path).write_text("".join(json.dumps(r) + "\n" for r in recs))
 
 
+
+def _lock_with_bodies(tree):
+    """Every statement inside a `with _PLANNER_SEEN_LOCK:` body, at any depth."""
+    import ast
+    inside = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.With) and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_PLANNER_SEEN_LOCK" for i in n.items):
+            for b in n.body:
+                for m in ast.walk(b):
+                    inside.add(id(m))
+    return inside
+
+
+def _mutation_targets(tree):
+    """(node, name) for every AugAssign or Assign whose target is a subscript of _PLANNER_STATS or _PLANNER_SEEN_READ_FAULT."""
+    import ast
+    out = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.AugAssign, ast.Assign)):
+            targets = [n.target] if isinstance(n, ast.AugAssign) else n.targets
+            for t in targets:
+                if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id in ("_PLANNER_STATS", "_PLANNER_SEEN_READ_FAULT"):
+                    out.append((n, t.value.id))
+    return out
+
+
+def _mutations_outside_the_lock(src):
+    import ast, textwrap
+    tree = ast.parse(textwrap.dedent(src))
+    inside = _lock_with_bodies(tree)
+    return [name for n, name in _mutation_targets(tree) if id(n) not in inside]
+
+
+def _mutation_count(src):
+    import ast, textwrap
+    return len(_mutation_targets(ast.parse(textwrap.dedent(src))))
+
 class PlannerSeenMemo(unittest.TestCase):
     def _reset_memo(self):
         """The memo's module state back to a fresh boot's; tolerant of a tree without the persisted memo (the base run), so
@@ -246,7 +283,7 @@ class PlannerSeenMemo(unittest.TestCase):
         finally:
             jd._rebind_state(self.root)
 
-    PLAN_SESSION_TOKENS_SHA16 = "37e9193b948d4430"   # 2026-09-14: the skipped and planned bumps under the memo lock (counters only, no derivation change)   # v2: the skip check counts mismatches by term (the derivation bumped with it)
+    PLAN_SESSION_TOKENS_SHA16 = "37e9193b948d4430"   # 2026-09-14: the skipped, planned and recorded bumps moved under the memo lock; counters only, no derivation change
 
     def test_a_change_to_the_plan_session_bumps_the_derivation_or_this_pin(self):
         """Round three, low 3: the derivation bump rule made mechanical. A persisted row asserts the planner had nothing to do
@@ -338,10 +375,17 @@ class PlannerSeenMemo(unittest.TestCase):
         [t.start() for t in ts]; [t.join(10) for t in ts]
         self.assertEqual(jd._PLANNER_STATS["mismatchByTerm"], {"0": 3000, "1": 3000}, "every bump counted")
         # round two of the tidy: the sibling counters (skipped, planned, recorded) and the read-fault check-and-set with its
-        # refused bump go through the same lock; no bare += on them stays in run_plan
+        # refused bump go through the same lock. The pin is an AST check (the third tidy): every mutation of _PLANNER_STATS or
+        # _PLANNER_SEEN_READ_FAULT in the two helpers sits INSIDE a `with _PLANNER_SEEN_LOCK` body, so a refactor that leaves
+        # the with and moves the mutation out fails here (a string pin on the with's presence passed that)
         import inspect
-        self.assertIn("with _PLANNER_SEEN_LOCK:", inspect.getsource(jd._planner_bump))
-        self.assertIn("with _PLANNER_SEEN_LOCK:", inspect.getsource(jd._planner_seen_read_fault))
+        for fn in (jd._planner_bump, jd._planner_seen_read_fault):
+            self.assertEqual(_mutations_outside_the_lock(inspect.getsource(fn)), [], fn.__name__)
+        self.assertGreaterEqual(_mutation_count(inspect.getsource(jd._planner_bump)), 1, "the bump is a mutation the check sees")
+        self.assertGreaterEqual(_mutation_count(inspect.getsource(jd._planner_seen_read_fault)), 2, "the flag set and the refused bump")
+        moved = "def _planner_bump(key):\n    with _PLANNER_SEEN_LOCK:\n        pass\n    _PLANNER_STATS[key] += 1\n"   # the with kept, the
+        self.assertEqual(_mutations_outside_the_lock(moved), ["_PLANNER_STATS"],                                       #  mutation moved out
+                         "the check is red on a copy whose mutation left the with (red first by construction); a string pin on the with passed it")
         for key, fn in (("skipped", jd._plan_session), ("planned", jd._plan_session), ("recorded", jd._plan_session)):
             fn_src = inspect.getsource(fn)
             self.assertIn('_planner_bump("%s")' % key, fn_src, key)
