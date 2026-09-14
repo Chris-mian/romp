@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -69,7 +70,8 @@ class UnknownIsNeverEmpty(unittest.TestCase):
         self.assertTrue(pm._dir_empty(base / "absent"), "an absent directory holds nothing")
         (base / "e").mkdir(); self.assertTrue(pm._dir_empty(base / "e"))
         (base / "f").mkdir(); (base / "f" / "x").write_text(""); self.assertFalse(pm._dir_empty(base / "f"))
-        (base / "file").write_text(""); self.assertFalse(pm._dir_empty(base / "file"), "a file is not an empty directory")
+        (base / "file").write_text(""); self.assertTrue(pm._dir_empty(base / "file"), "a file where the directory should be is MISSING "
+                                                       "in both rules (ENOTDIR): it holds nothing, and _mark_pending mints no marker for it")
         if ROOT_ONLY:
             return
         os.chmod(base / "f", 0)
@@ -122,6 +124,150 @@ class UnknownIsNeverEmpty(unittest.TestCase):
             self.assertFalse((pm.MAILPENDING / sid).exists(), "absent stays absent on an unknown inbox")
         finally:
             os.chmod(newd, 0o755)
+
+
+class TheQueuedLows(unittest.TestCase):
+    """The lows queued at the exists() fix's reads: each fault staged for real, the answer the closed door's."""
+
+    def test_a_file_shaped_inbox_is_missing_in_both_rules_and_mints_no_marker(self):
+        sid = "55555555-2222-4333-8444-0000000000e5"
+        (pm.MAILROOT / sid).mkdir(parents=True, exist_ok=True); (pm.MAILROOT / sid / "new").write_text("not a directory")
+        self.assertTrue(pm._dir_empty(pm.MAILROOT / sid / "new"), "ENOTDIR is MISSING by the shared tuple: holds nothing")
+        pm._mark_pending(sid)
+        self.assertFalse((pm.MAILPENDING / sid).exists(), "no marker on a file-shaped inbox (a False here minted a permanent one)")
+
+    def test_restore_answers_three_ways_and_unknown_neither_re_sends_nor_marks(self):
+        """restore() over an unreadable cur/ answers UNKNOWN (the manager's correction: never a claim the message is back
+        when it is not): POST /restore lists it under `unknown`, puts nothing back and re-feeds nothing; a missing claim
+        stays the re-send cue; a present one is RESTORED."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        sid = "66666666-2222-4333-8444-0000000000e6"; mid = "m-claimed"
+        cur = pm.MAILROOT / sid / "cur"; cur.mkdir(parents=True, exist_ok=True); (pm.MAILROOT / sid / "new").mkdir(exist_ok=True)
+        (cur / mid).write_text("From: alice\n\nhi\n"); (cur / "m-ok").write_text("From: bob\n\nyo\n")
+        self.assertEqual(pm.restore(sid, "m-ok"), pm.RESTORED); self.assertTrue((pm.MAILROOT / sid / "new" / "m-ok").is_file())
+        self.assertEqual(pm.restore(sid, "m-gone"), pm.RESTORE_MISSING, "a missing claim: nothing to put back, the re-send cue")
+        logs = []; saved = pm._log; pm._log = logs.append
+        self.addCleanup(setattr, pm, "_log", saved)
+        os.chmod(cur, 0)
+        try:
+            self.assertEqual(pm.restore(sid, mid), pm.RESTORE_UNKNOWN, "cur/ unreadable: unknown, never put back")
+            woke = []; saved_wake = pm._wake_when_ready; pm._wake_when_ready = lambda s: woke.append(s)
+            try:
+                res, code = pm.restore_stranded({"id": sid, "mids": [mid, "m-gone"]})
+            finally:
+                pm._wake_when_ready = saved_wake
+        finally:
+            os.chmod(cur, 0o755)
+        self.assertEqual((code, res["restored"], res["missing"], res["unknown"]), (200, [], [], [mid, "m-gone"]),
+                         "with cur/ unreadable nothing can be answered for, the absent id included: unknown, never missing")
+        self.assertTrue((cur / mid).is_file(), "the claim stands where it was")
+        self.assertFalse((pm.MAILROOT / sid / "new" / mid).exists(), "nothing claimed back")
+        self.assertTrue(any("could not be answered for" in m for m in logs), logs)
+        import inspect
+        src = inspect.getsource(pm._push) + inspect.getsource(pm._bounce_oversize)
+        self.assertEqual(src.count("== RESTORE_MISSING"), 2, "both push callers re-send on MISSING alone")
+        self.assertEqual(src.count("== RESTORE_UNKNOWN"), 3, "...and name the unknown answer, re-sending nothing")
+
+    def test_an_unreadable_claude_home_keeps_the_last_known_push_answer_and_is_off_cold(self):
+        """The manager's correction on the sentinels: an unreadable ~/.claude is an UNKNOWN source; the last known answer
+        stands with one log line per spell, and with no answer known yet the push is off, with the line."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        home = Path(tempfile.mkdtemp()); (home / ".claude").mkdir()
+        logs = []; saved = pm._log; pm._log = logs.append
+        self.addCleanup(setattr, pm, "_log", saved)
+        pm._PUSH_LAST[0] = None; pm._PUSH_FAULT_SAID[0] = False
+        with mock.patch.object(pm.Path, "home", staticmethod(lambda: home)):
+            os.chmod(home / ".claude", 0)
+            try:
+                self.assertTrue(pm._push_disabled(), "cold and unreadable: off")
+                self.assertTrue(pm._push_disabled()); self.assertEqual(sum("no answer known yet" in m for m in logs), 1, "said once")
+            finally:
+                os.chmod(home / ".claude", 0o755)
+            self.assertFalse(pm._push_disabled(), "readable, no sentinel: on, and the answer is now known")
+            os.chmod(home / ".claude", 0)
+            try:
+                self.assertFalse(pm._push_disabled(), "unreadable with a known answer: the last known answer (on) stands")
+                self.assertFalse(pm._push_disabled())
+                self.assertEqual(sum("the last known answer stands (push on)" in m for m in logs), 1, "said once per spell")
+            finally:
+                os.chmod(home / ".claude", 0o755)
+            (home / ".claude" / "romp-postal-nopush").write_text("")
+            self.assertTrue(pm._push_disabled(), "the sentinel stands: off")
+            os.chmod(home / ".claude", 0)
+            try:
+                self.assertTrue(pm._push_disabled(), "unreadable again: the last known answer (off) stands")
+            finally:
+                os.chmod(home / ".claude", 0o755)
+
+    def test_the_flags_file_unknown_closes_the_mail_door_cold_and_keeps_the_last_answer_on_both_sides(self):
+        """The same correction for the session-flags file, on the bus and on the kernel over ONE file: missing is a known
+        state (mail on); unreadable or corrupt with nothing known is closed under "unreadable" on both sides; after a clean
+        read the last known answer stands on both sides while the file cannot be read; a clean read re-arms."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        p = km.jd.STATE / "session-flags.json"
+        saved_flags = pm.SESSION_FLAGS; pm.SESSION_FLAGS = p          # the two modules over ONE file for this test
+        self.addCleanup(setattr, pm, "SESSION_FLAGS", saved_flags)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists():
+            p.unlink()
+        sid = "88888888-2222-4333-8444-0000000000e8"
+        (km.jd.STATE / "sdk").mkdir(exist_ok=True); (km.jd.STATE / "sdk" / (sid + ".json")).write_text('{"sid": "%s", "alive": true}' % sid)
+        km._thread_reg_memo.clear()
+        def cold():
+            pm._FLAGS_LAST[0] = None; pm._FLAGS_FAULT_SAID[0] = False
+            km._flags_cache.clear(); km._state_fault_seen.pop(str(p), None)
+        def both():
+            return (pm._mail_off_why(sid), km._mail_off_why_k(sid))
+        cold()
+        self.assertEqual(both(), ("", ""), "no flags file: a genuine state, mail on")
+        cold(); p.write_text("{not valid json")
+        self.assertEqual(pm._mail_off_why(sid), "unreadable", "torn bytes and nothing known: the bus closes the door")
+        self.assertEqual(km._mail_off_why_k(sid), "", "the kernel QUARANTINES torn bytes (its reader moves the file aside, the "
+                         "evidence kept) and reads the store as empty, a known state")
+        self.assertFalse(p.exists(), "the file was moved aside by the kernel's read")
+        self.assertEqual(both(), ("", ""), "...after which both sides read a missing file: agreement, known, mail on")
+        cold(); p.write_text('{"%s": {"postalServiceOff": true}}' % sid)
+        self.assertEqual(both(), ("isolation", "isolation"))
+        os.chmod(p, 0)
+        try:
+            self.assertEqual(both(), ("isolation", "isolation"), "unreadable with a known answer: the last known stands")
+        finally:
+            os.chmod(p, 0o644)
+        p.write_text("{}")
+        self.assertEqual(both(), ("", ""), "a clean read: the door opens on both sides")
+        os.chmod(p, 0)
+        try:
+            self.assertEqual(both(), ("", ""), "...and that answer is the one that stands under the next fault")
+        finally:
+            os.chmod(p, 0o644)
+
+    def test_an_inbox_that_cannot_be_listed_is_a_fault_never_an_empty_inbox(self):
+        """The manager's correction: read_box raises InboxUnreadable, _drain answers the fault beside empty rows (the /drain
+        handler turns it into a 503, the push skips the box with one line per spell), the sweeps skip the box with a line;
+        the client never reads "no mail" where mail sits unread."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        sid = "77777777-2222-4333-8444-0000000000e7"
+        newd = pm.MAILROOT / sid / "new"; newd.mkdir(parents=True, exist_ok=True); (newd / "m1").write_text("From: alice\n\nhi\n")
+        (pm.MAILROOT / sid / "cur").mkdir(exist_ok=True); (pm.MAILROOT / sid / "tmp").mkdir(exist_ok=True)
+        logs = []; saved = pm._log; pm._log = logs.append
+        self.addCleanup(setattr, pm, "_log", saved)
+        pm._INBOX_UNREADABLE_SAID.clear()
+        os.chmod(newd, 0)
+        try:
+            with self.assertRaises(pm.InboxUnreadable):
+                pm.read_box(sid, consume=False)
+            res = pm._drain(sid)
+            self.assertEqual(res["messages"], []); self.assertIn("cannot be listed", res["unreadable"])
+            pm._warn_stuck_mail(); pm._warn_stuck_mail()            # the sweep skips the box, said once
+            self.assertEqual(sum("cannot be listed" in m for m in logs), 1, logs)
+        finally:
+            os.chmod(newd, 0o755)
+        self.assertEqual([m["id"] for m in pm.read_box(sid, consume=False)], ["m1"], "readable again: the mail is there")
+        self.assertNotIn("unreadable", pm._drain(sid), "a clean drain carries no fault")
 
 
 class TaskPlanLoudOnUnreadable(unittest.TestCase):

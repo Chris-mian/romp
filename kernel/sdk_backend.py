@@ -3064,7 +3064,9 @@ def _reg_absent_for_write(path) -> bool:
     """Whether a reg WRITER may build a fresh {sid} record at `path`: only when the stat says ENOENT, a genuinely absent
     file. Every other stat error (EACCES on sdk/, ELOOP on a symlink-loop path, ENOTDIR, EIO) is a reg that exists or a
     path that cannot hold one, and a write there guts the record or lands in the wrong place; never Path.exists(), which
-    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14)."""
+    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14). This is the WRITERS' rule;
+    the readers' missing set (kernel _REG_MISSING_ERRNOS and postal REG_MISSING_ERRNOS: ENOENT, ENOTDIR, EBADF, ELOOP) is
+    wider on purpose: a reader treats a loop as no record, a writer never builds one there."""
     try:
         path.stat()
         return False
@@ -3076,8 +3078,12 @@ def _reg_absent_for_write(path) -> bool:
 
 def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     """read_reg for a READ-MODIFY-WRITE on one reg FIELD: {} when the reg genuinely does not
-    exist (a fresh session — an empty base is correct), None when the reg EXISTS but would not
-    read (a transient failure). A None caller MUST skip its write: rebuilding a list field from
+    exist (ENOENT, a fresh session: an empty base is correct), None when the reg EXISTS but would not
+    read (EACCES, EIO, torn JSON: transient) OR its path cannot hold a reg (ELOOP, ENOTDIR: these will
+    not heal, and the caller's skipped write is still the right answer, since a write there lands
+    nowhere a reader looks). The writers' rule is _reg_absent_for_write; the READERS' missing set is
+    wider (the kernel's _REG_MISSING_ERRNOS: ENOENT, ENOTDIR, EBADF, ELOOP), on purpose: a reader
+    treats a loop as no record, a writer never builds one there. A None caller MUST skip its write: rebuilding a list field from
     an empty base and persisting it silently wipes the field — bgLedger/bgLedgerEnded, pushNotes,
     taskWrites, sessionCrons all carried this shape (the 2026-09-01 field-level gutting class,
     the field-sized sibling of _update_reg's whole-reg guard). Losing one update is the far
@@ -4985,6 +4991,11 @@ def queue_meta_from_reg(reg: dict) -> list:
     return out
 
 
+_RESTAMPS: dict = {}   # {sid: (previous spawnedAt, new)} where this process moved a reg's epoch: the kernel's build counts the
+#                        still-running work between the two (a survivor's work a re-stamp dropped) once per entry and pops it;
+#                        seeded here, at the stamp, because at a boot the reg moves before the first build (2026-09-14)
+
+
 class SdkSession:
     """One long-lived SDK client running in its own thread + asyncio loop."""
 
@@ -6323,7 +6334,11 @@ class SdkSession:
         planner's persisted memo and the evidence gate and reading the live CLIs' running tasks as ghosts). `mark_echoes` is
         False on a DELIBERATE reconnect inside a live thread (the waker's effort or model change), whose forwarded sends land
         through the resume."""
+        prev = (read_reg(self.backend.state_dir, self.sid) or {}).get("spawnedAt")
         self.backend._update_reg(self.sid, spawnedAt=int(spawned_at), spawnedAtCli=str(cli_ident or ""))
+        if isinstance(prev, int) and not isinstance(prev, bool) and prev > 0 and int(spawned_at) != prev:
+            _RESTAMPS[self.sid] = (prev, int(spawned_at))   # the kernel's build counts what the move dropped, once (memos
+            #                                                  ghostDropped.restamped), then clears the entry
         self.backend._heal_stale_awaiting(self.sid)
         if mark_echoes:
             try:
@@ -10151,6 +10166,9 @@ class SdkBackend:
                       % (sess.name, ident))
             return
         login = cli.get("login")
+        # the reading (the follow-up's read, 2026-09-14): an EMPTY string is an identifier, the machine's own login, and is
+        # stamped as such, because the host echoes what the launch billed; an ABSENT field means a host older than the field
+        # and falls to this iteration's options login
         self._stamp_launch_login(sess, login_id=login if isinstance(login, str) else None)
         sess._fresh_cli_stamp(spawned, ident, mark_echoes=not getattr(sess, "_deliberate_connect", False))
         self._log("host (%s): a fresh CLI %s (spawned at %d); its epoch and launch login stamped" % (sess.name, ident, spawned))
@@ -13857,8 +13875,23 @@ class SdkBackend:
             self._log("boot reconcile: %s had a move to its own folder pending — nothing to settle; cleared" % sid[:8])
             self._update_reg_dropping(sid, ("cwdPending",))
             return
-        at_new = os.path.exists(transcript_path(pend, fsid))
-        at_old = bool(cur) and os.path.exists(transcript_path(cur, fsid))
+        def _at(slug):
+            """True, False, or None when the slug's transcript cannot be stat'ed for a reason other than ENOENT (an unsearchable
+            folder): os.path.exists answered False there on every interpreter, and an unsearchable pending slug with the transcript
+            also at the old one read as a move that never happened and dropped cwdPending (the exists() fix's queued low, 2026-09-14)."""
+            try:
+                os.stat(transcript_path(slug, fsid))
+                return True
+            except FileNotFoundError:
+                return False
+            except OSError:
+                return None
+        at_new = _at(pend)
+        at_old = bool(cur) and _at(cur)
+        if at_new is None or at_old is None:
+            self._log("boot reconcile: %s has a move to %s pending and a folder that cannot be read (new %r, old %r): left pending"
+                      % (sid[:8], pend, at_new, at_old))
+            return
         if at_new and not at_old:
             self._log("boot reconcile: %s was mid-move to %s — the transcript is there; finishing romp's half"
                       % (sid[:8], pend))
@@ -14488,7 +14521,8 @@ class SdkBackend:
         disk says this instant (the proof owns() and _ensure already take). None: NO reg file, which is
         durable, since this backend never unlinks a reg. A reg that EXISTS but would not read or parse
         RAISES (EMFILE, EIO, EACCES, torn JSON: the transient class owns() was repaired for on
-        2026-09-07), so the caller waits on a reader's fault instead of counting it as no record. The
+        2026-09-07; and ELOOP or ENOTDIR paths, which will not heal but are no record either way, so
+        the wait is the same answer), so the caller waits on a reader's fault instead of counting it as no record. The
         first version read through read_reg, which answers None for an unreadable reg exactly as for
         an absent one, and never looked at self.sessions: a running session whose reg would not read
         was classed as no record, its landing mail withheld, and its watch retired as ended (review

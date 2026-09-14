@@ -477,6 +477,11 @@ class BackendHostRules(unittest.TestCase):
         self.assertEqual(reg(), (1700006000, "6:f", "opts-login"), "a bool spawn time reads as absent")
         be._on_host_hello(s, dict(base, cli={"pid": 7, "start": "g", "spawnedAt": "1700007000", "login": "x"}))
         self.assertEqual(reg(), (1700006000, "7:g", "opts-login"), "a string spawn time reads as absent")
+        # the empty-login reading (the follow-up's read, low 3): "" IS an identifier, the machine's own login, stamped as the
+        # host echoes what the launch billed; only an ABSENT field falls to the options' login
+        be._on_host_hello(s, dict(base, cli={"pid": 8, "start": "h", "spawnedAt": 1700008000, "login": ""}))
+        self.assertEqual(reg(), (1700008000, "8:h", ""), "an empty cli.login stamps the machine's own login, not the options'")
+        self.assertEqual(sb.read_reg(Path(d), SID).get("launchedLogin"), "")
 
     def test_a_hosted_comment_thread_attaches_at_boot_and_gets_no_dead_life_notices(self):
         d, be = self._be()

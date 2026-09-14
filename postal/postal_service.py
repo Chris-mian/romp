@@ -401,7 +401,10 @@ def _mark_pending(sid):
         return
     m = MAILPENDING / sid
     newd = MAILROOT / sid / "new"
-    empty = _dir_empty(newd)                       # True, False, or None for a new/ that cannot be read
+    empty = _dir_empty(newd)                       # True, False, or None for a new/ that cannot be read. None covers EACCES and
+    #                                                EIO (the directory exists and cannot be listed); ENOENT, ENOTDIR, EBADF and
+    #                                                ELOOP read MISSING by the shared tuple (REG_MISSING_ERRNOS), so a symlink-loop
+    #                                                or file-shaped new/ clears the marker like an absent one, deliberately
     if empty is None:
         # UNKNOWN keeps the marker as it stands, present or absent, never an unlink: a box whose new/ cannot be listed
         # read as "no mail" here and lost the marker the retry arm had just kept, and the unread mail stranded with no
@@ -413,10 +416,7 @@ def _mark_pending(sid):
             MAILPENDING.mkdir(parents=True, exist_ok=True)
             m.touch()
         else:
-            try:
-                m.unlink()
-            except FileNotFoundError:
-                pass
+            m.unlink()                                 # FileNotFoundError lands in the except below like every other fault
     except Exception:
         pass
 
@@ -772,7 +772,24 @@ def _mail_unreadable(f, sid, exc):
                                   "why": "%s (errno %s)" % (WHY_INBOX_UNREADABLE, exc.errno)})
     _mark_pending(sid)                               # new/ may be empty now → drop the marker
 
+class InboxUnreadable(Exception):
+    """A mailbox whose new/ cannot be listed: /inbox and /drain answer this as a fault the client can show (a 503 with
+    the reason and an `unreadable` field beside empty rows), never as an empty inbox where mail sits unread; the push
+    and the sweeps skip the box with one line per fault spell, and the next poll or pass retries (2026-09-14)."""
+
+
+_INBOX_UNREADABLE_SAID = set()   # boxes whose listing fault was said (cleared by the box's next clean listing)
+
+
+def _say_inbox_unreadable_once(sid, why):
+    if sid not in _INBOX_UNREADABLE_SAID:
+        _INBOX_UNREADABLE_SAID.add(sid)
+        _log("%s; skipped until it can be listed" % why)
+
+
 def read_box(sid, consume):
+    """The unread mail of `sid`'s box, oldest first (consume: claimed into cur/). Raises InboxUnreadable when new/ exists
+    and cannot be listed; the callers answer the fault (never an empty inbox, which the client would read as no mail)."""
     if not _safe_id(sid):            # reject traversal in the id from /inbox, /drain
         return []
     if _postal_off(sid):             # isolated: hold mail — don't deliver while the mailbox is off (it waits in new/)
@@ -784,7 +801,12 @@ def read_box(sid, consume):
     if consume:
         (mb / "cur").mkdir(parents=True, exist_ok=True)
     out = []
-    for f in sorted(newd.iterdir(), key=lambda p: p.name):   # oldest first
+    try:
+        entries = sorted(newd.iterdir(), key=lambda p: p.name)   # oldest first
+    except OSError as e:
+        raise InboxUnreadable("inbox of %s cannot be listed (%s: %s)" % (sid, type(e).__name__, str(e)[:120]))
+    _INBOX_UNREADABLE_SAID.discard(sid)                   # listed: a later fault is a new spell
+    for f in entries:
         if not f.is_file():
             continue
         try:
@@ -826,6 +848,9 @@ def read_box(sid, consume):
         _mark_pending(sid)         # cleared the box -> drop the marker (no-op if more arrived)
     return out
 
+RESTORED, RESTORE_MISSING, RESTORE_UNKNOWN = "restored", "missing", "unknown"   # restore()'s three answers
+
+
 def restore(sid, mid):
     """UNCLAIM a consumed message: move cur/<mid> back to new/ under its ORIGINAL id.
 
@@ -839,12 +864,21 @@ def restore(sid, mid):
     one message one arc, and that arc lands. Restoring the FILE also keeps the original headers
     (X-Park, X-Kind, Date), which the re-send dropped.
 
-    Returns True iff the message was put back."""
+    Answers one of three words (2026-09-14): RESTORED, the message is back in new/ under its id; RESTORE_MISSING,
+    nothing to put back (recalled or swept while we held it, or an unsafe id), the callers' cue to re-send under a
+    new id; RESTORE_UNKNOWN, cur/ cannot be read, so the claim may well sit there: the callers neither re-send (a
+    second id and a second sent row for one message) nor mark it restored (a claim the message is back when it is
+    not), say so once, and the next sweep retries. The first cut answered "put back" for unknown, a quiet claim the
+    repo's rule refuses."""
     if not _safe_id(sid) or not _safe_id(mid):
-        return False
+        return RESTORE_MISSING
     src = MAILROOT / sid / "cur" / mid
-    if not src.is_file():                # recalled/swept while we held it — nothing to put back
-        return False
+    state = _record_state(src)
+    if state == "unreadable":
+        _log("restore of %s for %s: its cur/ cannot be read; the claim stands where it is for the next sweep" % (mid, sid))
+        return RESTORE_UNKNOWN
+    if state == "missing":               # recalled/swept while we held it: nothing to put back
+        return RESTORE_MISSING
     try:
         head = src.read_text(errors="replace").partition("\n\n")[0]
     except OSError:
@@ -852,8 +886,11 @@ def restore(sid, mid):
     try:
         (MAILROOT / sid / "new").mkdir(parents=True, exist_ok=True)
         src.rename(MAILROOT / sid / "new" / mid)
-    except OSError:
-        return False
+    except FileNotFoundError:
+        return RESTORE_MISSING
+    except OSError as e:
+        _log("restore of %s for %s: the move back to new/ failed (%s); the claim stands for the next sweep" % (mid, sid, type(e).__name__))
+        return RESTORE_UNKNOWN
     # The exec stamp said "the recipient read it"; it didn't. Retract it so the sender's receipt
     # reads pending again (_sent_receipts drops an exec that a later unexec retracts).
     _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
@@ -862,7 +899,7 @@ def restore(sid, mid):
         k, _, v = ln.partition(": "); meta[k.lower()] = v
     _queue_read_receipt(meta, unread=True)   # cross-host: retract the read the claim implied
     _mark_pending(sid)                   # new/ is non-empty again -> raise the marker
-    return True
+    return RESTORED
 
 def restore_stranded(data):
     """POST /restore {id, mids} — the kernel handing back mail it FED and LOST (SdkSession._return_stranded_mail,
@@ -878,14 +915,18 @@ def restore_stranded(data):
     if not sid or not _safe_id(sid) or not isinstance(mids, list) or not mids \
             or not all(isinstance(m, str) and m for m in mids):
         return {"ok": False, "error": "id and a list of message ids required"}, 400
-    restored, missing = [], []
+    restored, missing, unknown = [], [], []
     for mid in mids:
-        (restored if _safe_id(mid) and restore(sid, mid) else missing).append(mid)
+        r = restore(sid, mid) if _safe_id(mid) else RESTORE_MISSING
+        (restored if r == RESTORED else unknown if r == RESTORE_UNKNOWN else missing).append(mid)
     if restored:
         _log("restore for %s: %d message(s) the kernel fed and lost (a connection rebuild stranded the turn) put back "
              "in new/ under their own ids for re-delivery: %s" % (sid, len(restored), ", ".join(restored)))
         threading.Thread(target=_wake_when_ready, args=(sid,), daemon=True).start()
-    return {"ok": True, "restored": restored, "missing": missing}, 200
+    if unknown:
+        _log("restore for %s: %d message(s) could not be answered for (cur/ unreadable); neither put back nor re-fed, "
+             "the next sweep retries: %s" % (sid, len(unknown), ", ".join(unknown)))
+    return {"ok": True, "restored": restored, "missing": missing, "unknown": unknown}, 200
 
 def _queue_read_receipt(meta, unread=False, dmid=""):
     """Cross-host read backflow: mail delivered over the peer bus carries X-Peer-Mid/X-Peer-Via
@@ -1261,10 +1302,10 @@ def _dir_empty(d):
     holds an entry, None when it exists but cannot be read (unknown is never empty)."""
     try:
         return not any(d.iterdir())
-    except NotADirectoryError:
-        return False
     except OSError as e:
-        return True if e.errno in REG_MISSING_ERRNOS else None
+        return True if e.errno in REG_MISSING_ERRNOS else None   # ENOTDIR is in the tuple: a new/ that is a file is MISSING, the
+    #                                                              same word the reg rule gives it (a False here minted a permanent
+    #                                                              marker on a file-shaped box and the retry pushed every pass)
 
 
 def _record_state(p):
@@ -1329,20 +1370,51 @@ def _mail_off_why(sid):
                     told it was a comment thread, a wrong diagnosis the norms then make final).
       "isolation" — the user toggled POSTAL ISOLATION on (the timeline lane's mailbox icon → postalServiceOff;
                     the legacy `postalOff` key still honoured).
-    Both read the kernel's shared files. Best-effort on the flag read: any error → the flag is unset (fail OPEN,
-    never wedge messaging); the thread default holds regardless of the flag file's health."""
+    Both read the kernel's shared files. The flags file that cannot be read or parsed is an UNKNOWN source
+    (_session_flags_read): the last known flags stand, said once per fault spell, and with none known yet the door is
+    closed under "unreadable" until the file reads again (before 2026-09-14 the flag read failed OPEN, a quiet wrong
+    answer where the repo's rule wants a fault; the kernel's _mail_off_why_k keeps the same rule over the same file, so
+    the two sides agree on every shape). A MISSING flags file is a genuine state (no flag ever set): known, mail on.
+    The thread default holds regardless of the flag file's health."""
     if not sid:
         return ""
-    try:
-        f = json.loads(SESSION_FLAGS.read_text()).get(sid)
-    except Exception:
-        f = None
+    flags, known = _session_flags_read()
+    f = flags.get(sid) if isinstance(flags, dict) else None
     t = _thread_of(sid)
     if t == THREAD_REG_UNREADABLE:
         return "unreadable"                              # a record that exists but cannot be read: closed, never open
     if t and not (isinstance(f, dict) and f.get("threadMail") is True):
         return "thread"
+    if not known:
+        return "unreadable"                              # the flags cannot be read and none are known: closed, never open
     return "isolation" if (isinstance(f, dict) and (f.get("postalServiceOff") or f.get("postalOff"))) else ""
+
+
+_FLAGS_LAST = [None]          # the last session-flags dict read cleanly (a missing file reads {}); None: none yet
+_FLAGS_FAULT_SAID = [False]   # the flags file's read fault said once per fault spell (re-armed by a clean read)
+
+
+def _session_flags_read():
+    """The kernel's session-flags file as (flags, known): the parsed object, or {} for a missing file (a genuine state),
+    both known; on a read or parse fault the LAST KNOWN flags with one log line per fault spell (known), or (None, False)
+    when this process has none yet: unknown, and the readers close their doors. Mirrors the kernel's _session_flags,
+    which keeps its last cached value on a fault and says so once per episode."""
+    try:
+        d = json.loads(SESSION_FLAGS.read_text())
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+    except FileNotFoundError:
+        d = {}
+    except Exception as e:
+        if not _FLAGS_FAULT_SAID[0]:
+            _FLAGS_FAULT_SAID[0] = True
+            _log("session-flags.json cannot be read (%s: %s): %s" % (type(e).__name__, str(e)[:80],
+                 "the last known flags stand until it reads again" if _FLAGS_LAST[0] is not None
+                 else "no flags known yet, so mail is held (closed) until it reads"))
+        return _FLAGS_LAST[0], _FLAGS_LAST[0] is not None
+    _FLAGS_LAST[0] = d
+    _FLAGS_FAULT_SAID[0] = False
+    return d, True
 
 def _postal_off(sid):
     """True if the session can neither send nor receive mail (see _mail_off_why): it's invisible to list_agents,
@@ -1817,16 +1889,21 @@ def _drain(sid):
     # forever. Over the cap -> pause (don't consume); after a quiet window the
     # streak resets and delivery resumes.
     with _lock:
-        peek = read_box(sid, consume=False)
-        if not peek:
-            return {"messages": [], "paused": False}
-        now = time.time()
-        count, last = STREAKS.get(sid, (0, 0))
-        count = count + 1 if now - last <= WINDOW else 1
-        if count > MAX:
-            return {"messages": [], "paused": True}
-        STREAKS[sid] = (count, now)
-        return {"messages": read_box(sid, consume=True), "paused": False}
+        try:
+            peek = read_box(sid, consume=False)
+            if not peek:
+                return {"messages": [], "paused": False}
+            now = time.time()
+            count, last = STREAKS.get(sid, (0, 0))
+            count = count + 1 if now - last <= WINDOW else 1
+            if count > MAX:
+                return {"messages": [], "paused": True}
+            STREAKS[sid] = (count, now)
+            return {"messages": read_box(sid, consume=True), "paused": False}
+        except InboxUnreadable as e:
+            # the box cannot be listed: a fault the caller can show (the /drain handler answers 503 with it, the push
+            # skips the box with one line), never an empty drain
+            return {"messages": [], "paused": False, "unreadable": str(e)}
 
 # ───────────────────────── push-on-deliver (auto-wake) ─────────────────────────
 # When mail lands for a LOCAL romp session that's sitting idle, the bus wakes the recipient through the
@@ -1838,9 +1915,32 @@ def _drain(sid):
 # romp-postal-off, which also disables the drain).
 PUSH_SENTINEL = "#" * 44                          # the banner's rule line (format_push)
 
+_PUSH_LAST = [None]          # the last answer _push_disabled read cleanly (None: none yet this process)
+_PUSH_FAULT_SAID = [False]   # the sentinels' read fault said once per fault spell (re-armed by a clean read)
+
+
 def _push_disabled():
+    """The push is off when either sentinel file stands under ~/.claude. When the directory cannot be read the sentinels'
+    state is UNKNOWN, and an unknown source never yields a quiet answer of its own: the LAST KNOWN answer stands, said once
+    per fault spell, and with no answer known yet the push is OFF (closed) until the directory reads again (Path.exists()
+    read the sentinels absent there on 3.14 and raised on 3.13, the fail-open class of the exists() fix; the first cut of
+    this reader answered OFF on every unreadable read, which turned a working push off on a transient fault, 2026-09-14)."""
     h = Path.home() / ".claude"
-    return (h / "romp-postal-off").exists() or (h / "romp-postal-nopush").exists()
+    states = (_record_state(h / "romp-postal-off"), _record_state(h / "romp-postal-nopush"))
+    if "present" in states:
+        off = True
+    elif "unreadable" in states:
+        if not _PUSH_FAULT_SAID[0]:
+            _PUSH_FAULT_SAID[0] = True
+            _log("the push sentinels under ~/.claude cannot be read: %s" % (
+                "the last known answer stands (push %s) until they read again" % ("off" if _PUSH_LAST[0] else "on")
+                if _PUSH_LAST[0] is not None else "no answer known yet, so the push is off until they read"))
+        return True if _PUSH_LAST[0] is None else _PUSH_LAST[0]
+    else:
+        off = False
+    _PUSH_LAST[0] = off
+    _PUSH_FAULT_SAID[0] = False
+    return off
 
 def _sweep_orphans():
     """Bounce mail stuck UNREAD in a DEAD recipient's mailbox back to its (live)
@@ -1867,8 +1967,9 @@ def _sweep_orphans():
         recip = _name_for_id(box.name, rows=live)  # dead by construction: the registry names it, no fetch
         try:
             files = list(newd.iterdir())
-        except OSError:
-            continue                                    # an inbox the bus cannot read is skipped, never bounced or tidied
+        except OSError as e:
+            _say_inbox_unreadable_once(box.name, "inbox of %s cannot be listed (%s: %s)" % (box.name, type(e).__name__, str(e)[:120]))
+            continue                                    # skipped with a line, never bounced or tidied
         for f in files:
             if not f.is_file():
                 continue
@@ -1933,8 +2034,9 @@ def _sweep_orphans():
                     and not any(p.is_file() for p in box.iterdir()):
                 # …and no `.corrupt-*` sidecar beside the three dirs: a file moved aside is evidence
                 # the tidy must not sweep away with the empty box (review find, 2026-09-08). _dir_empty
-                # answers False for a directory that cannot be read (an is_dir() that read False there on
-                # 3.14 dropped the unreadable new/ from the check and the box, mail and all, was removed)
+                # answers None for a directory that cannot be read, and all() over a None is False (an
+                # is_dir() that read False there on 3.14 dropped the unreadable new/ from the check and the
+                # box, mail and all, was removed)
                 shutil.rmtree(box, ignore_errors=True)
         except Exception:
             pass
@@ -1967,7 +2069,12 @@ def _warn_stuck_mail():
             continue
         recip = by_id.get(box.name)
         recip_settled = bool(recip and recip.get("state", "") in ("idle", "waiting"))
-        for f in list(newd.iterdir()):
+        try:
+            files = list(newd.iterdir())
+        except OSError as e:
+            _say_inbox_unreadable_once(box.name, "inbox of %s cannot be listed (%s: %s)" % (box.name, type(e).__name__, str(e)[:120]))
+            continue                                    # skipped with a line: no warning owed on what cannot be seen
+        for f in files:
             if not f.is_file():
                 continue
             seen_ids.add(f.name)
@@ -2132,7 +2239,9 @@ def _bounce_oversize(sid, m):
             # letting the refusal out here (into _push's catch-all) would leave it in cur/ with no note
             # and no row — the arm the orphan sweep grew the same day (2026-09-08). Put it back under
             # its own id; the next pass re-claims it and retries the bounce once the log writes again.
-            restore(sid, mid)
+            if restore(sid, mid) == RESTORE_UNKNOWN:
+                _log("push to %s: the oversize message %s could not be put back (cur/ unreadable); its claim stands "
+                     "for the next pass" % (sid, mid))
             _say_refused_once("oversize bounce", "the note for %s" % mid, e)
             return
         _refusal_over("oversize bounce")
@@ -2141,9 +2250,12 @@ def _bounce_oversize(sid, m):
         _log("push to %s: message %s is %d bytes, over the %d-byte /deliver limit; bounced to its sender %s"
              % (sid, mid, n, _PUSH_MAX_BYTES, frm_id))
         return
-    if not restore(sid, mid):
+    r = restore(sid, mid)
+    if r == RESTORE_MISSING:                             # gone from cur/: a re-send is the only way to keep the mail
         deliver(sid, m.get("from", "?"), frm_id, m.get("body", ""), park=m.get("park", False),
                 kind=m.get("kind", ""), from_host=m.get("from_host", ""), relayed=bool(m.get("relayed")))
+    elif r == RESTORE_UNKNOWN:                           # cur/ unreadable: neither re-sent nor marked; the next pass retries
+        _log("push to %s: the oversize message %s could not be put back (cur/ unreadable); its claim stands" % (sid, mid))
     if mid not in _OVERSIZE_NAMED:
         _OVERSIZE_NAMED.add(mid)
         _log("push to %s: message %s is %d bytes, over the %d-byte /deliver limit, and has no local sender "
@@ -2178,6 +2290,9 @@ def _push(sid, agent):
         return False                                          # a permission ask / unknown state → drain later
     try:
         res = _drain(sid)                                     # claim mail (guarded + consuming)
+        if res.get("unreadable"):
+            _say_inbox_unreadable_once(sid, res["unreadable"])   # the box cannot be listed: skipped, said once, retried next pass
+            return False
         msgs = res.get("messages", [])
         if not msgs:
             return False                                      # nothing, or loop-guard paused
@@ -2204,13 +2319,18 @@ def _push(sid, agent):
         # deferred push doesn't mint a second identity for the same message. Only if the file is
         # gone (recalled/swept mid-push) do we fall back to a re-send, which costs a new id but
         # never loses the mail.
+        unknown = 0
         for m in held:
-            if not restore(sid, m.get("id", "")):
+            r = restore(sid, m.get("id", ""))
+            if r == RESTORE_MISSING:                     # gone from cur/: a re-send is the only way to keep the mail
                 deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""),
                         park=m.get("park", False), kind=m.get("kind", ""),
                         from_host=m.get("from_host", ""), relayed=bool(m.get("relayed")))
-        _log("push to %s deferred (%s); %d msg(s) restored for the drain backstop%s"
-             % (sid, cause, len(held), (" after %d landed" % landed) if landed else ""))
+            elif r == RESTORE_UNKNOWN:                   # cur/ unreadable: neither re-sent nor marked; the next pass retries
+                unknown += 1
+        _log("push to %s deferred (%s); %d msg(s) restored for the drain backstop%s%s"
+             % (sid, cause, len(held) - unknown, (" after %d landed" % landed) if landed else "",
+                ("; %d could not be answered for (cur/ unreadable), left claimed for the next pass" % unknown) if unknown else ""))
         return False
     except Exception as e:
         _log("push error for %s: %s" % (sid, e))
@@ -2479,12 +2599,20 @@ class Handler(BaseHTTPRequestHandler):
             peek = (q.get("peek") or ["0"])[0] == "1"
             if not _safe_id(sid):
                 return self._send({"error": "missing or invalid id"}, 400)
-            return self._send({"messages": read_box(sid, consume=not peek)})
+            try:
+                return self._send({"messages": read_box(sid, consume=not peek)})
+            except InboxUnreadable as e:
+                # a fault the client can show (the MCP tool and `romp mail inbox` surface the error text; the pages
+                # read `unreadable`), never an empty inbox where mail sits unread; the next poll retries
+                return self._send({"error": str(e), "unreadable": str(e), "messages": []}, 503)
         if u.path == "/drain":
             sid = (q.get("id") or [""])[0]
             if not _safe_id(sid):
                 return self._send({"error": "missing or invalid id"}, 400)
-            return self._send(_drain(sid))
+            res = _drain(sid)
+            if res.get("unreadable"):
+                return self._send(dict(res, error=res["unreadable"]), 503)
+            return self._send(res)
         if u.path == "/quarantine":                # held inbound mail from directed peers (kernel reads the
             return self._send({"held": quarantine_list()})   # dir directly for cards; this is for introspection/tests
         self._send({"error": "not found"}, 404)

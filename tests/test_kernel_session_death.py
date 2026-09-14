@@ -189,6 +189,48 @@ class GhostDroppedCounters(unittest.TestCase):
         self.assertEqual(km._GHOST_DROPPED["agents"], before + 1, "a kept dot is not counted")
 
 
+    def test_a_re_stamp_counts_the_survivors_work_it_dropped_once_seeded_from_the_stamp_site(self):
+        """The counter split (the manager's read of the spawnedAt follow-up's safety boot, 2026-09-14): the cumulative
+        counters keep counting standing stale rows once per build; `restamped` answers the fix's own question, the rows and
+        unsettled foreground launches with previous <= t < new when the reg's epoch moved, counted ONCE per re-stamp from the
+        backend's (sid, previous, new) entry and never on a build's first sight."""
+        td = tempfile.mkdtemp(); path = os.path.join(td, "t.jsonl")
+        rows = [
+            {"type": "assistant", "uuid": "a1", "timestamp": "2026-09-14T10:00:00Z", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_bg1", "name": "Bash", "input": {"command": "sleep 99", "run_in_background": True}}]}},
+            {"type": "user", "uuid": "u1", "parentUuid": "a1", "timestamp": "2026-09-14T10:00:01Z", "toolUseResult": {"isAsync": True, "status": "async_launched"},
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bg1", "content": "started"}]}},
+            {"type": "assistant", "uuid": "a2", "timestamp": "2026-09-14T10:00:05Z", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_ag1", "name": "Agent", "input": {"prompt": "look"}}]}},
+        ]
+        with open(path, "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        t_bg = km.em.parse_z("2026-09-14T10:00:00Z"); t_ag = km.em.parse_z("2026-09-14T10:00:05Z")
+        scan = km._bg_scan_cached(path)
+        self.assertEqual([r["id"] for r in scan if r.get("status") == "running"], ["toolu_bg1"], "the fixture has one running task")
+        table = {}
+        saved = km._RESTAMPS_OVERRIDE; km._RESTAMPS_OVERRIDE = table
+        self.addCleanup(setattr, km, "_RESTAMPS_OVERRIDE", saved)
+        before = json.loads(json.dumps(km._GHOST_DROPPED))
+        sid = "11111111-2222-3333-4444-5555555555d1"
+        km._bg_tasks(path, t_ag + 100, sid=sid)          # no entry for this sid: a build's sight counts nothing
+        self.assertEqual(km._GHOST_DROPPED["restamped"], before["restamped"])
+        table[sid] = (t_bg - 10, t_ag + 10)               # the epoch moved across both launches: a survivor's work dropped
+        km._bg_tasks(path, t_ag + 10, sid=sid)
+        self.assertEqual((km._GHOST_DROPPED["restamped"]["bgTasks"] - before["restamped"]["bgTasks"],
+                          km._GHOST_DROPPED["restamped"]["agents"] - before["restamped"]["agents"]), (1, 1))
+        self.assertNotIn(sid, table, "consumed once")
+        km._bg_tasks(path, t_ag + 10, sid=sid)
+        self.assertEqual(km._GHOST_DROPPED["restamped"]["bgTasks"] - before["restamped"]["bgTasks"], 1, "not counted again on the next build")
+        table[sid] = (t_ag + 20, t_ag + 30)               # a move across a window with no work in it
+        km._bg_tasks(path, t_ag + 30, sid=sid)
+        self.assertEqual(km._GHOST_DROPPED["restamped"]["bgTasks"] - before["restamped"]["bgTasks"], 1)
+        self.assertEqual(set(km._GHOST_DROPPED), {"bgTasks", "agents", "restamped"})
+        import inspect
+        self.assertIn('memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))',
+                      inspect.getsource(km), "the perf memos carry the split beside the cumulative counters")
+
 class DeathSweepTick(unittest.TestCase):
     def setUp(self):
         self._saved_codex = km._codex

@@ -789,7 +789,8 @@ class _PerfStats:
             except Exception:
                 memos[key] = {}
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
-        memos["ghostDropped"] = dict(_GHOST_DROPPED)   # the spawned-at ghost floor's drops: bgTasks and agents (2026-09-14)
+        memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
+        #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -26056,7 +26057,19 @@ def _mail_off_why_k(sid):
         return "unreadable"
     if _thread_mail_off(sid):
         return "thread"
-    return "isolation" if (_session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")) else ""
+    iso = _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")   # reads the flags (noting a fault)
+    if _flags_unknown_cold():
+        return "unreadable"                # the flags cannot be read and none are known: closed, as the bus answers
+    return "isolation" if iso else ""
+
+
+def _flags_unknown_cold():
+    """The session-flags file cannot be read and this process has no last-known copy: the flags' state is UNKNOWN
+    (_session_flags said so once per episode and answered {}), so a mail door that depends on them is closed until a
+    clean read; with a last-known copy the door keeps that answer. The bus's _mail_off_why applies the same rule over
+    the same file (its _session_flags_read), so the two sides agree on every shape (2026-09-14)."""
+    p = str(jd.STATE / "session-flags.json")
+    return p in _state_fault_seen and _flags_cache.get(p) is None
 
 
 def _mail_off_fields(sid):
@@ -27970,7 +27983,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     return out
 
 
-def _bg_tasks(path, spawned_at=None, live=None):
+def _bg_tasks(path, spawned_at=None, live=None, sid=None):
     """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
     'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
     (read fresh). The cached transcript scan (mtime+size, like _background_why) holds the meta; the output is
@@ -27984,6 +27997,8 @@ def _bg_tasks(path, spawned_at=None, live=None):
     background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Both filters run after
     the cache, since they change without the transcript changing."""
     scan = _bg_scan_cached(path)
+    if sid:
+        _count_restamped(sid, path, scan)               # the epoch moved since this process last saw it: what the move dropped
     if live is not None:
         live_ids = {t.get("toolUseId") for t in live if t.get("toolUseId")}
         scan = [tk for tk in scan if tk["id"] in live_ids]
@@ -28353,7 +28368,44 @@ def _agent_alive(row, agent_id, tm, spawned_at):
     return True
 
 
-_GHOST_DROPPED = {"bgTasks": 0, "agents": 0}      # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+_GHOST_DROPPED = {"bgTasks": 0, "agents": 0,     # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+                  "restamped": {"bgTasks": 0, "agents": 0}}   # ...and, a different question, what a RE-STAMP dropped (below)
+_RESTAMPS_OVERRIDE = None    # tests: a restamps table in place of the SDK backend module's
+
+
+def _restamps_table():
+    """The SDK backend's per-process table of epochs it moved, {sid: (previous, new)}, written where the reg's
+    spawnedAt moves (the hello decision, the kernel-child stamp) and consumed here once per entry."""
+    if _RESTAMPS_OVERRIDE is not None:
+        return _RESTAMPS_OVERRIDE
+    return getattr(sys.modules.get("romp_sdk_backend"), "_RESTAMPS", None)
+
+
+def _count_restamped(sid, path, scan):
+    """memos.ghostDropped.restamped: the spawnedAt fix's own question, distinct from the cumulative counters above.
+    `bgTasks`/`agents` count every drop at every build, so a stale row of a task that died with an EARLIER CLI is
+    counted once per build for as long as it stands (the memo's health, never zero on a box with history). This one
+    counts, once per re-stamp, the still-running rows and the unsettled foreground launches whose time lies at or after
+    the reg's PREVIOUS spawnedAt and before the new one: a survivor's work the re-stamp dropped. Seeded from the STAMP
+    site (the backend records (sid, previous, new) where it moves the reg), not from the build's first sight: at a boot
+    the reg moves before the first build, and a table seeded by the build would record the new value and count nothing.
+    Must read zero at every boot from now on (the manager's read of the follow-up, 2026-09-14). Never a clock: two
+    stored epochs against row times."""
+    table = _restamps_table()
+    if not table or sid not in table:
+        return
+    prev, new = table.pop(sid)
+    try:
+        n_tasks = sum(1 for r in scan if r.get("status") == "running" and isinstance(r.get("t"), (int, float))
+                      and prev <= r["t"] < new)
+        st = _agent_launch_state(path)
+        n_agents = sum(1 for tid, t in (st.get("launched") or {}).items()
+                       if tid not in st.get("settled", ()) and isinstance(t, (int, float)) and prev <= t < new)
+    except Exception as e:
+        sys.stderr.write("romp-kernel: restamp count for %s failed: %s: %s\n" % (str(sid)[:8], type(e).__name__, e))
+        return
+    _GHOST_DROPPED["restamped"]["bgTasks"] += n_tasks
+    _GHOST_DROPPED["restamped"]["agents"] += n_agents
 #                                                    (T401: a surviving CLI's launches read as ghosts at every restart until the
 #                                                    spawnedAt fix; zero for survivors on the boot after it is the read)
 
@@ -36140,7 +36192,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             # Reads the CALLER's snapshot — a fresh _live_map() here cost a reg sweep
             # per session build, on the pusher's hottest path (the 2026-08-10 CPU fix).
             "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid),
-                                 live=(live_map.get(str(sid)) or {}).get("bgTasks")),
+                                 live=(live_map.get(str(sid)) or {}).get("bgTasks"), sid=sid),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),

@@ -55,13 +55,22 @@ class PostalOff(unittest.TestCase):
         pm.SESSION_FLAGS.write_text(json.dumps({SID: {"hideFromFeed": True}}))   # muted from feed, NOT postal
         self.assertFalse(pm._postal_off(SID), "hideFromFeed alone must not isolate from postal")
 
-    def test_malformed_flags_file_fails_open(self):
+    def test_malformed_flags_file_closes_cold_and_keeps_the_last_known_answer(self):
         # the flags dir is made HERE, not inherited from an earlier test: under pytest-xdist the
         # class's tests split across workers, and this one landed on a worker where no sibling had
-        # created the dir yet (surfaced 2026-09-04 when the suite's test count shifted the split)
+        # created the dir yet (surfaced 2026-09-04 when the suite's test count shifted the split).
+        # Until 2026-09-14 this pinned fail-open (a corrupt file read as no flags); the repo's rule is that an
+        # unavailable source surfaces a fault, so a corrupt file with no flags known yet HOLDS mail (closed,
+        # "unreadable", said once), and after a clean read the last known flags stand while it cannot be read
         pm.SESSION_FLAGS.parent.mkdir(parents=True, exist_ok=True)
+        pm._FLAGS_LAST[0] = None; pm._FLAGS_FAULT_SAID[0] = False
         pm.SESSION_FLAGS.write_text("{not valid json")
-        self.assertFalse(pm._postal_off(SID), "a corrupt flags file must NOT wedge messaging (fail open)")
+        self.assertTrue(pm._postal_off(SID), "a corrupt flags file with nothing known: mail held, never a quiet on")
+        self.assertEqual(pm._mail_off_why(SID), "unreadable")
+        pm.SESSION_FLAGS.write_text(json.dumps({SID: {"hideFromFeed": True}}))
+        self.assertFalse(pm._postal_off(SID), "a clean read: on")
+        pm.SESSION_FLAGS.write_text("{not valid json")
+        self.assertFalse(pm._postal_off(SID), "corrupt again: the last known flags stand (on)")
 
     def test_read_box_holds_mail_while_isolated(self):
         box = pm.MAILROOT / SID / "new"
@@ -149,7 +158,10 @@ class ThreadMailOff(unittest.TestCase):
         _flags({THREAD: {"threadMail": True, "postalServiceOff": True}})
         self.assertEqual(pm._mail_off_why(THREAD), "isolation", "mail on for the thread, then the user's own isolation holds")
         _flags("{not json")
-        self.assertEqual(pm._mail_off_why(THREAD), "thread", "a corrupt flags file cannot turn a thread's mail on")
+        self.assertEqual(pm._mail_off_why(THREAD), "isolation", "a corrupt flags file keeps the LAST KNOWN flags (the rule since "
+                         "2026-09-14: an unavailable source is never a quiet fresh answer), so the user's isolation still holds")
+        pm._FLAGS_LAST[0] = None; pm._FLAGS_FAULT_SAID[0] = False
+        self.assertEqual(pm._mail_off_why(THREAD), "thread", "a corrupt flags file with nothing known cannot turn a thread's mail on")
 
     def test_breaking_out_returns_the_ordinary_rule(self):
         _reg(THREAD, threadOf=PARENT)
