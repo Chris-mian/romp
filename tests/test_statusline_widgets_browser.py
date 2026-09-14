@@ -6,9 +6,10 @@ by name, then the branch, leading the right cluster before the controls; no sess
 line section (right after Tab widgets, reached through the shell's relay, the whole entry point: no gear on the line) lists
 one row per widget with a live demo drawn by the line's own render, a sliding switch and the widget's options; a switch or
 an option written there reaches the chat frame's line live (the storage event), and the store's two mirrors (showBranch,
-showSessionBadge) follow; a store from before the widgets reads the branch from its showBranch when the key is present
-and shows the branch when it is absent (the default flipped on under a fresh key), and an unrelated save leaves that
-store's keys as they were.
+showSessionBadge) follow; a store from before the widgets shows the branch whatever its showBranch says (the one-shot
+migration: that key was the gear's injected default and is never read; the widget defaults apply, and the first save of
+the prefs writes the key and the mirrors), an unrelated save leaves that store's keys as they were, and the branch row
+switched off stays off in a page opened afresh in the same browser.
 
 STATUSLINE_SHOTS=<prefix> writes <prefix>-line-<theme>.png and <prefix>-settings-<theme>.png; STATUSLINE_DUMP=<path> writes
 the whole measurement. Skips LOUDLY without the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1

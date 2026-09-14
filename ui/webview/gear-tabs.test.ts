@@ -154,7 +154,7 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /selectTab\(b\.getAttribute\('data-tab'\)\); clearSectionScroll\(\); \}\); \}\);/, "a pill change clears the room and starts at the top (LOW 1)");
   assert.match(GEAR, /function clearSectionScroll\(\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*var card = document\.querySelector\('#rsettings \.rs-card'\);\s*\n\s*if \(card\) \{ writeCard\(card, 0\); card\.removeAttribute\('data-section-landed'\); \}/);
   assert.match(GEAR, /function showSection\(section\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}/, "a new ask retires the pending one");
-  assert.match(GEAR, /function closeSettings\(\) \{ if \(dragAbort\) dragAbort\(\); clearSectionScroll\(\); p\.hidden = true; setModalCls\(false\); feedFull\(false\); \}/, "the reset before the hide: a hidden card ignores a scroll write");
+  assert.match(GEAR, /function closeSettings\(\) \{ endDrags\(\); clearSectionScroll\(\); p\.hidden = true; setModalCls\(false\); feedFull\(false\); \}/, "the reset before the hide: a hidden card ignores a scroll write");
   // the ask STANDS: the head re-lands on every size change of the card or the pane (a font arriving, a list filling), until the
   // user's own scroll, a pill change or the close ends it (CI 2026-09-13: the head landed neither at the top nor at the end)
   assert.match(GEAR, /sectionRO = new ResizeObserver\(function \(\) \{ if \(sectionAsk === ask && card\.clientHeight > 0\) go\(\); \}\);\s*\n\s*sectionRO\.observe\(card\);\s*\n\s*sectionRO\.observe\(pane\);/);
@@ -264,4 +264,14 @@ test("the strip's gear glyph opens the Chat tab at its Tab widgets section throu
   assert.match(KERNEL, /window\.__rompOpenSettings=function\(tab,section\)\{var f=document\.getElementById\('f-settings'\);if\(!f\)return;/);
   assert.match(KERNEL, /var msg=\{romp:'openSettings'\};if\(typeof tab==='string'&&tab\)msg\.tab=tab;if\(typeof section==='string'&&section\)msg\.section=section;\s*\n\s*var open=function\(\)\{try\{f\.contentWindow&&f\.contentWindow\.postMessage\(msg,'\*'\);\}catch\(e\)\{\}\};/, "the shell forwards the tab and the section into the settings iframe; a bare ask stays bare");
   assert.match(KERNEL, /if\(m\.romp==='openSettings'\)window\.__rompOpenSettings\(m\.tab,m\.section\);/, "a pane's ask carries its tab and section through");
+});
+
+test("the Token usage panel's every close returns to the settings card (the T409 tidy's read): one function, three callers, no bare hide of the layer", () => {
+  // a bare hide left the card hidden with the shell's transparent full-window frame still over the page; the served settings lab
+  // presses the close, then Escape, then a click that must land
+  assert.match(GEAR, /function raHide\(e\) \{ if \(e && e\.stopPropagation\) e\.stopPropagation\(\); raBack\.hidden = true; p\.hidden = false; \}/, "the close's click stops before the card's click-outside listener, which would close the settings outright");
+  assert.match(GEAR, /if \(raClose\) raClose\.onclick = raHide;/);
+  assert.match(GEAR, /if \(e\.target === raBack\) raHide\(e\); \}\);/, "the backdrop");
+  assert.match(GEAR, /if \(e\.key === 'Escape' && raBack && !raBack\.hidden\) raHide\(\); \}\);/, "the panel's Escape");
+  assert.equal((GEAR.match(/raBack\.hidden = true/g) || []).length, 1, "the one hide of the layer is raHide's");
 });
