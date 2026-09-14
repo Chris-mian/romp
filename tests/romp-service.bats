@@ -27,6 +27,13 @@ setup() {
     # The env-file path is baked (and, when non-default, exported) into the unit too; a developer shell
     # that carries either variable must not leak it into the default-install assertions below.
     unset ROMP_SERVICE_ENV_FILE XDG_CONFIG_HOME
+    # The macOS install's verification probes the control port when the agent's manager is not running (a manager
+    # already serving there, a hand-run one, is named as such). A developer's machine, and a romp session's, has a
+    # live manager on the default port, so every test here answers that probe with a stand-in that says nothing
+    # serves; the tests about that state set their own.
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_DIR/probe-nothing"
+    chmod +x "$TEST_DIR/probe-nothing"
+    export ROMP_MANAGER_PROBE="$TEST_DIR/probe-nothing"
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -336,6 +343,82 @@ EOF
     [[ "$output" == *"last exit code: 134"* ]]
     [[ "$output" != *"Installed launchd agent"* ]]
     [ "$(grep -c print "$calls")" -ge 3 ]                     # the drain wait's print, the first live read, the re-read
+}
+
+# ── a manager already serving outside the service ─────────────────────────────────────────
+# bin/romp-manager refuses to start a second manager on a held control port (exit 1 at once), the throttle keeps the
+# respawn out of the verification window, and the install ended saying the dashboard would be dead while the hand-run
+# manager was serving it. The verification probes the control port and names that state with its own code.
+_dying_loaded_stub() {   # for install: print fails until bootstrap, then a loaded job with no pid and last exit $3 (1 by default)
+    local stub="$1" calls="$2" code="${3:-1}"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo "\$1" >> "$calls"
+[ "\$1" = bootout ] && exit 0
+[ "\$1" = bootstrap ] && exit 0
+if [ "\$1" = print ]; then
+    grep -q bootstrap "$calls" || exit 5
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = $code\n\truns = 2\n}\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+}
+
+@test "install (macOS): a manager already serving on the control port is named when the agent's code is the manager's refusal (1), with the log pointer" {
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _dying_loaded_stub "$stub" "$calls" 1
+    printf '#!/bin/sh\necho "probed :$1" >> "%s"\nexit 0\n' "$TEST_DIR/probe-calls" > "$TEST_DIR/probe-up"; chmod +x "$TEST_DIR/probe-up"
+    ROMP_MANAGER_PORT=7499 ROMP_MANAGER_PROBE="$TEST_DIR/probe-up" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"ALREADY serving on :7499"* ]]
+    [[ "$output" == *"code 1"* ]]
+    [[ "$output" == *"most likely outside the login service"* ]]     # the probe cannot tell whose manager answers
+    [[ "$output" == *"check $XDG_STATE_HOME/romp/manager.log"* ]]     # the log pointer stays in every branch (round two)
+    [[ "$output" != *"dashboard"* ]]                                   # the control port proves a manager, not the dashboard
+    grep -q "probed :7499" "$TEST_DIR/probe-calls"                     # the port the manager would use, not a default
+    # …and with nothing answering the port, the plain NOT running verdict and exit 1 as before
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_DIR/probe-down"; chmod +x "$TEST_DIR/probe-down"
+    rm -f "$calls"
+    ROMP_MANAGER_PROBE="$TEST_DIR/probe-down" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running"* ]]
+    [[ "$output" != *"ALREADY serving"* ]]
+}
+
+@test "install (macOS): an agent that died of its own cause (134) beside a manager answering is reported as both facts, not as the held port" {
+    # round two of the install-wording fix: the branch was gated on the probe alone, so issue 1600's own shape (the node copy
+    # aborting at exec) read as a held port once the user had worked around it with a hand-run romp up
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _dying_loaded_stub "$stub" "$calls" 134
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/probe-up"; chmod +x "$TEST_DIR/probe-up"
+    ROMP_MANAGER_PORT=7499 ROMP_MANAGER_PROBE="$TEST_DIR/probe-up" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running (last exit code: 134)"* ]]
+    [[ "$output" == *"check $XDG_STATE_HOME/romp/manager.log"* ]]
+    [[ "$output" == *"A manager is also serving on :7499"* ]]
+    [[ "$output" == *"not why it died"* ]]
+    [[ "$output" != *"ALREADY serving"* ]]
+}
+
+@test "install (macOS): the probe asks the port service.env gives the agent's manager (last assignment, quotes off), not the environment's default" {
+    unset ROMP_SERVICE_NO_LOAD ROMP_MANAGER_PORT
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$HOME/.config/romp"
+    printf 'ROMP_MANAGER_PORT=7601\nROMP_MANAGER_PORT="7602"\n' > "$HOME/.config/romp/service.env"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _dying_loaded_stub "$stub" "$calls" 1
+    printf '#!/bin/sh\necho "probed :$1" >> "%s"\nexit 0\n' "$TEST_DIR/probe-calls" > "$TEST_DIR/probe-up"; chmod +x "$TEST_DIR/probe-up"
+    ROMP_MANAGER_PROBE="$TEST_DIR/probe-up" ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"ALREADY serving on :7602"* ]]
+    grep -q "probed :7602" "$TEST_DIR/probe-calls"
+    ! grep -q "probed :7432" "$TEST_DIR/probe-calls"
 }
 
 @test "both units bake ROMP_SUPERVISED=1 — the manager's stale-self refresh needs a respawning supervisor" {
