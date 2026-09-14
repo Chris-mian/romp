@@ -105,15 +105,30 @@ class FeedFirstColdPush(unittest.TestCase):
     def test_a_warm_kernel_takes_no_extra_step(self):
         feed_c, chat_c = self._client("feed"), self._client("chat")
         km._built_feed[1] = json.loads(json.dumps(FEED))          # a feed already built since start
+        with km._PERF_STATS.lock:
+            km._PERF_STATS.pusher["cycles"] = 3                    # and later cycles: the built feed alone stands the pass down
         km._push([feed_c, chat_c])
         self.assertEqual(km._wire_stats["feed_first"], 0, "no early pass on a warm kernel")
         self.assertIn(("feed", "feed"), self.seq, "the regular feed section still serves the pane: %r" % self.seq)
 
-    def test_a_later_cycle_takes_no_extra_step(self):
+    def test_a_later_cycle_with_no_feed_built_yet_still_sends_the_feed_first(self):
+        # 2026-09-14: the pusher's first cycle runs before a browser has reconnected (0.6 to 0.9 s after the housekeeping
+        # split), so a guard on cycle zero never held on a real boot (a 24 h watch on push.feedFirst saw nothing); the cold
+        # state the shortcut is for is "no feed built yet", whatever the cycle count
         with km._PERF_STATS.lock:
-            km._PERF_STATS.pusher["cycles"] = 1
+            km._PERF_STATS.pusher["cycles"] = 7
         km._push([self._client("feed"), self._client("chat")])
-        self.assertEqual(km._wire_stats["feed_first"], 0, "only the boot's first cycle sends the feed first")
+        self.assertEqual(km._wire_stats["feed_first"], 1, "a cold kernel sends the feed first on any cycle")
+        kinds = list(self.seq)
+        self.assertLess(kinds.index(("feed", "feed")), kinds.index(("build", S1)), "before the first chat build: %r" % kinds)
+
+    def test_a_connect_push_on_a_later_cycle_of_a_cold_kernel_sends_the_feed_first(self):
+        # the realistic boot: the browser reconnects a few seconds in, after the pusher's first cycles ran with no client
+        with km._PERF_STATS.lock:
+            km._PERF_STATS.pusher["cycles"] = 12
+        km._push([self._client("feed")], connect=True)
+        self.assertEqual(km._wire_stats["feed_first"], 1)
+        self.assertEqual(self.feed_calls[0], False, "and it built, rather than serving a warmed build a cold kernel has not got")
 
     def test_no_feed_pane_means_no_early_pass(self):
         chat_c = self._client("chat")

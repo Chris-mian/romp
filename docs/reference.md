@@ -1726,6 +1726,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the kernel sample, the API health frame) against `_jobs_pass`.
 - `pusher`: `cycles`, `wakes` (every wake call; a burst of wakes runs one
   cycle), `wakes_event` and `wakes_backstop` (how the loop's wait ended),
+  `connectPush` (a fresh client's full push on its handler thread, the
+  browser's own first draw after a reload or a restart: `count`, `ms_sum`,
+  `ms_max`, `ms_last`, and the same per app under `byApp`; the pusher's
+  cycles never see this push, so before it the restart's logo phase had no
+  number),
   `cycle_ms_sum`, `cycle_ms_max` (since start), `cycle_ms_last`,
   `cycle_cpu_ms_sum` (the pusher thread's own CPU time), `cycle_ms_p50`,
   `cycle_ms_p90`, `cycle_ms_ring_max`, `ring_n` from the last 256 cycles,
