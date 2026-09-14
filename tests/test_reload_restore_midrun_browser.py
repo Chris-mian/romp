@@ -128,6 +128,7 @@ try {
 await page.waitForTimeout(500);
 const reloaded = await state();
 reloaded.landed = landed;
+reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));   // the landing trail: which branch the restore took (round eight, CI diagnostics)
 reloaded.saved = saved;
 reloaded.savedRow = savedRow;
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
@@ -168,6 +169,7 @@ try {
 await page.waitForTimeout(500);
 const reloaded = await state();
 reloaded.landed = landed;
+reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));   // the landing trail: which branch the restore took (round eight, CI diagnostics)
 reloaded.savedRow = savedRow;
 reloaded.stripText = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return n ? n.textContent : ""; });
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));

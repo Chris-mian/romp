@@ -13936,6 +13936,7 @@ function preJumpIntoGap(sid: string, t: number | null | undefined, rec: WindowAs
 // the served labs read the session's regions on demand (a gap inside a spacer has no element to read): kind, span, and a run's event count
 if (typeof window !== "undefined") (window as any).__rompRegions = (sid?: string): unknown => { const s = sessions.get(sid || activeId || ""); return s?.regions ? s.regions.map((r) => r.kind === "gap" ? { kind: "gap", lo: r.lo, hi: r.hi } : { kind: "run", lo: r.lo, hi: r.hi, n: r.events.length, first: keyOf(r.events[0] as { uuid?: string; key?: string }) ?? null, last: keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string }) ?? null }) : null; };
 if (typeof window !== "undefined") (window as any).__rompTurnUnderTop = (): number | null => { const sid = activeId || ""; const s = sessions.get(sid), v = views.get(sid), c = document.getElementById("content"); if (!s || !v || !c) return null; return turnUnderTop(v, s, displayItems(s), turnOfEvents(s), c, c.scrollTop); };   // the lab reads the point under the viewport top as a turn (round five)
+(window as any).__rompLandTrail = (): string[] => landTrail.slice();   // the landing trail so far, for a served lab's payload (round eight: CI's reload restore parked with no window ask; the trail names the branch it took)
 (window as any).__rompAskState = (sid?: string): unknown => { const id = sid || activeId || ""; const s = sessions.get(id); return { loadingOlder: loadingOlder.has(id), gapLoading: gapLoading.size, gapKeys: Array.from(gapLoading), landingGaps: Array.from(windowAsks.values()).reduce((n, a) => n + a.filter((r) => !r.cancelled && !!r.gap).length, 0), asks: (windowAsks.get(id) ?? []).map((r) => ({ anchor: r.anchor.slice(-6), nav: r.nav, cancelled: r.cancelled, gap: r.gap, origin: r.origin })), hasGap: !!(s && s.regions && s.regions.some((r) => r.kind === "gap")), olderOnServer: !!(s && olderOnServer(s)) }; };
 // the served geometry lab shows the notice on demand: its real showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLandingNotice(activeId || "", null); else hideLandingNotice(); };
@@ -17801,13 +17802,15 @@ function requestAround(sid: string, uuid: string): boolean {
   const arr = windowAsksOf(sid);
   for (let i = arr.length - 1; i >= 0; i--) if (arr[i].cancelled && arr[i].anchor === uuid) arr.splice(i, 1);   // a fresh ask on the anchor supersedes a cancelled twin: its reply, if it still comes, lands this ask
   const rec: WindowAsk = { anchor: uuid, nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null, origin: null, gap: null, cancelled: false };   // t and kind ride to the adoption (T386)
-  arr.push(rec);
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
   const cAsk = document.getElementById("content");
   scrollDiagRow("regionask", { sid, why: "landing", nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), notice: landingNoticeSid === sid, atBottom: !!cAsk && atBottom(cAsk) });   // the T366 window-ask row, renamed with the regions (T386 stage 2)
-  if (nav) { showLandingNotice(sid, pendingAnchorT); preJumpIntoGap(sid, pendingAnchorT, rec); }   // the one notice and the jump into the gap (T386 stage 2); a re-land shows nothing
+  // the one notice and the jump into the gap (T386 stage 2); a re-land shows nothing. Neither may lose the ask: a throw here would leave
+  // no record and no ask, never a live record with no ask on the wire (which would refuse every later landing as busy)
+  if (nav) { try { showLandingNotice(sid, pendingAnchorT); preJumpIntoGap(sid, pendingAnchorT, rec); } catch (e) { landTrail.push("pre-jump-threw"); } }
+  arr.push(rec);   // the record and the ask are one step: nothing between them can strand a record without its ask
   vscodeApi?.postMessage({ type: "loadAround", id: sid, uuid });
   return true;
 }
