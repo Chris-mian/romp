@@ -29,7 +29,11 @@ setup() {
     unset ROMP_SERVICE_ENV_FILE XDG_CONFIG_HOME
 }
 
-teardown() { rm -rf "$TEST_DIR"; }
+teardown() {
+    # the hang shapes record their pids: whatever a failing case left alive dies here, never in the suite's wake
+    local p; for p in node sleeper; do [ -s "$TEST_DIR/$p.pid" ] && kill -KILL "$(cat "$TEST_DIR/$p.pid")" 2>/dev/null; done
+    rm -rf "$TEST_DIR"
+}
 
 @test "install (macOS): launchd plist runs 'romp-manager up' at login, kept alive" {
     ROMP_OS_OVERRIDE=Darwin run "$SVC" install
@@ -144,16 +148,77 @@ EOF
     [ -z "$output" ]
 }
 
-@test "install (macOS): the hatch reads 0, false and no as off, and the file's last assignment wins" {
+# The hang shapes on both probe paths, the install's twin of the launcher's matrix (round four of issue 1600): exec (the
+# copy is the hung process), fork (a version manager's shim runs node instead of exec'ing it: the hung process is a child
+# of the pid the wrapper holds, which leaked on the watchdog path) and deaf (TERM ignored: only KILL ends it, and a timeout
+# without -k held the install for good). The stand-in runs from its source path and hangs from the copy's; the bound is
+# two seconds here (ROMP_NODE_PROBE_BOUND); the hung pids go to files, so the leak check names them.
+_hang_src() {   # $1 shape: exec | fork | deaf
+    local body
+    case "$1" in
+      exec) body='exec sleep 60' ;;
+      fork) body='sleep 60 & echo $! > "'"$TEST_DIR"'/sleeper.pid"; wait' ;;
+      deaf) body='trap "" TERM; exec sleep 60' ;;
+    esac
+    cat > "$TEST_DIR/hang-node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$TEST_DIR/hang-node") exit 0 ;;
+  *) echo \$\$ > "$TEST_DIR/node.pid"; $body ;;
+esac
+EOF
+    chmod +x "$TEST_DIR/hang-node"
+}
+_dead() {   # $1 pid: gone, or a zombie awaiting its reap
+    local st; st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')"
+    [ -z "$st" ] || [ "${st#Z}" != "$st" ]
+}
+_run_install_hang() {   # $1 shape, $2 path: bare (the watchdog) | timeout; the install in its own session under a 20 s outer bound
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    _hang_src "$1"
+    local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
+    local t p
+    for t in bash sh cmp cp chmod mv mkdir rm sleep ps pgrep setsid id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
+    if [ "$2" = timeout ]; then ln -s "$tmo" "$bare/timeout"; fi
+    rm -f "$TEST_DIR/node.pid" "$TEST_DIR/sleeper.pid" "$TEST_DIR/pgid"
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=2 ROMP_NODE_SRC="$TEST_DIR/hang-node" ROMP_OS_OVERRIDE=Darwin run "$tmo" 20 setsid -w bash -c 'printf "%s\n" "$$" > "$1"; exec "$2" install' _ "$TEST_DIR/pgid" "$SVC"
+}
+_install_hang_asserts() {   # the copy is removed with the reason said, and nothing of the probe survives: not the node, not its child, nothing in the session
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+    [ -s "$TEST_DIR/node.pid" ]
+    _dead "$(cat "$TEST_DIR/node.pid")"
+    [ ! -s "$TEST_DIR/sleeper.pid" ] || _dead "$(cat "$TEST_DIR/sleeper.pid")"
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+@test "install (macOS), the watchdog path: a shim that FORKS the hung node leaks nothing: the tree under the wrapper's pid is killed" { _run_install_hang fork bare; _install_hang_asserts; }
+@test "install (macOS), the watchdog path: a node that IGNORES TERM is killed a second later and the copy removed" { _run_install_hang deaf bare; _install_hang_asserts; }
+@test "install (macOS), the timeout path: a hung copy is killed at the bound (control: so it was before this round)" { _run_install_hang exec timeout; _install_hang_asserts; }
+@test "install (macOS), the timeout path: a shim that FORKS the hung node leaks nothing (control: timeout signals the whole group)" { _run_install_hang fork timeout; _install_hang_asserts; }
+@test "install (macOS), the timeout path: a node that IGNORES TERM is killed by -k a second after the bound instead of holding the install for good" { _run_install_hang deaf timeout; _install_hang_asserts; }
+
+@test "install (macOS): the hatch reads 0, false, no and off as off, and the file's last assignment wins" {
     mkdir -p "$HOME/.config/romp"
     local rn="$XDG_STATE_HOME/romp/romp-node"
     unset ROMP_NO_NODE_COPY
-    for v in 0 false No; do
+    for v in 0 false No off OFF; do
         rm -f "$rn"
         printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$HOME/.config/romp/service.env"
         ROMP_OS_OVERRIDE=Darwin run "$SVC" install
         [ "$status" -eq 0 ]
         [ -x "$rn" ]
+    done
+    for v in disabled none; do                                 # any other non-empty value is on: the docs say so
+        rm -f "$rn"
+        printf 'ROMP_NO_NODE_COPY=%s\n' "$v" > "$HOME/.config/romp/service.env"
+        ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+        [ "$status" -eq 0 ]
+        [ ! -e "$rn" ]
     done
     printf 'ROMP_NO_NODE_COPY=1\nROMP_NO_NODE_COPY=\n' > "$HOME/.config/romp/service.env"   # set, then cleared below: the copy is made
     ROMP_OS_OVERRIDE=Darwin run "$SVC" install
