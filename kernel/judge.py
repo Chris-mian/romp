@@ -3145,8 +3145,19 @@ _PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "ref
 #                            restored: rows a boot loaded (served only when their key stands); refused: rows the load would not
 #                            trust; persisted: the rows on disk after the last write (T401 (5c): every boot re-planned every
 #                            session because this memo lived in memory alone: plannerSkip skipped 0, planned 20 on 2026-09-14)
-_PLANNER_SEEN_FILE = "planner-seen.json"   # STATE/planner-seen.json: {"v": 1, "rows": {fsid: <the normalized plan key>}}
-_PLANNER_SEEN_V = 1
+_PLANNER_SEEN_FILE = "planner-seen.json"   # STATE/planner-seen.json: {"v": 1, "derivation": [<_PLANNER_SEEN_DERIVATION_V>, <PLACEMENTS_V>],
+#                                                                  "rows": {fsid: <the normalized plan key>}}
+_PLANNER_SEEN_V = 1                        # the DOCUMENT's shape (a reader of another shape loads nothing)
+_PLANNER_SEEN_DERIVATION_V = 1             # the PLANNER's derivation under which a row means "nothing to do": a persisted row asserts
+#                                            that under the code that wrote it, and before T401 (5c) every restart discarded the
+#                                            assertion; now a file whose derivation pair differs from the running code's is refused
+#                                            whole (every row counted refused), so the first pass after the change plans every
+#                                            session once and the rows are rewritten under the new derivation. PLACEMENTS_V rides
+#                                            beside it: the store's placementsV seal sits below the skip return in _plan_session, so
+#                                            a seg-id migration must invalidate the rows or a standing row would keep a store at the
+#                                            old placementsV. BUMP THIS when a change to _plan_session's reads or writes would make
+#                                            a pass that had nothing to do under the old code have something under the new (a heal,
+#                                            a new unit shape, a retire rule): v1 = the memo's first persisted shape (2026-09-14).
 _PLANNER_SEEN_LOCK = threading.Lock()
 _PLANNER_SEEN_DIRTY = [False]
 _PLANNER_SEEN_LOADED = [False]
@@ -3172,13 +3183,24 @@ def _load_planner_seen():
         return 0
     _PLANNER_SEEN_LOADED[0] = True
     try:
-        d = json.loads((STATE / _PLANNER_SEEN_FILE).read_text(encoding="utf-8"))
-    except Exception:
+        text = (STATE / _PLANNER_SEEN_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return 0                                                       # a fresh root: nothing to refuse
+    except OSError:
+        _PLANNER_STATS["refused"] += 1                                 # a file that exists and cannot be read: one refusal
+        return 0
+    try:
+        d = json.loads(text)
+    except ValueError:
+        _PLANNER_STATS["refused"] += 1                                 # torn: one refusal (round two, low 1)
         return 0
     rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _PLANNER_SEEN_V else None
     if not isinstance(rows, dict):
-        _PLANNER_STATS["refused"] += 1 if d else 0
+        _PLANNER_STATS["refused"] += 1                                 # empty, null, another shape or version: one refusal
         return 0
+    if d.get("derivation") != [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V]:
+        _PLANNER_STATS["refused"] += len(rows)                         # written under another derivation: every row refused, the
+        return 0                                                       #  first pass plans everything once (round two, medium 3)
     n = 0
     with _PLANNER_SEEN_LOCK:
         for fsid, v in rows.items():
@@ -3216,8 +3238,15 @@ def persist_planner_seen(force=False):
     with _PLANNER_SEEN_LOCK:
         if not (_PLANNER_SEEN_DIRTY[0] or force):
             return False
-        snap = {"v": _PLANNER_SEEN_V, "rows": {k: v for k, v in _PLANNER_SEEN.items()}}
-        body = json.dumps(snap)                                            # every row went through _planner_key_norm: JSON-native
+        snap = {"v": _PLANNER_SEEN_V, "derivation": [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V], "rows": {k: v for k, v in _PLANNER_SEEN.items()}}
+        try:
+            body = json.dumps(snap)                                        # every row went through _planner_key_norm: JSON-native;
+        except (TypeError, ValueError) as e:                               #  serialized BEFORE the flag clears, under the lock
+            if not _PLANNER_SEEN_SAID[0]:                                  #  (the tick-seen shape): an unserializable row is a bug,
+                _PLANNER_SEEN_SAID[0] = True                               #  said once, re-raised with the flag still dirty so the
+                sys.stderr.write("planner-seen memo: not serialized: %s: %s (said once per episode; retried by the next persist)\n"
+                                 % (type(e).__name__, str(e)[:120]))       #  next persist retries once the row is gone (round two, low 2)
+            raise
         _PLANNER_SEEN_DIRTY[0] = False
     p = STATE / _PLANNER_SEEN_FILE
     tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
@@ -3265,17 +3294,24 @@ def _task_store_key(fsid):
 def _plan_key(fsid, path, session, now):
     """Every input _plan_session reads, or None when the parse is not the cache's own (never skip what cannot
     be keyed). Taken before the store read. Index 2 is the store key: the record rule compares it after the
-    pass, so new terms go after the existing ones. Three terms beyond the files the pass opens by sid: the
-    LEAF's task store (the directory the declared-plan sync reads, which differs from the sid's for every SDK
-    session after a /clear), the captions file (the floor-title heal reads it), and each running background
-    launch with whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle
-    reads that crossing and no file records it)."""
+    pass, so new terms go after the existing ones. Beyond the files the pass opens by sid: the LEAF's task
+    store (the directory the declared-plan sync reads, which differs from the sid's for every SDK session
+    after a /clear), the captions file (the floor-title heal reads it), each running background launch with
+    whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle reads that
+    crossing and no file records it), and every file the plan tier's inventory names (_sig_inputs("plan"):
+    the death marker, cleared.jsonl, the stall slice) by stat. The reg is keyed by its file's stat here; its
+    spawnedAt and backend VALUES are the outer gate's terms (_stage_sig)."""
     pk = _parse_entry(fsid, session)
     if pk is None or pk[1] is not session:
         return None
     return (str(path), pk[0], _store_key(fsid), _file_key(str(EPIDIR / (fsid + ".jsonl"))),
             _task_store_key(session.get("leafFsid") or fsid), _file_key(str(SDKDIR / (fsid + ".json"))),
-            _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now))
+            _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now),
+            # T401 (5c) round two: the three files of the plan tier's inventory (_sig_inputs) this key lacked: the death marker
+            # (_cli_epoch), cleared.jsonl (plan_units through _live_anchor_gone) and the stall slice (rollup_status). The in-memory
+            # memo forgot every row at each restart, so a move between boots was planned by that amnesty; a persisted row must
+            # carry every input the pass reads (the completeness pin holds this tuple against _sig_inputs("plan")).
+            _file_key(str(GONEDIR / (fsid + ".json"))), _file_key(str(STATE / "cleared.jsonl")), _file_key(str(STATE / "auto-nudge.json")))
 
 
 def _store_key(fsid):

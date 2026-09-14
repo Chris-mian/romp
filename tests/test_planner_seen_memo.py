@@ -99,17 +99,64 @@ class PlannerSeenMemo(unittest.TestCase):
     def test_malformed_rows_are_refused_and_good_ones_loaded_and_another_version_loads_nothing(self):
         p = self.root / jd._PLANNER_SEEN_FILE
         good = ["/p", [1, 2], [[1, 2, 3], None, None], None, None, None, None, []]
-        p.write_text(json.dumps({"v": 1, "rows": {FSID: good, "not-a-uuid": good, FSID2: "a string"}}))
+        p.write_text(json.dumps({"v": 1, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V],
+                                 "rows": {FSID: good, "not-a-uuid": good, FSID2: "a string"}}))
         self.assertEqual(jd._load_planner_seen(), 1, "one row trusted")
         self.assertEqual(jd._PLANNER_STATS["refused"], 2, "the non-uuid sid and the non-list row refused")
         self.assertEqual(jd._PLANNER_SEEN, {FSID: good})
+        self.assertEqual(jd._PLANNER_STATS["restored"], 1)
         jd._PLANNER_SEEN_LOADED[0] = False
         with jd._PLANNER_SEEN_LOCK:
             jd._PLANNER_SEEN.clear()
-        p.write_text(json.dumps({"v": 0, "rows": {FSID: good}}))
+        p.write_text(json.dumps({"v": 0, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {FSID: good}}))
         self.assertEqual(jd._load_planner_seen(), 0, "another version: nothing trusted")
         jd._PLANNER_SEEN_LOADED[0] = False
         p.write_text("{torn"); self.assertEqual(jd._load_planner_seen(), 0, "a torn file: an empty memo, no raise")
+        self.assertEqual(jd._PLANNER_STATS["refused"], 4, "the other version and the torn file each counted once (round two, low 1)")
+        for bad in ("", "null", "[]"):
+            jd._PLANNER_SEEN_LOADED[0] = False; before = jd._PLANNER_STATS["refused"]
+            p.write_text(bad); self.assertEqual(jd._load_planner_seen(), 0)
+            self.assertEqual(jd._PLANNER_STATS["refused"], before + 1, "%r: one refusal" % bad)
+        jd._PLANNER_SEEN_LOADED[0] = False; before = jd._PLANNER_STATS["refused"]; p.unlink()
+        self.assertEqual(jd._load_planner_seen(), 0); self.assertEqual(jd._PLANNER_STATS["refused"], before, "a missing file is a fresh root, no refusal")
+
+    def test_a_file_written_under_another_derivation_is_refused_whole(self):
+        """Round two, medium 3: a row asserts the planner had nothing to do under the code that wrote it; a derivation or a
+        placements-identity change refuses every row, so the first pass after the change plans everything once."""
+        p = self.root / jd._PLANNER_SEEN_FILE
+        good = ["/p", [1, 2], [[1, 2, 3], None, None], None, None, None, None, [], None, None, None]
+        for der in ([jd._PLANNER_SEEN_DERIVATION_V + 1, jd.PLACEMENTS_V], [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V + 1], None):
+            jd._PLANNER_SEEN_LOADED[0] = False; jd._PLANNER_STATS["refused"] = 0
+            with jd._PLANNER_SEEN_LOCK:
+                jd._PLANNER_SEEN.clear()
+            doc = {"v": 1, "rows": {FSID: good, FSID2: good}}
+            if der is not None:
+                doc["derivation"] = der
+            p.write_text(json.dumps(doc))
+            self.assertEqual(jd._load_planner_seen(), 0, "derivation %r: nothing trusted" % der)
+            self.assertEqual(jd._PLANNER_STATS["refused"], 2, "every row counted refused")
+        jd._PLANNER_SEEN_LOADED[0] = False
+        p.write_text(json.dumps({"v": 1, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {FSID: good}}))
+        self.assertEqual(jd._load_planner_seen(), 1, "the running derivation: trusted")
+        jd._planner_seen_set(FSID2, good); jd.persist_planner_seen()
+        self.assertEqual(json.loads(p.read_text())["derivation"], [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "the write stamps the pair")
+
+    def test_an_unserializable_row_is_said_once_and_re_raised_with_the_flag_still_dirty(self):
+        """Round two, low 2 (the tick-seen shape, 1610 round two medium 3): the dump runs before the flag clears; a row that
+        cannot serialize is a bug that raises to the caller's guard, said once, and the flag stays dirty for the retry."""
+        jd._planner_seen_set(FSID, ["a"]); jd.persist_planner_seen()
+        with jd._PLANNER_SEEN_LOCK:
+            jd._PLANNER_SEEN[FSID2] = [object()]; jd._PLANNER_SEEN_DIRTY[0] = True   # past the norm: a bug's shape
+        err = io.StringIO()
+        with mock.patch.object(jd, "_PLANNER_SEEN_SAID", [False]), mock.patch.object(jd.sys, "stderr", err):
+            for _ in range(2):
+                with self.assertRaises(TypeError):
+                    jd.persist_planner_seen()
+                self.assertTrue(jd._PLANNER_SEEN_DIRTY[0], "still dirty: the next persist retries")
+        self.assertEqual(err.getvalue().count("planner-seen memo: not serialized"), 1, err.getvalue())
+        with jd._PLANNER_SEEN_LOCK:
+            del jd._PLANNER_SEEN[FSID2]
+        self.assertTrue(jd.persist_planner_seen(), "the row gone: written")
 
     def test_a_key_with_a_sentinel_is_neither_recorded_nor_compared(self):
         self.assertIsNone(jd._planner_key_norm(("/p", object())), "a _file_key sentinel cannot be persisted or matched")

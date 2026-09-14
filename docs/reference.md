@@ -2202,11 +2202,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `STATE/planner-seen.json` (version 1, the tick-seen shape: a row is never
   an answer on its own, the key is recomputed at the pass and compared, a
   malformed row is refused, rows are dropped with the sessions, the write
-  is atomic under a per-writer temporary and re-armed on a failed replace);
-  `restored` counts the rows a boot loaded, `refused` the rows it would not
-  trust, `persisted` the rows on disk after the last write; before it every
-  boot re-planned every session, `planned` 20 and `skipped` 0 on the
-  2026-09-14 read boots). The planner runs behind two gates. The outer gate is
+  is atomic under a per-writer temporary and re-armed on a failed replace).
+  The key holds every file the plan tier's inventory names (the parse, the
+  store trio, the episode log, the leaf's task store, the reg file's stat,
+  the captions file, the death marker, `cleared.jsonl`, the stall slice,
+  and each running background launch's deadline bit under the pass clock);
+  the file carries a derivation pair (the planner's derivation version and
+  `PLACEMENTS_V`), and a file written under another pair is refused whole,
+  so the first pass after such a change plans every session once and
+  rewrites the rows. `restored` counts the rows a boot loaded, `refused`
+  the rows it would not trust (a torn, empty or other-shaped file counts
+  once; another derivation counts every row), `persisted` the rows on disk
+  after the last write. Before it every boot re-planned every session
+  (`planned` 20 and `skipped` 0 on the 2026-09-14 read boots); the first
+  boot after the change has no rows and re-plans everything while its
+  passes record and persist, and the boot after that is the one to read.
+  The planner runs behind two gates. The outer gate is
   the judge's evidence gate around `_plan_session` (`docs/judges.md`, "Ops and
   knobs"): a session whose signature equals the one the planner stamped after
   its last complete run is skipped before it is submitted. It keys on the
