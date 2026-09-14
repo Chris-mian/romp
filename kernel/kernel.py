@@ -55067,7 +55067,7 @@ el.classList.remove('rn-drop');void el.offsetWidth;   // reflow: a second drop r
 el.classList.add('rn-drop');
 el.addEventListener('animationend',function(){el.classList.remove('rn-drop');},{once:true});});}
 // A non-ok answer is not the host list: a proxy in JSON-error mode answers a 5xx whose body parses, and it used to
-// read as "no hosts" (the panel painted an empty fleet, and dropCue below, which writes by ABSENCE, forgot every host
+// read as "no hosts" (the panel painted no hosts, and dropCue below, which writes by ABSENCE, forgot every host
 // it had seen up, so the next real drop never flashed). It throws, so the catch below names the failure and the
 // was-up map stands; the manager's own poll has the same rule (2026-09-14).
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();}).then(function(d){

@@ -158,7 +158,7 @@ class _PanelHarness:
 class RemotesPanelRender(_PanelHarness, unittest.TestCase):
     def test_a_non_ok_tunnels_answer_is_a_failed_refresh_and_keeps_the_was_up_map_so_the_next_real_drop_flashes(self):
         # A proxy in JSON-error mode answers /tunnels with a 5xx whose body parses. The refresh read the body without a
-        # status check, so the answer counted as "no hosts": the panel painted an empty fleet, and dropCue, which writes
+        # status check, so the answer counted as "no hosts": the panel painted no hosts, and dropCue, which writes
         # by ABSENCE, forgot every host it had seen up, so the next real drop never flashed (2026-09-14; the manager's own
         # poll had the same class of bug). Three polls: the host up, the 502, the host down. The 502 is a failed refresh
         # (named in the console, the loud road) and the drop on the third poll flashes exactly once.
