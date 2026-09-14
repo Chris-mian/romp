@@ -5858,8 +5858,9 @@ function applyFeedPayload(m: any): void {
   // a clear confirmed, a card's disclosure state pruned, a predicted move given up as gone, an optimistic tick retired,
   // a badge mark pruned. That reading holds only when the payload was BUILT over every host's cards. The Task tracking
   // switch's off frame is a stand-in with no cards (the single-kernel one returns before this function; a merged frame
-  // carries an off host's stand-in beside the others' frames and names that host in offHosts), and a host attached but
-  // yet to send a frame is named in pendingHosts (every remote host, on a reload's first frame), so while any host's
+  // carries an off host's stand-in beside the others' frames and names that host in offHosts), a host attached but
+  // yet to send a frame is named in pendingHosts, and a page load's very first merged frame, built before the first
+  // /tunnels answer has said which remote hosts exist at all, is marked hostsUnread (round nine), so while any host's
   // cards are unknown, every absence-driven writer stands down: nothing is confirmed, pruned, retired or forgotten
   // by a card not being here, and presence-driven work goes on. The store bounds hold: the badge mirror keeps only the
   // off hosts' marks, and the view state grows by gestures alone (feed-view-state.ts), so a long mixed state (an

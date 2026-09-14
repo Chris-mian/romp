@@ -517,7 +517,7 @@ export function applyViewerClears(merged: any, ledgers: any[], clearedForeign: a
 
 export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[],
                                view: readonly string[] = [], deadHosts: readonly string[] = [],
-                               arrivedAt: Record<string, number> = {}): any {
+                               arrivedAt: Record<string, number> = {}, hostsRead = true): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], stateUnknown: [], order: [], sessions: [] };
   let anchor = typeof local.now === "number" ? LOCAL : null;
@@ -618,6 +618,14 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // THAT instead of an open-ended wait — the fail-loudly rule; still retired only by the real
   // events (a payload arriving, or the detach dropping the host from hostSeq).
   merged.pendingDead = merged.pendingHosts.filter((h: string) => deadHosts.includes(h));
+  // The host list itself may not be in hand yet (T404 round nine): a page load's FIRST merged frame is built when the
+  // local kernel's push lands on its open socket, before the first /tunnels answer has put any remote host in
+  // hostSeq, so offHosts and pendingHosts are both empty and read as "every card in hand". Until the manager has
+  // absorbed one answer the frame says so, and the pane's absence-driven writers stand down for it exactly as for
+  // an off or pending host (frameCardsUnknown); the local host's cards still show and still ring. The manager
+  // re-emits the moment the first answer lands, so the wait is the answer's, not a push's.
+  if (!hostsRead) merged.hostsUnread = true;
+  else delete merged.hostsUnread;
   return merged;
 }
 
@@ -898,6 +906,9 @@ export class FederationManager {
   private perHostTl: Record<string, any> = {}; //   last timeline lanes payload ({type:"data"}.data) per host
   private perHostTlBars: Record<string, any> = {}; // last timeline {type:"bars"} detail per host
   private hostSeq: string[] = [LOCAL]; // local first, then attach order — fixes the group order in the strip
+  // false until the first /tunnels answer is absorbed (poll): before it, hostSeq is the local host alone and says
+  // nothing about which remote hosts exist, so a merged frame built then is flagged hostsUnread (T404 round nine)
+  private hostsRead = false;
   private downHosts = new Set<string>(); // attached, but its tunnel isn't up: what's on screen is a memory
   private dialingHosts = new Set<string>(); // the kernel is dialing or health-checking these right now (the row's `dialing`)
   // each host's recovery counter as last seen (/tunnels upSeq, T291b): the kernel bumps it when a row that had
@@ -1247,7 +1258,7 @@ export class FederationManager {
     }
     this.publishPending();
     const dead = this.deadHosts();
-    this.emit(mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view(), dead, this.perHostFeedAt));
+    this.emit(mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view(), dead, this.perHostFeedAt, this.hostsRead));
   }
 
   // the hosts whose link is DOWN right now (this manager knows its sockets) — the merges' pendingDead input
@@ -1528,11 +1539,17 @@ export class FederationManager {
     let opened = false;
     for (const [host, t] of want) if (!this.conns.has(host)) { this.openRemote(host, t.status === "up"); opened = true; }
     for (const host of [...this.conns.keys()]) if (!want.has(host)) this.closeRemote(host);
+    // The host list is in hand from here (T404 round nine): the first answer, hosts or none, ends the frames'
+    // hostsUnread mark, and the merged feed is re-emitted once for it, so the pane's absence-driven writers
+    // run on a frame that knows its hosts rather than on the next push that happens to land. A failed fetch
+    // returned above and leaves the mark standing: a list that could not be read is not a list in hand.
+    const firstRead = !this.hostsRead;
+    this.hostsRead = true;
     // A host just ATTACHED is pending from this moment, not from the next push that happens to land:
     // re-emit the merged payloads so the placeholders appear at the attach event. Each emission holds
     // until the LOCAL payload exists (the feed's hold is here; the timeline's is its own), so a page
     // still booting never gets an empty merged feed dropped onto its loader.
-    if (opened) {
+    if (opened || firstRead) {
       if (LOCAL in this.perHostFeed) this.emitMergedFeed();
       this.emitMergedTimeline(false);
       this.publishPending();

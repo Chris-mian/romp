@@ -68,15 +68,19 @@ export function keepCardSigs(seen: Iterable<string>, hosts: true | ReadonlySet<s
 
 /** The pane's reading of a frame's cards (T404 rounds six to eight): true when the frame is the switch's own stand-in
  *  (`off`: a single kernel's, or the local kernel's word over a merged frame; nothing was built, every host's cards are
- *  unknown); the set of hosts whose cards are not in hand when a merged frame names any, the OFF hosts (their frame is
+ *  unknown), and when the merged frame says the host list itself is not read yet (`hostsUnread`, round nine); the set
+ *  of hosts whose cards are not in hand when a merged frame names any, the OFF hosts (their frame is
  *  the stand-in, `offHosts`) and the PENDING hosts (attached, no frame yet, `pendingHosts`: on a reload the first merged
  *  frame names every remote host here, and reading their cards as gone pruned every remote mark and re-rang every remote
  *  warn, round eight); false when every card is in hand. A card not in hand is not a card gone, whichever of the two
  *  reasons. Truthy is the ONE gate every writer in the page that prunes, retires or forgets by absence stands behind. */
 export type CardsUnknown = boolean | ReadonlySet<string>;
-export function frameCardsUnknown(m: { off?: unknown; offHosts?: unknown; pendingHosts?: unknown } | null | undefined): CardsUnknown {
+export function frameCardsUnknown(m: { off?: unknown; offHosts?: unknown; pendingHosts?: unknown; hostsUnread?: unknown } | null | undefined): CardsUnknown {
   if (!m) return false;
   if (m.off === true) return true;
+  // the host list itself not read yet (a page load's first merged frame, before the first /tunnels answer): which
+  // remote hosts exist is unknown, so every card is, until the manager re-emits with the list in hand (round nine)
+  if (m.hostsUnread === true) return true;
   const hosts = new Set<string>();
   for (const list of [m.offHosts, m.pendingHosts]) if (Array.isArray(list)) for (const h of list) if (typeof h === "string") hosts.add(h);
   return hosts.size ? hosts : false;

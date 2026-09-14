@@ -3651,8 +3651,10 @@ reaches every attached kernel, and a kernel attached later adopts the newest sta
 /compact and file editing take.
 
 **Across attached machines** the browser merges every host's feed frame into one. A host whose frame is the off stand-in
-is named in the merged frame (`offHosts`, beside the per-host build counters), and a host that is attached but has not
-yet sent a frame is named too (`pendingHosts`: on a reload, every remote host, for the first frame); the frame's own
+is named in the merged frame (`offHosts`, beside the per-host build counters), a host that is attached but has not yet
+sent a frame is named too (`pendingHosts`), and a frame built before the browser has read the host list at all (a page
+load's very first, which the local kernel's push produces before the first `/tunnels` answer) says so (`hostsUnread`)
+and counts every card as not in hand until the answer lands, when the frame is re-emitted; the frame's own
 `off` stays the local kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree.
 While any host is named in either list, its cards are not in hand, which is not the same as gone, and the feed pane's
 writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or forgotten because a card is

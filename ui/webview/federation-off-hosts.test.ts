@@ -1,4 +1,4 @@
-// The Task tracking switch across kernels (T404 rounds six to eight). mergeHostFeeds builds the merged frame as the
+// The Task tracking switch across kernels (T404 rounds six to nine). mergeHostFeeds builds the merged frame as the
 // local host's with the lists overridden, so before round six a remote host's off frame (the switch's stand-in: no cards
 // built) merged under a local frame with the switch on left no trace, and the pane's writers that act on a card's
 // ABSENCE (the badge mirror's prune, the view state's prune, a predicted move's gone verdict, an optimistic tick's
@@ -153,6 +153,32 @@ test("a host attached but yet to send a frame is PENDING: its cards are not in h
   // both reasons at once: one host off, another pending, a third on
   const mixed = mergeHostFeeds({ "": onFrame("", SID_L), [REMOTE]: offFrame() }, ["", REMOTE, "HOSTB"]);
   assert.deepEqual(Array.from(asSet(frameCardsUnknown!(mixed))).sort(), [REMOTE, "HOSTB"].sort());
+});
+
+test("the host list not read yet is an UNKNOWN state (round nine): a merged frame built before the first /tunnels answer says hostsUnread, the pane reads every card as unknown, and the manager re-emits when the list lands", () => {
+  // a page load's first merged frame: the local kernel's push landed on its open socket before the first /tunnels answer,
+  // so hostSeq is the local host alone, offHosts and pendingHosts are both empty, and before this round the frame read as
+  // "every card in hand": every remote host's marks and disclosure state pruned, and every remote warn re-rung a moment later
+  const early = mergeHostFeeds({ "": onFrame("", SID_L) }, [""], [], [], {}, false);
+  assert.deepEqual(early.offHosts, []); assert.deepEqual(early.pendingHosts, []);
+  assert.equal(early.hostsUnread, true, "the frame says its host list is not in hand");
+  assert.equal(frameCardsUnknown!(early), true, "every card unknown until the list is read");
+  const seen = new Set<string>(); const remoteMark = markFor(REMOTE, SID_R, seen); const localGone = markFor("", SID_L, seen, "gone");
+  const half = badgeCardHalf!(early.asks, seen, frameCardsUnknown!(early));
+  assert.ok(half.active.has(remoteMark) && half.active.has(localGone), "nothing prunes on the unread frame, the local host's absent mark included");
+  assert.equal(half.notices.length, 1, "the local card's warn still rings");
+  // the list in hand (the default): no mark, and the same host list reads as every card in hand
+  const read = mergeHostFeeds({ "": onFrame("", SID_L) }, [""]);
+  assert.ok(!("hostsUnread" in read), "read is the default and leaves no key behind");
+  assert.equal(frameCardsUnknown!(read), false);
+  // the manager: false until the first poll absorbs an answer, handed to the merge, and the feed re-emitted once on the first read
+  const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
+  assert.match(FED, /private hostsRead = false;/);
+  assert.match(FED, /const firstRead = !this\.hostsRead;\s*\n\s*this\.hostsRead = true;/, "set once the /tunnels answer is absorbed, after a failed fetch has already returned");
+  assert.match(FED, /if \(opened \|\| firstRead\) \{\s*\n\s*if \(LOCAL in this\.perHostFeed\) this\.emitMergedFeed\(\);/, "the first read re-emits the merged feed");
+  assert.match(FED, /this\.emit\(mergeHostFeeds\(this\.perHostFeed, this\.hostSeq, this\.view\(\), dead, this\.perHostFeedAt, this\.hostsRead\)\);/);
+  const poll = FED.slice(FED.indexOf("private async poll(): Promise<void> {"), FED.indexOf("private openRemote("));
+  assert.ok(poll.indexOf("} catch (e) {\n      return;") < poll.indexOf("this.hostsRead = true;"), "a failed fetch returns before the list counts as read");
 });
 
 test("the ONE gate in applyFeedPayload: the frame's reading is taken first, and every absence-driven writer stands behind it (source pins on feed.ts)", () => {

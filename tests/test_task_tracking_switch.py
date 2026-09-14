@@ -326,6 +326,16 @@ class TheFeedOffFrame(_Base):
         self.assertTrue(any("machine sync failed" in t for t in texts) and any("was not saved" in t for t in texts), "the sync ring's rows ride the off frame: %r" % texts)
         self.assertEqual([r["kind"] for r in f["syncNotices"] if "was not saved" in r["text"]], ["refused"], "with their kinds")
         self.assertTrue(any("cannot start" in r.get("text", "") for r in f["sdkNotices"]), "the SDK ring's rows too: %r" % f["sdkNotices"])
+        # round nine, low 1: the clear ring's ROWS ride too (it was pinned as a list alone, so dropping its rows survived the module)
+        saved_bcn = km._boundary_clear_notices
+        row = {"sig": "c|11111111-2222-3333-4444-555555555555|7", "sid": "11111111-2222-3333-4444-555555555555", "t": 7,
+               "text": "web: a /clear dropped two open cards (a stub)"}
+        km._boundary_clear_notices = lambda alive: [dict(row)]
+        try:
+            f2 = km._feed_off_frame(int(time.time()), {})
+        finally:
+            km._boundary_clear_notices = saved_bcn
+        self.assertEqual(f2["clearNotices"], [row], "the clear ring's rows ride the off frame, verbatim")
         self.assertEqual((f["dismissedCount"], f["showDismissed"], f["canUndoClear"]), (0, False, False), "the bell's bits, from the cleared set")
         self.assertIn('mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown: true });',
                       Path(ROOT, "ui", "webview", "feed.ts").read_text(), "the feed's off branch mirrors the rings to the shell's bell before it returns, the cards unknown (round five)")

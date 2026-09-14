@@ -13,8 +13,11 @@ its mark written. Stage B2 (round eight, the medium): the page RELOADS while HOS
 remotes pending with no host off, and the marks and the view state survive it intact (a pending host's cards are not in hand
 either). Stage C: HOSTOFF flips back on WITH its card and nothing re-rings (its mark was kept). Stage C2: HOSTOFF pushes a frame
 with no cards: the merged frame names no host, pruning resumes, HOSTOFF's disclosure entry and mark leave while HOSTON's stand.
-Stage D: a plain reload with every host on: no warn re-rings. Skips LOUDLY without the extension deps or a browser (a failure
-under ROMP_SERVED_TESTS_REQUIRE=1). SYNTHETIC fixtures only: hosts HOSTON and HOSTOFF, placeholder sids, invented goal text."""
+Stage D: a plain reload with every host on: no warn re-rings. Round nine: each reload's first /tunnels answer is held for 1.5 s so
+the local kernel's push surely lands first, the frame hook is an init script that trap-registers on the federation manager's
+handle, and the first merged frame of each reload is asserted: no host known, the frame saying its host list is unread, and the
+store unmoved across it. Skips LOUDLY without the extension deps or a browser (a failure under ROMP_SERVED_TESTS_REQUIRE=1).
+SYNTHETIC fixtures only: hosts HOSTON and HOSTOFF, placeholder sids, invented goal text."""
 import base64
 import hashlib
 import json
@@ -237,24 +240,38 @@ page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + 
 // the shell's bell: every notify the feed pane posts up, so a card's warn ringing is observable here; installed before any
 // script of the page runs (an init script on the top window), since the first frame rings before a post-load hook could listen
 await page.addInitScript(() => { if (window !== window.top) return; const w = window; w.__notes = []; window.addEventListener("message", (e) => { const d = e.data; if (d && d.romp === "notify") w.__notes.push({ kind: d.kind, itemId: d.itemId }); }); });
+// the feed page's frame hook, ALSO an init script (round nine): the frames that matter are a load's first ones, applied before
+// any post-load hook exists. The manager's window handle is trapped with a setter, so the hook registers on onFrame the moment
+// federation.js publishes it, ahead of the pane's own handler (frames are delivered in registration order), and each record
+// carries the store BEFORE the pane's writers run on that frame: the marks' count and the disclosure entries' count
+await page.addInitScript(() => {
+  if (!location.pathname.startsWith("/feed")) return;
+  const w = window; w.__ttFrames = [];
+  const before = () => { try { return { marks: JSON.parse(localStorage.getItem("romp:cardNotified") || "[]").length, sec: Object.keys(JSON.parse(localStorage.getItem("romp:feedview") || "{}").sec || {}).length }; } catch { return { marks: -1, sec: -1 }; } };
+  const note = (m, via) => { if (m && m.type === "feed") w.__ttFrames.push({ via, off: m.off === true, hostsUnread: m.hostsUnread === true, offHosts: Array.isArray(m.offHosts) ? m.offHosts.slice() : null, pendingHosts: Array.isArray(m.pendingHosts) ? m.pendingHosts.slice() : null, askIds: Array.isArray(m.asks) ? m.asks.map((a) => a.itemId) : [], before: before() }); };
+  window.addEventListener("message", (e) => note(e.data, "window"));
+  let fed;
+  Object.defineProperty(w, "__rompFed", { configurable: true, get() { return fed; }, set(v) { fed = v; try { if (v && typeof v.onFrame === "function") v.onFrame((e) => note(e.data, "fed")); } catch {} } });
+});
+// the first /tunnels answer HELD (round nine, the deterministic race): the local kernel's push lands on its open socket before
+// the answer, so a load's first merged frame is built with no remote host in hand; every manager's poll in the 1.5 s after a
+// load is delayed until then, and the rest pass through untouched
+let holdUntil = 0;
+await page.route("**/tunnels", async (route) => { const wait = holdUntil - Date.now(); if (wait > 0) await new Promise((r) => setTimeout(r, wait)); await route.continue(); });
 await page.goto(cfg.landing);
 await page.waitForSelector("#rail-gear", { timeout: 20000 });
 const frameBy = async (part) => { let f = page.frames().find((x) => x.url().includes(part)); for (let i = 0; i < 100 && !f; i++) { await page.waitForTimeout(100); f = page.frames().find((x) => x.url().includes(part)); } return f; };
 // the feed page and its hook: every feed frame the pane receives, by either path, with the switch's per-host list, the pending list
 // and the card ids it carried; re-installed after each reload (the frames the pane applied BEFORE the hook are the reload's first
 // ones, so the hook goes in as early as the page allows and the reload stages read the store, which every frame writes)
-const hookFeed = async () => {
+const hookFeed = async () => {   // the hook is the init script's; this finds the frame and waits for its list
   const f = await frameBy("/feed");
   if (!f) { console.error("no feed frame"); process.exit(4); }
   await f.waitForSelector("#feed-list", { timeout: 15000 });
-  await f.evaluate(() => { const w = window; w.__ttFrames = [];
-    const note = (m, via) => { if (m && m.type === "feed") w.__ttFrames.push({ via, off: m.off === true, offHosts: Array.isArray(m.offHosts) ? m.offHosts.slice() : null, pendingHosts: Array.isArray(m.pendingHosts) ? m.pendingHosts.slice() : null, askIds: Array.isArray(m.asks) ? m.asks.map((a) => a.itemId) : [] }); };
-    window.addEventListener("message", (e) => note(e.data, "window"));
-    const fed = w.__rompFed; if (fed && typeof fed.onFrame === "function") fed.onFrame((e) => note(e.data, "fed")); });
   return f;
 };
 let feedF = await hookFeed();
-const reload = async () => { await page.reload(); await page.waitForSelector("#rail-gear", { timeout: 20000 }); feedF = await hookFeed(); };
+const reload = async () => { holdUntil = Date.now() + 1500; await page.reload(); await page.waitForSelector("#rail-gear", { timeout: 20000 }); feedF = await hookFeed(); };
 const frames = () => feedF.evaluate(() => window.__ttFrames);
 const lastFrame = () => feedF.evaluate(() => { const f = window.__ttFrames; return f.length ? f[f.length - 1] : null; });
 const waitFrame = (pred, why) => feedF.waitForFunction((p) => { const f = window.__ttFrames; const last = f.length ? f[f.length - 1] : null; return !!last && (new Function("f", "return (" + p + ")(f)"))(last); }, pred.toString(), { timeout: 30000 }).catch(() => { errors.push("timeout: " + why); });
@@ -470,10 +487,16 @@ class ServedTaskTrackingFederation(QueuedLab):
         merged = [f for f in r["frames"] + r["b2"]["frames"] + r["d"]["frames"] if f["offHosts"] is not None]
         self.assertGreater(len(merged), 2, "merged frames carry offHosts and pendingHosts" + table)
         self.assertTrue(all(f["pendingHosts"] is not None for f in merged), table)
-        # the reload stages saw the frame the medium names: both remotes pending, no host off (the hook may miss the very first
-        # frames of a reload, so this is asserted only when one was seen; the store reads above are the proof either way)
-        early = [f for f in r["b2"]["frames"] + r["d"]["frames"] if f["pendingHosts"]]
-        self.assertTrue(all(f["offHosts"] == [] for f in early), "a pending host is named pending, never off" + table)
+        # round nine: the hook is an init script, so a reload's very first merged frame is on record. It is built before the first
+        # /tunnels answer (held 1.5 s by the driver): no host off, none pending, and the frame says its host list is not read;
+        # the store the next frame found is the store this one found, so nothing pruned on it
+        for stage in ("b2", "d"):
+            fr = [f for f in r[stage]["frames"] if f["offHosts"] is not None]
+            self.assertGreaterEqual(len(fr), 2, stage + ": the first two merged frames are on record" + table)
+            first = fr[0]
+            self.assertEqual((first["offHosts"], first["pendingHosts"], first["hostsUnread"]), ([], [], True), stage + ": the first frame knows no host and says so" + table)
+            self.assertEqual(fr[1]["before"], first["before"], stage + ": the store did not move across the unread frame" + table)
+            self.assertTrue(any(f["hostsUnread"] is False and (f["pendingHosts"] or f["offHosts"] or f["askIds"]) for f in fr[1:]), stage + ": the list landed and the frames went on" + table)
 
 
 if __name__ == "__main__":
