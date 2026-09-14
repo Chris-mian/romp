@@ -621,7 +621,7 @@ test("executable, real thinking fixture: the unit stream drops thinking and fold
 test("everything that re-renders the chat's units refills the open popover live", () => {
   assert.match(UI, /function refillOpenCommentPop\(\): void \{/);
   assert.match(UI, /refillOpenCommentPop\(\);   \/\/ the popover renders the same units — its copy of this run must flip too/);
-  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
+  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); updateStatusline\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
 });
 
 // ── T106 (the user 2026-08-26, found by the romp-lab loop's first full pass): three seam fixes ────

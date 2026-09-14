@@ -37,7 +37,7 @@ test("the right-side controls are one container whose wrapped rows hug the right
 
 test("render.ts groups dir, branch, badges and ctx battery into .sl-right", () => {
   assert.match(RENDER, /el\("span", "sl-right"\)/);
-  assert.match(RENDER, /right\.appendChild\(dir\)/);
+  assert.match(RENDER, /composeStatusWidgets\(right, "right", rec, settings\.statusWidgets\);/);   // the dir and the branch are the right slot's widgets since T409, leading the cluster
   assert.match(RENDER, /right\.appendChild\(meta\)/);
   assert.match(RENDER, /right\.appendChild\(bar\)/);
   assert.match(RENDER, /sl\.appendChild\(right\)/);

@@ -95,6 +95,6 @@ test("federation stamps the arrival beside the frame on the wire path, drops it 
   assert.match(FED, /private perHostFeedAt: Record<string, number> = \{\};/);
   assert.match(FED, /this\.perHostFeed\[host\] = m;\n\s*this\.perHostFeedAt\[host\] = Date\.now\(\);/, "a frame's arrival");
   assert.match(FED, /delete this\.perHostFeed\[host\];\n\s*delete this\.perHostFeedAt\[host\];/, "a detach forgets both");
-  assert.match(FED, /mergeHostFeeds\(this\.perHostFeed, this\.hostSeq, this\.view\(\), dead, this\.perHostFeedAt\)/, "every emit carries the arrivals");
+  assert.match(FED, /mergeHostFeeds\(this\.perHostFeed, this\.hostSeq, this\.view\(\), dead, this\.perHostFeedAt, this\.hostsRead\)/, "every emit carries the arrivals");   // the sixth argument: whether the host list has been read (T404 round nine)
   assert.equal((FED.match(/perHostFeedAt\[host\] = Date\.now\(\)/g) || []).length, 1, "stamped where the frame comes off the wire and nowhere else — never on an emit");
 });

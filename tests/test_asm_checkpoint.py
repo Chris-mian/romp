@@ -1096,11 +1096,14 @@ class ReadersOverRestoredHydrateOnlyWhatTheyNeed(Harness):
         path, tree = self._restored("rows")
         em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})
         km._echo_landing_atoms(tree["turns"], [{"_echo_text": "an early line", "t": 0}])
-        km._merge_sets_memo.clear(); km._merge_tx_sets(tree, SID + "-rows", 0.0)
-        by = em.asm_checkpoint_stats()["hydratedBy"]
-        self.assertIn("_atom_user_texts<-_echo_landing_atoms", by, "%s" % by)
-        self.assertIn("_atom_user_texts<-_merge_tx_sets", by, "%s" % by)
-        self.assertNotIn("_atom_user_texts", by, "no bare row: %s" % by)
+        by1 = dict(em.asm_checkpoint_stats()["hydratedBy"])
+        path2, tree2 = self._restored("rows")                                          # a second fresh restore for the merge sets: since
+        em._ASM_CKPT_STATS.update(hydratedAtoms=0, hydratedBytes=0, hydratedBy={})     #  5b they hydrate USER rows alone, so each caller
+        km._merge_sets_memo.clear(); km._merge_tx_sets(tree2, SID + "-rows", 0.0)      #  must meet its rows unhydrated to be named
+        by2 = dict(em.asm_checkpoint_stats()["hydratedBy"])
+        self.assertIn("_atom_user_texts<-_echo_landing_atoms", by1, "%s" % by1)
+        self.assertIn("_atom_user_texts<-_merge_tx_sets", by2, "%s" % by2)
+        self.assertNotIn("_atom_user_texts", set(by1) | set(by2), "no bare row: %s %s" % (by1, by2))
 
     def test_the_floor_and_the_held_filter_share_one_holdable_echo_predicate(self):
         """Round three, low 3: the four clauses (a text key, not a command, not dropped, not landed) were spelled out twice; one

@@ -4627,16 +4627,18 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("{ type: 'setColormap', name: name }", _gear_src())                     # picking a bar persists + posts
         self.assertNotIn("renderCmapBar", _gear_src())                                 # the old preview-bar fn is gone
 
-    def test_gear_has_show_git_branch_toggle(self):
-        # the user 2026-06-23: a "Show git branch" checkbox controls whether the chat bottom-bar shows the
-        # session's git branch beside the dir. OFF by default since 2026-08-10 (the user, trimming the
-        # statusline for narrow panes): an explicit stored true opts in. It mirrors render.ts'
-        # loadSettings().showBranch read, persisted in romp:settings.
-        self.assertIn("id=rs-branch", _gear_src())
-        self.assertIn("Show git branch", _gear_src())
-        self.assertIn("s.showBranch = gb.checked", _gear_src())        # change → persist
-        self.assertIn("gb.checked = s.showBranch === true", _gear_src())  # open → reflect (default OFF)
-        self.assertIn("showBranch: false", _gear_src())               # load() default OFF, both branches
+    def test_gear_has_the_status_line_section_where_the_git_branch_toggle_was(self):
+        # the user 2026-06-23: a "Show git branch" checkbox controlled whether the chat bottom-bar shows the session's
+        # git branch beside the dir; OFF by default since 2026-08-10. Since T409 (the user 2026-09-13) the branch is a
+        # WIDGET of the status line, ON by default, with its row in the Chat tab's Status line section; showBranch stays
+        # in the store as the widget's mirror, written on a section save and never injected as a default by load().
+        self.assertIn("data-section=statusline>Status line", _gear_src())
+        self.assertIn("id=rs-swidgets", _gear_src())
+        self.assertIn("require('./status-widgets.ts')", _gear_src())
+        self.assertNotIn("id=rs-branch", _gear_src())
+        self.assertNotIn("Show git branch", _gear_src())
+        self.assertIn("s.showBranch = m.showBranch; s.showSessionBadge = m.showSessionBadge; save(s);", _gear_src())   # a section save writes both mirrors
+        self.assertNotIn("showBranch: false", _gear_src())            # no injected default (the fresh-key rule)
         self.assertNotIn("showBranch: true", _gear_src())             # the old default must not linger
 
     def test_gear_has_compact_tabs_and_agents_toggle(self):

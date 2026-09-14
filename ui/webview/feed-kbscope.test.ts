@@ -72,8 +72,8 @@ test("focus survives a re-render by LOGICAL identity — a rebuild must not eat 
 
 test("release: Escape anywhere, or the pointer leaving the card — back to normal page order", () => {
   assert.match(FEED, /if \(e\.key === "Escape" && tabScopeKey\) \{/);
-  assert.match(FEED, /if \(tabScopeKey === key\) releaseTabScope\(\);   \/\/ hover-away releases the keyboard scope too/,
-    "rides the same leave event the freeze uses");
+  assert.match(FEED, /if \(tabScopeKey === key && tabScopeCopy === copy\) releaseTabScope\(\);   \/\/ hover-away releases the keyboard scope too/,
+    "rides the same leave event the freeze uses, for the twin it holds (T410)");
   const relStart = FEED.indexOf("function releaseTabScope");
   const rel = FEED.slice(relStart, FEED.indexOf('window.addEventListener("keydown"', relStart));
   assert.ok(rel.includes('document.querySelectorAll(".kbd-focus").forEach((n) => n.classList.remove("kbd-focus"));'),

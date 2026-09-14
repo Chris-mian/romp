@@ -127,6 +127,12 @@ _service_env_override() {
     fi
 }
 
+# ThrottleInterval (issue 1600): KeepAlive respawns the manager whenever it exits, and launchd's default
+# throttle is ten seconds, so a manager that dies at once (a node copy that cannot load its library, a
+# python the kernel cannot run on) was restarted six times a minute forever, filling the log and the
+# process table. Sixty seconds bounds the loop to once a minute; a manager that ran longer than that
+# before exiting (its own stale-self refresh) is respawned at once as before, since the throttle counts
+# from the job's last START. The status below tells a loaded-but-dying job from a running one.
 write_plist() {
     mkdir -p "$LAUNCHD_DIR" "$STATE"
     # $() eats the trailing newline; put it back so </dict> keeps its own line. Empty → the
@@ -155,6 +161,7 @@ write_plist() {
 ${_plist_envf}${_plist_env}  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict>
@@ -232,7 +239,22 @@ audit_install() {
 }
 
 _linux_active() { "$SYSTEMCTL" --user is-active romp-manager.service 2>/dev/null || true; }
-_darwin_loaded() { "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+# launchctl print of a LOADED job succeeds whether or not its process is alive: a job crash-looping under
+# KeepAlive is loaded the whole time (issue 1600: status said running, install.sh trusted it, and the
+# fresh install exited 0 over a manager that had never lived). The job's record names its process, so the
+# distinction is read from it: a `pid = N` line while the process runs, none while launchd waits to
+# respawn it, and `last exit code = N` (or "(never exited)") from the previous run.
+_darwin_print() { "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" 2>/dev/null; }
+_darwin_loaded() { _darwin_print >/dev/null; }
+# The record's readers (round two of issue 1600): the print's own failure (the job not loaded at all) is not an error
+# here, no record and no exit code, so the head of each pipeline swallows it; and each reader lets sed quit itself
+# on its match (p;q) rather than piping into head -1, which under set -e plus pipefail left sed with SIGPIPE once its
+# output passed the pipe buffer and made the assignment, and the script, exit 141 with no status line (executed at
+# 3000 matching lines). The last exit code is captured whole, so "(signal: 6)" reads as itself and not as "(signal:".
+_darwin_record() { _darwin_print || true; }
+_darwin_pid() { _darwin_record | sed -nE '/^[[:space:]]*pid = [0-9]+/{s/^[[:space:]]*pid = ([0-9]+).*$/\1/p;q;}'; }
+_darwin_running() { [[ -n "$(_darwin_pid)" ]]; }
+_darwin_last_exit() { _darwin_record | sed -nE '/^[[:space:]]*last exit code = /{s/^[[:space:]]*last exit code = (.*[^[:space:]])[[:space:]]*$/\1/p;q;}'; }
 
 # The marker's one line for a status listing: when it was stopped and how to bring it back. Nothing
 # when there is no marker. python3 renders the time (a plain `date -d @` is GNU-only).
@@ -380,13 +402,21 @@ case "${1:-status}" in
             # the spawn (bad launcher path, env). Verify the service actually reports itself
             # before exiting 0 — an install that "succeeded" onto a dead agent is exactly the
             # silent outage this script keeps causing.
+            # A live pid alone is not enough (round two of issue 1600): a manager that aborts at start is alive for
+            # its first 50 to 200 ms, and a read milliseconds after bootstrap saw exactly that spawn, while the
+            # throttle kept the next one out of a six-second loop. The pid must be the SAME pid a second later.
             running=""
             for _ in $(seq 1 20); do
-                if "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then running=1; break; fi
+                _pid="$(_darwin_pid)"
+                if [[ -n "$_pid" ]]; then
+                    sleep 1
+                    if [[ "$(_darwin_pid)" == "$_pid" ]]; then running=1; break; fi
+                fi
                 sleep 0.3
             done
             if [[ -z "$running" ]]; then
-                echo "romp-service: agent loaded but is NOT running — check $LOG" >&2
+                _le="$(_darwin_last_exit)"
+                echo "romp-service: agent loaded but is NOT running (last exit code: ${_le:-unknown}) — check $LOG" >&2
                 exit 1
             fi
         fi
@@ -437,7 +467,12 @@ case "${1:-status}" in
     case "$os" in
       Darwin)
         if [[ -f "$PLIST" ]]; then echo "installed: $PLIST"; else echo "not installed"; fi
-        if [[ -z "$NO_LOAD" ]] && _darwin_loaded; then echo "running"; else _down_marker_line; fi ;;
+        if [[ -n "$NO_LOAD" ]]; then _down_marker_line
+        elif _darwin_running; then echo "running"
+        elif _darwin_loaded; then
+            _le="$(_darwin_last_exit)"
+            echo "loaded but not running (last exit code: ${_le:-unknown}); launchd keeps respawning it — check $LOG"
+        else _down_marker_line; fi ;;
       Linux)
         if [[ -f "$UNIT" ]]; then echo "installed: $UNIT"; else echo "not installed"; fi
         if [[ -z "$NO_LOAD" ]] && [[ "$(_linux_active)" == "active" ]]; then echo "running"; else _down_marker_line; fi ;;
