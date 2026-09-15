@@ -13,10 +13,13 @@ knows about one it never sees); `email`, `org` and `kind` ("personal" | "enterpr
 add flow could read them from the CLI's own record. The credential itself, a `claude setup-token` bearer,
 lives WHEREVER the user keeps it and nowhere in romp (the user 2026-09-11): `tokenCmd` is a shell command
 that prints the token on demand (a secret manager's read command, a private file's cat: romp never imports or
-assumes any store, it only runs the command; the user 2026-09-13), and a session billed to the login gets,
-in its per-session settings layer, an apiKeyHelper naming bin/romp-login-helper with the record id, which
-runs that command for the CLI per request. Nothing in this module reads, logs, returns or formats a token;
-a record's availability is its metadata alone (a command recorded, not refused, not a year old).
+assumes any store, it only runs the command; the user 2026-09-13), and a session or a judge call billed to
+the login gets that command's output in its OWN process environment as CLAUDE_CODE_OAUTH_TOKEN, the kernel
+running the command at launch the way it runs the box's own helper (the environment road, 2026-09-14: a
+setup-token through an apiKeyHelper hangs the CLI's request, in the environment it is accepted). Nothing in
+this module runs a command, reads, logs or formats a token (token_value hands its caller's runner's value
+straight through); a record's availability is its metadata alone (a command recorded, not refused, not a
+year old).
 
 stdlib only, loaded by path as `romp_logins` from the kernel and the SDK backend."""
 import json
@@ -103,7 +106,6 @@ def token_cmd_error(cmd) -> str:
 KINDS = {"pro": "personal", "max": "personal", "team": "enterprise", "enterprise": "enterprise"}
 TOKEN_LIFE_S = 365 * 86400          # the docs' one-year life of a setup-token
 EXPIRY_WARN_S = 335 * 86400         # eleven months: the gear and the menus warn from here
-HELPER_NAME = "romp-login-helper"   # bin/romp-login-helper: the per-login apiKeyHelper
 
 # The pick vocabulary every door shares (set_auth, the picker's create, the tab menu's setAuth):
 # "login" (the machine's own), "key", or "login:<id>" (a stored login by its record id).
@@ -148,15 +150,27 @@ def mint_id() -> str:
     return secrets.token_hex(6)
 
 
-def helper_command(login_id: str, state_dir=None, bin_dir=None) -> str:
-    """The apiKeyHelper a session billed to `login_id` gets in its per-session settings layer: this
-    checkout's bin/romp-login-helper, the record id, and the state directory the record lives under
-    (explicit, so the child needs no romp environment). Shell-quoted: the CLI runs the value in /bin/sh."""
-    b = Path(bin_dir) if bin_dir else Path(__file__).resolve().parent.parent / "bin"
-    parts = [shlex.quote(str(b / HELPER_NAME)), login_id]
-    if state_dir:
-        parts.append(shlex.quote(str(state_dir)))
-    return " ".join(parts)
+def token_command(state_dir, login_id: str) -> str:
+    """The token command a launch or a judge call billed to `login_id` runs (the environment road, 2026-09-14): the
+    record's `tokenCmd`, whose output is the login's setup-token. A missing record or an empty command is a ValueError
+    in static words, never a value."""
+    rec = read_record(state_dir, login_id)
+    if rec is None:
+        raise ValueError("no stored login with that id")
+    cmd = rec.get("tokenCmd")
+    if not isinstance(cmd, str) or not cmd.strip() or any(ord(ch) < 32 for ch in cmd):
+        raise ValueError("the %s login's record names no token command" % str(rec.get("label") or "stored"))
+    return cmd
+
+
+def token_value(state_dir, login_id: str, run) -> str:
+    """The setup-token a stored login's command prints, for the ONE process about to bill that login: `run(cmd)` is
+    the caller's runner (credentials.run_helper with its label: /bin/sh, a whitelisted environment, stdin closed,
+    stderr discarded, bounded), so this module never runs a command or holds a token itself; the value goes into that
+    process's environment as CLAUDE_CODE_OAUTH_TOKEN, exactly where the machine's own login tokens ride, and nowhere
+    else (no romp file, no log line). Verified 2026-09-14 on the user's machine: a setup-token through an apiKeyHelper
+    hangs the CLI's request, through CLAUDE_CODE_OAUTH_TOKEN it is accepted and billed to the subscription."""
+    return run(token_command(state_dir, login_id))
 
 
 def read_record(state_dir, login_id: str):

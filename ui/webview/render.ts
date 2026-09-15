@@ -7109,6 +7109,10 @@ function billingChoices(st: Status, avail: AuthAvail): Array<{ label: string; va
 // row). .ctx-menu is position: fixed, so the coordinates are viewport-space. The flyout is in the document already.
 function placeFlyBeside(anchor: HTMLElement, fly: HTMLElement): void {
   const ir = anchor.getBoundingClientRect();
+  // measure at the window's left edge, where the whole width is available: a flyout whose labels may wrap (the Billing
+  // flyout's, bounded by the window since 2026-09-14) is otherwise measured at its static position and re-flows once
+  // placed, ending flush with the window's right edge instead of 8 px inside it (the served lab at 560 px)
+  fly.style.left = "0px";
   const sr = fly.getBoundingClientRect();
   let left: number, top: number = ir.top;
   if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
@@ -7596,18 +7600,23 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       if (already) return already as HTMLElement;
       menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
       const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
-      const choices = billingChoices(st, avail);                  // the ONE list both menus below draw from (T387)
+      // the ONE list both menus below draw from (T387): the billings this machine can apply, and those ONLY (the user
+      // 2026-09-14: list what is set up, grey nothing; the 2026-09-08 greyed-with-a-reason row is gone). A machine with
+      // nothing to bill shows one inert line naming why, in the reasons' own words.
+      const all = billingChoices(st, avail);
+      const choices = all.filter((c) => !c.why);
+      if (!choices.length) {
+        const none = el("div", "ctx-item ctx-item-none");
+        none.textContent = all.map((c) => c.why).filter(Boolean).join("; ");
+        none.addEventListener("click", (ev2) => { ev2.stopPropagation(); });
+        sub.appendChild(none);
+      }
       for (const c of choices) {
         const cur = authChoiceCurrent(st, c.value);   // the key, or a login by WHICH login (st.authLogin)
-        const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+        const opt = el("div", "ctx-item" + (cur ? " current" : ""));
         opt.textContent = c.label;
-        if (c.why) {   // unavailable here: greyed, the reason on hover, inert (the user 2026-09-08)
-          opt.title = c.why;
-          opt.setAttribute("aria-disabled", "true");
-        }
         opt.addEventListener("click", (ev2) => {
           ev2.stopPropagation();
-          if (c.why) return;                                       // a disabled option posts nothing, and the menu stays
           dismissTabMenu();
           if (!cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value });
         });
@@ -7619,8 +7628,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       // kernel that says whether the default is explicit (an older one takes no scoped "auto" and marks no default). No
       // sub-line anywhere. The submenu rides the same hover-intent road, wired on the Billing flyout itself and appended
       // inside it, so leaving both closes both and the menu's dismissal covers it; the same placement rule places it.
-      const pickable = choices.filter((c) => !c.why);
-      if (pickable.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
+      if (choices.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
         sub.appendChild(el("div", "ctx-sep"));
         const setDef = el("div", "ctx-item ctx-item-toggle ctx-item-setdefault");
         const sl = el("span", "ctx-item-label"); sl.textContent = "Set default billing"; setDef.appendChild(sl);
@@ -7631,17 +7639,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           const explicit = !!avail.defaultExplicit;
           const d = el("div", "ctx-menu ctx-sub ctx-sub-default");
           const post = (value: string) => { dismissTabMenu(); if (vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value, scope: "machine" }); };
-          // the machine's own login and the key only (T346 beside T380 and T387): a stored login as the machine's default is
-          // not taken by the kernel yet (its scoped arm refuses the value by name), so the flyout does not offer it
-          const defaultChoices = choices.filter((c) => c.value === "login" || c.value === "key");
-          for (const c of defaultChoices) {
-            const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
-            const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+          // exactly the entries of the picks above, a stored login among them (the user 2026-09-14; the kernel's scoped arm
+          // takes "login:<id>" as the machine's default since then, where it offered the machine's own login and the key
+          // only). The check sits on the EXPLICIT default only; automatic marks nothing.
+          for (const c of choices) {
+            const cur = explicit && avail.default === c.value;
+            const opt = el("div", "ctx-item" + (cur ? " current" : ""));
             opt.textContent = c.label;
             opt.dataset.scope = "machine";   // a MARKER for the labs and the sheet, never read for the wire: post() carries the scope
-            if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
             // the picks list one level up dismisses on its current entry too (review): the same gesture, the same answer, nothing posted
-            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why) return; if (cur) { dismissTabMenu(); return; } post(c.value); });
+            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (cur) { dismissTabMenu(); return; } post(c.value); });
             d.appendChild(opt);
           }
           if (explicit) {
