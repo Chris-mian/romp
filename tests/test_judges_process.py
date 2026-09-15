@@ -19,8 +19,10 @@ from test_asm_checkpoint import kernel_module   # noqa: E402  the hermetic kerne
 
 SID = "11111111-2222-3333-4444-777777777777"
 FAKE = r'''
-import json, os, sys, time
+import json, os, signal, sys, time
 mode = os.environ.get("FAKE_MODE", "")
+if mode == "wedged":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)         # a child that answers neither the quit nor the terminate
 log = os.environ.get("FAKE_LOG", "")
 store = os.environ.get("FAKE_STORE", "")
 sys.stdout.write(json.dumps({"op": "ready", "pid": os.getpid(), "judgeVersion": "fake",
@@ -32,6 +34,8 @@ while True:
         break
     req = json.loads(line)
     if req.get("op") == "quit":
+        if mode == "wedged":
+            time.sleep(60)
         break
     if log:
         with open(log, "a") as f:
@@ -90,7 +94,7 @@ class _Child(unittest.TestCase):
     def _reset_judge_counters(self):
         with self.km._PERF_STATS.lock:
             self.km._PERF_STATS.judge.update({"passes": 0, "tierStarts": 0})
-            for k, v in (("passesLost", 0), ("childRestarts", 0), ("cpu_ms_child_workers", 0.0), ("child", None)):
+            for k, v in (("passesLost", 0), ("childRestarts", 0), ("orphansSwept", 0), ("cpu_ms_child_workers", 0.0), ("child", None)):
                 if k in self.km._PERF_STATS.judge:
                     self.km._PERF_STATS.judge[k] = v
 
@@ -298,8 +302,8 @@ class FailureRoads(_Child):
         child = getattr(km, "_JUDGE_CHILD", None)
         proc = getattr(child, "proc", None)
         self.assertIsNotNone(proc, "a child runs after a pass on the child road (the base has none)")
-        rec = self.jd.STATE / "judge-child.json"
-        self.assertTrue(rec.exists(), "the pid record is written at the spawn")
+        rec = self.jd.STATE / ("judge-child.%d.json" % os.getpid())
+        self.assertTrue(rec.exists(), "the pid record is written at the spawn, under this kernel's pid")
         self.assertEqual(json.loads(rec.read_text())["parent"], os.getpid())
         child.end()
         self.assertIsNotNone(proc.poll(), "the child is gone")
@@ -316,19 +320,21 @@ class FailureRoads(_Child):
         #                                                           extra words let the sweep's command check name it as the judge child
         gone = subprocess.Popen(["true"]); gone.wait(); dead = gone.pid   # a pid nothing runs under any more: the "kernel" that left it
         try:
-            (self.jd.STATE / "judge-child.json").write_text(json.dumps({"pid": orphan.pid, "parent": dead, "t": 1}))
+            (self.jd.STATE / ("judge-child.%d.json" % dead)).write_text(json.dumps({"pid": orphan.pid, "parent": dead, "t": 1}))
             if hasattr(km, "_JUDGE_CHILD"):
                 km._JUDGE_CHILD.__init__()
             n0 = self._judge().get("orphansSwept")
-            self._pass()                                          # the first request sweeps before it spawns
+            self._pass()                                          # the boot sweep and the first request's both run before it spawns
             try:
                 orphan.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
             self.assertIsNotNone(orphan.poll(), "the orphan is ended (the base sweeps nothing)")
             self.assertEqual((self._judge().get("orphansSwept") or 0) - (n0 or 0), 1)
-            self.assertEqual(json.loads((self.jd.STATE / "judge-child.json").read_text())["pid"], getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None) and km._JUDGE_CHILD.proc.pid,
-                             "the record now names this kernel's own child")
+            self.assertFalse((self.jd.STATE / ("judge-child.%d.json" % dead)).exists(), "the dead kernel's record is gone")
+            self.assertEqual(json.loads((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).read_text())["pid"],
+                             getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None) and km._JUDGE_CHILD.proc.pid,
+                             "this kernel's own record names its own child")
         finally:
             if orphan.poll() is None:
                 orphan.kill()
@@ -340,13 +346,16 @@ class FailureRoads(_Child):
         other = subprocess.Popen([sys.executable, self.script, "--serve", "romp-judge"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         other.stdout.readline()
         try:
-            (self.jd.STATE / "judge-child.json").write_text(json.dumps({"pid": other.pid, "parent": os.getppid(), "t": 1}))
+            peer = self.jd.STATE / ("judge-child.%d.json" % os.getppid())
+            peer.write_text(json.dumps({"pid": other.pid, "parent": os.getppid(), "t": 1}))
             if hasattr(km, "_JUDGE_CHILD"):
                 km._JUDGE_CHILD.__init__()
             self._pass()
             self.assertIsNone(other.poll(), "another live kernel's child is its own")
             self.assertEqual(self._judge().get("orphansSwept") or 0, 0)
             self.assertIsNotNone(getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None), "and this kernel's own child was started beside it")
+            self.assertTrue(peer.exists(), "the peer's record stands: records are per kernel pid, never overwritten")
+            self.assertTrue((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).exists(), "and this kernel's is its own file")
         finally:
             other.kill()
 
@@ -373,6 +382,111 @@ class FailureRoads(_Child):
         self.assertEqual(self._judge().get("passesLost"), 3, "and loses nothing more")
         self.switch.write_text("on \n")                            # the file written again: the latch lifts
         self.assertTrue(getattr(km, "_judges_in_child", lambda: False)())
+
+    def test_a_dead_kernels_child_is_swept_at_boot_with_the_switch_off_and_no_request_sent(self):
+        """Round three: the sweep ran only at the first request, so a kernel with the switch off (or one that never judged)
+        left a dead kernel's child running for good."""
+        import subprocess
+        km = self.km
+        orphan = subprocess.Popen([sys.executable, self.script, "--serve", "romp-judge"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        orphan.stdout.readline()
+        gone = subprocess.Popen(["true"]); gone.wait(); dead = gone.pid
+        rec = self.jd.STATE / ("judge-child.%d.json" % dead)
+        try:
+            rec.write_text(json.dumps({"pid": orphan.pid, "parent": dead, "t": 1}))
+            self.jd.run_index = lambda now=None: None
+            self.jd.run_triage = lambda now=None: None
+            self._pass()                                          # the switch is off: the producer boots, sweeps, judges in process
+            try:
+                orphan.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            self.assertIsNotNone(orphan.poll(), "the orphan is ended at boot (the base sweeps only at a request, so never here)")
+            self.assertEqual(self._judge().get("orphansSwept") or 0, 1)
+            self.assertFalse(rec.exists(), "the dead kernel's record is gone")
+            self.assertIsNone(getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None), "and no child was started: the switch is off")
+            self.assertEqual(self._requests(), [], "no request was sent")
+        finally:
+            if orphan.poll() is None:
+                orphan.kill()
+
+    def test_the_exit_road_ends_a_child_under_a_pass_in_flight_at_once_and_the_pass_is_counted_lost(self):
+        """Round three, high: end() waited on the pass lock, so a kernel leaving under a long pass sat out the pass's hard bound
+        (fifteen minutes) against a SIGTERM grace of seconds, and the manager's kill took the child's stores mid-write."""
+        import threading
+        km = self.km
+        self._on()
+        os.environ["FAKE_MODE"] = "hang-on-2"                     # the second pass sleeps thirty seconds in the child
+        grace_saved = getattr(km, "EXIT_GRACE_S", None)
+        km.EXIT_GRACE_S = 2.0
+        try:
+            self._pass()
+            child = getattr(km, "_JUDGE_CHILD", None)
+            proc = getattr(child, "proc", None)
+            self.assertIsNotNone(proc, "a child runs after the first pass (the base has none)")
+            lost0 = self._judge().get("passesLost") or 0
+            t = threading.Thread(target=self._pass, daemon=True)
+            t.start()
+            deadline = time.monotonic() + 10
+            while len(self._requests()) < 2 and time.monotonic() < deadline:   # loop-ok: a bounded wait for the child to take the request
+                time.sleep(0.02)
+            self.assertEqual(len(self._requests()), 2, "the second request reached the child, which now sleeps on it")
+            t0 = time.monotonic()
+            child.end()
+            dt = time.monotonic() - t0
+            self.assertIsNotNone(proc.poll(), "the child is gone")
+            self.assertLess(dt, km.EXIT_GRACE_S, "end() returned inside the grace, not after the pass's hard bound")
+            t.join(10)
+            self.assertFalse(t.is_alive(), "the pass thread came back on the closed pipe")
+            self.assertEqual((self._judge().get("passesLost") or 0) - lost0, 1, "the pass in flight is counted lost")
+            self.assertIsNone(child.proc, "and no child stands")
+            self.assertFalse((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).exists(), "its record is gone")
+        finally:
+            if grace_saved is not None:
+                km.EXIT_GRACE_S = grace_saved
+
+    def test_a_wedged_child_is_ended_inside_the_grace_with_budgets_that_scale_with_it(self):
+        """Round three, medium: the quit and the terminate each waited a fixed five seconds, so a child that answered neither
+        cost ten seconds of an eight-second grace."""
+        km = self.km
+        self._on()
+        os.environ["FAKE_MODE"] = "wedged"                        # ignores SIGTERM, sleeps on the quit
+        grace_saved = getattr(km, "EXIT_GRACE_S", None)
+        budgets = getattr(km, "_judge_child_budgets", None)
+        self.assertIsNotNone(budgets, "the child's end budgets derive from the grace (the base waits fixed seconds)")
+        try:
+            km.EXIT_GRACE_S = 4.0
+            self.assertAlmostEqual(sum(budgets()), 1.0, places=6, msg="a quarter of the grace in all")
+            km.EXIT_GRACE_S = 8.0
+            self.assertAlmostEqual(sum(budgets()), 2.0, places=6, msg="and it scales with the grace, never a constant")
+            km.EXIT_GRACE_S = 2.0
+            self._pass()
+            child = km._JUDGE_CHILD
+            proc = child.proc
+            self.assertIsNotNone(proc)
+            t0 = time.monotonic()
+            child.end()
+            dt = time.monotonic() - t0
+            self.assertIsNotNone(proc.poll(), "the wedged child is killed")
+            self.assertEqual(proc.returncode, -9, "by the kill, after the quit and the terminate went unanswered")
+            self.assertLess(dt, km.EXIT_GRACE_S, "inside the grace")
+        finally:
+            if grace_saved is not None:
+                km.EXIT_GRACE_S = grace_saved
+
+    def test_the_spawns_preexec_does_no_work_after_fork(self):
+        """Round three, medium: the preexec imported ctypes and opened libc in the forked child of a many-threaded kernel, an
+        import lock or an allocator lock away from a deadlock at every spawn."""
+        import inspect
+        km = self.km
+        pre = getattr(km, "_judge_child_preexec", None)
+        self.assertIsNotNone(pre, "the spawn asks for the parent-death signal between fork and exec (the base spawns nothing)")
+        src = inspect.getsource(pre)
+        self.assertNotIn("import", src.split('"""')[-1], "no import after fork")
+        self.assertNotIn("CDLL", src.split('"""')[-1], "no dlopen after fork")
+        self.assertIn("_PRCTL(", src, "one call through the pointer bound at import")
+        if sys.platform.startswith("linux"):
+            self.assertIsNotNone(getattr(km, "_PRCTL", None), "the pointer is bound at import on Linux")
 
     def test_the_switch_turning_off_ends_an_idle_child_on_that_pass(self):
         km = self.km

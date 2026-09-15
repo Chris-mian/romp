@@ -387,7 +387,8 @@ class _PerfStats:
             #                                           (chat_row_drop), reset with the process, sids only, time.monotonic
             #                                           deltas as the call sites take them
             self.sends = {k: {} for k in self.SEND_KINDS}
-            self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0,
+            self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0,
+                          "tierStarts": 0,                # judge tier threads started (T404: the lab's proof that off starts nothing)
                           "passesLost": 0, "childRestarts": 0, "childFallbacks": 0, "orphansSwept": 0,
                           "cpu_ms_child_workers": 0.0, "child": None}   # stage three: the judges' child (plans/judges-process.md):
             #                                 passes it answered nothing for, its restarts, the falls back to the in-process tiers after
@@ -53277,8 +53278,21 @@ JUDGES_PROCESS_FILE = "judges-process"   # STATE/judges-process: the literal `on
 #                                          else: the in-process tiers, today's road (rule 5: the default flips after the boot measurement)
 JUDGE_CHILD_READY_S = 60.0                 # the child's ready line bound after a start
 JUDGE_CHILD_PASS_HARD_S = 900.0            # the hard bound on one pass: a child that answers nothing by then is killed and restarted
-JUDGE_CHILD_QUIT_S = 5.0                   # how long a quit is given before the kill
 JUDGE_PROTOCOL_VERSIONS = (1,)             # the ready lines this kernel accepts; another version is refused, killed and counted
+_PRCTL = None                              # libc's prctl, bound ONCE at import (Linux) so the spawn's preexec does no work after fork
+if sys.platform.startswith("linux"):       #  (an import or a dlopen in the forked child takes locks another thread may hold)
+    try:
+        import ctypes as _ctypes
+        _PRCTL = _ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:
+        _PRCTL = None
+
+
+def _judge_child_budgets():
+    """(quit, terminate, kill) waits for ending the child, shares of the manager's SIGTERM grace (EXIT_GRACE_S, a quarter of it
+    in all), never fixed seconds: the exit road must leave inside the grace whatever the child does."""
+    g = float(EXIT_GRACE_S)
+    return 0.10 * g, 0.10 * g, 0.05 * g
 
 
 JUDGE_CHILD_LOST_SPAWNS_MAX = 3            # consecutive passes lost with no done from a fresh spawn before the kernel falls back to
@@ -53330,17 +53344,17 @@ def _judge_child_fallback_latch():
 
 
 def _judge_child_pid_file():
-    return jd.STATE / "judge-child.json"
+    return jd.STATE / ("judge-child.%d.json" % os.getpid())   # one record per kernel pid: two kernels over one root never overwrite
 
 
 def _judge_child_preexec():
-    """In the child, before exec: on Linux the child asks to be signaled when its parent dies (PR_SET_PDEATHSIG), so a kernel
-    that leaves through os._exit without the exit road's end() still takes its child with it. Other platforms have no
-    such request; the exit road and the boot sweep are the portable parts."""
-    if sys.platform.startswith("linux"):
+    """In the child, between fork and exec: one C call through the pointer bound at import (PR_SET_PDEATHSIG = 1), so a kernel
+    that leaves through os._exit without the exit road's end() still takes its child with it. No import, no dlopen, no
+    allocation of note: the forked child of a many-threaded kernel must take no lock another thread may hold. Other
+    platforms have no such request; the exit road and the boot sweep are the portable parts."""
+    if _PRCTL is not None:
         try:
-            import ctypes
-            ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, int(signal.SIGTERM), 0, 0, 0)   # PR_SET_PDEATHSIG = 1
+            _PRCTL(1, int(signal.SIGTERM), 0, 0, 0)
         except Exception:
             pass
 
@@ -53369,19 +53383,25 @@ class _JudgeChild:
     def __init__(self):
         self.proc = None
         self.seq = 0
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()          # one pass at a time (the producer's)
+        self.exit_lock = threading.Lock()     # end() once, from any thread, never behind the pass lock
         self.started_once = False
         self.pid = None
         self.buf = b""
         self.lost_spawns = 0
         self.swept = False
+        self.in_pass = False
 
-    def _readline(self, timeout):
-        """One line from the child's stdout within `timeout` seconds, decoded; None on the bound (a partial line included),
+    def _readline(self, p, timeout):
+        """One line from child `p`'s stdout within `timeout` seconds, decoded; None on the bound (a partial line included),
         "" at EOF. Bytes are read as they arrive and split on the newline, so a child that writes half a line and stalls
-        is held to the bound like one that writes nothing."""
+        is held to the bound like one that writes nothing. `p` is the process the caller holds: end() on another thread
+        may drop self.proc under a pass, and the pass then reads its closed pipe to EOF."""
         deadline = time.monotonic() + timeout
-        fd = self.proc.stdout.fileno()
+        try:
+            fd = p.stdout.fileno()
+        except (OSError, ValueError):
+            return ""
         while True:
             nl = self.buf.find(b"\n")
             if nl >= 0:
@@ -53390,18 +53410,25 @@ class _JudgeChild:
             left = deadline - time.monotonic()
             if left <= 0:
                 return None
-            r, _, _ = select.select([fd], [], [], min(left, 1.0))
+            try:
+                r, _, _ = select.select([fd], [], [], min(left, 1.0))
+            except (OSError, ValueError):
+                return ""
             if r:
-                chunk = os.read(fd, 65536)
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    return ""
                 if not chunk:
                     return ""
                 self.buf += chunk
-            elif self.proc.poll() is not None and not self.buf:
+            elif p.poll() is not None and not self.buf:
                 return ""
 
     def _kill(self, why):
-        p = self.proc
-        self.proc = None
+        with self.exit_lock:
+            p = self.proc
+            self.proc = None
         self.buf = b""
         if p is None:
             return
@@ -53425,42 +53452,54 @@ class _JudgeChild:
         except OSError:
             pass
 
-    def sweep_orphan(self):
-        """At this kernel's first request: a pid record left by a kernel that is gone (its parent pid answers no signal) names
-        a child that may still run (an exit through os._exit before the exit road ended it, a platform without a parent-death
-        signal): if that pid is alive and its command names romp-judge, it is ended (SIGTERM, then SIGKILL after the quit
-        bound) and counted (judge.orphansSwept). A record naming a live parent, or a pid whose command is something else
-        (the pid reused), is left alone; the record goes either way."""
+    def sweep_orphans(self):
+        """At this kernel's boot (the producer's start) and again at its first request: every pid record under the state root
+        (one per kernel pid, `judge-child.<pid>.json`, so two kernels over one root never overwrite each other's) left by a
+        kernel that is gone (its pid answers no signal) names a child that may still run (an exit through os._exit before
+        the exit road ended it, a platform without a parent-death signal): if that pid is alive and its command names
+        romp-judge, it is ended (SIGTERM, then SIGKILL after the terminate budget) and counted (judge.orphansSwept). A record
+        naming a live parent is its own kernel's; a pid whose command is something else (the pid reused) is left alone; a
+        dead kernel's record goes either way."""
         self.swept = True
         try:
-            rec = json.loads(_judge_child_pid_file().read_text())
-        except (OSError, ValueError):
-            return
-        pid, parent = rec.get("pid"), rec.get("parent")
-        if not isinstance(pid, int) or not isinstance(parent, int) or parent == os.getpid():
-            return
-        try:
-            os.kill(parent, 0)
-            return                                        # the parent lives: its child is its own
-        except ProcessLookupError:
-            pass
+            recs = sorted(jd.STATE.glob("judge-child*.json"))
         except OSError:
             return
-        if not _pid_is_judge_child(pid):
-            self._drop_pid_record()
-            return
-        sys.stderr.write("judge child: sweeping the orphan pid %d left by kernel %d\n" % (pid, parent))
-        try:
-            os.kill(pid, signal.SIGTERM)
-            deadline = time.monotonic() + JUDGE_CHILD_QUIT_S
-            while time.monotonic() < deadline and _pid_is_judge_child(pid):   # loop-ok: bounded by the quit bound
-                time.sleep(0.1)
+        for f in recs:
+            try:
+                rec = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            pid, parent = rec.get("pid"), rec.get("parent")
+            if not isinstance(pid, int) or not isinstance(parent, int) or parent == os.getpid():
+                continue
+            try:
+                os.kill(parent, 0)
+                continue                                  # the parent lives: its child is its own
+            except ProcessLookupError:
+                pass
+            except OSError:
+                continue
             if _pid_is_judge_child(pid):
-                os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-        _PERF_STATS.judge_orphan_swept()
-        self._drop_pid_record()
+                sys.stderr.write("judge child: sweeping the orphan pid %d left by kernel %d\n" % (pid, parent))
+                _quit_s, term_s, kill_s = _judge_child_budgets()
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    deadline = time.monotonic() + term_s
+                    while time.monotonic() < deadline and _pid_is_judge_child(pid):   # loop-ok: bounded by the terminate budget
+                        time.sleep(0.05)
+                    if _pid_is_judge_child(pid):
+                        os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                _PERF_STATS.judge_orphan_swept()
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    def sweep_orphan(self):
+        self.sweep_orphans()
 
     def _start(self):
         """Spawn the child and read its ready line. False (nothing running) when it did not come up."""
@@ -53477,7 +53516,7 @@ class _JudgeChild:
             _PERF_STATS.judge_child_restart()
         self.started_once = True
         self._write_pid_record()
-        line = self._readline(JUDGE_CHILD_READY_S)
+        line = self._readline(self.proc, JUDGE_CHILD_READY_S)
         try:
             ready = json.loads(line) if line else None
         except ValueError:
@@ -53497,7 +53536,7 @@ class _JudgeChild:
         child that never answered a done since its spawn counts toward the fallback latch."""
         with self.lock:
             if not self.swept:
-                self.sweep_orphan()
+                self.sweep_orphans()
             fresh = False
             if self.proc is None or self.proc.poll() is not None:
                 if self.proc is not None:
@@ -53506,27 +53545,35 @@ class _JudgeChild:
                     self._lost_spawn()
                     return None
                 fresh = True
-            self.seq += 1
+            p = self.proc                                 # the process THIS pass reads: end() on the exit road may drop self.proc
+            self.seq += 1                                 #  under us, and then the pipe reads to EOF and the pass is lost
             seq = self.seq
+            self.in_pass = True
             try:
-                self.proc.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": float(now), "mayStart": bool(may_start)}) + "\n").encode())
-                #                                  one word on the wire: the gate's verdict; the child treats an absent field as False
-                self.proc.stdin.flush()
-            except (OSError, ValueError) as e:
-                self._kill("the request could not be written: %s" % e)
-                if fresh:
-                    self._lost_spawn()
-                return None
-            if may_start:
-                _PERF_STATS.judge_tiers(2)                # the child starts its two tiers on this request: counted here, not at the
-            line = self._readline(JUDGE_CHILD_PASS_HARD_S)   #  done, so a long pass reads them during the pass (a refused spawn counts none)
+                try:
+                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": float(now), "mayStart": bool(may_start)}) + "\n").encode())
+                    #                             one word on the wire: the gate's verdict; the child treats an absent field as False
+                    p.stdin.flush()
+                except (OSError, ValueError) as e:
+                    self._kill("the request could not be written: %s" % e)
+                    if fresh:
+                        self._lost_spawn()
+                    return None
+                if may_start:
+                    _PERF_STATS.judge_tiers(2)            # the child starts its two tiers on this request: counted here, not at the
+                line = self._readline(p, JUDGE_CHILD_PASS_HARD_S)   #  done, so a long pass reads them during the pass (a refused spawn counts none)
+            finally:
+                self.in_pass = False
             if line is None:
                 self._kill("no done within the hard bound of %.0f s" % JUDGE_CHILD_PASS_HARD_S)
                 if fresh:
                     self._lost_spawn()
                 return None
             if line == "":
-                self._kill("exited mid-pass with %s" % self.proc.poll())
+                if self.proc is None:
+                    sys.stderr.write("judge child: pass %d lost: the child was ended under it (the kernel is leaving)\n" % seq)
+                else:
+                    self._kill("exited mid-pass with %s" % p.poll())
                 if fresh:
                     self._lost_spawn()
                 return None
@@ -53548,33 +53595,34 @@ class _JudgeChild:
             self.lost_spawns = 0
             _judge_child_fallback_latch()
 
-    def end(self, bound=None):
-        """End the child: quit, a bounded wait, SIGTERM, SIGKILL. The exit road's call and the stop's; also the off pass's
-        (the switch turned off with a child idle)."""
-        bound = JUDGE_CHILD_QUIT_S if bound is None else bound
-        with self.lock:
+    def end(self):
+        """End the child: quit, a bounded wait, SIGTERM, a bounded wait, SIGKILL, with the waits shares of the manager's SIGTERM
+        grace (_judge_child_budgets), so the exit road leaves inside the grace whatever the child does. Never waits on the
+        pass lock: a pass in flight is lost (the pass thread reads its pipe to EOF and counts it) and the child is signaled
+        at once. The exit road's call, the stop's and the off pass's; once, from any thread."""
+        with self.exit_lock:
             p = self.proc
             self.proc = None
-            self.buf = b""
             if p is None:
                 return
+            quit_s, term_s, kill_s = _judge_child_budgets()
+            if self.in_pass:
+                sys.stderr.write("judge child: ending pid %s with a pass in flight (the pass is lost)\n" % p.pid)
             try:
                 p.stdin.write(b'{"op": "quit"}\n')
                 p.stdin.flush()
             except (OSError, ValueError):
                 pass
-            try:
-                p.wait(timeout=bound)
-            except Exception:
+            for step, wait_s in (("quit", quit_s), ("terminate", term_s), ("kill", kill_s)):
                 try:
-                    p.terminate()
-                    p.wait(timeout=bound)
-                except Exception:
-                    try:
+                    if step == "terminate":
+                        p.terminate()
+                    elif step == "kill":
                         p.kill()
-                        p.wait(timeout=2)
-                    except Exception:
-                        pass
+                    p.wait(timeout=wait_s)
+                    break
+                except Exception:
+                    continue
             self._drop_pid_record()
 
     def stop(self):
@@ -53649,6 +53697,10 @@ def _producer():
     # uncontended figure (the restart-path work, 2026-09-11); a wedged attach never holds the judges past the bound
     if not _wait_boot_attached():
         sys.stderr.write("producer: the boot's attaches did not settle within %.0f s; judging anyway\n" % BOOT_JUDGE_HOLD_S)
+    try:
+        _JUDGE_CHILD.sweep_orphans()                       # a dead kernel's judge child is ended at boot, switch on or off
+    except Exception:
+        sys.stderr.write("judge child: the boot sweep failed: %s\n" % traceback.format_exc())
     while not _LOOPS_STOP.is_set():
         _nw, _nm = time.time(), time.monotonic()        # detect a host suspension (laptop slept) since the
         _iv = _detect_suspend(_prev_wall, _prev_mono, _nw, _nm)   # last tick: wall jumped past monotonic

@@ -3995,10 +3995,15 @@ Bounds and counters, all on `/perf` under `judge`:
   and a `ready` with a protocol version the kernel does not speak are handled the same way.
 - `childFallbacks`: after three passes lost in a row from fresh starts the judges run in the kernel until the switch
   file is written again, said as a sync notice.
-- `orphansSwept`: a child left by a kernel that is gone (its pid record under the state root, `judge-child.json`, names
-  a parent that answers no signal) is ended at the next kernel's first request, so the goal stores keep one writer. On
-  Linux the child also dies with its parent by construction (a parent-death signal); the kernel's exit road ends it
-  first in every case.
+- `orphansSwept`: a child left by a kernel that is gone (its pid record under the state root, one per kernel pid as
+  `judge-child.<pid>.json`, names a parent that answers no signal) is ended at the next kernel's boot and again at its
+  first request, so the goal stores keep one writer. On Linux the child also dies with its parent by construction (a
+  parent-death signal, asked for between fork and exec through a pointer the kernel bound at import, so the forked child
+  does no work of its own); the kernel's exit road ends it first in every case, signaling at once even with a pass in
+  flight (that pass is lost and counted) and waiting only shares of the manager's SIGTERM grace for the quit, the
+  terminate and the kill (a tenth, a tenth and a twentieth), so the exit stays inside the grace whatever the child does.
+- On the child road `parses.judge` and the `goals` block read zero: the judges' parses and store writes happen in the
+  child, and their per-pass figures ride its done line as `judge.child.parses` and `judge.child.goalIo`.
 - `cpu_ms_sum` counts the child's tier and worker CPU as it counts the in-process tiers and pools; `cpu_ms_child_workers`
   is the workers' share alone; `child` is the last done line (its wall, tier starts, CPU, failures, record cache and
   checkpoint blocks); `tierStarts` is counted at the request, so a long pass reads it during the pass.
