@@ -608,8 +608,9 @@ function render() {
       if (s.postalServiceOff) {
         // T356: a session whose mail is off says so on its row, quietly
         const mo = el("span", "fl-mail-off");
-        mo.textContent = s.mailOffWhy === "unreadable" ? "mail held" : "mail off";
+        mo.textContent = (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags") ? "mail held" : "mail off";
         mo.title = s.mailOffWhy === "unreadable" ? "this session's record cannot be read: mail waits until it is repaired"
+          : s.mailOffWhy === "flags" ? "the session settings file cannot be read: mail waits until it is written again"
           : s.mailOffWhy === "thread" ? "a comment thread's mail is off until it is broken out"
           : "this session neither sends nor receives peer mail";
         head.appendChild(mo);
