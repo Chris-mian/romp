@@ -83,7 +83,12 @@ diagnostics then apply to a remote session exactly as to a local one. Concretely
   (see the risk in section 6). This is the single most load-bearing term: it makes the remote's
   reconnect-supersession and its per-pane diagnostic row work.
 - **`skeleton=1`**, for a chat pane that is a later column or is on the restart diet, so the remote
-  diets the cold tabs.
+  diets the cold tabs. When the hub is watching a tab on ANOTHER host, this host is dialed `skeleton=1`
+  with no `active`, and the kernel diets ALL its tabs (every one a skeleton, none full) so the diet
+  reaches every attached host, not only the watched one. This no-active diet is scoped to the RELAY
+  client (`kind == "relay"`): a LOCAL served page also dials `skeleton=1` with no active in real
+  states (a reload whose blob names no tab, a fresh profile with no blob), so it keeps the fail-safe
+  whole push until a served lab proves its page-side recovery (a follow-up).
 - **`active`**, the pane's active session, so the remote builds that one full and skeletons the
   rest.
 - **`provrows=1`**, for the Outline pane, so the remote's cold-tab gate stays on and the pane owns
