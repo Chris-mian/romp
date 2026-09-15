@@ -18,6 +18,8 @@ was attributed to, beside the card the moved input changes:
   * a peer's verdict re-derives the session whose card reads that peer's store (the peers dependency);
   * nudge facts re-derive only cards that read the changed node, including foreign node ids; unrelated
     bookkeeping and undisplayed history do not invalidate, and concurrent writes wait for the next snapshot;
+  * a deferral record (the ledger's `deferred` map: the Stalled section, the Blocked filing) minted or retired
+    for a node re-derives the card that read that exact node id, a foreign-owned id included, and no other;
   * the clock: two builds ten minutes apart derive nothing and differ in `now`, `buildId` and the cards' age
     tint alone (the fold stamps trgb per build; the memo holds nothing clock-derived);
   * the byte bound (FEED_MEMO_BYTES): entries leave oldest first, counted, and the payload stays complete;
@@ -731,6 +733,44 @@ class PerCardNudgeInputs(_Board):
         delta, frame = self._delta(self._build)
         self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
         self.assertEqual(self._cards(frame)[foreign]["nudged"]["count"], 1)
+        _reset_memo()
+        self.assertEqual(_dump(frame), _dump(self._build()))
+
+    def test_a_deferral_record_for_a_foreign_node_id_re_derives_the_card_that_read_it(self):
+        """The key's `stalls` component follows the exact node ids the entry read, like `nudge`: a deferral
+        record (auto-nudge.json's `deferred` map, what _stalled_goals reads) minted or retired for a node whose id
+        prefix is another session's re-derives the session holding that card, once; a record for a node no entry
+        read re-derives nothing. Red on a session-prefix slice: with the nudge component scoped to its read ids,
+        no board-wide identity covered the ledger any more, and the holding session's entry was served with a
+        frozen or missing Stalled section."""
+        old, foreign = WEB + ":g1", API + ":g9"
+        store = jd.load_goals(WEB)
+        node = store["nodes"].pop(old)
+        node["id"] = foreign
+        store["nodes"][foreign] = node
+        store["status"][foreign] = store["status"].pop(old)
+        jd.save_goals(WEB, store)
+        frame = self._build()
+        self.assertEqual(self._cards(frame)[foreign]["sid"], WEB)
+        self.assertIsNone(self._cards(frame)[foreign]["stalled"])
+        hold = {"why": "waiting on the notes-api list endpoint to land", "at": NOW - 60}
+        self._nudge_data({}, deferred={foreign: hold})          # minted AFTER the entry was memoized
+        delta, frame = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
+        self.assertEqual(delta["miss_by"], {"stalls": 1}, delta)
+        stalled = self._cards(frame)[foreign]["stalled"]
+        self.assertEqual((stalled["why"], stalled["since"]), (hold["why"], hold["at"]))
+        delta, _ = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (0, 3), "the record stands: a hit: %r" % delta)
+        unread = TESTS + ":g7"                                    # a node id no entry read
+        self._nudge_data({}, deferred={foreign: hold, unread: dict(hold, at=NOW - 50)})
+        delta, _ = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (0, 3), "an unread node's record moves no key: %r" % delta)
+        self._nudge_data({}, deferred={unread: dict(hold, at=NOW - 50)})   # the foreign node's record retired
+        delta, frame = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
+        self.assertEqual(delta["miss_by"], {"stalls": 1}, delta)
+        self.assertIsNone(self._cards(frame)[foreign]["stalled"])
         _reset_memo()
         self.assertEqual(_dump(frame), _dump(self._build()))
 

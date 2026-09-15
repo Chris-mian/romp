@@ -38710,7 +38710,7 @@ _FEED_MEMO_LABELS = ("transcript", "parse", "cut", "states", "names", "captions"
                      "cleared", "row", "ask", "live", "bg", "wait", "postal", "stalls", "nudge", "jauth", "jactive",
                      "hide", "watch", "subagents", "usage", "offer", "auth", "downtime", "debug", "interrupting",
                      "closer", "peers")
-_FEED_MEMO_DEPS = ("usage", "offer", "peers", "nudge")    # components evaluated over the previous entry's read record
+_FEED_MEMO_DEPS = ("usage", "offer", "peers", "nudge", "stalls")    # components evaluated over the previous entry's read record
 _FEED_NUDGE_FIELDS = ("count", "failed", "failedAt")  # the fields the card reads; pinned by the input census
 _feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
@@ -38941,6 +38941,17 @@ def _feed_nudge_key(ctx, entry):
     return tuple(out)
 
 
+def _feed_stalls_key(ctx, entry):
+    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Blocked
+    filing), from the build's own _stalled_goals() snapshot in ctx, keyed by the exact node ids in the
+    entry's `reads`. The body reads a record by exact node id, a foreign-owned id included, so a slice on
+    the session's own id prefix missed those; the board-wide nudge identity covered them until the nudge
+    component was scoped to its read ids (the review, 2026-09-15). A deps component, like nudge: a cold
+    entry gets it from _feed_key_with_deps."""
+    ids = set(((entry or {}).get("reads") or {}).get("nudges") or ())
+    return tuple(sorted((g, v.get("why"), v.get("since")) for g, v in ctx["stalls"].items() if g in ids))
+
+
 def _feed_session_key(s, tm, ctx, prev_entry):
     """One session's memo key: a tuple in _FEED_MEMO_LABELS order, one component per input _feed_session_entry reads,
     every file stat'd BEFORE any read below it (stat-then-read: a publish landing between the stat and the read pairs
@@ -39001,8 +39012,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         times, asks, reply-requiring sends and returns, the other parties' display names). _peer_answered and
         _peer_answered_at walk those pairs, _session_stamp_read's superseding clock is that walk, _peer_identity's
         remote names are the join; a row between two other sessions moves no key of this one.
-      stalls: the session's slice of _stalled_goals() as (gid, why, since), sorted. The stalled section and the
-        in-flight swirl.
+      stalls: the deferral records of _stalled_goals() as (gid, why, since), sorted, for the exact node ids the
+        previous entry read (a foreign-owned id included: the body reads a record by exact node id, so a slice on
+        the session's own id prefix missed a foreign-id node's hold). The stalled section, the in-flight swirl and
+        the Blocked filing. A deps component, re-evaluated over the new entry.
       nudge: count, failed/failedAt and the last eight displayed history timestamps for the exact node ids
         the previous entry read. The pre-build snapshot also feeds the body; unrelated ledger writes and
         other sessions' history do not invalidate this entry. A deps component, populated on a cold build.
@@ -39057,8 +39070,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
            if tm else None)
     postal = _postal_session_slice(fsid, board["postal"])
     nudge = _feed_nudge_key(ctx, prev_entry)
-    stalls = tuple(sorted((k, v.get("why"), v.get("since")) for k, v in ctx["stalls"].items()
-                          if k.startswith(fsid + ":")))
+    stalls = _feed_stalls_key(ctx, prev_entry)
     jauth = tuple(sorted((ctx["jauth_map"].get(fsid) or {}).items(), key=str)) or None
     jactive = fsid in ctx["jactive"]
     subagents = _subagent_dirs_ident(fsid, str(_subagents_dir(path)))[1] if path else None
@@ -39120,8 +39132,8 @@ _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build'
 
 def _feed_key_with_deps(key, ctx, entry):
     """The key with its dependency components re-evaluated over the entry a derivation just produced: `usage` and
-    `offer` from the entry's `reads`, `nudge` from its exact read node ids and the build's snapshot, `peers` from
-    the entry's `peers`, each peer's facts the PRE-derivation ones the key
+    `offer` from the entry's `reads`, `nudge` and `stalls` from its exact read node ids and the build's snapshots,
+    `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
     took when the previous entry already named that peer. A peer this derivation read for the FIRST time has no
     pre-derivation facts, and facts taken now could pair a new key with old content (the peer's store moving while
     the body read it, the order stat-then-read forbids), so the stored key carries _FEED_PEERS_UNSETTLED instead:
@@ -39132,6 +39144,7 @@ def _feed_key_with_deps(key, ctx, entry):
     k[_FEED_MEMO_LABELS.index("usage")] = ctx.get("usage_ident") if reads.get("usage") else None
     k[_FEED_MEMO_LABELS.index("offer")] = ctx.get("cap_open") if reads.get("usage") else None
     k[_FEED_MEMO_LABELS.index("nudge")] = _feed_nudge_key(ctx, entry)
+    k[_FEED_MEMO_LABELS.index("stalls")] = _feed_stalls_key(ctx, entry)
     if entry is None:
         peers = None
     else:
