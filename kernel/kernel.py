@@ -54452,7 +54452,7 @@ _PANE_ORDER = (("chat", "Chat"), ("timeline", "Sessions"), ("fleet", "Outline"),
 def _pane_label(app):
     """The label a pane wears on every surface (the rail, the tabs, a line that names it): _PANE_ORDER's word for its key,
     the key's own capitalised form for a page outside that list (Settings). The shim bakes it as LABEL so a line a pane
-    says about itself never shows an internal key (the round-three review: "the fleet pane")."""
+    says about itself never shows an internal key (the round-three review read the Outline pane's key in such a line)."""
     return dict(_PANE_ORDER).get(str(app or ""), str(app or "").capitalize())
 
 _LANDING_ERRS_JS = """

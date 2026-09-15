@@ -372,8 +372,8 @@ out({ diag: DIAG });""")
         self.assertGreaterEqual(s["diag"][0]["data"]["ageMs"], 180000, "three minutes held, three minutes said")
 
     def test_every_pane_names_itself_by_its_label_never_its_key(self):
-        """The round-three review's medium A: a line a pane says about itself read "the fleet pane" for the Outline pane and would
-        read "the timeline pane" for the Sessions pane. The shim bakes LABEL from _pane_label, the one map every surface renders
+        """The round-three review's medium A: a line a pane says about itself read the Outline pane's internal key and would
+        read the Sessions pane's for that pane. The shim bakes LABEL from _pane_label, the one map every surface renders
         (_PANE_ORDER), rendered here for every key; a source grep of added lines cannot catch an interpolated key."""
         labels = dict(km._PANE_ORDER)
         self.assertEqual(labels["fleet"], "Outline"); self.assertEqual(labels["timeline"], "Sessions")
