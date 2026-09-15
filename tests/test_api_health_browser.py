@@ -328,12 +328,20 @@ await step2('pressFocus', async () => {
   //     focus, so focus would fall to BODY, where the card's Tab trap no longer sees the keys and a Shift+Tab walks
   //     out of the aria-modal dialog. Focus moves to the card before the disable; the trap holds.
   await page.evaluate(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    // #ah-tip is ONE stable node whose content every render replaces (kernel.py creates it once and toggles its
+    // display), so the previous open's content would satisfy the wait below at once: the Tab landed on the OLD pause
+    // button, the open's read re-rendered and replaced it, and the Space hit a detached node (no setGlobalRetryPaused
+    // sent, the disabled wait timed out: CI 2026-09-15, three failures from one cause). Emptied here, the wait is met
+    // by the NEW render alone: the open paints a pending row first (no error line, no bars) and the read's render
+    // brings the content the wait keys on. A lab road that reads a stable node's content right after a trigger is a
+    // timing claim (the repo rule); this one keys on the render the trigger causes.
+    document.getElementById("ah-tip").innerHTML = "";
     window.__sent3 = []; window.__rompShellSend = (o) => { window.__sent3.push(o); return true; };
     window.__rompApiHealth(window.__frame({ state: "paused", reason: "limit", text: "paused · usage limit · 1 waiting", since: 1700000010, seq: 12 }));
     document.getElementById("rail-api").focus(); });
   await page.keyboard.press("Enter");
   // the open's read lands (this lab has no /api-health: the failure line) and re-renders the card; the focus reads
-  // below wait for that render rather than racing it (a CI flake on another PR read focus mid-render)
+  // below wait for that render, which is the first content the emptied node can carry, rather than racing it
   await page.waitForFunction(() => !!document.querySelector("#ah-tip .ah-err") || !!document.querySelector("#ah-tip .ah-bars"), null, { timeout: 8000 });
   await page.keyboard.press("Tab");
   R.pressFocusBefore = await active();
