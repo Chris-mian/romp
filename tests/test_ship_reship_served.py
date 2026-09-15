@@ -239,6 +239,23 @@ out.wedge.gateOffered = await waitBtn.count();
 if (out.wedge.gateOffered) await waitBtn.click();
 out.wedge.inputHeld = await page.inputValue("#composer-input");
 out.wedge.chipStillPendingHeld = await page.locator(".composer-file-pending").count();
+// The observation cannot depend on when this driver looks (three CI reds on unrelated heads, 2026-09-15: the pane's reopen
+// asks /version and the core owes, announces and can even FIRE the restart's reload before the driver's own request): two
+// recorders go in BEFORE the kill and write synchronously to sessionStorage, which survives the reload. Every held
+// announcement the core makes from here on (t215:held), and the pane's pending state at the instant the core fires,
+// through its persist hook, the last call before location.reload() (t215:fire). The class's claim is read at the fire.
+await page.evaluate(() => {
+  const R = window.__rompReload;
+  sessionStorage.removeItem("t215:held"); sessionStorage.removeItem("t215:fire");
+  if (R) { const prev = R.held; R.held = (b, o) => {
+    try { const l = JSON.parse(sessionStorage.getItem("t215:held") || "[]"); l.push({ hold: String(b), reason: o && o.reason }); sessionStorage.setItem("t215:held", JSON.stringify(l)); } catch (e) {}
+    if (prev) prev(b, o); }; }
+  const prevP = window.__rompPersistForReload;
+  window.__rompPersistForReload = () => {
+    try { const input = document.getElementById("composer-input");
+      sessionStorage.setItem("t215:fire", JSON.stringify({ pending: document.querySelectorAll(".composer-file-pending").length, input: input ? input.value : null })); } catch (e) {}
+    if (prevP) prevP(); };
+});
 // ---- the restart: the old socket dies with the ack still owed; a fresh kernel takes the port ----
 process.kill(cfg.kernelPid, "SIGKILL");
 const k2 = spawn(cfg.relaunch.cmd, [], { env: cfg.relaunch.env, detached: true,
@@ -252,6 +269,7 @@ fs.writeSync(1, "KPID:" + k2.pid + "\n");
 // the hold is recorded by the core's own event (the held hook fires when the request finds the pane busy), not by a poll
 // that must catch the busy window: on a fast heal the first poll of the wait below found the pane idle and read no hold
 // (a CI red of 2026-09-15). The FIRST hold is kept: the chat pane's redial holds on fresh too once invisible restarts landed.
+if (cfg.raceDelayMs) await page.waitForTimeout(cfg.raceDelayMs);   // the reproduced race: the pane's reopen owes and fires the reload before this request
 await page.evaluate(() => { window.__probe = 1; const R = window.__rompReload; if (R) {
   // the hold may already be announced: the pane's reopen asks /version and the core owes the restart's reload before this
   // driver gets here (a fast relaunch), and the core announces a hold once per reason, so a wrapper installed now would hear
@@ -295,6 +313,10 @@ out.wedge.reloadFiredAfterHeal = await page.waitForFunction(() => window.__probe
 await page.waitForLoadState("load").catch(() => {});
 await page.waitForSelector("#composer-input", { timeout: 20000 });
 await page.waitForTimeout(500);
+const rec = await page.evaluate(() => { const g = (k) => { try { return JSON.parse(sessionStorage.getItem(k) || "null"); } catch (e) { return null; } };
+  return { held: g("t215:held"), fire: g("t215:fire") }; }).catch(() => ({ held: null, fire: null }));
+out.wedge.heldAnnouncements = rec.held;   // every hold the core announced since before the kill
+out.wedge.atFire = rec.fire;              // the pane's pending state when the core fired: the claim, read at the event
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-wedge.png" });
 
 // ---- regression: a normal ship+send against the restarted kernel, untouched ----
@@ -585,11 +607,14 @@ class LabKernelEnv(unittest.TestCase):
 
 class ServedWedge(_ShipLab):
     def test_restart_between_ship_and_ack_reships_heals_and_releases_the_held_send(self):
+        self._wedge(race_delay_ms=0)
+
+    def _wedge(self, race_delay_ms):
         r = self._run_driver(DRIVER, {
             "url": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token),
             "kernelPid": self.kernel.pid, "relaunch": relaunch_cfg(self.env, self.klog),
             "file": self.png, "msg": "hold this message for the upload T215",
-            "msg2": "a normal send after the restart T215",
+            "msg2": "a normal send after the restart T215", "raceDelayMs": race_delay_ms,
             "shots": os.environ.get("SHIP_RESHIP_SHOTS", "")})
         w, reg = r["wedge"], r["regression"]
         # the ship went out on a live socket the stopped kernel will never answer
@@ -605,8 +630,18 @@ class ServedWedge(_ShipLab):
                         "the reconnect must re-ship and release the held send — pre-fix this pulses "
                         "forever and the send never fires: %r (kernel log tail: %s)"
                         % (w, Path(self.klog).read_text()[-500:]))
-        self.assertIn(w.get("reloadHeldWhileBusy"), ("upload", "held-send", "sends"),
-                      "the restart's reload was owed and WAITING on this pane while the ship and the held send were in flight: %r" % w)
+        # the heart of T272, read at the EVENT: the core's persist hook runs as the last call before location.reload(), and the
+        # pane's pending state then must be clear (no chip, the held send released). Whether the reload was HELD depends on
+        # when it was owed: by the driver's request while the ship was pending (a hold announced, recorded before the kill),
+        # or by the pane's own reopen after the heal (no hold needed, and none announced); both are right, and neither is a
+        # matter of when this driver looked (three CI reds of 2026-09-15 were the driver looking late).
+        self.assertIsNotNone(w.get("atFire"), "the core's persist hook recorded the pane's state at the fire: %r" % w)
+        self.assertEqual(w["atFire"]["pending"], 0, "the reload fired with no ship pending: %r" % w)
+        self.assertEqual(w["atFire"]["input"], "", "…and the held send released: %r" % w)
+        holds = [h["hold"] for h in (w.get("heldAnnouncements") or [])]
+        self.assertTrue(all(h in ("upload", "held-send", "sends", "fresh") for h in holds), "only the pane's own holds stand between a restart and its reload: %r" % holds)
+        if w.get("reloadHeldWhileBusy") is not None:
+            self.assertIn(w["reloadHeldWhileBusy"], ("upload", "held-send", "sends"), "a hold the driver did see was the pane's: %r" % w)
         self.assertTrue(w.get("reloadFiredAfterHeal"), "…and fired on its own once the ack landed and the send left (the ending event, "
                                                        "render.ts endReloadHoldIfIdle) — never waiting for the user's next click: %r" % w)
         self.assertEqual(w["pendingAfterRestart"], 0, "no chip may pulse over an upload that settled: %r" % w)
@@ -665,6 +700,15 @@ await browser.close();
 process.exit(0);
 """
 
+
+
+class ServedWedgeRaced(ServedWedge):
+    """The reproduced race of the three CI reds of 2026-09-15: the driver's request comes seconds after the relaunch, so the
+    pane's own reopen has owed the restart's reload (and, the ship having healed, fired it) before the driver looks. The claim
+    is the same and holds at the fire; the lab's kernel is per class and the driver kills it once, so the road has its own."""
+
+    def test_restart_between_ship_and_ack_reships_heals_and_releases_the_held_send(self):
+        self._wedge(race_delay_ms=4000)
 
 class ReloadLossToast(_ShipLab):
     """The reload face, executed: a ship lost to a page death warns ONCE at the next load, then the
