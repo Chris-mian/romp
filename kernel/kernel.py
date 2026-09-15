@@ -23812,7 +23812,10 @@ def _notice_action(item_id, route, body):
         return False, "no such action on that card"
     if route == "/send":
         target = _sid_of(str(body.get("id") or body.get("name") or sid))
-        ok, err, _queued = _deliver_text(target, str(body.get("text") or ""))
+        try:
+            ok, err, _queued = _deliver_text(target, str(body.get("text") or ""))
+        except Exception as e:                         # a delivery fault is the answer, never the socket's death
+            return False, "the action could not be delivered (%s)" % e
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
@@ -63594,7 +63597,10 @@ class Handler(BaseHTTPRequestHandler):
             # a NOTICE CARD's action button (T370, plans/notice-cards.md): the kernel executes the STORED action (its route
             # in the allowlist, matched exactly) and answers the asking pane by the card's item id, so the feed re-arms the
             # button on a refusal and the next push drops the card when dismissOnAction cleared it
-            _nok, _nerr = _notice_action(str(msg["itemId"]), str(msg.get("route") or ""), msg.get("body") if isinstance(msg.get("body"), dict) else {})
+            try:
+                _nok, _nerr = _notice_action(str(msg["itemId"]), str(msg.get("route") or ""), msg.get("body") if isinstance(msg.get("body"), dict) else {})
+            except Exception as e:                     # said to the asking pane; the socket lives on
+                _nok, _nerr = False, "the action failed (%s)" % e
             client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}))
         elif msg and msg.get("type") == "quarantineDecision" and msg.get("mid"):
             # Human verdict on a DIRECTED peer's held message (per-host trust): approve delivers it
