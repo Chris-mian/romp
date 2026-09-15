@@ -17,21 +17,24 @@ const GEAR = read("ui", "webview", "gear.js");
 const FED = read("ui", "webview", "federation.ts");
 const KERNEL = read("bin", "romp-kernel");
 
-test("the gear has a Whole chat frames checkbox in the Chat tab beside Thinking summaries, gesture-stamped, filled from /version", () => {
+test("the gear has an Always load whole chats checkbox in its own Chat history section of the Chat tab, gesture-stamped, filled from /version", () => {
   assert.ok(GEAR.includes("id=rs-wholechat"), "the checkbox exists in the gear markup");
   const at = GEAR.indexOf("id=rs-wholechat");
-  assert.ok(GEAR.indexOf("id=rs-thinksum") < at, "…after Thinking summaries, in the same section");
+  assert.ok(GEAR.indexOf("id=rs-thinksum") < at, "…after Thinking summaries");
+  const sec = GEAR.lastIndexOf("<div class='rs-sec'>", at);
+  assert.ok(GEAR.slice(sec, at).includes(">Chat history</div>"), "…under its own Chat history section header, not Thinking's (the 1704 read, low 4)");
   assert.ok(GEAR.indexOf("data-pane=chat") > 0 && GEAR.indexOf("data-pane=feed") > 0, "both panes exist (indexOf's -1 would pass the order check)");
   assert.ok(GEAR.indexOf("data-pane=chat") < at && at < GEAR.indexOf("data-pane=feed"), "…in the Chat tab");
-  const row = GEAR.slice(at, at + 700);
-  assert.match(row, /<b>Whole chat frames<\/b>/);
-  assert.ok(/from its first turn on every push/.test(row) && /off is the normal setting/.test(row),
-    "the sub-copy says what the switch does and that off is normal");
+  const row = GEAR.slice(at, GEAR.indexOf("</label>", at) + 8);
+  assert.match(row, /<b>Always load whole chats<\/b>/, "the user's words, not the wire's (low 5)");
+  assert.ok(/Load every chat from its first message, instead of the most recent part with the rest loading as you scroll; slower on long chats\./.test(row),
+    "the sub-copy in the user's words");
+  assert.equal((row.match(/<span/g) || []).length, (row.match(/<\/span>/g) || []).length, "every span the row opens it closes (low 3)");
   assert.ok(GEAR.includes("post({ type: 'setWholeChatFrames', enabled: wcf.checked, gt: gclock.stamp('whole-chat-frames') })"),
     "the click posts the kernel's designed message with the gesture stamp minted in the literal");
   assert.ok(GEAR.includes("wcf.checked = !!v.wholeChatFrames"),
     "the box always shows the kernel's persisted answer, never a page default");
-  assert.match(GEAR, /STALE_LABELS = \{[\s\S]*?'whole-chat-frames': 'Whole chat frames'/,
+  assert.match(GEAR, /STALE_LABELS = \{[\s\S]*?'whole-chat-frames': 'Always load whole chats'/,
     "a stood-down gesture toasts under the row's own name");
   assert.match(GEAR, /STALE_TYPE = \{[\s\S]*?'whole-chat-frames': 'setWholeChatFrames'/,
     "the toast's Apply anyway may re-issue this one setting");

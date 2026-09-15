@@ -198,12 +198,14 @@ var GEAR_HTML =
   '<span><b>Thinking summaries</b>' +
   '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display. Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
   '</span></label>' +
-  // WHOLE CHAT FRAMES (2026-09-15): every chat tab built from turn 0 for every page, instead of from the saved document's cut
-  // with the history above it fetched on demand; the lever for a page that cannot fill the region above the cut. Per-install,
-  // like Thinking summaries: the floor is this kernel's build decision; the kernel reads it live at every push
+  // CHAT HISTORY (2026-09-15): every chat loaded from its first message for every page, instead of from the saved document's
+  // cut with the history above it loading as the user scrolls; the lever for a page that cannot fill the region above the cut.
+  // Per-install, like Thinking summaries: the floor is this kernel's build decision; the kernel reads it live at every push.
+  // Its own section (the 1704 read, low 4), in the user's words, not the wire's (low 5), the spans closed (low 3)
+  "<div class='rs-sec'>Chat history</div>" +
   "<label class='rs-row'><input type=checkbox id=rs-wholechat>" +
-  '<span><b>Whole chat frames</b>' +
-  '<span class=rs-sub>Build every chat tab from its first turn on every push, instead of from the saved checkpoint with the earlier turns loaded as you scroll. Costs the kernel the whole build of every tab; off is the normal setting.' +
+  '<span><b>Always load whole chats</b>' +
+  '<span class=rs-sub>Load every chat from its first message, instead of the most recent part with the rest loading as you scroll; slower on long chats.</span>' +
   '</span></label>' +
   // TAB STRIP (T415, the user 2026-09-14): the strip's gear jumps the panel here (data-section is the anchor showSection scrolls
   // the card to), a small section of the strip's own settings ABOVE Tab widgets; the tab lock (T395; a row in the gear's menu
@@ -1480,7 +1482,7 @@ function initGear(post, opts) {
     'comment-model': 'Comment model', 'comment-effort': 'Comment effort',
     'comment-fast': 'Fast comment threads',
     'judge-fast': 'Fast mode (triage judges)', 'distill-fast': 'Fast mode (distilling judges)', 'index-fast': 'Fast mode (indexing judges)',
-    'thinking-summaries': 'Thinking summaries', 'whole-chat-frames': 'Whole chat frames' };
+    'thinking-summaries': 'Thinking summaries', 'whole-chat-frames': 'Always load whole chats' };
   // store name → the message type that sets it: the whitelist for the toast's Apply anyway (a frame
   // may re-issue the one setting it names, nothing else) and the completeness pin's map
   // (gear.test.ts checks every emitter stamps through the clock under its own store name)

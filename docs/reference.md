@@ -1334,8 +1334,14 @@ landed and whose next turn exists, or the turn that holds the last compaction
 boundary, whichever is later; before that only the boundary's turn, so a
 session that never compacted had no document. A standing document is
 rewritten with a later cut only when the tail past its cut has grown to an
-eighth of the pre-cut bytes or a compaction landed past it, so the rewrites
-over a session's life are a logarithm of its growth) as identities and
+eighth of the pre-cut bytes or a compaction landed past it, and a session's
+FIRST document waits until its pre-cut part holds an eighth of the fold cap,
+1 MB by default (`ROMP_CKPT_FIRST_DOC_KB` sets it, 0 turns it off), since below
+that a whole parse costs milliseconds and, with uniform turns, the share bound
+alone is met at nearly every settle until the pre-cut part outgrows the two
+to three turn lag (27 rewrites over a young session's first 30 settled turns
+measured); above the floor the rewrites over a session's life are a logarithm
+of its growth) as identities and
 record locations: each record's uuid, verdict, type, order, time and file, each
 emitted atom's scalar fields and the identity facts the ids and the turn
 segmentation read, the kept chain, the gate facts, the emit carry with its text
@@ -1843,7 +1849,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   boot sweep retires a mark whose sidecar carries a document version below the
   current one (a mark belongs to the cut rule it was made under; the sidecar's
   bytes are kept as `.meta.retired-<stamp>`, one count under
-  `removed.refusedMark:version`), so the next parse takes the version-refusal
+  `removed.refusedMark:version`; a rewrite of the sidecar that fails leaves the
+  document and the mark standing for the next boot, one count under
+  `removed.refusedMark:versionFailed` and one stderr line; an aside that could
+  not be written is counted under `removed.refusedMark:asideFailed` and said
+  once, the retirement proceeding; a mark already kept aside is never copied
+  twice), so the next parse takes the version-refusal
   road once and the settle's write produces the current document; a cyclic resolved
   graph (a reused uuid closing a ring) no longer refuses the document: the
   writer's spine walk ends at the first revisit as the parse's own walk does,
@@ -1863,8 +1874,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `full:noDocument`, `full:noDir` (no checkpoint directory), `full:refused` (a document that stood but did not verify,
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
-  beside `asmCheckpoint.removed`, the document files removed per reason (a
-  fallback's reason, or the boot sweep). The row also carries `nudgeWalk`
+  beside `asmCheckpoint.removed`, the checkpoint directory's removals and
+  retirements per reason: a document file removed (a fallback's reason, or the
+  boot sweep), a refusal mark the sweep retired from a version-old sidecar
+  (`refusedMark:version`, the document stays), a retirement whose sidecar
+  rewrite failed and left the mark for the next boot (`refusedMark:versionFailed`,
+  nothing removed), a mark whose forensic aside could not be written
+  (`refusedMark:asideFailed`). The row also carries `nudgeWalk`
   (T401): the first eight characters of the session ids whose parses the
   boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
   each), and how many it `deferred` to a later pass.

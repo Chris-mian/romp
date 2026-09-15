@@ -99,6 +99,10 @@ os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel exports this to its sess
 # bus refuses its fixed port under a test unless the port is the run's own, which the marker beside a port says
 os.environ.pop("ROMP_POSTAL_PORT", None)
 os.environ["ROMP_POSTAL_HERMETIC"] = "1"
+os.environ["ROMP_CKPT_FIRST_DOC_KB"] = "0"   # the young-session floor is off for the suite's small fixtures (a document under 1 MB of
+#                                                pre-cut bytes is never written live); the floor's own test sets it. A plain assignment: an
+#                                                exported value in the shell (64, say) would red every checkpoint fixture (1721 round two);
+#                                                tests/__init__.py carries the same line for the unittest runner
 # No test spawns a per-session HOST by omission (2026-09-11, T348): hosts are on by default now, so a backend built over
 # a state dir with no `session-hosts` file starts a real bin/romp-session-host for any session it connects. The root the
 # runner floors carries the toggle set to off from the start, re-asserted per test below (a test that deletes or rewrites

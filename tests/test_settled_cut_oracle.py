@@ -118,6 +118,9 @@ class SettledCutOracle(T.Harness):
         for name in ("plain", "compacted", "adopted manual compact pair", "the stage-one ring", "an open last turn", "a tool pair split by the cut"):
             self.assertEqual(roads[name], "restore", "%s restores: %s" % (name, roads))
         self.assertEqual(roads["a single turn"], "skip:noCut")
+        self.assertEqual(roads["a ring across the cut"], "skip:reuse", roads)                       # the three refusals the body names,
+        self.assertEqual(roads["a pre-cut record superseded by last-wins that a tail record parents on"], "skip:reuse", roads)   # pinned so a
+        self.assertEqual(roads["two settled turns then a re-parented turn"], "skip:unsplittable", roads)   # verdict flip cannot pass (1695 low 5)
         self.assertEqual(roads["the attachment shape"], "restore", "the cut falls before the attachment; the pair is the tail: %s" % roads)
 
 
