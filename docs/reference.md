@@ -3158,6 +3158,25 @@ tunnel is down). The merge happens in the browser and follows the federation
 rule: per-host maps in, one line per machine out, the worst state wins for the
 dot, and no count or clock is ever added to or compared with another kernel's.
 
+Three more relays of one call to an attached host sit beside it, all behind the
+local token, all forwarding the remote's own token, all bounded at ten seconds
+(a peer that accepts and never answers is reported as not answering then, and
+the tunnel is re-dialed). `GET /remote/<host>/sessions` reads the peer's own
+session roster: 200 with `{ok, host, sessions}` (each row the public shape with
+its identity colors, nothing of this kernel's added), 404 in prose for an
+unknown host, the peer's own status and prose for a refusal or an older build
+without the route, 502 in prose for a dead tunnel or a body that is not a list.
+`POST /remote/<host>/new` and `POST /remote/<host>/send` relay a control call
+that lands on that machine: a session spawned there, and its briefing sent
+before this kernel's poll has learned the new id (a `POST /send` here would
+route it nowhere). The body must be a JSON object and crosses as sent; the
+peer validates and answers for itself, and its status and JSON verdict are
+mirrored (its 400 or 409 arrives as a 400 or 409 with its words). Every answer
+this side writes is JSON `{ok, error}`: 404 for a path that names no host
+(`/remote/new`), for an op other than `new` and `send`, or for an unknown host;
+400 for a body that is not a JSON object (the peer is never reached); 502 for
+a dead tunnel or a peer that answered without a JSON verdict.
+
 ### The ledger
 
 Every attempt is also folded, the moment it lands, into `ledger`, a per-bucket

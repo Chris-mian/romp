@@ -7,8 +7,11 @@ published, gone since 2026-09-08. Pinned here:
   - the remote sees its OWN token, never the caller's; the JSON object body crosses as sent;
   - the peer's verdict is mirrored with its status (a 409 refusal stays a 409 with its words), never rewritten
     into "not answering";
-  - 404 for an unknown host or an op outside {new, send}, 400 for a body that is not a JSON object (the remote is
-    never reached), 502 for a dead tunnel or a peer that answered without a JSON verdict, every one as JSON {ok, error};
+  - 404 for an unknown host, for a path that names no host (/remote/new: the catch-all's 500 with a traceback before
+    the 2026-09-15 read) and for an op outside {new, send} (the relay's own answer, since every POST under /remote/
+    reaches it), 400 for a body that is not a JSON object (the remote is never reached), 502 for a dead tunnel or a
+    peer that answered without a JSON verdict, every one as JSON {ok, error};
+  - the peer's answer is bounded by _RELAY_TIMEOUT_S, the read relays' ten seconds, not a bound of its own;
   - the route sits behind the local auth gate.
 Synthetic throughout: TESTHOST, placeholder ids, the notes-api demo sessions."""
 import json
@@ -16,6 +19,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -134,9 +138,65 @@ class Relay(unittest.TestCase):
         self.assertEqual(st, 404)
         self.assertEqual(doc["ok"], False)
         self.assertIn("no attached host", doc["error"])
-        st, _, _ = self._post("/remote/TESTHOST/end", {"id": SID_NEW})
-        self.assertNotEqual(st, 200, "only new and send relay")
+        st, doc, data = self._post("/remote/TESTHOST/end", {"id": SID_NEW})
+        self.assertEqual(st, 404, data[:200])
+        self.assertIsNotNone(doc, "the relay's own JSON envelope, not the handler's plain-text fall-through: %r" % data[:80])
+        self.assertEqual(doc["ok"], False)
+        self.assertIn("no such relay op", doc["error"])
         self.assertEqual(_FakeRemote.seen, [], "nothing reached the remote")
+
+    def test_a_path_without_a_host_is_404_json_with_no_traceback(self):
+        """The medium of the 2026-09-15 read: POST /remote/new (no host segment) split the path into one piece, the
+        unpack raised, and do_POST's catch-all answered HTTP 500 with the traceback, absolute paths included. The
+        relay parses the path itself now and answers its own 404 naming the missing host, in the same JSON shape."""
+        for path in ("/remote/new", "/remote/send", "/remote//new"):
+            with self.subTest(path=path):
+                st, doc, data = self._post(path, {"name": "web", "dir": "/tmp/notes-api"})
+                self.assertEqual(st, 404, data[:200])
+                self.assertNotIn(b"Traceback", data)
+                self.assertNotIn(ROOT.encode(), data, "no path of this machine in the answer")
+                self.assertNotIn(b"/home/", data)
+                self.assertIsNotNone(doc, data[:80])
+                self.assertEqual(doc["ok"], False)
+                self.assertIn("names no host", doc["error"])
+                self.assertIn("/remote/<host>/new", doc["error"])
+        self.assertEqual(_FakeRemote.seen, [], "the remote is never reached")
+
+    def test_a_peer_that_accepts_and_never_answers_is_502_within_the_read_relays_bound(self):
+        """A peer that takes the connection and never writes an answer held the relay for 30 s and then reported a
+        healthy peer as not answering; the read relays bound the same call at 10 s. One constant governs both, and
+        the relay answers 502 the moment it elapses (lowered here so the pin takes a second, not ten)."""
+        self.assertEqual(km._RELAY_TIMEOUT_S, 10, "the read relays' bound, shared")
+        release = threading.Event()
+
+        class _Hang(BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(n) if n else b""
+                release.wait(5)          # never answers within the relay's bound; let go in the finally below
+
+            def log_message(self, *a):
+                pass
+
+        hang = ThreadingHTTPServer(("127.0.0.1", 0), _Hang)
+        threading.Thread(target=hang.serve_forever, daemon=True).start()
+        with km._remotes_lock:
+            km._remotes["SLOWHOST"] = {"host": "SLOWHOST", "kernel_port": 29855, "local_port": hang.server_address[1],
+                                       "token": REMOTE_TOKEN, "status": "up", "sids": [], "trust": "directed"}
+        saved = km._RELAY_TIMEOUT_S
+        km._RELAY_TIMEOUT_S = 0.5
+        try:
+            t0 = time.monotonic()
+            st, doc, _ = self._post("/remote/SLOWHOST/new", {"name": "web"})
+            took = time.monotonic() - t0
+            self.assertEqual(st, 502)
+            self.assertIn("not answering", doc["error"])
+            self.assertIn("SLOWHOST", doc["error"])
+            self.assertLess(took, 5, "the relay returned at its bound, not at the peer's leisure")
+        finally:
+            km._RELAY_TIMEOUT_S = saved
+            release.set()
+            hang.shutdown(); hang.server_close()
 
     def test_a_body_that_is_not_an_object_is_400_before_the_remote_is_reached(self):
         st, doc, _ = self._post("/remote/TESTHOST/new", None, raw=b'["not", "an", "object"]')

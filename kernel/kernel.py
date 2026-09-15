@@ -21896,6 +21896,9 @@ def _host_for_sid(sid):
     return None
 
 
+_RELAY_TIMEOUT_S = 10   # one bound for every relay of ONE call through a tunnel (/remote/<host>/api-health, /new, /send): a
+                        #  peer that accepts and never answers is reported "not answering" after this, and the redial asked
+
 def _remote_forward(r, path, body):
     """Forward a small CONTROL call (deliver/send/working) to a remote kernel THROUGH its -L tunnel — this is
     the wake-router. The postal bus only ever talks to THIS local kernel (POST /deliver {id}); when the id is
@@ -59763,13 +59766,14 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
                 return self._send(200, json.dumps({"ok": True}), "application/json")
-            if u.path.startswith("/remote/") and (u.path.endswith("/new") or u.path.endswith("/send")):
+            if u.path.startswith("/remote/"):
                 # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
                 # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth
-                # gate has run; the peer validates and answers for itself (_remote_control).
-                rest = unquote(u.path[len("/remote/"):])
-                rhost, rop = rest.rsplit("/", 1)
-                return self._remote_control(rhost, rop, raw_body)
+                # gate has run; the peer validates and answers for itself (_remote_control). EVERY POST under
+                # /remote/ lands there, so the relay's own JSON answers cover a path with no host and an op it does
+                # not carry: a split here on a hostless /remote/new raised into the catch-all below, an HTTP 500
+                # whose body was a traceback with absolute paths (the 2026-09-15 read).
+                return self._remote_control(unquote(u.path[len("/remote/"):]), raw_body)
             if u.path == "/new":
                 # Headless session creation (`romp new`, 2026-07-25): the WS createSession op as a
                 # one-shot POST, so a terminal can start a session — SDK by default, the recommended
@@ -62056,7 +62060,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    def _remote_control(self, host, op, raw_body):
+    def _remote_control(self, rest, raw_body):
         """POST /remote/<host>/new and /remote/<host>/send: relay ONE control call to an attached host's own kernel
         through this kernel's tunnel, which is how an action LANDS on that machine. The /api-health relay's shape:
         the local auth gate has run, the remote's own token goes in the forwarded request, a dead tunnel is a 502
@@ -62070,9 +62074,18 @@ class Handler(BaseHTTPRequestHandler):
         None, which would report a peer's refusal as a dead tunnel (the /send arm's own lesson).
         (the user 2026-09-14: the editor plugin's new-experiment command spawns its managing session on the vault's
         mirror host; it posted to the tunnel port with the peer token /tunnels used to publish, gone since
-        2026-09-08.)"""
+        2026-09-08.) `rest` is the path after /remote/, parsed HERE (the dispatcher sends every POST under
+        /remote/), so a path with no host (/remote/new, /remote//send) and an op outside the two are this route's
+        own 404s in the same JSON shape, never the catch-all's 500. The peer's answer is bounded by
+        _RELAY_TIMEOUT_S, the read relays' bound: a peer that accepts and never answers is "not answering" in
+        ten seconds, not thirty."""
+        host, sep, op = rest.rpartition("/")
+        if not host:
+            return self._send(404, json.dumps({"ok": False, "error":
+                "the relay path names no host: POST /remote/<host>/new or /remote/<host>/send"}), "application/json")
         if op not in ("new", "send"):
-            return self._send(404, json.dumps({"ok": False, "error": "no such relay op %r" % op}), "application/json")
+            return self._send(404, json.dumps({"ok": False, "error": "no such relay op %r: new and send relay" % op}),
+                              "application/json")
         b, berr = _json_object_body(raw_body)
         if berr:
             return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
@@ -62086,7 +62099,7 @@ class Handler(BaseHTTPRequestHandler):
         hdrs = {"Content-Type": "application/json"}
         if rtok:
             hdrs["X-Romp-Token"] = rtok
-        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=30)
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=_RELAY_TIMEOUT_S)
         try:
             conn.request("POST", "/" + op, payload, hdrs)
             resp = conn.getresponse()
@@ -62122,7 +62135,7 @@ class Handler(BaseHTTPRequestHandler):
             port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
         if not port:
             return self._send(404, "no attached host %r" % host, "text/plain")
-        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=_RELAY_TIMEOUT_S)
         try:
             conn.request("GET", "/api-health", headers=({"X-Romp-Token": rtok} if rtok else {}))
             resp = conn.getresponse()
