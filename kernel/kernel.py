@@ -46422,7 +46422,10 @@ def _chat_history_reply(sid, msg, now, base=None):
         """The turn a wire key sits in: by its position in the floor'd list, else by the parse (a key in the pages)."""
         p = pos.get(k)
         if p is not None:
-            return max(0, tix[p])
+            if p < len(tix) and tix[p] >= 0:
+                return tix[p]
+            fm = _first_mapped_turn(tix, p)         # a note key: the turn it rides with, never max(0, -1)=0
+            return fm if fm is not None else _turn_of_uuid(turns, k)
         return _turn_of_uuid(turns, k)
 
     def pages(lo, hi):
@@ -46446,8 +46449,11 @@ def _chat_history_reply(sid, msg, now, base=None):
         if p is not None and p > 0:
             frm = _snap_turn_start(tix, max(0, p - WIRE_CHUNK))
             more = frm > 0 or floor > 0
+            _span_lo = _first_mapped_turn(tix, frm)
+            _span_lo = _span_lo if _span_lo is not None else 0          # the head edge: the first placed turn, never max(0, -1)=0 for a leading note
+            _span_hi = tix[p - 1] if tix[p - 1] >= 0 else _span_lo
             return {"type": "chatHead", "id": sid, "beforeUuid": before, "events": (head_cards if not more else []) + evs[frm:p],
-                    "more": more, "span": [max(0, tix[frm]), max(0, tix[p - 1]) + 1],
+                    "more": more, "span": [_span_lo, _span_hi + 1],
                     "_base": ({"first": _event_key(evs[frm])} if (p > frm and into_tail) else None)}
         j = floor if p == 0 else _turn_of_uuid(turns, before)
         if j is None:
@@ -46594,6 +46600,19 @@ def _turn_index_of_events(evs, turns):
     return out
 
 
+def _first_mapped_turn(tix, start):
+    """The turn of the first event at or after `start` that the parse places in a turn (tix >= 0), or None when
+    none from `start` on is placed. A durable note flushed into the idle gap before the cut (a retry recovery, a
+    gaveup, an orphan reply, an effort change, a command gesture) has a synthesized uuid no turn carries, so
+    _turn_index_of_events gives it -1 (its own index carries the PREVIOUS turn, and a LEADING note has none): a head
+    or tail edge derived from that index must read the next placed event's turn, never max(0, -1) = turn 0 (which
+    made the page render one run, no head gap, headKnown, and never ask: the reported no-history/no-scroll)."""
+    for i in range(max(0, start), len(tix)):
+        if tix[i] >= 0:
+            return tix[i]
+    return None
+
+
 def _snap_turn_start(tix, p):
     while 0 < p < len(tix) and tix[p - 1] == tix[p]:
         p -= 1
@@ -46681,7 +46700,7 @@ def _tail_lo(sid, evs, head_from, now):
         if sess is None or head_from >= len(evs):
             return None
         tix = _turn_index_of_events(evs, _parse(sess["path"], sid, now)["turns"])
-        return max(0, tix[head_from]) if head_from < len(tix) else None
+        return _first_mapped_turn(tix, head_from) if head_from < len(tix) else None   # never max(0, -1)=0 for a leading note (the tail run begins at the first placed turn)
     except Exception:
         return None
 
