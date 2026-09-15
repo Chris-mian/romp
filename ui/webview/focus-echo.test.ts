@@ -41,12 +41,10 @@ test("the chat acknowledges the echo synchronously: reveal, un-suppress, peek, a
 
 test("the first-visit wait is the ROMP LOADER, not a bare text hint — and the build event removes it", () => {
   // the standing wait-state rule: swirl (reverse spin) + wordmark + pulsing accent dots
-  assert.match(RENDER, /sw\.src = mediaSrc\("romp-swirl-glyph\.svg"\); sw\.alt = ""; sw\.onerror = \(\) => sw\.remove\(\);/);
-  assert.match(RENDER, /wm\.textContent = "romp";/);
-  assert.match(RENDER, /dots\.append\(el\("i"\), el\("i"\), el\("i"\)\);/);
+  assert.match(RENDER, /const ld = el\("div", "tx-loading"\);\s*\n\s*ld\.appendChild\(rompLoaderInner\("", \{ wordmark: true, cls: "rl-sm" \}\)\);/, "the wait is the ONE standard loader (rompLoaderInner), scaled for the inline slot, never a forked swirl");
   assert.doesNotMatch(RENDER, /ld\.textContent = "Loading transcript…"/, "the bare hint is gone");
-  assert.match(CSS, /\.tx-loading-swirl \{ width: 18px; height: 18px; animation: tx-swirl-spin 1\.6s linear infinite reverse; \}/);
-  assert.match(CSS, /\.tx-loading-dots i \{[^}]*background: var\(--accent\);/s, "the pulsing dots wear the accent, never a status color");
+  assert.match(CSS, /\.rl-dots i \{[^}]*background: var\(--accent\);/s, "the standard loader's pulsing accent dots, never a status color");
+  assert.match(CSS, /@keyframes rl-spin \{ to \{ transform: rotate\(-360deg\); \} \}/, "the swirl turns counter-clockwise on the shared keyframe (never the old reverse-spin)");
   // removal is EVENT-based: the deferred build replaces the view's children (harness-verified gone-on-content)
   assert.match(RENDER, /truly empty → the ROMP LOADER holds the spot/);
 });

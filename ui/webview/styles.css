@@ -934,18 +934,9 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .empty-state-name { font-weight: 600; }
 /* brief hint while a first-visited tab's transcript builds on the next frame (the deferred build keeps the
    switch itself instant — the user 2026-06-17); the build replaces it. */
-.tx-loading { color: var(--dim); text-align: center; padding: 28px; font-size: 0.92em;
-  display: flex; align-items: center; justify-content: center; gap: 8px; }
-/* the standing romp loader treatment (swirl reverse-spin + wordmark + pulsing accent dots) for the
-   first-visit transcript build — the boot splash / pane loader language, never a bare text hint */
-.tx-loading-swirl { width: 18px; height: 18px; animation: tx-swirl-spin 1.6s linear infinite reverse; }
-.tx-loading-wordmark { font-weight: 650; color: var(--fg); }
-.tx-loading-dots i { display: inline-block; width: 5px; height: 5px; border-radius: 50%;
-  background: var(--accent); margin-left: 4px; animation: tx-dot-pulse 1.2s ease-in-out infinite; }
-.tx-loading-dots i:nth-child(2) { animation-delay: 0.2s; }
-.tx-loading-dots i:nth-child(3) { animation-delay: 0.4s; }
-@keyframes tx-swirl-spin { to { transform: rotate(-360deg); } }
-@keyframes tx-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+/* the first-visit transcript build's wait: the ONE standard romp loader (.rl-* below), never a forked swirl.
+   .tx-loading is the centering wrapper; the loader itself is scaled for the inline slot by .rl-sm. */
+.tx-loading { padding: 28px; display: flex; justify-content: center; }
 /* a genuinely empty transcript (a session with no turns yet) — shown instead of "Loading transcript…",
    which would be a lie since the full events payload already arrived (the user 2026-06-19). */
 .tx-empty { color: var(--dim); text-align: center; padding: 28px; font-size: 0.92em; }
@@ -3337,13 +3328,9 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
    so the browser never anchors on it (the first visible turn holds when a gap above the viewport fills or re-sizes); the romp
    loading glyph, large enough to read at a glance, while a page of it is on the wire, sticky so it stays in view through a tall gap */
 .tx-gap { position: relative; width: 100%; overflow-anchor: none; pointer-events: none; }
-.tx-gap-glyph { position: sticky; top: 40%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 0;
-  font-family: var(--sans); font-size: 21px; font-weight: 650; color: var(--fg); opacity: 0.85; }
-.tx-gap-glyph .tx-gap-r { color: #1EA1EB; }
-.tx-gap-glyph .tx-gap-mp { color: #54B204; }
-.tx-gap-glyph .tx-gap-swirl { width: 30px; height: 30px; animation: tx-swirl-spin 1.6s linear infinite reverse; }
-.tx-gap-glyph .tx-loading-dots { margin-left: 8px; }
-.tx-gap-glyph .tx-loading-dots i { width: 7px; height: 7px; }
+/* a gap's loading mark is the ONE standard loader (.rl-* below), scaled by .rl-sm; this rule only positions it,
+   sticky at 40% so it stays in view through a tall gap while a page of history is on the wire */
+.tx-gap-glyph { position: sticky; top: 40%; display: flex; align-items: center; justify-content: center; padding: 12px 0; opacity: 0.9; }
 @media (pointer: coarse) { #jump-bottom { width: 64px; height: 32px; } }   /* the phone half: WIDEN for the hit area, never heighten — the compact look is the ask */
 /* replies ready (the user 2026-09-08): two chips stacked ABOVE the jump chip in the SAME slot and dress —
    "↑ 2 replies unread" / "↓ 1 reply unread" — for the unread landed replies whose marks sit off-screen in
@@ -3515,6 +3502,10 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
 .rl-dots i:nth-child(3) { animation-delay: .32s; }
 @keyframes rl-bnc { 0%, 75%, 100% { opacity: .25; transform: translateY(0); } 38% { opacity: 1; transform: translateY(-5px); } }
 @keyframes rl-spin { to { transform: rotate(-360deg); } }
+/* the inline placements of the loader (the history gap glyph, the first-visit build): the same .rl-* anatomy and the
+   same rl-spin swirl, scaled DOWN from the boot splash by the wordmark's font-size (rl-o is .65em, so it scales too) */
+.rl-in.rl-sm { gap: 9px; }
+.rl-in.rl-sm .rl-word { font-size: 21px; }
 
 /* ── revive loader (the user 2026-07-05; PANE-LOCAL 2026-08-25): the romp loader (swirl + wordmark +
    dots, the .rl-* anatomy above) while a dead session revives. It covers ONLY
@@ -4215,12 +4206,12 @@ body.filebrowse-open { overflow: hidden; }
 /* the romp loader, per the loading-state rule: swirl + wordmark + three pulsing accent dots */
 .fileview-load { display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 30px 0; color: var(--dim); font-size: 0.86em; }
-.fileview-load img { width: 17px; height: 17px; animation: fileview-spin 1.6s linear infinite reverse; }
+.fileview-load img { width: 17px; height: 17px; animation: rl-spin 7s linear infinite; }   /* the shared loader keyframe and pace (was a forked fileview-spin) */
 .fileview-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
   animation: fileview-pulse 1.1s ease-in-out infinite; }
 .fileview-dot:nth-of-type(2) { animation-delay: 0.18s; }
 .fileview-dot:nth-of-type(3) { animation-delay: 0.36s; }
-@keyframes fileview-spin { to { transform: rotate(360deg); } }
+
 @keyframes fileview-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 /* A pressed viewer toggle (Rendered/Raw, Wrap) wears the app-wide selected language — accent text +

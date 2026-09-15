@@ -9163,8 +9163,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
 // rule: one treatment, parameterized rather than forked. wordmark:false (the user 2026-08-25,
 // POPOVER-ONLY: "don't write the whole text of romp — just the spinning logo") keeps the spinning
 // swirl + dots + caption and drops the R-o-m-p letters; everywhere else keeps the full treatment.
-function rompLoaderInner(caption: string, opts?: { wordmark?: boolean }): HTMLElement {
-  const inner = el("div", "rl-in");
+function rompLoaderInner(caption: string, opts?: { wordmark?: boolean; cls?: string }): HTMLElement {
+  const inner = el("div", "rl-in" + (opts?.cls ? " " + opts.cls : ""));   // cls: a size modifier for an inline placement (rl-sm), scaling the font-size — never a new keyframe
   const word = el("div", "rl-word");
   const swirl = el("img", "rl-o") as HTMLImageElement;
   swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = ""; swirl.onerror = () => swirl.remove();
@@ -9179,9 +9179,8 @@ function rompLoaderInner(caption: string, opts?: { wordmark?: boolean }): HTMLEl
   }
   const dots = el("div", "rl-dots");
   dots.append(el("i", ""), el("i", ""), el("i", ""));
-  const cap = el("div", "revive-cap");
-  cap.textContent = caption;
-  inner.append(word, dots, cap);
+  if (caption) { const cap = el("div", "revive-cap"); cap.textContent = caption; inner.append(word, dots, cap); }
+  else inner.append(word, dots);   // an inline placeholder (the region gap, the first-visit build) carries no caption line
   return inner;
 }
 
@@ -13279,11 +13278,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
     // deferred build replacing this view's children — the content event — and that build always
     // runs (or the next syncView rebuilds), so the loader cannot trap.
     const ld = el("div", "tx-loading");
-    const sw = document.createElement("img"); sw.className = "tx-loading-swirl";
-    sw.src = mediaSrc("romp-swirl-glyph.svg"); sw.alt = ""; sw.onerror = () => sw.remove();
-    const wm = el("span", "tx-loading-wordmark"); wm.textContent = "romp";
-    const dots = el("span", "tx-loading-dots"); dots.append(el("i"), el("i"), el("i"));
-    ld.append(sw, wm, dots);
+    ld.appendChild(rompLoaderInner("", { wordmark: true, cls: "rl-sm" }));   // the ONE standard loader (the .rl-* swirl + RompAnta wordmark + accent dots), scaled for the inline slot
     v.el.appendChild(ld);
   }
   if (pendingBuildRaf != null) cancelAnimationFrame(pendingBuildRaf);
@@ -17506,11 +17501,7 @@ function gapHasAsk(sid: string, gap: { lo: number; hi: number }): boolean {
  *  whose page is on the wire; never the small pill. */
 function gapGlyph(): HTMLElement {
   const w = el("div", "tx-gap-glyph");
-  const r = el("span", "tx-gap-r"); r.textContent = "R";
-  const o = el("img", "tx-gap-swirl") as HTMLImageElement; o.src = mediaSrc("romp-swirl-o.svg"); o.alt = "o";
-  const mp = el("span", "tx-gap-mp"); mp.textContent = "mp";
-  const dots = el("span", "tx-loading-dots"); dots.append(el("i"), el("i"), el("i"));
-  w.append(r, o, mp, dots);
+  w.appendChild(rompLoaderInner("", { wordmark: true, cls: "rl-sm" }));   // the ONE standard loader, scaled for the inline gap (the .rl-* swirl as the wordmark's o, spun by rl-spin)
   return w;
 }
 /** A gap in the thread: empty space of the gap's estimated height (overflow-anchor none, so the browser never anchors on it), the
