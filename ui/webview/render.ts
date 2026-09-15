@@ -32,7 +32,7 @@ import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTa
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
-import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
+import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
 import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
@@ -68,6 +68,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional,
 import { colFromSearch, columnHolds, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
 import { onlyTag, matchesOnly, onlyWindow } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
+import { actionParts, toolRowLabel, toolInputText } from "./compact";
 import { parseAgentNotif, notifHead, type AgentNotif } from "./agent-notif";
 import { injectedHead, type InjectedSource } from "./injected-source";
 import { subTabId, isSubId, subParts, subLabel, gistLines, stepLines, stepsNote, agentFoldLabel, subHeadParts, subWaitTail, openIconSvg, pinIconSvg, type SubMeta, type AgentGist, type AgentGistRow, type GistLine } from "./subagent-view";
@@ -5230,10 +5231,16 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   turn.appendChild(d);
 
   const head = el("div", "tool-head");
-  const name = el("span", "tool-name"); name.textContent = ev.name;
+  // the row's label in the user's terms (T418): the model's description when it wrote one, else a phrase derived from the tool's
+  // input ("Read .../kernel/kernel.py", "Edited .../ui/feed.ts +12 -3", "Searched for foo"); a bare Bash shows its command in the
+  // code face; the tool's name is secondary, kept only where no phrase names the action ("Used a tool · Skill")
+  const lbl = toolRowLabel(ev);
+  const name = el("span", "tool-label" + (lbl.code ? " tool-label-code" : "")); name.textContent = lbl.text;
   head.appendChild(name);
-  if (ev.file) head.appendChild(fileLink(ev.file));
-  else if (ev.desc) { const c = el("span", "tool-desc"); c.textContent = ev.desc; head.appendChild(c); }
+  if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
+  if (ev.file) head.appendChild(fileLink(ev.file));   // EVERY event with a file keeps its link (round two, medium 2); a label that names the path names it as this link, never twice
+  // An edit's totals are the diff fold's toggle below (+A -R), printed once per row (round two, medium 1); a FAILED edit's error fold
+  // replaces that fold and prints no totals: a failed edit changed nothing (round three, low d). The head carries no totals span.
 
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
@@ -5245,7 +5252,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     // "error" toggle, the IN/OUT hanging below. The red ✗ rail dot + red tool name (.tool-err) keep it loud.
     if (ev.input || ev.output) {
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, true));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), true));
       if (ev.output) io.appendChild(ioRow("OUT", ev.output, true));
       const n = ev.output ? countLines(ev.output) : 0;
       inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
@@ -5269,9 +5276,9 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       row.append(og, ng, sign, txt);
       pre.appendChild(row);
     }
-    inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
+    inlineFold(head, turn, `+${add} -${del}`, pre, fkey);   // the row's one totals text, the approved shape (+A -R, a hyphen minus); the head prints none beside it (T418 round two)
   } else if (ev.name === "Read") {
-    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output, fkey && fkey + ":out"), fkey);
+    if (ev.output) { const n = countLines(ev.output); inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, preEl(ev.output, fkey && fkey + ":out"), fkey); }   // "1 line", not "1 lines" (T418, seen in the lab)
   } else if (ev.name === "Skill") {
     // A Skill invocation (the user 2026-07-08): the head names the skill, and the skill's INSTRUCTIONS
     // (ev.skillMd, kernel-joined) are the fold body — DEFAULT COLLAPSED like every tool body. They used
@@ -5332,14 +5339,14 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       // user expand survives the running→done re-render.
       if (ev.input) {
         const io = el("div", "tool-io tool-io-fold");
-        io.appendChild(ioRow("IN", ev.input, false));
+        io.appendChild(ioRow("IN", toolInputText(ev), false));
         inlineFold(head, turn, ev.resultUuid ? "no output" : "running…", io, fkey);
       }
     } else {
       // Bash/Grep/Glob/…: output line-count on the head line (right of the command);
       // the command + full output hang below, hidden until clicked.
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, false));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), false));
       io.appendChild(ioRow("OUT", ev.output, false));
       const n = countLines(ev.output);
       inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io, fkey);
@@ -5935,6 +5942,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
   rows.push(["Mail", !s.postalServiceOff ? "on"
     : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
+    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
     : s.mailOffWhy === "thread" ? "off until the thread is broken out"
     : "off: this session neither sends nor receives peer mail"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
@@ -10818,6 +10826,7 @@ function renderCommentPopover(): void {
     mailOn.textContent = !th.mailOff
       ? "Its mail is on now: peers can reach it and it can send." + (held ? " " + held + (held === 1 ? " held message lands" : " held messages land") + " in a moment." : "")
       : th.mailOffWhy === "unreadable" ? "Its mail is held: this session's record cannot be read, and mail flows again once the record is repaired."
+      : th.mailOffWhy === "flags" ? "Its mail is held: the session settings file cannot be read, and mail flows again once it is written."
       : "Its mailbox is off: the lane's mailbox toggle turns peer mail back on.";   // the reason rides the frame: a remedy that fits (T356)
     pop.appendChild(mailOn);
     const row = el("div", "cmt-actions");
@@ -12446,10 +12455,20 @@ function unitAtScroll(v: View, content: HTMLElement): number {
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
 function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || String(eventEpoch(first) ?? "")); }
 
-// A collapsed run of consecutive tool uses → one rail line: a caret + "3 Edits, 2 Reads" with each
-// tool word bold (matching the non-compact .tool-name, so it reads AS tools). Clicking the line toggles
-// expand → the full non-compact cards (the user 2026-06-14). Carries the rail dot + time-marker + hover
-// wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any errored.
+// A collapsed run of consecutive tool uses → one rail line: a caret + the head in the user's terms (T418, the user 2026-09-14,
+// the desktop app's shape): "Ran 11 commands, read 4 files, edited 3 files, created 2 files" with the edits' totals ONCE at the
+// end in the diff colours (+37 -0). Clicking the line toggles expand → the full non-compact rows (the user 2026-06-14). Carries
+// the rail dot + time-marker + hover wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any
+// errored.
+/** The edits' totals of a head, summed over every edit in the group, appended once in the diff colours. */
+function appendTotals(line: HTMLElement, add: number, del: number): void {
+  if (!add && !del) return;
+  const tot = el("span", "tool-totals");
+  const plus = el("span", "tool-plus"); plus.textContent = "+" + add;
+  const minus = el("span", "tool-minus"); minus.textContent = "-" + del;
+  tot.append(" ", plus, " ", minus);
+  line.appendChild(tot);
+}
 function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoch: number | null, key: string, open: boolean): HTMLElement {
   const turn = el("div", "turn turn-toolgroup" + (open ? " expanded" : ""));
   const anyErr = tools.some((t) => t.isError);
@@ -12462,11 +12481,11 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   line.dataset.act = "noticetoggle"; line.dataset.gkey = key;
   setTip(line, open ? "click to collapse" : "click to expand");
   const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
-  if (!open) {   // collapsed → the "3 Edits, 2 Reads" summary; expanded → just the open arrow (the cards say it)
-    toolCounts(tools.map((t) => t.name)).forEach((c, i) => {
-      line.appendChild(document.createTextNode((i ? ", " : " ") + c.count + " "));
-      const w = el("span", "toolgroup-tool"); w.textContent = c.label; line.appendChild(w);   // bold, like .tool-name
-    });
+  if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14, who wanted the rows to read as the desktop app's do): the phrases ordered by the number each prints, the edits' totals once at the end; expanded → just the open arrow (the rows say it)
+    const parts = actionParts(tools);
+    line.appendChild(document.createTextNode(" "));
+    const w = el("span", "toolgroup-head"); w.textContent = parts.text; line.appendChild(w);   // the phrases; the summed totals follow once, in the diff colours
+    appendTotals(line, parts.add, parts.del);
   }
   turn.appendChild(line);
   const epoch = eventEpoch(tools[0]);
@@ -15350,6 +15369,14 @@ const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[
 // run: an empty model menu beats offering another vendor's models (docs/codex.md).
 const CODEX_MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 const CODEX_EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+// The effort menus list the ladder TOP-DOWN (the user 2026-09-14): the highest effort first, the lowest
+// last, the way the model menu already leads with the most capable family. The kernel serves `efforts`
+// low→high because its rank ramp (position → colour) and the gear's settings selects read that order, and
+// neither moves; the display order is derived HERE, once, for every menu these arrays feed (the statusline,
+// a thread's popover, the comment-create chips). Each row carries its own color/tone, so nothing recolours,
+// and the ✓ matches by value (isCurrentMeta), so it follows its row.
+const effortDisplayOrder = (efforts: { label: string; value: string; color?: number[] | null }[]): { label: string; value: string; color?: number[] | null }[] =>
+  [...efforts].reverse();
 // Why the Codex list is empty, when it is: the payload's `codex.error` (the app-server client not up yet,
 // a failed model list, no live Codex session). A Codex menu with no list shows it in place of a
 // blank menu. "" while a list is held or the field is absent.
@@ -15374,9 +15401,9 @@ function loadModelChoices(): void {
   fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then((d) => {
     if (typeof d.rev === "number") { if (d.rev < modelChoicesRev) return; modelChoicesRev = d.rev; }
     if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
-    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
+    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...effortDisplayOrder(d.efforts)); }
     if (d.codex && Array.isArray(d.codex.models)) { CODEX_MODEL_CHOICES.length = 0; CODEX_MODEL_CHOICES.push(...d.codex.models); }
-    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...d.codex.efforts); }
+    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...effortDisplayOrder(d.codex.efforts)); }
     if (d.codex) CODEX_MODELS_ERROR = typeof d.codex.error === "string" ? d.codex.error : "";
     if (d.commentDefaults) adoptCommentDefaults(d.commentDefaults);
     if (onModelChoicesLoaded) onModelChoicesLoaded();   // once per APPLIED read: a response the rev check dropped never fires it
@@ -17313,7 +17340,7 @@ function upsert(msg: any) {
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
     hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
-    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record
+    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record, the settings file unreadable (flags)
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
   };
   sessions.set(msg.id, s);
