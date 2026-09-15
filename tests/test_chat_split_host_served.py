@@ -221,8 +221,11 @@ out.s1.released = releaseRemote();
 // TESTHOST's strip lands in the column: it lists its member…
 out.s1.col2Lists = await listsIn("f-chat-2", cfg.remote, T);
 const tListed = Date.now();
-// …and stands five seconds on (the user's fold came ~250 ms after the drop)
+// …and stands five seconds on (the user's fold came ~250 ms after the drop). The wall clock, not the timer, is the floor
+// the lab asserts: a Node timer can fire before Date.now() agrees the delay has passed (main's run of 2026-09-15 read
+// 4999 against 5000), so after the timer, re-arm for whatever the clock still owes, until the hold is covered.
 await page.waitForTimeout(cfg.holdMs);
+while (Date.now() - tListed < cfg.holdMs) await page.waitForTimeout(Math.max(1, cfg.holdMs - (Date.now() - tListed)));   // bounded by the remainder: a few ms at most
 out.s1.heldMs = Date.now() - tListed;
 out.s1.after = { ...(await shell()), col1Tabs: await tabsIn("f-chat"), col2Tabs: await tabsIn("f-chat-2"), col2Active: await activeIn("f-chat-2"), col1Active: await activeIn("f-chat"), log: await shellLog(),
                  pane2: await page.evaluate(() => !!document.getElementById("chat-pane-2")) };
@@ -389,7 +392,7 @@ class ServedChatSplitHostPrefix(unittest.TestCase):
         self.assertTrue(any(n > 0 for n in s["remoteHeld"]), "the hold was real — the new column's relay frames from TESTHOST were held: %r" % s["remoteHeld"])
         # released: the host's strip lands, the column lists its member and stands five seconds on
         self.assertTrue(s["col2Lists"], "column 2 lists the remote session once its host's strip lands: %r" % s)
-        self.assertGreaterEqual(s["heldMs"], HOLD_MS)
+        self.assertGreaterEqual(s["heldMs"], HOLD_MS, "the driver held the column for the whole hold by the wall clock: %r" % s["heldMs"])
         a = s["after"]
         self.assertTrue(a["pane2"], "#chat-pane-2 is still attached %d ms after the member was listed: %r" % (s["heldMs"], a))
         self.assertEqual(a["frameIds"], ["f-chat", "f-chat-2"])

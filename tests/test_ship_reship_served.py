@@ -108,8 +108,8 @@ class SourcePins(unittest.TestCase):
         page = src[src.index("def _chat_page():"):src.index("\ndef ", src.index("def _chat_page():") + 10)]
         self.assertLess(page.index("<script>%s</script>"), page.index("/dist/render.js"), "the shim's script precedes the bundle in the chat page")
         self.assertIn('_shim("chat", v)', page)
-        self.assertIn('window.__rompPaneBusy=function(){return (everConnected&&queue.length>queuedDiag)?"sends":"";};', src,
-                      "the shim defines the hook the pane wraps")
+        shim = src[src.index("def _shim(app, v=0, no_stale=False):"):src.index("\ndef ", src.index("def _shim(app, v=0, no_stale=False):") + 10)]
+        self.assertIn("window.__rompPaneBusy=function(){", shim, "the shim defines the hook the pane wraps (its body, the sends hold and its bound, is run by ui/webview/pane-shim-stale.test.ts)")
 
     def test_a_reload_loss_is_loud_never_a_silent_vanish(self):
         self.assertIn("shipsInFlight: [...pendingShips.values()].flat().map((p) => p.name)", RENDER)
