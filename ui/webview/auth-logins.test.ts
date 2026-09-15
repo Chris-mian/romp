@@ -32,7 +32,8 @@ test("a stored login the CLI did not use is said on the hover and the sub-line, 
 
 test("the tab menu's Billing submenu lists every login plus the key, the current one by WHICH login", () => {
   // the kernel's list when it sends one; the two-entry list for an older kernel, its literals intact
-  assert.match(RENDER, /const choices = billingChoices\(st, avail\);/, "the ONE list both menus draw from (T387)…");
+  assert.match(RENDER, /const all = billingChoices\(st, avail\);/, "the ONE list both menus draw from (T387)…");
+  assert.match(RENDER, /const choices = all\.filter\(\(c\) => !c\.why\);/, "…filtered to the billings this machine can apply (the user 2026-09-14)");
   assert.match(RENDER, /function billingChoices\(st: Status, avail: AuthAvail\)[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(avail\.logins && avail\.logins\.length\) return authLoginChoices\(avail\);/, "…grows with the stored logins (T346): every login this host knows plus the key; an older kernel keeps the two-entry list");
   assert.match(RENDER, /for \(const c of choices\) \{\s*\n\s*const cur = authChoiceCurrent\(st, c\.value\);/);
   // every login the kernel knows, `Login (<label>)`, greyed with its reason; then the key

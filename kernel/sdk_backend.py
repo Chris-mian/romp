@@ -3065,7 +3065,9 @@ def _reg_absent_for_write(path) -> bool:
     """Whether a reg WRITER may build a fresh {sid} record at `path`: only when the stat says ENOENT, a genuinely absent
     file. Every other stat error (EACCES on sdk/, ELOOP on a symlink-loop path, ENOTDIR, EIO) is a reg that exists or a
     path that cannot hold one, and a write there guts the record or lands in the wrong place; never Path.exists(), which
-    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14)."""
+    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14). This is the WRITERS' rule;
+    the readers' missing set (kernel _REG_MISSING_ERRNOS and postal REG_MISSING_ERRNOS: ENOENT, ENOTDIR, EBADF, ELOOP) is
+    wider on purpose: a reader treats a loop as no record, a writer never builds one there."""
     try:
         path.stat()
         return False
@@ -3077,8 +3079,12 @@ def _reg_absent_for_write(path) -> bool:
 
 def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     """read_reg for a READ-MODIFY-WRITE on one reg FIELD: {} when the reg genuinely does not
-    exist (a fresh session — an empty base is correct), None when the reg EXISTS but would not
-    read (a transient failure). A None caller MUST skip its write: rebuilding a list field from
+    exist (ENOENT, a fresh session: an empty base is correct), None when the reg EXISTS but would not
+    read (EACCES, EIO, torn JSON: transient) OR its path cannot hold a reg (ELOOP, ENOTDIR: these will
+    not heal, and the caller's skipped write is still the right answer, since a write there lands
+    nowhere a reader looks). The writers' rule is _reg_absent_for_write; the READERS' missing set is
+    wider (the kernel's _REG_MISSING_ERRNOS: ENOENT, ENOTDIR, EBADF, ELOOP), on purpose: a reader
+    treats a loop as no record, a writer never builds one there. A None caller MUST skip its write: rebuilding a list field from
     an empty base and persisting it silently wipes the field — bgLedger/bgLedgerEnded, pushNotes,
     taskWrites, sessionCrons all carried this shape (the 2026-09-01 field-level gutting class,
     the field-sized sibling of _update_reg's whole-reg guard). Losing one update is the far
@@ -4512,18 +4518,16 @@ def env_request_error(env, auth: str = "") -> str:
 
 
 def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bool = False,
-                       env: dict | None = None, no_helper: bool = False, helper_cmd: str = "", log=None) -> str:
+                       env: dict | None = None, no_helper: bool = False, log=None) -> str:
     """The settings file handed to the CLI (options.settings — the flag-settings layer, the CLI's
     documented per-session hook for keys the SDK has no typed field for). Returns "" when a session
     needs none, which is the common case.
 
     Four keys ride here, all per-session:
-    - `apiKeyHelper: "<bin>/romp-login-helper <id> <state dir>"` (T346, `helper_cmd`): a launch billed to a
-      STORED login names that login's own helper, which runs the token command its record holds (a secret
-      manager's read command, typically), so the CLI fetches the login's setup-token per request and no
-      credential rides romp's files or environment (docs/reference.md, "Several Claude logins").
     - `apiKeyHelper: ""` (2026-09-08, `no_helper`): a LOGIN-billed launch disables the box's apiKeyHelper for
-      this one process. In the CLI's precedence the helper outranks every login form, so without this a
+      this one process, the machine's own login and a STORED login alike (T346; the stored login's token rides
+      the launch's environment since 2026-09-14, docs/reference.md "Several Claude logins", where a helper
+      would outrank it). In the CLI's precedence the helper outranks every login form, so without this a
       login pick on a helper box would bill the key; the empty string is the value the CLI takes as unset
       (null falls through to the settings files), verified on Claude Code 2.1.257 with a marker-writing
       helper. romp holds no key of its own, so this is the whole of what a Billing pick does at launch.
@@ -4560,10 +4564,6 @@ def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bo
         keys["env"] = dict(env)
     if no_helper:
         keys["apiKeyHelper"] = ""
-    if helper_cmd:
-        # a session billed to a STORED login (T346): its own helper, bin/romp-login-helper with the record id,
-        # which runs the token command the record holds; outranks the plain disable above
-        keys["apiKeyHelper"] = helper_cmd
     if not keys:
         return ""
     d = os.path.join(str(state_dir), FLAG_SETTINGS_DIR)
@@ -4984,6 +4984,11 @@ def queue_meta_from_reg(reg: dict) -> list:
                 break
         out.append(hit)
     return out
+
+
+_RESTAMPS: dict = {}   # {sid: (previous spawnedAt, new)} where this process moved a reg's epoch: the kernel's build counts the
+#                        still-running work between the two (a survivor's work a re-stamp dropped) once per entry and pops it;
+#                        seeded here, at the stamp, because at a boot the reg moves before the first build (2026-09-14)
 
 
 class SdkSession:
@@ -5820,7 +5825,10 @@ class SdkSession:
         The bus's put-back is its `restore` — the roll-back its not-injected push already takes: cur/<mid> moves
         back to new/, the exec row is retracted, the session is woken. It is reached through
         SdkBackend.postal_restore, which the kernel installs (a POST to the bus's /restore). The answer is the set
-        of ids the bus put back, and it is AUTHORITATIVE about the bus's own files: a PARTIAL answer names the ids
+        of ids the bus HOLDS: the ones it put back, plus (2026-09-14) the ones it could not answer for (its cur/ could
+        not be read; the claim stands and its own retry puts them back), named in the answer's `.held` (a set subclass;
+        set arithmetic drops the attribute, so it is read off the answer before any `set(res)`). AUTHORITATIVE about
+        the bus's own files: a PARTIAL answer names the ids
         gone from the bus's box (recalled by its sender, swept), which are never re-fed on this side's say-so. An
         answer that put back NONE of them means this bus never held the banner: nothing removes a live session's
         cur/ file (recall reads new/ only; the orphan sweep skips live boxes), so the ids are a session's whose
@@ -5852,7 +5860,7 @@ class SdkSession:
                                   "before the teardown; the resumed conversation carries it, not handed back (%s)"
                                   % (self.name, ", ".join(mids)))
                 continue
-            back, why = None, "no bus hook is installed"
+            back, why, held_by_bus = None, "no bus hook is installed", set()
             if callable(hook):
                 try:
                     res = hook(self.sid, list(mids))
@@ -5860,6 +5868,7 @@ class SdkSession:
                         why = "the bus gave no answer"
                     else:
                         back = set(res)
+                        held_by_bus = set(getattr(res, "held", ()) or ())   # ids the bus holds under an unreadable cur/ (2026-09-14)
                 except Exception as e:
                     why = "the bus could not be asked (%r)" % (e,)
             if back is None:
@@ -5879,11 +5888,15 @@ class SdkSession:
                                   "bus holds none of its ids (%s); re-heading it so the new client is fed it"
                                   % (self.name, ", ".join(mids)), problem=True)
                 continue
-            self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted; handed back "
-                              "to the bus by id for re-delivery (%s)%s"
-                              % (self.name, ", ".join(m for m in mids if m in back),
+            put_back = [m for m in mids if m in back and m not in held_by_bus]
+            held_here = [m for m in mids if m in held_by_bus]
+            self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted%s%s%s"
+                              % (self.name,
+                                 ("; handed back to the bus by id for re-delivery (%s)" % ", ".join(put_back)) if put_back else "",
+                                 ("; held by the bus under a PENDING fault (its cur/ cannot be read; the sender's receipt reads "
+                                  "pending, the bus's retry puts them back once it reads): %s" % ", ".join(held_here)) if held_here else "",
                                  ("; no longer in the bus's box, not re-fed: %s" % ", ".join(gone)) if gone else ""),
-                              problem=False)
+                              problem=bool(held_here))
         if rehead:
             with self._lock:
                 self._q_prepend(rehead, self._unfeed_locked(rehead))   # back at the head under their own ids
@@ -6229,11 +6242,23 @@ class SdkSession:
         explicit = getattr(self.backend, "explicit_default_auth", None)   # getattr: test doubles
         if explicit:
             side = explicit()
-            if side and not self.backend.auth_unavailable_why(side):
+            # a stored login as the default (the user 2026-09-14) is judged on its own record, as a pick of it would be
+            lid = getattr(self.backend, "explicit_default_login", lambda: "")() if side == "login" else ""
+            if side and not (self.backend.auth_unavailable_why(side, lid) if lid else self.backend.auth_unavailable_why(side)):
                 return side
         if key is None:
             key = self.backend.key_available
         return "key" if key else "login"
+
+    def effective_login(self) -> str:
+        """WHICH login this session bills when effective_auth() reads login (the status's authLogin and authLabel): its
+        own pick's stored login, else the stored login the explicit machine default names when it has no pick of its
+        own (the user 2026-09-14), "" for the machine's own login or the key."""
+        if self.auth in ("login", "key"):
+            return (getattr(self, "auth_login", "") or "") if self.auth == "login" else ""
+        if self.effective_auth() != "login":
+            return ""
+        return getattr(self.backend, "explicit_default_login", lambda: "")()
 
     async def _do_refresh_usage(self):
         """Pull the EXACT account-wide /usage snapshot from the CLI — the designed data behind the /usage
@@ -6324,7 +6349,11 @@ class SdkSession:
         planner's persisted memo and the evidence gate and reading the live CLIs' running tasks as ghosts). `mark_echoes` is
         False on a DELIBERATE reconnect inside a live thread (the waker's effort or model change), whose forwarded sends land
         through the resume."""
+        prev = (read_reg(self.backend.state_dir, self.sid) or {}).get("spawnedAt")
         self.backend._update_reg(self.sid, spawnedAt=int(spawned_at), spawnedAtCli=str(cli_ident or ""))
+        if isinstance(prev, int) and not isinstance(prev, bool) and prev > 0 and int(spawned_at) != prev:
+            _RESTAMPS[self.sid] = (prev, int(spawned_at))   # the kernel's build counts what the move dropped, once (memos
+            #                                                  ghostDropped.restamped), then clears the entry
         self.backend._heal_stale_awaiting(self.sid)
         if mark_echoes:
             try:
@@ -8988,6 +9017,7 @@ class SdkSession:
         else:
             ls = last_state(self.backend.state_dir, self.sid)
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
+        _el = self.effective_login()   # once per snapshot: authLogin and authLabel below read the same answer
         return {"state": state, "since": str(since) if since else "",
                 "model": model_label(self.model, self.chosen_model), "effort": self.effort,
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
@@ -8999,10 +9029,11 @@ class SdkSession:
                 # the fall carried explicitly 2026-09-09)
                 "authPickUnavailable": self.backend.pick_unavailable(self.auth, getattr(self, "auth_login", "")),
                 "authPickFell": self.backend.pick_fall(self.auth, getattr(self, "auth_login", "")),
-                # WHICH login a login pick bills (T346): the stored login's record id and its display label,
-                # "" for the machine's own (the kernel fills the machine's own label into the status push)
-                "authLogin": getattr(self, "auth_login", ""),
-                "authLabel": self.backend.login_display(getattr(self, "auth_login", "")),
+                # WHICH login this session bills (T346): the stored login's record id and its display label, its own
+                # pick's or, unpicked, the explicit default's (2026-09-14); "" for the machine's own (the kernel fills
+                # the machine's own label into the status push)
+                "authLogin": _el,
+                "authLabel": self.backend.login_display(_el),
                 # the init's EVIDENCE of which login answered (T346): the record id when the stored login's helper did,
                 # "" when the CLI fell back to the machine's own login, absent until an init lands
                 "authLoginLive": getattr(self, "auth_login_live", None),
@@ -9447,8 +9478,10 @@ class SdkBackend:
         self.thread_wake_model = None      # kernel-installed: model_id -> replacement or None, consulted
         #                                    ONLY when a comment THREAD is explicitly woken (T223 rider) —
         #                                    the catalog lives in the kernel; the backend never imports it
-        self.postal_restore = None         # kernel-installed: (sid, [mid, ...]) -> the set of ids the bus put back in
-        #                                    the session's new/ (kernel._bus_restore_mail → the bus's POST /restore);
+        self.postal_restore = None         # kernel-installed: (sid, [mid, ...]) -> the set of ids the bus HOLDS: put back in
+        #                                    the session's new/, plus those held under an unreadable cur/, named in the
+        #                                    answer's `.held` (set arithmetic drops the attribute; read it off the answer
+        #                                    first) (kernel._bus_restore_mail → the bus's POST /restore);
         #                                    raises when the bus could not be asked. Consulted ONLY by a resumable
         #                                    reconnect that stranded a fed postal banner (_return_stranded_mail,
         #                                    2026-09-12); None (a stand-in, an older kernel) → the banner is re-headed
@@ -10152,6 +10185,9 @@ class SdkBackend:
                       % (sess.name, ident))
             return
         login = cli.get("login")
+        # the reading (the follow-up's read, 2026-09-14): an EMPTY string is an identifier, the machine's own login, and is
+        # stamped as such, because the host echoes what the launch billed; an ABSENT field means a host older than the field
+        # and falls to this iteration's options login
         self._stamp_launch_login(sess, login_id=login if isinstance(login, str) else None)
         sess._fresh_cli_stamp(spawned, ident, mark_echoes=not getattr(sess, "_deliberate_connect", False))
         self._log("host (%s): a fresh CLI %s (spawned at %d); its epoch and launch login stamped" % (sess.name, ident, spawned))
@@ -11407,33 +11443,32 @@ class SdkBackend:
         the declaration — else against _launched_keyed as before; see the comment at the check."""
         _ll = getattr(sess, "_launched_login", "") or ""
         if _ll:
-            # A launch billed to a STORED login (T346) carried that login's helper. The init's source word is the
-            # EVIDENCE of what the CLI did with it, never the pick: 'apiKeyHelper' means the helper answered and the
-            # account billed is that login's subscription (the landing reads as the login's; auth_login_live names
-            # it); the source ABSENT or 'none' means the CLI never used the helper (the token command failed, or was
-            # skipped) and signed in with the MACHINE'S OWN login from its credentials file, the wrong account: said
-            # loudly, shown on the Billing row (authLoginLive ""), and the record marked refused so every menu greys
-            # it until the deciding event the other way, a served reply on that login (_ah_note_ok clears it).
+            # A launch billed to a STORED login (T346) carried that login's setup-token in its own environment as
+            # CLAUDE_CODE_OAUTH_TOKEN, the box's helper disabled (the environment road, 2026-09-14). The init's source
+            # word is the EVIDENCE of what the CLI did with it, never the pick: ABSENT or 'none' is a bearer login, the
+            # token this launch handed over (a bearer in the environment outranks the machine's own credentials file in
+            # the CLI's precedence, and the machine's tokens were not restored into this launch), so the account billed
+            # is that login's subscription (auth_login_live names it); any KEY word ('apiKeyHelper', '/login managed
+            # key', 'user', 'project', 'temporary', ANTHROPIC_API_KEY) means the CLI took a key from somewhere and never
+            # used the token, the wrong account: said loudly, shown on the Billing row (authLoginLive ""), and the record
+            # marked refused so every menu leaves it out until the deciding event the other way, a served reply on
+            # that login (_ah_note_ok clears it).
             _word = str(source or "").strip().lower()
-            if _word == "apikeyhelper":
+            if not _word or _word == "none":
                 source = "none"
                 sess.auth_login_live = _ll
-                sess._wrong_landing_reconnected = False   # the helper answers again: a later wrong landing may take the fall
+                sess._wrong_landing_reconnected = False   # the token answers again: a later wrong landing may take the fall
                 self._persist_login_evidence(sess, authLoginLive=_ll)
             else:
-                # ANY other word means the helper did not answer and the CLI signed in with something else: absent
-                # or 'none' is the machine's own login from its credentials file; '/login managed key', 'user',
-                # 'project', 'temporary' or ANTHROPIC_API_KEY another credential entirely. The wrong account either
-                # way: said loudly naming what the CLI used, the record marked refused (every menu greys it), and
-                # the session RECONNECTED so its next launch takes the documented fall (the key when a helper is
-                # configured, else the machine's own login, said in the status as authPickUnavailable/authPickFell)
-                # instead of running unflagged on whatever the CLI found; once per session, and only when there IS
-                # a fall (below). The session is not ended, since that would drop the user's conversation: it keeps
-                # running on the fallback side (or, with no fall, where it landed) with the Billing row saying so.
+                # A key word: the CLI signed in with another credential. Said loudly naming what the CLI used, the record
+                # marked refused, and the session RECONNECTED so its next launch takes the documented fall (the key when
+                # a helper is configured, else the machine's own login, said in the status as authPickUnavailable and
+                # authPickFell) instead of running unflagged on whatever the CLI found; once per session, and only when
+                # there IS a fall (below). The session is not ended, since that would drop the user's conversation: it
+                # keeps running on the fallback side (or, with no fall, where it landed) with the Billing row saying so.
                 sess.auth_login_live = ""
-                used = ("the machine's own login" if (not _word or _word == "none")
-                        else "the CLI's %s credential" % str(source).strip())
-                why = "the token command did not answer and the CLI signed in with %s instead" % used
+                used = "the CLI's %s credential" % str(source).strip()
+                why = "the token was not used and the CLI signed in with %s instead" % used
                 _logins.mark_refused(self.state_dir, _ll, why)
                 sess._launched_login = ""       # the evidence: this process does not bill the stored login
                 self._persist_login_evidence(sess, launchedLogin="", authLoginLive="")
@@ -11446,7 +11481,7 @@ class SdkBackend:
                     fall = self.pick_fall("login", _ll)
                 except Exception:
                     fall = ""
-                head = "auth (%s): the %s login's helper was not used: %s; " % (sess.name, self.login_display(_ll), why)
+                head = "auth (%s): the %s login's token was not used: %s; " % (sess.name, self.login_display(_ll), why)
                 if not fall:
                     self._log(head + "nothing to fall to on this box, so the session stays where it landed, flagged",
                               problem=True)
@@ -12084,21 +12119,46 @@ class SdkBackend:
         # pick the box cannot bill with NOTHING to fall to (a key pick on a box with neither) launches
         # plain and the CLI decides, as before.
         auth_login = getattr(sess, "auth_login", "") or ""   # the stored login the pick names ("" = the machine's own)
-        fell = self.pick_fall(sess.auth, auth_login)
-        side = fell or sess.auth                        # the ONE decision, shared with the status rows (authPickFell)
-        # WHICH login a login launch bills (T346): the stored login's id when the pick names one AND the launch
-        # is not falling away from it (a refused, expired or command-less stored login falls exactly as a dead
-        # machine login does: to the key when a helper is configured, else to the machine's own login, said
-        # once per session below); "" = the machine's own login.
-        login_id = auth_login if (side == "login" and not fell) else ""
+
+        def _decide():
+            """(fell, side, login_id): the ONE decision, shared with the status rows (authPickFell). WHICH login a login
+            launch bills (T346): the stored login's id when the pick names one AND the launch is not falling away from
+            it (a refused, expired or command-less stored login falls exactly as a dead machine login does: to the key
+            when a helper is configured, else to the machine's own login, said once per session below); "" = the
+            machine's own login. NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default
+            when one is set and this box can bill it, the rule the status already uses (effective_auth / fallback_auth),
+            so the readout and the launch agree (before, an unpicked session read Login in its status and billed the
+            key at launch, the helper unsuppressed); a STORED login as that default (the user 2026-09-14) is followed
+            by id; without one the launch stays plain and the CLI decides, as ever."""
+            fell = self.pick_fall(sess.auth, auth_login)
+            side = fell or sess.auth
+            login_id = auth_login if (side == "login" and not fell) else ""
+            if sess.auth not in ("login", "key"):
+                _exp = self.explicit_default_auth()
+                _exl = self.explicit_default_login() if _exp == "login" else ""
+                side = _exp if (_exp and not self.auth_unavailable_why(_exp, _exl)) else ""
+                if side == "login" and _exl:
+                    login_id = _exl
+            return fell, side, login_id
+
+        fell, side, login_id = _decide()
         picked = _logins.pick_value(sess.auth, auth_login)
-        if sess.auth not in ("login", "key"):
-            # NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default when one is set and
-            # this box can bill it, the rule the status already uses (effective_auth / fallback_auth), so the readout
-            # and the launch agree (before, an unpicked session read Login in its status and billed the key at launch,
-            # the helper unsuppressed); without one the launch stays plain and the CLI decides, as ever
-            _exp = self.explicit_default_auth()
-            side = _exp if (_exp and not self.auth_unavailable_why(_exp)) else ""
+        # The environment road (2026-09-14; docs/reference.md "Several Claude logins"): a launch billed to a STORED login
+        # runs the record's token command NOW, the way the kernel runs the box's own helper (credentials.run_helper:
+        # /bin/sh, a whitelisted environment, stdin closed, stderr discarded, bounded), and hands the output to this one
+        # CLI as CLAUDE_CODE_OAUTH_TOKEN below. A command that fails is loud, never a quiet fall onto another account: the
+        # record is marked refused with the reason (every menu leaves it out, the status says the fall) and the decision
+        # is made again against the refusal, so this launch takes the same fall a dead machine login takes.
+        login_token = ""
+        if login_id:
+            try:
+                login_token = _logins.token_value(self.state_dir, login_id,
+                                                  lambda c: _cred.run_helper(c, label="the token command"))
+            except (_cred.CredentialError, ValueError) as e:
+                _logins.mark_refused(self.state_dir, login_id, "the token command did not answer: %s" % e)
+                self._log("auth (%s): the %s login's token command failed (%s): the record is marked refused and this "
+                          "launch takes the fall" % (sess.name, self.login_display(login_id), e), problem=True)
+                fell, side, login_id = _decide()
         if side == sess.auth and sess.auth in ("login", "key") and sess._pick_unknown_said != picked:
             why = self.pick_unknown(sess.auth, auth_login)   # cannot tell just now: the pick stands, said once per session
             if why:
@@ -12115,9 +12175,7 @@ class SdkBackend:
         login = side == "login"
         fs = flag_settings_path(self.state_dir, sess.sid,
                                 ultracode=(sess.effort or "") == "ultracode", fast=sess.fast_opt,
-                                env=env_vars, no_helper=login and not login_id,
-                                helper_cmd=_logins.helper_command(login_id, self.state_dir) if login_id else "",
-                                log=self._log)
+                                env=env_vars, no_helper=login, log=self._log)
         if fs:
             kw["settings"] = fs
         # What the launch MEANT, for _note_auth_source's per-init check: keyed when the box's helper will
@@ -12125,17 +12183,16 @@ class SdkBackend:
         # fall to) leaves the CLI to decide, and a login landing then is the pick contradicted.
         launch_keyed = not login and keyed_box
         if login_id:
-            # A launch billed to a STORED login (T346): the per-session settings layer above named THAT login's
-            # helper (apiKeyHelper: bin/romp-login-helper <id> <state dir>, flag_settings_path's helper_cmd)
-            # instead of disabling the box's; the CLI runs it per request and it runs the login's token command
-            # (a secret manager's read command, typically) into the CLI's pipe and nowhere else. No credential rides romp's
-            # files or environment, and the machine's own login tokens are NOT restored into this launch (a
-            # bearer outranks the helper in the CLI's precedence and would bill the machine's account). The
-            # door rules stand: env_request_error still refuses credential names from any client payload and
-            # the strip above still drops them from a stored session env. ANTHROPIC_API_KEY, which outranks the
-            # helper too, cannot ride the child either: this overlay cannot unset an inherited variable, and the
-            # kernel's own environment never carries the name (check_boot_environment refuses to start with it).
-            kw["env"] = dict(kw["env"])
+            # A launch billed to a STORED login (T346): the token its command printed rides this ONE process as
+            # CLAUDE_CODE_OAUTH_TOKEN, exactly where the machine's own login tokens ride a login launch (the environment
+            # road, 2026-09-14: a setup-token through an apiKeyHelper hangs the CLI's request; in the environment it is
+            # accepted), with the box's helper disabled above (a helper outranks a bearer in the CLI's precedence). The
+            # machine's own tokens are NOT restored beside it (the first bearer found would bill the machine's account),
+            # and no romp file or log line ever holds the value. The door rules stand: env_request_error still refuses
+            # credential names from any client payload and the strip above still drops them from a stored session env.
+            # ANTHROPIC_API_KEY, which outranks a bearer too, cannot ride the child either: this overlay cannot unset an
+            # inherited variable, and the kernel's own environment never carries the name (check_boot_environment).
+            kw["env"] = dict(kw["env"], CLAUDE_CODE_OAUTH_TOKEN=login_token)
         elif login or (side != "key" and not keyed_box):
             # The login tokens claimed at boot ride every launch that bills the login: a login pick, and an
             # unpicked session on a box with no helper (its effective billing IS the login, and the judges'
@@ -13858,8 +13915,23 @@ class SdkBackend:
             self._log("boot reconcile: %s had a move to its own folder pending — nothing to settle; cleared" % sid[:8])
             self._update_reg_dropping(sid, ("cwdPending",))
             return
-        at_new = os.path.exists(transcript_path(pend, fsid))
-        at_old = bool(cur) and os.path.exists(transcript_path(cur, fsid))
+        def _at(slug):
+            """True, False, or None when the slug's transcript cannot be stat'ed for a reason other than ENOENT (an unsearchable
+            folder): os.path.exists answered False there on every interpreter, and an unsearchable pending slug with the transcript
+            also at the old one read as a move that never happened and dropped cwdPending (the exists() fix's queued low, 2026-09-14)."""
+            try:
+                os.stat(transcript_path(slug, fsid))
+                return True
+            except FileNotFoundError:
+                return False
+            except OSError:
+                return None
+        at_new = _at(pend)
+        at_old = bool(cur) and _at(cur)
+        if at_new is None or at_old is None:
+            self._log("boot reconcile: %s has a move to %s pending and a folder that cannot be read (new %r, old %r): left pending"
+                      % (sid[:8], pend, at_new, at_old))
+            return
         if at_new and not at_old:
             self._log("boot reconcile: %s was mid-move to %s — the transcript is there; finishing romp's half"
                       % (sid[:8], pend))
@@ -14301,8 +14373,9 @@ class SdkBackend:
         per-session pick gets (auth_unavailable_why). Marks the default explicit (`authExplicit`), so a later
         per-session pick no longer moves it; "auto" clears the flag and the seed (the helper rule again).
         Touches no session's own pick: a session that follows the default shows the new side in its status at
-        once and launches on it next time. Every write here empties authLogin: an explicit default is the machine's own
-        side, never a stored login (T346)."""
+        once and launches on it next time. A STORED login ("login:<id>") is a default too since 2026-09-14 (the user:
+        the Set default billing submenu offers every billing the picks do), written with its id under authLogin and
+        judged on its own record as a pick of it would be; the machine's own login and the key write authLogin empty."""
         if value == "auto":
             # back to the helper rule (the key when an apiKeyHelper is configured, else the login): the flag
             # clears and the seed empties, so a per-session pick seeds the default again as it did before
@@ -14311,18 +14384,21 @@ class SdkBackend:
             write_sdk_default(self.state_dir, auth="", authExplicit=False, authLogin="")
             self._log("auth: the machine's default billing is automatic again (the helper rule)")
             return True
-        if value not in ("login", "key"):
+        side, lid = _logins.parse_pick(value)
+        if not side:
             return False
-        why = self.auth_unavailable_why(value)
+        why = self.auth_unavailable_why(side, lid)
         if why:
             self.last_auth_refusal = why
             self._log("auth: the machine default cannot be %s on this box: %s" % (value, why), problem=True)
             return False
-        # the machine's OWN side, always: authLogin is written empty, so a stored login a per-session pick seeded into the
-        # defaults never becomes the machine default by inheritance (the Default group offers no stored login, and the
-        # kernel refuses one by name; a seed carrying one would bill it silently, the 2026-08-12 wrong-account failure)
-        write_sdk_default(self.state_dir, auth=value, authExplicit=True, authLogin="")
-        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)" % value)
+        # a STORED login (the user 2026-09-14) is written with its id; the machine's own login and the key write authLogin
+        # EMPTY, so a stored login a per-session pick seeded into the defaults while the default was automatic never becomes
+        # the machine default by inheritance (a seed carrying one would bill it silently, the 2026-08-12 wrong-account
+        # failure): an id here is always the user's explicit choice in the submenu
+        write_sdk_default(self.state_dir, auth=side, authExplicit=True, authLogin=lid)
+        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)"
+                  % (self.login_display(lid) if lid else side))
         return True
 
     def default_auth(self, reg: dict | None = None) -> str:
@@ -14344,7 +14420,9 @@ class SdkBackend:
         never a dead login) — a box with neither still reads login, the CLI's own resolution, and the launch's
         auth check rings on what lands."""
         side = self.explicit_default_auth()
-        if side and not self.auth_unavailable_why(side):
+        # a stored login as the default (the user 2026-09-14) is judged on its own record, as a pick of it would be; an
+        # unusable one reads "" here and the machine's own login is judged instead (the fall-through _auth_avail follows)
+        if side and not self.auth_unavailable_why(side, self.explicit_default_login() if side == "login" else ""):
             return side
         return "key" if self.key_available else "login"
 
@@ -14367,20 +14445,46 @@ class SdkBackend:
         """The machine default the user set explicitly (sdk-defaults.json `auth` with `authExplicit` true), else
         "". Read per status snapshot, so cached on the file's mtime and size: one stat per call. The cache is
         module-level, keyed by the state root, not an attribute on the backend: the perf bench's stand-in backend
-        refuses any attribute it did not anticipate (CI, 2026-09-12)."""
+        refuses any attribute it did not anticipate (CI, 2026-09-12). The stat key takes ino and ctime too: a same-size
+        rewrite whose mtime did not advance (review)."""
+        return self._explicit_default()[0]
+
+    def _explicit_default(self) -> tuple:
+        """(side, stored login id) of the explicit machine default: explicit_default_auth's read, the id the defaults
+        carry under authLogin beside an explicit login side ("" otherwise; whether that record is usable is
+        explicit_default_login's question). Cached on sdk-defaults.json's stat like the side."""
         p = _defaults_path(self.state_dir)
         try:
             st = p.stat()
-            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)   # ino and ctime too: a same-size rewrite whose mtime did not advance (review)
+            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
         except OSError:
             key = None
         cache = _EXPLICIT_DEFAULT_CACHE.get(str(self.state_dir))
         if cache is not None and cache[0] == key:
-            return cache[1]
+            return cache[1], cache[2]
         d = read_sdk_defaults(self.state_dir) if key is not None else {}
         side = d.get("auth") if (d.get("authExplicit") and d.get("auth") in ("login", "key")) else ""
-        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side)
-        return side
+        lid = SdkBackend.reg_login(d) if side == "login" else ""
+        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side, lid)
+        return side, lid
+
+    def explicit_default_login(self) -> str:
+        """The STORED login the explicit machine default names (the user 2026-09-14: sdk-defaults.json `authLogin` beside
+        auth login and authExplicit), "" for the machine's own login, the key, an automatic default, or a stored login
+        this box cannot bill just now (refused, expired, command-less or removed: the default falls through to the
+        machine's own login, the rule _auth_avail's `default` follows). One record read per call beside the cached side."""
+        side, lid = self._explicit_default()
+        return lid if (side == "login" and lid and not self.auth_unavailable_why("login", lid)) else ""
+
+    def default_login(self, reg: dict | None = None) -> str:
+        """WHICH stored login a session bills when default_auth(reg) reads login: the reg's own pick's id, else the
+        explicit machine default's stored login when the reg has no pick of its own (the user 2026-09-14), "" for the
+        machine's own login or the key. The dormant twin of SdkSession.effective_login(); the judges ask it too
+        (the kernel wires it beside default_auth, judge._DEFAULT_LOGIN_FN)."""
+        a = (reg or {}).get("auth")
+        if a in ("login", "key"):
+            return SdkBackend.reg_login(reg) if a == "login" else ""
+        return self.explicit_default_login() if self.fallback_auth() == "login" else ""
 
     def auth_unavailable_why(self, side: str, login_id: str = "") -> str:
         """Why this box cannot bill `side` ("login" | "key"), as ONE plain sentence for the refusal toast,
@@ -14489,7 +14593,8 @@ class SdkBackend:
         disk says this instant (the proof owns() and _ensure already take). None: NO reg file, which is
         durable, since this backend never unlinks a reg. A reg that EXISTS but would not read or parse
         RAISES (EMFILE, EIO, EACCES, torn JSON: the transient class owns() was repaired for on
-        2026-09-07), so the caller waits on a reader's fault instead of counting it as no record. The
+        2026-09-07; and ELOOP or ENOTDIR paths, which will not heal but are no record either way, so
+        the wait is the same answer), so the caller waits on a reader's fault instead of counting it as no record. The
         first version read through read_reg, which answers None for an unreadable reg exactly as for
         an absent one, and never looked at self.sessions: a running session whose reg would not read
         was classed as no record, its landing mail withheld, and its watch retired as ended (review
@@ -14710,6 +14815,7 @@ class SdkBackend:
         if st in ("working", "permission", "picker", "compacting", "retrying"):
             st = "waiting"
         lc = reg.get("liveCtx")   # last persisted context fill → bar survives idle/restart
+        _dl = self.default_login(reg)   # once per row: the stored login the reg names, or the explicit default's (2026-09-14)
         return {"state": st,
                     "since": str(ls.get("t") or ""),
                     # not running (e.g. post-restart): prefer the last LIVE model we persisted
@@ -14721,8 +14827,8 @@ class SdkBackend:
                     "auth": self.default_auth(reg),
                     "authPickUnavailable": self.pick_unavailable(reg.get("auth") or "", self.reg_login(reg)),   # same as snapshot()
                     "authPickFell": self.pick_fall(reg.get("auth") or "", self.reg_login(reg)),
-                    "authLogin": self.reg_login(reg),                        # the stored login a dormant reg names (T346)
-                    "authLabel": self.login_display(self.reg_login(reg)),
+                    "authLogin": _dl,                                        # the stored login a dormant reg names, or the default's (T346, 2026-09-14)
+                    "authLabel": self.login_display(_dl),
                     # the persisted CLI truth (apiKeyAuth, the liveModel pattern) so a dormant
                     # session's Billing row keeps telling it; absent = no init ever landed
                     "authLive": ("key" if reg.get("apiKeyAuth") else "login")

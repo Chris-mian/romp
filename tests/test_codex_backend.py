@@ -471,6 +471,90 @@ class ApprovalModes(unittest.TestCase):
         self.assertTrue(notices)
         self.assertTrue(all(msg["type"] == "warn" for msg in notices))
 
+    def test_a_dead_stderr_never_raises_out_of_the_approval_handler(self):
+        # the handler's FIRST line is a log write, before any answer is returned, and it runs inline on the
+        # SDK's single reader thread (the case above). With a stderr that raises on write (a log disk at
+        # ENOSPC, the pipe a supervisor's end closed) that write raised out of the handler: the reader ended
+        # with no reply written and every in-flight request of every Codex session failed at once. The log
+        # callback is wrapped ONCE at construction, so the raising logger goes in through the constructor: a
+        # post-construction `be.log = ...` replaces the wrap and would prove nothing
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=FakeClient, log=dead_stderr)
+        notices = []
+        be.notify = lambda app, msg: notices.append(msg)
+        answers = (("item/commandExecution/requestApproval", {"decision": "decline"}),
+                   ("item/fileChange/requestApproval", {"decision": "decline"}),
+                   ("item/permissions/requestApproval", {"permissions": {}, "scope": "turn"}),
+                   ("item/tool/requestUserInput", {"answers": {}}),
+                   ("unknown/requestApproval", {}))
+        for method, want in answers:
+            self.assertEqual(be._handle_approval(method, {}), want, method)
+        self.assertEqual(len(notices), len(answers), "the session still hears every denial")
+        self.assertTrue(all(msg["type"] == "warn" for msg in notices))
+        # the DEFAULT logger (no log= handed in: the bare `codex-backend:` stderr line) is wrapped the same way
+        be2 = cb.CodexBackend(tempfile.mkdtemp(), client_factory=FakeClient)
+        with mock.patch.object(sys, "stderr", SimpleNamespace(write=dead_stderr, flush=lambda: None)):
+            self.assertEqual(be2._handle_approval("item/commandExecution/requestApproval", {}),
+                             {"decision": "decline"})
+
+    def test_a_dead_stderr_does_not_end_the_pump_before_it_records_the_failure(self):
+        # the same shape on the pump thread: its except branch logs FIRST, then uninstalls the client
+        # (_record_client_failure_locked) and wakes queued workers. Under a raising stderr the pump died at
+        # that log line, so the dead client stayed installed: the next send's _get_client handed it back
+        # and turn_start parked forever in the SDK's untimed wait, every Codex session wedged until a
+        # restart, with nothing on the log to say so
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+        fake = FakeClient()
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=lambda: fake, log=dead_stderr)
+        self.assertIs(be._get_client(), fake)
+        fake.close()                                  # next_notification raises: the pump's except branch runs
+        self.assertTrue(until(lambda: be._client is None), "the dead client is uninstalled")
+        self.assertIn("client closed", be._client_err or "", "the failure is recorded, not lost with the line")
+
+    def test_a_dead_stderr_does_not_end_the_worker_before_it_files_the_failure(self):
+        # the third site with this shape, on each session's worker thread: _work's except branch logs the
+        # traceback FIRST, then files launch_error and sets the session "waiting". Under a raising stderr the
+        # worker died at that log line, and _work's finally only clears s.worker: nothing was filed, the
+        # queued batch parked with no visible reason, and the session read busy forever. A plain RuntimeError
+        # from turn_start (not a permanent rejection) reaches that branch; the second attempt holds at its
+        # entry, so the filed error is read before the ack that clears it
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+
+        class FailOnceClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+                self.retry_entered = threading.Event()
+                self.allow_retry = threading.Event()
+
+            def turn_start(self, tid, input_items, params=None):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("synthetic pre-ack failure")
+                self.retry_entered.set()
+                self.allow_retry.wait(5)
+                return super().turn_start(tid, input_items, params)
+
+        fake = FailOnceClient()
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=lambda: fake, log=dead_stderr)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "first"))
+        self.assertTrue(fake.retry_entered.wait(5), "the worker never came back for the retry: it died at the log line")
+        err = be.launch_error(sid)
+        self.assertIsNotNone(err, "the failure is filed, not lost with the line")
+        self.assertEqual(err["text"], "codex turn failed: synthetic pre-ack failure")
+        self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
+        fake.allow_retry.set()
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        self.assertEqual(fake.attempts, 2)
+        # the contract itself, in one line: the wrap is at construction, so the callback the backend holds never
+        # raises, whichever site on whichever thread calls it. A guard at each of the three sites above would
+        # pass the three cases and fail here
+        be.log("probe")
+
     def test_real_client_is_constructed_with_fail_closed_handler(self):
         be, _, _ = build()
         be._client_factory = None

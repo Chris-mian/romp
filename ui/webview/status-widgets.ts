@@ -45,8 +45,10 @@ export interface StatusWidget {
 }
 export type StatusWidgetPrefs = WidgetPrefs;
 
+// the demo's NAME is the placeholder session_name (T415 part two, the user 2026-09-14: new copy, wanted in every demo tab and in the
+// name widget's demo chip), worn in the identity colour the way a real tab wears its name; the sid stays the demo's
 export const DEMO_RECORD: StatusRecord = {
-  id: "demo", name: "web", color: { bg: "#9cd2ff" }, cwd: "/home/user/projects/notes-api",
+  id: "demo", name: "session_name", color: { bg: "#9cd2ff" }, cwd: "/home/user/projects/notes-api",
   gitBranch: "search-module", workTree: null, host: "TESTHOST",
 };
 

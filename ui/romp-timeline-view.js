@@ -7018,7 +7018,7 @@ class TimelinePanel {
     const hit = el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' });   // hit pad (whole glyph clickable)
     g.appendChild(hit);
     const st = { fill: 'none', stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' };
-    // the same numbers as ui/webview/icons.ts ICON_LOCK / ICON_LOCK_OPEN (the chat strip's tab lock, T395): one drawing, change both
+    // the one padlock drawing (T395; the chat strip's copy in ui/webview/icons.ts left with T415, when the tab lock became a switch in the settings card)
     g.appendChild(el('rect', Object.assign({ x: 3, y: 6.2, width: 8, height: 5.6, rx: 1.2 }, st)));
     g.appendChild(el('path', Object.assign({ d: on ? 'M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2'           // seated shackle (locked)
                                                   : 'M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7' }, st)));   // swung-out shackle (unlocked)

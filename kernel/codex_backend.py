@@ -340,7 +340,21 @@ class CodexBackend:
         self.push = push or (lambda: None)
         self.push_session = push_session or (lambda sid: None)
         self.codex_bin = codex_bin
-        self.log = log or (lambda m: sys.stderr.write("codex-backend: %s\n" % m))
+        raw_log = log or (lambda m: sys.stderr.write("codex-backend: %s\n" % m))
+
+        def _log(m):
+            # Best-effort, like the kernel's _exit_log: no log line may raise on the thread that wrote it. The
+            # kernel hands a bare sys.stderr.write, and a stderr that raises on write (a log disk at ENOSPC, the
+            # pipe a supervisor's end closed) used to raise out of every site that logs first and acts second:
+            # _handle_approval, inline on the pinned SDK's single reader thread (the reader ended with no reply
+            # written and every in-flight request of every Codex session failed at once); the pump's except
+            # branch, before _record_client_failure_locked (the dead client stayed installed and the next turn
+            # parked forever on it); each worker's, before launch_error is filed (the session stayed "working").
+            try:
+                raw_log(m)
+            except Exception:
+                pass
+        self.log = _log
         self._client_factory = client_factory   # tests inject a fake; None → real CodexClient
         self._client = None
         self._client_err = None       # why the client can't be built/authed (str), or None

@@ -80,10 +80,13 @@ class TheJudgesFollowTheMachineDefault(unittest.TestCase):
         self._key = jd._key_available
         self._fn = jd._DEFAULT_AUTH_FN
         jd._DEFAULT_AUTH_FN = None
+        self._lfn = getattr(jd, "_DEFAULT_LOGIN_FN", None)   # getattr: the red run at the base predates the name
+        jd._DEFAULT_LOGIN_FN = None
 
     def tearDown(self):
         jd._key_available = self._key
         jd._DEFAULT_AUTH_FN = self._fn
+        jd._DEFAULT_LOGIN_FN = self._lfn
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_the_judges_ask_the_one_resolver_the_kernel_wires_so_an_unbillable_default_moves_them_with_the_launch(self):
@@ -114,6 +117,27 @@ class TheJudgesFollowTheMachineDefault(unittest.TestCase):
         (jd.SDKDIR / (self.fsid + ".json")).write_text(json.dumps({"sid": self.fsid}))
         jd._key_available = lambda: True
         self.assertEqual(jd._judge_auth(self.fsid), "key", "junk from the resolver: the helper rule")
+
+    def test_an_unpicked_session_following_a_stored_login_default_bills_its_judges_to_that_login(self):
+        """The user 2026-09-14: a stored login set as the machine's default. The resolver says the side (login); the second
+        wired function, default_login, says WHICH; the judge carries "login:<id>" so _judge_cmd names that login's helper.
+        An empty or junk id, or no second function, reads as the machine's own login; a failing one never raises."""
+        jd._DEFAULT_AUTH_FN = lambda reg: "login"
+        self.assertEqual(jd._judge_auth(self.fsid), "login", "no second function wired (an older kernel): the machine's own login")
+        jd._DEFAULT_LOGIN_FN = lambda reg: "0123456789ab"
+        self.assertEqual(jd._judge_auth(self.fsid), "login:0123456789ab")
+        self.assertEqual(jd._judge_auth(""), "login:0123456789ab", "a call with no session follows the default too")
+        jd._DEFAULT_LOGIN_FN = lambda reg: ""
+        self.assertEqual(jd._judge_auth(self.fsid), "login", "the machine's own login")
+        jd._DEFAULT_LOGIN_FN = lambda reg: "not-an-id"
+        self.assertEqual(jd._judge_auth(self.fsid), "login", "junk reads as the machine's own login")
+        jd._DEFAULT_AUTH_FN = lambda reg: "key"
+        jd._DEFAULT_LOGIN_FN = lambda reg: "0123456789ab"
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "the id is read beside a login side only")
+        jd._DEFAULT_AUTH_FN = lambda reg: "login"
+        jd._DEFAULT_LOGIN_FN = lambda reg: (_ for _ in ()).throw(RuntimeError("boom"))
+        jd._key_available = lambda: True
+        self.assertEqual(jd._judge_auth(self.fsid), "key", "a failing second function: the standalone rule, never a raise")
 
     def test_standalone_the_registry_pick_and_the_helper_rule_stand_in(self):
         jd._key_available = lambda: True
