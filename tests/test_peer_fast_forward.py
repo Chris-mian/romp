@@ -24,6 +24,9 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
+os.makedirs(os.path.join(os.environ["XDG_STATE_HOME"], "romp"), exist_ok=True)
+with open(os.path.join(os.environ["XDG_STATE_HOME"], "romp", "session-hosts"), "w") as _f:
+    _f.write("off")                       # a minted state root pins the hosts off (the 2026-09-11 rule): a live handler runs over it below
 km = load_source("romp_kernel_peerff", os.path.join(BIN, "romp-kernel"))
 
 LOCAL = "a" * 40        # this machine's HEAD
@@ -381,22 +384,76 @@ class DriftOnTheCheckout(unittest.TestCase):
     def test_a_classification_that_failed_is_answered_safe_and_never_latched(self):
         """The round-two review's medium: _kernel_code_changed reads True on any error by design, and the memo stored that
         True for the pair, so one git flake right after a pull made a docs-only checkout report a restart pending on
-        every poll. Only a verdict that was read is kept; a failed read answers True for that call alone."""
+        every poll. Only a verdict that was read is kept; a failed read answers True, held for a short bound, then judges again."""
         saved = (km._kernel_sha, km._converge_classes)
         km._RESTART_PENDING_MEMO.clear()
         try:
             km._kernel_sha = lambda reask=False: REMOTE[:8]
             km._converge_classes = lambda a, b: None                        # the flake
             self.assertTrue(km._restart_pending(), "unreadable this time: the safe answer")
-            self.assertEqual(km._RESTART_PENDING_MEMO, {}, "and nothing remembered")
+            self.assertEqual(km._RESTART_PENDING_MEMO, {}, "and nothing remembered as a verdict")
             km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/a.md"], "ast_equal": []}
+            km._RESTART_PENDING_FAILED[(REMOTE[:7], LOCAL[:7])] -= km.RESTART_PENDING_RETRY_S + 1   # the safe answer's bound passes
             self.assertFalse(km._restart_pending(), "the next read judges again: a docs-only pair, nothing pending")
-            self.assertEqual(km._RESTART_PENDING_MEMO, {(REMOTE[:8], LOCAL[:8]): False}, "a verdict that was read is kept")
+            self.assertEqual(km._RESTART_PENDING_MEMO, {(REMOTE[:7], LOCAL[:7]): False}, "a verdict that was read is kept, keyed on the seven-character prefixes")
             km._converge_classes = lambda a, b: None
             self.assertFalse(km._restart_pending(), "and the kept verdict answers, not the later flake")
         finally:
             km._kernel_sha, km._converge_classes = saved
             km._RESTART_PENDING_MEMO.clear()
+
+    def test_a_fresh_read_that_failed_answers_none_never_the_cached_head(self):
+        # the round-three review's low 1: the route reads the head the pull just moved; when that read fails, the polls'
+        # cache still names the head before the fast-forward and would answer False for a pair that changed kernel code
+        saved = (km._kernel_sha, km._converge_classes)
+        km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+        try:
+            km._kernel_sha = lambda reask=False: LOCAL[:8]                        # booted at the cached head: the cache would say False
+            km._converge_classes = lambda a, b: {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
+            self.assertIsNone(km._restart_pending(checkout=""), "a failed fresh read claims nothing")
+            self.assertFalse(km._restart_pending(), "the poll path, with no head of its own, reads the cache as before")
+        finally:
+            km._kernel_sha, km._converge_classes = saved
+            km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+
+    def test_an_unreadable_pair_costs_one_classification_per_bound_not_one_per_poll(self):
+        # the round-three review's low 2: /version is auth-exempt and polled by every reader; a git diff per poll over an
+        # unreadable pair is a 20 s subprocess each time
+        saved = (km._kernel_sha, km._converge_classes)
+        calls = []
+        km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+        try:
+            km._kernel_sha = lambda reask=False: REMOTE[:8]
+            km._converge_classes = lambda a, b: calls.append(1) or None
+            self.assertTrue(km._restart_pending()); self.assertTrue(km._restart_pending()); self.assertTrue(km._restart_pending())
+            self.assertEqual(len(calls), 1, "one diff, then the safe answer stands for the bound")
+            key = (REMOTE[:7], LOCAL[:7])
+            km._RESTART_PENDING_FAILED[key] -= km.RESTART_PENDING_RETRY_S + 1     # the bound passes
+            self.assertTrue(km._restart_pending())
+            self.assertEqual(len(calls), 2, "asked again after the bound")
+            km._converge_classes = lambda a, b: calls.append(1) or {"kernel": [], "bus": [], "skip": ["docs/a.md"], "ast_equal": []}
+            km._RESTART_PENDING_FAILED[key] -= km.RESTART_PENDING_RETRY_S + 1
+            self.assertFalse(km._restart_pending(), "a read verdict replaces the safe answer")
+            self.assertNotIn(key, km._RESTART_PENDING_FAILED, "and clears the failure")
+        finally:
+            km._kernel_sha, km._converge_classes = saved
+            km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+
+    def test_the_route_s_full_sha_and_the_poll_s_short_one_share_one_memo_entry(self):
+        # the round-three review's low 3: two keys for one commit meant two classifications
+        saved = (km._kernel_sha, km._converge_classes)
+        calls = []
+        km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+        try:
+            km._kernel_sha = lambda reask=False: REMOTE[:8]
+            km._converge_classes = lambda a, b: calls.append(1) or {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
+            self.assertTrue(km._restart_pending(checkout=LOCAL))            # the route's full sha
+            self.assertTrue(km._restart_pending())                          # the poll's short one
+            self.assertEqual(len(calls), 1, "one classification for one commit")
+            self.assertEqual(list(km._RESTART_PENDING_MEMO), [(REMOTE[:7], LOCAL[:7])])
+        finally:
+            km._kernel_sha, km._converge_classes = saved
+            km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
 
     def test_the_pull_route_answers_with_the_peers_verdict_read_on_the_fresh_head(self):
         """The route driven: POST /tunnels/pull on a live handler with the pull itself stubbed. Its answer carries the
@@ -423,7 +480,7 @@ class DriftOnTheCheckout(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertTrue(body["ok"]); self.assertIn("pulled 1 commit", body["detail"])
             self.assertIs(body["kernel_code_changed"], True, "the peer's own verdict rides the answer")
-            self.assertEqual(judged, [(LOCAL[:8], FRESH[:8] if False else km._sha_base(FRESH))],
+            self.assertEqual(judged, [(LOCAL[:8], km._sha_base(FRESH))],
                              "judged against the head the pull moved, not the cached one")
             km._RESTART_PENDING_MEMO.clear()
             km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/x.md"], "ast_equal": []}
