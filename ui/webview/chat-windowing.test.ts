@@ -287,7 +287,29 @@ test("the landing notice's pulse is one-shot (the follow-up after PR 1584, low 1
 
 
 test("the skeleton prefetch never builds a tab the strip does not show (the user 2026-09-14): tabInView and the #only= filter gate it", () => {
-  assert.match(RENDER, /const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), \(id\) => stripShows\(id\)\);/,
-    "the idle prefetch's in-view gate is the strip's own predicate, stripShows (it begins with tabInView and adds the #only= filter)");
-  assert.match(RENDER, /const onOnlyHashChange = \(\): void => \{ renderTabs\(\); schedulePrebuild\(\); \};/, "the filter's reveal re-arms the idle prefetch (round two of PR 1661, medium 3)");
+  assert.match(RENDER, /const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), stripShowsTab\);/,
+    "the idle prefetch's gate is the strip's own visibility, stripShowsTab (the views, another column's holds, the #only= filter, a collapsed section's fold)");
+  assert.match(RENDER, /function stripShowsTab\(id: string\): boolean \{ return stripShows\(id\) && !collapsedTabIds\.has\(id\); \}/, "a tab folded under a collapsed section header is not shown, so not prefetched (the follow-up after PR 1661, low 3)");
+  // THE REVEAL IS DETECTED WHERE THE SHOWN SET IS COMPUTED (PR 1671 round four): renderTabs compares the tabs it shows now (visibleIds
+  // less the plan's folded ids) with the last paint's and re-arms the prefetch when any went hidden to shown, so every bare renderTabs()
+  // is safe by construction (rounds two and three re-armed call sites one by one and missed the kernel's tabOrder frame, the media flip
+  // and the renamed frame). The executed roads are strip-reveal-rearm.test.ts; here the wiring: the detector sits between the plan and
+  // the signature skip, once, and the listeners and view writers repaint bare.
+  const rt = RENDER.slice(RENDER.indexOf("\nfunction renderTabs() {"), RENDER.indexOf("\nfunction stripAftermath("));
+  const det = rt.indexOf("const shownNow = visibleIds.filter((id) => !plan.folded.has(id));");
+  assert.ok(det > 0, "renderTabs computes the shown set from visibleIds and the plan's folded ids");
+  assert.match(rt, /const shownNow = visibleIds\.filter\(\(id\) => !plan\.folded\.has\(id\)\);\s*\n\s*if \(revealedTabs\(lastShownTabIds, shownNow\)\.length\) schedulePrebuild\(\);\s*\n\s*lastShownTabIds = new Set\(shownNow\);/,
+    "…checks it against the last paint's (revealedTabs, tab-groups.ts) and re-arms on any reveal, then remembers it");
+  assert.ok(rt.indexOf("const plan = planStrip(") < det && det < rt.indexOf("const stripSig = JSON.stringify(["), "after the plan, before the signature skip");
+  assert.equal((rt.match(/schedulePrebuild\(\)/g) || []).length, 1, "one arm inside renderTabs: the detector's");
+  assert.match(RENDER, /^let lastShownTabIds: Set<string> \| null = null;$/m, "null until the first paint, which arms once");
+  assert.equal(RENDER.includes("renderTabsAndPrefetch"), false, "the round-three helper is gone: no caller needs to know");
+  assert.match(RENDER, /^window\.addEventListener\(TABGROUPS_EVENT, \(\) => renderTabs\(\)\);$/m, "a section opened repaints bare (this window)");
+  assert.match(RENDER, /^window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === TABGROUPS_KEY\) renderTabs\(\); \}\);$/m, "…and from a sibling document");
+  assert.match(RENDER, /^window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === "romp-chat-cols"\) renderTabs\(\); \}\);$/m, "…and another column's holds");
+  assert.match(RENDER, /^const onOnlyHashChange = \(\): void => renderTabs\(\);/m, "…and the #only= filter's change");
+  assert.match(RENDER, /^try \{ window\.matchMedia\(PHONE_LAYOUT_MEDIA\)\.addEventListener\("change", \(\) => renderTabs\(\)\); \} catch \{/m, "…and the phone/desktop flip");
+  assert.match(RENDER, /captureViews\(m\.views \|\| null\);\s*\n\s*applyTabOrder\(m\.order, m\.tabs,/, "the kernel's tabOrder frame adopts the blob, then repaints through applyTabOrder…");
+  const ato = RENDER.slice(RENDER.indexOf("\nfunction applyTabOrder("), RENDER.indexOf("\nfunction syncTabKeysWithStrip("));
+  assert.match(ato, /\n  renderTabs\(\);\s*\n\s*syncTabKeysWithStrip\(\);\s*\n\}/, "…whose bare renderTabs() is the reveal's repaint for a peer's view or lens change");
 });

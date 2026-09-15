@@ -6295,14 +6295,33 @@ def _pending_tag_path():
 
 
 def _pending_tag_rows():
-    """The journal, cached after one disk read (writes keep the cache in sync under the lock)."""
+    """The journal, cached after one disk read (writes keep the cache in sync under the lock). That one
+    read is the strict one (_read_state_json, expect=list): a MISSING file is the empty journal; torn or
+    non-JSON bytes, or JSON of the wrong shape, are quarantined aside (a move, never a delete) and the
+    journal starts over empty after that stated event; a file that EXISTS but cannot be read (EIO,
+    EACCES) RAISES _StateUnreadable, loud once per episode (_note_state_fault), and caches NOTHING, so
+    the next call reads the disk again. Callers stand down for the one call: the queue refuses (nothing
+    is promised over a journal it could not read), the reattach apply waits for the next pass, the
+    display claims no pending badge this build. Until this change every failure of the read was folded
+    to a cached [] for the rest of the process (review find, 2026-09-10): the badge vanished, the
+    reattach apply never fired for any host, and the next queued edit read that [] and published its one
+    row over every earlier journaled intent under a "queued" ack -- the fold-then-overwrite the strict
+    reader was written against for the views store, which never reached this journal's private reader."""
     with _PENDING_TAG_LOCK:
         if _PENDING_TAG_CACHE["rows"] is None:
+            p = _pending_tag_path()
             try:
-                d = json.loads(_pending_tag_path().read_text())
-                _PENDING_TAG_CACHE["rows"] = [r for r in d if isinstance(r, dict)] if isinstance(d, list) else []
-            except Exception:
-                _PENDING_TAG_CACHE["rows"] = []
+                d = _read_state_json(p, expect=list)
+            except _StateUnreadable as e:
+                _note_state_fault(e)                 # said once per episode; the cache stays None
+                raise
+            # a clean read ends the episode (a re-fault speaks again) and, when one WAS open, marks the views
+            # dirty: the rows ride the views payload (_views_client) on the cached feed and timeline frames,
+            # and the fault's START moved their signature by itself (the once-per-episode notice) while its
+            # end moved nothing, so the frames built with no badge stood until the clock bucket. The heal is
+            # the event that rebuilds them (the views store's reader ends its episodes the same way).
+            _views_read_clean(p)
+            _PENDING_TAG_CACHE["rows"] = [r for r in d if isinstance(r, dict)] if d else []
         return list(_PENDING_TAG_CACHE["rows"])
 
 
@@ -6338,7 +6357,13 @@ def _queue_pending_tag_edit(host, body):
         return False
     tid = next((str(t.get("id") or "") for t in (cached.get("tags") or [])
                 if isinstance(t, dict) and _tag_name_basis(t.get("name")) == name), "")
-    rows = _pending_tag_rows()
+    try:
+        rows = _pending_tag_rows()
+    except _StateUnreadable:
+        # the journal exists but could not be read (said once, by the reader): NOT queued, so the
+        # caller's refusal carries no "queued" promise. A read-modify-write over a fold to [] would
+        # publish this one row over every earlier journaled intent.
+        return False
     same = lambda x: x.get("host") == host and _tag_name_basis(x.get("name")) == name   # a journal from before the basis may hold a padded name
     mine = [x for x in rows if same(x)]
     if any(x.get("delete") for x in mine):
@@ -6578,8 +6603,13 @@ def _views_client(v=None):
     # tag federation v2: a queued edit is VISIBLE, never gone-but-not-gone — the matching cached
     # remote entry wears `pending` ("delete"/"rename"/"remove") for the dialog's compact idiom,
     # and the raw rows ride as pendingTagEdits so an intent for a host with no cached tag entry
-    # still surfaces.
-    pend = _pending_tag_rows()
+    # still surfaces. A journal that exists but could not be read (said once, by the reader) is
+    # rendered as no badge this build, unproved and uncached: a raise here would abort every client's
+    # push, and the rows are not gone.
+    try:
+        pend = _pending_tag_rows()
+    except _StateUnreadable:
+        pend = []
     if pend:
         v["pendingTagEdits"] = [{"host": x.get("host") or "", "name": _tag_name_basis(x.get("name")),
                                  "op": _row_op(x)} for x in pend]
@@ -9656,12 +9686,18 @@ def _retry_paused_on():
         return False
 
 
-# How many times this kernel wrote the pause file since boot: the apiHealth frame's `seq`. A press on the
-# bottom bar's detail pause button writes the file, and the frame that follows carries a moved seq even when
-# the cycle's auto-pause re-engaged the same state within the same second, so the shell can tell the frame
-# that answers its press from one that predates it (_LANDING_APIH_JS pendSeq). An event counter, never a
-# clock: two cycles over an unwritten file read the same seq.
+# How many times this kernel wrote the pause file since boot, plus each PRESS the setGlobalRetryPaused door
+# refused because the file could not be read: the apiHealth frame's `seq`. A press on the bottom bar's detail
+# pause button writes the file, and the frame that follows carries a moved seq even when the cycle's
+# auto-pause re-engaged the same state within the same second, so the shell can tell the frame that
+# answers its press from one that predates it (_LANDING_APIH_JS pendSeq); the door moves it for a refused
+# press too, so the button repaints the truth instead of staying acknowledged. A refusal the cycle's engage
+# or lift met moves nothing: no button waits on it, and a frame per pass for the span of a fault would be a
+# clock. An event counter, never a clock: two cycles over an unwritten file read the same seq.
 _RETRY_PAUSE_SEQ = [0]
+
+_retry_pause_read_fault_said = [""]   # the writer's read fault said this episode (its errno text); a clean read or the
+#                                       file's absence ends it, with one line, so a fault that spans cycles is not a line a pass
 
 
 def _set_retry_paused(paused, reason="", bills="", lifted_at=None):
@@ -9693,12 +9729,37 @@ def _set_retry_paused(paused, reason="", bills="", lifted_at=None):
     # stamps whole seconds) and waits for that session's next attempt, since re-engaging over the gesture
     # would be the worse error. `supersedes` is informational (the Log and a hand read of the file): nothing
     # reads it.
+    # Returns whether the file was written. A read-modify-write: the file that EXISTS but could not be read
+    # (EMFILE on a kernel holding many sockets and subprocesses, EIO or EACCES on a state root over a flaky
+    # mount) still holds the memory, so the write is refused and the caller hears False. Folding that fault
+    # to an empty `prev` rewrote the file without it: a lift wrote no liftedAt, the next cycle's spend engage
+    # read the capped session's standing record as unruled and put the pause back (the flap the memory exists
+    # to stop), and the user's Resume during a spend pause read as ignored. Only a MISSING file is "nothing to
+    # carry" (a first write); unparseable bytes carry nothing either, and the write is their repair. The
+    # refusal itself changes nothing a client sees: no seq, no dirty mark, no wake. The engage and lift try
+    # again every pass for as long as their evidence stands, and the readers fold the same fault to unpaused,
+    # so a refusal that published would be a full view rebuild and a frame to every shell per pass for the
+    # span of the fault (a clock); the one caller with a pressed button to release, the setGlobalRetryPaused
+    # door, moves the seq itself. The stderr line is once per fault episode (keyed by its errno text), and
+    # the clean read that ends the episode says so once.
+    p = jd.STATE / "retry-paused.json"
     try:
-        prev = json.loads((jd.STATE / "retry-paused.json").read_text())
+        prev = json.loads(p.read_text())
         if not isinstance(prev, dict):
             prev = {}
+    except FileNotFoundError:
+        prev = {}
+    except OSError as e:
+        why = _errno_text(e)
+        if _retry_pause_read_fault_said[0] != why:
+            _retry_pause_read_fault_said[0] = why
+            sys.stderr.write("retry-pause: the pause file could not be read (%s); nothing changed\n" % why)
+        return False
     except Exception:
         prev = {}
+    if _retry_pause_read_fault_said[0]:
+        _retry_pause_read_fault_said[0] = ""
+        sys.stderr.write("retry-pause: the pause file reads again; this write lands\n")
     d = {"paused": bool(paused)}
     if paused:
         d["t"] = time.time()
@@ -9713,8 +9774,9 @@ def _set_retry_paused(paused, reason="", bills="", lifted_at=None):
         d["liftedAt"] = prev["liftedAt"]
         d["supersedes"] = prev.get("supersedes", 0)
     _RETRY_PAUSE_SEQ[0] += 1
-    _atomic_write(jd.STATE / "retry-paused.json", json.dumps(d))
+    _atomic_write(p, json.dumps(d))
     _mark_views_dirty()   # the queued bubble renders this hold; every writer publishes the flip (review 2026-09-05)
+    return True
 
 
 def _retry_pause_reason():
@@ -9840,8 +9902,10 @@ def _auto_pause_on_limit():
     except Exception:
         return
     if account and not _retry_paused_on():
-        _set_retry_paused(True, reason="limit")     # latched at the event: the API cell's 'paused, usage limit'
-        #                                               (not re-derived from _retry_resume_at's clock compare)
+        # latched at the event: the API cell's 'paused, usage limit' (not re-derived from _retry_resume_at's clock
+        # compare); a refused write (the pause file could not be read) is the writer's own stderr line, no engage
+        if not _set_retry_paused(True, reason="limit"):
+            return
         sys.stderr.write("retry-pause: auto-engaged — usage limit reached (%s) → auto-retry + judges paused until reset\n"
                          % ",".join(account))
         # no inline push: _set_retry_paused marked the views dirty and woke the pusher, whose next cycle
@@ -9903,7 +9967,8 @@ def _auto_pause_on_spend_limit(now, live_map):
         # while one session streamed past the other's cap)
         live = live_map if isinstance(live_map, dict) else {}
         bills = "login" if _bills_login(live.get(str(capped.get("sid") or ""))) else "key"
-        _set_retry_paused(True, reason="spend", bills=bills)
+        if not _set_retry_paused(True, reason="spend", bills=bills):
+            return                                       # refused (the pause file could not be read): the writer said so
         sys.stderr.write("retry-pause: auto-engaged: monthly spend limit reached (%s billing); auto-retry + judges "
                          "paused until the cap is raised (claude.ai/settings/usage)\n" % bills)
         # no inline push: _set_retry_paused marked the views dirty and woke the pusher, whose next cycle
@@ -10013,8 +10078,11 @@ def _lift_retry_pause(now, why, lifted_at=None):
     flip and the re-arm of the cards the judges gave up on while degraded. No inline push and no wake of its
     own: _set_retry_paused ends in _mark_views_dirty, which wakes the pusher, and its next cycle carries
     globalRetryPaused=false (the caller's docstring). `lifted_at` is the spend rule's evidence time, recorded
-    as the file's liftedAt (_set_retry_paused); the other rules pass none."""
-    _set_retry_paused(False, lifted_at=lifted_at)
+    as the file's liftedAt (_set_retry_paused); the other rules pass none. A refused write (the pause file
+    could not be read: the writer's own stderr line) is no lift: nothing is announced and nothing re-armed,
+    and the next cycle's resume check reads the same evidence again."""
+    if not _set_retry_paused(False, lifted_at=lifted_at):
+        return
     sys.stderr.write("retry-pause: auto-cleared (%s): judges + auto-retry resume\n" % why)
     try:                                                 # recovery edge → re-arm cards the judges gave up on
         rearmed = jd.rearm_failed_summaries(now)         # while degraded, so their summaries/briefs retry now
@@ -25518,6 +25586,11 @@ def _tunnel_supervisor():
                     try:
                         if any(x.get("host") == r.get("host") for x in _pending_tag_rows()):
                             _apply_pending_tag_edits(r)
+                    except _StateUnreadable:
+                        # the journal could not be read (said once, by the reader): every row waits for
+                        # the next pass, which reads the disk again. Not a dial record: a disk that stays
+                        # bad would write one per host per pass and rotate the dial history away.
+                        pass
                     except Exception:
                         _tunnel_log(r.get("host") or "?", "pending-tag-edits",
                                     note="apply pass raised: %s" % traceback.format_exc(limit=3))
@@ -52690,7 +52763,7 @@ function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
-try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}));}catch(e){}   /* kept for the panes' first dial (the chat diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces */
+try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}));}catch(e){}   /* kept for the chat pane's first dial (the diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces; the path says which document reloaded, so a standalone feed page's reload never steers the next chat document's dial */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
@@ -52787,13 +52860,17 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // (Handler._ws → _resolve_reconnect: the redial diet, for a fresh page that has a hint). false everywhere else: the
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
-// The RESTART DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
-// until shown): a main chat pane whose page was just reloaded by a kernel RESTART dials its first socket as a skeleton client, the later
-// column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab, and the
-// page's idle prefetch fills the rest. The reason is the reload core's durable record (romp:reloadReason; the announce record is consumed
-// before this shim dials), CONSUMED here on the read that acts on it, as the announce record is by announce() (round two, medium 1: a
-// plain reload two seconds after a restart reload dialed the diet on the same record); a build reload, a column, a fresh open and every
-// redial dial as before. Emitted for the chat app alone (round two, medium 2): every other pane's shim carries the false alone.
+// The RELOAD DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
+// until shown; and restarts are invisible, so the one reload the reload core still fires is a changed build, a fresh page on a kernel that
+// just restarted): a main chat pane whose page the reload core just reloaded, for ANY reason, dials its first socket as a skeleton client,
+// the later column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab,
+// and the page's idle prefetch fills the rest. The signal is the reload core's durable record (romp:reloadReason, written in fire() with the
+// reason and the path of the document that reloaded; the announce record is consumed before this shim dials). The chat shim alone reads
+// it (the slot below is emitted for the chat app; every other pane's shim carries the false), REMOVES it before parsing it (a malformed or
+// scalar record is consumed and diets nothing, as announce() consumes its record), and acts on it only when it is an object with the fields
+// and its path names the shell or a chat document, so a standalone feed or timeline page's own reload steers no later chat dial. A column
+// and a skeleton view leave the record alone (their dials are the shell's statement); a redial carries the diet through reconnect=1; a
+// fresh open with no record dials as before.
 %s
 // This PAGE's instance id — minted once per load, never stored: every connect of this page carries it, so the
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
@@ -52953,7 +53030,7 @@ function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // on
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
-ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after a kernel restart's reload (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
+ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after any reload the reload core fired (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
@@ -53146,10 +53223,17 @@ returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial s
 
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
-# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet only when it named a kernel restart. A
+# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet for any reload the core fired when the
+# record is an object with the fields whose path names the shell or a chat document (the user's ruling: restarts are invisible, so the
+# one reload left is a changed build, a fresh page on a kernel that just restarted; a scalar or fieldless record diets nothing). A
 # column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
-_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||\"null\");"
-                    "if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}")
+_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');"
+                    "rr=raw?JSON.parse(raw):null;}catch(e){}"
+                    "RESTART_DIET=!!(rr&&typeof rr==='object'&&typeof rr.reason==='string'&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}")
+# The record is REMOVED before it is parsed (a malformed one is consumed too, as announce() does), and any reload the reload core fired
+# dials the diet (the user's ruling of 2026-09-14: restarts invisible, so the one reload left is a changed build, a fresh page on a kernel
+# that just restarted): the record's presence decides, not its reason. A record written by a standalone feed or timeline page's own
+# reload names that path and steers nothing (path === undefined only for a record an older core wrote).
 
 
 def _shim_core_js(app="test", v=0):
@@ -56460,6 +56544,9 @@ else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotify
 else if(m&&m.type==='notifyTurns'&&window.__rompNotifyTurnsPaint)window.__rompNotifyTurnsPaint(!!m.on);
 // the bottom bar's API health cell: one frame, painted by _LANDING_APIH_JS (sent on change + on ready)
 else if(m&&m.type==='apiHealth'&&window.__rompApiHealth)window.__rompApiHealth(m);
+// a refusal answering a press this socket carried (the detail's pause button over a pause file the kernel could not
+// read): the notification center, the way the chat page toasts its own; the answering frame's moved seq repaints the button
+else if(m&&m.type==='warn'&&typeof m.text==='string'&&m.text&&window.__rompNotify)window.__rompNotify('warn',m.text);
 // the boot check found a newer romp release — raise the update banner on every open dashboard
 else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'',m.drift||'',m.boot||'',m.state||'');};
 // the API health detail's pause acknowledgment rides this socket: a press it carried cannot be answered now (the
@@ -61629,8 +61716,12 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:                                   # a string here paused retries across EVERY session
                 _refuse_ws_flag(client, msg["type"], ferr, "value", msg.get("value"))
                 return
-            _set_retry_paused(paused)
-            _mark_views_dirty()
+            if not _set_retry_paused(paused):          # the pause file could not be read: nothing was written. The press
+                _RETRY_PAUSE_SEQ[0] += 1               # hears it: the seq moves here, for the press alone (the shell clears
+                _reply(client, {"type": "warn",        # the pressed button's acknowledgment on a moved seq and repaints the
+                                "text": "Couldn't change the pause: its file could not be read; nothing was changed "
+                                        "\u2014 retry"})   # truth), and a warn frame on its socket (the shell routes it to the
+            _mark_views_dirty()                        # notification center, the chat page to its toast)
             return
         if msg and msg.get("type") == "ready":
             client["proto"] = 2 if msg.get("proto") == 2 else 1   # the chat wire it speaks (T323 stage 4b): 2 = uuid frames; absent = index frames

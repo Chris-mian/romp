@@ -270,6 +270,37 @@ class PushIsChunkedUnderTheKernelsCap(unittest.TestCase):
         self.assertLess(len(note), 600)
         self.assertTrue(any("m-big" in l and "bounced to its sender" in l for l in self.logged), self.logged)
 
+    def test_the_bounce_retracts_the_drains_read_stamp_so_the_senders_receipt_reads_bounced_not_read(self):
+        # The live push drains the box as a CLAIM, and read_box(consume=True) stamps an `exec` row ("the
+        # recipient read it") for every message it claims. The local-sender arm of _bounce_oversize wrote only
+        # its `bounced` row, so the ledger read exec + bounced, and format_receipts tests exec first: the
+        # sender's check_sent said "read HH:MM" for a message that was never handed over and was returned
+        # (while the dashboard's card, which ranks bounced first, said Bounced). The real deliver, drain,
+        # ledger and receipts here; only the kernel leg is stubbed. Private sids: the ledger is module-wide.
+        rcp, snd = "55555555-6666-7777-8888-999999999999", "66666666-7777-8888-9999-aaaaaaaaaaaa"
+        pm._drain, pm.deliver, pm.restore, pm._tl_append = self.saved[0], self.saved[2], self.saved[3], self.saved[7]
+        pm._name_for_id = lambda sid, rows=None: "api" if sid == rcp else None
+        saved_agents = pm.local_agents
+        pm.local_agents = lambda threads=False: []           # the receipts' name lookup never reaches a kernel
+        try:
+            mid = pm.deliver(rcp, "web", snd, "x" * 1_000_000, kind="coordinate")
+            pm._kernel_post = self._inject_all
+            pm._push(rcp, {"id": rcp, "state": "idle"})
+            self.assertEqual(self.posted, [], "the oversize message is never posted")
+            self.assertFalse((pm.MAILROOT / rcp / "new" / mid).exists(), "it left the recipient's box")
+            self.assertEqual(len(pm.read_box(snd, consume=False)), 1, "its sender holds the bounce note")
+            recs = pm._sent_receipts(snd)
+            text = pm.format_receipts(recs)
+            self.assertNotIn("read ", text, "check_sent must not say a returned message was read")
+            self.assertIn("undeliverable, returned to you", text)
+            self.assertEqual([(r["id"], r["exec"], bool(r["bounced"])) for r in recs], [(mid, None, True)])
+            rows = [json.loads(l) for l in (pm.TLDIR / "messages.jsonl").read_text().splitlines()]
+            self.assertEqual([r["ev"] for r in rows if r.get("id") == mid], ["sent", "exec", "unexec", "bounced"],
+                             "the drain's claim stamped exec; the bounce retracts it before its terminal row")
+        finally:
+            pm.local_agents = saved_agents
+            pm.STREAKS.pop(rcp, None)
+
     def test_an_oversize_message_with_no_local_sender_waits_for_the_drain_and_is_named_once(self):
         relayed = self._msg("m-far", 1_000_000, from_host="TESTHOST")   # acked to its host at relay time
         pm._drain = lambda sid: {"messages": [relayed]}
