@@ -8,7 +8,7 @@
 // The first test states the delegate's contract over the markup the sanitizer produces; the second runs the
 // chat's own pipeline (marked + sanitizeMd, as md() runs them) on a message with a `#` link and clicks it; the
 // third posts a session frame so render.ts's own md() renders the reply, and clicks there. Skips with a stated
-// reason when no playwright browser is installed (CI installs none; tests/test_spend_modal_headless.py is the
+// reason when no playwright browser is installed (CI installs none; tests/test_spend_modal_headless_served.py is the
 // precedent, skipping without a playwright install). Synthetic values only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";

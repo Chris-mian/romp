@@ -22,7 +22,7 @@ opener posted openSettings into #f-feed and the shell lifted that iframe). The k
 
 The opener's arms run under node in tests/test_pane_state_broadcast.py RelayArms; the served-page and
 browser guards (the gear opening in the settings iframe, the feed frame without one) are
-tests/test_log_opener_moved.py ServedOpener and tests/test_gear_select_matrix.py ServedMatrix.
+tests/test_log_opener_moved_served.py ServedOpener and tests/test_gear_select_matrix_served.py ServedMatrix.
 Synthetic fixtures only; nothing here mints a goal.
 """
 import os

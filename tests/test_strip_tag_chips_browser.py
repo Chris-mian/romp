@@ -39,7 +39,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
 
 NAMES = ["web", "api", "deploy", "tests", "docs", "auth"]
 TAGS = ["infra", "web", "api", "docs", "tests", "auth", "deploy", "data", "ops", "ui", "db", "cache", "queue", "mail", "search",

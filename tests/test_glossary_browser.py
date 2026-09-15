@@ -27,7 +27,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402
+import test_ship_reship_served as _lab   # noqa: E402
 
 SID = "11111111-2222-3333-4444-555555555555"
 FIX = json.loads(Path(HERE, "fixtures", "glossary_grammar.json").read_text())

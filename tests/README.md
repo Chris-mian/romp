@@ -209,7 +209,7 @@ the patterns, the scrub's cost and the hook end to end.
 relaunch reads from carries a shorter list.** Every module that boots a hermetic
 kernel (`bin/romp-kernel` under a lab's own `XDG_STATE_HOME`,
 `CLAUDE_CONFIG_DIR` and `ROMP_DIST_DIR`, at a free port with a synthetic serve
-token) builds its environment with `kernel_env` in `tests/test_ship_reship.py`,
+token) builds its environment with `kernel_env` in `tests/test_ship_reship_served.py`,
 never from a copy of the runner's. A run from a shell on a machine running romp
 carries the live kernel's exports, and a lab kernel that inherited them exited
 when the live manager restarted (`ROMP_MANAGER_PID`, the kernel's parent-death
@@ -223,7 +223,7 @@ the suite sets for the run's children (`TMPDIR` the tests package's since
 lab's roots and seams, any seam the lab adds by keyword, and a postal bus of its
 own that is never started (`ROMP_POSTAL_PORT` at a free port,
 `ROMP_POSTAL_PEERS=0`, `ROMP_POSTAL_CLIENT_ONLY=1`). The served labs whose
-driver kills and relaunches the kernel (`test_ship_reship.py`,
+driver kills and relaunches the kernel (`test_ship_reship_served.py`,
 `test_dashboard_reload_served.py`) write the relaunch's command, environment and
 log to the lab's `cfg.json` through `relaunch_cfg`, and the environment in that
 file is narrowed once more by `relaunch_env`: the `ROMP_*` and `XDG_*` names,
@@ -234,7 +234,7 @@ which the tests package (conftest until 2026-09-14) exports for the run's own te
 its kernel's environment reaches the file; each served lab plants a probe name
 in that environment and checks the written file for its absence. To give a lab
 kernel another name of the runner's, add the name to the list with its reason
-beside it. `LabKernelEnv` and `RelaunchEnv` in `tests/test_ship_reship.py` pin
+beside it. `LabKernelEnv` and `RelaunchEnv` in `tests/test_ship_reship_served.py` pin
 both functions; the served legs check the file itself.
 
 `fixtures/` must stay SYNTHETIC: invented prompts, placeholder UUIDs, hostname

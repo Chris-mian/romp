@@ -8,7 +8,7 @@
 // refusals that report a state (the staging refusals, the branch jump's, the send on a disconnected host, the send into
 // a tab whose create failed, the queued edit's send on a session that cannot be reached) is lifted out of it and
 // executed over a fake DOM the way chat-exact-tail-exec.test.ts lifts chatTail. The served scenario (a nack on the last
-// ship across a kernel restart; the fresh page says it again, once) is tests/test_ship_reship.py
+// ship across a kernel restart; the fresh page says it again, once) is tests/test_ship_reship_served.py
 // NackNoticeSurvivesReload. Synthetic only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -55,7 +55,7 @@ test("the reading asks for the toasts without the ephemeral mark: a refusal abou
   // a session that cannot be reached; the staging refusals; the branch jump to a session not on this dashboard) is
   // about something the fresh page shows for itself or no longer has; render.ts marks those toasts where they are
   // raised (executed below) and the selector skips the mark. The mark's effect on a real DOM is executed by
-  // tests/test_ship_reship.py NackNoticeSurvivesReload.
+  // tests/test_ship_reship_served.py NackNoticeSurvivesReload.
   const asked: string[] = [];
   assert.deepEqual(liveNotices({ querySelectorAll: (sel: string) => { asked.push(sel); return [{ textContent: "kept" }]; } }), ["kept"]);
   assert.deepEqual(asked, [SEL]);

@@ -27,7 +27,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab                                  # noqa: E402  the lab kernel's environment
+import test_ship_reship_served as _lab                                  # noqa: E402  the lab kernel's environment
 from test_fold_checkpoints_served import ChatClient, _free_port   # noqa: E402  the websocket client
 from test_asm_checkpoint_served import transcript                # noqa: E402  the compacting synthetic transcript
 

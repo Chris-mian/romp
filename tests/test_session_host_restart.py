@@ -35,7 +35,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (named runner variables, never the whole environment)
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment (named runner variables, never the whole environment)
 from dist_copy import copy_dist   # noqa: E402
 EXT_DIST = os.path.join(ROOT, "vscode-extension", "dist")
 FAKE = os.path.join(HERE, "fixtures", "fake_claude.py")
