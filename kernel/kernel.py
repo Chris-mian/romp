@@ -8316,20 +8316,24 @@ def _whole_chat_frames_on():
     if isinstance(v, bool):
         return v
     if v is not None:                                    # a hand-edited store (the string "false", a number): not a proved answer, so
-        _note_whole_chat_frames_read_fault(v)            #  OFF, said once per value (the 1704 read, low 2); the next write repairs it
-    return False
+        _note_whole_chat_frames_read_fault(v)            #  OFF, said once per distinct value (the 1704 read, low 2); the next write repairs
+    return False                                         #  it. A JSON null for `enabled` reads as absent: OFF, silently (d.get cannot tell
+    #                                                      null from a missing key; the docstring says so, 1721 round two, low 3)
 
 
-_wcf_read_fault_said = {}
+_wcf_read_fault_said = set()                             # the distinct non-boolean values already said (bounded: cleared past 64)
 
 
 def _note_whole_chat_frames_read_fault(v):
-    """The switch's unproved read, loud once per value: a store whose `enabled` is not a boolean reads OFF (the default), and
-    the stderr line says which value it refused, so a hand edit that meant ON is found rather than silently ignored."""
+    """The switch's unproved read, loud once per DISTINCT value (a small set, cleared past 64 entries): a store whose `enabled` is
+    not a boolean reads OFF (the default), and the stderr line says which value it refused, so a hand edit that meant ON is
+    found rather than silently ignored. Keyed by value, not by the last value seen, so alternating bad values do not repeat."""
     text = "the whole chat frames switch file holds %r for enabled, not a boolean; the switch reads off until a real true or false is written" % (v,)
-    if _wcf_read_fault_said.get("last") == text:
+    if text in _wcf_read_fault_said:
         return
-    _wcf_read_fault_said["last"] = text
+    if len(_wcf_read_fault_said) >= 64:
+        _wcf_read_fault_said.clear()
+    _wcf_read_fault_said.add(text)
     sys.stderr.write("romp-kernel: %s\n" % text)
 
 

@@ -879,17 +879,30 @@ class Proto2Wire(Harness):
         switch does; the next write repairs it."""
         store = km.jd.STATE / km.WHOLE_CHAT_FRAMES_FILE
         self.addCleanup(lambda: store.unlink(missing_ok=True))
-        km._wcf_read_fault_said.clear()
+        getattr(km, "_wcf_read_fault_said", set()).clear()               # reached with a default: the base red is the read below, not a name
         err = io.StringIO()
         store.write_text(json.dumps({"enabled": "false", "gt": 1}))
         with contextlib.redirect_stderr(err):
-            self.assertFalse(km._whole_chat_frames_on(), "the string false is not a proved ON")
+            self.assertFalse(km._whole_chat_frames_on(), "the string false is not a proved ON (the base read it as True)")
             self.assertFalse(km._whole_chat_frames_on())
         self.assertEqual(err.getvalue().count("not a boolean"), 1, "said once per value")
         store.write_text(json.dumps({"enabled": "true", "gt": 2}))
         with contextlib.redirect_stderr(err):
             self.assertFalse(km._whole_chat_frames_on(), "the string true is not a proved ON either")
         self.assertEqual(err.getvalue().count("not a boolean"), 2, "a new value: said again, once")
+        for k, v in enumerate(("yes", 1, 2.5, [True], {"on": True}, "TRUE")):   # six more distinct values: six lines, keyed by value, not by the
+            store.write_text(json.dumps({"enabled": v, "gt": 3 + k}))          #  last value seen (1721 round two, low 3)
+            with contextlib.redirect_stderr(err):
+                self.assertFalse(km._whole_chat_frames_on())
+        self.assertEqual(err.getvalue().count("not a boolean"), 8, "one line per distinct value")
+        store.write_text(json.dumps({"enabled": "false", "gt": 9}))            # a value said before: no new line
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(km._whole_chat_frames_on())
+        self.assertEqual(err.getvalue().count("not a boolean"), 8, "a repeat of an earlier value says nothing")
+        store.write_text(json.dumps({"enabled": None, "gt": 10}))              # a JSON null reads as absent: off, silently (the docstring says so)
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(km._whole_chat_frames_on())
+        self.assertEqual(err.getvalue().count("not a boolean"), 8, "null is absent, not a fault")
         self.assertIsNotNone(km._set_whole_chat_frames(True)); self.assertTrue(km._whole_chat_frames_on(), "a real write repairs it")
 
     def test_the_boot_seed_of_the_whole_chat_frames_switch_runs_after_every_definition_it_reaches_and_seeds_once(self):
@@ -907,6 +920,7 @@ class Proto2Wire(Harness):
         child = subprocess.run([sys.executable, "-c", "\n".join([
             "import os, sys, tempfile, json",
             "root = tempfile.mkdtemp(); os.environ['XDG_STATE_HOME'] = root; os.environ.pop('ROMP_STATE_DIR', None)",
+            "os.makedirs(os.path.join(root, 'romp'), exist_ok=True); open(os.path.join(root, 'romp', 'session-hosts'), 'w').write('off')",   # its own root: hosts off
             "os.environ['ROMP_KERNEL_NO_OPEN'] = '1'; os.environ.setdefault('ROMP_SERVE_TOKEN', 'testtok'); os.environ['ROMP_CHAT_FLOOR0'] = '1'",
             "sys.path.insert(0, %r)" % HERE, "from romp_load import load_source",
             "km = load_source('romp_kernel_seedprobe', %r)" % os.path.join(BIN, "romp-kernel"),

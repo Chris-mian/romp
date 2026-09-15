@@ -1448,10 +1448,12 @@ class LowsOfTheSettledCutReads(Harness):
         outgrows the two-to-three turn lag (27 rewrites over a young session's first 30 settled turns measured), so a session's
         FIRST document waits until its pre-cut part holds _ASM_FIRST_DOC_MIN bytes (an eighth of the fold cap, 1 MB live; the
         suite runs with the floor off); a standing document is never held by the floor."""
-        saved = em._ASM_FIRST_DOC_MIN; self.addCleanup(setattr, em, "_ASM_FIRST_DOC_MIN", saved)
+        saved = getattr(em, "_ASM_FIRST_DOC_MIN", None)              # reached with a default: the base red is the write below, not a name
+        self.addCleanup(lambda: setattr(em, "_ASM_FIRST_DOC_MIN", saved) if saved is not None else delattr(em, "_ASM_FIRST_DOC_MIN"))
         path, recs = self._base("young")
         em._ASM_FIRST_DOC_MIN = 10 ** 9
-        self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"young": 1}, "under the floor: no first document")
+        self.assertFalse(self.doc(path), "under the floor: no first document (the base wrote one)")
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"young": 1}, "under the floor: no first document")
         self.assertIn("young", em._ASM_SKIP_STRUCTURAL, "structural: the memo re-arms as the cut moves")
         em._ASM_FIRST_DOC_MIN = 0
         self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}

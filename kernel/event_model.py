@@ -5973,6 +5973,13 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             files[fsid] = f
         # the pre-cut records: identity, verdict, type, order, time, file, landed
         type_code = {"user": "u", "assistant": "a", "system": "s", "attachment": "t"}
+        if standing is None and not cp.exists() and cut_off_total < _ASM_FIRST_DOC_MIN:
+            return skip("young")                          # the young-session floor: no first document under the floor's bytes; the memo
+            #                                               re-arms as the cut moves with the settled turns, so the first write lands once
+            #                                               the pre-cut part is worth a document (a standing document is never held by it).
+            #                                               Decided HERE, once the files loop has summed the pre-cut bytes and BEFORE the
+            #                                               rows and atom rows are built, so a young session pays the stat and the cut
+            #                                               choice alone at each settle (1721 round two, low 4)
         rows, row_of, files_order = [], {}, {}
         for u, r in ad.by_uuid.items():                   # insertion order = read order
             sq = ad.seq_of.get(u, 0)
@@ -6032,10 +6039,6 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 if "toolUseResult" in a:
                     row["tur"] = a["toolUseResult"]
             pre_atoms.append(row)
-        if standing is None and not cp.exists() and cut_off_total < _ASM_FIRST_DOC_MIN:
-            return skip("young")                          # the young-session floor: no first document under the floor's bytes; the memo
-            #                                               re-arms as the cut moves with the settled turns, so the first write lands once
-            #                                               the pre-cut part is worth a document (a standing document is never held by it)
         # the pre-cut spine, root to cut: the leaf's parent chain as the PARSE resolves it (repeated uuids last-wins, a
         # self-link a root), walked with a visited set that ends at the first revisit exactly as active_path does, so the
         # document's spine is the spine the chat shows. Until 2026-09-14 the walk was hop-bounded and a cycle in the
