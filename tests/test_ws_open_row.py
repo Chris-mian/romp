@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -31,6 +32,11 @@ from romp_load import load_source  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "bin")
+# Hermetic state BEFORE the load: the kernel resolves its state root at import time, and only pytest runs conftest's
+# floor (a bare run would write real state); the isolation pin, tests/test_state_isolation_order.py, holds this order.
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = load_source("romp_kernel_wsopen_row", os.path.join(BIN, "romp-kernel"))
 
