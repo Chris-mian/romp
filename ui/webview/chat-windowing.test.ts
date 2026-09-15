@@ -236,6 +236,11 @@ test("round seven fixes each carry a pin (T386 stage 2): a fault has its own wor
   assert.ok(win.indexOf('landTrail.push("window-stray");') > 0 && win.indexOf('landTrail.push("window-stray");') < win.indexOf("const cancelled = rec.cancelled;"), "…and says so in the trail");
   assert.match(win, /const wasLanding = !cancelled && landingNoticeSid === msg\.id;/, "a cancelled ask's reply leaves the notice to the live ask");
   assert.match(RENDER, /for \(const r of windowAsks\.get\(sid\) \?\? \[\]\) if \(!r\.cancelled && r\.gap && r\.gap\.lo === gap\.lo && r\.gap\.hi === gap\.hi\) return true;/, "gapHasAsk reads the live records");
+  // the redial re-ask (2026-09-15): a gapLoading key parses from the RIGHT (a host-prefixed remote sid stays whole, so the in-flight
+  // guard matches a federated gap), and a redial re-sends every outstanding loadTurns, event-keyed, no timer
+  assert.match(RENDER, /const parts = k\.split\(":"\); const hi = Number\(parts\.pop\(\)\), lo = Number\(parts\.pop\(\)\);\s*\n\s*return \{ sid: parts\.join\(":"\), lo, hi \};/, "a gapLoading key parses from the right: a remote sid keeps its host prefix");
+  assert.match(RENDER, /reaskOutstandingGaps\(Array\.from\(gapLoading\), h\);/, "a relay reopen (romp:hostRelayUp) re-sends that host's outstanding loadTurns");
+  assert.match(RENDER, /window\.addEventListener\("romp:wsup", \(\) => \{ const keys = gapReaskOnWsup; gapReaskOnWsup = \[\]; reaskOutstandingGaps\(keys, ""\); \}\);/, "the local socket reopen (romp:wsup) replays the local gaps outstanding at the drop");
   assert.doesNotMatch(RENDER, /\b(cancelledLandings|preJumpFrom|pendingWindowNav)\b|const landingGaps\b/, "no per-session slot for a landing's state remains");
   // low 7: the older edge's evidence writers lost their reader with the pill's latch and are off the scroll hot path
   assert.doesNotMatch(RENDER, /olderEvidence|noteOlderEvidence|NAV_KEYS/, "no dead evidence writer on wheel, touch, key or drag");

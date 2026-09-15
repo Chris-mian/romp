@@ -16120,6 +16120,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   // make their one attempt here as well
   refreshSettledPreviews();
   reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
+  reaskOutstandingGaps(Array.from(gapLoading), h);   // …and re-send every loadTurns still outstanding for that host: a relay drop fires no romp:wsdown, so gapLoading kept its keys and, with the guard now correct, the gap would stay suppressed until a reload (2026-09-15)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
   // one with no active tab at all. Its pusher builds and flushes a client's active tab first; every tab is
@@ -17354,6 +17355,7 @@ function onWireDown(): void {
   // notice stands forever. gapLoading and its glyphs, the landing's held gap, the older-ask set, and the notice all go; a landing in flight
   // is told once the jump was lost. A gap met again on the healed socket asks anew.
   const liveLanding = !!landingNoticeSid || Array.from(windowAsks.values()).some((a) => a.some((r) => !r.cancelled && !!r.gap));   // a jump the reader already cancelled owes no toast (round four, low 1)
+  gapReaskOnWsup = Array.from(gapLoading).filter((k) => hostOf(parseGapKey(k).sid) === "");   // snapshot the LOCAL outstanding gaps for the redial (romp:wsup) to re-ask; a relay's keys are kept (no wsdown) and re-asked on romp:hostRelayUp
   gapLoading.clear(); windowAsks.clear(); loadingOlder.clear();   // every window ask's record too (round eight): its reply comes on no socket, and a cancelled one left standing would eat the next landing on its anchor
   document.querySelectorAll("#content .tx-gap-loading").forEach((g) => g.classList.remove("tx-gap-loading"));
   hideLandingNotice();
@@ -17489,14 +17491,39 @@ function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]
 }
 const gapLoading = new Set<string>();                                        // "sid:lo:hi" of the page asks in flight
 const gapKey = (sid: string, lo: number, hi: number): string => sid + ":" + lo + ":" + hi;
+// lo/hi are the last two colon fields; a REMOTE sid carries a host prefix ("HOST:uuid"), so the sid is everything
+// before them, parse from the RIGHT, never k.split(":")[0], which for a federated key named only the host and left
+// the in-flight guard unable to match a remote session (it re-asked the gap on every observer fire).
+function parseGapKey(k: string): { sid: string; lo: number; hi: number } {
+  const parts = k.split(":"); const hi = Number(parts.pop()), lo = Number(parts.pop());
+  return { sid: parts.join(":"), lo, hi };
+}
 function gapHasAsk(sid: string, gap: { lo: number; hi: number }): boolean {
   for (const r of windowAsks.get(sid) ?? []) if (!r.cancelled && r.gap && r.gap.lo === gap.lo && r.gap.hi === gap.hi) return true;   // a live landing's window on the wire for this gap (the pre-jump; per ask, round eight)
   for (const k of gapLoading) {   // a page ask whose span lies inside the gap
-    const [ksid, a, b] = k.split(":");
-    if (ksid === sid && Number(a) >= gap.lo && Number(b) <= gap.hi) return true;
+    const p = parseGapKey(k);
+    if (p.sid === sid && p.lo >= gap.lo && p.hi <= gap.hi) return true;
   }
   return false;
 }
+// The redial re-ask (2026-09-15): a socket that dropped WITH a loadTurns outstanding never gets that page's reply,
+// and with the in-flight guard now correct for a remote sid the gap stays suppressed until a full reload. So on a
+// REDIAL the page re-sends every loadTurns still outstanding, keyed on the event (romp:hostRelayUp for a relay,
+// romp:wsup for the local socket), never a timer. A relay drop fires no romp:wsdown, so gapLoading still holds the
+// host's keys and they are re-sent from it; a local drop's onWireDown cleared them, so it snapshots the LOCAL keys
+// into gapReaskOnWsup for the wsup listener to replay.
+let gapReaskOnWsup: string[] = [];
+function reaskOutstandingGaps(keys: Iterable<string>, host: string | null): void {
+  for (const k of keys) {
+    const { sid, lo, hi } = parseGapKey(k);
+    if (host !== null && hostOf(sid) !== host) continue;
+    const s = sessions.get(sid);
+    if (!s || s.proto !== 2 || !Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+    gapLoading.add(k);   // still in flight after the re-send; the reply (chatTurns) clears it
+    vscodeApi?.postMessage({ type: "loadTurns", id: sid, lo, hi });
+  }
+}
+window.addEventListener("romp:wsup", () => { const keys = gapReaskOnWsup; gapReaskOnWsup = []; reaskOutstandingGaps(keys, ""); });   // the local socket redialed: replay the local gaps outstanding at the drop
 /** The romp loading glyph at a size read at a glance (the swirl as the o of the wordmark, the three accent dots): the mark of a gap
  *  whose page is on the wire; never the small pill. */
 function gapGlyph(): HTMLElement {
