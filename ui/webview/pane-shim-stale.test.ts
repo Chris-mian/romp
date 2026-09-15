@@ -423,3 +423,34 @@ test("only the chat pane's reconnect arms the reload core's fresh hold, stamped,
     assert.equal(g.win.__rompFreshPending, undefined, app + ": a pane that is not the chat pane never arms the hold");
   }
 });
+
+// The sends hold: messages queued for a socket that has not come back hold the reload core's reload (their loss is the
+// reload's cost). Unbounded, a dead socket kept a page on an old build forever after a deploy (2026-09-14); now the hold
+// stands a minute, like the fresh hold, then the reload goes.
+test("queued messages hold the reload for a minute, then the hold ends; a drained queue holds nothing", () => {
+  const h = new Harness(shimJs("chat"));
+  h.ws.open(); h.bundleReady();
+  assert.equal(h.win.__rompPaneBusy(), "", "nothing queued: no hold");
+  h.ws.close();
+  h.win.__rompLocalSend({ type: "activeTab", id: "t1" });          // queued: the socket is down
+  assert.equal(h.win.__rompPaneBusy(), "sends", "a queued message holds");
+  h.now += 59_000;
+  assert.equal(h.win.__rompPaneBusy(), "sends", "inside the bound it still holds");
+  h.now += 2_000;
+  assert.equal(h.win.__rompPaneBusy(), "", "past the bound the hold ends, the reload may go");
+  h.runTimers(); h.ws.open();                                       // the redial drains the queue
+  assert.equal(h.win.__rompPaneBusy(), "", "drained: no hold, and the stamp is cleared");
+  h.ws.close(); h.win.__rompLocalSend({ type: "activeTab", id: "t2" });
+  assert.equal(h.win.__rompPaneBusy(), "sends", "a new queue starts a new minute");
+});
+
+// The reload core's breadcrumb door: a hold that has stood for the bound is filed by the shell through a pane's shim, which
+// sends it up its own socket as a clientDiag row of surface reload-core (the core itself names no send route).
+test("the diagnostics door sends a reload-core breadcrumb up this pane's socket", () => {
+  const h = new Harness(shimJs("chat"));
+  h.ws.open(); h.bundleReady();
+  h.win.__rompDiag("held", { reason: "build", hold: "typing", ageMs: 60000 });
+  const rows = h.sent.filter((m) => m.type === "clientDiag" && m.surface === "reload-core");
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0], { type: "clientDiag", surface: "reload-core", what: "held", data: { reason: "build", hold: "typing", ageMs: 60000 } });
+});

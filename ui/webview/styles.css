@@ -3496,6 +3496,9 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
   animation: fl-prov-spin 2.4s linear infinite;
 }
 @keyframes fl-prov-spin { to { transform: rotate(-360deg); } }
+/* a PROVISIONAL session row (plans/outline-pane-provisional-row.md): the cold-tab gate skipped its tab, its goals come from the store, its
+   jumps wait for the build; the provisional cards' dashed underline marks the name, lightly */
+.fl-prov-sess .fl-name { border-bottom: 1px dashed rgba(255, 255, 255, 0.25); }
 @media (prefers-reduced-motion: reduce) { .fl-prov-swirl { animation: none; } }
 
 /* ── the romp loader anatomy (.rl-*) — swirl spinning as the wordmark's "o" + three pulsing accent
