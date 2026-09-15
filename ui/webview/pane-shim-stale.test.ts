@@ -548,3 +548,17 @@ test("a standalone page keeps the loss line at the reload for its next life on t
   const third = new Harness(shimJs("chat"), { standalone: true, session, pathname: "/chat" });
   assert.equal(third.bars.length, 0, "a later load says nothing");
 });
+
+// The 1715 lows, low 2: a kept record that parses to something other than a record (null, a number, an empty string, false)
+// used to stay in the session store forever, since only a parse failure was consumed. Anything but a record is consumed.
+test("a standalone page consumes a kept loss record that is not a record, and shows nothing", () => {
+  for (const junk of ["null", "0", '""', "false", "not json"]) {
+    const session = new Map<string, string>([["romp:sendsDropped", junk]]);
+    const h = new Harness(shimJs("chat"), { standalone: true, session, pathname: "/chat" });
+    assert.equal(h.bars.length, 0, junk + ": nothing to show");
+    assert.equal(session.has("romp:sendsDropped"), false, junk + ": consumed");
+  }
+  const session = new Map<string, string>([["romp:sendsDropped", JSON.stringify({ text: "kept for another path", path: "/feed" })]]);
+  const h = new Harness(shimJs("chat"), { standalone: true, session, pathname: "/chat" });
+  assert.equal(h.bars.length, 0); assert.equal(session.has("romp:sendsDropped"), true, "a record for another path is kept for it");
+});

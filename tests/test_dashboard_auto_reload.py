@@ -390,6 +390,49 @@ out({ delays: delays, timers: TIMERS.length, after: state() });""")
         self.assertLessEqual(s["timers"], 8, "one timer per walk, never a storm: %r" % s["timers"])
         self.assertEqual(s["after"]["reloads"], 0, "the draft still holds")
 
+    def test_a_pane_detached_between_the_listing_and_the_call_holds_nothing_and_the_walk_goes_on(self):
+        # the 1715 lows, low 1 (pre-existing): the walk's first busyHere call on a pane was outside any try, so a pane whose
+        # window went away between panes() and the call threw out of busy() and tryFire(): no reload and no backstop
+        s = run_core("""
+var R = window.__rompReload;
+IFRAMES = [{ contentWindow: { __rompReload: { busyHere: function () { throw new Error("detached"); } }, __rompFreshPendingSince: 0 } },
+           pane(function () { return 'upload'; }, 0)];
+R.noteDv(8); var held = state();
+IFRAMES[1].contentWindow.__rompReload.busyHere = function () { return ''; }; R.ended(); await tick(); await tick();
+out({ held: held, after: state() });""")
+        self.assertEqual(s["held"]["waiting"], "upload", "the second pane's hold is read past the first pane's throw")
+        self.assertEqual(s["after"]["reloads"], 1, "and the reload goes when it ends")
+
+    def test_the_bells_connection_line_names_the_pane_by_the_page_side_label_helper(self):
+        """The 1715 lows, low 4: the bell's line read PN[m.app] || m.app, the raw key for a page outside the label list; the
+        page's helper mirrors _pane_label (the rail's word, else the key capitalised), run here for every key."""
+        holders = [n for n in dir(km) if isinstance(getattr(km, n, None), str) and "var PN=" in getattr(km, n)]
+        self.assertEqual(len(holders), 1, holders)
+        js = getattr(km, holders[0])
+        self.assertIn("'Kernel connection lost \\u2014 '+paneLabel(m.app)+' pane (reconnecting)'", js, "the line reads the helper")
+        a = js.index("var PN=")
+        fn_start = js.index("function paneLabel(k){", a)
+        slice_js = js[a:js.index("}", js.index("return PN[k]", fn_start)) + 1]
+        node = shutil.which("node")
+        if not node:
+            raise unittest.SkipTest("node not installed")
+        probe = slice_js + """
+var OUT = {}; ["chat", "timeline", "fleet", "feed", "files", "settings", "shell", ""].forEach(function (k) { OUT[k] = paneLabel(k); });
+process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
+"""
+        d = tempfile.mkdtemp(prefix="pane-label-")
+        path = os.path.join(d, "label.js")
+        with open(path, "w") as f:
+            f.write(probe)
+        r = subprocess.run([node, path], capture_output=True, text=True, timeout=60)
+        shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(r.returncode, 0, "node failed:\n" + r.stderr)
+        out = json.loads(next(ln for ln in r.stdout.splitlines() if ln.startswith("RESULT:"))[len("RESULT:"):])
+        self.assertEqual(out, {"chat": "Chat", "timeline": "Sessions", "fleet": "Outline", "feed": "Feed", "files": "Files",
+                               "settings": "Settings", "shell": "Shell", "": ""})
+        for k, v in out.items():
+            self.assertEqual(v, km._pane_label(k) if k else "", k)
+
     def test_the_breadcrumbs_age_counts_from_the_holds_start_not_the_last_backstop(self):
         # the 1698 lows, low 3: a row filed at a later bound (no door at the earlier ones) read 60000 for a three-minute hold
         s = run_core("""

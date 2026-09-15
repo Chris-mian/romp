@@ -53297,7 +53297,8 @@ function freshSeenClear(w){try{if(w.__rompFreshSeenAt)w.__rompFreshSeenAt=0;}cat
    sends in that pane, or the page window's edge would fire the reload over them (the round-four review's high) */
 function otherHold(w){var o='';try{o=w.__rompReload.busyHere(true)||'';}catch(e){}return o==='fresh'?'':o;}
 function busy(){var stamps=[],hold=busyHere();if(hold==='fresh'){stamps.push(freshStamp(window));hold=busyHere(true)||'';if(hold==='fresh')hold='';}else freshSeenClear(window);var ps=panes();
-for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){stamps.push(freshStamp(ps[i]));b=otherHold(ps[i]);}else freshSeenClear(ps[i]);if(b&&!hold)hold=b;}
+for(var i=0;i<ps.length;i++){var b='';try{b=ps[i].__rompReload.busyHere()||'';}catch(e){b='';}   /* a pane detached between panes() and the call holds nothing; the walk goes on (the 1715 lows, low 1) */
+if(b==='fresh'){stamps.push(freshStamp(ps[i]));b=otherHold(ps[i]);}else freshSeenClear(ps[i]);if(b&&!hold)hold=b;}
 lastStamps=stamps;var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
 /* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age since
    the hold BEGAN, not since the last backstop) through a pane's diagnostics door, so a page that never reloads after a deploy is
@@ -53596,8 +53597,9 @@ else sessionStorage.setItem(SENDS_DROPPED_KEY,JSON.stringify({text:t,path:locati
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
 // …and shows the loss line its previous life kept at the reload (__rompShimPersist), on the same path only, once
-try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){var sdd=null;try{sdd=JSON.parse(sdk);}catch(e2){sessionStorage.removeItem(SENDS_DROPPED_KEY);}   // a value that will not parse is consumed, never kept forever
-if(sdd&&(!sdd.path||sdd.path===location.pathname)){sessionStorage.removeItem(SENDS_DROPPED_KEY);if(sdd.text)selfBar(String(sdd.text),"warn");}}}}catch(e){}
+try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){var sdd=null;try{sdd=JSON.parse(sdk);}catch(e2){sdd=null;}
+if(!sdd||typeof sdd!=="object")sessionStorage.removeItem(SENDS_DROPPED_KEY);   // anything but a record (unparseable, null, a number, a string) is consumed, never kept forever (the 1715 lows, low 2)
+else if(!sdd.path||sdd.path===location.pathname){sessionStorage.removeItem(SENDS_DROPPED_KEY);if(sdd.text)selfBar(String(sdd.text),"warn");}}}}catch(e){}
 try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
@@ -54770,13 +54772,14 @@ function shown(k){return document.body.classList.contains('po-'+k);}
 function liveDown(){for(var k in st){if(st[k]==='down'&&shown(k))return true;}for(var c in stc){if(stc[c]==='down'&&shown('chat'))return true;}return false;}
 window.__rompColGone=function(c){delete stc[String(c)];paint();};   // a closed column takes its state with it
 var PN=""" + json.dumps(dict(_PANE_ORDER)) + """;   // key → rail label, from _PANE_ORDER (one list with the rail, the tabs and the drop row); timeline key stays internal — the pane outgrew the name (filter, tags, lane controls — the user 2026-08-24)
+function paneLabel(k){k=String(k||'');return PN[k]||(k?k.charAt(0).toUpperCase()+k.slice(1):k);}   // the page's copy of _pane_label: the rail's word, else the key capitalised for a sentence (Settings), never a raw key (the 1715 lows, low 4)
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;
 var col=(m.app==='chat'&&window.__rompColOf)?window.__rompColOf(e.source):'';   // a split column reports under its own key (the sender frame says which)
 if(col){var sc=(m.state==='up')?'up':'down',pc=stc[col];stc[col]=sc;
 if(sc==='down'&&pc!=='down'&&shown('chat'))window.__rompNotify('conn','Kernel connection lost \\u2014 chat split '+col+' (reconnecting)');else paint();return;}
 var s=(m.state==='up')?'up':'down',prev=st[m.app];st[m.app]=s;
 if(s==='down'&&prev!=='down'&&shown(m.app))
-window.__rompNotify('conn','Kernel connection lost \\u2014 '+(PN[m.app]||m.app)+' pane (reconnecting)');
+window.__rompNotify('conn','Kernel connection lost \\u2014 '+paneLabel(m.app)+' pane (reconnecting)');
 else paint();});
 window.addEventListener('romp-panes',paint);
 // opening marks seen only what the filters let you SEE — a muted kind's entries stay unread, so
