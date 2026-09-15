@@ -61923,8 +61923,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True, "id": fsid, "name": nm}),
                                   "application/json")
             if u.path == "/rename":
-                # Headless rename (`romp rename`, the user 2026-08-23 via the SynthProbe fleet
-                # restructuring): the renameSession WS op as a one-shot POST, the exact sibling of
+                # Headless rename (`romp rename`, the user 2026-08-23, restructuring another project's
+                # sessions): the renameSession WS op as a one-shot POST, the exact sibling of
                 # /fork — which exists precisely because hand-driving a WS op with the dashboard
                 # token is surgery nobody should repeat. Body: {"target": <live name or sid>,
                 # "name": <new-name>}. Sessions are uuid-keyed with the name as a label, so a rename
