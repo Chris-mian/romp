@@ -2471,7 +2471,7 @@ PY
     grep '/notice' "$MOCK_LOG" | grep -q '"producer": *"figure"'
     grep '/notice' "$MOCK_LOG" | grep -q '"id": *"11111111-2222-3333-4444-555555555555"'
     # the token never rides the command line: curl reads it from the piped config
-    ! grep '/notice' "$MOCK_LOG" | grep -q 'testtok'
+    [ "$(grep '/notice' "$MOCK_LOG" | grep -c 'testtok')" -eq 0 ]
     # --session sends a NAME; the key defaults to a slug of the title
     run env ROMP_SID= "$ROMP_SCRIPT" card --title "Sweep done: see the plot" --session web
     [ "$status" -eq 0 ]
