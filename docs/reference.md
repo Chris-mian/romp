@@ -481,78 +481,73 @@ assumes nothing about where it is kept; it only runs the recorded command
 (a secret manager's read command, a private file's `cat`: the choice, and the
 setup that puts the token there, are the user's own, outside romp).
 
-A session billed to a stored login reaches the token the way a key-billed
-session reaches the key today, through Claude Code's `apiKeyHelper` contract:
-its per-session settings layer (the file the SDK hands the CLI as
-`--settings`, the same layer a login pick uses to write `"apiKeyHelper": ""`)
-names `bin/romp-login-helper <id> <state dir>` as the helper, and that script
-runs the record's token command and passes its output into the CLI's pipe, per
-request, refreshed on the CLI's own helper interval. The machine's own login
-tokens are stripped from such a launch, since a bearer in the environment
-outranks the helper. This helper road rests on one fact the user verifies on a
-machine with a login (the devbox has none): a request the CLI authenticates
-with a setup-token through the helper is accepted and billed to the
-subscription, not refused as a bad API key and not billed as API dollars. That
-check runs in a plain terminal outside any recorded session or agent
-transcript: minting a setup-token prints it, and a token in a transcript is a
-compromised token (the gear flow of the second change removes the handling).
-Should the check fail, the fallback is the environment road: the launch runs
-the token command itself and puts the token in that one session's process
-environment as `CLAUDE_CODE_OAUTH_TOKEN`, exactly where the machine's own
-login tokens ride today, readable by processes of the same user as those are.
+A session billed to a stored login gets the token the way the machine's own
+login tokens already reach a launch: at launch, the kernel runs the record's
+token command itself and puts the output into that ONE session's process
+environment as `CLAUDE_CODE_OAUTH_TOKEN`, with the box's `apiKeyHelper`
+disabled through the per-session settings layer (the same layer a login pick
+uses). The machine's own login tokens are not restored into such a launch. The
+token rides that process's environment, readable by processes of the same user
+as the machine's own tokens are, and nothing else: no romp file, no log line,
+no argument list. This environment road replaced the helper road on 2026-09-14,
+after the check the design called for, run by the user on their own machine:
+a setup-token handed to Claude Code through an `apiKeyHelper` hangs the request
+(the CLI never answers and never reports an error), while the same token in
+`CLAUDE_CODE_OAUTH_TOKEN`, under a scratch configuration with no other login to
+fall back on, is accepted and billed to the subscription. A judge call billed
+to a stored login runs the same command the same way for its own child.
 
 The command runs the way the kernel runs the box's own key helper: under a
 whitelisted environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`,
 `LC_ALL`, `TERM`, `CLAUDE_CONFIG_DIR` and the `LC_*` and `XDG_*` names), never
 the kernel's whole environment, whose serve token is full control of every
-session; with its standard input closed; and with its standard error
-discarded, since a secret manager's diagnostics can quote the value it read
-and the CLI's standard error is kept in the session's registry row and the
-kernel log. Anything the tool needs beyond that, the command provides itself:
-on a headless machine a secret manager's CLI needs its own session or service
-credential, so the command sources that from a private file (mode 0600) before
-the read, while a desktop's unlocked app serves as is. The login records themselves are written
+session; with its standard input closed; with its standard error discarded,
+since a secret manager's diagnostics can quote the value it read; and bounded
+at fifteen seconds, the kernel's own helper bound. Anything the tool needs
+beyond that, the command provides itself: on a headless machine a secret
+manager's CLI needs its own session or service credential, so the command
+sources that from a private file (mode 0600) before the read, while a
+desktop's unlocked app serves as is. The login records themselves are written
 at mode 0600 in a 0700 directory.
 
-A failing command is loud, never a quiet fall onto another account. The
-session's first request fails with an auth error the card names by the login's
-label. When the CLI never used the helper and signed in with something else
-(the machine's own login from its credentials file, a managed key, a key found
-in a settings file), the init's own report is the evidence: its source word is
-anything but the helper's. The problem ring names what the CLI used, the tab
-hover reads `picked, but the CLI signed in with another credential`, the
-submenu's sub-line `CLI used another credential`, the record is marked refused
-so every menu greys it with that reason, and the session is reconnected so its
-next launch takes the same fall a dead machine login takes (the API key when a
-helper is configured, else the machine's own login, said in the Billing row as
-a fall). The session is not ended, since that would drop the conversation: it
-keeps running on the fallback side, flagged, and the Billing menu switches it
-elsewhere on a click. The reconnect is asked once per session, and only when
-the machine has a side to fall to (a helper, or a signed-in machine login);
-with neither, a relaunch would carry the same failing helper and land wrong
-again, so the session stays where it landed, flagged. The API-health bucket and
-the spend rows follow the credential that actually answered, never the pick,
-and an API auth error marks a stored login refused only on a session whose
-launch carried that login's helper and whose CLI used it. That evidence is
-per process: a relaunch that no longer carries the helper (the login went
+A failing command is loud, never a quiet fall onto another account. When the
+command fails at launch (a missing tool, a locked store, a bound passed), the
+record is marked refused with the reason, the problem ring says so, and that
+launch takes the same fall a dead machine login takes (the API key when a
+helper is configured, else the machine's own login), said in the Billing row
+as a fall. When the command answered but the CLI signed in with something else
+(a managed key, a key found in a settings file, an `ANTHROPIC_API_KEY`), the
+init's own report is the evidence: its source word names a key, where a bearer
+login reports none. The problem ring names what the CLI used, the tab hover
+reads `picked, but the CLI signed in with another credential`, the submenu's
+sub-line `CLI used another credential`, the record is marked refused so every
+menu leaves it out with that reason, and the session is reconnected so its
+next launch takes the fall. The session is not ended, since that would drop
+the conversation: it keeps running on the fallback side, flagged, and the
+Billing menu switches it elsewhere on a click. The reconnect is asked once per
+session, and only when the machine has a side to fall to (a helper, or a
+signed-in machine login); with neither, a relaunch would land wrong again, so
+the session stays where it landed, flagged. The API-health bucket and the
+spend rows follow the credential that actually answered, never the pick, and
+an API auth error (a revoked or expired token) marks a stored login refused
+only on a session whose launch carried that login's token. That evidence is
+per process: a relaunch that no longer carries the token (the login went
 unavailable, then a model or effort change) starts with none, and it is kept
 on the session's registry row so a session re-attached to its running CLI
 after a kernel restart keeps it through the turn: an attach launches nothing
-and resets nothing. A served reply on
-a session whose helper did answer is the deciding event the other way and
-clears the refusal; a judge call never clears one (its envelope does not say
-which login answered), and the judges of a session on a refused login take the
-same fallback, said once in the kernel log. The helper bounds the command at fifteen seconds (the kernel's own helper
-bound; `ROMP_LOGIN_HELPER_TIMEOUT_S` overrides it). A command whose text
-carries a credential-shaped run (a setup-token's prefix, forty or more token
-characters outside a path, or a JWT-shaped bearer of three dot-joined
-segments) is refused at add time: it would ride the shell's argument list on
-every refresh, readable to every process of the same user, and the refusal
-says a value typed there is already exposed through the shell's history and
-should be rotated. Dotted names pass (a secret manager's key path, a host, a
-file), a forty-digit hex run inside a `gpg` command or right after
-`--recipient` is a key fingerprint and passes, and the rule is applied at add
-time only: a stored record is never re-read against it.
+and resets nothing. A served reply on a session whose token did answer is the
+deciding event the other way and clears the refusal; a judge call never clears
+one (its envelope does not say which login answered), and the judges of a
+session on a refused login take the same fallback, said once in the kernel
+log. A command whose text carries a credential-shaped run (a setup-token's
+prefix, forty or more token characters outside a path, or a JWT-shaped bearer
+of three dot-joined segments) is refused at add time: it would ride the
+shell's argument list on every run, readable to every process of the same
+user, and the refusal says a value typed there is already exposed through the
+shell's history and should be rotated. Dotted names pass (a secret manager's
+key path, a host, a file), a forty-digit hex run inside a `gpg` command or
+right after `--recipient` is a key fingerprint and passes, and the rule is
+applied at add time only: a stored record is never re-read against it.
 
 A machine or session with no stored login works exactly as today: the ordinary
 Claude Code login and the API key path are untouched, and the stored logins

@@ -928,17 +928,14 @@ def _judge_cmd(model, sys_prompt, effort=None, auth=None, tier="triage"):
         # engaged is the CLI's answer, per account: the envelope's fast_mode_state, kept on the usage row and
         # read back by _note_fast_readback.
         overlay["fastMode"] = True
-    if auth == "login":
+    if _is_login_auth(auth):
         # A login-billed call must not bill the key (2026-09-08): in the CLI's precedence apiKeyHelper outranks
         # every login form, so the per-call settings layer disables the helper. The empty string is the value
         # the CLI takes as unset (null falls through to the settings files; verified on 2.1.257), the same
-        # lever a login-picked session's launch uses (sdk_backend.flag_settings_path).
+        # lever a login-picked session's launch uses (sdk_backend.flag_settings_path). The machine's own login
+        # and a STORED login alike: a stored login's token rides the child's environment (_judge_env, the
+        # environment road since 2026-09-14), where a helper would outrank it.
         overlay["apiKeyHelper"] = ""
-    elif str(auth or "").startswith("login:"):
-        # a call for a session billed to a STORED login (T346) carries that login's own helper instead: the
-        # judges bill the same account as the session they judge, and the machine's tokens stay out of the
-        # child (_judge_env restores them for the machine's login only)
-        overlay["apiKeyHelper"] = _login_helper_cmd(str(auth)[6:])
     if overlay:
         cmd += ["--settings", json.dumps(overlay)]
     return cmd
@@ -1787,14 +1784,6 @@ def _is_login_auth(auth) -> bool:
     return auth == "login" or str(auth or "").startswith("login:")
 
 
-def _login_helper_cmd(login_id):
-    """The apiKeyHelper for a judge call billed to a STORED login (T346): bin/romp-login-helper with the record
-    id and this state directory, the same command the session's own launch carries (sdk_backend
-    flag_settings_path's helper_cmd), so the judge runs the login's own token command per request (a secret
-    manager's read command, typically) and nothing rides this process's files or environment."""
-    return "%s %s %s" % (shlex.quote(str(HERE.parent / "bin" / "romp-login-helper")), login_id, shlex.quote(str(STATE)))
-
-
 _LOGIN_FALL_SAID = set()       # (fsid, login id) pairs whose judge fall off a refused stored login was said (once each)
 _API_HEALTH_NOTE_FN = None     # the kernel wires the API-health ring's judge source (T346, the user 2026-09-11: one
                                # accounting per login, the judges included): fn(kind, auth, model, msg, fsid) with kind
@@ -2039,8 +2028,11 @@ def _judge_env(tier, auth="login", model=None):
     unconditionally, and a KEY-billed call injects nothing back (2026-09-08: romp holds no key; the child
     resolves Claude Code's apiKeyHelper itself, and the first pass after boot runs exactly like every later
     one). A LOGIN-billed call gets the claimed login tokens back and, in _judge_cmd, the helper suppression.
-    A call billed to a STORED login ('login:<id>', T346) gets NEITHER: its credential is that login's own
-    helper in _judge_cmd's overlay, and a machine token beside it would outrank the helper.
+    A call billed to a STORED login ('login:<id>', T346) gets that login's setup-token instead, read by running
+    the record's token command now, the way the session's own launch runs it (the environment road, 2026-09-14:
+    a setup-token through an apiKeyHelper hangs the CLI's request; through CLAUDE_CODE_OAUTH_TOKEN it is
+    accepted); the machine's tokens stay out, and a failing command is a CredentialError the caller notes in
+    its own words, never a fall onto ambient auth.
     Removal, not blanking: the CLI treats even an empty var as key-mode-without-a-key and refuses with
     "Not logged in"."""
     env = dict(os.environ)
@@ -2055,6 +2047,12 @@ def _judge_env(tier, auth="login", model=None):
             env.pop(k, None)
     if auth == "login":
         env.update(_login_auth_env())
+    elif str(auth or "").startswith("login:"):
+        try:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = _logins.token_value(STATE, str(auth)[6:],
+                                                                 lambda c: _cred.run_helper(c, label="the token command"))
+        except ValueError as e:                     # no such record, or one naming no command: the same loud road
+            raise _cred.CredentialError(str(e)) from None
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
     env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard

@@ -314,31 +314,35 @@ def helper_env() -> dict:
             if k in HELPER_ENV_PASSTHROUGH or k.startswith(HELPER_ENV_PREFIXES)}
 
 
-def run_helper(cmd) -> str:
+def run_helper(cmd, label: str = "apiKeyHelper", timeout_s=None) -> str:
     """Run the helper once, the way Claude Code runs it: through /bin/sh, stdin /dev/null (a prompt would
     hang until the timeout), stderr discarded and never logged (a secret manager's diagnostics can quote
     its own token), stdout the key: non-empty, one line, no whitespace, at most 16 KiB, one trailing
-    newline forgiven (a script's echo adds one). Every failure is a CredentialError in static words."""
+    newline forgiven (a script's echo adds one). Every failure is a CredentialError in static words that
+    open with `label`: the box's own apiKeyHelper by default, a stored login's token command when a launch
+    or a judge call runs one the same way (logins.token_value, the environment road since 2026-09-14).
+    `timeout_s` overrides the bound for a test; HELPER_TIMEOUT_S otherwise."""
+    bound = HELPER_TIMEOUT_S if timeout_s is None else timeout_s
     try:
         r = subprocess.run(cmd, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, timeout=HELPER_TIMEOUT_S, check=False, env=helper_env())
+                           stderr=subprocess.DEVNULL, timeout=bound, check=False, env=helper_env())
     except FileNotFoundError:
-        raise CredentialError("apiKeyHelper could not run: /bin/sh is not available") from None
+        raise CredentialError("%s could not run: /bin/sh is not available" % label) from None
     except subprocess.TimeoutExpired:
-        raise CredentialError("apiKeyHelper timed out after %d s" % HELPER_TIMEOUT_S) from None
+        raise CredentialError("%s timed out after %d s" % (label, bound)) from None
     except OSError:
-        raise CredentialError("apiKeyHelper could not be run") from None
+        raise CredentialError("%s could not be run" % label) from None
     if r.returncode:
-        raise CredentialError("apiKeyHelper is not on the manager's PATH (exit 127)" if r.returncode == 127
-                              else "apiKeyHelper failed (non-zero exit)")
+        raise CredentialError("%s is not on the manager's PATH (exit 127)" % label if r.returncode == 127
+                              else "%s failed (non-zero exit)" % label)
     try:
         value = r.stdout.decode("utf-8")
     except UnicodeError:
-        raise CredentialError("apiKeyHelper printed bytes that are not a key") from None
+        raise CredentialError("%s printed bytes that are not a key" % label) from None
     if value.endswith("\n"):
         value = value[:-2] if value.endswith("\r\n") else value[:-1]
     if not value or len(value) > 16384 or any(c.isspace() or c == "\0" for c in value):
-        raise CredentialError("apiKeyHelper printed an empty or invalid key (one line on stdout, exit 0)")
+        raise CredentialError("%s printed an empty or invalid key (one line on stdout, exit 0)" % label)
     return value
 
 
