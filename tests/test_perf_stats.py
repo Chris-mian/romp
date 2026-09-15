@@ -240,10 +240,11 @@ class Collector(unittest.TestCase):
         self.assertAlmostEqual(p["cycle_ms_ring_max"], 299.0, msg="the window's max: the ring's largest")
         self.assertAlmostEqual(p["cycle_ms_max"], 5000.0, msg="the lifetime max keeps the boot cycle")
 
-    def test_the_per_session_chat_build_timer_keeps_first_last_and_max_and_leaves_with_its_session(self):
+    def test_the_per_session_chat_build_timer_keeps_first_last_and_max_and_leaves_with_its_sessions_certified_death(self):
         """The process split's measure (2026-09-14): beside the aggregate, a row per session with the FIRST build after the
         boot (set once per process life), the last, the max, the counts and the leaf's bytes; sorted by max under
-        builds.chat.bySession; a row leaves with its session at the death sweep's tick; the aggregate is unchanged."""
+        builds.chat.bySession; a row leaves with its session's CERTIFIED death (_record_death drops it, whichever road
+        recorded the death) and with nothing else; the aggregate is unchanged."""
         A, B, C = "aaaaaaaa-2222-4333-8444-0000000000a1", "bbbbbbbb-2222-4333-8444-0000000000b2", "cccccccc-2222-4333-8444-0000000000c3"
         self.st.build_chat(False, 0.100, active=True, sid=A, nbytes=1000)    # A: first 100 ms
         self.st.build_chat(False, 0.050, sid=A, nbytes=1200)                  # A: last 50, max stays 100
@@ -268,7 +269,7 @@ class Collector(unittest.TestCase):
         self.st.chat_row_drop("no-such-sid")                                  # a death of a session never built: nothing to drop
         self.assertEqual(len(self.st.snapshot()["builds"]["chat"]["bySession"]), 2)
         # the certified death drives the drop through the real _record_death and the real death sweep's tick over three ticks
-        # (tests/test_sdk_registry_blind.py, ChatBuildRowsFollowTheTick); the call sites are executed, not read: PushStages below
+        # (tests/test_sdk_registry_blind.py, ChatBuildRowsLeaveWithTheCertifiedDeath); the call sites are executed, not read: PushStages below
         # drives the real _push and the real _push_session_now and reads the rows from the snapshot
 
     def test_stages_builds_judge(self):

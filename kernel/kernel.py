@@ -692,9 +692,10 @@ class _PerfStats:
         a warm rebuild (rounds one to three of the timer computed a keep from a moving window each tick and forgot what it
         kept). What else can leave a row, and its bound: a session forgotten or renamed away without a death keeps a row
         until the process ends; every row was minted by a build of a session on the chat tab list, so the table holds at
-        most the sessions this kernel life ever showed (the names registry's size), reset with the process; the sweep's
-        tick also drops a row whose session left the live map with a death marker standing and no registry row (a death
-        stamped before the row existed, or by another road), the way the boot pass sweeps the registry."""
+        most the sessions this kernel life ever showed (the names registry's size), reset with the process; and the death
+        sweep's tick drops the row of a departure whose marker another road or process stamped, inside its own walk, only
+        when the tick's own verdict is dead (reg present False, never None; no registry blind; no alive arm), the way the
+        boot pass sweeps the registry: one classifier, never a simpler predicate beside it (round five)."""
         with self.lock:
             self.chat_by_session.pop(str(sid), None)
 
@@ -25736,10 +25737,6 @@ def _death_sweep_tick(now, live_map):
     _prev_live_sids[0] = cur
     if prev is None:
         return
-    _chat_rows_sweep(cur)                                 # the per-session chat build rows: a row leaves with _record_death (the certified
-    #                                                       event, any road); this sweep bounds the leftovers whose death some other road or
-    #                                                       process stamped (round four, 2026-09-15: the keep computed here each tick from a
-    #                                                       moving window forgot what it kept a tick later)
     cx = _codex()
     blind = _codex_records_blind(cx)
     sdk_blind = _sdk_records_blind()
@@ -25749,6 +25746,16 @@ def _death_sweep_tick(now, live_map):
         if present:
             continue                                 # an SDK death is the kill gesture's to stamp
         if not _death_stamp_due(sid):
+            # already stamped (a marker standing that this kernel did not write: another road or process), or a supersession.
+            # The per-session chat build row (/perf) leaves with a CERTIFIED death only, and ONE classifier decides: the row goes
+            # here only when this tick's own verdict is dead, that is reg present is False (never None: an unreadable sdk/ is a
+            # stand-down, as the two other death writers read it), neither registry is blind, and no alive arm fires (not
+            # Codex-owned, no driver thread, no recent life); every other case keeps the row (round five, 2026-09-15: a sweep
+            # with a simpler predicate at the tick's top dropped a live session's row four ways)
+            if (present is False and not sdk_blind and not blind
+                    and not (cx is not None and cx._session(sid) is not None and cx.owns(sid))
+                    and not _sdk_thread_alive(sid) and not _recent_life(sid, now)):
+                _PERF_STATS.chat_row_drop(sid)
             continue
         if sdk_blind or present is None:
             stood_sdk += 1                           # its reg may sit behind the unreadable directory: stand down
@@ -25776,25 +25783,6 @@ def _death_sweep_tick(now, live_map):
         sys.stderr.write("death-sweep: the SDK registry directory cannot be read — %d departed sid(s) not stamped this tick\n" % stood_sdk)
     if stood:
         sys.stderr.write("death-sweep: the Codex registry cannot be read — %d departed sid(s) not stamped this tick\n" % stood)
-
-
-def _chat_rows_sweep(cur):
-    """Drop the per-session chat build rows (/perf builds.chat.bySession) of sessions that left the live map with a death
-    marker STANDING (a marker exists and no states row postdates it: _death_stamp_due answers not due) and no SDK registry
-    row: a death some other road or process stamped before the row existed. A row whose session is live, has a registry
-    row (a dead session the user keeps open as a tab, reg alive:False), or has no standing marker (a stand-down, a
-    departure certified alive, a stamp not due on a revived session) stays. _record_death drops the row for the deaths
-    this kernel certifies; this is the bound on the rest, the way the boot pass sweeps the registry for deaths no kernel
-    saw. Cheap: rows of dead sessions leave on the first sweep, so the steady state reads nothing."""
-    with _PERF_STATS.lock:
-        sids = [s for s in _PERF_STATS.chat_by_session if s not in cur]
-    for sid in sids:
-        try:
-            marker = (jd.STATE / "gone" / (sid + ".json")).exists()
-        except OSError:
-            marker = False
-        if marker and not _death_stamp_due(sid) and not _sdk_reg_exists(sid):
-            _PERF_STATS.chat_row_drop(sid)
 
 
 def _death_boot_pass(now=None):
