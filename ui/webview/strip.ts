@@ -651,8 +651,9 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         if (stale) ver = ver.replace(" · ", " · last known: ");
       } else if (t.restartPending) {
         // its checkout matches this machine, but its kernel booted from older kernel code: not behind, a restart pending
-        // (plans/drift-by-running-code.md); the Update offer below asks that restart
-        ver = " · running older code";
+        // (plans/drift-by-running-code.md); the Update offer below asks that restart. A remembered flag (the row not
+        // polled while disconnected) wears the same hedge the drift words do.
+        ver = stale ? " · last known: running older code" : " · running older code";
       }
       // A connected host reporting NO build at all runs a plain file copy (no git checkout): it cannot
       // name a release or commit, and drift can't be measured — it may be months behind and never say

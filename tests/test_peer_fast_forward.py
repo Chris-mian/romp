@@ -326,10 +326,6 @@ class SurfacesOnlyOfferWhatCanWork(unittest.TestCase):
         self.assertIn("Update asks it to fast-forward itself", detail)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DriftOnTheCheckout(unittest.TestCase):
     """plans/drift-by-running-code.md: a remote is behind by its CHECKOUT, not by the commit its kernel booted from; whether
     it runs older kernel code is a separate fact with its own offer. A peer that pulled a docs commit and, rightly, did
@@ -382,7 +378,71 @@ class DriftOnTheCheckout(unittest.TestCase):
             km._kernel_sha, km._kernel_code_changed = saved
             km._RESTART_PENDING_MEMO.clear()
 
-    def test_the_pull_route_answers_with_the_verdict(self):
-        src = open(os.path.join(os.path.dirname(BIN), "kernel", "kernel.py"), encoding="utf-8").read()
-        self.assertIn('kcc = _restart_pending() if ok else None', src)
-        self.assertIn('json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc})', src, "the peer's own word rides its pull answer")
+    def test_a_classification_that_failed_is_answered_safe_and_never_latched(self):
+        """The round-two review's medium: _kernel_code_changed reads True on any error by design, and the memo stored that
+        True for the pair, so one git flake right after a pull made a docs-only checkout report a restart pending on
+        every poll. Only a verdict that was read is kept; a failed read answers True for that call alone."""
+        saved = (km._kernel_sha, km._converge_classes)
+        km._RESTART_PENDING_MEMO.clear()
+        try:
+            km._kernel_sha = lambda reask=False: REMOTE[:8]
+            km._converge_classes = lambda a, b: None                        # the flake
+            self.assertTrue(km._restart_pending(), "unreadable this time: the safe answer")
+            self.assertEqual(km._RESTART_PENDING_MEMO, {}, "and nothing remembered")
+            km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/a.md"], "ast_equal": []}
+            self.assertFalse(km._restart_pending(), "the next read judges again: a docs-only pair, nothing pending")
+            self.assertEqual(km._RESTART_PENDING_MEMO, {(REMOTE[:8], LOCAL[:8]): False}, "a verdict that was read is kept")
+            km._converge_classes = lambda a, b: None
+            self.assertFalse(km._restart_pending(), "and the kept verdict answers, not the later flake")
+        finally:
+            km._kernel_sha, km._converge_classes = saved
+            km._RESTART_PENDING_MEMO.clear()
+
+    def test_the_pull_route_answers_with_the_peers_verdict_read_on_the_fresh_head(self):
+        """The route driven: POST /tunnels/pull on a live handler with the pull itself stubbed. Its answer carries the
+        peer's verdict on the head the pull just moved, read fresh (the round-two review's low 4: the polls' 15 s cache
+        would still name the head before the fast-forward)."""
+        import http.client, threading
+        from http.server import ThreadingHTTPServer
+        FRESH = "c" * 40
+        saved = (km._pull_remote, km._kernel_sha, km._local_head, km._fresh_local_head, km._converge_classes)
+        judged = []
+        km._RESTART_PENDING_MEMO.clear()
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            km._pull_remote = lambda host: (True, "pulled 1 commit from %s" % host)
+            km._kernel_sha = lambda reask=False: LOCAL[:8]                       # booted at LOCAL
+            km._local_head = lambda short=False: (LOCAL[:8] if short else LOCAL)   # the polls' cache still says LOCAL
+            km._fresh_local_head = lambda: FRESH                                  # the fast-forward moved the checkout
+            km._converge_classes = lambda a, b: judged.append((a, b)) or {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
+                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
+            self.assertEqual(resp.status, 200)
+            self.assertTrue(body["ok"]); self.assertIn("pulled 1 commit", body["detail"])
+            self.assertIs(body["kernel_code_changed"], True, "the peer's own verdict rides the answer")
+            self.assertEqual(judged, [(LOCAL[:8], FRESH[:8] if False else km._sha_base(FRESH))],
+                             "judged against the head the pull moved, not the cached one")
+            km._RESTART_PENDING_MEMO.clear()
+            km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/x.md"], "ast_equal": []}
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
+                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
+            self.assertIs(body["kernel_code_changed"], False, "a docs-only pull: no restart asked for")
+            km._pull_remote = lambda host: (False, "this machine's tree has uncommitted changes")
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
+                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
+            self.assertEqual(resp.status, 502); self.assertIsNone(body["kernel_code_changed"], "a refused pull claims nothing")
+        finally:
+            srv.shutdown(); srv.server_close()
+            km._pull_remote, km._kernel_sha, km._local_head, km._fresh_local_head, km._converge_classes = saved
+            km._RESTART_PENDING_MEMO.clear()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -9112,21 +9112,30 @@ def _kernel_code_changed(a, b):
 _RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
 
 
-def _restart_pending():
+def _restart_pending(checkout=None):
     """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
-    checkout's HEAD through _kernel_code_changed (plans/drift-by-running-code.md). False when the two are one commit;
-    None when either cannot be read (no claim, so a hub falls back to its own reading). Memoized per pair: /version
-    is polled every few seconds and the pair changes only at a pull or a restart."""
-    booted, checkout = _sha_base(_kernel_sha() or ""), _local_head(short=True) or ""
+    checkout's HEAD through the converge's own classification (plans/drift-by-running-code.md). False when the two are
+    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` names
+    the head to judge when the caller holds a fresh one (the pull route, right after its fast-forward); otherwise the
+    polls' cached head. Memoized per pair, and only a verdict that was READ is kept: a classification that failed (a git
+    flake, an index lock right after a merge) answers True for that read, the safe converge, without latching, so the
+    next read judges again (the round-two review: a latched failure made a docs-only checkout report a restart pending
+    on every poll)."""
+    booted = _sha_base(_kernel_sha() or "")
+    checkout = _sha_base(checkout or "") or (_local_head(short=True) or "")
     if not booted or not checkout:
         return None
     if _shas_agree(booted, checkout):
         return False
     key = (booted, checkout)
-    if key not in _RESTART_PENDING_MEMO:
-        if len(_RESTART_PENDING_MEMO) > 64:
-            _RESTART_PENDING_MEMO.clear()
-        _RESTART_PENDING_MEMO[key] = bool(_kernel_code_changed(booted, checkout))
+    if key in _RESTART_PENDING_MEMO:
+        return _RESTART_PENDING_MEMO[key]
+    cc = _converge_classes(booted, checkout)
+    if cc is None:
+        return True                                   # unreadable this time: the safe answer, remembered by nobody
+    if len(_RESTART_PENDING_MEMO) > 64:
+        _RESTART_PENDING_MEMO.clear()
+    _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
     return _RESTART_PENDING_MEMO[key]
 
 
@@ -22360,7 +22369,7 @@ def _poll_remote_version(r):
         csha = j.get("checkout_sha") or None
         if csha and not _peer_sha(csha):
             _peer_shape_complain(host, "checkout_sha", csha)
-            csha = None
+            csha = r.get("checkout_sha") or None                   # the last good value the row held, as kernel_sha above
         rp = j.get("restart_pending")
         return {"sha": sha, "ver": ver, "shaConfirmed": sha_ok,
                 "checkoutSha": csha, "restartPending": rp if isinstance(rp, bool) else None,
@@ -24278,10 +24287,11 @@ def _ask_peer_to_pull(host, restart="if-code-changed"):
     from here, through the tunnel it keeps open:
       1. ask its kernel to pull from us (its /tunnels/pull — ff-only, refused on a dirty tree there), so
          every guardrail stays on the side where a clobber would happen, and
-      2. ask it to restart, so it RUNS what it just pulled. Its /version reports the sha its process
-         BOOTED from, so a pull alone would leave the old kernel up still reporting the old sha — the
-         drift would never clear and this would re-offer itself forever. The push direction restarts the
-         remote for exactly the same reason; this is that step, asked instead of done.
+      2. ask it to restart ONLY when what it pulled changes what its process runs (its own verdict rides
+         the pull answer; plans/drift-by-running-code.md). A docs, tests or UI pull converges in place
+         there, and its /version reports its checkout's commit beside the booted one, so the drift clears
+         on the checkout matching and nothing re-offers itself. `restart="always"` is the rail's Restart
+         sweep, a restart the user asked for.
     Returns (ok, detail), fail-loud: the peer's own refusal is passed through verbatim."""
     host = str(host or "").strip()
     if not host:
@@ -61742,7 +61752,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _pull_remote(host)
                 # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
                 # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
-                kcc = _restart_pending() if ok else None
+                kcc = _restart_pending(checkout=_fresh_local_head()) if ok else None   # the head the pull just moved, read fresh, not the polls' cache
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
                                   "application/json")
             if u.path == "/tunnels/askpull":
