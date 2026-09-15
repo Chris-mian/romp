@@ -6622,6 +6622,16 @@ def _per_file_rewound(fsid, files):
                 #                                           boot's first judge pass (checkpoints.refolds.rewoundUuids, wholeReads
                 #                                           upgrade<-_per_file_rewound); the sidecar's list is the one-file answer
                 out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
+            elif em.asm_document_seeds(fp) and _sdk_owned(fp.stem) and _sdk_last_sid(fp.stem) is None:
+                # ANOTHER live SDK session's CURRENT leaf, named by this session's episode rows (a fork's episode log names its
+                # parent's leaf), whose own one-file document stands (2026-09-15): the seeded walk under that document with that
+                # leaf's own owner bit (an SDK session's, the parse cache keys on it), the tail read from the cut. The memo road below
+                # reads a file whole whenever its memo is stale (fold_records folds from record zero), and a live growing leaf's memo
+                # is stale at every boot: three live leaves, 570 MB, read whole on every boot's first judge pass as other sessions'
+                # candidates. A frozen file (a dead episode's, a /clear anchor: the reg's lastSid has moved on) keeps the memo road,
+                # whose fresh memo is served with no read; a live leaf no registry names (a Codex session's, a forked leaf named by
+                # a reg's lastSid rather than its sid) keeps it too, a known residue until a liveness signal exists for it
+                out |= em.file_rewound(fp, rompuuid=fp.stem, sdk_human=True)
             else:                                         # a dead episode's frozen file, or a leaf with no assembly document (no
                 #                                           compaction boundary yet, or ever: its seeded walk had nothing to seed
                 #                                           and read the file whole at every boot, 104 MB on one): the walk once, its

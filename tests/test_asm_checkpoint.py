@@ -2119,6 +2119,71 @@ class ClearedSessionDocument(Harness):
         self.assertLess(read, os.path.getsize(leaf) // 2, "the leaf's tail was read, not the whole file: %d of %d bytes" % (read, os.path.getsize(leaf)))
 
 
+class CrossSessionRewoundCandidates(Harness):
+    """2026-09-15: the judges' per-file rewound walk adds every fsid a session's episode rows name to its candidates (a fork's
+    episode log names its parent's leaf), and a candidate that was not this session's leaf took the memo road unconditionally;
+    the memo road reads a file whole whenever its memo is stale (fold_records folds from record zero), and a live growing leaf's
+    memo is stale at every boot, so three live leaves, 570 MB, were read whole on every boot's first judge pass as other sessions'
+    candidates. Another live SDK session's CURRENT leaf (a reg under its stem, no lastSid fork) whose own one-file document stands
+    takes the seeded walk under that document with its own owner bit: the tail read. A live leaf no registry names keeps the memo
+    road (the residue the body names), its set equal. Driven on the LIVE shape: the other leaf restored first (a standing tail
+    entry, the judges' restore), then the walk."""
+    def test_another_sdk_sessions_documented_leaf_named_by_the_episode_rows_takes_the_seeded_walk(self):
+        jd = kernel_module().jd
+        verdicts = []
+        for owner in (True, False):
+            with self.subTest(sdk_owned=owner):
+                d = self.td / ("cross-%s" % owner); d.mkdir()
+                a_sid = "77777777-2222-4333-8444-00000000077%d" % (1 if owner else 0)
+                b_sid = "88888888-2222-4333-8444-00000000088%d" % (1 if owner else 0)
+                a_leaf = d / (a_sid + ".jsonl"); b_leaf = d / (b_sid + ".jsonl")
+                a_leaf.write_text("".join(json.dumps(r) + "\n" for r in G.SINGLE_FILE["queued_new_turn"][0]()))   # this session: small, no rewind
+                recs = compacting_variant(G.SINGLE_FILE["rewind_off_path"][0](), "cs")                              # the other: a rewind, compacted,
+                recs = recs + _turns_after(recs, "cs", 2)                                                              #  live and growing
+                b_leaf.write_text("".join(json.dumps(r) + "\n" for r in recs))
+                jd.EPIDIR.mkdir(parents=True, exist_ok=True)                                                         # A's episode rows name B
+                (jd.EPIDIR / (a_sid + ".jsonl")).write_text(json.dumps({"head": "h_cs", "fsid": b_sid, "t": NOW}) + "\n")
+                jd._episode_memo.pop(a_sid, None)
+                reg = jd.SDKDIR / (b_sid + ".json")
+                if owner:                                                                                            # B is a live SDK session's
+                    jd.SDKDIR.mkdir(parents=True, exist_ok=True)                                                     #  current leaf: its reg, no fork
+                    reg.write_text(json.dumps({"sid": b_sid, "alive": True, "name": "web"}))
+                    jd._lastsid_memo.pop(b_sid, None)
+                self.assertEqual(jd._sdk_owned(b_sid), owner); self.assertIsNone(jd._sdk_last_sid(b_sid))
+                try:
+                    self.fresh()
+                    em.parse_session(str(b_leaf), rompuuid=b_sid, candidate_files=[str(b_leaf)], states=None, postal_log=[], now=NOW, sdk_human=owner)
+                    self.assertTrue(em.asm_checkpoint_write(str(b_leaf), b_sid, sdk_human=owner), em.asm_checkpoint_stats())
+                    self.assertTrue(em.asm_document_seeds(str(b_leaf)))
+                    self.fresh(); answer_memo = em.rewound_uuids(str(b_leaf), drop=False)                # the memo road's answer
+                    self.fresh(); answer_seed = em.file_rewound(str(b_leaf), rompuuid=b_sid, sdk_human=owner)   # the seeded road's
+                    self.assertEqual(answer_memo, answer_seed, "the two roads agree on the other leaf"); self.assertTrue(answer_memo)
+                    # the live shape: B restored first (a standing tail entry), then A's walk names B through its episode rows
+                    self.fresh(); modes = []
+                    em.parse_session(str(b_leaf), rompuuid=b_sid, candidate_files=[str(b_leaf)], states=None, postal_log=[], now=NOW,
+                                     sdk_human=owner, asm_mode_out=modes)
+                    self.assertEqual(modes, ["restore"], "the judges' restore stands before the walk")
+                    with em._READ_BYTES_LOCK:
+                        em._READ_BYTES.clear()
+                    with em._CKPT_LOCK:
+                        walked0 = em._REWOUND_STATS["walked"]
+                    rewound, fails = jd._per_file_rewound(a_sid, [str(a_leaf)])
+                    self.assertEqual(fails, 0)
+                    self.assertEqual(rewound, answer_memo, "the walk's set is B's rewound set on either road (A has no rewind)")
+                    read = em.read_bytes_report().get(str(b_leaf), 0)
+                    with em._CKPT_LOCK:
+                        walked = em._REWOUND_STATS["walked"] - walked0
+                    if owner:
+                        self.assertLess(read, os.path.getsize(b_leaf) // 2, "B's tail, not the whole file: %d of %d bytes (the base read it whole)" % (read, os.path.getsize(b_leaf)))
+                        self.assertEqual(walked, 1, "one memo walk, A's own undocumented leaf; B took the seeded road (the base walked both: 2)")
+                    else:
+                        self.assertEqual(walked, 2, "no registry names B: the memo road as before, the residue the body names")
+                    verdicts.append(owner)
+                finally:
+                    (jd.EPIDIR / (a_sid + ".jsonl")).unlink(missing_ok=True); jd._episode_memo.pop(a_sid, None)
+                    reg.unlink(missing_ok=True); jd._lastsid_memo.pop(b_sid, None)
+        self.assertEqual(verdicts, [True, False], "both owner bits ran to their verdict")
+
 class LazyBodies(Harness):
     def test_a_body_read_before_hydration_is_loud_and_hydration_counts(self):
         records, _ = G.SINGLE_FILE["compaction_atom"]
