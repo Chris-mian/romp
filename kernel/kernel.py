@@ -8339,6 +8339,22 @@ def _set_whole_chat_frames(enabled, gt=None):
     return stamp
 
 
+def _seed_whole_chat_frames():
+    """The boot-time fallback: ROMP_CHAT_FLOOR0=1 SEEDS the Whole chat frames switch ON once, when no store exists; the gear
+    owns it after (a later flip is never overwritten by a second boot with the env set). Called from main() once every
+    definition below is loaded (the 1704 read, low 1): the seed used to sit in a module-level try beside the boot sweep, where
+    the setter's _mark_views_dirty call raised NameError, swallowed by the bare except, so the store write landed and
+    nothing after it ran. Returns True when it seeded."""
+    if os.environ.get("ROMP_CHAT_FLOOR0") != "1":
+        return False
+    try:
+        if (jd.STATE / WHOLE_CHAT_FRAMES_FILE).exists():
+            return False
+    except OSError:
+        return False
+    return _set_whole_chat_frames(True) is not None
+
+
 def _thinking_summaries_on():
     """OFF unless this install's file says yes: absent, unreadable or malformed all read False — the
     opt-in must be provable, and reading never creates the file (shipping never turns it on)."""
@@ -9153,27 +9169,43 @@ def _kernel_code_changed(a, b):
 _RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
 
 
+RESTART_PENDING_RETRY_S = 30      # how long a failed classification's safe answer stands before git is asked again
+_RESTART_PENDING_FAILED = {}      # key -> when the classification last failed: /version is polled by every reader, and an
+#                                   unreadable pair must not run a git diff (a 20 s subprocess bound) on each poll
+
+
 def _restart_pending(checkout=None):
     """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
     checkout's HEAD through the converge's own classification (plans/drift-by-running-code.md). False when the two are
-    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` names
-    the head to judge when the caller holds a fresh one (the pull route, right after its fast-forward); otherwise the
-    polls' cached head. Memoized per pair, and only a verdict that was READ is kept: a classification that failed (a git
-    flake, an index lock right after a merge) answers True for that read, the safe converge, without latching, so the
-    next read judges again (the round-two review: a latched failure made a docs-only checkout report a restart pending
-    on every poll)."""
+    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` is the
+    head to judge when the caller read one itself (the pull route, right after its fast-forward): None means the
+    polls' cached head, and an EMPTY string means the caller's fresh read failed, which is answered None, never the
+    cache (the round-three review's low 1: the cache still named the head before the fast-forward). Keyed on the two
+    commits' seven-character prefixes, so the route's full sha and the poll's short one share one entry. Only a verdict
+    that was READ is kept: a classification that failed (a git flake, an index lock right after a merge) answers True,
+    the safe converge, and holds that answer for RESTART_PENDING_RETRY_S before git is asked again, so a poll storm
+    over an unreadable pair costs one diff per bound rather than one per poll."""
+    if checkout is not None and not checkout:
+        return None
     booted = _sha_base(_kernel_sha() or "")
     checkout = _sha_base(checkout or "") or (_local_head(short=True) or "")
     if not booted or not checkout:
         return None
     if _shas_agree(booted, checkout):
         return False
-    key = (booted, checkout)
+    key = (booted[:7], checkout[:7])
     if key in _RESTART_PENDING_MEMO:
         return _RESTART_PENDING_MEMO[key]
+    failed_at = _RESTART_PENDING_FAILED.get(key)
+    if failed_at is not None and time.time() - failed_at < RESTART_PENDING_RETRY_S:
+        return True                                   # the safe answer stands until the bound; no diff this poll
     cc = _converge_classes(booted, checkout)
     if cc is None:
-        return True                                   # unreadable this time: the safe answer, remembered by nobody
+        if len(_RESTART_PENDING_FAILED) > 64:
+            _RESTART_PENDING_FAILED.clear()
+        _RESTART_PENDING_FAILED[key] = time.time()
+        return True                                   # unreadable this time: the safe answer, remembered only for the bound
+    _RESTART_PENDING_FAILED.pop(key, None)
     if len(_RESTART_PENDING_MEMO) > 64:
         _RESTART_PENDING_MEMO.clear()
     _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
@@ -11202,8 +11234,6 @@ _load_tick_seen()               # the previous kernel's last evaluations, if it 
 _load_intr_marks()              # and its interrupt-marks memo (T401 (3) target 3)
 try:
     em.checkpoint_sweep()       # checkpoints of files that are gone (cleared, removed sessions) leave with the boot (T323 stage 3)
-    if os.environ.get("ROMP_CHAT_FLOOR0") == "1" and not (jd.STATE / WHOLE_CHAT_FRAMES_FILE).exists():
-        _set_whole_chat_frames(True)   # the boot-time fallback SEEDS the Whole chat frames switch once; the gear owns it after
 except Exception:
     pass
 
@@ -37372,17 +37402,21 @@ def _compact_goal_stores():
     moved = 0
     try:
         jd._disk_memo_evict_absent()                   # save_goals' disk-side memo: drop removed stores' entries
+        jd._raw_store_evict_absent()                   # ...and the writer loader's parse memo entries of removed stores
         jd._shared_evict_absent()                      # ...and the shared read-only views of removed stores
     except Exception:
         pass
     owned = None                                   # the discovered sessions' sids, once the walk below lands
     try:
-        # ...and, for the two memos that hold PARSED stores, the entries of stores no discovered session
-        # owns: neither had a cap (review find, 2026-09-08). discover is cached behind the transcript
-        # directory's fingerprint, so this is the tiers' own list, not a second walk. A discover that
-        # raises evicts nothing: with no owner list there is no unowned.
+        # ...and, for the three memos that hold PARSED stores, the entries of stores no discovered session
+        # owns: none has a cap (review find, 2026-09-08, on the first two; the writer loader's parse memo
+        # of 2026-09-15 follows them, and this sweep is what fills it with every store the directory
+        # holds). discover is cached behind the transcript directory's fingerprint, so this is the tiers'
+        # own list, not a second walk. A discover that raises evicts nothing: with no owner list there is
+        # no unowned.
         owned = {f for f, _p, _a, _n in jd.discover(int(time.time()))}
         jd._shared_evict_unowned(owned)
+        jd._raw_store_evict_unowned(owned)
         _goals_memo_evict_unowned(owned)
     except Exception:
         sys.stderr.write("compact: memo eviction: %s\n" % traceback.format_exc())
@@ -43607,6 +43641,36 @@ _session_tok_cache = {}   # transcript path -> ((mtime, size), [(t, in, out, cac
 #                           subagent transcript cache separately, so a file that moved re-parses itself alone
 
 
+_subagent_dir_memo = {}   # directory -> (st_mtime_ns or None, st_ino, [.jsonl file names], [subdirectory names]): ONE
+#                           directory's listing under a session's subagents tree, served while the directory's own
+#                           stamp holds (_subagent_transcripts); None for a directory changed within the racy window
+#                           below, kept for its names and never served. Ordered by last visit (popped and re-set on
+#                           each), so the cap evicts the least recently served directory first
+_SUBAGENT_DIR_MEMO_MAX = 16384   # directories: the five live sessions measured held 1,292 between them, so a month's
+#                                  sessions fit; past it a directory re-lists on its next visit, the cost before the memo
+_SUBAGENT_DIR_RACY_NS = 2_000_000_000   # git's racy-stamp rule: a directory whose mtime is within this of the clock is listed
+#                                         but its listing not served, because the filesystem stamps with a coarser clock than
+#                                         the wall clock (a jiffy on Linux before 6.13's multigrain stamps, a second on some
+#                                         filesystems), so an entry created in the same tick as the listing would carry the
+#                                         stamp memoised for it and stay unseen until the directory changed again
+_subagent_dir_memo_lock = threading.Lock()   # the walk runs on the HTTP handler threads (/analytics), two at once possible
+
+
+def _subagent_dir_memo_drop(d):
+    """Forget directory `d` and every directory under it: gone, or no longer a directory (a symlink in its place).
+    Nothing to do when `d` is not in the memo: a directory enters it only through its parent's listing (a directory
+    changed within the racy window is in it too, under a stamp of None), so none of its descendants is there either,
+    and the pass over every key — the memo's size, paid at every session WITHOUT a subagents tree per analytics
+    pass before this check — is skipped. A child whose parent the cap evicted stays until the cap reaches it too:
+    nothing visits it and nothing serves it."""
+    if _subagent_dir_memo.pop(d, None) is None:
+        return
+    pre = d + os.sep
+    for k in list(_subagent_dir_memo):
+        if k.startswith(pre):
+            _subagent_dir_memo.pop(k, None)
+
+
 def _subagent_transcripts(path):
     """The subagent transcripts beside a session's main one, sorted; [] when none. The CLI writes each
     spawned agent's conversation under `<sid>/subagents/` next to `<sid>.jsonl`: Task agents as
@@ -43614,21 +43678,79 @@ def _subagent_transcripts(path):
     `workflows/wf_<id>/agent-<id>.jsonl` — its path parser takes any extra segments — so the walk is
     RECURSIVE (a flat listing misses every nested file; measured on one installation, those held a
     quarter of the sessions' tokens and 62% of their output tokens). Bounded to the session's own
-    subagents tree: no symlink is followed — not a directory (os.walk's followlinks=False), not a FILE
-    (os.walk lists a symlinked file like any other and the reader would open it wherever it points; the
-    CLI writes none, so one is a user's, and it is skipped), and not the subagents directory itself.
-    Cost: one directory read per directory under it plus one lstat per file."""
+    subagents tree: no symlink is followed — not a directory, not a FILE (the reader would open one
+    wherever it points; the CLI writes none, so one is a user's, and it is skipped), and not the
+    subagents directory itself.
+
+    Each directory's LISTING is memoised on the directory's own (st_mtime_ns, st_ino) in
+    _subagent_dir_memo: a directory's mtime moves when an entry is added, removed or renamed, and NOT
+    when a file under it grows, so a stamp that holds means the same names are still there and the
+    listing (open, read, close) is skipped for that directory alone, while a stamp that moved re-lists
+    that ONE directory. The per-file stat that sees a subagent transcript grow is the reader's
+    (_transcript_tok_rows) and is untouched by this. Before the memo every call read every directory
+    of the tree, and the analytics build (_token_analytics, the settings modal's chart) calls this once
+    per session discovered in its window, live or not, on an HTTP handler thread and so on the GIL:
+    five live sessions held 3,577 agent transcripts under 1,292 directories (one of them 326 past
+    workflows' directories), every one read per pass. The chat builds' walk over the same tree is
+    _subagent_dirs, with _subagent_meta_map's own cache, not this memo. Cost per call now: one lstat
+    per directory, plus one listing per directory whose stamp moved. A directory gone, or a symlink in
+    its place, drops from the memo with everything under it; a directory unreadable when listed yields
+    nothing under it (as os.walk had it) and is not memoised, so the next call tries again.
+
+    The stamp alone cannot tell a listing from an entry that landed in the same mtime tick after it:
+    the filesystem stamps with a coarser clock than the wall clock, so on a kernel before 6.13 (a
+    jiffy) or a filesystem with second stamps, a Workflow agent's file created right after the pass
+    that listed its directory would carry the memoised stamp and stay uncounted until that directory
+    changed again. So, git's racy-stamp rule: a directory changed within _SUBAGENT_DIR_RACY_NS of the
+    clock is listed, kept for its subdirectory names (stamp None, never a hit) and listed again on the
+    next call; it is served from the memo once it has been quiet that long. Only the directories a
+    session is writing into pay that, one or two per call, never the tree."""
     base, ext = os.path.splitext(str(path))
     if ext != ".jsonl":
         return []
-    d = os.path.join(base, "subagents")
-    if os.path.islink(d):
-        return []
     out = []
-    for root, dirs, files in os.walk(d):            # followlinks=False — never leaves the session's own tree
-        dirs.sort()
-        out.extend(p for p in (os.path.join(root, n) for n in files if n.endswith(".jsonl"))
-                   if not os.path.islink(p))
+    stack = [os.path.join(base, "subagents")]
+    racy_from = time.time_ns() - _SUBAGENT_DIR_RACY_NS    # a stamp at or past this may still be the tick an entry lands in
+    with _subagent_dir_memo_lock:
+        while stack:
+            d = stack.pop()
+            try:
+                st = os.lstat(d)
+            except OSError:                          # gone (a root that never existed: [] as ever)
+                _subagent_dir_memo_drop(d)
+                continue
+            if not stat.S_ISDIR(st.st_mode):         # a symlink (the root itself pointing elsewhere), or a file in its place
+                _subagent_dir_memo_drop(d)
+                continue
+            hit = _subagent_dir_memo.pop(d, None)    # re-set below: the memo's order is by last visit, for the cap
+            if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_ino:
+                files, subdirs = hit[2], hit[3]
+            else:
+                try:
+                    with os.scandir(d) as it:
+                        entries = list(it)
+                except OSError:                      # unreadable, or gone since the lstat: nothing under it, tried again next call
+                    _subagent_dir_memo_drop(d)
+                    continue
+                files, subdirs = [], []
+                for e in entries:
+                    try:
+                        if e.is_symlink():
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            subdirs.append(e.name)
+                        elif e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False):
+                            files.append(e.name)
+                    except OSError:
+                        continue
+                if hit is not None:
+                    for name in set(hit[3]).difference(subdirs):   # a subdirectory gone: its memo goes with it
+                        _subagent_dir_memo_drop(os.path.join(d, name))
+            _subagent_dir_memo[d] = (st.st_mtime_ns if st.st_mtime_ns < racy_from else None, st.st_ino, files, subdirs)
+            while len(_subagent_dir_memo) > _SUBAGENT_DIR_MEMO_MAX:
+                _subagent_dir_memo.pop(next(iter(_subagent_dir_memo)))
+            out.extend(os.path.join(d, n) for n in files)
+            stack.extend(os.path.join(d, n) for n in subdirs)
     return sorted(out)
 
 
@@ -43708,8 +43830,9 @@ def _session_tok_rows(path):
     subagent's rows in place; a per-session fingerprint would re-parse the whole tree whenever any one
     file moved, which on a session with Workflow agents running is every build. A subagent file gone
     between the listing and the read drops out and the rest still count. Cost per call: the subagents
-    walk (one directory read per directory), one stat per file, and the concatenation; parsing only for
-    the files whose stamp moved. The analytics build calls this ONCE per session (_session_usage)."""
+    walk (one stat per directory; a listing only for a directory whose own stamp moved, or that changed
+    within the last two seconds), one stat per file, and the concatenation; parsing only for the files
+    whose stamp moved. The analytics build calls this ONCE per session (_session_usage)."""
     rows = _transcript_tok_rows(str(path))
     if rows is None:
         return None
@@ -61872,7 +61995,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _pull_remote(host)
                 # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
                 # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
-                kcc = _restart_pending(checkout=_fresh_local_head()) if ok else None   # the head the pull just moved, read fresh, not the polls' cache
+                kcc = _restart_pending(checkout=_fresh_local_head() or "") if ok else None   # the head the pull just moved, read fresh; a failed read answers None, never the cache
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
                                   "application/json")
             if u.path == "/tunnels/askpull":
@@ -63929,6 +64052,7 @@ def main():
     #                                                           builds the backend itself if it wins the race)
     threading.Thread(target=_rewind_migration_bg, daemon=True).start()   # one-time dead-branch cleanup
     #                                                           of pre-fix residue, marker-gated
+    _seed_whole_chat_frames()   # the ROMP_CHAT_FLOOR0 seed, here where every definition it reaches is loaded (the 1704 read, low 1)
     threading.Thread(target=_producer, daemon=True, name="producer").start()   # named: the stack sample says whose frames
     threading.Thread(target=_pusher, daemon=True, name="pusher").start()
     _JOBS_THREAD_STARTED[0] = True                            # the boot row waits for this thread's first pass too

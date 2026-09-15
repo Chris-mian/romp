@@ -38,12 +38,16 @@ class ForkedSelfIdentity(unittest.TestCase):
         self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS
         self._env = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        # a Codex session's shell carries CODEX_THREAD_ID, the second identity source since 2026-09-15: a
+        # run launched from inside one would otherwise resolve an identity in the "no environment" case
+        self._codex = os.environ.pop("CODEX_THREAD_ID", None)
 
     def tearDown(self):
         if self._env is None:
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         else:
             os.environ["CLAUDE_CODE_SESSION_ID"] = self._env
+        restore_env("CODEX_THREAD_ID", self._codex)
         restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def test_exact_id_match_resolves_directly(self):
