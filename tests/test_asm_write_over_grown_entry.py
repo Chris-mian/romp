@@ -160,9 +160,10 @@ class WriteOverGrownEntry(Harness):
                 G.compact_line(t0 + 10, "b_deg", "att_deg_2"),
                 G.compact_summary_line(t0 + 11, "s_deg", "b_deg"),
                 G.uline(t0 + 20, "after the compaction, what remains?", "u_deg_1", "s_deg"),
-                G.aline(t0 + 30, "the cap and the retry budget remain", "a_deg_1", "u_deg_1", stop="end_turn"),
-                G.uline(t0 + 40, "then close them out", "u_deg_2", "a_deg_1"),
-                G.aline(t0 + 50, "closing both", "a_deg_2", "u_deg_2", stop="end_turn")]
+                G.aline(t0 + 30, "the cap and the retry budget remain", "a_deg_1", "u_deg_1", stop="end_turn")]
+        #        one settled turn after the compaction, so the boundary's turn is the last settled turn with a follower and the cut
+        #        stays at the boundary (stage one b moves the cut to the turn before the last settled turn with a follower; a second
+        #        turn here would put the boundary and the summary pre-cut and the document would no longer be degenerate)
         path = self.write("degenerate", recs)
         self.fresh(); self.parse(path)
         self.assertTrue(self.doc(path), em.asm_checkpoint_stats())

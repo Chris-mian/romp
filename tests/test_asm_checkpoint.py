@@ -175,10 +175,10 @@ class StringRowsAndRestoreSplit(Harness):
         self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
         return path
 
-    def test_a_written_document_is_version_6_with_string_rows_and_restores_equal(self):
+    def test_a_written_document_is_version_7_with_string_rows_and_restores_equal(self):
         path = self._compacting()
         d = _doc(path)
-        self.assertEqual(d["av"], 6)
+        self.assertEqual(d["av"], 7, "version 7: the settled-turn cut (stage one b)")
         self.assertGreater(len(d["atoms"]), 0)
         self.assertTrue(all(isinstance(r, str) for r in d["atoms"]), "every atom row is a JSON string")
         self.assertTrue(all(isinstance(json.loads(r), dict) for r in d["atoms"]), "each decodes to the row it was")
@@ -198,18 +198,21 @@ class StringRowsAndRestoreSplit(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once under `rows`: %s" % em.asm_checkpoint_stats()["fallbacks"])
         self.assertEqual(_strip(tree), self.cold(path))
 
-    def test_the_previous_version_is_refused_and_the_next_settle_writes_version_6(self):
+    def test_the_previous_version_is_refused_once_and_the_next_settle_writes_version_7(self):
+        # the deploy boot of stage one b: every version 6 document (the compaction cut) is refused ONCE under `version` and the
+        # settle that follows the whole parse writes the version 7 document (the settled-turn cut); the boot after restores
         path = self._compacting()
         d = _doc(path)
-        d["av"] = 5; d["atoms"] = [json.loads(r) for r in d["atoms"]]   # the previous version's document: dict rows
+        d["av"] = 6                                                # the previous version's document: string rows, the old cut rule
         _write_doc(path, d)
         em._ASM_CKPT_STATS["fallbacks"] = {}
         self.fresh(); modes = []; self.parse(path, modes)
         self.assertEqual(modes, ["full"]); self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "the migration boot's road")
         self.assertTrue(self.doc(path), "the settle rewrites it")
-        self.assertEqual(_doc(path)["av"], 6)
+        self.assertEqual(_doc(path)["av"], 7)
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"])
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "refused once, never again")
 
     def test_the_restore_split_reports_every_part_above_zero_after_one_fast_restore(self):
         """1606 low 3 and 1610 round two, medium 2: whole milliseconds, then tenths, reported zeros for the fast parts of one
@@ -514,9 +517,16 @@ class CyclesInThePreCutGraph(Harness):
         got = _strip(self.parse(path, modes))
         self.assertNotEqual(modes, ["restore"], "the standing document is refused: the tail left into the pre-cut interior (%s)" % em.asm_checkpoint_stats())
         self.assertEqual(got, cold, "the cold parse rules")
+        # stage one b: the refusal's own whole parse offers a rewrite over the RE-ROOTED spine (a1, the ring's child, is the first
+        # pre-cut record on the leaf's path). The only settled cut there leaves a1 pre-cut with its parent u1 resolved (last-wins)
+        # to the tail's reused record: a ring ACROSS the cut, which a restore cannot rebuild (the oracle found the restored world
+        # differing from the cold parse). The writer refuses such a cut (the pre-cut part must be closed under parents), and with
+        # no earlier cut the leaf has no document, as before stage one b (then: noBoundary)
         self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
-        self.assertFalse(self.doc(path)); self.assertIn("noBoundary", em.asm_checkpoint_stats()["skipped"],
-                                                         "the leaf's spine now bypasses the boundary: no document by design")
+        self.assertFalse(self.doc(path), "no document: %s" % em.asm_checkpoint_stats()["skipped"])
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"unsplittable": 1}, "every cut before the ring's child cuts nothing")
+        self.fresh(); modes = []
+        self.assertEqual(_strip(self.parse(path, modes)), cold); self.assertNotEqual(modes, ["restore"])
 
     def test_a_self_linked_pre_cut_record_is_a_root_and_the_document_restores_identical(self):
         path, whole, wrote = self._round_trip("self-link", _self_link_records())
@@ -782,12 +792,16 @@ class ConvergeAssembly(Harness):
         for name, val in (("CKPT_CONVERGE_MS", 150.0), ("CKPT_CONVERGE_BYTES", em._CKPT_CYCLE_CAP_DEFAULT), ("ASM_CONVERGE", True)):
             saved = getattr(self.km, name); setattr(self.km, name, val); self.addCleanup(setattr, self.km, name, saved)
 
-    def idle_leaf(self, name="idle", scenario="compaction_atom", age=600):
+    def idle_leaf(self, name="idle", scenario="compaction_atom", age=600, records=None):
         """A leaf idle past the reader's quiescence window, with no assembly document, parsed once by this process (the boot's
         read: a whole entry), registered as the only session."""
         import time
-        records, sent = G.SINGLE_FILE[scenario]
-        path = self.write(name, records(), sent=sent)
+        if records is None:
+            records, sent = G.SINGLE_FILE[scenario]
+            records = records()
+        else:
+            sent = None
+        path = self.write(name, records, sent=sent)
         old = time.time() - age; os.utime(path, (old, old))
         self.fresh(); self.parse(path)
         rows = [{"sid": SID, "path": path}]
@@ -961,13 +975,25 @@ class ConvergeAssembly(Harness):
         self.km._release_oldest(table)
         self.assertEqual(len(table), 4096); self.assertNotIn("k0", table); self.assertIn("k4099", table); self.assertNotIn("k3", table)
 
-    def test_a_leaf_without_a_boundary_is_looked_at_once(self):
-        path = self.idle_leaf("plain", scenario=next(n for n in G.SINGLE_FILE if n not in COMPACTING))
+    def test_a_leaf_without_a_boundary_but_with_a_settled_turn_gets_a_document(self):
+        # stage one b: the cut is the boundary before the last settled turn with a follower, so a leaf that never compacted
+        # is documented too (before it, no boundary meant no document: `noBoundary`)
+        path = self.idle_leaf("plain", scenario="author_kinds")     # three settled turns, no compaction
+        self.assertFalse(any(r.get("subtype") == "compact_boundary" for r in G.SINGLE_FILE["author_kinds"][0]()))
+        self.cycle(NOW + 600)
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertTrue(em._asm_ckpt_file(path).exists(), "%s" % cv)
+        self.assertEqual((cv["candidates"], cv["writes"]), (1, 1), "%s" % cv)
+
+    def test_a_leaf_with_no_settled_turn_before_its_last_has_no_cut_and_is_looked_at_once(self):
+        t = NOW - 3600
+        recs = [G.uline(t, "one question", "u1", None), G.aline(t + 5, "one answer", "a1", "u1", stop="end_turn")]
+        path = self.idle_leaf("oneturn", records=recs)
         for k in range(3):
             self.cycle(NOW + 600 + k)
         cv = em.asm_checkpoint_stats()["converge"]
         self.assertFalse(em._asm_ckpt_file(path).exists())
-        self.assertEqual((cv["candidates"], cv["skipped"].get("noBoundary"), cv["writes"]), (1, 1, 0), "no cut, no document, said once: %s" % cv)
+        self.assertEqual((cv["candidates"], cv["skipped"].get("noCut"), cv["writes"]), (1, 1, 0), "no cut, no document, said once: %s" % cv)
 
     def test_off_writes_nothing_and_a_live_leaf_is_left_to_the_settle(self):
         path = self.idle_leaf("off")
@@ -979,6 +1005,245 @@ class ConvergeAssembly(Harness):
         self.cycle(NOW + 601)
         self.assertFalse(em._asm_ckpt_file(live).exists()); self.assertEqual(em.asm_checkpoint_stats()["converge"]["candidates"], 0)
         self.assertIn("converge", self.km._PERF_STATS.snapshot()["asmCheckpoint"], "the counters ride /perf")
+
+
+
+def _turns_after(recs, tag, n, dt=100):
+    """`n` settled turns chained onto the last record of `recs`, each stamped `dt` seconds apart past every stamp in `recs`."""
+    t = max((em.parse_z(r.get("timestamp")) or 0) for r in recs if r.get("timestamp")) + dt
+    out, parent = [], _last_uuid(recs)
+    for k in range(n):
+        u, a = "ut_%s_%d" % (tag, k), "at_%s_%d" % (tag, k)   # the `ut_`/`at_` prefixes: no collision with compacting_variant's `u_<tag>_n`
+        out.append(G.uline(t + 2 * k * dt, "step %d of %s" % (k, tag), u, parent))
+        out.append(G.aline(t + (2 * k + 1) * dt, "step %d of %s is done" % (k, tag), a, u, stop="end_turn"))
+        parent = a
+    return out
+
+
+class SettledCut(Harness):
+    """Stage one b (plans/checkpoint-settled-cut.md): the cut is the boundary before the last SETTLED turn that has a following
+    turn, or the last compaction's turn, whichever is later. Every leaf with two settled turns gets a document, a compaction
+    is no longer required, the tip is a regular record proven childless of pre-cut children by construction, and the tail
+    proof at restore is the same reachability walk. The oracle: restore-then-hydrate equals the cold parse at every cut."""
+    def _cut_turn(self, path):
+        """The index of the turn the writer cuts before, from the tree the last parse returned, by the plan's rule."""
+        turns = self._trees[path]["turns"]
+        si = max((i for i in range(len(turns) - 1) if turns[i].get("ended")), default=None)
+        return si
+
+    def _written_and_equal(self, name, recs, sent=None):
+        path = self.write(name, recs, sent=sent)
+        whole = self.cold(path)
+        self.fresh(); self.parse(path)
+        em._ASM_CKPT_STATS["skipped"] = {}
+        wrote = self.doc(path)
+        return path, whole, wrote
+
+    def test_every_golden_scenario_is_documented_when_a_settled_turn_precedes_its_last_and_restores_equal(self):
+        """The oracle over the plain scenarios (no compaction appended): a document is written exactly when a settled turn with a
+        following turn exists (the rule), the writer proves the tip childless, and restore-then-hydrate equals the cold parse."""
+        restored, refused, undocumented = [], [], {}
+        for name in G.SINGLE_FILE:
+            with self.subTest(scenario=name):
+                records, sent = G.SINGLE_FILE[name]
+                path, whole, wrote = self._written_and_equal("plain-" + name, records(), sent=sent)
+                ci = self._cut_turn(path)
+                compacts = any(r.get("subtype") == "compact_boundary" for r in records())
+                if ci is None and not compacts:
+                    self.assertFalse(wrote); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"noCut": 1}, name)
+                    undocumented[name] = "noCut"; continue
+                if ci == 0 and not compacts:
+                    self.assertFalse(wrote); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"unsplittable": 1},
+                                                              "a cut before the first turn leaves nothing pre-cut: %s" % name)
+                    undocumented[name] = "unsplittable"; continue
+                self.assertTrue(wrote, "%s: %s" % (name, em.asm_checkpoint_stats()["skipped"]))
+                self.assertIs(_doc(path).get("tipChildless"), True, "a settled-turn cut's tip is proven childless: %s" % name)
+                self.fresh(); modes = []
+                tree = self.parse(path, modes); em.hydrate(tree, SID)
+                self.assertEqual(_strip(tree), whole, "the parse from the document, restored or refused, equals the whole parse: %s" % name)
+                (restored if modes == ["restore"] else refused).append(name)
+        self.assertEqual(sorted(undocumented), sorted(["multi_input_absorbed", "popall", "clear_breaks_lineage", "slash_command_turn", "retry_superseded",
+                                                       "queued_new_turn", "idle_atom", "rewind_off_path", "eclipsed_branch_kept"]),
+                         "one-turn and two-turn scenarios have no pre-cut part: %s" % undocumented)
+        self.assertEqual(refused, ["broken_chain_kept"], "the one tail the proof cannot chain (a record parented on a uuid the file never wrote) "
+                                                         "is refused and walked cold, as a re-rooted tail is today; the rest restore: %s" % refused)
+        self.assertEqual(sorted(restored), sorted(["author_kinds", "compaction_atom", "compaction_broken_stitch", "manual_compact_detached"]), restored)
+
+    def test_the_cut_moves_with_each_settled_turn_and_restores_equal_at_every_position(self):
+        """The sweep over cut positions: a compacting scenario grows one settled turn at a time; at every settle (a fresh
+        entry each time, so the churn bound does not hold the standing document) the document's cut is the boundary before
+        the last settled turn with a follower, and restore-then-hydrate equals the cold parse at that position."""
+        for name in ("compaction_atom", "manual_compact_detached"):
+            records, sent = G.SINGLE_FILE[name]
+            recs = list(records())
+            cuts = []
+            for k in range(1, 6):
+                with self.subTest(scenario=name, turns_after=k):
+                    recs = recs + _turns_after(recs, "%s%d" % (name[:4], k), 1)
+                    path, whole, wrote = self._written_and_equal("sweep-%s-%d" % (name, k), recs, sent=sent)
+                    self.assertTrue(wrote, em.asm_checkpoint_stats()["skipped"])
+                    d = _doc(path)
+                    cut_uuid = d["records"][len(d["records"]) - 1][0] if d.get("records") else None
+                    tail_first = em.asm_checkpoint_stats()
+                    cuts.append(len(d["records"]))
+                    self.assertIs(d.get("tipChildless"), True)
+                    got, modes, n_lazy = self.restored(path)
+                    self.assertEqual(modes, ["restore"], "%s at %d: %s" % (name, k, em.asm_checkpoint_stats()))
+                    self.assertEqual(got, whole)
+            self.assertEqual(cuts, sorted(cuts), "the cut advances with the settled turns: %s" % cuts)
+            self.assertGreater(cuts[-1], cuts[0], "the cut moved past the compaction as turns settled")
+
+    def test_the_ring_fixture_at_a_cut_past_the_ring_restores_equal(self):
+        recs = _ring_records() + _turns_after(_ring_records(), "past", 3)
+        path, whole, wrote = self._written_and_equal("ring-past", recs)
+        self.assertTrue(wrote, em.asm_checkpoint_stats()["skipped"])
+        d = _doc(path)
+        self.assertGreater(len(d["records"]), 5, "the ring and the compaction are pre-cut; the cut sits at a settled turn past them")
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], whole))
+
+    def _documented_base(self, name, big=False):
+        """A documented leaf with four settled turns after a compaction (the cut before the fourth), its cold parse, the records,
+        and the tip's uuid. `big` makes the opener large enough that one more turn stays under the churn bound's share."""
+        opener = [G.uline(NOW - 3600, "hello " * (2000 if big else 1), "u1", None), G.aline(NOW - 3595, "hi " * (4000 if big else 1), "a1", "u1", stop="end_turn")]
+        base = compacting_variant(opener, name)
+        recs = base + _turns_after(base, name, 2)
+        path, whole, wrote = self._written_and_equal(name, recs)
+        self.assertTrue(wrote, em.asm_checkpoint_stats()["skipped"])
+        d = _doc(path)
+        tip = d["records"][d["spine"][-1]][0]
+        self.assertEqual(tip, "a_%s_2" % name, "the settled turns after the compaction are pre-cut and the tip is a regular record "
+                                                "(before stage one b the cut was the boundary's turn and the tip the opener's answer)")
+        return path, whole, recs, tip
+
+    def test_each_adversarial_tail_shape_refuses_the_document_and_the_cold_parse_rules(self):
+        """Correction 5: one shape per class the earlier rounds found, appended past a settled-turn cut. Each refuses the
+        standing document (the tail leaves the tail's forest, or re-roots it) and restore-then-hydrate equals the cold parse.
+        The control (a plain settled turn chained on the leaf) restores."""
+        shapes = {
+            "repeated uuid across the cut": lambda recs, tip: [G.uline(NOW + 900, "reusing a pre-cut uuid", "u1", _last_uuid(recs))],
+            "self-link at the tip": lambda recs, tip: [G.uline(NOW + 900, "a self-linked record", "u_self", "u_self")],
+            "rewind from the tail onto a pre-cut record": lambda recs, tip: [G.uline(NOW + 900, "rewound onto the opener", "u_rw", "a1"),
+                                                                             G.aline(NOW + 905, "answered from there", "a_rw", "u_rw", stop="end_turn")],
+            "a /clear fork in the tail": lambda recs, tip: [G.uline(NOW + 900, "a fresh root after /clear", "u_clear", None),
+                                                            G.aline(NOW + 905, "starting over", "a_clear", "u_clear", stop="end_turn")],
+            "a compaction boundary in the tail anchored on a pre-cut record": lambda recs, tip: [G.compact_line(NOW + 900, "b_pre", "a1"),
+                                                                                                   G.compact_summary_line(NOW + 901, "s_pre", "b_pre")],
+        }
+        proven = []                                            # every shape's verdict, asserted OUTSIDE the subtests too
+        for label, mk in list(shapes.items()) + [("control: a settled turn on the leaf", None)]:
+            with self.subTest(shape=label):
+                name = "adv-" + "".join(ch if ch.isalnum() else "-" for ch in label)[:40]
+                path, whole, recs, tip = self._documented_base(name)
+                extra = mk(recs, tip) if mk else _turns_after(recs, "ctl", 1)
+                pp = Path(path); pp.write_text(pp.read_text() + "".join(json.dumps(r) + "\n" for r in extra))
+                cold = self.cold(path)
+                self.fresh(); modes = []
+                tree = self.parse(path, modes)
+                em.hydrate(tree, SID)
+                if mk is None:
+                    self.assertEqual(modes, ["restore"], "the control chains onto the tip: %s" % em.asm_checkpoint_stats())
+                else:
+                    self.assertNotEqual(modes, ["restore"], "the standing document is refused for %s: %s" % (label, em.asm_checkpoint_stats()))
+                self.assertEqual(_strip(tree), cold, "restore-then-hydrate equals the cold parse: %s" % label)
+                proven.append(label)
+        self.assertEqual(len(proven), len(shapes) + 1, "every shape ran to its verdict over a settled-turn cut: %s" % proven)
+
+    def test_the_standing_document_holds_until_the_tail_reaches_the_share_or_a_compaction_lands(self):
+        """Correction 2, the churn bound: with the entry standing (no restart), a settled turn appended past the cut leaves
+        the document as it is (`written`: the tail is under an eighth of the pre-cut bytes); once the tail past the standing
+        cut reaches the share the settle rewrites the document with a later cut; a compaction landing past the cut rewrites
+        at once."""
+        base = compacting_variant([G.uline(NOW - 3600, "hello " * 2000, "u1", None), G.aline(NOW - 3595, "hi " * 4000, "a1", "u1", stop="end_turn")], "churn")
+        recs = base + _turns_after(base, "churn", 2)
+        path, whole, wrote = self._written_and_equal("churn", recs)
+        self.assertTrue(wrote, em.asm_checkpoint_stats()["skipped"])
+        d0 = _doc(path); n0 = len(d0["records"])
+        pre = sum(int((f.get("cut") or [0])[0]) for f in d0["files"].values())
+        # one small settled turn: under the share, the standing document stands
+        recs = recs + _turns_after(recs, "small", 1)
+        pp = Path(path); pp.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"written": 1}, "%s" % em.asm_checkpoint_stats()["skipped"])
+        self.assertEqual(len(_doc(path)["records"]), n0, "the document is the one written before")
+        # the tail grows to the share: the settle rewrites with a later cut
+        tail = os.path.getsize(path) - pre
+        k = 0
+        for _k in range(400):                                  # loop-ok: bounded; the share is reached long before
+            if tail * em._ASM_TAIL_SHARE >= pre:
+                break
+            recs = recs + _turns_after(recs, "grow%d" % k, 1); k += 1
+            pp.write_text("".join(json.dumps(r) + "\n" for r in recs))
+            tail = os.path.getsize(path) - pre
+        self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertTrue(self.doc(path), "the tail reached the share: rewritten (%s)" % em.asm_checkpoint_stats()["skipped"])
+        d1 = _doc(path)
+        self.assertGreater(len(d1["records"]), n0, "the cut advanced")
+        got, modes, _n = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], self.cold(path)))
+        # a compaction landing past the cut rewrites at once, whatever the tail's share
+        self.fresh(); self.parse(path); self.assertFalse(self.doc(path)); n1 = len(_doc(path)["records"])
+        recs = compacting_variant(recs, "late")
+        pp.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertTrue(self.doc(path), "a compaction past the cut: rewritten (%s)" % em.asm_checkpoint_stats()["skipped"])
+        self.assertGreater(len(_doc(path)["records"]), n1)
+        got, modes, _n = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], self.cold(path)))
+
+    def test_a_tail_that_never_settles_keeps_the_previous_cut_and_restores_equal(self):
+        """The cut never chases a live turn: an open turn (a user record with no result) is the tail; the cut stands at the
+        boundary before the last settled turn with a follower, the document stands, and the restore equals the cold parse."""
+        path, whole, recs, tip = self._documented_base("open", big=True)
+        rows0 = [row[0] for row in _doc(path)["records"]]; n0 = len(rows0)
+        self.assertIn("a_open_2", rows0, "the settled turns after the compaction are pre-cut (before stage one b the cut was the boundary's turn)")
+        self.assertEqual(tip, "a_open_2", "the tip is the record before the cut turn (the last settled turn with a follower): a regular record")
+        extra = [G.uline(NOW + 900, "a question still being answered", "u_open", _last_uuid(recs))]
+        pp = Path(path); pp.write_text(pp.read_text() + "".join(json.dumps(r) + "\n" for r in extra))
+        self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertFalse(self.doc(path), "nothing rewritten while the turn is open: %s" % em.asm_checkpoint_stats()["skipped"])
+        cold = self.cold(path)
+        got, modes, _n = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], cold))
+        self.assertEqual(len(_doc(path)["records"]), n0)
+        # a restart with the open turn in place: the standing document restores (the open turn is its tail) and the restored
+        # entry writes nothing (`restored`: the document stands until the fold's gate demotes it)
+        self.fresh(); modes = []; self.parse(path, modes); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertEqual(modes, ["restore"]); self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"restored": 1})
+        d = _doc(path)
+        self.assertNotIn("u_open", {row[0] for row in d["records"]}, "the open turn is the tail, never pre-cut")
+
+    def test_a_refusal_mark_is_retired_with_the_rewrite_that_moves_the_cut(self):
+        """Correction 3: a `refusedStanding` mark belongs to a cut; when a compaction lands and the rewrite moves the cut, the
+        mark goes with the sidecar it stood in (its bytes kept as `<meta>.retired-<stamp>`), and the next restore proves the
+        new document instead of standing down on the old mark."""
+        # the shape: a turn parented on a uuid the file never wrote (the broken chain the parse keeps as its own turn) lands in
+        # the tail of the settled cut, followed by a settled turn on the leaf; the proof cannot chain the orphan, the refusal's
+        # whole parse offers a rewrite that reproduces the same cut (the last settled turn with a follower has not moved), and
+        # the mark stands for the leaf's stat
+        path, whole, recs, tip = self._documented_base("mark")
+        extra = [G.uline(NOW + 900, "a record whose parent the file never wrote", "u_ghost", "ghost-missing-uuid"),
+                 G.aline(NOW + 905, "answered anyway", "a_ghost", "u_ghost", stop="end_turn")]   # the last turn: the cut stays put
+        recs = recs + extra
+        pp = Path(path); pp.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        self.fresh(); modes = []; self.parse(path, modes)
+        self.assertNotEqual(modes, ["restore"]); self.assertTrue(em._asm_refusal_stands(path), "the mark stands: the rewrite reproduced the cut")
+        meta = em._asm_ckpt_file(path).with_name(em._asm_ckpt_file(path).name + ".meta")
+        self.assertIn("refused", json.loads(meta.read_text()))
+        recs = recs + _turns_after(recs, "moved", 2)                 # two settled turns on the leaf: the cut moves past the orphan turn
+        pp.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        em._ASM_CKPT_STATS["skipped"] = {}
+        self.fresh(); modes = []; self.parse(path, modes)            # the leaf moved: the mark clears, the proof refuses the OLD document
+        self.assertNotEqual(modes, ["restore"])                      #  once more (the orphan is still its tail), and the refusal's rewrite
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"], {})   #  moves the cut past the orphan turn: written, not marked
+        self.assertNotIn("refused", json.loads(meta.read_text()), "the mark for the old cut is gone from the sidecar")
+        retired = sorted(meta.parent.glob(meta.name + ".retired-*"))
+        self.assertEqual(len(retired), 1, "the old sidecar's bytes are kept beside it: %s" % retired)
+        self.assertIn("refused", json.loads(retired[0].read_text()))
+        self.assertFalse(em._asm_refusal_stands(path))
+        cold = self.cold(path)
+        got, modes, _n = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], cold), "the next restore proves the new document: %s" % em.asm_checkpoint_stats())
 
 
 class HydrationAttribution(Harness):

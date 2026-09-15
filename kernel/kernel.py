@@ -840,7 +840,7 @@ class _PerfStats:
                 "checkpoints": em.checkpoint_stats(),
                 "recordCache": em.record_cache_stats(),   # the shared reader's byte budget and its evictions (2026-09-11)
                 # T323 stage 4a: the assembly documents: written, restored, fallbacks per reason, skips per reason (noEntry,
-                # restored, noBoundary, unsplittable, oversize, ...), hydrated bodies and bytes since boot
+                # restored, noCut, unsplittable, oversize, ...), hydrated bodies and bytes since boot
                 "asmCheckpoint": em.asm_checkpoint_stats(),
                 "asmIndex": em.asm_index_stats(),          # the lazy index (T323 stage 4c): atoms built, by caller, resident
                 "chatPages": dict(_PAGE_STATS)}   # the pre-floor history pages (T323 stage 4b): hits, misses, evictions, resident
@@ -11189,7 +11189,8 @@ _ASM_CONVERGE_DONE = {}             # leaf -> the file's (mtime_ns, size) once i
 #                                     writer refused it for a property of its cut (T376): looked at once per file state, never per cycle
 _ASM_CONVERGE_BLIP = {}             # leaf -> the file state under which the writer's one blip retry was spent
 _ASM_CONVERGE_NOENTRY = {}          # leaf -> the file state under which "no entry" was counted (once, not per cycle)
-_ASM_STRUCTURAL = set(em._ASM_SKIP_STRUCTURAL) | {"noBoundary", "written", "restored"}   # the writer's reasons that hold until the cut moves
+_ASM_STRUCTURAL = set(em._ASM_SKIP_STRUCTURAL) | {"written", "restored"}   # the writer's reasons that hold until the cut moves (noCut
+#                                                                              rides in the writer's own structural set, stage one b)
 
 
 def _converge_assembly(now, t0):
