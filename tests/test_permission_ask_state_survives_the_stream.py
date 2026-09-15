@@ -14,6 +14,8 @@ the stream and the ask sites' settle all take it; the text still feeds, only the
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -85,6 +87,45 @@ def _session(be, sid=SID):
 def _states(be, sid):
     p = os.path.join(be.state_dir, "states", sid + ".jsonl")
     return [json.loads(l)["state"] for l in open(p) if l.strip() and "state" in json.loads(l)]
+
+
+def _working_census(src):
+    """Every ast.Constant "working" in `src` as (enclosing def or <module>, the holding node's kind), sorted with counts."""
+    import ast
+    tree, found = ast.parse(src), []
+    def walk(node, stack):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, stack + [child.name]); continue
+            if isinstance(child, ast.Constant) and child.value == "working":
+                found.append((stack[-1] if stack else "<module>", type(node).__name__))
+            walk(child, stack)
+    walk(tree, [])
+    return sorted(((k, found.count(k)) for k in set(found)))
+
+
+def _callers_of_the_gate(src):
+    import ast
+    tree, callers = ast.parse(src), []
+    def walk(node, stack):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, stack + [child.name]); continue
+            if isinstance(child, ast.Call):
+                f = child.func
+                if (f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)) == "_mark_producing":
+                    callers.append(stack[-1] if stack else "<module>")
+            walk(child, stack)
+    walk(tree, [])
+    return sorted(set(callers))
+
+
+# the holders of the constant "working" in kernel/sdk_backend.py, by def and by the node that holds it (a count each): two
+# state tuples at module level, _mark's comparison, snapshot's conditional and tuple, drive_idle_queue's and _live_row's
+# tuples, and the gate's call, the module's ONE writer
+WORKING_HOLDERS = sorted([(("<module>", "Tuple"), 2), (("_live_row", "Tuple"), 1), (("_mark", "Compare"), 1),
+                          (("_mark_producing", "Call"), 1), (("drive_idle_queue", "Tuple"), 1), (("snapshot", "IfExp"), 1),
+                          (("snapshot", "Tuple"), 1)])
 
 
 class ParkedPermissionKeepsItsState(unittest.TestCase):
@@ -165,32 +206,54 @@ class TheNeedsYouReadersShareOneState(unittest.TestCase):
         self.assertIn("if self.inflight > 0 and not parked:", BSRC)
 
     def test_the_one_gate_yields_to_a_parked_ask_and_every_writer_of_working_takes_it(self):
-        import ast
         self.assertIn('    def _mark_producing(self) -> None:', BSRC, "the gate exists")
         self.assertIn('        if self.backend._pending_ask.get(self.sid) is not None:\n            return\n        self._mark("working")', BSRC,
                       "the gate yields while the backend holds a pending ask for the session")
         self.assertIn('append_state(self.backend.state_dir, self.sid, state)', BSRC, "the mark writes the log the snapshot reads")
-        # the census: the module's ONLY literal writer of "working" is the gate; every other writer calls the gate, and the
-        # callers are exactly the five known doors (a sixth writer added later fails here, whichever way it writes)
-        tree = ast.parse(BSRC)
-        literal, callers = [], []
-        def walk(node, stack):
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    walk(child, stack + [child.name]); continue
-                if isinstance(child, ast.Call):
-                    f = child.func
-                    name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
-                    if name in ("_mark", "append_state") and any(isinstance(a, ast.Constant) and a.value == "working" for a in child.args):
-                        literal.append(stack[-1] if stack else "<module>")
-                    if name == "_mark_producing":
-                        callers.append(stack[-1] if stack else "<module>")
-                walk(child, stack)
-        walk(tree, [])
-        self.assertEqual(literal, ["_mark_producing"], "one literal writer of working, the gate itself: %r" % literal)
-        self.assertEqual(sorted(set(callers)), ["_approve_plan", "_ask_user", "_can_use_tool", "_forward", "inputs"],
-                         "the five doors: the feeder's pop, the stream's re-assert, the three ask sites' settle: %r" % sorted(set(callers)))
+        self.assertEqual(_callers_of_the_gate(BSRC), ["_approve_plan", "_ask_user", "_can_use_tool", "_forward", "inputs"],
+                         "the five doors take the gate: the feeder's pop, the stream's re-assert, the three ask sites' settle")
 
+    def test_every_constant_working_in_the_module_has_a_named_holder_and_the_gate_is_the_only_writer_shape(self):
+        # EVERY ast.Constant whose value is "working", mapped to its enclosing def and the node that holds it: the readers by
+        # their shapes (tuples of states, a comparison, a conditional), and the gate as the ONLY call-argument holder. A new
+        # holder of the constant anywhere in the module, of any shape, changes this multiset and fails here; a reader added
+        # later is registered here on purpose.
+        self.assertEqual(_working_census(BSRC), WORKING_HOLDERS, "the holders of the working constant, by def and shape")
+        write_shapes = {k for (k, n) in WORKING_HOLDERS if k[1] in ("Call", "keyword", "Assign", "AnnAssign", "Return")}
+        self.assertEqual(write_shapes, {("_mark_producing", "Call")}, "one write-shaped holder: the gate")
+
+    def test_the_census_catches_the_four_shapes_of_a_sixth_writer(self):
+        # proven, not promised: a copy of the module with a sixth writer spliced in, in each shape the round-two read tried,
+        # changes the census (a literal in a new method, a VARIABLE holding the string, the state as a KEYWORD, a wrapper
+        # taking the string, and a module-level function)
+        anchor = "    def _mark(self, state: str) -> None:"
+        self.assertEqual(BSRC.count(anchor), 1)
+        mutants = {
+            "a literal in a new method": '    def _sixth_door(self):\n        self._mark("working")\n\n',
+            "a variable holding the string": '    def _sixth_door(self):\n        st = "working"\n        self._mark(st)\n\n',
+            "the state as a keyword": '    def _sixth_door(self):\n        append_state(self.backend.state_dir, self.sid, state="working")\n\n',
+            "a wrapper taking the string": '    def _mark_busy(self, s):\n        self._mark(s)\n\n    def _sixth_door(self):\n        self._mark_busy("working")\n\n',
+        }
+        for label, ins in mutants.items():
+            self.assertNotEqual(_working_census(BSRC.replace(anchor, ins + anchor, 1)), WORKING_HOLDERS, "caught: " + label)
+        self.assertNotEqual(_working_census(BSRC + '\n\ndef _module_door(sess):\n    sess._mark("working")\n'), WORKING_HOLDERS,
+                            "caught: a module-level function writing the literal")
+
+    def test_the_real_feeder_leaves_a_parked_asks_state_alone_and_feeds_the_text(self):
+        # the real inputs() generator under the real _amain with a stub SDK client, the real ask coroutines and the real
+        # forward, in its own process (the stub module must not sit in this process's sys.modules): a permission parked,
+        # the composer's text fed, the log unchanged; the stream likewise; the answer settles with one working line; the
+        # control pop marks working with nothing parked; a picker the same way. Red at the base on feeder_left_permission.
+        drive = os.path.join(HERE, "permission_ask_feeder_drive.py")
+        p = subprocess.run([sys.executable, drive, os.path.dirname(HERE)], capture_output=True, text=True, timeout=120)
+        line = next((l for l in p.stdout.splitlines() if l.startswith("CHECKS:")), None)
+        self.assertIsNotNone(line, "the drive reported (stderr tail: %s)" % p.stderr[-1500:])
+        checks = json.loads(line[len("CHECKS:"):])
+        failed = {k: v for k, v in checks.items() if not v[0]}
+        self.assertEqual(failed, {}, "every check of the real feeder drive holds")
+        self.assertEqual(sorted(checks), sorted(["parked_marks_permission", "text_fed", "feeder_left_permission", "ask_still_parked",
+                                                 "stream_left_permission", "answer_delivered", "settle_marks_working_once", "ask_cleared",
+                                                 "control_pop_marks_working", "picker_text_fed_state_stands", "picker_settle_marks_working"]))
 
 if __name__ == "__main__":
     unittest.main()
