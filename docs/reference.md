@@ -2636,6 +2636,22 @@ lazy atoms (a page hydrates its own turns), memoized in a bounded cache
 from one record); the notes romp adds (a retry recovered, an effort change, an
 orphan reply) carry synthetic uuids keyed by their second and ordinal.
 
+### The judges' own process: `romp-judge --serve`
+
+Stage three of the process split (plans/judges-process.md) moves the judge pass into one long-lived child, `romp-judge
+--serve`, that the kernel starts at boot and speaks to over a line protocol on the child's stdin and stdout (JSON, one
+object per line). The child announces `{"op":"ready","pid","judgeVersion","protocolVersion"}` once; the kernel sends
+`{"op":"pass","seq","now","tracking"}` per producer wake and `{"op":"quit"}` to end; the child answers exactly one
+`{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recordCache","asmCheckpoint"}` per pass,
+the same figures the `/perf` judge block reads plus the child's own record cache and checkpoint blocks. Inside a pass the
+child does what the in-process producer does between opening and ending the evidence frame: both tiers in parallel under
+one frame, a barrier, the stores written as before; `tracking` false starts no tier and still answers. One pass at a time:
+a `pass` arriving before the previous `done` is answered `{"op":"error","reason":"busy"}` and dropped, never queued; a
+malformed line answers `malformed`, an unknown op `unknownOp`, and the loop continues. Every stderr line of the child
+carries the prefix `romp-judge: `, and the child's stdout is rebound to its stderr for the whole process, so no diagnostic
+can reach the protocol channel. The kernel's side (the request, the hard bound, the restart count, the switch that
+defaults to the in-process loop) is described with the producer above once it lands.
+
 ## The file preview popover
 
 Hovering a local file link in the chat (or focusing it from the keyboard) pops up

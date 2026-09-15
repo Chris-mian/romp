@@ -19502,8 +19502,186 @@ def _dump_goals():
         print()
 
 
+# ───────────────────────── the judges' own process: `romp-judge --serve` (stage three of the process split) ─────────────────────────
+# plans/judges-process.md (2026-09-15): the kernel starts ONE long-lived `romp-judge --serve` child at boot and speaks a line
+# protocol over its stdin and stdout, one `pass` per producer wake; the child runs both tiers under its own pass frame and its
+# own parse store, writes the stores as the in-process loop does today, and answers one `done` line with the counters the
+# kernel's /perf judge block reads. The kernel's side (the request, the hard bound, the restart count, the bookkeeping around
+# the request, the switch defaulting to the in-process loop) lives in kernel.py; this side is the child alone.
+#
+#   child  -> {"op":"ready","pid":<int>,"judgeVersion":<str>,"protocolVersion":<int>}          once, at start
+#   kernel -> {"op":"pass","seq":<int>,"now":<epoch>,"tracking":<bool>}                         one per wake
+#   child  -> {"op":"done","seq":<int>,"wallMs":..,"tierStarts":0|2,"tierCpuMs":..,"workerCpuMs":..,
+#              "failures":null|{"count":<int>,"first":<str>},"recordCache":{..},"asmCheckpoint":{..}}   one per pass
+#   child  -> {"op":"error","seq":<int|null>,"reason":"malformed"|"unknownOp"|"busy"}          a request it cannot take
+#   kernel -> {"op":"quit"}                                                                     (or stdin's end): exit 0
+#
+# One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and DROPPED, never queued, so a stuck
+# tier cannot pile requests behind the kernel's bound (the kernel sends one per wake; this is the fail-safe). Every stderr
+# line of the process carries the prefix `romp-judge: ` so the kernel can attribute the child's diagnostics when it drains
+# the pipe, and sys.stdout is rebound to that stderr for the whole process, so no stray print can reach the protocol channel.
+PROTOCOL_VERSION = 1
+
+
+class _PrefixedStream:
+    """A text stream that prefixes every line it writes (the child's stderr under `romp-judge: `)."""
+    def __init__(self, raw, prefix):
+        self._raw, self._prefix, self._at_start, self._lock = raw, prefix, True, threading.Lock()
+
+    def write(self, s):
+        if not s:
+            return 0
+        with self._lock:
+            ends = s.endswith("\n")
+            body = s[:-1] if ends else s
+            text = (self._prefix if self._at_start else "") + ("\n" + self._prefix).join(body.split("\n")) + ("\n" if ends else "")
+            self._at_start = ends
+            self._raw.write(text)
+        return len(s)
+
+    def flush(self):
+        self._raw.flush()
+
+    def fileno(self):
+        return self._raw.fileno()
+
+    def isatty(self):
+        return False
+
+
+def _judge_version():
+    """The repository's VERSION file beside kernel/ (the child announces it on its ready line)."""
+    try:
+        return (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
+    except OSError:
+        return "unknown"
+
+
+_SERVE_STAGE = threading.local()
+
+
+def _set_stage(name):
+    """The child's per-thread stage mark, the kernel's `_set_stage` counterpart for the serve loop: installed as the event
+    model's stage provider by serve(), so a tier thread's reads and hydrations, and its pool workers', count under
+    judge.<tier> in the child's own record cache figures (the stage census in tests/test_stage_marks.py reads this call in a
+    thread target's body as the mark). A no-op for the in-process judges: the kernel installs its own provider."""
+    _SERVE_STAGE.name = name
+
+
+def _read_stage():
+    return getattr(_SERVE_STAGE, "name", None)
+
+
+def _serve_fault(tier):
+    """A TEST knob and nothing else: ROMP_JUDGE_SERVE_FAULT = "raise:<tier>" makes that tier raise before it runs,
+    "sleep:<tier>:<seconds>" makes it sleep first; the kernel never sets it. Enumerated behaviours, never code."""
+    spec = os.environ.get("ROMP_JUDGE_SERVE_FAULT") or ""
+    parts = spec.split(":")
+    if len(parts) >= 2 and parts[1] == tier:
+        if parts[0] == "raise":
+            raise RuntimeError("test fault in the %s tier" % tier)
+        if parts[0] == "sleep" and len(parts) >= 3:
+            time.sleep(float(parts[2]))
+
+
+def _serve_tier(fn, tier, failures, cpu):
+    """The kernel's _run_tier shape inside the child: the tier's stage mark (its reads and hydrations count under
+    judge.<tier> in the child's own record cache figures), a crash logged and counted, never raised, the thread's own
+    CPU over the run added to `cpu`."""
+    c0 = time.thread_time()
+    _set_stage("judge." + tier)
+    try:
+        _serve_fault(tier)
+        fn()
+    except Exception:
+        tb = traceback.format_exc()
+        sys.stderr.write("serve tier %s: %s\n" % (tier, tb))
+        failures.append(tb.strip().splitlines()[-1][:200])
+    finally:
+        _set_stage(None)
+        cpu[0] += time.thread_time() - c0
+
+
+def _serve_pass(req, emit):
+    """ONE judge pass, exactly what the kernel's producer does between begin_pass_frame and end_pass_frame: both tiers
+    in parallel threads under one evidence frame, a barrier, then the `done` line. `tracking` False starts no tier
+    (no kernel-initiated model call) and still answers."""
+    _set_stage("producer")                        # the pass thread's own parses count under the producer, as the kernel's do
+    seq = req.get("seq")
+    now = req.get("now")
+    now = int(now) if isinstance(now, (int, float)) and not isinstance(now, bool) else None
+    tracking = bool(req.get("tracking", True))
+    t0 = time.monotonic()
+    failures, cpu = [], [0.0]
+    worker0 = judge_worker_cpu_ms()
+    tiers = []
+    if tracking:
+        tiers = [threading.Thread(target=_serve_tier, args=(lambda: run_index(now=now), "index", failures, cpu), name="index"),
+                 threading.Thread(target=_serve_tier, args=(lambda: run_triage(now=now), "triage", failures, cpu), name="triage")]
+    frame = begin_pass_frame()                    # ONE evidence frame for BOTH tiers and their worker pools
+    try:
+        for t in tiers:
+            t.start()
+        for t in tiers:                           # barrier: both tiers finish before the answer
+            t.join()
+    finally:
+        end_pass_frame(frame)
+    emit({"op": "done", "seq": seq, "wallMs": round((time.monotonic() - t0) * 1000.0, 3), "tierStarts": len(tiers),
+          "tierCpuMs": round(cpu[0] * 1000.0, 3), "workerCpuMs": round(judge_worker_cpu_ms() - worker0, 3),
+          "failures": ({"count": len(failures), "first": failures[0]} if failures else None),
+          "recordCache": em.record_cache_stats(), "asmCheckpoint": em.asm_checkpoint_stats()})
+
+
+def serve(inp=None, out=None):
+    """The child's loop (the protocol above): read request lines from `inp` (stdin), answer on `out` (the real stdout),
+    one pass at a time, until `quit` or the end of input. Returns the exit status (0)."""
+    inp = inp if inp is not None else sys.stdin
+    real_out = out if out is not None else sys.__stdout__
+    sys.stderr = _PrefixedStream(sys.__stderr__, "romp-judge: ")
+    sys.stdout = sys.stderr                       # no stray print reaches the protocol channel
+    em.set_stage_provider(_set_stage)             # the child's marks: judge.<tier> on the tier threads and their pool workers
+    em.set_read_stage_provider(_read_stage)
+    emit_lock = threading.Lock()
+
+    def emit(obj):
+        with emit_lock:
+            real_out.write(json.dumps(obj, separators=(",", ":")) + "\n")
+            real_out.flush()
+
+    emit({"op": "ready", "pid": os.getpid(), "judgeVersion": _judge_version(), "protocolVersion": PROTOCOL_VERSION})
+    running = [None]
+    for line in iter(inp.readline, ""):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+            if not isinstance(req, dict) or not isinstance(req.get("op"), str):
+                raise ValueError("not a request object")
+        except ValueError:
+            emit({"op": "error", "seq": None, "reason": "malformed"})
+            continue
+        seq = req.get("seq")
+        if req["op"] == "quit":
+            break
+        if req["op"] != "pass":
+            emit({"op": "error", "seq": seq, "reason": "unknownOp"})
+            continue
+        if running[0] is not None and running[0].is_alive():
+            emit({"op": "error", "seq": seq, "reason": "busy"})   # dropped, never queued
+            continue
+        running[0] = threading.Thread(target=_serve_pass, args=(req, emit), name="serve-pass")
+        running[0].start()
+    if running[0] is not None and running[0].is_alive():
+        running[0].join()                         # a pass in flight answers before the exit; the kernel's bound kills a stuck one
+    sys.stderr.write("serve: exiting\n")
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if args and args[0] == "--serve":
+        sys.exit(serve())
     if args and args[0] == "--once":
         r = run_index(verbose=True)
         sys.stderr.write("romp-judge: wrote %d captions, %d archives\n" % (r["captions"], r["archives"]))
@@ -19524,7 +19702,7 @@ def main():
     elif args and args[0] == "--goals":
         _dump_goals()
     else:
-        sys.stderr.write("usage: romp-judge [--once | --plan | --close | --ab-close | --ab-classify | --test <transcript> | --archives | --goals]\n")
+        sys.stderr.write("usage: romp-judge [--serve | --once | --plan | --close | --ab-close | --ab-classify | --test <transcript> | --archives | --goals]\n")
         sys.exit(2)
 
 
