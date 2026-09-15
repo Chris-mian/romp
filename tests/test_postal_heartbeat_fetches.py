@@ -48,8 +48,9 @@ class Counting(unittest.TestCase):
         # os.environ is process-wide: other modules in the same pytest worker pop or repoint the seam
         # between tests, so pin both env halves here and put them back after (the self-identity test's idiom)
         self._env = (os.environ.get("CLAUDE_CODE_SESSION_ID"), os.environ.get("ROMP_SESSIONS_FILE"),
-                     os.environ.get("ROMP_POSTAL_PEERS"))
+                     os.environ.get("ROMP_POSTAL_PEERS"), os.environ.get("CODEX_THREAD_ID"))
         os.environ["CLAUDE_CODE_SESSION_ID"] = WEB
+        os.environ.pop("CODEX_THREAD_ID", None)   # the second identity source (a Codex shell's variable): the no-identity cases below need both absent
         os.environ["ROMP_SESSIONS_FILE"] = _SESS
         os.environ.pop("ROMP_POSTAL_PEERS", None)               # peer mode, the default; legacy tests set 0
         pm._LOCAL_CONFIRMED[0] = False                          # a fresh MCP process
@@ -66,7 +67,8 @@ class Counting(unittest.TestCase):
     def tearDown(self):
         pm._kernel_sessions_checked, pm._http, pm.ensure = self._saved
         pm._LOCAL_CONFIRMED[0] = False
-        for key, val in zip(("CLAUDE_CODE_SESSION_ID", "ROMP_SESSIONS_FILE", "ROMP_POSTAL_PEERS"), self._env):
+        for key, val in zip(("CLAUDE_CODE_SESSION_ID", "ROMP_SESSIONS_FILE", "ROMP_POSTAL_PEERS", "CODEX_THREAD_ID"),
+                            self._env):
             if val is None:
                 os.environ.pop(key, None)
             else:
