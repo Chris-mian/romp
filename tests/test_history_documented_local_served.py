@@ -6,7 +6,7 @@ carries the floor and the last few events plus a head card; every loadTurns/load
 reads the PAGE: does it hold s.regions from that frame, does the head gap ask loadTurns, does the reply render
 and the gap scroll. If the page shows the tail alone with no gap and no ask, that is the bug.
 
-The document is seeded the way romp_metrics did it (tests/test_chat_pages.py Harness): whole-parse the leaf,
+The document is seeded the way tests/test_chat_pages.py's Harness does it: whole-parse the leaf,
 em.asm_checkpoint_write into the kernel's own STATE/checkpoints, then boot the kernel over that state root so
 its first parse restores from the document. SYNTHETIC transcript only (the 4a served fixture's builder)."""
 import json
@@ -30,7 +30,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402
+import test_ship_reship_served as _lab   # noqa: E402  (the served-lab kernel env; renamed from test_ship_reship by PR 1697)
 from test_asm_checkpoint_served import transcript   # noqa: E402  the compacted long-transcript builder
 
 # make the state root hermetic BEFORE any load of romp code (test_state_isolation_order.py): the served kernel is
