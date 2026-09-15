@@ -404,8 +404,9 @@ class RealArm(Harness):
         recs = transcript(NOW - 86400, turns=600, compact_every=150)      # ~300 events after the cut: longer than the wire tail
         self.write(recs)
         whole = self.whole()
-        self.document()
-        m = self.restored()
+        self.write(_head_past_the_last_compaction(recs)); self.document()   # documented before the tail landed (stage one b cuts at
+        self.write(recs)                                                     #  the last settled turn, so a whole-file document has a
+        m = self.restored()                                                  #  short tail)
         evs = m["events"]
         deep = whole[10]["uuid"]
         run = []                                                          # what the page holds, as the frames build it
@@ -752,6 +753,16 @@ class FloorDecision(Harness):
                 km._clients = saved_clients
 
 
+def _head_past_the_last_compaction(recs):
+    """The records up to and including two turns after the last compaction boundary: a document written over them has its cut
+    near that boundary, and the rest of `recs`, appended after, is the tail the restore reads (stage one b, 2026-09-15: the cut
+    is the turn before the last settled turn, so a document written over the whole file would leave a tail of one turn)."""
+    bi = max(i for i, r in enumerate(recs) if r.get("subtype") == "compact_boundary")
+    users = [i for i, r in enumerate(recs) if i > bi and r.get("type") == "user" and not r.get("isCompactSummary")]
+    end = users[2] if len(users) > 2 else len(recs)
+    return recs[:end]
+
+
 def _client(proto=2):
     sent = []
     return {"send": lambda s: sent.append(json.loads(s)), "sent": {}, "proto": proto, "echat": {}}, sent
@@ -827,8 +838,9 @@ class Proto2Wire(Harness):
         """Review find N: the earlier fixture's floor'd list fit the wire tail whole (pf 0). Here the tail is longer: a change
         just before the held first is a full frame, just after it a delta from the change; a floor move (an index client
         connecting) rebuilds the list from turn 0 and is a full frame."""
-        recs = transcript(NOW - 86400, turns=600, compact_every=150)      # the cut near turn 450: ~300 events after it
-        self.write(recs); self.document(); m = self.restored()
+        recs = transcript(NOW - 86400, turns=600, compact_every=150)
+        self.write(_head_past_the_last_compaction(recs)); self.document()   # the document's cut near turn 450 (stage one b cuts at the
+        self.write(recs); m = self.restored()                                #  last settled turn: documented before the ~300-event tail)
         evs = m["events"]; self.assertGreater(len(evs), km.WIRE_TAIL)
         c, sent = _client()
         km._send_chat_locked(c, m, None, 0, False)
@@ -915,8 +927,9 @@ class Proto2Wire(Harness):
         recs = transcript(NOW - 86400, turns=600, compact_every=150)      # ~300 events after the cut: longer than the wire tail
         self.write(recs)
         whole = self.whole()
-        self.document()
-        m = self.restored()
+        self.write(_head_past_the_last_compaction(recs)); self.document()   # documented before the tail landed (stage one b cuts at
+        self.write(recs)                                                     #  the last settled turn, so a whole-file document has a
+        m = self.restored()                                                  #  short tail)
         evs = m["events"]
         self.assertGreater(len(evs), km.WIRE_TAIL)
         c, sent = _client()

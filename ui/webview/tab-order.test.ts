@@ -186,7 +186,7 @@ test("a session frame's id joins the order once: not when its tabOrder frame alr
 });
 
 // ── the strip's provenance and the close backstop's knob (the vanishing tab, the user 2026-09-12) ──
-import { localStrip, readCloseAckMs, CLOSE_ACK_KEY, CLOSE_ACK_DEFAULT_MS } from "./tab-order";
+import { localStrip, stripHost, readCloseAckMs, CLOSE_ACK_KEY, CLOSE_ACK_DEFAULT_MS } from "./tab-order";
 
 test("localStrip: the local kernel's own strip, or a frame with no provenance, is the board; a synthetic re-emission or another host's fresh push is not", () => {
   assert.equal(localStrip(undefined), true, "a frame the kernel sent directly (VS Code, no federation manager)");
@@ -195,6 +195,18 @@ test("localStrip: the local kernel's own strip, or a frame with no provenance, i
   assert.equal(localStrip({ reemit: true }), false, "a re-emission from the store: on a fresh page an EMPTY order, never the board");
   assert.equal(localStrip({ reemit: true, freshHost: "" }), false, "reemit wins over any host named");
   assert.equal(localStrip({ freshHost: "TESTHOST" }), false, "another kernel's push says nothing about this kernel's sessions");
+});
+
+test("stripHost: the one host a merged strip is fresh evidence about — '' for the local kernel or a frame with no provenance, the named remote host for its fresh push, null for a re-emission", () => {
+  assert.equal(stripHost(undefined), "", "a frame the kernel sent directly (VS Code, no federation manager) is the local kernel's own");
+  assert.equal(stripHost({ reemit: false, freshHost: undefined }), "", "the dispatch's shape for that frame");
+  assert.equal(stripHost({ freshHost: "" }), "", "the LOCAL kernel's push under federation");
+  assert.equal(stripHost({ freshHost: "TESTHOST" }), "TESTHOST", "a remote kernel's own push: that host has now reported on this socket");
+  assert.equal(stripHost({ reemit: true }), null, "a re-emission from the store is nobody's fresh word");
+  assert.equal(stripHost({ reemit: true, freshHost: "TESTHOST" }), null, "reemit wins over any host named");
+  for (const r of [undefined, { freshHost: "" }, { reemit: true }, { freshHost: "TESTHOST" }] as const) {
+    assert.equal(localStrip(r), stripHost(r) === "", "localStrip is stripHost === '' for " + JSON.stringify(r ?? null));
+  }
 });
 
 test("readCloseAckMs: fifteen seconds unless the page's localStorage holds a positive integer of ms under the knob", () => {

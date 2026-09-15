@@ -959,6 +959,7 @@ def set_checkpoint_dir(fn):
     _CKPT_DIR_FN = fn
     with _ASM_CKPT_LOCK:
         _ASM_CHAIN_REFUSED_PATHS.clear()                  # a rebind forgets a refusal recorded against another directory's document
+        _ASM_LAST_WRITE_CUT.clear()
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
         _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
@@ -1565,6 +1566,13 @@ def checkpoint_sweep():
     if d is None or not Path(d).is_dir():
         return 0
     gone = 0
+    for aside in Path(d).glob("*.asm.json.gz.meta.retired-*"):   # a retired refusal sidecar (the writer keeps the bytes of a mark it
+        cp = aside.with_name(aside.name.split(".meta.retired-")[0])   #  replaced): it leaves with its document, never on its own
+        if not cp.exists():
+            try:
+                aside.unlink(); gone += 1
+            except OSError:
+                pass
     for cp in list(Path(d).glob("*.json")) + list(Path(d).glob("*.asm.json.gz")):
         keep = False
         try:
@@ -1586,6 +1594,11 @@ def checkpoint_sweep():
                 if cp.name.endswith(".gz"):                # an assembly document: counted as removed, its sidecar with it
                     _asm_removed("sweep")
                     cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
+                    for aside in Path(d).glob(cp.name + ".meta.retired-*"):   # and every retired refusal sidecar it left
+                        try:
+                            aside.unlink()
+                        except OSError:
+                            pass
             except OSError:
                 pass
     with _CKPT_LOCK:
@@ -4578,6 +4591,16 @@ def _asm_gates(entry, leaf_path, candidate_files, links):
     leaf_stem = Path(leaf_path).stem
     files = [f for f in candidate_files if Path(f).stem != leaf_stem] + [Path(leaf_path)]
     delta = leaf_recs = None
+    if entry.get("docPre") is not None and entry.get("prefix"):
+        # a RESTORED entry: its cut advances only through a whole parse (the pre-cut records are lazy rows, not in hand), so
+        # when the tail past the document's cut has grown to the share the entry is demoted here and the settle that follows
+        # the whole parse writes the new cut (stage one b's churn bound; a compaction in the tail demotes below as before)
+        try:
+            tail_now = os.stat(leaf_path).st_size - int(entry.get("docCutOff") or 0)
+        except OSError:
+            tail_now = 0
+        if tail_now > 0 and tail_now * _ASM_TAIL_SHARE >= max(1, int(entry["docPre"])):
+            return _asm_demote("tailShare")
     for fp in files:
         old = entry["recs"].get(str(fp))
         if old is None:
@@ -4769,7 +4792,7 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
 # ids and atom uuids. Bodies come back on demand (hydrate). Anything that does not verify is a counted fallback to a
 # whole parse; a compaction landing after the document demotes the tail fold to a whole parse exactly as before, and
 # the next settle writes a new document with the new cut.
-_ASM_CKPT_V = 6                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
+_ASM_CKPT_V = 7                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
 #                                       4: a `turns` section over the pre-cut rows (T323 stage 4c: the lazy index)
 #                                       5: lazy markers carry pc (assistant prose chars) and mid (postal message ids); a turn row
 #                                          carries pcs and hT, a segment row w, mids and hp (T358: the per-cycle walkers read scalars).
@@ -4786,6 +4809,8 @@ _ASM_CKPT_V = 6                       # 2: atom rows carry [offset, len], nt for
 # (3.9 million on a 118 GiB machine); ROMP_ASM_INDEX_CAP sets it outright. At 20,000 (2026-09-11, the day the index
 # shipped) 50 sessions' 4,080 restored turns materialized 1.2 million atoms and evicted 1.19 million of them in 150 s,
 # every chat build cold at 5.6 s: a ceiling under the working set is a thrash, not a saving.
+#                                       7: the cut is the boundary before the last SETTLED turn, not only a compaction's (stage one b, 2026-09-15):
+#                                          every v6 document is refused once (`version`) at the deploy boot and rewritten at the next settle
 _MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (LazyAtoms, row): eviction drops the memo, never a field in place
 _MAT_LOCK = threading.Lock()
@@ -5301,6 +5326,28 @@ def _asm_mark_refused(leaf_path, reason, rompuuid=None, sdk_human=False):
             return False
 
 
+def _asm_retire_refusal_mark(meta):
+    """The sidecar `meta` is about to be replaced by a write with a new cut: a `refused` mark in it belonged to the old cut and
+    must not stand over the new document. The old sidecar's bytes are kept beside it as `<meta>.retired-<stamp>` for forensics,
+    the way the flags quarantine keeps its sidecar; only the mark the readers key on goes (with the file). Best-effort."""
+    try:
+        text = meta.read_bytes()
+        d = json.loads(text.decode("utf-8"))
+    except (OSError, ValueError):
+        return
+    if not (isinstance(d, dict) and isinstance(d.get("refused"), dict)):
+        return
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    aside, n = meta.with_name("%s.retired-%s" % (meta.name, stamp)), 0
+    while aside.exists():                               # loop-ok: a second retirement in the same second
+        n += 1
+        aside = meta.with_name("%s.retired-%s-%d" % (meta.name, stamp, n))
+    try:
+        aside.write_bytes(text)
+    except OSError:
+        pass
+
+
 def _asm_refusal_stands(leaf_path):
     """Whether the sidecar marks the standing document refused for the tail's shape at the leaf's CURRENT stat: a few bytes
     read, no document, no tail; True sends every road straight to the whole or cold parse (restore:refusedStanding)."""
@@ -5452,6 +5499,9 @@ def _asm_ckpt_file(leaf_path):
     return Path(d) / (hashlib.sha1(os.path.realpath(str(leaf_path)).encode("utf-8")).hexdigest()[:20] + ".asm.json.gz")
 
 
+_ASM_LAST_WRITE_CUT = {}          # realpath -> the leaf's cut offset of the document the writer last published (under _ASM_CKPT_LOCK):
+#                                   the refusal road reads it after its offered rewrite to tell a rewrite that MOVED the cut (a new tail,
+#                                   proven afresh at the next restore) from one that reproduced the refused cut (marked; stage one b)
 _ASM_CHAIN_REFUSED_PATHS = {}     # realpath -> why the chain proof refused the standing document at this parse ("unproven": the
 #                                   missing bit; "shape": the tail's own shape): parse_session
 #                                   rewrites the document from the whole parse that follows, then and there (the writer has the
@@ -5632,7 +5682,13 @@ def _pre_tree_identity(atoms, rompuuid):
     return h.hexdigest()
 
 
-_ASM_SKIP_STRUCTURAL = ("unsplittable", "reconstruction", "unencodable", "oversize")   # true of a cut until it moves
+_ASM_SKIP_STRUCTURAL = ("unsplittable", "reconstruction", "unencodable", "oversize", "noCut", "reuse", "closure")   # true of a cut until it moves
+_ASM_TAIL_SHARE = 8                   # the churn bound (stage one b): a standing document is rewritten when the tail past its cut has
+#                                       grown to ONE EIGHTH of the pre-cut bytes (each rewrite is a whole parse, so a share bounds the
+#                                       rewrites over a leaf's life to a logarithm of its growth while the tail every cold parse still
+#                                       decodes stays under an eighth of the documented part; the eighth is the machine's own cap share,
+#                                       the share a capped job's CPU and memory quota take, never a literal chosen for this file), or
+#                                       when a compaction landed past the cut (the boundary changes what the tail is)
 
 
 def _tree_key(tree):
@@ -5665,43 +5721,127 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             return _skip("noEntry")
         if entry.get("prefix") or entry.get("preTurns"):
             return _skip("restored")            # the document it came from stands
-        if entry.get("docWritten") and cp.exists() and (tree is None or entry.get("docTurns")
-                                                          or entry.get("docNoTurns") == _tree_key(tree)):
-            return _skip("written")             # this entry's pre-cut part has not moved (a fold appends after the cut);
-        #                                                  a document written without a tree is written again once one is given,
-        #                                                  one whose tree yielded no section is not, for that tree (review low 4)
         ad = entry["ad"]
         atoms = entry["atoms"]
         bounds = [a for a in atoms if a.get("type") == "system" and a.get("subtype") == "compact_boundary"]
-        if not bounds:
-            return _skip("noBoundary")
+        turns = segment_turns([dict(a) for a in atoms], rompuuid)
+        # THE CUT (stage one b, plans/checkpoint-settled-cut.md): the boundary before the last SETTLED turn, a turn whose result
+        # landed (`ended`) and whose next turn exists, or the turn holding the last compaction boundary, whichever is later; a
+        # leaf with neither has no cut (structural, re-armed as the tree grows). The pre-cut part ends before that turn, so the
+        # tip is a settled record with a following record, never a record of an open turn: the cut never chases a live turn
+        # (a session mid-turn for hours keeps its previous document; the open turn is the tail, decoded as today)
+        si = max((i for i in range(len(turns) - 1) if turns[i].get("ended")), default=None)
+        last_b = max(bounds, key=lambda a: (a["t"], a.get("_seq", 0))) if bounds else None
+        bi = None
+        if last_b is not None:
+            bi = next(i for i, t in enumerate(turns) if any(a.get("uuid") == last_b["uuid"] for a in t["atoms"]))
+            if last_b["uuid"] in ad._adopted and bi > 0:
+                bi -= 1                                   # an adopted manual compact: its /compact episode is the turn before
+        ci = max(x for x in (si, bi) if x is not None) if (si is not None or bi is not None) else None
+        if ci is None:
+            return _skip("noCut")
+        cut_uuid = next((a.get("uuid") for a in turns[ci]["atoms"] if a.get("uuid")), None) or "turn%d" % ci
+        memo = entry.get("docSkip")
+        if memo is not None and memo[0] == cut_uuid:
+            return _skip(memo[1])               # this cut already failed to write: nothing rebuilt until it moves
+        standing = entry.get("docCut")              # (the cut's first uuid, the pre-cut bytes, the boundaries before the cut)
+        if entry.get("docWritten") and cp.exists() and (tree is None or entry.get("docTurns")
+                                                          or entry.get("docNoTurns") == _tree_key(tree)):
+            # this entry's pre-cut part has not moved (a fold appends after the cut); a document written without a tree is
+            # written again once one is given, one whose tree yielded no section is not, for that tree (review low 4). The cut
+            # ADVANCES (a rewrite) only under the churn bound: a compaction landed past the standing cut, or the tail past it
+            # has grown to the share (_ASM_TAIL_SHARE); otherwise the standing document stands
+            if standing is None or standing[0] == cut_uuid:
+                return _skip("written")
+            try:
+                tail_now = os.stat(leaf_path).st_size - int(standing[4])   # the leaf's bytes past the standing cut: one stat
+            except OSError:
+                tail_now = 0
+            if not (len(bounds) > standing[2] or tail_now * _ASM_TAIL_SHARE >= max(1, int(standing[1]))):
+                return _skip("written")
         active = ad.active_path()
         verdicts = ad.chain_verdicts(active)
-        turns = segment_turns([dict(a) for a in atoms], rompuuid)
-        last_b = max(bounds, key=lambda a: (a["t"], a.get("_seq", 0)))
-        memo = entry.get("docSkip")
-        if memo is not None and memo[0] == last_b["uuid"]:
-            return _skip(memo[1])               # this cut already failed to write: nothing rebuilt until it moves
 
         def skip(reason):
             if reason in _ASM_SKIP_STRUCTURAL:            # a property of this cut: memoized like a success (docWritten),
-                entry["docSkip"] = (last_b["uuid"], reason)   #  re-armed when the cut moves
+                entry["docSkip"] = (cut_uuid, reason)     #  re-armed when the cut moves
                 _say_once("assembly checkpoint: %s not written: %s (said once until its cut moves)" % (leaf_path, reason))
             else:                                         # a blip (a stat or a write failing, a record landing between the
                 _say_once("assembly checkpoint: %s not written by the %s: %s (said once per leaf; tried again at the next %s)"
                           % (leaf_path, who, reason, who))   #  parse and the offsets): named for its caller, once per leaf
             return _skip(reason)
-        bi = next(i for i, t in enumerate(turns) if any(a.get("uuid") == last_b["uuid"] for a in t["atoms"]))
-        if last_b["uuid"] in ad._adopted and bi > 0:
-            bi -= 1                                       # an adopted manual compact: its /compact episode is the turn before
         def _rec_seq(a):
             return ad.seq_of.get(a.get("uuid"), 0)
         cut_seq = None
-        for ti in range(bi, -1, -1):                      # the cut turn, then earlier ones while the chronological split fails
+        uuid_at = {sq: u for u, sq in ad.seq_of.items()}   # seq -> uuid, for the cut record's raw-against-resolved parent check
+        # EVERY record the pre-cut bytes carry, in seq order (the kept chain, the absorbed attachments, every copy of a repeated
+        # uuid): the reuse and closure guards below read these, never the document's rows (round two of stage one b, 2026-09-15: a
+        # pre-cut absorbed attachment whose uuid a tail record reused was no row, so neither guard saw it, and the document restored
+        # silently missing that atom). A uuid seen before the cut and again at or past it blocks the cut (`reuse`); a pre-cut
+        # record whose parent resolves (last-wins) past the cut blocks it (`closure`)
+        all_recs, _sq = [], 0
+        for _fp, _recs in ad._src.items():
+            _base = None                                  # the adapter's own numbering: a SEEDED adapter (a restore's) numbers its tail
+            for _k, _r in enumerate(_recs):               #  from the document's cut, so the file's base is read off any record the
+                _u = _r.get("uuid") if isinstance(_r, dict) else None   #  adapter indexed (its last-wins copy), never assumed to be one
+                if _u and ad.by_uuid.get(_u) is _r and _u in ad.seq_of:
+                    _base = ad.seq_of[_u] - _k - 1
+                    break
+            if _base is None:
+                _base = _sq                               # no indexed record in this file: the cumulative count (the whole parse's own)
+            for _k, _r in enumerate(_recs):
+                if isinstance(_r, dict) and _r.get("uuid"):
+                    all_recs.append((_base + _k + 1, _r))
+            _sq = _base + len(_recs)
+        first_at, last_at = {}, {}
+        for _sq, _r in all_recs:
+            first_at.setdefault(_r["uuid"], _sq); last_at[_r["uuid"]] = _sq
+        spans = sorted((a, b) for a, b in ((first_at[u], last_at[u]) for u in first_at) if a < b)   # a reused uuid: (first, last)
+        def _reused_across(cand):
+            return any(a < cand <= b for a, b in spans)
+        def _parent_past(cand):
+            for _sq, _r in all_recs:
+                if _sq >= cand:
+                    break
+                u = _r["uuid"]
+                p = ad.parent_of.get(u) if ad.by_uuid.get(u) is _r else (_r.get("parentUuid") or None)   # the last-wins copy: as the
+                if p and ad.seq_of.get(p, 0) >= cand:                                                     #  parse resolves it; a shadowed
+                    return True                                                                           #  copy: its raw parent, last-wins
+            return False
+        blocked = set()                                   # why candidates fell: the named skip when none survives
+        qseqs = {q["seq"] for q in ad.qatts}              # the absorbed attachments' seqs: a turn's bytes begin at the attachments the
+        #                                                   CLI spliced before its prompt, so a cut at the prompt's record leaves them
+        #                                                   pre-cut (absorbed through the carry) and a cut before them is the same turn
+        #                                                   boundary; both are tried, the attachment-first one when the prompt's fails
+        def _cands(ti):
             seqs = [_rec_seq(a) for t in turns[ti:] for a in t["atoms"] if a.get("uuid") in ad.seq_of]
             if not seqs:
-                continue
-            cand = min(seqs)
+                return []
+            out, c = [min(seqs)], min(seqs)
+            for _k in range(len(qseqs)):                  # bounded: at most every attachment
+                if (c - 1) not in qseqs:
+                    break
+                c -= 1
+                out.append(c)
+            return out
+        for ti, cand in ((ti, c) for ti in range(ci, -1, -1) for c in _cands(ti)):   # the cut turn, then earlier ones while a guard fails
+            first = ad.by_uuid.get(uuid_at.get(cand))
+            if (first is not None and not (first.get("type") == "system" and first.get("subtype") == "compact_boundary")
+                    and ad.parent_of.get(first.get("uuid")) != (first.get("parentUuid") or None)):
+                continue                                  # the tail's first record chains onto the tip in the RESOLVED graph but not
+                #                                           in the RAW one (the record after an adopted manual /compact pair, whose
+                #                                           parent the parse re-points from the /compact stdout to the summary): the
+                #                                           restore's proof walks raw parents, so this cut could never be proven; the
+                #                                           turn before it is the cut (stage one b, correction 1)
+            if _reused_across(cand):
+                blocked.add("reuse"); continue            # a tail record reuses a uuid the pre-cut bytes carry (a row's, an absorbed
+                #                                           attachment's, a shadowed copy's): the restore cannot rebuild what the parse
+                #                                           makes of the pair, so the cut steps back before the first copy
+            if _parent_past(cand):
+                blocked.add("closure"); continue          # a pre-cut record whose RESOLVED parent lies past the cut: a ring across the
+                #                                           cut, which the restore cannot rebuild (the pre-cut rows are frozen, their parent
+                #                                           bound to a record the tail holds). The pre-cut part is closed under parents,
+                #                                           or the cut steps back (stage one b; found by the moving-cut oracle)
             pre_ts = [ad.ts_of.get(u, 0) for u in entry["kept"] if ad.seq_of.get(u, 0) < cand and u in ad.by_uuid
                       and (ad.by_uuid[u].get("type") in ("user", "assistant") or ad.by_uuid[u].get("subtype") == "compact_boundary")]
             tail_ts = [ad.ts_of.get(u, 0) for u in entry["kept"] if ad.seq_of.get(u, 0) >= cand and u in ad.by_uuid
@@ -5710,14 +5850,18 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 continue                                  # a stamp out of order across the cut: the carry would not hold
             cut_seq = cand
             break
-        if cut_seq is None or cut_seq <= 1:
-            return skip("unsplittable")
+        if cut_seq is None or cut_seq <= 1 or not any(ad.seq_of.get(u, 0) < cut_seq for u in entry["kept"]):
+            if blocked:
+                return skip("reuse" if "reuse" in blocked else "closure")   # a guard blocked every cut that cuts anything: its name
+            return skip("unsplittable")               # nothing pre-cut, or pre-cut bytes that hold no kept record (every record before
+            #                                           the cut shadowed by a later copy of its uuid): no document says less than none
         # the files: each one's records before the cut, its witness, and where the tail read starts
         first_seq, n = {}, 0
         for fp, recs in ad._src.items():
             first_seq[fp] = n + 1
             n += len(recs)
         files, cuts, fsid_paths, file_offs = {}, {}, {}, {}
+        cut_off_total = 0                                 # the pre-cut bytes over the lineage: the churn bound's denominator
         for fp, recs in ad._src.items():
             fsid = Path(fp).stem
             fsid_paths[fsid] = fp
@@ -5752,6 +5896,7 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                  "first": pre_uuids[0] if pre_uuids else None, "last": pre_uuids[-1] if pre_uuids else None}
             if pre_n >= len(recs) and not is_leaf:
                 f["skip"] = True                          # wholly before the cut: never read at restore, stat is its proof
+                cut_off_total += int(st_.st_size)       # a prior file lies wholly before the cut: all of it is pre-cut bytes
                 st_read = (getattr(ad, "_src_stat", {}) or {}).get(fp)
                 if st_read is None:
                     return skip("stat")                   # no witness for the records the tree was parsed from: no row
@@ -5761,6 +5906,7 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 #                                            one, medium, the half that needed no reader in between)
             else:
                 cut_off = offs[pre_n][0] if pre_n < len(recs) else st_.st_size
+                cut_off_total += int(cut_off)           # the pre-cut bytes of this file
                 try:
                     with open(fp, "rb") as fh:
                         fh.seek(max(0, cut_off - _JSONL_TAIL_GUARD))
@@ -5967,6 +6113,9 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                "cands": list(entry["cands"]), "links": dict(entry["links"]), "files": files, "fsids": fsids, "cutSeq": cut_seq,
                "records": rows, "atoms": None,             # v6: string rows, built inside the guard below (an unencodable row
                "spine": spine, "seqTs": seq_ts, "lastTs": last_ts,   #  is the counted `unencodable` skip, never a raise)
+               "xu": sorted({_r["uuid"] for _sq, _r in all_recs if _sq < cut_seq} - set(row_of)),   # the pre-cut uuids that are no row
+               #                                             (absorbed attachments, shadowed copies): the restore's reuse check reads
+               #                                             rows and these, so a tail record reusing any of them refuses (round two)
                "turns": turns_doc, "treeIdentity": _tree_identity_of_doc(turns_doc, identity) if turns_doc else None,
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
@@ -5987,6 +6136,7 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             _t_write = time.monotonic()                   # the window's edge: a refusal stamped before this was against the document
             os.replace(tmp, cp)                           #  the replace retires (popped below); one stamped after it stands
             meta = cp.with_name(cp.name + ".meta")            # {"av", "path"}: what the boot sweep reads, never the document
+            _asm_retire_refusal_mark(meta)                    # a refusedStanding mark for the cut this write replaces is history
             mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
             mtmp.write_text(json.dumps(_asm_sidecar(doc)))   # the inputs' fsids and whether resume links joined them: what
             #                                                   asm_document_seeds reads, never the document
@@ -5994,6 +6144,13 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
         except OSError:
             return skip("write")
         entry["docWritten"] = True
+        entry["docCut"] = (cut_uuid, int(cut_off_total), sum(1 for b_ in bounds if ad.seq_of.get(b_.get("uuid"), 0) < cut_seq), cut_seq,
+                           int(((files.get(Path(leaf_path).stem) or {}).get("cut") or [0])[0]))
+        with _ASM_CKPT_LOCK:
+            _ASM_LAST_WRITE_CUT[os.path.realpath(str(leaf_path))] = entry["docCut"][4]   # what the refusal road compares its offer against
+        #                                                   the cut's first uuid, the pre-cut bytes over the lineage, the boundaries before
+        #                                                   it, the cut seq, the leaf's cut offset: the churn bound reads them at the next
+        #                                                   settle (stage one b)
         with _ASM_CKPT_LOCK:                              # a fresh document stands: a later parse with none is noDocument, not an
             _rk = os.path.realpath(str(leaf_path))        #  OLD refusal (T398 follow-up, low 1); a refusal a judge recorded inside this
             _rv = _ASM_CKPT_REFUSED.get(_rk)              #  write's window (against the document just published) stays (low B)
@@ -6354,7 +6511,8 @@ def _tail_chains_onto_the_document(leaf_path, doc, assume_childless=False):
     by_uuid = {r["uuid"]: r for r in nodes}                               #  uuid-less record bearing a parentUuid is no node to the
     rows, spine = doc.get("records") or [], doc.get("spine") or []       #  parse either (nothing is indexed for it), so it is not
     #                                                                       walked (T402 follow-up); a snapshot or index row is none
-    pre_uuids = {row[0] for row in rows}
+    pre_uuids = {row[0] for row in rows} | set(doc.get("xu") or [])   # every uuid the pre-cut bytes carry: the rows and the ones no
+    #                                                                   row holds (absorbed attachments, shadowed copies; `xu`, round two)
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
     tip_ok = tip if tip is not None and (doc.get("tipChildless") is True or assume_childless) else None
     known = pre_uuids | set(by_uuid)
@@ -6432,7 +6590,10 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
             _why = ("unproven" if doc.get("tipChildless") is None and _tail_chains_onto_the_document(leaf_path, doc, assume_childless=True)
                     else "shape")                         # the missing bit alone, or the tail's own shape
             with _ASM_CKPT_LOCK:
-                _ASM_CHAIN_REFUSED_PATHS[os.path.realpath(str(leaf_path))] = _why   # the whole parse that follows offers its document
+                _ASM_CHAIN_REFUSED_PATHS[os.path.realpath(str(leaf_path))] = (_why, int((((doc.get("files") or {}).get(Path(leaf_path).stem)
+                                                                                         or {}).get("cut") or [0])[0]))
+                #                                                                  the why and the refused document's leaf cut offset:
+                #                                                                  the whole parse that follows offers its document
             #                                               once; for the shape it then marks the sidecar at the leaf's stat, so the
             #                                               same cut is not proved or rewritten again while the leaf stands (round two)
             return None                                   #  document stands on disk until the next write replaces it
@@ -6474,7 +6635,11 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
         entry = {"ad": ad, "st": st, "atoms": atoms, "kept": kept, "landed": landed | ad.landed_text_uuids(),
                  "cands": tuple(str(f) for f in candidate_files), "links": dict(links or {}),
                  "recs": dict(ad._src_keys), "n_qatts": len(ad.qatts), "prefix": prefix, "preTurns": pre_turns,
-                 "skipped": {f["path"]: (f["size"], f["mtime"]) for f in doc["files"].values() if f.get("skip")}}
+                 "skipped": {f["path"]: (f["size"], f["mtime"]) for f in doc["files"].values() if f.get("skip")},
+                 "docPre": sum((int(f["size"]) if f.get("skip") else int((f.get("cut") or [0])[0])) for f in doc["files"].values()),
+                 "docCutOff": int(((doc["files"].get(Path(leaf_path).stem) or {}).get("cut") or [0])[0])}
+        #        docPre: the pre-cut bytes over the lineage; docCutOff: the leaf's cut offset. The fold's gate demotes this entry
+        #        to a whole parse when the tail past the cut reaches the share (tailShare), so the settle rewrites the cut
     except Exception as e:                                     # noqa: BLE001 — a document the code cannot use is a fallback
         _asm_ckpt_note(leaf_path, "restore", repr(e)[:120]); return None
     _LAZY_FILES[str(rompuuid)] = {fsid: f["path"] for fsid, f in doc["files"].items()}
@@ -6826,11 +6991,18 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
         out["cutTurn"] = cut_turn                   # a restored tree only (T323 stage 4b): where its lazy atoms ended
     _rk = os.path.realpath(str(leaf_path))
     with _ASM_CKPT_LOCK:
-        _why = _ASM_CHAIN_REFUSED_PATHS.pop(_rk, None)
+        _refused = _ASM_CHAIN_REFUSED_PATHS.pop(_rk, None)
+    _why, _refused_off = _refused if _refused is not None else (None, None)
     if _why is not None and _CKPT_DIR_FN is not None:
         try:                                        # the chain proof refused the standing document and this whole parse produced a
             if asm_checkpoint_write(leaf_path, rompuuid, sdk_human, tree=out, who="refusal"):   # sound tree: write its document now,
                 _asm_stat("write:afterRefusal")     #  carrying the childless bit, so the next restore takes it (T402 follow-up)
+                with _ASM_CKPT_LOCK:
+                    _new_off = _ASM_LAST_WRITE_CUT.get(_rk)
+                if _why == "shape" and _new_off is not None and _new_off != _refused_off:
+                    _asm_stat("write:afterRefusalMovedCut")   # the rewrite moved the cut (stage one b: the settled turns advanced it, or a
+                    _why = None                     #  compaction landed): a new tail, proven afresh at the next restore, so the mark for
+                    #                                  the refused cut's shape does not stand over it (the writer retired the old mark)
             else:
                 _asm_stat("write:afterRefusalSkipped")   # the writer declined (its own skip reason is counted under asmCheckpoint.skipped)
                 _why = "shape"                          # a declined offer, whatever the refusal's reason (a legacy document whose

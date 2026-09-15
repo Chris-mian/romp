@@ -243,6 +243,38 @@ class Collector(unittest.TestCase):
         self.assertAlmostEqual(p["cycle_ms_ring_max"], 299.0, msg="the window's max: the ring's largest")
         self.assertAlmostEqual(p["cycle_ms_max"], 5000.0, msg="the lifetime max keeps the boot cycle")
 
+    def test_the_per_session_chat_build_timer_keeps_first_last_and_max_and_leaves_with_its_sessions_certified_death(self):
+        """The process split's measure (2026-09-14): beside the aggregate, a row per session with the FIRST build after the
+        boot (set once per process life), the last, the max, the counts and the leaf's bytes; sorted by max under
+        builds.chat.bySession; a row leaves with its session's CERTIFIED death (_record_death drops it, whichever road
+        recorded the death) and with nothing else; the aggregate is unchanged."""
+        A, B, C = "aaaaaaaa-2222-4333-8444-0000000000a1", "bbbbbbbb-2222-4333-8444-0000000000b2", "cccccccc-2222-4333-8444-0000000000c3"
+        self.st.build_chat(False, 0.100, active=True, sid=A, nbytes=1000)    # A: first 100 ms
+        self.st.build_chat(False, 0.050, sid=A, nbytes=1200)                  # A: last 50, max stays 100
+        self.st.build_chat(False, 0.020, sid=B, nbytes=50)                    # B: first 20
+        self.st.build_chat(False, 0.300, sid=B, nbytes=60)                    # B: last 300, max 300
+        self.st.build_chat(True, sid=C)                                       # C: cached only, never built
+        self.st.build_chat(True, sid=A)
+        self.st.build_chat(False, 0.010)                                      # no sid: the aggregate alone
+        snap = self.st.snapshot()
+        chat = snap["builds"]["chat"]
+        self.assertEqual((chat["built"], chat["cached"]), (5, 2), "the aggregate counts every build as before")
+        rows = {r["sid"]: r for r in chat["bySession"]}
+        self.assertEqual([r["sid"] for r in chat["bySession"]], [B, A, C], "sorted by max, the largest first")
+        self.assertEqual(rows[A], {"sid": A, "first": 100.0, "last": 50.0, "max": 100.0, "n": 2, "cached": 1, "bytes": 1200})
+        self.assertEqual(rows[B], {"sid": B, "first": 20.0, "last": 300.0, "max": 300.0, "n": 2, "cached": 0, "bytes": 60})
+        self.assertEqual(rows[C], {"sid": C, "first": None, "last": None, "max": 0.0, "n": 0, "cached": 1, "bytes": None})
+        self.st.build_chat(False, 0.400, sid=A)
+        rows = {r["sid"]: r for r in self.st.snapshot()["builds"]["chat"]["bySession"]}
+        self.assertEqual((rows[A]["first"], rows[A]["last"], rows[A]["max"]), (100.0, 400.0, 400.0), "first is set once; last and max move")
+        self.st.chat_row_drop(B)                                              # B's death was certified (_record_death calls this)
+        self.assertEqual(sorted(r["sid"] for r in self.st.snapshot()["builds"]["chat"]["bySession"]), sorted([A, C]))
+        self.st.chat_row_drop("no-such-sid")                                  # a death of a session never built: nothing to drop
+        self.assertEqual(len(self.st.snapshot()["builds"]["chat"]["bySession"]), 2)
+        # the certified death drives the drop through the real _record_death and the real death sweep's tick over three ticks
+        # (tests/test_sdk_registry_blind.py, ChatBuildRowsLeaveWithTheCertifiedDeath); the call sites are executed, not read: PushStages below
+        # drives the real _push and the real _push_session_now and reads the rows from the snapshot
+
     def test_stages_builds_judge(self):
         self.st.stage("push.chat", 0.5); self.st.stage("push.chat", 0.25); self.st.stage("jobs", 0.1)
         self.st.build("chat", True); self.st.build("chat", False, 0.040); self.st.build("feed", False, 1.0)
@@ -253,7 +285,8 @@ class Collector(unittest.TestCase):
         # chat also carries the watched/background split and the per-component attribution (2026-09-09); the
         # plain writer counts the build and attributes nothing
         self.assertEqual(snap["builds"]["chat"], {"cached": 1, "built": 1, "ms": 40.0, "active_built": 0, "bg_built": 0,
-                                                  "moved": 0, "coldSkipped": 0, "bg_miss": {k: 0 for k in km._PerfStats.CHAT_MISS}})
+                                                  "moved": 0, "coldSkipped": 0, "bg_miss": {k: 0 for k in km._PerfStats.CHAT_MISS},
+                                                  "bySession": []})                   # the per-session timer (2026-09-14): no sid handed in, no row
         self.assertEqual(snap["builds"]["feed"]["built"], 1)
         self.assertEqual(snap["builds"]["timeline"], {"cached": 0, "built": 0, "ms": 0.0})
         self.assertEqual(snap["judge"]["passes"], 2)
@@ -657,24 +690,33 @@ class PusherRecords(unittest.TestCase):
         self.assertEqual(self._pusher()["cycles"], before + 1)
 
     def test_cycle_jobs_split_into_push_and_jobs(self):
-        # the REAL _pusher_cycle_jobs with every tick job a no-op and _push_all a 5 ms sleep: `push` is the
-        # _push_all call, `jobs` the rest of the function, so push >= 5 and 0 <= jobs < push
+        # the REAL _pusher_cycle_jobs with every tick job a no-op and _push_all a stub that reads the clock ONCE,
+        # under a stubbed time.monotonic that steps 1 ms per read: `push` is the _push_all call (the read inside
+        # the stub plus the read that closes it: 2 ms exactly), `jobs` the rest of the function (the reads outside
+        # the push: a count of clock reads, never negative). A wall-clock ratio here (push >= a 5 ms sleep, jobs
+        # below two pushes) was green alone and a coin toss under the suite (2026-09-12, 2026-09-14); a stubbed
+        # clock makes both stages counts
         for nm in self.JOBS:
             setattr(km, nm, lambda *a, **k: None)
-        km._push_all = lambda live_map=None: time.sleep(0.005)
-        before = km._PERF_STATS.snapshot()["stages_ms"]
-        km._pusher_cycle_jobs(int(time.time()), {}, True)
-        after = km._PERF_STATS.snapshot()["stages_ms"]
-        push, jobs = after["push"] - before["push"], after["jobs"] - before["jobs"]
-        self.assertGreaterEqual(push, 5.0)
-        self.assertGreaterEqual(jobs, 0.0, "jobs is the function minus the push, never negative")
-        self.assertLess(jobs, 2 * push, "no-op jobs cost less than two 5 ms pushes (a 4 percent margin on a 5 ms measurement was a coin toss "
-                                         "on a shared runner: 5.26 ms against 5.07 ms on Python 3.10, 2026-09-12)")
-        before = km._PERF_STATS.snapshot()["stages_ms"]
-        km._pusher_cycle_jobs(int(time.time()), {}, False)   # no client: no push, the jobs still run
-        after = km._PERF_STATS.snapshot()["stages_ms"]
-        self.assertEqual(after["push"], before["push"])
-        self.assertGreaterEqual(after["jobs"], before["jobs"])
+        km._push_all = lambda live_map=None: time.monotonic()
+        reads = [0]
+        def _clock():
+            reads[0] += 1
+            return reads[0] * 0.001
+        with mock.patch.object(km.time, "monotonic", _clock):
+            before = km._PERF_STATS.snapshot()["stages_ms"]
+            km._pusher_cycle_jobs(int(time.time()), {}, True)
+            after = km._PERF_STATS.snapshot()["stages_ms"]
+            push, jobs = after["push"] - before["push"], after["jobs"] - before["jobs"]
+            n_first = reads[0]
+            self.assertAlmostEqual(push, 2.0, places=6, msg="the push stage spans the stub's read and the closing read")
+            self.assertGreaterEqual(jobs, 0.0, "jobs is the function minus the push, never negative")
+            self.assertAlmostEqual(push + jobs, (n_first - 1) * 1.0, places=6, msg="push plus jobs is the function's whole span: every read but the first")
+            before = km._PERF_STATS.snapshot()["stages_ms"]
+            km._pusher_cycle_jobs(int(time.time()), {}, False)   # no client: no push, the jobs still run
+            after = km._PERF_STATS.snapshot()["stages_ms"]
+            self.assertEqual(after["push"], before["push"])
+            self.assertAlmostEqual(after["jobs"] - before["jobs"], (reads[0] - n_first - 1) * 1.0, places=6, msg="the no-client cycle's jobs span every read but its first")
 
     def test_a_connect_serves_the_build_it_tested_when_the_cache_is_replaced_between_its_reads(self):
         # _cached_timeline tested the cached payload and returned it as two reads of the shared list while the
@@ -864,6 +906,59 @@ class PushStages(unittest.TestCase):
         self.assertEqual(snap2["builds"]["chat"]["built"] - snap1["builds"]["chat"]["built"], 0)
         self.assertLess(snap2["stages_ms"]["push.chat"] - snap1["stages_ms"]["push.chat"], 5.0,
                         "a cached tab costs the chat stage no build")
+
+    def test_the_per_session_row_is_fed_by_the_real_push_with_the_leafs_bytes_and_a_cached_second_push(self):
+        # round three, low 2: the wiring executed instead of a regex over the kernel source: the built site hands the sid and
+        # the leaf's byte size, the cached site hands the sid; a second push over the same transcript raises `cached` and leaves n
+        km._PERF_STATS.chat_by_session.pop(SID, None)
+        km._push([self.chat, self.tl])
+        rows = {r["sid"]: r for r in km._PERF_STATS.snapshot()["builds"]["chat"]["bySession"]}
+        self.assertIn(SID, rows, "the built site hands the sid: %s" % sorted(rows))
+        row = rows[SID]
+        self.assertEqual((row["n"], row["cached"], row["bytes"]), (1, 0, os.path.getsize(self.transcript)), row)
+        self.assertGreaterEqual(row["first"], 5.0, "the build's sleep is the first build's ms"); self.assertEqual((row["last"], row["max"]), (row["first"], row["first"]))
+        km._push([self.chat, self.tl])
+        row2 = {r["sid"]: r for r in km._PERF_STATS.snapshot()["builds"]["chat"]["bySession"]}[SID]
+        self.assertEqual((row2["n"], row2["cached"], row2["first"]), (1, 1, row["first"]), "the cached site hands the sid; n and first stand")
+
+    def test_the_targeted_push_records_its_build_in_the_row_and_the_aggregate(self):
+        # round three, low 1: _push_session_now built through build_session and recorded nothing, so the row's first (the number
+        # the timer exists to read) could be a build over a cache an unrecorded handshake push had warmed; it records under the
+        # label `targeted` now and still caches nothing (no dependency record: a stored entry would have no signature)
+        km._PERF_STATS.chat_by_session.pop(SID, None)
+        saved = (list(km._clients), km._PERF_STATS.snapshot()["builds"]["chat"])
+        with km._clients_lock:
+            km._clients[:] = [self.chat]
+        try:
+            km._push_session_now(SID)
+        finally:
+            with km._clients_lock:
+                km._clients[:] = saved[0]
+        self.assertEqual(self.builds, 1, "the targeted push built the session")
+        snap = km._PERF_STATS.snapshot()["builds"]["chat"]
+        row = {r["sid"]: r for r in snap["bySession"]}.get(SID)
+        self.assertIsNotNone(row, "the targeted push feeds the per-session row")
+        self.assertEqual((row["n"], row["cached"], row["bytes"]), (1, 0, os.path.getsize(self.transcript)), row)
+        self.assertGreaterEqual(row["first"], 5.0)
+        self.assertEqual(snap["built"] - saved[1]["built"], 1, "and the aggregate")
+        self.assertEqual(snap["bg_miss"].get("targeted", 0) - saved[1]["bg_miss"].get("targeted", 0), 1, "attributed to the push, not a signature component")
+        self.assertNotIn(SID, km._built_chat, "still not cached: the build ran with no dependency record")
+        self.assertIn("session", [f["type"] for f in self.chat_frames])
+        # round four, low b: the watched tab's handshake build lands under active_built, read from the target client's active sid
+        self.chat["active"] = SID
+        km._PERF_STATS.chat_by_session.pop(SID, None)
+        before = km._PERF_STATS.snapshot()["builds"]["chat"]
+        with km._clients_lock:
+            km._clients[:] = [self.chat]
+        try:
+            km._push_session_now(SID)
+        finally:
+            with km._clients_lock:
+                km._clients[:] = saved[0]
+        after = km._PERF_STATS.snapshot()["builds"]["chat"]
+        self.assertEqual((after["active_built"] - before["active_built"], after["bg_built"] - before["bg_built"]), (1, 0),
+                         "the watched tab's build counts as active, not background")
+        self.assertEqual(after["bg_miss"].get("targeted", 0), before["bg_miss"].get("targeted", 0), "no background attribution for the watched tab")
 
     def test_the_seams_stay_where_the_stages_are_defined(self):
         # the order of the four stage records in _push is the definition of the split; pinned beside the
