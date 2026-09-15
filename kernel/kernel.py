@@ -53825,6 +53825,7 @@ class _JudgeChild:
             except Exception:
                 pass
 
+            @_stage_marked("judge.end")                   # the census's mark: this thread reaps, it builds and hydrates nothing
             def reap():
                 try:
                     p.wait(timeout=term_s)
