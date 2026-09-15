@@ -513,7 +513,9 @@ class KernelPipe {
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
-    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}`);
+    // the Outline panel declares the provisional-row capability on its dial (plans/outline-pane-provisional-row.md): without the
+    // term it would be a permanently unflagged Outline that disables the cold-tab gate for the whole kernel while open
+    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}${this.app === "fleet" ? "&provrows=1" : ""}`);
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }
