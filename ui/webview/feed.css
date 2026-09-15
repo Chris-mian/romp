@@ -1609,12 +1609,11 @@ a.fileview-gh-note { border-style: dashed; }
 /* the romp loader, per the loading-state rule: swirl + wordmark + three pulsing accent dots */
 .fileview-load { display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 30px 0; color: var(--dim); font-size: 0.86em; }
-.fileview-load img { width: 17px; height: 17px; animation: fileview-spin 1.6s linear infinite reverse; }
+.fileview-load img { width: 17px; height: 17px; animation: fask-swirl-spin 7s linear infinite; }   /* the feed sheet's own shared swirl keyframe, at the loader pace (was a forked fileview-spin reverse) */
 .fileview-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
   animation: fileview-pulse 1.1s ease-in-out infinite; }
 .fileview-dot:nth-of-type(2) { animation-delay: 0.18s; }
 .fileview-dot:nth-of-type(3) { animation-delay: 0.36s; }
-@keyframes fileview-spin { to { transform: rotate(360deg); } }
 @keyframes fileview-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 /* A pressed viewer toggle (Rendered/Raw, Wrap) wears the app-wide selected language — accent text +
