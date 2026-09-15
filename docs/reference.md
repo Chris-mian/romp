@@ -1839,7 +1839,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   proven at the next restore; while a mark stands every
   road goes straight to the whole or cold parse with no proof and no rewrite
   (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
-  the leaf moves or a write the writer accepts replaces the sidecar; a cyclic resolved
+  the leaf moves or a write the writer accepts replaces the sidecar, and the
+  boot sweep retires a mark whose sidecar carries a document version below the
+  current one (a mark belongs to the cut rule it was made under; the sidecar's
+  bytes are kept as `.meta.retired-<stamp>`, one count under
+  `removed.refusedMark:version`), so the next parse takes the version-refusal
+  road once and the settle's write produces the current document; a cyclic resolved
   graph (a reused uuid closing a ring) no longer refuses the document: the
   writer's spine walk ends at the first revisit as the parse's own walk does,
   so the document's spine is the one the chat shows (until 2026-09-14 a
