@@ -438,6 +438,13 @@ test("queued messages hold the reload for a minute, then the hold ends; a draine
   assert.equal(h.win.__rompPaneBusy(), "sends", "inside the bound it still holds");
   h.now += 2_000;
   assert.equal(h.win.__rompPaneBusy(), "", "past the bound the hold ends, the reload may go");
+  // the 1698 lows, low 2: the reload that follows takes the queued messages, so the pane says so once, to the shell
+  const dropped = h.posted.filter((m) => m.romp === "sendsDropped");
+  assert.equal(dropped.length, 1, "one line for the loss");
+  assert.equal(dropped[0].n, 1); assert.equal(dropped[0].app, "chat");
+  assert.match(dropped[0].text, /^1 message queued for the chat pane could not be sent before the dashboard reloaded; they were not delivered\.$/);
+  h.win.__rompPaneBusy();
+  assert.equal(h.posted.filter((m) => m.romp === "sendsDropped").length, 1, "said once per bound, not once per walk");
   h.runTimers(); h.ws.open();                                       // the redial drains the queue
   assert.equal(h.win.__rompPaneBusy(), "", "drained: no hold, and the stamp is cleared");
   h.ws.close(); h.win.__rompLocalSend({ type: "activeTab", id: "t2" });

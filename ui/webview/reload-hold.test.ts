@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { shipHoldsReload, reloadHoldReason, heldReloadText } from "./reload-hold";
+import { shipHoldsReload, reloadHoldReason } from "./reload-hold";
 
 // T272 follow-up: the upload hold on the dashboard's reload counts only ships whose ack can still arrive, and a held
 // reload wears a line.
@@ -23,12 +23,4 @@ test("the pane's reason: upload for a live ship, held-send for a gate on a live 
   assert.equal(reloadHoldReason([], "s1", fed), "held-send");
   assert.equal(reloadHoldReason([], "gone:s1", fed), "", "a send held on a gone host's upload does not hold");
   assert.equal(reloadHoldReason([], null, fed), "");
-});
-
-test("a held reload's line names what it waits for; a momentary gesture hold gets none", () => {
-  assert.equal(heldReloadText("upload"), "The dashboard will reload once the upload in progress finishes.");
-  assert.equal(heldReloadText("held-send"), "The dashboard will reload once the held message has been sent.");
-  assert.equal(heldReloadText("sends"), "The dashboard will reload once the queued messages have left.");
-  for (const g of ["pointer", "pan", "drag", "selection", "typing", ""]) assert.equal(heldReloadText(g), null, g);
-  assert.match(heldReloadText("custom-reason")!, /^The dashboard will reload once the page is idle \(custom-reason\)\.$/);
 });

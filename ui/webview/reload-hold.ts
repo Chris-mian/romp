@@ -3,8 +3,8 @@
 // pending — but ONLY while the ack can still arrive. A ship to a host whose relay is down, or to a host no longer
 // attached, has no ack coming until that host returns; holding every restart and build reload for it would stop the
 // dashboard from ever reloading, silently. So the hold counts ships whose host is the local kernel or an attached,
-// reachable host, and a held reload wears a face (heldReloadText) on the notification center or a standalone pane's
-// bar, since nothing displayed the core's `waiting` before. Pure and DOM-free so node --test executes it.
+// reachable host, and a held reload wears a face on the notification center or a standalone pane's bar, drawn by the
+// kernel's two held maps (the shim's and the shell's; tests/test_dashboard_auto_reload.py runs both). Pure and DOM-free so node --test executes it.
 
 export type FedView = { hosts?: () => string[]; down?: () => string[] } | null | undefined;
 
@@ -31,16 +31,4 @@ export function reloadHoldReason(shipSids: string[], gateSid: string | null, fed
   if (live.length) return "upload";
   if (gateSid && shipHoldsReload(gateSid, fed)) return "held-send";
   return "";
-}
-
-/** The line a held reload wears, per the pane's reason; null for a momentary gesture hold (the core's own
- *  pointer/pan/drag/selection/typing reasons), which needs no line. */
-export function heldReloadText(reason: string): string | null {
-  switch (reason) {
-    case "upload": return "The dashboard will reload once the upload in progress finishes.";
-    case "held-send": return "The dashboard will reload once the held message has been sent.";
-    case "sends": return "The dashboard will reload once the queued messages have left.";
-    case "pointer": case "pan": case "drag": case "selection": case "typing": case "": return null;
-    default: return "The dashboard will reload once the page is idle (" + reason + ").";
-  }
 }

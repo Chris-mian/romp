@@ -314,6 +314,50 @@ out({ none: none, thrown: thrown, later: DIAG.length });""")
         self.assertEqual(v["thrown"], 0, "a door that throws files nothing and does not latch")
         self.assertEqual(v["later"], 1, "the row is not lost: the next bound files it through the door that appeared")
 
+    def test_a_pane_that_drops_after_the_fresh_window_ended_opens_its_own_while_an_older_pane_still_answers_fresh(self):
+        """The 1698 lows, low 4: the page's fresh bound is a window. A column that dropped at the first minute's start and never
+        got its frame keeps answering fresh with its old stamp; a column that drops AFTER that minute ended must not be judged
+        by the old stamp (a ten-second-old redial read as expired, and the reload fired over it). Panes that drop inside a
+        running window still join it (the round-three requirement: two staggered columns, one minute)."""
+        s = run_core("""
+var R = window.__rompReload;
+var t0 = Date.now();
+var a = pane(function () { return 'fresh'; }, t0);                              // its frame never comes
+IFRAMES = [a];
+R.noteDv(8); var first = state();
+document.activeElement = COMPOSER; COMPOSER.value = "a draft that spans the bound";        // the draft begins inside the minute
+CLOCK += 65000; TIMERS.shift().f(); await tick(); await tick(); var afterBound = state();   // the window ended; typing holds
+CLOCK += 5000; var b = pane(function () { return 'fresh'; }, Date.now()); IFRAMES = [a, b];   // a second column drops now
+CLOCK += 10000; document.activeElement = null; R.ended(); await tick(); await tick();          // the draft clears ten seconds later
+out({ first: first, afterBound: afterBound, after: state() });""")
+        self.assertEqual(s["first"]["waiting"], "fresh", "the first column's minute")
+        self.assertEqual(s["afterBound"]["waiting"], "typing", "past the minute only the draft holds")
+        self.assertEqual(s["after"]["reloads"], 0, "the new column's redial keeps its own minute")
+        self.assertEqual(s["after"]["waiting"], "fresh")
+        t = run_core("""
+var R = window.__rompReload;
+var t0 = Date.now();
+IFRAMES = [pane(function () { return 'fresh'; }, t0)];
+R.noteDv(8);
+CLOCK += 40000; IFRAMES.push(pane(function () { return 'fresh'; }, Date.now()));   // a second column drops inside the window
+CLOCK += 20000; TIMERS.shift().f(); await tick(); await tick();
+out({ after: state() });""")
+        self.assertEqual(t["after"]["reloads"], 1, "a drop inside the running window joins it and ends with it: one minute for the page")
+
+    def test_the_breadcrumbs_age_counts_from_the_holds_start_not_the_last_backstop(self):
+        # the 1698 lows, low 3: a row filed at a later bound (no door at the earlier ones) read 60000 for a three-minute hold
+        s = run_core("""
+var R = window.__rompReload;
+IFRAMES = [pane(function () { return 'typing'; }, 0)];
+R.noteDv(8);
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();                 // no door yet
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();                 // still none
+IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
+out({ diag: DIAG });""")
+        self.assertEqual(len(s["diag"]), 1)
+        self.assertGreaterEqual(s["diag"][0]["data"]["ageMs"], 180000, "three minutes held, three minutes said")
+
     def test_build_drift_after_a_reconnect_reloads_once_the_chat_pane_has_its_frame(self):
         # the pre-existing build-drift reload after any reconnect (the round-two review found it held forever behind a Files pane
         # whose flag stood unstamped and uncleared): an unstamped flag holds nothing, a stamped one holds until the frame
@@ -487,6 +531,8 @@ out({ after: state() });""", code="abc1234")
         wording = "The dashboard will reload onto the new build once the chat pane has caught up, a minute at most."
         self.assertIn(wording, js, "the held wording, the pane's bar")
         self.assertIn(wording, km._STALE_JS, "and the shell's")
+        self.assertIn("else if(m&&m.romp==='sendsDropped'){if(window.__rompNotify&&m.text)window.__rompNotify('warn',String(m.text));}", km._STALE_JS,
+                      "the shell keeps a pane's abandoned-messages line in the notification center (ui/webview/pane-shim-stale.test.ts posts it)")
         self.assertIn("CODE=%s," % json.dumps(km._code_ident() or ""), km._reload_core(), "the served core bakes this kernel's code identity")
 
     def test_version_readings_feed_both_signals(self):
@@ -742,7 +788,7 @@ class ReloadWiringPinned(unittest.TestCase):
         self.assertIn('if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();', js, "the keepalive's dv is still the event")
         self.assertIn("if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.checkBoot();", js)
         # the pane's queued sends hold the reload, and the flush is the ending event (review find, 2026-09-08)
-        self.assertIn('window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;return "";}if(!sendsSince)sendsSince=Date.now();return Date.now()-sendsSince<SENDS_HOLD_MS?"sends":"";};', js)
+        self.assertIn('window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;sendsDroppedSaid=false;return "";}', js)
         self.assertIn("queue=[];queuedDiag=0;\ntry{if(window.__rompReload)window.__rompReload.ended();}catch(e){}", js)
         # a standalone page consumes its own marker; nobody else would
         self.assertIn("try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}", js)

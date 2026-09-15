@@ -53095,7 +53095,7 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
 # this code in node with fakes and pins the wiring.
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdSince=0,holdDiag=false,freshSince=0,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdSince=0,holdStart=0,holdDiag=false,freshSince=0,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
@@ -53109,16 +53109,22 @@ try{if(window.__rompPaneBusy){var b=window.__rompPaneBusy();if(b)return String(b
 return '';}
 function panes(){var out=[],fs=document.querySelectorAll?document.querySelectorAll('iframe'):[];
 for(var i=0;i<fs.length;i++){try{var w=fs[i].contentWindow;if(w&&w.__rompReload)out.push(w);}catch(e){}}return out;}
-/* the fresh bound is per PAGE: the earliest stamp the walk has seen bounds every pane's hold, so two chat columns whose drops stagger
-   cannot chain two bounds (round three, low 1); the record resets when a walk sees no fresh hold at all */
-function freshExpired(w){var st=0;try{st=w.__rompFreshPendingSince||0;}catch(e){}if(st&&(!freshSince||st<freshSince))freshSince=st;return freshSince>0&&Date.now()-freshSince>=FRESH_HOLD_MS;}
-/* the walk visits EVERY pane before it answers, so the stamp resets whenever no pane holds fresh, whatever other hold stands (the
-   round-four low 1: an early return on typing kept a stale stamp, and a later, genuinely new drop read as already expired) */
-function busy(){var saw=false,hold=busyHere();if(hold==='fresh'){saw=true;if(freshExpired(window))hold='';}var ps=panes();
-for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){saw=true;if(freshExpired(ps[i]))b='';}if(b&&!hold)hold=b;}if(!saw)freshSince=0;return hold;}
-/* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age) through a
-   pane's socket, so a page that never reloads after a deploy is readable from the kernel's client-diag.jsonl; once per owed request */
-function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdSince};
+/* the fresh bound is per PAGE, as a WINDOW (round three, low 1; the 1698 lows, low 4): the first drop opens a minute, panes that
+   drop inside it join it and end with it (two staggered columns cannot chain two minutes), and a pane that drops after the
+   window has ended opens a new one of its own (a genuinely new redial keeps its minute even while an older pane, whose frame
+   never came, still answers fresh). No fresh pane at all closes the window. */
+function freshHeld(stamps){if(!stamps.length){freshSince=0;return false;}var now=Date.now();
+if(freshSince&&now-freshSince<FRESH_HOLD_MS)return true;
+var edge=freshSince?freshSince+FRESH_HOLD_MS:0,newest=0;for(var i=0;i<stamps.length;i++){var st=stamps[i];if(st>=edge&&(!newest||st<newest))newest=st;}
+if(newest){freshSince=newest;return now-freshSince<FRESH_HOLD_MS;}return false;}
+function freshStamp(w){try{return w.__rompFreshPendingSince||Date.now();}catch(e){return Date.now();}}   /* a pane answering fresh without a stamp counts from now (a real pane's own check needs the stamp; a bare answer is a harness) */
+function busy(){var stamps=[],hold=busyHere();if(hold==='fresh'){stamps.push(freshStamp(window));hold='';}var ps=panes();
+for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){stamps.push(freshStamp(ps[i]));b='';}if(b&&!hold)hold=b;}
+var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
+/* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age since
+   the hold BEGAN, not since the last backstop) through a pane's diagnostics door, so a page that never reloads after a deploy is
+   readable from the kernel's client-diag.jsonl; once per owed request, latched only once a door took it */
+function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-(holdStart||holdSince)};
 try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
 function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}
 var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}}}
@@ -53131,8 +53137,8 @@ try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
 if(b){R.waiting=b;var hk=owed.reason+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}   /* keyed on the reason: a second restart inside one hold moves the detail and must not announce the same wait again */
-if(!holdTimer){holdSince=Date.now();holdTimer=setTimeout(function(){holdTimer=null;heldLong();tryFire();},FRESH_HOLD_MS);}   /* the bound's backstop, one per hold: no event ends a hold whose frame or drain never comes, so the walk runs once more when the bound has passed, and a hold still standing is filed */
-return;}R.waiting='';holdDiag=false;fire();}
+if(!holdStart)holdStart=Date.now();if(!holdTimer){holdSince=Date.now();holdTimer=setTimeout(function(){holdTimer=null;heldLong();tryFire();},FRESH_HOLD_MS);}   /* the bound's backstop, one per hold: no event ends a hold whose frame or drain never comes, so the walk runs once more when the bound has passed, and a hold still standing is filed */
+return;}R.waiting='';holdDiag=false;holdStart=0;fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
 var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;holdDiag=false;}
 if(!owed){owed=next;holdDiag=false;}else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* the breadcrumb latch clears only when owed itself changes: a restart arriving while a build reload is held is the same wait */   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
@@ -53385,7 +53391,13 @@ var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: 
 // messages queued for a socket that has not come back hold the reload (their loss is the reload's cost), bounded like the fresh hold:
 // after a minute the reload goes anyway, so a dead socket cannot keep a page on an old build (the manager 2026-09-14)
 var sendsSince=0,SENDS_HOLD_MS=60000;
-window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;return "";}if(!sendsSince)sendsSince=Date.now();return Date.now()-sendsSince<SENDS_HOLD_MS?"sends":"";};
+var sendsDroppedSaid=false;
+// when the bound ends the hold with messages still queued, the reload that follows takes them: say so once, on the page (the
+// shell's notification center, which survives the reload; a standalone pane's own bar), never a silent loss (the 1698 lows, low 2)
+function sendsDropped(n){if(sendsDroppedSaid)return;sendsDroppedSaid=true;var t=n+" message"+(n===1?"":"s")+" queued for the "+APP+" pane could not be sent before the dashboard reloaded; they were not delivered.";
+try{if(window.parent!==window)window.parent.postMessage({romp:"sendsDropped",app:APP,n:n,text:t},"*");else selfBar(t,"warn");}catch(e){}}
+window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;sendsDroppedSaid=false;return "";}if(!sendsSince)sendsSince=Date.now();
+if(Date.now()-sendsSince<SENDS_HOLD_MS)return "sends";sendsDropped(queue.length-queuedDiag);return "";};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
 try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
@@ -57315,7 +57327,10 @@ _STALE_JS = (
     # (and re-asserts its wording): a resync delivers state, never new code, so only a reload answers it.
     "window.addEventListener('message',function(e){var m=e&&e.data;"
     "if(m&&m.romp==='wsStale'){if(m.build){if(RL)RL.request('build','');else{buildStale=true;show(BUILDMSG);}}else{connStale=true;show(CONNMSG);}}"
-    "else if(m&&m.romp==='wsFresh'){connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');}});"
+    "else if(m&&m.romp==='wsFresh'){connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');}"
+    # {romp:'sendsDropped'} (the 1698 lows, low 2): a pane's queued messages were abandoned when the sends hold's bound ended;
+    # the notification center keeps the line across the reload that follows, so the loss is never silent
+    "else if(m&&m.romp==='sendsDropped'){if(window.__rompNotify&&m.text)window.__rompNotify('warn',String(m.text));}});"
     # T132 (the user 2026-08-27): the banner is DRAGGABLE — movable out of the way so it can STAY up
     # (it was covering a tab they needed before accepting the build). Moving never dismisses, mutes, or
     # times it out; Reload keeps working identically after any number of moves (BUTTON targets never
