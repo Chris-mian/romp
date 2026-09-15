@@ -3333,12 +3333,13 @@ again to a shell that sends `ready`:
                       "errs": 0, "stale": false, "fault": "HTTP 403 (only when the last read was refused)"}}}
 ```
 
-`seq` counts the retry-pause file's writes since the kernel started. A press
-on the detail's pause button writes that file, so the frame that answers the
-press carries a moved `seq` whatever state it brings, and the shell clears
-the button's acknowledgment on it; a frame from before the press carries the
-old one. It is an event counter, not a clock, and restarts at 0 with the
-kernel. `waiting` is `retrying` plus `blocked`. `cls` is the plurality class
+`seq` counts the retry-pause file's writes since the kernel started, plus
+each press the kernel refused because that file could not be read (the press
+is told so on its own socket; nothing is changed). A press on the detail's
+pause button writes that file, so the frame that answers the press carries a
+moved `seq` whatever state it brings, and the shell clears the button's
+acknowledgment on it; a frame from before the press carries the old one. It
+is an event counter, not a clock, and restarts at 0 with the kernel. `waiting` is `retrying` plus `blocked`. `cls` is the plurality class
 over the affected sessions, ties resolved 429, then 529, then offline, then
 errors. `since` is the pause's time when paused, else the earliest affected
 session's event (a record's timestamp, or the retrying turn's start), else 0.
