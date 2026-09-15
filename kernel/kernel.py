@@ -8339,6 +8339,22 @@ def _set_whole_chat_frames(enabled, gt=None):
     return stamp
 
 
+def _seed_whole_chat_frames():
+    """The boot-time fallback: ROMP_CHAT_FLOOR0=1 SEEDS the Whole chat frames switch ON once, when no store exists; the gear
+    owns it after (a later flip is never overwritten by a second boot with the env set). Called from main() once every
+    definition below is loaded (the 1704 read, low 1): the seed used to sit in a module-level try beside the boot sweep, where
+    the setter's _mark_views_dirty call raised NameError, swallowed by the bare except, so the store write landed and
+    nothing after it ran. Returns True when it seeded."""
+    if os.environ.get("ROMP_CHAT_FLOOR0") != "1":
+        return False
+    try:
+        if (jd.STATE / WHOLE_CHAT_FRAMES_FILE).exists():
+            return False
+    except OSError:
+        return False
+    return _set_whole_chat_frames(True) is not None
+
+
 def _thinking_summaries_on():
     """OFF unless this install's file says yes: absent, unreadable or malformed all read False — the
     opt-in must be provable, and reading never creates the file (shipping never turns it on)."""
@@ -11202,8 +11218,6 @@ _load_tick_seen()               # the previous kernel's last evaluations, if it 
 _load_intr_marks()              # and its interrupt-marks memo (T401 (3) target 3)
 try:
     em.checkpoint_sweep()       # checkpoints of files that are gone (cleared, removed sessions) leave with the boot (T323 stage 3)
-    if os.environ.get("ROMP_CHAT_FLOOR0") == "1" and not (jd.STATE / WHOLE_CHAT_FRAMES_FILE).exists():
-        _set_whole_chat_frames(True)   # the boot-time fallback SEEDS the Whole chat frames switch once; the gear owns it after
 except Exception:
     pass
 
@@ -63928,6 +63942,7 @@ def main():
     #                                                           builds the backend itself if it wins the race)
     threading.Thread(target=_rewind_migration_bg, daemon=True).start()   # one-time dead-branch cleanup
     #                                                           of pre-fix residue, marker-gated
+    _seed_whole_chat_frames()   # the ROMP_CHAT_FLOOR0 seed, here where every definition it reaches is loaded (the 1704 read, low 1)
     threading.Thread(target=_producer, daemon=True, name="producer").start()   # named: the stack sample says whose frames
     threading.Thread(target=_pusher, daemon=True, name="pusher").start()
     _JOBS_THREAD_STARTED[0] = True                            # the boot row waits for this thread's first pass too

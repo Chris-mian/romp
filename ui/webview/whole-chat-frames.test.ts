@@ -53,5 +53,6 @@ test("the kernel reads the switch live in its floor decision and serves it on /v
   assert.ok(body.includes("if _whole_chat_frames_on():"), "the switch is read at every decision, before the client protocols");
   assert.ok(KERNEL.includes('"wholeChatFrames": _whole_chat_frames_on(),'), "/version carries it for the gear's fill");
   assert.ok(KERNEL.includes('msg.get("type") == "setWholeChatFrames"'), "the WS op exists");
-  assert.ok(KERNEL.includes('os.environ.get("ROMP_CHAT_FLOOR0") == "1"'), "the boot-time seed exists");
+  assert.ok(KERNEL.includes("def _seed_whole_chat_frames():") && KERNEL.includes('os.environ.get("ROMP_CHAT_FLOOR0") != "1"'),
+    "the boot-time seed exists as a function main() calls once the module is loaded (the 1704 read, low 1)");
 });
