@@ -1,13 +1,16 @@
-"""A parked tool-permission ask keeps its needs-you state while the CLI's stream carries on (the user's report of
-2026-09-16: a session blocked on an Allow prompt showed neither the tab's dashed ring nor a card under Blocked, while the
-picker stayed up). The one detector for a live permission is romp's own SDK callback: _can_use_tool marks "permission" in
+"""A parked tool-permission ask keeps its needs-you state while the CLI's stream carries on and while texts are fed
+(the user's report of 2026-09-15: a session blocked on an Allow prompt showed neither the tab's dashed ring nor a card under
+Blocked, while the picker stayed up). The one detector for a live permission is romp's own SDK callback: _can_use_tool marks "permission" in
 states/<sid>.jsonl and stores the ask (_pending_ask); a running session's snapshot, while an ask is parked, reads its state
 from that log's LAST line, and the tab ring, the card floor and the placeholder card all read the live state through
 _NEEDS_INPUT_STATES. SdkBackend._forward re-asserted "working" on ANY streamed work atom whenever _cli_working was False,
 and the permission mark sets it False, so a parallel tool's result (a user atom carrying a tool_result), a subagent's stream
 or an assistant chunk landing while the ask stood appended "working" after "permission": the picker stayed (the ask was
 untouched) and every needs-you surface went dark. The re-assert yields while the backend holds a pending ask for the
-session; the ask site's own settle re-marks "working" after the answer, as before. Synthetic only (placeholder ids)."""
+session. Round two of PR 1739 found the second door: the turn FEEDER marked "working" at its pop with no parked-ask term, so a
+text landing in a session standing on a prompt (the composer's message, a peer's postal message, a nudge, a scheduled prompt)
+put the readers out the same way. One gate now, SdkSession._mark_producing, the module's only writer of "working": the feeder,
+the stream and the ask sites' settle all take it; the text still feeds, only the state mark yields. Synthetic only."""
 import json
 import os
 import re
@@ -20,8 +23,11 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()   # hermetic state BEFORE the load: the module resolves its root at import
+_XDG = tempfile.mkdtemp()
+os.environ["XDG_STATE_HOME"] = _XDG   # hermetic state BEFORE the load: the module resolves its root at import
 os.environ.pop("ROMP_STATE_DIR", None)
+os.makedirs(os.path.join(_XDG, "romp"), exist_ok=True)
+open(os.path.join(_XDG, "romp", "session-hosts"), "w").write("off\n")   # a minted state root pins the per-session hosts off
 sb = load_source("romp_sdk_backend_permask", os.path.join(BIN, "romp_sdk_backend.py"))
 KSRC = open(os.path.join(BIN, "romp-kernel")).read()
 BSRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()
@@ -54,7 +60,16 @@ class AssistantMessage:
 
 
 def _backend():
-    return sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+    root = tempfile.mkdtemp()
+    open(os.path.join(root, "session-hosts"), "w").write("off\n")   # the backend's own state root too
+    return sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+
+
+def _producing(s):
+    """What a writer of "working" does: the one gate at the head, the bare mark at the base (the new name reached through
+    getattr so the base run executes the old behaviour and reads red)."""
+    fn = getattr(s, "_mark_producing", None)
+    return fn() if fn else s._mark("working")
 
 
 def _session(be, sid=SID):
@@ -87,7 +102,7 @@ class ParkedPermissionKeepsItsState(unittest.TestCase):
         self.assertIsNotNone(be._pending_ask.get(SID), "the ask itself was never touched by the stream")
 
     def test_an_assistant_chunk_streamed_while_a_permission_is_parked_leaves_the_log_at_permission(self):
-        # the shape the user's record showed (2026-09-16): ONE tool_use, no tool_result, the log alternating permission and
+        # the shape the user's record showed (2026-09-15): ONE tool_use, no tool_result, the log alternating permission and
         # working three times in thirteen seconds: the re-asserting atom was an assistant chunk or a subagent's stream
         be = _backend(); s = _session(be)
         s._mark("working"); s._mark("permission")
@@ -96,6 +111,20 @@ class ParkedPermissionKeepsItsState(unittest.TestCase):
         self.assertEqual(_states(be, SID)[-1], "permission", "the parked ask's state stands: %r" % _states(be, SID))
         self.assertFalse(s._cli_working)
         self.assertEqual(_states(be, SID).count("working"), 1, "no second working mark was appended: %r" % _states(be, SID))
+
+    def test_a_text_fed_while_a_permission_is_parked_leaves_the_log_at_permission(self):
+        # the second door (round two): the feeder's pop marks working with what a writer of working does; under a standing
+        # prompt the composer's message, a postal message, a nudge or a scheduled prompt all land here. The text still feeds.
+        be = _backend(); s = _session(be)
+        s._mark("working"); s._mark("permission")
+        be._pending_ask[SID] = {"kind": "single", "header": "Permission", "permission": True}
+        _producing(s)                                        # the feeder's mark at its pop
+        self.assertEqual(_states(be, SID), ["working", "permission"], "the fed text left the prompt's state alone")
+        self.assertFalse(s._cli_working)
+        be._clear_ask(s)                                     # the answer: the ask site's settle takes the same gate
+        _producing(s)
+        self.assertEqual(_states(be, SID)[-1], "working", "no ask parked any more: the gate marks")
+        self.assertTrue(s._cli_working)
 
     def test_once_the_ask_is_answered_the_stream_re_asserts_working_as_before(self):
         be = _backend(); s = _session(be)
@@ -135,10 +164,32 @@ class TheNeedsYouReadersShareOneState(unittest.TestCase):
         self.assertIn("parked = self.backend._pending_ask.get(self.sid) is not None", BSRC)
         self.assertIn("if self.inflight > 0 and not parked:", BSRC)
 
-    def test_the_streams_working_re_assert_yields_to_a_parked_ask(self):
-        self.assertIn('and not sess._cli_working and self._pending_ask.get(sess.sid) is None:\n            sess._mark("working")', BSRC,
-                      "the re-assert is gated on no pending ask for the session")
+    def test_the_one_gate_yields_to_a_parked_ask_and_every_writer_of_working_takes_it(self):
+        import ast
+        self.assertIn('    def _mark_producing(self) -> None:', BSRC, "the gate exists")
+        self.assertIn('        if self.backend._pending_ask.get(self.sid) is not None:\n            return\n        self._mark("working")', BSRC,
+                      "the gate yields while the backend holds a pending ask for the session")
         self.assertIn('append_state(self.backend.state_dir, self.sid, state)', BSRC, "the mark writes the log the snapshot reads")
+        # the census: the module's ONLY literal writer of "working" is the gate; every other writer calls the gate, and the
+        # callers are exactly the five known doors (a sixth writer added later fails here, whichever way it writes)
+        tree = ast.parse(BSRC)
+        literal, callers = [], []
+        def walk(node, stack):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    walk(child, stack + [child.name]); continue
+                if isinstance(child, ast.Call):
+                    f = child.func
+                    name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+                    if name in ("_mark", "append_state") and any(isinstance(a, ast.Constant) and a.value == "working" for a in child.args):
+                        literal.append(stack[-1] if stack else "<module>")
+                    if name == "_mark_producing":
+                        callers.append(stack[-1] if stack else "<module>")
+                walk(child, stack)
+        walk(tree, [])
+        self.assertEqual(literal, ["_mark_producing"], "one literal writer of working, the gate itself: %r" % literal)
+        self.assertEqual(sorted(set(callers)), ["_approve_plan", "_ask_user", "_can_use_tool", "_forward", "inputs"],
+                         "the five doors: the feeder's pop, the stream's re-assert, the three ask sites' settle: %r" % sorted(set(callers)))
 
 
 if __name__ == "__main__":

@@ -6457,7 +6457,7 @@ class SdkSession:
                 self._note_turn_opener(fed_text_opener(item), fresh)   # who this turn is for (the Stop hook stamps it)
                 if item.startswith(RENAME_PING_HEAD):
                     self._ping_feeding = True       # hold feeds until this turn's first streamed message
-                self._mark("working")
+                self._mark_producing()              # the one gate: a text fed under a standing prompt leaves the prompt's state
                 self.backend._poke()
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
@@ -6975,6 +6975,20 @@ class SdkSession:
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     row[kk] = int(v)
         return row
+
+    def _mark_producing(self) -> None:
+        """The ONE writer of the "working" state (PR 1739 round two, 2026-09-15): the turn feeder's pop, the stream's
+        re-assert and the ask sites' settle all come here, and it YIELDS while the backend holds a pending ask for this
+        session. The permission and picker marks set _cli_working False and the running snapshot reads the log's last line
+        while an ask is parked, so any writer of "working" running under a standing prompt put every needs-you reader out:
+        a parallel tool's result, an assistant chunk or a subagent's stream on the wire, or a text fed into the session
+        while it stood on the prompt (the composer's message, a peer's postal message, a nudge, a scheduled prompt). The
+        record of the user's session read permission, working, three times in thirteen seconds with pendingAsk true. The
+        text still feeds (the composer's message during a prompt is deliberate); only the state mark waits for the answer,
+        and the ask site's settle marks it then, through this same gate, once the ask is cleared."""
+        if self.backend._pending_ask.get(self.sid) is not None:
+            return
+        self._mark("working")
 
     def _mark(self, state: str) -> None:
         """Persist a lifecycle STATE to states/<sid>.jsonl AND track whether the CLI is producing.
@@ -8013,7 +8027,7 @@ class SdkSession:
             finally:
                 self.backend._clear_ask(self)
                 if self.inflight:
-                    self._mark("working")
+                    self._mark_producing()
         if decision == "remember":
             return PermissionResultAllow(behavior="allow", updated_permissions=list(context.suggestions))
         if decision == "allow":
@@ -8055,7 +8069,7 @@ class SdkSession:
             finally:
                 self.backend._clear_ask(self)
                 if self.inflight:
-                    self._mark("working")
+                    self._mark_producing()
         if choice == "1":
             return PermissionResultAllow(behavior="allow")
         if choice == "2":
@@ -8075,7 +8089,7 @@ class SdkSession:
         finally:
             self.backend._clear_ask(self)
             if self.inflight:
-                self._mark("working")
+                self._mark_producing()
         return build_answers(questions, picks)
 
     async def _ask_one(self, question: dict, qi: int, total: int):
@@ -15010,15 +15024,16 @@ class SdkBackend:
         if not atom.get("_echo_text") and not atom.get("command") and not atom.get("isApiError") \
                 and getattr(sess, "_first_out_t", None) is None and getattr(sess, "inflight", 0):
             sess._first_out_t = time.time()   # the turn's FIRST streamed work atom — turns.jsonl's firstOutT (T304)
-        # …but never over a PARKED ASK (the user 2026-09-16, a session blocked on an Allow prompt that showed neither the
+        # …but never over a PARKED ASK (the user 2026-09-15, a session blocked on an Allow prompt that showed neither the
         # tab's dashed ring nor a Blocked card while the picker stayed up): the permission and picker marks set
         # _cli_working False, and the running snapshot reads the LOG's last line while an ask is parked, so an assistant
         # chunk, a subagent's stream or a parallel tool's result landing during the ask appended "working" after
         # "permission" and every needs-you reader went dark (the record: permission, working, three times in thirteen
-        # seconds, pendingAsk true). The ask site's own settle re-marks "working" after the answer when the turn is in flight.
+        # seconds, pendingAsk true). The gate is _mark_producing, the module's ONE writer of "working"; the feeder's pop and
+        # the ask sites' settle take the same door.
         if not atom.get("_echo_text") and not atom.get("command") and not atom.get("isApiError") \
-                and not sess._cli_working and self._pending_ask.get(sess.sid) is None:
-            sess._mark("working")   # (an isApiError settle is the turn DYING, not producing — never 'working')
+                and not sess._cli_working:
+            sess._mark_producing()  # the one gate (a parked ask holds the state; an isApiError settle is the turn DYING, not producing)
         self._wake_push()
 
     def _wake_push(self):
