@@ -302,11 +302,16 @@ and with only one real choice, the same spot writes out which applies,
 `Login (name@example.com)` or `API key`. The key choice exists when Claude
 Code's settings for the kernel's working directory carry a helper; romp reads
 the setting and never runs it for this. A live session's tab menu carries a
-**Billing** submenu that lists BOTH choices on every box (since 2026-09-08; it
-used to exist only when both were real): the choice this machine cannot bill
-is greyed and inert, with the reason in its hover, `no Claude login signed in
-on this machine`, `no apiKeyHelper configured`, or `the apiKeyHelper is set in
-managed settings, login cannot apply`. The status payload carries the same
+**Billing** submenu that lists the billings this machine can apply, the
+machine's own login, every stored login and the API key, and those only (the
+user 2026-09-14: what is set up, nothing greyed; from 2026-09-08 to then the
+missing side was listed greyed with its reason in the hover). A machine with
+nothing to bill shows one inert line in the reasons' own words, `no Claude
+login signed in on this machine`, `no apiKeyHelper configured`, or `the
+apiKeyHelper is set in managed settings, login cannot apply`. Each label shows
+whole, the menu as wide as its longest label and bounded by the window alone
+(the user 2026-09-14; a 22em cap had cut the machine login's `email ·
+organisation · kind` to an ellipsis). The status payload carries the same
 availability as `authAvail` (`authBoth` rides beside it for older clients),
 and the machine's default beside it. The flyout opens on hover over the
 Billing row, as the Tags flyout does (one gesture: a short hover opens, a
@@ -314,10 +319,18 @@ click opens at once, leaving both the row and the flyout closes it), and on
 click. Switching reconnects the session to apply, with the same switching-dots
 the effort badge wears.
 
-Below the session's choices the flyout carries **Default for this machine**:
-the same choices as a radio group, the current default marked. That default is
+Below the session's choices, behind a rule, the flyout carries one entry,
+**Set default billing**, which opens a submenu holding exactly the same
+choices, a stored login among them (the user 2026-09-14; until then the
+submenu offered the machine's own login and the key only), the current
+explicit default check-marked. That default is
 the seed every new session, and every session with no pick of its own, launches
-on; it lives in the state root's `sdk-defaults.json` as `auth` (never a token),
+on; it lives in the state root's `sdk-defaults.json` as `auth` (never a token;
+a stored login as `auth: login` with its record id under `authLogin`, and an
+unpicked session then launches with that login's helper, reads it in its
+status and bills its judges to it, exactly as a session that picked it would;
+a stored login the machine cannot bill just now, refused, expired or removed,
+falls through to the machine's own login),
 and a pick there changes no session that carries its own pick; a session
 with no pick of its own follows it, in its status at once and at its next
 launch. A third choice, Automatic, is the rule that held before: the API key

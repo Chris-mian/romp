@@ -127,12 +127,46 @@ test("an explicit default is check-marked in the nested submenu, and Automatic s
   assert.deepEqual(posted, [{ type: "setAuth", id: "11111111-2222-3333-4444-555555555555", value: "auto", scope: "machine" }], "Automatic clears the explicit default (the helper rule again)");
 });
 
-test("one billing to choose from (the other side unavailable here): no rule, no Set default billing entry; the unavailable side still listed, greyed", () => {
+test("one billing to choose from (the other side unavailable here): the one listed alone, no greyed row, no rule, no Set default billing entry", () => {
+  // the user 2026-09-14: list what is set up, grey nothing (the 2026-09-08 greyed-with-a-reason row is gone)
   const { sub } = lift({ login: true, key: false, keyWhy: "no apiKeyHelper configured", default: "login", defaultExplicit: false }, "", "");
-  assert.deepEqual(lines(sub), ["Login", "API key"]);
-  assert.ok(has(sub.children[1], "disabled") && sub.children[1].title === "no apiKeyHelper configured");
+  assert.deepEqual(lines(sub), ["Login"]);
+  assert.equal(sub.querySelectorAll(".disabled").length, 0, "nothing greyed");
   assert.equal(sub.querySelectorAll(".ctx-sep").length, 0);
   assert.equal(sub.querySelectorAll(".ctx-item-setdefault").length, 0);
+});
+
+test("nothing to bill on this machine: one inert line naming the reasons, in their own words, no choice and no entry", () => {
+  const { sub, posted, dismissed } = lift({ login: false, loginWhy: "no Claude login signed in on this machine", key: false, keyWhy: "no apiKeyHelper configured", default: "login", defaultExplicit: false }, "", "");
+  assert.deepEqual(lines(sub), ["no Claude login signed in on this machine; no apiKeyHelper configured"]);
+  assert.ok(has(sub.children[0], "ctx-item-none") && has(sub.children[0], "ctx-item"), sub.children[0].className);
+  sub.children[0].fire("click");
+  assert.deepEqual(posted, []); assert.equal(dismissed.length, 0, "inert: posts nothing, the menu stays");
+  assert.equal(sub.querySelectorAll(".ctx-item-setdefault").length, 0);
+});
+
+test("a stored login is offered in the Set default billing submenu like every other pick, and posts its value with scope machine", () => {
+  // the user 2026-09-14: the enterprise login showed among the picks but not under Set default billing
+  const avail = { login: true, key: true, default: "key", defaultExplicit: false,
+    logins: [{ id: "", value: "login", label: "user@example.com · Example", machine: true, available: true },
+             { id: "0123456789ab", value: "login:0123456789ab", label: "Work", machine: false, available: true }] };
+  const { sub, posted } = lift(avail as Avail, "", "");
+  assert.deepEqual(lines(sub), ["Login (user@example.com · Example)", "Login (Work)", "API key", "---", "Set default billing"]);
+  sub.children[4].fire("click");
+  const d = sub.querySelector(".ctx-sub-default")!;
+  assert.deepEqual(lines(d), ["Login (user@example.com · Example)", "Login (Work)", "API key"], "exactly the picks' entries, the stored login among them");
+  d.children[1].fire("click");
+  assert.deepEqual(posted, [{ type: "setAuth", id: "11111111-2222-3333-4444-555555555555", value: "login:0123456789ab", scope: "machine" }]);
+});
+
+test("a stored login set as the explicit default wears the check in the submenu", () => {
+  const avail = { login: true, key: true, default: "login:0123456789ab", defaultExplicit: true,
+    logins: [{ id: "", value: "login", label: "user@example.com", machine: true, available: true },
+             { id: "0123456789ab", value: "login:0123456789ab", label: "Work", machine: false, available: true }] };
+  const { sub } = lift(avail as Avail, "", "");
+  sub.children[4].fire("click");
+  const d = sub.querySelector(".ctx-sub-default")!;
+  assert.deepEqual(d.children.map((c) => has(c, "current")), [false, true, false, false, false], "the stored default wears the check; then the rule and Automatic");
 });
 
 test("an older kernel that does not say whether the default is explicit shows no Set default billing entry", () => {
@@ -141,13 +175,11 @@ test("an older kernel that does not say whether the default is explicit shows no
   assert.equal(sub.querySelectorAll(".ctx-item-setdefault").length, 0);
 });
 
-test("the session's own pick list is unchanged: the current pick marked, a disabled entry posts nothing, the current pick dismisses and posts nothing", () => {
+test("the session's own pick list: an unavailable side is not listed, the current pick is marked and dismisses without posting", () => {
   const { sub, posted, dismissed } = lift({ login: false, loginWhy: "no Claude login signed in on this machine", key: true, default: "key", defaultExplicit: false }, "key", "");
-  assert.deepEqual(sub.children.map((c) => has(c, "current")), [false, true]);
+  assert.deepEqual(lines(sub), ["API key"], "the signed-out login is not offered (the user 2026-09-14)");
+  assert.deepEqual(sub.children.map((c) => has(c, "current")), [true]);
   sub.children[0].fire("click");
-  assert.deepEqual(posted, []);
-  assert.equal(dismissed.length, 0, "a disabled entry leaves the menu up");
-  sub.children[1].fire("click");
   assert.deepEqual(posted, [], "the current pick posts nothing");
   assert.equal(dismissed.length, 1, "…and dismisses");
 });
@@ -164,20 +196,28 @@ test("source: ONE entry-list function feeds both menus, both flyouts ride wireFl
   const BILL = RENDER.slice(a, RENDER.indexOf('    wireFlyout(menu, item, ".ctx-sub-billing"', a));
   assert.match(RENDER, /^function billingChoices\(st: Status, avail: AuthAvail\): Array<\{ label: string; value: string; why: string \}> \{/m);
   assert.equal((BILL.match(/billingChoices\(/g) || []).length, 1, "one call; the nested submenu iterates the SAME array");
-  assert.match(BILL, /const choices = billingChoices\(st, avail\);/);
-  assert.match(BILL, /const pickable = choices\.filter\(\(c\) => !c\.why\);\s*\n\s*if \(pickable\.length > 1 && avail\.default && avail\.defaultExplicit !== undefined\) \{/, "the rule and the entry only with more than one billing to choose from, from a kernel that reports the flag");
+  assert.match(BILL, /const all = billingChoices\(st, avail\);/);
+  assert.match(BILL, /const choices = all\.filter\(\(c\) => !c\.why\);/, "the one list holds the billings this machine can apply, and those only (the user 2026-09-14)");
+  assert.match(BILL, /if \(choices\.length > 1 && avail\.default && avail\.defaultExplicit !== undefined\) \{/, "the rule and the entry only with more than one billing to choose from, from a kernel that reports the flag");
+  assert.doesNotMatch(BILL, /disabled|aria-disabled|defaultChoices/, "no greyed row and no filtered default list any more");
+  assert.match(BILL, /for \(const c of choices\) \{\s*\n\s*const cur = explicit && avail\.default === c\.value;/, "the submenu lists the same choices, a stored login among them");
   assert.match(BILL, /wireFlyout\(sub, setDef, "\.ctx-sub-default", \(\) => openDefaultFly\(\)\);/, "the nested level rides the same hover-intent road, scoped to the Billing flyout");
   assert.match(BILL, /placeFlyBeside\(setDef, d\);/); assert.match(BILL, /placeFlyBeside\(item, sub\);/);
   assert.match(RENDER, /^function placeFlyBeside\(anchor: HTMLElement, fly: HTMLElement\): void \{/m);
+  assert.match(RENDER, /^function placeFlyBeside[^\n]*\n\s*const ir = anchor\.getBoundingClientRect\(\);\n(?:\s*\/\/[^\n]*\n)*\s*fly\.style\.left = "0px";\n\s*const sr = fly\.getBoundingClientRect\(\);/m,
+    "the flyout is measured at the window's left edge, where its whole width is available (a wrapping label re-flows once placed otherwise)");
   assert.doesNotMatch(BILL, /ctx-sub-head|ctx-radio|autoWord|machineChoices|Default for /, "the Default group, its head, note and radios are gone");
   assert.doesNotMatch(BILL, /ctx-item-sub/, "no sub-line is built anywhere in the flyout");
   assert.equal((RENDER.match(/type: "setAuth"/g) || []).length, 2, "two senders: the session pick and the machine default (the census in feed-cap-offer.test.ts)");
 });
 
-test("styles: the head and note rules are gone; both flyouts keep a menu's width with long labels truncating", () => {
+test("styles: the head and note rules are gone; both flyouts take their longest label's width whole, bounded by the window only", () => {
+  // the user 2026-09-14: the machine login's label was cut to an ellipsis under a 22em cap; the label shows in full, the menu growing
   assert.doesNotMatch(CSS, /\.ctx-sub-head/, "no group head any more");
-  assert.match(CSS, /^\.ctx-sub-billing, \.ctx-sub-default \{ max-width: 22em; \}/m);
-  assert.match(CSS, /^\.ctx-sub-billing \.ctx-item, \.ctx-sub-default \.ctx-item \{ overflow: hidden; text-overflow: ellipsis; \}/m);
+  assert.match(CSS, /^\.ctx-sub-billing, \.ctx-sub-default \{ max-width: calc\(100vw - 16px\); \}/m, "the window is the one bound");
+  assert.match(CSS, /^\.ctx-sub-billing \.ctx-item, \.ctx-sub-default \.ctx-item \{ white-space: normal; overflow-wrap: anywhere; \}/m, "at the bound a label wraps rather than clips");
+  assert.doesNotMatch(CSS, /\.ctx-sub-billing[^\n]*(22em|text-overflow)/, "no cap and no ellipsis on a billing label");
+  assert.match(CSS, /^\.ctx-sub \.ctx-item\.ctx-item-none \{ cursor: default; \}/m, "the nothing-to-bill line is inert");
   // the review: the nested level keeps the flyout's row size (0.92em compounded once more before), and the entry's caret lines
   // up with the Billing and Tags carets (no check-mark room on a row that opens a submenu)
   assert.match(CSS, /^\.ctx-sub-default \{ font-size: 1em; \}/m);
