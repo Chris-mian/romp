@@ -15183,9 +15183,11 @@ DEATH_DRAIN_PER_PASS = CONCURRENCY   # a QUEUE-DRAIN bound on death-pending fina
 #   NOT a fairness cap on live sessions (those were removed 2026-06-30 and stay removed): the pending
 #   set is a finite backlog that strictly shrinks (every drained marker gains endedAt, superseded ones
 #   retire), so the bound only spreads the one-time upgrade backfill over successive passes instead of
-#   letting the first post-upgrade pass submit hundreds of dead stores at once. ONE exception (2026-09-03):
-#   a marker whose walk was sweep-CUT stays pending (its turns are reachable only through this drain),
-#   and _death_rotate moves it to the BACK of the oldest-first queue, so it costs one call per pass
+#   letting the first post-upgrade pass submit hundreds of dead stores at once. TWO exceptions, both
+#   handled the same way: a marker whose walk was sweep-CUT stays pending (its turns are reachable only
+#   through this drain; 2026-09-03), and a marker whose states file EXISTS but could not be read stays
+#   pending too (_death_finalize defers rather than decide revived-vs-dead on a failed read; 2026-09-15).
+#   Either way _death_rotate moves it to the BACK of the oldest-first queue, so it costs one call per pass
 #   behind every newer marker instead of pinning a slot at the head.
 DEATH_BACKFILL_WINDOW = 365 * 86400  # how far back the drain resolves a dead sid's transcript (cached
 #   per (window, forks) like the picker's wide walk — one filesystem walk, not one per marker)
@@ -15207,18 +15209,29 @@ def _write_death_marker(fsid, m):
 
 
 def _newest_states_t(fsid):
-    """The newest states-row t for a sid, any row shape — the finalize's supersession read."""
+    """The newest states-row t for a sid, any row shape — the finalize's supersession read. 0 when the file
+    is absent or carries no t (a real state: nothing newer than the marker). None when the file EXISTS and
+    cannot be read: that is not "no newer evidence", and answering 0 there let a revived session's marker
+    take the real-end branch (an `ended` record naming its open cards, irreversible). The failed read marks
+    the running stage incomplete and logs one `states-unreadable` row per failure episode (_read_failed), so
+    no closer stamp lands and the marker stays in the drain until the file reads."""
+    path_s = str(STATESDIR / (fsid + ".jsonl"))
     try:
         rows = (STATESDIR / (fsid + ".jsonl")).read_text().splitlines()
-        for ln in reversed(rows):
-            try:
-                r = json.loads(ln)
-                if isinstance(r, dict) and r.get("t") is not None:
-                    return int(r["t"])
-            except (ValueError, TypeError):
-                continue
-    except OSError:
-        pass
+    except (FileNotFoundError, NotADirectoryError):
+        _read_ok(path_s)                               # absent is the common case and a real state
+        return 0
+    except OSError as e:
+        _read_failed(path_s, "states-unreadable", fsid, e)
+        return None
+    _read_ok(path_s)
+    for ln in reversed(rows):
+        try:
+            r = json.loads(ln)
+            if isinstance(r, dict) and r.get("t") is not None:
+                return int(r["t"])
+        except (ValueError, TypeError):
+            continue
     return 0
 
 
@@ -15255,14 +15268,16 @@ def _death_pending(exclude):
 
 
 def _death_rotate(fsid):
-    """A sweep-CUT walk left this dead session's marker pending (see _close_session). _death_pending drains
-    the OLDEST marker first, so a marker whose walk is cut every pass — a turn whose call dies the same way
-    each time — would hold the head of the queue for good, and DEATH_DRAIN_PER_PASS such sessions would
-    starve every newer dead session of its sweep and its 'ended' settle (review find, 2026-09-03). Touch the
-    marker so it takes its place at the BACK: one doomed call per pass, behind everyone else, and the
+    """A sweep-CUT walk (see _close_session) or a states file that exists and cannot be read (see
+    _death_finalize) left this dead session's marker pending. _death_pending drains the OLDEST marker first,
+    so a marker whose walk is cut every pass — a turn whose call dies the same way each time — or whose
+    states file never reads would hold the head of the queue for good, and DEATH_DRAIN_PER_PASS such sessions
+    would starve every newer dead session of its sweep and its 'ended' settle (review find, 2026-09-03). Touch
+    the marker so it takes its place at the BACK: one doomed call per pass, behind everyone else, and the
     drain's bound stays honest. Bounded for kills: DISTILL_FAIL_CAP killed calls on one turn give it up
     and the walk goes on (_close_session), so a marker waits back here at most that many passes per
-    doomed turn; a transient storm rotates it for as long as the storm lasts — the storm's bound, not ours."""
+    doomed turn; a transient storm, or an unreadable file, rotates it for as long as that lasts — the
+    storm's bound, not ours."""
     m = _death_marker(fsid)
     if not isinstance(m, dict) or "endedAt" in m:
         return
@@ -15282,12 +15297,20 @@ def _death_finalize(fsid, store, settled):
     (nothing-open sessions included — the dedup must fire for the common case, the gate's second
     finding), and only when open (non-complete, non-cleared) tops remain, ONE 'ended' settle record
     (keyed on the marker's t, so it can never re-fire) lists the still-open cards on the same
-    episodes channel the /clear bell reads — cards end loudly instead of vanishing."""
+    episodes channel the /clear bell reads — cards end loudly instead of vanishing. A states file that
+    exists and cannot be read DEFERS the finalize (None from _newest_states_t, which marked the stage
+    incomplete): unreadable never decides revived-vs-dead, and the marker rotates to the BACK of the drain
+    (_death_rotate, the cut walk's move) to wait for a pass that can read it — a permission bit never
+    clears on its own, and a marker left at the head would cost the oldest-first drain a slot every pass."""
     m = _death_marker(fsid)
     if not isinstance(m, dict) or "endedAt" in m:
         return
     mt = int(m.get("t") or 0)
-    if _newest_states_t(fsid) > mt:
+    newest = _newest_states_t(fsid)
+    if newest is None:
+        _death_rotate(fsid)                            # …and waits at the BACK of the drain, not its head
+        return
+    if newest > mt:
         m["endedAt"] = mt
         m["superseded"] = True
         _write_death_marker(fsid, m)
