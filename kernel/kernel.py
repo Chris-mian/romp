@@ -37388,17 +37388,21 @@ def _compact_goal_stores():
     moved = 0
     try:
         jd._disk_memo_evict_absent()                   # save_goals' disk-side memo: drop removed stores' entries
+        jd._raw_store_evict_absent()                   # ...and the writer loader's parse memo entries of removed stores
         jd._shared_evict_absent()                      # ...and the shared read-only views of removed stores
     except Exception:
         pass
     owned = None                                   # the discovered sessions' sids, once the walk below lands
     try:
-        # ...and, for the two memos that hold PARSED stores, the entries of stores no discovered session
-        # owns: neither had a cap (review find, 2026-09-08). discover is cached behind the transcript
-        # directory's fingerprint, so this is the tiers' own list, not a second walk. A discover that
-        # raises evicts nothing: with no owner list there is no unowned.
+        # ...and, for the three memos that hold PARSED stores, the entries of stores no discovered session
+        # owns: none has a cap (review find, 2026-09-08, on the first two; the writer loader's parse memo
+        # of 2026-09-15 follows them, and this sweep is what fills it with every store the directory
+        # holds). discover is cached behind the transcript directory's fingerprint, so this is the tiers'
+        # own list, not a second walk. A discover that raises evicts nothing: with no owner list there is
+        # no unowned.
         owned = {f for f, _p, _a, _n in jd.discover(int(time.time()))}
         jd._shared_evict_unowned(owned)
+        jd._raw_store_evict_unowned(owned)
         _goals_memo_evict_unowned(owned)
     except Exception:
         sys.stderr.write("compact: memo eviction: %s\n" % traceback.format_exc())
