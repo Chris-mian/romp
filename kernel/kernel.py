@@ -1682,8 +1682,26 @@ _SHA_REASK_S = 30           # and how long that failure stands before git is ask
 _CONVERGE_CRASH_T = [0.0]   # when the automatic converge's leg last crashed: one cool-down is held before the retry
 
 
-_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved once
+def _code_ident_of(root):
+    """(identity, stat key) of the kernel code under `root`/kernel: a short sha1 over the bytes of kernel/*.py in path order
+    beside the files' (name, mtime_ns, size), or ("", ()) when the tree cannot be read or holds no kernel code (a hash of
+    nothing would compare equal across different builds). The one recipe behind the booted identity (_code_ident, read at
+    import) and the checkout's (_checkout_code_ident, read from the disk on demand), so the two compare byte for byte."""
+    h = hashlib.sha1()
+    key = []
+    try:
+        for f in sorted(Path(root, "kernel").glob("*.py")):
+            st = f.stat()
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+            key.append((f.name, st.st_mtime_ns, st.st_size))
+    except OSError:
+        return "", ()
+    return (h.hexdigest()[:12] if key else ""), tuple(key)
 
+
+_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved AT IMPORT (below): a lazy read taken after
+#                             a pull moved the checkout would name the new code as the running one (the laptop, 2026-09-15)
 
 def _code_ident():
     """A content identity of the kernel's own code: a short sha1 over the bytes of kernel/*.py in path order,
@@ -1698,20 +1716,30 @@ def _code_ident():
     reload, never a silent stale page."""
     if _CODE_IDENT[0] is None:
         forced = os.environ.get("ROMP_CODE_IDENT")
-        if forced:
-            _CODE_IDENT[0] = forced
-        else:
-            h = hashlib.sha1()
-            seen = 0
-            try:
-                for f in sorted(Path(ROOT, "kernel").glob("*.py")):
-                    h.update(f.name.encode())
-                    h.update(f.read_bytes())
-                    seen += 1
-                _CODE_IDENT[0] = h.hexdigest()[:12] if seen else ""
-            except OSError:
-                _CODE_IDENT[0] = ""
+        _CODE_IDENT[0] = forced if forced else _code_ident_of(ROOT)[0]
     return _CODE_IDENT[0]
+
+
+_code_ident()               # the booted identity is the code on disk NOW, at import, before any pull can move it
+
+
+_CHECKOUT_IDENT = [(), ""]  # the last disk read: the files' stat key and the identity it hashed to
+
+
+def _checkout_code_ident():
+    """The identity of the kernel code the checkout holds NOW, the files on disk (a pull just moved them; a dirty tree's
+    edits count, since the kernel loads from the worktree), keyed on the files' (name, mtime_ns, size) so a poll costs
+    a stat per file and the bytes are hashed only when one moved. Empty when the tree cannot be read."""
+    try:
+        key = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in sorted(Path(ROOT, "kernel").glob("*.py")))
+    except OSError:
+        return ""
+    if not key:
+        return ""
+    if key != _CHECKOUT_IDENT[0]:
+        ident, key = _code_ident_of(ROOT)
+        _CHECKOUT_IDENT[0], _CHECKOUT_IDENT[1] = key, ident
+    return _CHECKOUT_IDENT[1]
 
 
 def _kernel_sha(reask=False):
@@ -9189,50 +9217,24 @@ def _kernel_code_changed(a, b):
     return cc is None or bool(cc["kernel"])
 
 
-_RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
-
-
-RESTART_PENDING_RETRY_S = 30      # how long a failed classification's safe answer stands before git is asked again
-_RESTART_PENDING_FAILED = {}      # key -> when the classification last failed: /version is polled by every reader, and an
-#                                   unreadable pair must not run a git diff (a 20 s subprocess bound) on each poll
-
-
 def _restart_pending(checkout=None):
-    """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
-    checkout's HEAD through the converge's own classification (plans/drift-by-running-code.md). False when the two are
-    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` is the
-    head to judge when the caller read one itself (the pull route, right after its fast-forward): None means the
-    polls' cached head, and an EMPTY string means the caller's fresh read failed, which is answered None, never the
-    cache (the round-three review's low 1: the cache still named the head before the fast-forward). Keyed on the two
-    commits' seven-character prefixes, so the route's full sha and the poll's short one share one entry. Only a verdict
-    that was READ is kept: a classification that failed (a git flake, an index lock right after a merge) answers True,
-    the safe converge, and holds that answer for RESTART_PENDING_RETRY_S before git is asked again, so a poll storm
-    over an unreadable pair costs one diff per bound rather than one per poll."""
-    if checkout is not None and not checkout:
+    """Whether this checkout holds kernel code the running process does not execute: the identity of the code this
+    process loaded at import (_code_ident, the bytes of kernel/*.py then) against the identity of the kernel/*.py on
+    disk now (_checkout_code_ident), byte for byte (plans/drift-by-running-code.md, the running-code identity). Not a
+    git sha on either side: the running sha (_kernel_sha) is resolved lazily and a first read that fails at a busy
+    boot is taken again later, so a kernel whose checkout had moved by then adopted the pulled head as its own and
+    this verdict compared the checkout with itself (the laptop, 2026-09-15: two pulls that changed kernel code drew no
+    restart and it ran 1 h 52 min behind its checkout). `checkout` is accepted for the callers that read a head (the
+    pull route) and not needed: the disk is read on every call, keyed on the files' stats. None when either identity
+    cannot be read or the booted one is forced (ROMP_CODE_IDENT, a lab's stand-in: no claim); False when the two agree;
+    True otherwise, a comment-only edit included (the converge's AST tolerance is the self-converge's, which judges
+    commits; here a byte the process does not run is the fact reported)."""
+    if os.environ.get("ROMP_CODE_IDENT"):
         return None
-    booted = _sha_base(_kernel_sha() or "")
-    checkout = _sha_base(checkout or "") or (_local_head(short=True) or "")
-    if not booted or not checkout:
+    booted, disk = _code_ident(), _checkout_code_ident()
+    if not booted or not disk:
         return None
-    if _shas_agree(booted, checkout):
-        return False
-    key = (booted[:7], checkout[:7])
-    if key in _RESTART_PENDING_MEMO:
-        return _RESTART_PENDING_MEMO[key]
-    failed_at = _RESTART_PENDING_FAILED.get(key)
-    if failed_at is not None and time.time() - failed_at < RESTART_PENDING_RETRY_S:
-        return True                                   # the safe answer stands until the bound; no diff this poll
-    cc = _converge_classes(booted, checkout)
-    if cc is None:
-        if len(_RESTART_PENDING_FAILED) > 64:
-            _RESTART_PENDING_FAILED.clear()
-        _RESTART_PENDING_FAILED[key] = time.time()
-        return True                                   # unreadable this time: the safe answer, remembered only for the bound
-    _RESTART_PENDING_FAILED.pop(key, None)
-    if len(_RESTART_PENDING_MEMO) > 64:
-        _RESTART_PENDING_MEMO.clear()
-    _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
-    return _RESTART_PENDING_MEMO[key]
+    return booted != disk
 
 
 def _rebuild_dist():
@@ -62257,7 +62259,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _pull_remote(host)
                 # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
                 # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
-                kcc = _restart_pending(checkout=_fresh_local_head() or "") if ok else None   # the head the pull just moved, read fresh; a failed read answers None, never the cache
+                kcc = _restart_pending() if ok else None   # the disk the pull just moved, read fresh; a refused pull claims nothing
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
                                   "application/json")
             if u.path == "/tunnels/askpull":

@@ -12,7 +12,10 @@ SYNTHETIC fixtures only — invented hosts and placeholder shas; every network c
 """
 import json
 import os
+import shutil
+import subprocess
 import unittest
+from pathlib import Path
 from romp_load import load_source
 import tempfile
 
@@ -335,12 +338,31 @@ class DriftOnTheCheckout(unittest.TestCase):
     not restart used to read "behind 1 commit" forever and be asked again on every pass."""
 
     def setUp(self):
-        self._saved = (km._local_head, km._behind_info)
+        self._saved = (km._local_head, km._behind_info, km.ROOT, km._CODE_IDENT[0], km._SHA, km._SHA_MISS_T[0],
+                       km.subprocess.run, km._fresh_local_head)
+        self._dirs = []
         km._local_head = lambda short=False: (LOCAL[:8] if short else LOCAL)
         km._behind_info = lambda sha, head=None: {"behind": 1, "ahead": 0, "date": ""}
 
     def tearDown(self):
-        km._local_head, km._behind_info = self._saved
+        (km._local_head, km._behind_info, km.ROOT, km._CODE_IDENT[0], km._SHA, km._SHA_MISS_T[0],
+         km.subprocess.run, km._fresh_local_head) = self._saved
+        getattr(km, "_CHECKOUT_IDENT", [(), ""])[:] = [(), ""]
+        for d in self._dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _booted(self, code):
+        """A hermetic checkout: a temp root whose kernel/a.py holds `code`, booted as it stands (the identity a kernel reads
+        at import). Returns the file, for the test to move as a pull would."""
+        d = tempfile.mkdtemp(); self._dirs.append(d)
+        (Path(d) / "kernel").mkdir()
+        a = Path(d) / "kernel" / "a.py"; a.write_text(code)
+        km.ROOT = Path(d)
+        ident_of = getattr(km, "_code_ident_of", None)
+        km._CODE_IDENT[0] = ident_of(km.ROOT)[0] if ident_of else None   # the base has no shared recipe: its lazy read stands in
+        km._code_ident()
+        getattr(km, "_CHECKOUT_IDENT", [(), ""])[:] = [(), ""]
+        return a
 
     def test_a_peer_whose_checkout_matches_is_not_behind_whatever_it_booted_from(self):
         row = {"host": PEER, "kernel_sha": REMOTE[:8], "checkout_sha": LOCAL[:8]}
@@ -363,144 +385,87 @@ class DriftOnTheCheckout(unittest.TestCase):
         self.assertFalse(quiet["restartPending"]); self.assertFalse(quiet["askPull"])
 
     def test_version_carries_the_checkout_and_the_pending_verdict(self):
-        saved = (km._kernel_sha, km._kernel_code_changed)
-        km._RESTART_PENDING_MEMO.clear()
-        try:
-            km._kernel_sha = lambda reask=False: REMOTE[:8]
-            km._kernel_code_changed = lambda a, b: True
-            v = km._version_info()
-            self.assertEqual(v["checkout_sha"], LOCAL[:8])
-            self.assertTrue(v["restart_pending"], "the checkout holds kernel code this process does not run")
-            km._kernel_code_changed = lambda a, b: (_ for _ in ()).throw(AssertionError("memoized: not asked again"))
-            self.assertTrue(km._restart_pending())
-            km._kernel_sha = lambda reask=False: LOCAL[:8]
-            self.assertFalse(km._restart_pending(), "one commit booted and checked out: nothing pending")
-            km._kernel_sha = lambda reask=False: None
-            self.assertIsNone(km._restart_pending(), "no claim when the booted commit cannot be read")
-        finally:
-            km._kernel_sha, km._kernel_code_changed = saved
-            km._RESTART_PENDING_MEMO.clear()
+        """The verdict is the booted code's identity against the kernel/*.py on disk: False while the disk holds the bytes
+        this process runs, True once a pull moved them, False again when they agree, no claim with no kernel code to read."""
+        a = self._booted("x = 1\n")
+        v = km._version_info()
+        self.assertEqual(v["checkout_sha"], LOCAL[:8])
+        self.assertIs(v["restart_pending"], False, "the disk holds the bytes this process runs")
+        a.write_text("x = 22\n")                                          # the pull moved the checkout's kernel code
+        self.assertIs(km._restart_pending(), True, "the checkout holds kernel code this process does not run")
+        a.write_text("x = 1\n")
+        self.assertIs(km._restart_pending(), False, "moved back: the bytes agree again")
+        a.unlink()
+        self.assertIsNone(km._restart_pending(), "no kernel code on disk: no claim")
 
-    def test_a_classification_that_failed_is_answered_safe_and_never_latched(self):
-        """The round-two review's medium: _kernel_code_changed reads True on any error by design, and the memo stored that
-        True for the pair, so one git flake right after a pull made a docs-only checkout report a restart pending on
-        every poll. Only a verdict that was read is kept; a failed read answers True, held for a short bound, then judges again."""
-        saved = (km._kernel_sha, km._converge_classes)
-        km._RESTART_PENDING_MEMO.clear()
-        try:
-            km._kernel_sha = lambda reask=False: REMOTE[:8]
-            km._converge_classes = lambda a, b: None                        # the flake
-            self.assertTrue(km._restart_pending(), "unreadable this time: the safe answer")
-            self.assertEqual(km._RESTART_PENDING_MEMO, {}, "and nothing remembered as a verdict")
-            km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/a.md"], "ast_equal": []}
-            if hasattr(km, "_RESTART_PENDING_FAILED"):
-                km._RESTART_PENDING_FAILED[(REMOTE[:7], LOCAL[:7])] -= km.RESTART_PENDING_RETRY_S + 1   # the safe answer's bound passes
-            self.assertFalse(km._restart_pending(), "the next read judges again: a docs-only pair, nothing pending")
-            self.assertEqual(km._RESTART_PENDING_MEMO, {(REMOTE[:7], LOCAL[:7]): False}, "a verdict that was read is kept, keyed on the seven-character prefixes")
-            km._converge_classes = lambda a, b: None
-            self.assertFalse(km._restart_pending(), "and the kept verdict answers, not the later flake")
-        finally:
-            km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear()
+    def test_a_first_sha_read_that_failed_never_lets_a_pull_pass_as_the_running_code(self):
+        """The laptop, 2026-09-15 (a candidate cause until this reproduced it): git did not answer the running sha at a boot
+        inside a 39 s sleep wake, the checkout was then pulled twice with kernel code in both, the lazy sha read that finally
+        succeeded named the pulled head as the running one, and the verdict compared the checkout with itself: no restart,
+        1 h 52 min of kernel code the process did not run. The running sha may still be adopted late (it is display); the
+        verdict reads the code."""
+        a = self._booted("x = 1\n")
+        km._SHA = None; km._SHA_MISS_T[0] = 0.0                            # git did not answer at boot
+        POST = "d" * 40
+        real_run = km.subprocess.run
+        def run(cmd, *args, **kw):
+            if isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=POST[:8] + "\n", stderr="")
+            if isinstance(cmd, (list, tuple)) and "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return real_run(cmd, *args, **kw)
+        km.subprocess.run = run
+        km._local_head = lambda short=False: (POST[:8] if short else POST)
+        km._fresh_local_head = lambda: POST
+        a.write_text("x = 22\n")                                          # the pull: new kernel code on disk
+        self.assertEqual(km._kernel_sha(), POST[:8], "the lazy read adopts the post-pull head as the running sha: the cause")
+        self.assertIs(km._restart_pending(checkout=POST), True, "yet the verdict reads the code: the process runs older bytes")
 
-    def test_a_fresh_read_that_failed_answers_none_never_the_cached_head(self):
-        # the round-three review's low 1: the route reads the head the pull just moved; when that read fails, the polls'
-        # cache still names the head before the fast-forward and would answer False for a pair that changed kernel code
-        saved = (km._kernel_sha, km._converge_classes)
-        km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
-        try:
-            km._kernel_sha = lambda reask=False: LOCAL[:8]                        # booted at the cached head: the cache would say False
-            km._converge_classes = lambda a, b: {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
-            self.assertIsNone(km._restart_pending(checkout=""), "a failed fresh read claims nothing")
-            self.assertFalse(km._restart_pending(), "the poll path, with no head of its own, reads the cache as before")
-        finally:
-            km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
-
-    def test_an_unreadable_pair_costs_one_classification_per_bound_not_one_per_poll(self):
-        # the round-three review's low 2: /version is auth-exempt and polled by every reader; a git diff per poll over an
-        # unreadable pair is a 20 s subprocess each time
-        saved = (km._kernel_sha, km._converge_classes)
+    def test_the_disk_is_hashed_only_when_a_file_moved(self):
+        a = self._booted("x = 1\n")
+        real = getattr(km, "_code_ident_of", None)
+        self.assertIsNotNone(real, "one recipe behind the booted identity and the disk's")
         calls = []
-        km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
+        km._code_ident_of = lambda root: calls.append(1) or real(root)
         try:
-            km._kernel_sha = lambda reask=False: REMOTE[:8]
-            km._converge_classes = lambda a, b: calls.append(1) or None
-            self.assertTrue(km._restart_pending()); self.assertTrue(km._restart_pending()); self.assertTrue(km._restart_pending())
-            self.assertEqual(len(calls), 1, "one diff, then the safe answer stands for the bound")
-            key = (REMOTE[:7], LOCAL[:7])
-            km._RESTART_PENDING_FAILED[key] -= km.RESTART_PENDING_RETRY_S + 1     # the bound passes
-            self.assertTrue(km._restart_pending())
-            self.assertEqual(len(calls), 2, "asked again after the bound")
-            km._converge_classes = lambda a, b: calls.append(1) or {"kernel": [], "bus": [], "skip": ["docs/a.md"], "ast_equal": []}
-            km._RESTART_PENDING_FAILED[key] -= km.RESTART_PENDING_RETRY_S + 1
-            self.assertFalse(km._restart_pending(), "a read verdict replaces the safe answer")
-            self.assertNotIn(key, km._RESTART_PENDING_FAILED, "and clears the failure")
+            km._restart_pending(); km._restart_pending(); km._restart_pending()
+            self.assertEqual(len(calls), 1, "three polls, one hash: the files' stats key the memo")
+            a.write_text("x = 22\n"); km._restart_pending()
+            self.assertEqual(len(calls), 2, "a moved file is hashed again")
         finally:
-            km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
+            km._code_ident_of = real
 
-    def test_the_route_s_full_sha_and_the_poll_s_short_one_share_one_memo_entry(self):
-        # the round-three review's low 3: two keys for one commit meant two classifications
-        saved = (km._kernel_sha, km._converge_classes)
-        calls = []
-        km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
-        try:
-            km._kernel_sha = lambda reask=False: REMOTE[:8]
-            km._converge_classes = lambda a, b: calls.append(1) or {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
-            self.assertTrue(km._restart_pending(checkout=LOCAL))            # the route's full sha
-            self.assertTrue(km._restart_pending())                          # the poll's short one
-            self.assertEqual(len(calls), 1, "one classification for one commit")
-            self.assertEqual(list(km._RESTART_PENDING_MEMO), [(REMOTE[:7], LOCAL[:7])])
-        finally:
-            km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
-
-    def test_the_pull_route_answers_with_the_peers_verdict_read_on_the_fresh_head(self):
+    def test_the_pull_route_answers_with_the_peers_verdict_read_on_the_disk_the_pull_moved(self):
         """The route driven: POST /tunnels/pull on a live handler with the pull itself stubbed. Its answer carries the
-        peer's verdict on the head the pull just moved, read fresh (the round-two review's low 4: the polls' 15 s cache
-        would still name the head before the fast-forward)."""
+        peer's verdict on the kernel code the pull just put on disk."""
         import http.client, threading
         from http.server import ThreadingHTTPServer
-        FRESH = "c" * 40
-        saved = (km._pull_remote, km._kernel_sha, km._local_head, km._fresh_local_head, km._converge_classes)
-        judged = []
-        km._RESTART_PENDING_MEMO.clear()
+        a = self._booted("x = 1\n")
+        saved = km._pull_remote
         srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        def ask():
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
+                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
+            return resp.status, body
         try:
             km._pull_remote = lambda host: (True, "pulled 1 commit from %s" % host)
-            km._kernel_sha = lambda reask=False: LOCAL[:8]                       # booted at LOCAL
-            km._local_head = lambda short=False: (LOCAL[:8] if short else LOCAL)   # the polls' cache still says LOCAL
-            km._fresh_local_head = lambda: FRESH                                  # the fast-forward moved the checkout
-            km._converge_classes = lambda a, b: judged.append((a, b)) or {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
-            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
-            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
-                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
-            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
-            self.assertEqual(resp.status, 200)
+            a.write_text("x = 22\n")                                      # the fast-forward moved kernel code
+            status, body = ask()
+            self.assertEqual(status, 200)
             self.assertTrue(body["ok"]); self.assertIn("pulled 1 commit", body["detail"])
             self.assertIs(body["kernel_code_changed"], True, "the peer's own verdict rides the answer")
-            self.assertEqual(judged, [(LOCAL[:8], km._sha_base(FRESH))],
-                             "judged against the head the pull moved, not the cached one")
-            km._RESTART_PENDING_MEMO.clear()
-            km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/x.md"], "ast_equal": []}
-            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
-            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
-                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
-            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
-            self.assertIs(body["kernel_code_changed"], False, "a docs-only pull: no restart asked for")
+            a.write_text("x = 1\n")                                       # a pull that left kernel/*.py as booted (docs, tests)
+            status, body = ask()
+            self.assertIs(body["kernel_code_changed"], False, "no restart asked for")
             km._pull_remote = lambda host: (False, "this machine's tree has uncommitted changes")
-            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
-            c.request("POST", "/tunnels/pull", json.dumps({"host": "hubname"}).encode(),
-                      {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
-            resp = c.getresponse(); body = json.loads(resp.read().decode()); c.close()
-            self.assertEqual(resp.status, 502); self.assertIsNone(body["kernel_code_changed"], "a refused pull claims nothing")
+            status, body = ask()
+            self.assertEqual(status, 502); self.assertIsNone(body["kernel_code_changed"], "a refused pull claims nothing")
         finally:
             srv.shutdown(); srv.server_close()
-            km._pull_remote, km._kernel_sha, km._local_head, km._fresh_local_head, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear()
-
+            km._pull_remote = saved
 
 if __name__ == "__main__":
     unittest.main()
