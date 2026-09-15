@@ -2270,7 +2270,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `spendTree` is the spend guard's memo of each live
   session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
   the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
-  reads since boot: `dirStats`, `fileStats`, `entryStats` (the per-entry
+  reads since boot: `served` (passes that served an idle session's standing file list from the memo with no stat, plans/spend-guard-events.md), `dirStats`, `fileStats`, `entryStats` (the per-entry
   stats a listing performs), `listings`, `loaded`, `loadFailed`, `dropped`
   (paths outside the root a load discarded), `written`, `writeFailed` (a
   memo write that raised, a read-only directory or a full disk, said once a
