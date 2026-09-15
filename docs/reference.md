@@ -2194,7 +2194,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   read-only store cache (`hit`, `miss`, `compare_miss`, `refuse`, `dup`,
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
-  (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
+  (`hit`, `miss`, `populate`, `bypass`); `sessionsListing` is the kept GET
+  /sessions listing (`built` by the pusher's cycle when its key moved, `served`
+  to requests from memory, `requestBuilt` once before the first cycle, `missBy`
+  the key input that moved: rows, names, notes or registry); `nudgeWalk` is the auto-nudge walk's
   parse gate (T401): `looks`, `skippedParses` (a session whose files are
   unchanged since its last completed look and whose clock legs, noted by that
   look with the instant each could flip, have not come due; the skip repeats
