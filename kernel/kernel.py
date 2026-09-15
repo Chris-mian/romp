@@ -23779,7 +23779,7 @@ def _notice_projection(sid, now, cleared=()):
     ledger, in post order, and at most NOTICE_LIVE_KEYS_MAX of them (the newest by post time). The ledger is applied BEFORE
     the cap (round three, low a): a dismissed row held a cap slot until the sweep and hid the oldest undismissed card. A key
     past the cap is superseded into the archive by the sweep with no further signal (the reference and the help line say so)."""
-    newest, retired = {}, set()
+    newest, retired, acted = {}, set(), set()
     for r in _notice_rows(sid):
         k = r.get("key")
         if r.get("op") == "post":
@@ -23788,10 +23788,17 @@ def _notice_projection(sid, now, cleared=()):
                 newest[k] = r
         elif r.get("op") == "expire":
             retired.add((k, int(r.get("rev") or 0)))
+        elif r.get("op") == "acted":
+            acted.add((k, int(r.get("rev") or 0)))
     out = []
     for k, r in newest.items():
         if (k, int(r.get("rev") or 0)) in retired:
             continue
+        if (k, int(r.get("rev") or 0)) in acted:
+            # the one-shot mark (round five): a dismissing card's action ran; should Undo bring the card back, it comes back
+            # with its action SPENT: no actions on the row, `acted` on the flavour. The store's own record, which the cleared
+            # ledger's Undo never touches.
+            r = dict(r, actions=[], acted=True)
         exp = r.get("expiresAt")
         if exp and now >= int(exp):
             continue
@@ -23832,7 +23839,7 @@ def _notice_cards(now, cleared):
                 "notice": {"producer": r.get("producer") or "", "key": r.get("key"), "rev": int(r.get("rev") or 0),
                            "body": r.get("body") or "", "attachment": r.get("attachment"),
                            "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
-                           "dismissOnAction": bool(r.get("dismissOnAction"))},
+                           "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
                 "column": "needs_input" if r.get("needsYou") else "completed",
                 "tree": []})
     out.sort(key=lambda c: (c["t"], c["itemId"]))
@@ -23872,11 +23879,14 @@ def _notice_action_run(m, item_id, route, body):
     act = next((a for a in (row.get("actions") or []) if a.get("route") == route and a.get("body") == body), None)
     if act is None or route not in NOTICE_ACTION_ROUTES:
         return False, "no such action on that card"
-    if row.get("dismissOnAction") and item_id in _cleared_ids():
-        # the event this action's success writes is the card's dismissal (the cleared ledger); a repeat click after it
-        # would deliver the user's words a second time (round four, high). A card that does not dismiss on its action
-        # is meant to run again.
-        return False, "that card was dismissed: its action ran already"
+    if row.get("dismissOnAction"):
+        # the one-shot mark is the store's own acted row (round five): the cleared ledger's Undo restores the card, and a
+        # refusal keyed on the ledger let the restored card deliver the words a second time. A card that does not dismiss
+        # on its action is meant to run again.
+        if any(a.get("op") == "acted" and a.get("key") == key and int(a.get("rev") or 0) == rev for a in _notice_rows(sid)):
+            return False, "that card's action ran already"
+        if item_id in _cleared_ids():
+            return False, "that card was dismissed"
     if route == "/send":
         # the target is the notice's OWN session, read from the row, whatever the stored body says (the check refuses a body
         # naming one; an older row's is ignored), and the text takes the plain-message door: no typed-command routing, so a
@@ -23889,6 +23899,8 @@ def _notice_action_run(m, item_id, route, body):
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
+        with _notice_lock:                              # the acted mark first, then the dismissal: a crash between the two leaves
+            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "route": route})   # a spent card, never a re-runnable one
         _clear_ask(item_id)
         _mark_views_dirty()
     return ok, err
@@ -23906,10 +23918,11 @@ def _compact_notices(now=None):
     except OSError:
         return 0
     cleared = _cleared_ids()
+    ledger_st = _stat_key(jd.STATE / "cleared.jsonl")
     for sid in names:
         p = _notice_path(sid)
         st = _stat_key(p)
-        if st is None or _NOTICE_SWEPT.get(sid) == st:
+        if st is None or _NOTICE_SWEPT.get(sid) == (st, ledger_st):   # unmoved file AND ledger: a dismissal moves the ledger alone (round five)
             continue
         with _notice_lock:
             rows = _notice_rows_unlocked(sid)
@@ -23930,6 +23943,12 @@ def _compact_notices(now=None):
             keep, arch = [], []
             for r in rows:
                 k, rv = r.get("key"), int(r.get("rev") or 0)
+                if r.get("op") == "acted":              # the one-shot mark goes when its target's post goes (Undo may still show it until then)
+                    tgt = next((p for p in rows if p.get("op") == "post" and p.get("key") == k and int(p.get("rev") or 0) == rv), None)
+                    tgt_gone = tgt is None or rv < newest.get(k, 0) or (k, rv) in retired or _notice_item_id(sid, k, rv) in cleared \
+                        or (tgt.get("expiresAt") and now >= int(tgt.get("expiresAt"))) or k in capped
+                    (arch if tgt_gone else keep).append(r)
+                    continue
                 gone = (r.get("op") == "expire" or rv < newest.get(k, 0) or (k, rv) in retired
                         or _notice_item_id(sid, k, rv) in cleared
                         or (r.get("expiresAt") and now >= int(r.get("expiresAt")))
@@ -23948,11 +23967,11 @@ def _compact_notices(now=None):
                 except OSError as e:
                     sys.stderr.write("notice: the archive pass could not move %s's rows (%s)\n" % (sid[:8], e))
                     continue
-            _NOTICE_SWEPT[sid] = _stat_key(p)
+            _NOTICE_SWEPT[sid] = (_stat_key(p), ledger_st)
     return moved
 
 
-_NOTICE_SWEPT = {}                         # sid -> the stat key the sweep last saw: an unmoved file is skipped
+_NOTICE_SWEPT = {}                         # sid -> (the file's stat key, the cleared ledger's) the sweep last saw: unmoved, skipped
 
 
 def _deliver_text(sid, text, plain=False):

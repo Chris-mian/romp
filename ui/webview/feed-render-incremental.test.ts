@@ -1106,7 +1106,7 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   // a card that stays re-arms
   btns[0].onclick(ev);
   await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":figure:2", ok: true, error: "" });
-  assert.equal(card("notice:" + WEB + ":figure:2"), null, "the dismissing card left on the success answer");
+  assert.equal(card("notice:" + WEB + ":figure:2") === null, true, "the dismissing card left on the success answer");   // a boolean: a failure must not diff the element
   const n3 = cardOf("notice:" + WEB + ":stays:1", WEB, "web", "#3366cc", "A card that stays", "completed", {
     live: false, tree: [], blocked: null, notice: { producer: "figure", key: "stays", rev: 1, body: "", attachment: null,
     actions: [{ label: "Ping", route: "/send", body: { text: "ping" } }], expiresAt: null, dismissOnAction: false } });
@@ -1115,6 +1115,12 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   b3.onclick(ev); assert.equal(b3.disabled, true);
   await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":stays:1", ok: true, error: "" });
   assert.ok(card("notice:" + WEB + ":stays:1"), "a card that stays is still on the board"); assert.equal(b3.disabled, false, "…and its button let go");
+  // round five: a dismissing card back from Undo carries its action SPENT (the kernel drops the actions and sets acted): no button shows
+  const nBack = cardOf("notice:" + WEB + ":figure:2", WEB, "web", "#3366cc", "A new version of the accuracy figure is ready", "completed", {
+    live: false, tree: [], blocked: null, notice: { producer: "figure", key: "figure", rev: 2, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: true, acted: true } });
+  await dispatch(frame([g1, g2, g3, n3, nBack], { working: ["web"] }));
+  const back = card("notice:" + WEB + ":figure:2");
+  assert.ok(back, "Undo brought the card back"); assert.equal(back._nActions.querySelectorAll("button").length, 0, "…with no action to click"); assert.equal(back._nActions.style.display, "none");
   // a needs-you notice files under Blocked; a card with no body, attachment or actions hides those blocks
   const n2 = cardOf("notice:" + API + ":dropped-sends:1", API, "api", "#cc6633", "1 message you typed before the restart was not re-sent", "needs_input", {
     live: false, tree: [], blocked: null, notice: { producer: "dropped-sends", key: "dropped-sends", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: true } });

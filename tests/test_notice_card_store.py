@@ -168,7 +168,7 @@ class TheCardFamily(unittest.TestCase):
         self.assertEqual((fig["text"], fig["column"], fig["name"], fig["sid"], fig["t"], fig["tree"], fig["live"], fig["blocked"]),
                          ("second", "completed", "web", SID, 200, [], False, None))
         self.assertEqual(fig["notice"], {"producer": "figure", "key": "figure", "rev": 2, "body": "two", "attachment": None,
-                                         "actions": [], "expiresAt": None, "dismissOnAction": False})
+                                         "actions": [], "expiresAt": None, "dismissOnAction": False, "acted": False})
         self.assertEqual(a[0]["column"], "needs_input", "needsYou files under Blocked")
         self.assertEqual(fig["color"], {"bg": "#1EA1EB", "fg": "#ffffff"})
         self.assertNotIn("_ageT", fig, "no private fold field rides the wire (round two, low b)")
@@ -229,8 +229,22 @@ class Actions(unittest.TestCase):
         self.assertEqual((ok, e), (True, "")); self.assertEqual(self.w.delivered, [(SID, "please retry the sweep")])
         self.assertIn(iid, km._cleared_ids(), "dismissOnAction: a success clears the card")
         # round four, high: the dismissal is the event; a repeat click after it must not deliver the words a second time
-        self.assertEqual(km._notice_action(iid, "/send", {"text": "please retry the sweep"}), (False, "that card was dismissed: its action ran already"))
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "please retry the sweep"}), (False, "that card's action ran already"))
         self.assertEqual(self.w.delivered, [(SID, "please retry the sweep")], "one delivery")
+        # round five: Undo reverses the cleared ledger and brings the card back; the one-shot mark is the store's own acted row,
+        # so the card returns with its action SPENT and a click delivers nothing
+        km._undo_clear()
+        self.assertNotIn(iid, km._cleared_ids(), "Undo restored the card's visibility")
+        cards = km._notice_cards(500, km._cleared_ids())
+        back = next(c for c in cards if c["itemId"] == iid)
+        self.assertEqual((back["notice"]["acted"], back["notice"]["actions"]), (True, []), "back with its action spent")
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "please retry the sweep"}), (False, "that card's action ran already"))
+        self.assertEqual(self.w.delivered, [(SID, "please retry the sweep")], "still one delivery after Undo")
+        rows = _rows(SID); self.assertEqual([r["op"] for r in rows], ["post", "acted"], "the acted row rides the store")
+        # a card the user cleared before ever clicking: the plain reason, no claim that its action ran
+        km.post_notice(SID, "k2", "t", producer="cli", actions=[{"label": "Send", "route": "/send", "body": {"text": "x"}}], dismiss_on_action=True, now=100)
+        iid2 = "notice:%s:k2:1" % SID; km._clear_ask(iid2)
+        self.assertEqual(km._notice_action(iid2, "/send", {"text": "x"}), (False, "that card was dismissed"))
         self.assertEqual(km._notice_action(iid, "/send", {"text": "something else"}), (False, "no such action on that card"))
         self.assertEqual(km._notice_action(iid, "/watch", {}), (False, "no such action on that card"))
         self.assertEqual(km._notice_action("notice:%s:gone:1" % SID, "/send", {}), (False, "that notice is gone"))
@@ -308,6 +322,12 @@ class Retention(unittest.TestCase):
         self.assertEqual(sorted((r["key"], r["rev"], r["op"]) for r in live), [("figure", 2, "post"), ("keep", 2, "post")])
         self.assertEqual(sorted((r["key"], r["rev"], r["op"]) for r in arch),
                          [("figure", 1, "post"), ("gone", 1, "post"), ("keep", 1, "expire"), ("keep", 1, "post"), ("soon", 1, "post")])
+        # an acted mark goes with its target's post and not before (Undo may still show the spent card until then)
+        km.post_notice(SID, "act", "t", producer="cli", actions=[{"label": "Send", "route": "/send", "body": {"text": "x"}}], dismiss_on_action=True, now=700)
+        km._notice_action("notice:%s:act:1" % SID, "/send", {"text": "x"}); km._undo_clear()
+        self.assertEqual(km._compact_notices(now=800), 0, "the spent card, visible after Undo, keeps its post and its acted mark")
+        km._clear_ask("notice:%s:act:1" % SID)
+        self.assertEqual(km._compact_notices(now=900), 2, "dismissed again: the post and its acted mark go together")
         self.assertEqual(km._compact_notices(now=700), 0, "an unmoved file is skipped")
         self.assertEqual([c["itemId"] for c in km._notice_cards(700, km._cleared_ids())], ["notice:%s:keep:2" % SID, "notice:%s:figure:2" % SID], "post order by t")
 

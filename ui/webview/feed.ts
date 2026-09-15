@@ -130,7 +130,7 @@ interface AskItem {
   notice?: { producer: string; key: string; rev: number; body: string;
              attachment: { path: string; kind: string | null; allowed: boolean; why: string; pin: string | null } | null;
              actions: { label: string; route: string; body: Record<string, unknown> }[];
-             expiresAt: number | null; dismissOnAction: boolean } | null;
+             expiresAt: number | null; dismissOnAction: boolean; acted?: boolean } | null;   // acted: the one-shot action ran (a card back from Undo carries no actions)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
@@ -2045,7 +2045,7 @@ function noticeBodyNodes(md: string): Node[] {
 // A notice card's action buttons let go on EVERY push, gated or not (the review of PR 1757, medium 2): a click on a down
 // socket is dropped and never answered (a kernel restart), and the card gate skips an unchanged card's update, so a latch
 // that waited for the card's own update or the kernel's answer read "Send again…" for good. The kernel's noticeActionDone
-// and the next push both re-arm; a success with dismissOnAction takes the card off with that push.
+// and the next push both re-arm; a success on a dismissing card takes the card off at once (the noticeActionDone handler).
 function rearmNoticeButtons(card: any): void {
   const acts = card._nActions as HTMLElement | undefined;
   if (!acts || !card._it?.notice) return;
@@ -2660,7 +2660,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // remote loads stripped BEFORE adoption; an image attachment inline from the file route with its pin (the picture as
   // posted), only where the page can reach the kernel (canPreview) and only when the kernel allowed it; the actions as
   // buttons that latch on the click and re-arm on the kernel's noticeActionDone (a refusal is toasted; a success with
-  // dismissOnAction leaves with the next push). Rebuilt only when the notice's own fields change (the rev key).
+  // dismissOnAction leaves at once on the answer). A card back from Undo with its action spent carries no actions and
+  // `acted`, so no button shows. Rebuilt only when the notice's own fields change (the rev key).
   const nt = it.notice || null;
   const nProd = a._nProd as HTMLElement, nBody = a._nBody as HTMLElement, nAttach = a._nAttach as HTMLElement, nActions = a._nActions as HTMLElement;
   for (const e of [nProd, nBody, nAttach, nActions]) e.style.display = nt ? "" : "none";
@@ -6556,6 +6557,12 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction));
     if (m.ok && dismisses) {
       pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
+      if (hoverAskId === m.itemId) {   // removed under the pointer: no mouseleave fires, so the hover path is closed here (round five, low)
+        hoverAskId = null; applyFocus();
+        const pin = focusAnchorId(pinnedAskId);
+        if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, sid: sidOfItem(pin), locate: false });
+        else vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: twins[0] ? ((twins[0] as any)._it?.sid || "") : "", off: true });
+      }
       for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
       dropDismissed([m.itemId]);
     } else {
