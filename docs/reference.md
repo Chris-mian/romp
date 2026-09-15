@@ -2650,6 +2650,36 @@ lazy atoms (a page hydrates its own turns), memoized in a bounded cache
 from one record); the notes romp adds (a retry recovered, an effort change, an
 orphan reply) carry synthetic uuids keyed by their second and ordinal.
 
+### The judges' own process: `romp-judge --serve`
+
+Stage three of the process split (plans/judges-process.md) moves the judge pass into one long-lived child, `romp-judge
+--serve`, that the kernel starts at boot and speaks to over a line protocol on the child's stdin and stdout (JSON, one
+object per line). The child announces `{"op":"ready","pid","judgeVersion","protocolVersion"}` once; the kernel sends
+`{"op":"pass","seq","now","mayStart"}` per producer wake and `{"op":"quit"}` to end; the child answers exactly one
+`{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered","recordCache","asmCheckpoint",
+"parses","goalIo"}` per pass. Every counter on it is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are the
+pass's own, `failures` its tier crashes, and the four blocks (`recordCache` and `asmCheckpoint` from the event model,
+`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes) are the DIFFERENCES
+against the previous pass's snapshot for every counter, so the kernel can feed its `/perf` counters per pass, while each
+block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes` (the cache's contents now),
+`budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document memo's size and cap);
+`parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
+since boot, as described above), so the line carries the pass's own restore time. A non-numeric value (a name) rides as
+current too. `recovered` is the child's judge-module recovery flag (the once-per-storm
+edge `consume_judge_recovery` reads), consumed by the child and acted on by the kernel, which re-arms its given-up cards on
+it as the in-process pass does. `mayStart` is the
+kernel's composite gate, the same predicate the in-process pass reads (the Task tracking switch, a live session, retries not
+paused), evaluated on the kernel side; the child gates on it and on nothing else, and an absent field reads false: no tier,
+no kernel-initiated model call, still an answer. The pass body is ONE function, `run_pass` in kernel/judge.py, that the
+in-process producer and the child both call: both tiers in parallel under one evidence frame, a barrier, the tier threads'
+CPU and failures accounted under a lock, the frame ended in a finally. One pass at a time: a `pass` arriving before the
+previous `done` is answered `{"op":"error","reason":"busy"}` and dropped, never queued; a malformed line answers
+`malformed`, an unknown op `unknownOp`, and the loop continues. Every stderr line of the child carries the prefix
+`romp-judge: `; the child's file descriptor 1 is redirected onto its stderr for the whole process and the protocol is
+written to the saved descriptor, so no print, direct write or child process can reach the channel. The kernel's side (the
+request, the hard bound, the restart count, the switch that defaults to the in-process loop) is described with the producer
+above once it lands.
+
 ## The file preview popover
 
 Hovering a local file link in the chat (or focusing it from the keyboard) pops up
