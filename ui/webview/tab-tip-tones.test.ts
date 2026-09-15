@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 import { pickTone, readableRgb } from "./ctx-color";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const require = createRequire(__filename);
 const esbuild = require("esbuild");
 
@@ -22,6 +23,13 @@ function lift(name: string): string {
   assert.ok(at >= 0, name + " declared");
   const end = RENDER.indexOf("\n}\n", at);
   return RENDER.slice(at, end + 3);
+}
+/** the same, from status-controls.ts (the badges and their tint helper moved there, T415 part two), the export keyword dropped */
+function liftMod(name: string): string {
+  const at = MODULE.indexOf("export function " + name + "(");
+  assert.ok(at >= 0, name + " exported by status-controls.ts");
+  const end = MODULE.indexOf("\n}\n", at);
+  return MODULE.slice(at + "export ".length, end + 3);
 }
 
 class El {
@@ -53,7 +61,7 @@ const setTip = () => {}; const toggleMetaMenu = () => {}; const modeIconSvg = ()
 const prettyFast = (f) => f; const metaCurrent = (kind, st) => kind === "model" ? st.model : st.effort; const fastAvailable = () => false;
 const metaDots = () => el("span", "meta-dots"); const isMetaPending = () => false;
 `;
-const SRC = PRELUDE + lift("metaColor") + lift("showTabTip") + lift("metaButton") + lift("syncMetaControls")
+const SRC = PRELUDE + liftMod("metaColor") + lift("showTabTip") + liftMod("metaButton") + liftMod("syncMetaControls")
   + "\nreturn { showTabTip, metaButton, metaColor, syncMetaControls };";
 const js = esbuild.transformSync(SRC, { loader: "ts", format: "cjs", target: "es2020" }).code;
 const mod = new Function("pickTone", "readableRgb", "document", "window", js)(pickTone, readableRgb, (globalThis as any).document, (globalThis as any).window);
@@ -72,7 +80,7 @@ const popoverValues = () => {
 };
 const footerColours = () => {
   const meta = new El("div");
-  mod.syncMetaControls(meta, status, null);
+  mod.syncMetaControls(meta, status, null, {});   // no hooks: the badges as a preview draws them; the tints are what this test reads
   const out: Record<string, string> = {};
   for (const b of meta.querySelectorAll(".meta-btn")) out[b.dataset.kind] = b.querySelector(".meta-label")!.style.color || "";
   return out;
@@ -115,7 +123,7 @@ test("a status without colours (an older kernel) leaves the values plain, as the
   mod.showTabTip(new El("div"), { ...session, status: bare });
   const tip = body.children[body.children.length - 1];
   for (const r of tip.children) if (r.className === "tab-tip-row") assert.equal(r.children[1].style.color ?? "", "", r.children[0].textContent);
-  const meta = new El("div"); mod.syncMetaControls(meta, bare, null);
+  const meta = new El("div"); mod.syncMetaControls(meta, bare, null, {});
   for (const b of meta.querySelectorAll(".meta-btn")) assert.equal(b.querySelector(".meta-label")!.style.color ?? "", "");
 });
 
@@ -126,6 +134,6 @@ test("at source: the rows carry the colour as a third member, the value span tak
   assert.match(stt, /rows\.push\(\["Effort", s\.status\.effort, metaColor\("effort", s\.status\)\]\);/);
   assert.match(stt, /if \(color\) ve\.style\.color = color;/);
   assert.doesNotMatch(stt, /addEventListener\("(resize|keydown|mousedown)"/, "no window listener inside the lifted slice");
-  const sync = RENDER.slice(RENDER.indexOf("function syncMetaControls("), RENDER.indexOf("\n}\n", RENDER.indexOf("function syncMetaControls(")));
+  const sync = MODULE.slice(MODULE.indexOf("function syncMetaControls("), MODULE.indexOf("\n}\n", MODULE.indexOf("function syncMetaControls(")));
   assert.match(sync, /label\.style\.color = showDots \? "" : metaColor\(kind, st\);/, "the footer tints through the same helper");
 });

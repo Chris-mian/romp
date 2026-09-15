@@ -8,13 +8,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // setCtxBar lives here since T415 part two; render.ts keeps the callers
 const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
 test("the chat battery applies the server ctxColor, falling back to the traffic-light", () => {
   assert.match(RENDER, /ctxColor\?: number\[\];/);   // on the Status interface
-  assert.match(RENDER, /function setCtxBar\(bar: HTMLElement, ctxStr: string \| undefined, compacting = false, ctxColor\?: number\[\], ctxOver = false\)/);
-  assert.match(RENDER, /\(ctxColor && ctxColor\.length === 3\) \? `rgb\(\$\{ctxColor\.join\(","\)\}\)`/);   // the fill wears the tone as-is (readableRgb is for TEXT — 2026-08-31)
-  assert.match(RENDER, /: ctxFallbackColor\(pct\)/);  // fallback intact, via the ONE shared pair (ctx-color.ts)
+  assert.match(MODULE, /export function setCtxBar\(bar: HTMLElement, ctxStr: string \| undefined, compacting = false, ctxColor\?: number\[\] \| null, ctxOver = false, sweep\?: \(scan: HTMLElement, fresh: boolean\) => void\): void \{/);
+  assert.match(RENDER, /^function setCtxBar\(bar: HTMLElement, ctxStr: string \| undefined, compacting = false, ctxColor\?: number\[\], ctxOver = false\): void \{/m, "the chat's wrapper keeps the signature its callers use");
+  assert.match(MODULE, /\(ctxColor && ctxColor\.length === 3\) \? `rgb\(\$\{ctxColor\.join\(","\)\}\)`/);   // the fill wears the tone as-is (readableRgb is for TEXT — 2026-08-31)
+  assert.match(MODULE, /: ctxFallbackColor\(pct\)/);  // fallback intact, via the ONE shared pair (ctx-color.ts)
 });
 
 test("every setCtxBar caller threads s.status.ctxColor (statusline, tick, tab tooltip)", () => {

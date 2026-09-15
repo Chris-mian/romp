@@ -928,17 +928,14 @@ def _judge_cmd(model, sys_prompt, effort=None, auth=None, tier="triage"):
         # engaged is the CLI's answer, per account: the envelope's fast_mode_state, kept on the usage row and
         # read back by _note_fast_readback.
         overlay["fastMode"] = True
-    if auth == "login":
+    if _is_login_auth(auth):
         # A login-billed call must not bill the key (2026-09-08): in the CLI's precedence apiKeyHelper outranks
         # every login form, so the per-call settings layer disables the helper. The empty string is the value
         # the CLI takes as unset (null falls through to the settings files; verified on 2.1.257), the same
-        # lever a login-picked session's launch uses (sdk_backend.flag_settings_path).
+        # lever a login-picked session's launch uses (sdk_backend.flag_settings_path). The machine's own login
+        # and a STORED login alike: a stored login's token rides the child's environment (_judge_env, the
+        # environment road since 2026-09-14), where a helper would outrank it.
         overlay["apiKeyHelper"] = ""
-    elif str(auth or "").startswith("login:"):
-        # a call for a session billed to a STORED login (T346) carries that login's own helper instead: the
-        # judges bill the same account as the session they judge, and the machine's tokens stay out of the
-        # child (_judge_env restores them for the machine's login only)
-        overlay["apiKeyHelper"] = _login_helper_cmd(str(auth)[6:])
     if overlay:
         cmd += ["--settings", json.dumps(overlay)]
     return cmd
@@ -1059,8 +1056,9 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              "gate-stamp" (the evidence gate could not write a tier's stamp after a complete run; the run
              counts bypassed and the session stays due: _gated), "states-unreadable", "cleared-unreadable",
              "stall-unreadable", "captions-unreadable", "episodes-unreadable", "marker-unreadable",
-             "archive-unreadable" (a side file the evidence gate stat'd into a tier's signature exists and
-             could not be read or parsed by the stage: the run is marked incomplete and stamps nothing, one
+             "archive-unreadable", "reg-unreadable" (the eight side-file kinds: a file the evidence gate
+             stat'd or read by value into a tier's signature exists and could not be read or parsed: the
+             gate runs the stage without a stamp, or the stage's own read marks the run incomplete, one
              row per failure episode: _read_failed)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.
@@ -1689,6 +1687,8 @@ def _fast_org_env():
 
 
 _DEFAULT_AUTH_FN = None        # kernel wiring: fn(reg) -> 'login' | 'key', SdkBackend.default_auth: the ONE billing resolver
+_DEFAULT_LOGIN_FN = None       # kernel wiring beside it: fn(reg) -> a stored login's id or "", SdkBackend.default_login: WHICH login
+#                                an unpicked session bills when the machine's explicit default names a stored one (2026-09-14)
 #                                (the reg's own pick, else the machine's explicit default when billable, else the helper rule)
 _LOGIN_AUTH_ENV_FN = None      # login tokens claimed out of the manager's ambient environment: the kernel
                                # wires sdk_backend.startup_auth_env; standalone reads the environment
@@ -1733,7 +1733,8 @@ def _judge_auth(fsid):
     file all move the launch, the status and the flyout to the other side, and the judges with them — the
     round-3 review found a seed re-read here that kept billing the login alone), else the helper rule. A
     call with no session (rows with no session) takes the same default a fresh session would. A session billed to a STORED login (T346) is decided here first, from the reg's
-    own pick: the resolver names sides, and a stored login is a pick, never a default. Standalone
+    own pick: the resolver names sides. A stored login set as the machine's DEFAULT (the user 2026-09-14) reaches an
+    unpicked session's judges through the second wired function, default_login, which judges the record. Standalone
     (tests, no kernel wiring) the registry file and the helper rule stand in: an explicit 'login' or 'key'
     pick → that side; else the key when Claude Code's settings carry an apiKeyHelper, else login."""
     reg = {}
@@ -1763,6 +1764,12 @@ def _judge_auth(fsid):
     if _DEFAULT_AUTH_FN is not None:
         try:
             side = str(_DEFAULT_AUTH_FN(reg) or "")
+            if side == "login" and _DEFAULT_LOGIN_FN is not None:
+                # an unpicked session following a STORED login set as the machine's default (the user 2026-09-14): its
+                # judges bill that login, as its launch does; default_login judges the record ("" = the machine's own)
+                lid = str(_DEFAULT_LOGIN_FN(reg) or "")
+                if re.fullmatch(r"[0-9a-f]{12}", lid):
+                    return "login:" + lid
             if side in ("login", "key"):
                 return side
         except Exception:
@@ -1775,14 +1782,6 @@ def _judge_auth(fsid):
 def _is_login_auth(auth) -> bool:
     """A login-side pick, the machine's own ('login') or a stored one ('login:<id>')."""
     return auth == "login" or str(auth or "").startswith("login:")
-
-
-def _login_helper_cmd(login_id):
-    """The apiKeyHelper for a judge call billed to a STORED login (T346): bin/romp-login-helper with the record
-    id and this state directory, the same command the session's own launch carries (sdk_backend
-    flag_settings_path's helper_cmd), so the judge runs the login's own token command per request (a secret
-    manager's read command, typically) and nothing rides this process's files or environment."""
-    return "%s %s %s" % (shlex.quote(str(HERE.parent / "bin" / "romp-login-helper")), login_id, shlex.quote(str(STATE)))
 
 
 _LOGIN_FALL_SAID = set()       # (fsid, login id) pairs whose judge fall off a refused stored login was said (once each)
@@ -2029,8 +2028,11 @@ def _judge_env(tier, auth="login", model=None):
     unconditionally, and a KEY-billed call injects nothing back (2026-09-08: romp holds no key; the child
     resolves Claude Code's apiKeyHelper itself, and the first pass after boot runs exactly like every later
     one). A LOGIN-billed call gets the claimed login tokens back and, in _judge_cmd, the helper suppression.
-    A call billed to a STORED login ('login:<id>', T346) gets NEITHER: its credential is that login's own
-    helper in _judge_cmd's overlay, and a machine token beside it would outrank the helper.
+    A call billed to a STORED login ('login:<id>', T346) gets that login's setup-token instead, read by running
+    the record's token command now, the way the session's own launch runs it (the environment road, 2026-09-14:
+    a setup-token through an apiKeyHelper hangs the CLI's request; through CLAUDE_CODE_OAUTH_TOKEN it is
+    accepted); the machine's tokens stay out, and a failing command is a CredentialError the caller notes in
+    its own words, never a fall onto ambient auth.
     Removal, not blanking: the CLI treats even an empty var as key-mode-without-a-key and refuses with
     "Not logged in"."""
     env = dict(os.environ)
@@ -2045,6 +2047,12 @@ def _judge_env(tier, auth="login", model=None):
             env.pop(k, None)
     if auth == "login":
         env.update(_login_auth_env())
+    elif str(auth or "").startswith("login:"):
+        try:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = _logins.token_value(STATE, str(auth)[6:],
+                                                                 lambda c: _cred.run_helper(c, label="the token command"))
+        except ValueError as e:                     # no such record, or one naming no command: the same loud road
+            raise _cred.CredentialError(str(e)) from None
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
     env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard

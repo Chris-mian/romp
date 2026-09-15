@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("Status carries the server-driven modelPending flag", () => {
@@ -16,14 +17,14 @@ test("Status carries the server-driven modelPending flag", () => {
 
 test("syncMetaControls renders dots for a pending model, driven by the server flag (+ local click heuristic)", () => {
   // model + effort both drive dots now (effort reconnects to apply); the model clause is still present
-  assert.match(RENDER, /const pending = \(kind === "model" && !!st\.modelPending\) \|\| \(kind === "effort" && !!st\.effortPending\)\s*\n\s*\|\| isMetaPending\(kind, st\);/);
-  assert.match(RENDER, /const showDots = pending && \(kind === "model" \|\| kind === "effort"\);/);   // billing moved to the tab menu (2026-08-09)
-  assert.match(RENDER, /if \(!label\.querySelector\("\.meta-dots"\)\) label\.replaceChildren\(metaDots\(\)\);/);
+  assert.match(MODULE, /const pending = \(kind === "model" && !!st\.modelPending\) \|\| \(kind === "effort" && !!st\.effortPending\)\s*\n\s*\|\| !!\(hooks\.pending && hooks\.pending\(kind, st\)\);/);   // the local heuristic is the chat's hook (T415 part two)
+  assert.match(MODULE, /const showDots = pending && \(kind === "model" \|\| kind === "effort"\);/);   // billing moved to the tab menu (2026-08-09)
+  assert.match(MODULE, /if \(!label\.querySelector\("\.meta-dots"\)\) label\.replaceChildren\(metaDots\(\)\);/);
 });
 
 test("metaDots builds three <i> dots", () => {
-  assert.match(RENDER, /function metaDots\(\): HTMLElement \{/);
-  const body = RENDER.slice(RENDER.indexOf("function metaDots"));
+  assert.match(MODULE, /export function metaDots\(\): HTMLElement \{/);
+  const body = MODULE.slice(MODULE.indexOf("function metaDots"));
   assert.equal((body.slice(0, body.indexOf("return d;")).match(/el\("i"\)/g) || []).length, 3,
                "exactly three dots");
 });

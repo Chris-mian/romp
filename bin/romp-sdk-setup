@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# romp-sdk-setup — provision the Claude Agent SDK for romp's Claude Code backend.
+# romp-sdk-setup — provision the Claude Agent SDK for romp's Claude Code backend, plus the
+# `cryptography` package phone and browser notifications need (the kernel's only other dependency).
 #
 # Rather than install the SDK into the system python (PEP 668 / externally-managed envs), we keep
 # it in a DEDICATED venv under romp's state dir and the kernel adds that venv's site-packages to
@@ -235,8 +236,24 @@ if [ ! -x "$VENV/bin/python" ] || [ ! -x "$VENV/bin/pip" ]; then
 fi
 "$VENV/bin/pip" install -q --upgrade pip >/dev/null
 "$VENV/bin/pip" install -q --upgrade claude-agent-sdk
-"$VENV/bin/python" - <<'PY'
-import claude_agent_sdk as m, sys
+# cryptography: what phone and browser notifications (Web Push: VAPID signing, payload encryption)
+# need on the kernel host, the kernel's one soft dependency beyond the SDK (_push_crypto in
+# kernel/kernel.py reads it from this venv). Nothing installed it until 2026-09-14, so a fresh
+# install's bell answered every subscribe with the missing package named and no way to get it.
+# Its OWN pip run, after the SDK's: a wheel that will not install here (an exotic platform with
+# no binary wheel and no Rust toolchain) must not take the SDK backend down with it, so the
+# failure is named with the consequence and the command, and this script still exits 0. The
+# kernel runs without it; only the notifications to a phone or browser stay off until it is in.
+if ! "$VENV/bin/pip" install -q --upgrade cryptography; then
+  echo "romp-sdk-setup: could not install 'cryptography' (the line above says why). romp runs without it, but phone and browser notifications stay off until it is installed:  $VENV/bin/pip install cryptography" >&2
+fi
+ROMP_SDK_VENV="$VENV" "$VENV/bin/python" - <<'PY'
+import claude_agent_sdk as m, os, sys
 print("romp-sdk-setup: claude-agent-sdk %s ready (python %s)" % (m.__version__, ".".join(map(str, sys.version_info[:3]))))
+try:
+    import cryptography
+    print("romp-sdk-setup: cryptography %s ready (phone and browser notifications)" % cryptography.__version__)
+except ImportError:
+    print("romp-sdk-setup: 'cryptography' does not import from the venv; phone and browser notifications stay off until it does:  %s/bin/pip install cryptography" % os.environ.get("ROMP_SDK_VENV", "<venv>"), file=sys.stderr)
 PY
 echo "romp-sdk-setup: done — the kernel will pick this up automatically (no restart-side config)."

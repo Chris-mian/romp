@@ -583,18 +583,26 @@ class AssemblyRoadCounters(Harness):
         meta = em._asm_ckpt_file(path).with_name(em._asm_ckpt_file(path).name + ".meta")
         self.assertEqual([p.name for p in meta.parent.glob("*.tmp")], [], "no tmp left behind")
 
-    def test_a_cyclic_resolved_graph_refuses_the_write_instead_of_walking_to_the_guard(self):
+    def test_a_cyclic_resolved_graph_writes_a_document_whose_spine_ends_at_the_first_revisit(self):
         """Follow-up (the demote gate's later low): a reused uuid can make the resolved graph cyclic, and the writer's spine walk
-        ran to its 500,000 guard and stored the collected chain; the walk is bounded by the record count and a cycle refuses."""
+        ran to its 500,000 guard and stored the collected chain; the fix bounded the walk by the record count and REFUSED the
+        document on a cycle. Stage one of the process split (2026-09-14, plans/checkpoint-cycle-walk.md): the walk ends at the
+        first revisit as the parse's active_path does, the document is written, no cycle skip is counted, and the restore
+        equals the cold parse (34 of the 76 live transcripts over 10 MB were refused this way, every chat build a cold parse)."""
         t0 = NOW
         recs = [G.uline(t0, "first ask", "u1", "a1"), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),   # u1 <-> a1
                 G.compact_line(t0 + 600, "b1", "a1"), G.compact_summary_line(t0 + 601, "s1", "b1"),
                 G.uline(t0 + 610, "after", "u4", "s1"), G.aline(t0 + 620, "reply", "a4", "u4", stop="end_turn")]
         path = self.write("cycle", recs)
+        cold = self._cold(path)
         self.fresh(); self._parse_lineage(path, [path])
         sk0 = dict(em.asm_checkpoint_stats()["skipped"])
-        self.assertFalse(self.doc(path), "no document for a cyclic graph")
-        self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("cycle", 0) - sk0.get("cycle", 0), 1, em.asm_checkpoint_stats()["skipped"])
+        self.assertTrue(self.doc(path), "a document for a cyclic graph: %s" % em.asm_checkpoint_stats()["skipped"])
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("cycle", 0) - sk0.get("cycle", 0), 0, "no cycle skip")
+        self.fresh(); self._reset()
+        tree, parse, reads = self._served(path)
+        self.assertEqual((parse.get("restore"), parse.get("restore:chainRefused", 0)), (1, 0), parse)
+        self.assertEqual(tree, cold, "restored equals the cold parse: the spine is the chain up to the first revisit")
 
     def test_a_uuid_less_record_bearing_a_parent_is_not_a_node_of_the_walk(self):
         """Follow-up (the demote gate's later low): the parse indexes nothing for a record without a uuid, so a null or interior

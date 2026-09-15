@@ -766,19 +766,21 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    (the user 2026-06-26). The icon is the same metaphor as the timeline lane toggles; a .off icon is slashed
    + dimmed to show the flag is currently off (matching the timeline). */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
-/* the Billing flyout and its nested default submenu (T387) stay a menu's width (the T380 review: a note had grown the
-   flyout to 585 px, past narrow windows; the note is gone, the cap stays for a long login label), the label truncating
-   inside the item instead of stretching it; the check mark sits in the item's padding, unclipped */
-.ctx-sub-billing, .ctx-sub-default { max-width: 22em; }
+/* the Billing flyout and its nested default submenu (T387) take the width of their longest label, whole (the user 2026-09-14,
+   who read the machine login's email · organisation · kind cut to an ellipsis under the T380 review's 22em cap and asked for
+   the label in full, the menu growing as needed). The one bound is the window: placeFlyBeside flips a wide flyout to the
+   anchor's other side and clamps it to the edge, and a label longer than the window wraps rather than clips (the flyout is
+   sized to its content, so nothing wraps before the cap binds); the check mark sits in the item's padding, unclipped */
+.ctx-sub-billing, .ctx-sub-default { max-width: calc(100vw - 16px); }
+.ctx-sub-billing .ctx-item, .ctx-sub-default .ctx-item { white-space: normal; overflow-wrap: anywhere; }
 /* the nested level is the flyout's size, not 0.92 of it again (the T387 review measured 11.0 px against 10.1 px: .ctx-menu's
-   0.92em compounds at every nesting, the em rule ui/CLAUDE.md names; the 22em cap follows the size, so it matches too) */
+   0.92em compounds at every nesting, the em rule ui/CLAUDE.md names) */
 .ctx-sub-default { font-size: 1em; }
 /* the Set default billing row opens a submenu, so its caret lines up with the Billing and Tags carets: no check-mark
    room on its right (the .ctx-sub .ctx-item 26px is for the entries that can wear the check) */
 /* four classes: it must OUTRANK .ctx-sub .ctx-item's 26px below (equal specificity lost to the later rule: the fold's served
    lab measured 26 against 10; the repo's cascade rule, pin the tiebreak) */
 .ctx-sub.ctx-sub-billing > .ctx-item.ctx-item-setdefault { padding-right: 10px; }
-.ctx-sub-billing .ctx-item, .ctx-sub-default .ctx-item { overflow: hidden; text-overflow: ellipsis; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
@@ -810,6 +812,10 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    feed view menu's .forced items wear */
 .ctx-sub .ctx-item.disabled { opacity: 0.45; cursor: default; }
 .ctx-sub .ctx-item.disabled:hover { background: transparent; color: inherit; }   /* .ctx-item:hover also recolours */
+/* the Billing flyout on a machine with nothing to bill (no login signed in, no apiKeyHelper): one inert line naming why, in
+   the reasons' own words, in place of greyed choices (the user 2026-09-14: list what is set up, grey nothing) */
+.ctx-sub .ctx-item.ctx-item-none { cursor: default; }
+.ctx-sub .ctx-item.ctx-item-none:hover { background: transparent; color: inherit; }
 /* a Move to row held by the tab lock (T395): the label dims and the row stops answering, but the + beside it still tags
    (adding is not a move), so it keeps full strength and its own title; hence the dim on the body, not the row */
 .ctx-sub .ctx-item.ctx-item-locked { cursor: default; }
@@ -1819,7 +1825,6 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .toolgroup-line { color: var(--dim); font-size: 0.92em; line-height: 1.4; cursor: pointer; width: fit-content; padding-right: 6px; }
 .toolgroup-line:hover { color: var(--fg); }
 .toolgroup-caret { display: inline-block; font-size: 0.72em; opacity: 0.7; color: var(--dim); margin-right: 4px; }   /* the notice caret's size (was 1.3em) */
-.toolgroup-tool { font-weight: 700; color: var(--vscode-foreground, #fff); }   /* matches .tool-name */
 /* An expanded tool-group's children are a DETOUR of the main rail (the user 2026-07-17 ×2: the rail
    goes IN, DOWN, and BACK — one path, never two parallel verticals): a right-turn arm under the open
    arrow onto a 24px-indented sub-rail (the children's own ::before, full height so it reaches both
@@ -2337,6 +2342,16 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
 .tool-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; flex-wrap: wrap; }
 .tool-name { font-weight: 700; color: var(--vscode-foreground, #fff); }
 .tool-desc { color: var(--dim); }
+/* T418: the row's label in the user's terms (the model's description, or the derived phrase); a bare command in the code face; the
+   edits' totals in the diff colours; the tool's name secondary where no phrase names the action */
+.tool-label { color: var(--vscode-foreground, #fff); }
+.tool-label-code { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.92em; color: var(--dim); }
+.tool-secondary { font-weight: 400; color: var(--dim); font-size: 0.92em; }
+.tool-totals { font-variant-numeric: tabular-nums; }
+.tool-plus { color: var(--green); }
+.tool-minus { color: var(--err); }
+.toolgroup-head { color: var(--dim); }
+.toolgroup-line:hover .toolgroup-head { color: var(--fg); }
 /* a FAILED tool's fold toggle reads in red, so a collapsed error stays loud at a glance (the user 2026-06-22) */
 .turn-tool.tool-err .tool-fold-toggle { color: var(--err); text-decoration-color: var(--err); }
 .turn-tool.tool-err .tool-fold-toggle:hover { color: var(--err); opacity: 0.82; }
@@ -2525,7 +2540,7 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    is the sole outcome glyph now; the duplicate in-head ✗ was dropped (the user 2026-06-13). */
 .dot.err { background: var(--err); border: none; display: flex; align-items: center; justify-content: center; }
 .dot.err::before { content: "✗"; color: #fff; font-size: 8px; font-weight: 900; line-height: 1; }
-.tool-err .tool-name { color: var(--err); }
+.tool-err .tool-name, .tool-err .tool-label { color: var(--err); }
 
 /* clickable file name → opens the real file in the editor */
 .tool-file {

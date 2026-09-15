@@ -32,7 +32,7 @@ import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTa
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
-import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
+import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
 import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
@@ -68,6 +68,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional,
 import { colFromSearch, columnHolds, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
 import { onlyTag, matchesOnly, onlyWindow } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
+import { actionParts, toolRowLabel, toolInputText } from "./compact";
 import { parseAgentNotif, notifHead, type AgentNotif } from "./agent-notif";
 import { injectedHead, type InjectedSource } from "./injected-source";
 import { subTabId, isSubId, subParts, subLabel, gistLines, stepLines, stepsNote, agentFoldLabel, subHeadParts, subWaitTail, openIconSvg, pinIconSvg, type SubMeta, type AgentGist, type AgentGistRow, type GistLine } from "./subagent-view";
@@ -106,6 +107,8 @@ import { durLabel } from "./duration";
 import { apiErrorReason } from "./api-error-reason";
 import { chatMdExtensions, userMdHtml } from "./chat-md";
 import { setTip, pruneTip } from "./tip";
+import { MetaKind, MetaHooks, metaButton as buildMetaButton, syncMetaControls as syncMetaControlsWith, ctxBar as buildCtxBar, setCtxBar as setCtxBarWith,
+  metaColor, modeIconSvg, riskyMode, prettyMode, prettyFast, fastAvailable, metaCurrent, metaDots, rampOn } from "./status-controls";   // the status line's controls, one renderer for the chat's line, the popovers and the settings card's preview (T415 part two)
 import { agentCount, replyOwed, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, newCommentCreate, commentCreateFrame,
          pickMarkToOpen, type CommentThread, type CommentCreate, markSkipsParent } from "./comments";
 import { isReplyReady, placeMark, placeWindowed, readyChips, replyLine, chipLabel, chipTip, chipAria, type Dir, type ReadyMark, type ReadyChip } from "./reply-ready";
@@ -5230,10 +5233,16 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   turn.appendChild(d);
 
   const head = el("div", "tool-head");
-  const name = el("span", "tool-name"); name.textContent = ev.name;
+  // the row's label in the user's terms (T418): the model's description when it wrote one, else a phrase derived from the tool's
+  // input ("Read .../kernel/kernel.py", "Edited .../ui/feed.ts +12 -3", "Searched for foo"); a bare Bash shows its command in the
+  // code face; the tool's name is secondary, kept only where no phrase names the action ("Used a tool · Skill")
+  const lbl = toolRowLabel(ev);
+  const name = el("span", "tool-label" + (lbl.code ? " tool-label-code" : "")); name.textContent = lbl.text;
   head.appendChild(name);
-  if (ev.file) head.appendChild(fileLink(ev.file));
-  else if (ev.desc) { const c = el("span", "tool-desc"); c.textContent = ev.desc; head.appendChild(c); }
+  if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
+  if (ev.file) head.appendChild(fileLink(ev.file));   // EVERY event with a file keeps its link (round two, medium 2); a label that names the path names it as this link, never twice
+  // An edit's totals are the diff fold's toggle below (+A -R), printed once per row (round two, medium 1); a FAILED edit's error fold
+  // replaces that fold and prints no totals: a failed edit changed nothing (round three, low d). The head carries no totals span.
 
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
@@ -5245,7 +5254,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     // "error" toggle, the IN/OUT hanging below. The red ✗ rail dot + red tool name (.tool-err) keep it loud.
     if (ev.input || ev.output) {
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, true));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), true));
       if (ev.output) io.appendChild(ioRow("OUT", ev.output, true));
       const n = ev.output ? countLines(ev.output) : 0;
       inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
@@ -5269,9 +5278,9 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       row.append(og, ng, sign, txt);
       pre.appendChild(row);
     }
-    inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
+    inlineFold(head, turn, `+${add} -${del}`, pre, fkey);   // the row's one totals text, the approved shape (+A -R, a hyphen minus); the head prints none beside it (T418 round two)
   } else if (ev.name === "Read") {
-    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output, fkey && fkey + ":out"), fkey);
+    if (ev.output) { const n = countLines(ev.output); inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, preEl(ev.output, fkey && fkey + ":out"), fkey); }   // "1 line", not "1 lines" (T418, seen in the lab)
   } else if (ev.name === "Skill") {
     // A Skill invocation (the user 2026-07-08): the head names the skill, and the skill's INSTRUCTIONS
     // (ev.skillMd, kernel-joined) are the fold body — DEFAULT COLLAPSED like every tool body. They used
@@ -5332,14 +5341,14 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       // user expand survives the running→done re-render.
       if (ev.input) {
         const io = el("div", "tool-io tool-io-fold");
-        io.appendChild(ioRow("IN", ev.input, false));
+        io.appendChild(ioRow("IN", toolInputText(ev), false));
         inlineFold(head, turn, ev.resultUuid ? "no output" : "running…", io, fkey);
       }
     } else {
       // Bash/Grep/Glob/…: output line-count on the head line (right of the command);
       // the command + full output hang below, hidden until clicked.
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, false));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), false));
       io.appendChild(ioRow("OUT", ev.output, false));
       const n = countLines(ev.output);
       inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io, fkey);
@@ -5935,6 +5944,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
   rows.push(["Mail", !s.postalServiceOff ? "on"
     : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
+    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
     : s.mailOffWhy === "thread" ? "off until the thread is broken out"
     : "off: this session neither sends nor receives peer mail"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
@@ -6052,15 +6062,11 @@ let renderPendingWhilePressed = false;
 // before the rebuild. Reset ("") wherever the strip's DOM is changed outside renderTabs — a tab drag's live
 // reorder — so the next render rebuilds whatever the inputs say.
 let tabStripSig = "";
-// THE TAB LOCK (T395, the user 2026-09-12): one press freezes every way a tab moves (the drag reorder, a drag into another
-// column or the split's edge, the tab menu's Move to rows) until the next press. A per-browser setting like the gear's,
-// written through the same store and fanned out the same way: the same-document signal every consumer listens to (the
-// strip repaints through its signature), and the host relay VS Code's separate panes need.
-function setTabsLocked(on: boolean): void {
-  settings = saveSettings({ tabsLocked: on });
-  try { window.dispatchEvent(new Event("romp:settings")); } catch { /* no window event: nothing listens */ }
-  vscodeApi?.postMessage({ type: "settingsSync", settings });
-}
+// THE TAB LOCK (T395, the user 2026-09-12): one setting freezes every way a tab moves (the drag reorder, a drag into another
+// column or the split's edge, the tab menu's Move to rows) until it is cleared. Since T415 the switch is the settings card's
+// (gear.js rs-tablock, the Chat tab's Tab strip section), written through the gear's store and fanned out the gear's way: the
+// same-document signal every consumer listens to (the strip repaints through its signature) and the host relay VS Code's
+// separate panes need. Nothing in this file writes it any more; the strip only reads settings.tabsLocked.
 // Release the press-hold and flush any deferred rebuild. Hoisted so the DRAG handlers can call it
 // too: a native drag swallows the pointerup, so without this a finished drag would leave the strip
 // frozen against pushes until the next unrelated press (see the dragend handler).
@@ -7095,6 +7101,10 @@ function billingChoices(st: Status, avail: AuthAvail): Array<{ label: string; va
 // row). .ctx-menu is position: fixed, so the coordinates are viewport-space. The flyout is in the document already.
 function placeFlyBeside(anchor: HTMLElement, fly: HTMLElement): void {
   const ir = anchor.getBoundingClientRect();
+  // measure at the window's left edge, where the whole width is available: a flyout whose labels may wrap (the Billing
+  // flyout's, bounded by the window since 2026-09-14) is otherwise measured at its static position and re-flows once
+  // placed, ending flush with the window's right edge instead of 8 px inside it (the served lab at 560 px)
+  fly.style.left = "0px";
   const sr = fly.getBoundingClientRect();
   let left: number, top: number = ir.top;
   if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
@@ -7582,18 +7592,23 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       if (already) return already as HTMLElement;
       menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
       const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
-      const choices = billingChoices(st, avail);                  // the ONE list both menus below draw from (T387)
+      // the ONE list both menus below draw from (T387): the billings this machine can apply, and those ONLY (the user
+      // 2026-09-14: list what is set up, grey nothing; the 2026-09-08 greyed-with-a-reason row is gone). A machine with
+      // nothing to bill shows one inert line naming why, in the reasons' own words.
+      const all = billingChoices(st, avail);
+      const choices = all.filter((c) => !c.why);
+      if (!choices.length) {
+        const none = el("div", "ctx-item ctx-item-none");
+        none.textContent = all.map((c) => c.why).filter(Boolean).join("; ");
+        none.addEventListener("click", (ev2) => { ev2.stopPropagation(); });
+        sub.appendChild(none);
+      }
       for (const c of choices) {
         const cur = authChoiceCurrent(st, c.value);   // the key, or a login by WHICH login (st.authLogin)
-        const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+        const opt = el("div", "ctx-item" + (cur ? " current" : ""));
         opt.textContent = c.label;
-        if (c.why) {   // unavailable here: greyed, the reason on hover, inert (the user 2026-09-08)
-          opt.title = c.why;
-          opt.setAttribute("aria-disabled", "true");
-        }
         opt.addEventListener("click", (ev2) => {
           ev2.stopPropagation();
-          if (c.why) return;                                       // a disabled option posts nothing, and the menu stays
           dismissTabMenu();
           if (!cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value });
         });
@@ -7605,8 +7620,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       // kernel that says whether the default is explicit (an older one takes no scoped "auto" and marks no default). No
       // sub-line anywhere. The submenu rides the same hover-intent road, wired on the Billing flyout itself and appended
       // inside it, so leaving both closes both and the menu's dismissal covers it; the same placement rule places it.
-      const pickable = choices.filter((c) => !c.why);
-      if (pickable.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
+      if (choices.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
         sub.appendChild(el("div", "ctx-sep"));
         const setDef = el("div", "ctx-item ctx-item-toggle ctx-item-setdefault");
         const sl = el("span", "ctx-item-label"); sl.textContent = "Set default billing"; setDef.appendChild(sl);
@@ -7617,17 +7631,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           const explicit = !!avail.defaultExplicit;
           const d = el("div", "ctx-menu ctx-sub ctx-sub-default");
           const post = (value: string) => { dismissTabMenu(); if (vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value, scope: "machine" }); };
-          // the machine's own login and the key only (T346 beside T380 and T387): a stored login as the machine's default is
-          // not taken by the kernel yet (its scoped arm refuses the value by name), so the flyout does not offer it
-          const defaultChoices = choices.filter((c) => c.value === "login" || c.value === "key");
-          for (const c of defaultChoices) {
-            const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
-            const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+          // exactly the entries of the picks above, a stored login among them (the user 2026-09-14; the kernel's scoped arm
+          // takes "login:<id>" as the machine's default since then, where it offered the machine's own login and the key
+          // only). The check sits on the EXPLICIT default only; automatic marks nothing.
+          for (const c of choices) {
+            const cur = explicit && avail.default === c.value;
+            const opt = el("div", "ctx-item" + (cur ? " current" : ""));
             opt.textContent = c.label;
             opt.dataset.scope = "machine";   // a MARKER for the labs and the sheet, never read for the wire: post() carries the scope
-            if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
             // the picks list one level up dismisses on its current entry too (review): the same gesture, the same answer, nothing posted
-            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why) return; if (cur) { dismissTabMenu(); return; } post(c.value); });
+            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (cur) { dismissTabMenu(); return; } post(c.value); });
             d.appendChild(opt);
           }
           if (explicit) {
@@ -10818,6 +10831,7 @@ function renderCommentPopover(): void {
     mailOn.textContent = !th.mailOff
       ? "Its mail is on now: peers can reach it and it can send." + (held ? " " + held + (held === 1 ? " held message lands" : " held messages land") + " in a moment." : "")
       : th.mailOffWhy === "unreadable" ? "Its mail is held: this session's record cannot be read, and mail flows again once the record is repaired."
+      : th.mailOffWhy === "flags" ? "Its mail is held: the session settings file cannot be read, and mail flows again once it is written."
       : "Its mailbox is off: the lane's mailbox toggle turns peer mail back on.";   // the reason rides the frame: a remedy that fits (T356)
     pop.appendChild(mailOn);
     const row = el("div", "cmt-actions");
@@ -12446,10 +12460,20 @@ function unitAtScroll(v: View, content: HTMLElement): number {
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
 function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || String(eventEpoch(first) ?? "")); }
 
-// A collapsed run of consecutive tool uses → one rail line: a caret + "3 Edits, 2 Reads" with each
-// tool word bold (matching the non-compact .tool-name, so it reads AS tools). Clicking the line toggles
-// expand → the full non-compact cards (the user 2026-06-14). Carries the rail dot + time-marker + hover
-// wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any errored.
+// A collapsed run of consecutive tool uses → one rail line: a caret + the head in the user's terms (T418, the user 2026-09-14,
+// the desktop app's shape): "Ran 11 commands, read 4 files, edited 3 files, created 2 files" with the edits' totals ONCE at the
+// end in the diff colours (+37 -0). Clicking the line toggles expand → the full non-compact rows (the user 2026-06-14). Carries
+// the rail dot + time-marker + hover wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any
+// errored.
+/** The edits' totals of a head, summed over every edit in the group, appended once in the diff colours. */
+function appendTotals(line: HTMLElement, add: number, del: number): void {
+  if (!add && !del) return;
+  const tot = el("span", "tool-totals");
+  const plus = el("span", "tool-plus"); plus.textContent = "+" + add;
+  const minus = el("span", "tool-minus"); minus.textContent = "-" + del;
+  tot.append(" ", plus, " ", minus);
+  line.appendChild(tot);
+}
 function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoch: number | null, key: string, open: boolean): HTMLElement {
   const turn = el("div", "turn turn-toolgroup" + (open ? " expanded" : ""));
   const anyErr = tools.some((t) => t.isError);
@@ -12462,11 +12486,11 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   line.dataset.act = "noticetoggle"; line.dataset.gkey = key;
   setTip(line, open ? "click to collapse" : "click to expand");
   const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
-  if (!open) {   // collapsed → the "3 Edits, 2 Reads" summary; expanded → just the open arrow (the cards say it)
-    toolCounts(tools.map((t) => t.name)).forEach((c, i) => {
-      line.appendChild(document.createTextNode((i ? ", " : " ") + c.count + " "));
-      const w = el("span", "toolgroup-tool"); w.textContent = c.label; line.appendChild(w);   // bold, like .tool-name
-    });
+  if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14, who wanted the rows to read as the desktop app's do): the phrases ordered by the number each prints, the edits' totals once at the end; expanded → just the open arrow (the rows say it)
+    const parts = actionParts(tools);
+    line.appendChild(document.createTextNode(" "));
+    const w = el("span", "toolgroup-head"); w.textContent = parts.text; line.appendChild(w);   // the phrases; the summed totals follow once, in the diff colours
+    appendTotals(line, parts.add, parts.del);
   }
   turn.appendChild(line);
   const epoch = eventEpoch(tools[0]);
@@ -14190,14 +14214,7 @@ const COLORMAPS: Record<string, Array<[number, number, number]>> = {
 function selectedStops(): Array<[number, number, number]> {
   return COLORMAPS[(settings.colormap || "").toLowerCase()] || COLORMAPS.aurora;   // settings updated + rerenderAll on change
 }
-function ramp(v: number): [number, number, number] {
-  const STOPS = selectedStops();
-  v = Math.max(0, Math.min(1, v));
-  const x = v * (STOPS.length - 1), i = Math.floor(x), fr = x - i;
-  if (i >= STOPS.length - 1) return STOPS[STOPS.length - 1];
-  const a = STOPS[i], b = STOPS[i + 1];
-  return [Math.round(a[0] + (b[0] - a[0]) * fr), Math.round(a[1] + (b[1] - a[1]) * fr), Math.round(a[2] + (b[2] - a[2]) * fr)];
-}
+function ramp(v: number): [number, number, number] { return rampOn(v, selectedStops()); }   // the arithmetic is status-controls.ts rampOn (the kernel's cm.ramp), over the selected map
 // Arm a compaction "sweep" fill (the tab bar bar + the statusline battery scan) so it (a) does NOT restart
 // every render and (b) mirrors the context colormap as it compresses.
 //   (a) renderTabs()/updateStatusline() recreate the element on every kernel push (0.5–3s backstop + one per
@@ -15332,7 +15349,6 @@ function elapsedMs(sinceMs: number | null): string {
 // Each value is a little dropdown: picking an entry has the kernel apply the matching
 // /model or /effort setting to the session; the label then updates
 // when the session republishes the value (meta-pending bridges the gap).
-type MetaKind = "mode" | "model" | "effort" | "fast";
 // One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
 // label; `sdkOnly` drops the entry on a backend that cannot apply it (Codex).
 interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null;
@@ -15350,6 +15366,14 @@ const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[
 // run: an empty model menu beats offering another vendor's models (docs/codex.md).
 const CODEX_MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 const CODEX_EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+// The effort menus list the ladder TOP-DOWN (the user 2026-09-14): the highest effort first, the lowest
+// last, the way the model menu already leads with the most capable family. The kernel serves `efforts`
+// low→high because its rank ramp (position → colour) and the gear's settings selects read that order, and
+// neither moves; the display order is derived HERE, once, for every menu these arrays feed (the statusline,
+// a thread's popover, the comment-create chips). Each row carries its own color/tone, so nothing recolours,
+// and the ✓ matches by value (isCurrentMeta), so it follows its row.
+const effortDisplayOrder = (efforts: { label: string; value: string; color?: number[] | null }[]): { label: string; value: string; color?: number[] | null }[] =>
+  [...efforts].reverse();
 // Why the Codex list is empty, when it is: the payload's `codex.error` (the app-server client not up yet,
 // a failed model list, no live Codex session). A Codex menu with no list shows it in place of a
 // blank menu. "" while a list is held or the field is absent.
@@ -15374,9 +15398,9 @@ function loadModelChoices(): void {
   fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then((d) => {
     if (typeof d.rev === "number") { if (d.rev < modelChoicesRev) return; modelChoicesRev = d.rev; }
     if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
-    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
+    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...effortDisplayOrder(d.efforts)); }
     if (d.codex && Array.isArray(d.codex.models)) { CODEX_MODEL_CHOICES.length = 0; CODEX_MODEL_CHOICES.push(...d.codex.models); }
-    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...d.codex.efforts); }
+    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...effortDisplayOrder(d.codex.efforts)); }
     if (d.codex) CODEX_MODELS_ERROR = typeof d.codex.error === "string" ? d.codex.error : "";
     if (d.commentDefaults) adoptCommentDefaults(d.commentDefaults);
     if (onModelChoicesLoaded) onModelChoicesLoaded();   // once per APPLIED read: a response the rev check dropped never fires it
@@ -15415,38 +15439,7 @@ function modelChoiceLabel(value: string): { label: string; color?: number[] | nu
   }
   return { label: value };
 }
-// Permission mode. A Claude Code session sets it outright over the control channel (set_permission_mode),
-// which is what makes Bypass offerable there and only there (a Codex session has its own vocabulary and
-// cannot express it). `sdkOnly` is the filter, applied in toggleMetaMenu.
-// Permission-mode GLYPHS (the user 2026-08-28): each mode gets a small line icon beside its text —
-// the statusline badge and the picker rows carry it, always WITH the label (an icon alone is a
-// riddle). House icon style (the tag-glyph convention): 16-unit viewBox, stroke currentColor 1.4,
-// round caps/joins. The vocabulary: the GATE is a shield — Normal is the shield as-is, Bypass is
-// the shield slashed (the gate removed); Accept edits is the pencil (edits pre-approved); Auto is
-// the bolt (it decides at speed); Plan is the route pin-to-pin (look before touching); Don't ask
-// (renderable, not offerable) is the crossed speech bubble (it will never raise a question).
-const MODE_ICONS: Record<string, string> = {
-  default: '<path d="M8 2 L13 4 V8 C13 11.4 10.8 13.2 8 14 C5.2 13.2 3 11.4 3 8 V4 Z"/>',
-  acceptedits: '<path d="M3.5 12.5 L4.1 10.1 L10.9 3.3 A1.35 1.35 0 0 1 12.8 5.2 L6 12 L3.5 12.5 Z"/><path d="M9.9 4.3 L11.8 6.2"/>',
-  auto: '<path d="M8.8 2 L4.2 9 H7.4 L6.9 14 L11.8 6.8 H8.3 Z"/>',
-  plan: '<circle cx="4" cy="12" r="1.5"/><circle cx="12" cy="4" r="1.5"/><path d="M5.2 10.8 C7.5 9.5 8.5 6.5 10.8 5.2" stroke-dasharray="2 1.6"/>',
-  bypasspermissions: '<path d="M8 2 L13 4 V8 C13 11.4 10.8 13.2 8 14 C5.2 13.2 3 11.4 3 8 V4 Z"/><path d="M3.2 13 L12.8 3"/>',
-  dontask: '<path d="M3 3.5 H13 V10 H8.5 L5.5 12.8 V10 H3 Z"/><path d="M3.2 12.6 L12.8 2.6"/>',
-};
-// the modes that REMOVE the gate rather than move it read in a red hue on the yatharth themes
-// (the user 2026-08-31) — CSS-scoped to .chat-theme-yatharth so classic renders untouched
-function riskyMode(mode: string | undefined): boolean {
-  const k = (mode || "").toLowerCase().replace(/[\u2019' -]/g, "");
-  return k === "bypasspermissions" || k === "bypass" || k === "dontask";
-}
 
-function modeIconSvg(mode: string | undefined): string {
-  // accepts wire values AND display labels (metaButton receives prettyMode's text)
-  const raw = (mode || "default").toLowerCase().replace(/[\u2019' -]/g, "");
-  const k = raw === "normal" || raw === "" ? "default" : raw;
-  const body = MODE_ICONS[k] ?? MODE_ICONS.default;
-  return '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + "</svg>";
-}
 
 // Every mode wears a one-phrase sub-line (T140, the user 2026-08-28: where taglines exist under
 // some entries, add analogous ones saying what the other modes are — and 'Accept edits' reads
@@ -15474,44 +15467,6 @@ const FAST_CHOICES: { label: string; value: string }[] = [
   { label: "Fast", value: "on" },
   { label: "Slow", value: "off" },
 ];
-// Per-session billing (the user 2026-08-08) — the Claude login vs the API key behind Claude Code's
-// apiKeyHelper — is no longer a statusline badge: the SWITCHING control lives in the tab's
-// right-click menu (showTabMenu's Billing flyout, the user 2026-08-09), on every SDK session since
-// 2026-09-08 (both choices listed, the one this box cannot bill greyed with the reason; it was gated
-// on st.authBoth before), and still labelled plainly 'API key' — no fragment of the key, not even a
-// last-4 tail, is shipped or shown (2026-08-08, evening). The tab hover's Billing row keeps carrying
-// the fact everywhere.
-// the fast-mode state ("on"/"off"/"cooldown") → the badge label. ONE WORD (the user 2026-08-10, on a
-// phone-width statusline), but the WORD carries the state: off reads "Slow", not a second "Fast" —
-// tint alone (orange on, dim off) didn't say which side the toggle was on (the user 2026-08-11).
-// ON keeps the CLI's fast orange (metaColor); the picker's ✓ names the state on click.
-function prettyFast(f: string | undefined): string {
-  const s = (f || "").toLowerCase();
-  return s === "cooldown" ? "Cooldown"   // rate-limited: the CLI resumes fast mode when the limit resets
-    : s === "on" ? "Fast" : "Slow";
-}
-// Whether the session's MODEL can run fast mode at all (the CLI's /fast is an Opus-only research
-// preview). Gated HERE, on the model, because the CLI is no help: fast_mode_state arrives "off" with
-// an EMPTY fast_mode_disabled_reason on a non-Opus session (verified 2026-08-10 against 2.1.226 on a
-// fable session), so state alone would leave a dead toggle on every model /fast refuses (the user
-// 2026-08-10). Unknown/default stays visible: the account default may be Opus, and hiding a live
-// control is worse than a rare dead one.
-function fastAvailable(st: Status): boolean {
-  const m = (st.model || "").toLowerCase();
-  return !m || m === "default" || m.includes("opus");
-}
-// the @claude-permission-mode var → a short readable badge label
-function prettyMode(m: string | undefined): string {
-  switch ((m || "").toLowerCase()) {
-    case "plan": return "Plan";
-    case "acceptedits": return "Accept";   // one word everywhere the mode renders (T140)
-    case "auto": return "Auto";
-    case "dontask": return "Don’t ask";
-    case "bypasspermissions": return "Bypass";
-    case "sandboxed": return "Sandboxed";
-    default: return "Normal";   // default / normal / unknown
-  }
-}
 const CODEX_MODE_CHOICES: MetaChoice[] = [
   { label: "Sandboxed", value: "sandboxed", sub: "commands stay sandboxed; escalation is denied" },
   { label: "Auto", value: "auto", sub: "approved commands run unsandboxed as you; the rest denied" },
@@ -15529,11 +15484,6 @@ function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {
     if (kind === "effort") return CODEX_EFFORT_CHOICES;
   }
   return META_CHOICES[kind];
-}
-// the live value of a meta kind for the active session
-function metaCurrent(kind: MetaKind, st: Status): string {
-  return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast
-    : st.mode) || "";
 }
 
 // Is this menu entry the session's current value? Effort matches exactly; the
@@ -15562,41 +15512,30 @@ function isMetaPending(kind: MetaKind, st: Status): boolean {
   return true;
 }
 
-// Three pulsing accent-blue dots shown IN the model badge while a /model switch resolves (the user
-// 2026-07-03) — the romp loader's dot motif, so a wait always reads as "something's happening, it's
-// romp". Cleared the instant syncMetaControls sees modelPending drop and the real name lands.
-function metaDots(): HTMLElement {
-  const d = el("span", "meta-dots");
-  d.appendChild(el("i"));
-  d.appendChild(el("i"));
-  d.appendChild(el("i"));
-  return d;
+// THE CHAT'S LIVE HALF OF THE STATUS CONTROLS (T415 part two): status-controls.ts builds the badges and the battery for the chat's
+// line, the popovers and the settings card's preview alike; the chat hands it what only the chat has, as hooks: the picker a badge
+// click opens (toggleMetaMenu), the sub-second pending heuristic (isMetaPending), the battery's /compact click and the compaction
+// sweep's colormap animation (applyCompactSweep reads the chat's colormap setting). The wrappers keep every call site as it was.
+const META_HOOKS: MetaHooks = { onPress: (kind, btn, forSid) => toggleMetaMenu(kind, btn, forSid), pending: (kind, st) => isMetaPending(kind, st as Status) };
+function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement { return buildMetaButton(kind, text, forSid, META_HOOKS); }
+function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null): void { syncMetaControlsWith(meta, st, forSid, META_HOOKS); }
+// Context "battery": a small bar that FILLS with the context-used %, recolors as it fills, with the % written inside (the shared
+// renderer draws it); CLICK → /compact the session, same as the timeline's battery click. The chat's bar keeps its id: the lighter
+// in-place refresh finds it by id.
+function ctxBar(): HTMLElement { const bar = buildCtxBar(compactActiveSession); bar.id = "ctx-bar"; return bar; }
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false): void {
+  setCtxBarWith(bar, ctxStr, compacting, ctxColor, ctxOver, (scan, fresh) => applyCompactSweep(scan, 3200, fresh));
+}
+function compactActiveSession(bar: HTMLElement): void {
+  const s = activeId ? liveSession(activeId) : null;
+  if (!s || !vscodeApi) return;
+  // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
+  if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+  vscodeApi.postMessage({ type: "compactSession", id: activeId });
+  bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
 }
 
-function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement {
-  const btn = el("span", "meta-btn");
-  btn.dataset.kind = kind;
-  if (forSid) btn.dataset.sid = forSid;   // a popover's badges name their thread; the chat's carry no session (metaAnchor)
-  if (kind === "mode") {   // the permission glyph, always beside its text (never instead of it)
-    const ico = el("span", "meta-ico mode-ico");
-    ico.innerHTML = modeIconSvg(text);   // refreshed by the sync loop below from st.mode
-    btn.appendChild(ico);
-    btn.classList.toggle("mode-risky", riskyMode(text));   // kept live by the sync loop
-  }
-  const label = el("span", "meta-label");
-  label.textContent = text;
-  btn.appendChild(label);
-  const caret = el("span", "meta-caret");
-  caret.textContent = "▾";
-  btn.appendChild(caret);
-  // the styled tip (tip.ts), not a native title — every tooltip wears the one .romp-tip dress
-  setTip(btn, kind === "model" ? "change model (sends /model)"
-    : kind === "effort" ? "change thinking effort (sends /effort)"
-    : kind === "fast" ? "toggle fast mode (sends /fast)"
-    : "change permission mode (shift+tab cycle)");
-  btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn, forSid ?? null); });
-  return btn;
-}
+
 
 // The model/effort label tint, from the server-computed colormap RGB (by capability/effort rank, the user
 // 2026-07-02) — "" for mode (untinted) or an unknown model/effort, which resets to the default gray.
@@ -15607,63 +15546,7 @@ function nonClassicChoiceTone(choice: { color?: number[] | null; tone?: number[]
   return picked && picked.length === 3 ? readableRgb(picked) : (picked as number[] | undefined);
 }
 
-function metaColor(kind: MetaKind, st: Status): string {
-  // fast ON wears the CLI's own fast-mode orange (--fast, a status color) so the badge reads the same
-  // here as in the Claude Code TUI; off/cooldown stay the default gray.
-  if (kind === "fast") return (st.fast || "").toLowerCase() === "on" ? "var(--fast)" : "";
-  const c0 = kind === "model" ? pickTone(st.modelColor, st.modelTone)
-    : kind === "effort" ? pickTone(st.effortColor, st.effortTone) : undefined;
-  const c = c0 && c0.length === 3 ? readableRgb(c0) : c0;
-  return (c && c.length === 3) ? `rgb(${c[0]},${c[1]},${c[2]})` : "";
-}
 
-// Build or refresh the model/effort buttons inside #spinner-meta. Called from
-// updateStatusline (fresh container) and the 1s ticker (label refresh in place).
-function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null) {
-  // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name
-  // (the user 2026-06-16); fast exists only when the session reports it (SDK init) AND the model can
-  // run it (fastAvailable). Billing moved to the tab's right-click menu (the user 2026-08-09) — no
-  // badge here.
-  const fast = st.fast && fastAvailable(st) ? st.fast : "";   // reported AND the model can run it — else no dead control
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", fast ? "fast" : ""].filter(Boolean).join();
-  const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
-  if (btns.map((b) => b.dataset.kind).join() !== want) {
-    meta.replaceChildren();
-    if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode), forSid));
-    if (st.model) meta.appendChild(metaButton("model", st.model, forSid));
-    if (st.effort) meta.appendChild(metaButton("effort", st.effort, forSid));
-    if (fast) meta.appendChild(metaButton("fast", prettyFast(fast), forSid));
-  }
-  for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
-    const kind = b.dataset.kind as MetaKind;
-    const disp = kind === "mode" ? prettyMode(st.mode) : kind === "fast" ? prettyFast(st.fast)
-      : metaCurrent(kind, st);
-    const label = b.querySelector(".meta-label") as HTMLElement | null;
-    if (kind === "mode") {
-      const ico = b.querySelector(".mode-ico") as HTMLElement | null;
-      if (ico) ico.innerHTML = modeIconSvg(st.mode);
-      b.classList.toggle("mode-risky", riskyMode(st.mode));
-    }
-    // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
-    // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
-    // and the local click heuristic (isMetaPending) covers the sub-second before the first server push.
-    // model resolves live; effort reconnects to apply (--effort is connect-time) — both drive the switching-
-    // dots from the server (st.modelPending / st.effortPending), with isMetaPending covering the sub-second
-    // before the first server push (the user 2026-07-06).
-    const pending = (kind === "model" && !!st.modelPending) || (kind === "effort" && !!st.effortPending)
-      || isMetaPending(kind, st);
-    const showDots = pending && (kind === "model" || kind === "effort");   // both apply via a resolve/reconnect the server tracks
-    if (label) {
-      if (showDots) {
-        if (!label.querySelector(".meta-dots")) label.replaceChildren(metaDots());
-      } else if (label.textContent !== disp || label.firstElementChild) {
-        label.textContent = disp;
-      }
-      label.style.color = showDots ? "" : metaColor(kind, st);   // tint the model name / effort by the colormap rank
-    }
-    b.classList.toggle("meta-pending", pending);
-  }
-}
 
 let metaMenuEl: HTMLElement | null = null;
 function closeMetaMenu() {
@@ -15880,66 +15763,6 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
 document.addEventListener("click", () => closeMetaMenu());
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMetaMenu(); });
 
-// Context "battery": a small bar that FILLS with the context-used %, recolors as it
-// fills (green → amber → red), with the % written inside. Replaces the plain "40%".
-// CLICK → /compact the session, same as the timeline's battery click.
-function ctxBar(): HTMLElement {
-  const bar = el("span", "ctx-bar"); bar.id = "ctx-bar";
-  bar.appendChild(el("span", "ctx-fill"));
-  bar.appendChild(el("span", "ctx-text"));
-  bar.appendChild(el("span", "ctx-scan"));   // compacting: teal rectangle whose right edge compresses leftward (as on the timeline)
-  bar.addEventListener("click", () => {
-    const s = activeId ? liveSession(activeId) : null;
-    if (!s || !vscodeApi) return;
-    // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
-    if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
-    vscodeApi.postMessage({ type: "compactSession", id: activeId });
-    bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
-  });
-  return bar;
-}
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false) {
-  // Compacting: hide the fill/% (the number is about to be wrong anyway) and run
-  // the scanning bar instead, mirroring the timeline's battery. No ctx% needed.
-  bar.classList.toggle("ctx-compacting", compacting);
-  if (compacting) {
-    bar.classList.remove("ctx-clicked");   // the click's pulse cue did its job
-    bar.style.display = "";
-    bar.title = "compacting context…";
-    const scan = bar.querySelector(".ctx-scan") as HTMLElement | null;
-    if (scan) {
-      // setCtxBar runs on BOTH the fresh bar updateStatusline builds AND the reused #ctx-bar the lighter
-      // in-place refresh keeps — so phase-sync ONLY a fresh scan (no `swept` flag yet); re-seeding a reused
-      // one every refresh restarted its animation, the jump the user saw (2026-07-02). The gradient still
-      // (re)applies either way (recolors without restarting).
-      const fresh = !scan.dataset.swept;
-      if (fresh) scan.dataset.swept = "1";
-      applyCompactSweep(scan, 3200, fresh);   // ctx-compress runs 3.2s
-    }
-    return;
-  }
-  // left compacting → clear the arm flag so the NEXT episode re-seeds the phase on this (possibly reused) bar
-  const scanOff = bar.querySelector(".ctx-scan") as HTMLElement | null;
-  if (scanOff) delete scanOff.dataset.swept;
-  if (!ctxStr) { bar.style.display = "none"; return; }
-  bar.style.display = "";
-  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
-  const fill = bar.querySelector(".ctx-fill") as HTMLElement | null;
-  const txt = bar.querySelector(".ctx-text") as HTMLElement | null;
-  // The GLOBAL colormap (the user 2026-06-26): the kernel computes the fill color server-side (ctxColor =
-  // ramp(context%) on the selected map, bright = full) so the chat battery matches the timeline + usage bars.
-  // Fall back to the old traffic-light if an older kernel didn't ship a color.
-  const fillBg = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
-    : ctxFallbackColor(pct);   // theme-aware pair; fills stay un-re-encoded (see tabCtxGauge's note)
-  if (fill) { fill.style.width = pct + "%"; fill.style.background = fillBg; }
-  // ctxOver: the kernel clamps the CLI's "0-100+" percentage at 100 — past it the tokens exceed the
-  // CURRENT model's window (a 1M→200k model switch does this instantly). Say so: a silent 100% right
-  // after picking a smaller model reads as a broken gauge (the user 2026-09-02).
-  if (txt) txt.textContent = ctxOver ? "100%+" : pct + "%";
-  bar.title = ctxOver
-    ? "context exceeds this model's window — the next turn compacts or trims; click to /compact now"
-    : `context ${pct}% used — click to /compact`;
-}
 
 // CHIP_LABEL, the state words, lives in status-chip.ts since T322b (the user 2026-09-10): the tag overview's rows wear
 // the same chip as this bar, so the words and the classes have one home the two import (imported above).
@@ -17313,7 +17136,7 @@ function upsert(msg: any) {
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
     hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
-    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record
+    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record, the settings file unreadable (flags)
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
   };
   sessions.set(msg.id, s);

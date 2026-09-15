@@ -338,7 +338,7 @@ class ServedStatusLineWidgets(unittest.TestCase):
         by = {r["id"]: r for r in rows}
         self.assertEqual((by["folder"]["demo"]["cls"], by["folder"]["demo"]["text"], by["folder"]["demo"]["hasSvg"]), ("status-dir", " notes-api", True))
         self.assertEqual((by["branch"]["demo"]["cls"], by["branch"]["demo"]["text"]), ("status-branch", "⎇ search-module"))
-        self.assertEqual((by["name"]["demo"]["cls"], by["name"]["demo"]["text"]), ("chip chip-session", "web"))
+        self.assertEqual((by["name"]["demo"]["cls"], by["name"]["demo"]["text"]), ("chip chip-session", "session_name"))   # the demo record's placeholder name (T415 part two)
         self.assertEqual((by["host"]["demo"]["cls"], by["host"]["demo"]["text"]), ("status-branch status-host", "@ TESTHOST"), "the demo record is a remote session")
         self.assertEqual([(o["key"], o["label"]) for o in by["folder"]["opts"]], [("show", "Show")])
         self.assertIn("Name only", by["folder"]["opts"][0]["current"])

@@ -1,7 +1,8 @@
-// The Billing flyout on a one-auth box (the user 2026-09-08): both choices are ALWAYS listed, the one this
-// box cannot bill is greyed with its reason in the hover and inert, and a pick that fell to the other side
-// says so in the sub-line. render.ts has no jsdom harness, so these are source pins, the same idiom as
-// auth-selector.test.ts; the kernel/backend halves are pinned in tests/test_session_auth.py.
+// The Billing flyout on a one-auth box: the choices this box can bill are listed, and those only (the user
+// 2026-09-14: list what is set up, grey nothing; from 2026-09-08 to then both were always listed, the missing
+// side greyed with its reason), a box with nothing to bill shows one inert line naming why, and a pick that
+// fell to the other side says so in the sub-line. render.ts has no jsdom harness, so these are source pins, the
+// same idiom as auth-selector.test.ts; the kernel/backend halves are pinned in tests/test_session_auth.py.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -17,17 +18,18 @@ test("the Billing submenu renders on availability, not only when both sides exis
   assert.match(RENDER, /const avail: AuthAvail = st\.authAvail \|\| \{ login: true, key: true \};/);
 });
 
-test("both options are listed; the unavailable one is greyed, titled with its reason, and inert", () => {
+test("the options this box can bill are listed, and those only; nothing to bill is one inert line naming why", () => {
+  // each choice still carries the reason it cannot apply here: the list filters on it (and the sub-line and the log speak it)
   assert.match(RENDER, /value: "login", why: avail\.login \? "" : \(avail\.loginWhy \|\| "no Claude login signed in on this machine"\)/);
   assert.match(RENDER, /value: "key", why: avail\.key \? "" : \(avail\.keyWhy \|\| "no apiKeyHelper configured"\)/);
-  assert.match(RENDER, /\(cur \? " current" : ""\) \+ \(c\.why \? " disabled" : ""\)/);   // T346: cur = authChoiceCurrent (by WHICH login)
-  assert.match(RENDER, /opt\.title = c\.why;\s*\n\s*opt\.setAttribute\("aria-disabled", "true"\);/);
-  assert.match(RENDER, /if \(c\.why\) return;\s*\/\/ a disabled option posts nothing/);
-  // the click handler posts setAuth only past that guard
-  const i = RENDER.indexOf('if (c.why) return;');
-  const j = RENDER.indexOf('vscodeApi.postMessage({ type: "setAuth", id, value: c.value })', i);
-  assert.ok(i > 0 && j > i, "setAuth is posted only after the disabled guard");
-  assert.match(STYLES, /\.ctx-sub \.ctx-item\.disabled \{ opacity: 0\.45; cursor: default; \}/);
+  assert.match(RENDER, /const all = billingChoices\(st, avail\);\s*\n\s*const choices = all\.filter\(\(c\) => !c\.why\);/);
+  assert.match(RENDER, /el\("div", "ctx-item" \+ \(cur \? " current" : ""\)\)/);   // T346: cur = authChoiceCurrent (by WHICH login); no disabled class since 2026-09-14
+  assert.match(RENDER, /const none = el\("div", "ctx-item ctx-item-none"\);\s*\n\s*none\.textContent = all\.map\(\(c\) => c\.why\)\.filter\(Boolean\)\.join\("; "\);/);
+  const a = RENDER.indexOf("    const openBillingFly = (): HTMLElement | null => {");
+  const BILL = RENDER.slice(a, RENDER.indexOf('    wireFlyout(menu, item, ".ctx-sub-billing"', a));
+  assert.doesNotMatch(BILL, /aria-disabled|" disabled"|opt\.title = c\.why/, "no greyed row in the flyout");
+  assert.match(STYLES, /\.ctx-sub \.ctx-item\.ctx-item-none \{ cursor: default; \}/);
+  assert.match(STYLES, /\.ctx-sub \.ctx-item\.ctx-item-none:hover \{ background: transparent; color: inherit; \}/);
 });
 
 test("a pick that fell to the other side is said in the sub-line, from the kernel's word on the fall", () => {

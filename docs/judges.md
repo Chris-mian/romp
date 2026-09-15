@@ -511,7 +511,11 @@ Every judge child (`claude -p`) launches with no credential in its environment.
 A key-billed call resolves the helper itself, inside its own CLI, the way a
 session does. A login-billed call passes `--settings '{"apiKeyHelper": ""}'`,
 which disables the helper for that one process, and gets back the login tokens
-the kernel claimed out of its own environment at boot. The same selection
+the kernel claimed out of its own environment at boot. A call billed to a
+stored login passes the same suppression and gets that login's setup-token
+instead, read by running the record's token command for that one child (the
+environment road, 2026-09-14; a failing command fails the call in its own
+words, never a fall onto another credential). The same selection
 applies to standalone `romp-judge --once`. A helper that fails inside a judge's
 CLI cannot silently use the login or a stale key; what the call files depends on
 how the CLI fails: a credential error the CLI reports within the call's 120 s
@@ -645,12 +649,13 @@ permission/API-error floors: one interrupt at a time, the present event first.
   unroll-heal: a top left rolled up with settle rows and no done in its
   diary, given one reopen row so it can be judged again, gate-stamp: the
   evidence gate could not write a tier's stamp after a complete run, so the
-  session stays due, and the seven `*-unreadable` kinds of the gate's side
+  session stays due, and the eight `*-unreadable` kinds of the gate's side
   files, states-unreadable, cleared-unreadable, stall-unreadable,
-  captions-unreadable, episodes-unreadable, marker-unreadable and
-  archive-unreadable: a file the gate stat'd into a tier's signature exists
-  and could not be read or parsed by the stage, so the run is marked
-  incomplete and stamps nothing, one row per failure episode).
+  captions-unreadable, episodes-unreadable, marker-unreadable,
+  archive-unreadable and reg-unreadable: a file the gate stat'd or read by
+  value into a tier's signature exists and could not be read or parsed, so
+  the gate runs the stage without a stamp (or the stage's own read marks the
+  run incomplete), one row per failure episode).
   A file that does not parse is never deleted: it is moved beside its path as
   `<file>.corrupt-<utc stamp>` (a `-n` suffix when two land in the same second)
   before a fresh one is written, so the bytes survive for inspection, and the

@@ -16,7 +16,14 @@ offers Automatic behind a rule; clicks Automatic and reads the seed cleared. Ser
 NO apiKeyHelper: the flyout lists both sides with the key greyed and shows neither the rule nor the entry.
 BILLING_FLYOUT_DIST=<dir> serves another tree's UI bundle (the red run's before; the driver falls back to a click when
 the hover opens nothing, so the rest is still read); BILLING_FLYOUT_SHOTS=<prefix> writes <prefix>-dark.png and
-<prefix>-light.png of the open flyout with its submenu. Skips LOUDLY without the extension deps or a Playwright browser,
+<prefix>-light.png of the open flyout with its submenu. Since 2026-09-14 (the user): the flyout lists the billings the
+machine can apply and those only (nothing greyed: the one-side lab lists the login alone), every label whole (the machine
+login's long synthetic email · organisation label is measured: no row truncates, the flyout is as wide as its longest
+label and content-sized, and at 560 px the label wraps at the window's bound rather than clipping), and the two-sided
+machine carries a stored login (record Work) that the picks AND the Set default billing submenu offer; the default pick
+in this lab is that stored login, after which web (no pick of its own) reads it and the seed carries its id.
+BILLING_FLYOUT_DIST_NOTE: the older tree served by BILLING_FLYOUT_DIST truncates and greys, the red run's before.
+Skips LOUDLY without the extension deps or a Playwright browser,
 and never otherwise (CI turns a skip in a served module into a failure). SYNTHETIC fixtures only."""
 import json
 import os
@@ -43,6 +50,13 @@ import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment: a 
 
 # the notes-api demo world: twenty sessions, enough to wrap the strip onto several rows at a narrow width
 NAMES = ["web", "api"]
+# the machines' synthetic accounts: the two-sided machine's `email · organisation` label (43 characters) overran the 22em cap
+# the flyout wore until 2026-09-14 and shows whole now, one line at every window this lab uses, with room for the nested
+# submenu beside it at 1100 px; the one-side machine's (86 characters) wraps at a 560 px window's bound. The stored login's
+# synthetic id.
+ACCOUNT_TWO_SIDED = ("a-long-login-name@example.com", "Example Org")
+ACCOUNT_ONE_SIDE = ("a-much-longer-synthetic-login-name@example.com", "Example Organization With A Long Name")
+STORED_ID = "0123456789ab"
 SIDS = {n: "%s-1111-2222-3333-444444444444" % (chr(ord("a") + i) * 8) for i, n in enumerate(NAMES)}
 PALETTE = [("#9cd2ff", "#0c1a2e"), ("#1EA1EB", "#ffffff"), ("#54B204", "#ffffff"), ("#c98cff", "#1a0c2e"),
            ("#e5a50a", "#1a1200"), ("#4EC9B0", "#00201a")]
@@ -87,10 +101,14 @@ const readFly = () => page.evaluate(() => {
   const kids = Array.from(fly.children);
   const lines = kids.map((k) => k.classList.contains("ctx-sep") ? "---" : k.classList.contains("ctx-item-setdefault") ? "[set default]" : k.textContent.trim());
   const choices = kids.filter((k) => k.classList.contains("ctx-item") && !k.classList.contains("ctx-item-setdefault") && !k.closest(".ctx-sub-default"))
-    .map((i) => ({ text: i.textContent.trim(), current: i.classList.contains("current"), disabled: i.classList.contains("disabled"), title: i.title }));
+    .map((i) => ({ text: i.textContent.trim(), current: i.classList.contains("current"), disabled: i.classList.contains("disabled"), title: i.title,
+      // the label whole (2026-09-14): a truncating row reports its full content width in scrollWidth against a smaller clientWidth
+      scrollW: i.scrollWidth, clientW: i.clientWidth, h: i.getBoundingClientRect().height, textOverflow: getComputedStyle(i).textOverflow,
+      textW: (() => { const rg = document.createRange(); rg.selectNodeContents(i); return rg.getBoundingClientRect().width; })() }));
   const entry = fly.querySelector(":scope > .ctx-item-setdefault");
   const readSub = (d) => Array.from(d.children).map((k) => k.classList.contains("ctx-sep") ? { sep: true } : {
     text: k.textContent.trim(), current: k.classList.contains("current"), disabled: k.classList.contains("disabled"), scope: k.dataset.scope,
+    scrollW: k.scrollWidth, clientW: k.clientWidth,
     check: getComputedStyle(k, "::after").content, checkW: parseFloat(getComputedStyle(k, "::after").width) || 0, auto: k.classList.contains("ctx-item-auto") });
   const d = fly.querySelector(".ctx-sub-default");
   const row = document.querySelector(".ctx-menu .ctx-item-billing .ctx-item-sub");
@@ -166,7 +184,7 @@ await page.setViewportSize({ width: 1100, height: 700 }); await page.waitForTime
 // the default pick: Login in the nested submenu (the seed reads key: the helper is the box's default), posting setAuth with scope machine
 await menuOpen(); await hoverBilling(); await openSub();
 out.pick = await page.evaluate(() => {
-  const r = Array.from(document.querySelectorAll(".ctx-sub-billing .ctx-sub-default > .ctx-item")).find((i) => i.textContent.trim().startsWith("Login"));
+  const r = Array.from(document.querySelectorAll(".ctx-sub-billing .ctx-sub-default > .ctx-item")).find((i) => i.textContent.trim().startsWith("Login (Work"));
   if (!r) return { found: false };
   const disabled = r.classList.contains("disabled");
   if (!disabled) r.click();
@@ -201,6 +219,7 @@ class ServedBillingFlyout(unittest.TestCase):
     maxDiff = None
     result = None
     BOTH_SIDES = True
+    ACCOUNT = ACCOUNT_TWO_SIDED
 
     @classmethod
     def setUpClass(cls):
@@ -265,8 +284,15 @@ class ServedBillingFlyout(unittest.TestCase):
             Path(claude, "settings.json").write_text(json.dumps({}))   # the login alone: one billing to choose from
         home = os.path.join(cls.lab, "home"); os.makedirs(home, exist_ok=True)
         Path(home, ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "11111111-2222-3333-4444-555555555555",
-                                                                             "emailAddress": "user@example.com", "organizationName": "Example"}}))
+                                                                             "emailAddress": cls.ACCOUNT[0], "organizationName": cls.ACCOUNT[1]}}))
         cls.home = home
+        if cls.BOTH_SIDES:
+            # a STORED login beside the machine's own (T346): its record names a token command by a synthetic tool name, never
+            # run by any surface this lab reads; the picks and the Set default billing submenu offer it (the user 2026-09-14)
+            ldir = Path(state, "logins"); ldir.mkdir(parents=True, exist_ok=True); os.chmod(ldir, 0o700)
+            Path(ldir, STORED_ID + ".json").write_text(json.dumps({"id": STORED_ID, "label": "Work", "tokenCmd": "token-read 'romp login Work'",
+                                                                    "addedAt": int(time.time()) - 86400}))
+            os.chmod(Path(ldir, STORED_ID + ".json"), 0o600)
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-billing"
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST", HOME=cls.home)
@@ -350,15 +376,26 @@ class ServedBillingFlyout(unittest.TestCase):
         f = r["fly"]
         self.assertIsNotNone(f, "the flyout was read")
         table = "\n  " + json.dumps(f)
-        self.assertEqual([c["text"].split(" (")[0] for c in f["choices"]], ["Login", "API key"], table)
-        self.assertEqual(f["lines"][2:], ["---", "[set default]"], "below the picks: a rule, then the ONE entry, nothing else" + table)
+        self.assertEqual([c["text"].split(" (")[0] for c in f["choices"]], ["Login", "Login", "API key"], "the machine's login, the stored login, the key" + table)
+        self.assertEqual(f["lines"][3:], ["---", "[set default]"], "below the picks: a rule, then the ONE entry, nothing else" + table)
         self.assertEqual(f["entry"]["label"], "Set default billing", table)
         self.assertEqual(f["entry"]["caret"], "▸", "the entry opens a further submenu: its caret says so" + table)
         self.assertEqual(f["subLines"], 0, "no sub-line under anything (the user: self-explanatory)" + table)
         self.assertEqual((f["heads"], f["radios"]), (0, 0), "the Default group's head and radios are gone" + table)
-        self.assertFalse(any(c["disabled"] for c in f["choices"]), "both sides are available on this machine" + table)
+        self.assertFalse(any(c["disabled"] for c in f["choices"]), "nothing greyed: every listed billing applies here" + table)
         self.assertEqual(f["subLine"], "API key", "web follows the automatic default: the key (the helper)" + table)
-        self.assertLessEqual(f["rect"]["w"], 380, "a menu's width" + table)
+        # every label whole (the user 2026-09-14): the long machine label is not cut, the flyout as wide as its longest row and no
+        # wider than its content, inside the window; the measured numbers FIRST (CI truncates a long table)
+        rows = f["choices"]
+        nums = json.dumps([{k: round(c[k], 1) if isinstance(c[k], float) else c[k] for k in ("scrollW", "clientW", "h", "textW", "textOverflow")} for c in rows] + [{"flyW": f["rect"]["w"], "right": f["rect"]["right"], "vw": f["viewport"]}])
+        self.assertIn(self.ACCOUNT[0] + " · " + self.ACCOUNT[1], rows[0]["text"], "the machine's label carries the whole email and organisation\n  " + nums)
+        for c in rows:
+            self.assertLessEqual(c["scrollW"], c["clientW"] + 0.5, "no row truncates (a cut row reports its content width above its box)\n  " + nums)
+            self.assertNotEqual(c["textOverflow"], "ellipsis", "no ellipsis on a billing label\n  " + nums)
+            self.assertAlmostEqual(c["h"], rows[-1]["h"], delta=1, msg="every row one line tall at 1100 px (the key row's height)\n  " + nums)
+        self.assertGreaterEqual(f["rect"]["w"], max(c["textW"] for c in rows) + 36 - 1, "as wide as its longest label plus the item's padding\n  " + nums)
+        self.assertLessEqual(f["rect"]["w"], max(c["scrollW"] for c in rows) + 12, "content-sized: the menu's padding and border only beyond its widest row\n  " + nums)
+        self.assertLessEqual(f["rect"]["right"], f["viewport"] - 8 + 0.5, "inside the window\n  " + nums)
 
     def test_the_entry_opens_a_nested_submenu_by_hover_holding_the_same_entries_none_marked_while_automatic(self):
         r = self._run()
@@ -370,7 +407,9 @@ class ServedBillingFlyout(unittest.TestCase):
         items = [i for i in f["sub"]["items"] if not i.get("sep")]
         self.assertEqual([i["text"] for i in items], [c["text"] for c in f["choices"]], "exactly the list's entries, in its order" + table)
         self.assertTrue(all(i["scope"] == "machine" for i in items), table)
-        self.assertEqual([i["current"] for i in items], [False, False], "no explicit default yet: nothing is check-marked" + table)
+        self.assertEqual([i["current"] for i in items], [False, False, False], "no explicit default yet: nothing is check-marked" + table)
+        self.assertFalse(any(i["disabled"] for i in items), "nothing greyed in the submenu either" + table)
+        self.assertTrue(all(i["scrollW"] <= i["clientW"] + 0.5 for i in items), "the submenu's labels whole too" + table)
         self.assertTrue(all(i["check"] in ("none", "normal", "") or i["checkW"] == 0 for i in items), "…and no check mark is painted (the computed ::after)" + table)
         self.assertFalse(any(i.get("sep") for i in f["sub"]["items"]), "no rule and no Automatic while the default is automatic already" + table)
         self.assertEqual(f["subLines"], 0, "no sub-line in the submenu either" + table)
@@ -397,14 +436,17 @@ class ServedBillingFlyout(unittest.TestCase):
         a = r["afterPick"]
         self.assertIsNotNone(a and a["sub"], "the submenu was read again after the pick")
         table = "\n  " + json.dumps(a)
-        self.assertTrue((a["subLine"] or "").startswith("Login"), "web (no pick of its own) now reads the login, at once" + table)
-        self.assertEqual([c["current"] for c in a["choices"]], [True, False], "…and its own choice marks the login it follows" + table)
+        self.assertEqual(a["subLine"], "Login (Work)", "web (no pick of its own) now reads the STORED login it follows, at once (the user 2026-09-14)" + table)
+        self.assertEqual([c["current"] for c in a["choices"]], [False, True, False], "…and its own choice marks that login" + table)
         items = a["sub"]["items"]
-        self.assertEqual([i.get("text", "---") for i in items], [a["choices"][0]["text"], "API key", "---", "Automatic"], "the list, then the rule, then Automatic at the END" + table)
-        self.assertEqual([i.get("current") for i in items if not i.get("sep")], [True, False, False], "the explicit Login default wears the check" + table)
-        self.assertEqual(items[0]["check"], '"✓"', "the check mark is the painted pseudo-element" + table)
-        self.assertGreater(items[0]["checkW"], 0, table)
-        self.assertTrue(items[3]["auto"], table)
+        self.assertEqual([i.get("text", "---") for i in items], [a["choices"][0]["text"], "Login (Work)", "API key", "---", "Automatic"], "the list, then the rule, then Automatic at the END" + table)
+        self.assertEqual([i.get("current") for i in items if not i.get("sep")], [False, True, False, False], "the explicit stored-login default wears the check; Automatic none" + table)
+        self.assertEqual(items[1]["check"], '"✓"', "the check mark is the painted pseudo-element" + table)
+        self.assertGreater(items[1]["checkW"], 0, table)
+        self.assertTrue(items[4]["auto"], table)
+        d0 = json.loads(Path(self.state, "sdk-defaults.json").read_text()) if os.path.exists(os.path.join(self.state, "sdk-defaults.json")) else {}
+        # the seed names the stored login (read before Automatic cleared it: the driver's autoClick follows; the kernel log keeps the write)
+        self.assertIn("the machine's default billing is now Work", open(self.klog).read(), "the kernel wrote the stored login as the default")
         self.assertEqual(a["subLines"], 0, "Automatic carries no sub-line" + table)
         api = json.loads(Path(self.state, "sdk", SIDS["api"] + ".json").read_text())
         self.assertEqual(api.get("auth"), "key", "a session with its own pick is untouched")
@@ -414,9 +456,9 @@ class ServedBillingFlyout(unittest.TestCase):
         c = r["autoClick"]
         self.assertTrue(c["found"] and c["behindRule"] and c["last"] and c["menuGone"], json.dumps(c))
         d = json.loads(Path(self.state, "sdk-defaults.json").read_text())
-        self.assertEqual((d.get("auth"), d.get("authExplicit")), ("", False), "the seed and the flag cleared: " + json.dumps(d))
+        self.assertEqual((d.get("auth"), d.get("authExplicit"), d.get("authLogin") or ""), ("", False, ""), "the seed, the flag and the stored id cleared: " + json.dumps(d))
         z = r["afterAuto"]
-        self.assertEqual([i.get("current") for i in z["sub"]["items"] if not i.get("sep")], [False, False], "\n  " + json.dumps(z))
+        self.assertEqual([i.get("current") for i in z["sub"]["items"] if not i.get("sep")], [False, False, False], "\n  " + json.dumps(z))
         self.assertFalse(any(i.get("sep") for i in z["sub"]["items"]), "no Automatic while the default is automatic" + "\n  " + json.dumps(z))
         self.assertEqual(z["subLine"], "API key", "web follows the helper rule again")
 
@@ -441,6 +483,15 @@ class ServedBillingFlyout(unittest.TestCase):
                 self.assertTrue(below, "below the row when it fits there (review: the clamp pulled it back over the row)" + table)
             elif fits_above and not beside:
                 self.assertTrue(above, "above the row's top when below does not fit" + table)
+            # every label whole here too (the user 2026-09-14): no row truncates; at 560 px the long machine label wraps at the
+            # window's bound (taller than the one-line key row), at 760 px and wider it stays one line
+            rows = f["choices"]
+            self.assertTrue(all(c["scrollW"] <= c["clientW"] + 0.5 for c in rows), "no row truncates" + table)
+            two_lines = f["fontPx"]["fly"] * 2.4   # one line is about 1.2 em plus 8 px of padding; two lines clear 2.4 em
+            if not self.BOTH_SIDES and f["viewport"] <= 560:
+                self.assertGreater(rows[0]["h"], two_lines, "the one-side machine's longer label wraps at the window's bound rather than clipping" + table)
+            else:
+                self.assertLess(rows[0]["h"], two_lines, "one line when the window has room" + table)
             if f["sub"]:
                 sr = f["sub"]["rect"]
                 self.assertGreaterEqual(sr["left"], 8 - 0.5, "the nested submenu inside the viewport too" + table)
@@ -450,8 +501,10 @@ class ServedBillingFlyout(unittest.TestCase):
 
 
 class ServedBillingFlyoutOneSide(ServedBillingFlyout):
-    """The same lab on a machine with NO apiKeyHelper: one billing to choose from, so neither the rule nor the entry."""
+    """The same lab on a machine with NO apiKeyHelper and no stored login: one billing to choose from, listed alone (the
+    user 2026-09-14: nothing greyed), so neither the rule nor the entry."""
     BOTH_SIDES = False
+    ACCOUNT = ACCOUNT_ONE_SIDE
     result = None
 
     def test_hovering_the_billing_row_opens_the_flyout_without_a_click(self):
@@ -464,9 +517,12 @@ class ServedBillingFlyoutOneSide(ServedBillingFlyout):
         r = self._run()
         f = r["fly"]
         table = "\n  " + json.dumps(f)
-        self.assertEqual([c["text"].split(" (")[0] for c in f["choices"]], ["Login", "API key"], "both sides still listed" + table)
-        self.assertEqual([c["disabled"] for c in f["choices"]], [False, True], "the key greyed: no apiKeyHelper here" + table)
-        self.assertIn("apiKeyHelper", f["choices"][1]["title"], "with the reason in its hover" + table)
+        self.assertEqual([c["text"].split(" (")[0] for c in f["choices"]], ["Login"], "the login alone: the key is not set up here, so it is not listed" + table)
+        self.assertEqual([c["disabled"] for c in f["choices"]], [False], "nothing greyed" + table)
+        self.assertLessEqual(f["choices"][0]["scrollW"], f["choices"][0]["clientW"] + 0.5, "the long label whole" + table)
+        self.assertIn(self.ACCOUNT[0] + " · " + self.ACCOUNT[1], f["choices"][0]["text"], table)
+        self.assertLess(f["choices"][0]["h"], f["fontPx"]["fly"] * 2.4, "one line at 1100 px" + table)
+        self.assertLessEqual(f["rect"]["right"], f["viewport"] - 8 + 0.5, table)
         self.assertEqual(f["lines"], [c["text"] for c in f["choices"]], "one billing to choose from: no rule, no Set default billing entry" + table)
         self.assertFalse(f["sep"], table)
         self.assertIsNone(f["entry"], table)

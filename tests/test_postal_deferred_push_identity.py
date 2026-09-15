@@ -55,7 +55,7 @@ class DeferredPushKeepsOneIdentity(unittest.TestCase):
         self.assertEqual([m["id"] for m in claimed], [mid])
         self.assertFalse((pm.MAILROOT / TO / "new" / mid).exists(), "claimed → out of new/")
 
-        self.assertTrue(pm.restore(TO, mid), "a claimed message can be put back")
+        self.assertEqual(pm.restore(TO, mid), pm.RESTORED, "a claimed message can be put back")
         self.assertTrue((pm.MAILROOT / TO / "new" / mid).is_file(), "back in new/ under its own id")
         self.assertFalse((pm.MAILROOT / TO / "cur" / mid).exists(), "and no longer claimed")
 
@@ -98,11 +98,11 @@ class DeferredPushKeepsOneIdentity(unittest.TestCase):
         mid = pm.deliver(TO, "api", FROM, "never mind", kind="coordinate")
         pm.read_box(TO, consume=True)
         (pm.MAILROOT / TO / "cur" / mid).unlink()
-        self.assertFalse(pm.restore(TO, mid))
+        self.assertEqual(pm.restore(TO, mid), pm.RESTORE_MISSING, "gone: the re-send cue (never the unknown answer, which re-sends nothing)")
 
     def test_restore_rejects_a_traversing_id(self):
-        self.assertFalse(pm.restore(TO, "../../../../etc/passwd"))
-        self.assertFalse(pm.restore("../../../../etc", "x"))
+        self.assertEqual(pm.restore(TO, "../../../../etc/passwd"), pm.RESTORE_MISSING)
+        self.assertEqual(pm.restore("../../../../etc", "x"), pm.RESTORE_MISSING)
 
 
 class DeferredPushEndToEnd(unittest.TestCase):
