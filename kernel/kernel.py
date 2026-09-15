@@ -41559,6 +41559,18 @@ SPEND_GUARD_MEMO_SLACK_S = 60       # a file's window rows are scanned this much
 #                                     memo serves the next cycles' (later) windows without a re-scan
 SPEND_GUARD_LATCH_MAX = 1000        # latch entries kept for sessions no longer live (the oldest go first)
 _SPEND_GUARD = {}                   # sid -> {"over": bool, "t": the crossing (or clearing) epoch, "rate": $/h then}
+_SPEND_CAN_PREV = {}                # sid -> whether the session could spend on the last pass (plans/spend-guard-events.md: the edge
+#                                     from spending to idle is statted once more, so the files a turn wrote as it ended are read)
+
+
+def _spend_can_spend(tm):
+    """Whether a session can spend now (plans/spend-guard-events.md rule 1): its live row says working, or its backend
+    reports a live subagent or a background task for it (a background agent writes its transcript under the tree while
+    the parent's row stands idle). Both sets ride the backend snapshot's row (`subagents`, `bgTasks`), filled by the
+    SubagentStart/Stop hooks and the task lifecycle stream on the direct road and through the host's relay of the same
+    frames on the host-attached road. An absent row (a dormant session) cannot spend."""
+    tm = tm or {}
+    return tm.get("state") == "working" or bool(tm.get("subagents")) or bool(tm.get("bgTasks"))
 _SPEND_GUARD_SEEDED = [False]       # the latch was read back from the ledger once this kernel life
 _SPEND_ROWS_CACHE = {}              # file -> ((mtime, size, base), floor, [(t, usd), ...], last use): the window rows, memoized on the stamp
 SPEND_GUARD_ROWS_CACHE_MAX = 4000   # window-row memo entries kept; over it the least recently used go (a kernel life sees
@@ -41569,7 +41581,7 @@ SPEND_GUARD_RESTAT_PER_CYCLE = 400  # after a memo LOAD every file is statted on
 #                                     no directory's mtime, so only the file's stat finds it), spread at most this many per cycle: a
 #                                     warm stat is about 5 us (the largest tree's 2,581 files listed in 15 ms), so a cycle carries
 #                                     about 2 ms and that tree is whole again within seven cycles, well inside the 30 s rescan bound
-_SPEND_TREE_STATS = {"dirStats": 0, "fileStats": 0, "entryStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0,
+_SPEND_TREE_STATS = {"served": 0, "dirStats": 0, "fileStats": 0, "entryStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0,
                      "swept": 0, "dropped": 0, "dumpSkipped": 0, "evicted": 0, "writeFailed": 0}    # the guard's tree reads, cumulative (GET /perf memos.spendTree; `romp perf` reads two snapshots as
 #                                     rates): a boot read shows one stat per directory, the spread file re-stat and no listing when the
 #                                     persisted memo stood; entryStats are the per-entry stats a listing performs (one per DirEntry)
@@ -41827,7 +41839,7 @@ def _spend_tree_list_dir(d, m, known):
             continue
 
 
-def _spend_window_files(leaf, since, now=None):
+def _spend_window_files(leaf, since, now=None, stat=True):
     """The leaf transcript and every agent transcript beside it that changed at or after `since` (Task agents at the top
     of <sid>/subagents/, Workflow agents under workflows/wf_<id>/, the recursive tree the review asked for), from a memo
     of the session's tree rather than a walk per call (the round-two review's MEDIUM: the walk ran per live session on
@@ -41839,7 +41851,12 @@ def _spend_window_files(leaf, since, now=None):
     `since`: a file that may still be growing is never read stale), and the COLD ones once per SPEND_GUARD_TREE_RESCAN_S,
     so an agent that wakes after a long tool call is seen within that bound, a twentieth of the window. The first call
     lists the tree whole, or loads the persisted memo (_spend_tree_load: the listings saved, one stat per file spread
-    over the cycles that follow). Steady state per cycle: one stat per directory plus one per hot file."""
+    over the cycles that follow). Steady state per cycle: one stat per directory plus one per hot file.
+    `stat` False (plans/spend-guard-events.md: the session's row is idle and its backend reports nothing running) serves the
+    standing list from the memo's own mtimes with no stat at all, once the memo has been statted at least once (a loaded
+    memo's spread re-stat must drain first: the previous kernel's stats are not trusted until every file was seen once)
+    and while the floor holds (SPEND_GUARD_TREE_RESCAN_S since the last stat, the bound on the memo's trust); `served`
+    under memos.spendTree counts those passes."""
     now = time.time() if now is None else now
     key = str(leaf)
     base, ext = os.path.splitext(key)
@@ -41865,6 +41882,11 @@ def _spend_window_files(leaf, since, now=None):
             for k in sorted(_SPEND_TREE_CACHE, key=lambda k: _SPEND_TREE_CACHE[k]["seen"])[:len(_SPEND_TREE_CACHE) - SPEND_GUARD_LATCH_MAX]:
                 _SPEND_TREE_CACHE.pop(k, None)
     m["seen"] = now
+    if not fresh and not stat and "restat" not in m and now - m.get("lastStat", 0.0) < SPEND_GUARD_TREE_RESCAN_S:
+        _SPEND_TREE_STATS["served"] += 1                 # idle and inside the floor: the standing list, no stat (rule 1)
+        floor = since - SPEND_GUARD_MEMO_SLACK_S
+        return [key] + [p for p, mt in m["files"].items() if mt >= floor]
+    m["lastStat"] = now                                  # the stat road: the floor counts from here
     if not fresh:
         for d, mt in list(m["dirs"].items()):
             try:
@@ -41981,14 +42003,14 @@ def _spend_file_rows(f, since, prices, dearest):
     return [r for r in rows if r[0] >= since]
 
 
-def _spend_window_usd(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None):
+def _spend_window_usd(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None, stat=True):
     """Dollars the session spent in the last `window_s` seconds: the leaf's and its agent files' rows in the window
     (_spend_file_rows), priced by `prices` (the merged table by default, without the feed refresh)."""
     if prices is None:
         prices = _model_prices(int(now), refresh=False)   # never a network fetch from the pusher's path
     dearest = max(prices.values(), key=lambda p: float(p.get("out") or 0)) if prices else None
     since = now - window_s
-    return sum(c for f in _spend_window_files(leaf, since, now) for _t, c in _spend_file_rows(f, since, prices, dearest))
+    return sum(c for f in _spend_window_files(leaf, since, now, stat=stat) for _t, c in _spend_file_rows(f, since, prices, dearest))
 
 
 def _spend_guard_seed():
@@ -42021,9 +42043,9 @@ def _spend_guard_seed():
                                        "seeded": True}
 
 
-def _spend_rate_usd_per_hour(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None):
-    """The session's spend over the window, scaled to an hour."""
-    return _spend_window_usd(leaf, now, window_s, prices) * 3600.0 / float(window_s)
+def _spend_rate_usd_per_hour(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None, stat=True):
+    """The session's spend over the window, scaled to an hour (`stat` False: from the memo, see _spend_window_files)."""
+    return _spend_window_usd(leaf, now, window_s, prices, stat=stat) * 3600.0 / float(window_s)
 
 
 def _usd_words(x):
@@ -42167,8 +42189,12 @@ def _spend_guard_tick(now, live_map, sessions=None, be=None, clients=None, price
             continue
         live.add(sid)
         live_paths.add(str(path))
+        can = _spend_can_spend((live_map or {}).get(sid))              # rule 1: statted while the session can spend, or on the edge
+        dirty = getattr(_live_scope, "files_dirty", None)             #  after it stopped, or when the nudge prelude's observers marked
+        stat = can or _SPEND_CAN_PREV.get(sid, True) or bool(dirty and (dirty[1] or sid in dirty[0]))   #  its files (a transcript
+        _SPEND_CAN_PREV[sid] = can                                    #  under the tree moved); else served from the memo within the floor
         try:
-            rate = _spend_rate_usd_per_hour(path, now, prices=prices)
+            rate = _spend_rate_usd_per_hour(path, now, prices=prices, stat=stat)
         except Exception:
             sys.stderr.write("spend-guard rate (%s): %s\n" % (sid[:8], traceback.format_exc()))
             continue
@@ -42184,6 +42210,8 @@ def _spend_guard_tick(now, live_map, sessions=None, be=None, clients=None, price
     if len(_SPEND_GUARD) > SPEND_GUARD_LATCH_MAX:
         for sid in sorted((k for k in _SPEND_GUARD if k not in live), key=lambda k: _SPEND_GUARD[k].get("t") or 0)[:len(_SPEND_GUARD) - SPEND_GUARD_LATCH_MAX]:
             _SPEND_GUARD.pop(sid, None)
+    for k in [k for k in _SPEND_CAN_PREV if k not in live]:
+        _SPEND_CAN_PREV.pop(k, None)
     _spend_tree_memo_prune(live_paths)
 
 
