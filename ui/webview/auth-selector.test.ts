@@ -79,7 +79,7 @@ test("the switching CONTROL is the tab menu's Billing submenu, both sides listed
   assert.match(RENDER, /\{ label: "API key", value: "key", why: avail\.key \? "" : /);   // 2026-09-08: reason field, see above
   // the current mark is by WHICH login since T346 (authChoiceCurrent: the key, or a login by st.authLogin)
   assert.match(RENDER, /const cur = authChoiceCurrent\(st, c\.value\);/);
-  assert.match(RENDER, /el\("div", "ctx-item" \+ \(cur \? " current" : ""\) \+ \(c\.why \? " disabled" : ""\)\)/);   // 2026-09-08: the unavailable side is greyed, never hidden
+  assert.match(RENDER, /el\("div", "ctx-item" \+ \(cur \? " current" : ""\)\)/);   // 2026-09-14: the unavailable side is not offered (list what is set up, grey nothing; 2026-09-08 to then: greyed)
   // a pick posts the same setAuth the badge used, and only a CHANGE posts (current = dismiss)
   assert.match(RENDER, /if \(!cur && vscodeApi\) vscodeApi\.postMessage\(\{ type: "setAuth", id, value: c\.value \}\);/);
   // the item's sub-line names the current billing, or the applying reconnect

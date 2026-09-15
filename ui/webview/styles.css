@@ -766,19 +766,21 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    (the user 2026-06-26). The icon is the same metaphor as the timeline lane toggles; a .off icon is slashed
    + dimmed to show the flag is currently off (matching the timeline). */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
-/* the Billing flyout and its nested default submenu (T387) stay a menu's width (the T380 review: a note had grown the
-   flyout to 585 px, past narrow windows; the note is gone, the cap stays for a long login label), the label truncating
-   inside the item instead of stretching it; the check mark sits in the item's padding, unclipped */
-.ctx-sub-billing, .ctx-sub-default { max-width: 22em; }
+/* the Billing flyout and its nested default submenu (T387) take the width of their longest label, whole (the user 2026-09-14,
+   who read the machine login's email · organisation · kind cut to an ellipsis under the T380 review's 22em cap and asked for
+   the label in full, the menu growing as needed). The one bound is the window: placeFlyBeside flips a wide flyout to the
+   anchor's other side and clamps it to the edge, and a label longer than the window wraps rather than clips (the flyout is
+   sized to its content, so nothing wraps before the cap binds); the check mark sits in the item's padding, unclipped */
+.ctx-sub-billing, .ctx-sub-default { max-width: calc(100vw - 16px); }
+.ctx-sub-billing .ctx-item, .ctx-sub-default .ctx-item { white-space: normal; overflow-wrap: anywhere; }
 /* the nested level is the flyout's size, not 0.92 of it again (the T387 review measured 11.0 px against 10.1 px: .ctx-menu's
-   0.92em compounds at every nesting, the em rule ui/CLAUDE.md names; the 22em cap follows the size, so it matches too) */
+   0.92em compounds at every nesting, the em rule ui/CLAUDE.md names) */
 .ctx-sub-default { font-size: 1em; }
 /* the Set default billing row opens a submenu, so its caret lines up with the Billing and Tags carets: no check-mark
    room on its right (the .ctx-sub .ctx-item 26px is for the entries that can wear the check) */
 /* four classes: it must OUTRANK .ctx-sub .ctx-item's 26px below (equal specificity lost to the later rule: the fold's served
    lab measured 26 against 10; the repo's cascade rule, pin the tiebreak) */
 .ctx-sub.ctx-sub-billing > .ctx-item.ctx-item-setdefault { padding-right: 10px; }
-.ctx-sub-billing .ctx-item, .ctx-sub-default .ctx-item { overflow: hidden; text-overflow: ellipsis; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
@@ -810,6 +812,10 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    feed view menu's .forced items wear */
 .ctx-sub .ctx-item.disabled { opacity: 0.45; cursor: default; }
 .ctx-sub .ctx-item.disabled:hover { background: transparent; color: inherit; }   /* .ctx-item:hover also recolours */
+/* the Billing flyout on a machine with nothing to bill (no login signed in, no apiKeyHelper): one inert line naming why, in
+   the reasons' own words, in place of greyed choices (the user 2026-09-14: list what is set up, grey nothing) */
+.ctx-sub .ctx-item.ctx-item-none { cursor: default; }
+.ctx-sub .ctx-item.ctx-item-none:hover { background: transparent; color: inherit; }
 /* a Move to row held by the tab lock (T395): the label dims and the row stops answering, but the + beside it still tags
    (adding is not a move), so it keeps full strength and its own title; hence the dim on the body, not the row */
 .ctx-sub .ctx-item.ctx-item-locked { cursor: default; }

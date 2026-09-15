@@ -17621,6 +17621,7 @@ def _sdk_locked():
             # the status resolve for it, the machine's explicit default when this box can bill it, else the helper rule
             # (default_auth over the reg applies auth_unavailable_why); the judge guards None and falls to its file rule
             jd._DEFAULT_AUTH_FN = getattr(_sdk_backend, "default_auth", None)
+            jd._DEFAULT_LOGIN_FN = getattr(_sdk_backend, "default_login", None)   # WHICH stored login an unpicked session bills (2026-09-14)
             # the Billing pick's login gate (T124): set_auth refuses 'login' when the credential
             # store names no signed-in account — the same authority the usage bars trust, so the
             # pick can never sit in the UI as applied fact on a box that demonstrably cannot apply it
@@ -18805,13 +18806,15 @@ def _drive(msg, client):
                     "The permission mode could not be changed: no running backend owns this session.")
             client["send"](json.dumps({"type": "warn", "text": text}))
         _push_soon()
-    elif t == "setAuth" and msg.get("scope") == "machine" and msg.get("value") in ("login", "key", "auto"):
+    elif t == "setAuth" and msg.get("scope") == "machine" and (msg.get("value") == "auto" or lg.parse_pick(msg.get("value"))[0]):
         # the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
         # session with no pick of its own launches on ("auto" = the helper rule again). Written on THIS kernel
         # (the op routes to the session's owning host, so a remote session's flyout sets that host's default);
         # no session's own pick is touched, so nothing reconnects. LOUD on refusal, the same reason vocabulary as
         # a per-session pick; a backend that keeps no machine default (Codex) is refused by name, never a raise
-        # swallowed inside the drive (review).
+        # swallowed inside the drive (review). A STORED login ("login:<id>") is a machine default too since
+        # 2026-09-14 (the user: the Set default billing submenu offers every billing the picks do); the backend's
+        # set_auth_default judges the record as a per-session pick would.
         _set_def = getattr(be, "set_auth_default", None)
         if _set_def is None:
             client["send"](json.dumps({"type": "warn",
@@ -18829,11 +18832,10 @@ def _drive(msg, client):
         client["send"](json.dumps({"type": "warn",
                                    "text": "Automatic is a choice for the machine's default billing, not for one session: pick Login or API key here."}))
     elif t == "setAuth" and msg.get("scope") == "machine":
-        # a STORED login as the machine's default (T346 beside T380): not taken yet, said. This arm sits before the
-        # per-session arm so a scoped value is never read as a session's own pick; the flyout's Default group lists
-        # the machine's own login and the key only until set_auth_default takes a stored one (the T346 follow-up).
+        # a scoped value that is no billing choice at all: said, never dropped. This arm sits before the per-session
+        # arm so a scoped value is never read as a session's own pick.
         client["send"](json.dumps({"type": "warn",
-                                   "text": "Couldn't set this machine's default billing: a stored login can't be the machine's default yet; pick it for a session instead."}))
+                                   "text": "Couldn't set this machine's default billing: '%s' is not a billing choice." % str(msg.get("value") or "")[:40]}))
     elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:   # "login" | "key" | "login:<id>" (T346)
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
         # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): Codex

@@ -808,9 +808,8 @@ class SetAuth(_Keyed):
             km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "auto"}, client)
             self.assertEqual(sent[-1]["type"], "warn")
             self.assertIn("not for one session", sent[-1]["text"])
-            # a scoped STORED login (T346 beside T380): the kernel takes no stored login as the machine default yet, so the
-            # value is refused by name from an arm before the per-session one, and neither writer sees it: never the
-            # machine default, and never read as this session's own pick either
+            # a scoped STORED login (the user 2026-09-14: the Set default billing submenu offers every pick): the value
+            # reaches the machine-default writer, as a scoped "login" does, and never the per-session pick path
             calls = []
             class Recorder:
                 def set_auth_default(self, v): calls.append(("default", v)); return True
@@ -820,13 +819,20 @@ class SetAuth(_Keyed):
             saved_park = km._set_auth_or_park
             km._set_auth_or_park = lambda be, sid, v: (parked.append(v), True)[1]
             try:
+                n_before = len(sent)
                 km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "login:0123456789ab", "scope": "machine"}, client)
+                self.assertEqual(calls, [("default", "login:0123456789ab")], "the stored login is written as the machine default")
+                self.assertEqual(len(sent), n_before, "no toast: the writer took it")
+                self.assertEqual(parked, [], "and the value never reaches the per-session pick path")
+                # a scoped value that is no billing choice at all is still said, never dropped, and reaches no writer
+                calls.clear()
+                km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "credit-card", "scope": "machine"}, client)
             finally:
                 km._set_auth_or_park = saved_park
             self.assertEqual(sent[-1]["type"], "warn")
-            self.assertIn("a stored login can't be the machine's default yet", sent[-1]["text"])
-            self.assertEqual(calls, [], "no writer is called for a scoped value the arm does not take")
-            self.assertEqual(parked, [], "and the value never reaches the per-session pick path")
+            self.assertIn("'credit-card' is not a billing choice", sent[-1]["text"])
+            self.assertEqual(calls, [], "no writer is called for a scoped value that is no choice")
+            self.assertEqual(parked, [], "and it never reaches the per-session pick path")
         finally:
             km.Sessions.backend_for, km._kernel_knows, km._push_soon = saved
 
@@ -1246,20 +1252,22 @@ class DrivePlumbing(unittest.TestCase):
         self.assertIn('elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:', src)   # T346: 'login' | 'key' | 'login:<id>'
         self.assertIn("def _set_auth_or_park(be, sid, value):", src)
         # the machine's default (T380): the same op with scope "machine" writes the seed on THIS kernel and touches no session
-        self.assertIn('elif t == "setAuth" and msg.get("scope") == "machine" and msg.get("value") in ("login", "key", "auto"):', src)
+        self.assertIn('elif t == "setAuth" and msg.get("scope") == "machine" and (msg.get("value") == "auto" or lg.parse_pick(msg.get("value"))[0]):', src)   # a stored login too (2026-09-14)
         self.assertIn('_set_def = getattr(be, "set_auth_default", None)', src)
         # the judges ask the same resolver the launch and the status use (round 3 of T380): the kernel wires it
         ksrc = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py")).read()
         self.assertIn('jd._DEFAULT_AUTH_FN = getattr(_sdk_backend, "default_auth", None)', ksrc, "the one billing resolver, wired into the judges")
+        self.assertIn('jd._DEFAULT_LOGIN_FN = getattr(_sdk_backend, "default_login", None)', ksrc, "and WHICH stored login an unpicked session bills, beside it (2026-09-14)")
         self.assertIn("keeps no machine billing default", src, "a backend without the writer (Codex) is refused by name, never a raise inside the drive")
         plain = src.index('elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:')
         self.assertLess(src.index('msg.get("scope") == "machine"'), plain,
                         "the scoped arm is tried first: the plain arm would otherwise swallow it as a per-session pick")
-        # a scoped value the kernel does not take yet (a STORED login as the machine's default, T346 beside T380) is refused
-        # by name from an arm BEFORE the plain one, so it is never read as a session's own pick either
+        # a scoped value that is no billing choice at all is refused by name from an arm BEFORE the plain one, so it is never
+        # read as a session's own pick either (a stored login is a choice since 2026-09-14: the first scoped arm takes it)
         refuse = src.index('elif t == "setAuth" and msg.get("scope") == "machine":')
         self.assertLess(refuse, plain, "the scoped refusal sits before the per-session arm")
-        self.assertIn("a stored login can't be the machine's default yet", src)
+        self.assertIn("is not a billing choice", src)
+        self.assertNotIn("a stored login can't be the machine's default yet", src)
         self.assertIn('_gate_or_park(sid, ("auth", value))', src)   # parks on the gate, or hands over (2026-09-05)
         self.assertIn('elif op[0] == "auth":', src)
         self.assertIn("be.set_auth(sid, op[1])", src)
