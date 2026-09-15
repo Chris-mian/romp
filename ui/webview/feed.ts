@@ -35,7 +35,7 @@ import { applyTheme } from "./theme";
 import { hostsGear, openGear } from "./gear-host";
 import { canPreview, fileUrl } from "./preview";
 import { sanitizeMd } from "./md-sanitize";
-import { userMdHtml } from "./chat-md";
+import { Marked } from "marked";
 import { stripRemoteLoads } from "./file-preview";
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
@@ -2029,9 +2029,12 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
 // inert DOM BEFORE adoption (no request ever starts). Should the sanitizer itself fail (no DOM to build it on, as in a
 // document stand-in), the body falls to PLAIN TEXT: nothing unsanitized ever reaches the page, and the card still says its
 // words; the served lab reads the rendered form.
+// a plain renderer of its own: the chat's markdown module carries the math grammar and KaTeX, which the feed bundle
+// must not (feed-bundle pins); a notice body is prose, code and links
+const noticeMarked = new Marked({ gfm: true, breaks: true });
 function noticeBodyNodes(md: string): Node[] {
   try {
-    const clean = sanitizeMd(userMdHtml(md));
+    const clean = sanitizeMd(noticeMarked.parse(md) as string);
     stripRemoteLoads(clean, (typeof window !== "undefined" && window.location ? window.location.origin : ""), "");
     return Array.from(clean.childNodes);
   } catch (e) {
