@@ -288,8 +288,8 @@ class _PerfStats:
                                    memos.shared), save_goals calls, and the saves that reached the
                                    disk (a byte-identical republish is a save without a write)
       memos                        pass / shared / chain: the judge pass's stat-keyed store memo
-                                   (_goals_memo_report: hit, miss, fail, evict, punch, entries,
-                                   bytes), the pusher's shared read-only store cache
+                                   (_goals_memo_report: hit, miss, fail, evict, punch, skip, entries,
+                                   bytes, unowned), the pusher's shared read-only store cache
                                    (judge.shared_store_stats) and the write-moment chain memo
                                    (judge.chain_memo_stats); intrMarks / statesOverlay: the
                                    interrupt-marks memo (_intr_marks_memo_report: hit, miss, evict,
@@ -1686,6 +1686,7 @@ def _record_suspend(iv):
     try:                                             #  the two sees the suspension and a stat that will move under its memo; the
         with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:   #  other order let a look record a skippable memo without the
             f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")   #  suspension under the final stat (T401 (2) round six)
+        _files_stat_mark()                           # the downtime log is a keyed file of every session
     except OSError:
         _nudge_memos_forget()                        # the list moved with no file to say so: every nudge memo keyed on the downtime
     #                                                  log is stale, so none may skip (round five, low b)
@@ -1711,8 +1712,26 @@ _SHA_REASK_S = 30           # and how long that failure stands before git is ask
 _CONVERGE_CRASH_T = [0.0]   # when the automatic converge's leg last crashed: one cool-down is held before the retry
 
 
-_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved once
+def _code_ident_of(root):
+    """(identity, stat key) of the kernel code under `root`/kernel: a short sha1 over the bytes of kernel/*.py in path order
+    beside the files' (name, mtime_ns, size), or ("", ()) when the tree cannot be read or holds no kernel code (a hash of
+    nothing would compare equal across different builds). The one recipe behind the booted identity (_code_ident, read at
+    import) and the checkout's (_checkout_code_ident, read from the disk on demand), so the two compare byte for byte."""
+    h = hashlib.sha1()
+    key = []
+    try:
+        for f in sorted(Path(root, "kernel").glob("*.py")):
+            st = f.stat()
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+            key.append((f.name, st.st_mtime_ns, st.st_size))
+    except OSError:
+        return "", ()
+    return (h.hexdigest()[:12] if key else ""), tuple(key)
 
+
+_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved AT IMPORT (below): a lazy read taken after
+#                             a pull moved the checkout would name the new code as the running one (the laptop, 2026-09-15)
 
 def _code_ident():
     """A content identity of the kernel's own code: a short sha1 over the bytes of kernel/*.py in path order,
@@ -1727,20 +1746,30 @@ def _code_ident():
     reload, never a silent stale page."""
     if _CODE_IDENT[0] is None:
         forced = os.environ.get("ROMP_CODE_IDENT")
-        if forced:
-            _CODE_IDENT[0] = forced
-        else:
-            h = hashlib.sha1()
-            seen = 0
-            try:
-                for f in sorted(Path(ROOT, "kernel").glob("*.py")):
-                    h.update(f.name.encode())
-                    h.update(f.read_bytes())
-                    seen += 1
-                _CODE_IDENT[0] = h.hexdigest()[:12] if seen else ""
-            except OSError:
-                _CODE_IDENT[0] = ""
+        _CODE_IDENT[0] = forced if forced else _code_ident_of(ROOT)[0]
     return _CODE_IDENT[0]
+
+
+_code_ident()               # the booted identity is the code on disk NOW, at import, before any pull can move it
+
+
+_CHECKOUT_IDENT = [(), ""]  # the last disk read: the files' stat key and the identity it hashed to
+
+
+def _checkout_code_ident():
+    """The identity of the kernel code the checkout holds NOW, the files on disk (a pull just moved them; a dirty tree's
+    edits count, since the kernel loads from the worktree), keyed on the files' (name, mtime_ns, size) so a poll costs
+    a stat per file and the bytes are hashed only when one moved. Empty when the tree cannot be read."""
+    try:
+        key = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in sorted(Path(ROOT, "kernel").glob("*.py")))
+    except OSError:
+        return ""
+    if not key:
+        return ""
+    if key != _CHECKOUT_IDENT[0]:
+        ident, key = _code_ident_of(ROOT)
+        _CHECKOUT_IDENT[0], _CHECKOUT_IDENT[1] = key, ident
+    return _CHECKOUT_IDENT[1]
 
 
 def _kernel_sha(reask=False):
@@ -7450,6 +7479,7 @@ def _set_session_flag(sid, flag, value):
                     for nid in tops:
                         fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
                 _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
+                _files_stat_mark()                            # the clears log is a keyed file of every session
         except Exception:
             pass
     if flag == "hideFromFeed" and not value:
@@ -8062,6 +8092,8 @@ def _ledger_write_proved(p, what, d, cache, normalize=None):
             _sdk_problem(line)                # the error center: on record once, however many gestures repeat it
         raise
     _ledger_write_failed.pop(what, None)     # a landed write ends the write-fault episode
+    if what == "auto-nudge":
+        _files_stat_mark()                   # the ledger is the tenth keyed file of every session: the next pass stats them all
     _ledger_proved(what, None)               # a proved write ends the episode too
     try:
         st = p.stat()
@@ -9218,50 +9250,24 @@ def _kernel_code_changed(a, b):
     return cc is None or bool(cc["kernel"])
 
 
-_RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
-
-
-RESTART_PENDING_RETRY_S = 30      # how long a failed classification's safe answer stands before git is asked again
-_RESTART_PENDING_FAILED = {}      # key -> when the classification last failed: /version is polled by every reader, and an
-#                                   unreadable pair must not run a git diff (a 20 s subprocess bound) on each poll
-
-
 def _restart_pending(checkout=None):
-    """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
-    checkout's HEAD through the converge's own classification (plans/drift-by-running-code.md). False when the two are
-    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` is the
-    head to judge when the caller read one itself (the pull route, right after its fast-forward): None means the
-    polls' cached head, and an EMPTY string means the caller's fresh read failed, which is answered None, never the
-    cache (the round-three review's low 1: the cache still named the head before the fast-forward). Keyed on the two
-    commits' seven-character prefixes, so the route's full sha and the poll's short one share one entry. Only a verdict
-    that was READ is kept: a classification that failed (a git flake, an index lock right after a merge) answers True,
-    the safe converge, and holds that answer for RESTART_PENDING_RETRY_S before git is asked again, so a poll storm
-    over an unreadable pair costs one diff per bound rather than one per poll."""
-    if checkout is not None and not checkout:
+    """Whether this checkout holds kernel code the running process does not execute: the identity of the code this
+    process loaded at import (_code_ident, the bytes of kernel/*.py then) against the identity of the kernel/*.py on
+    disk now (_checkout_code_ident), byte for byte (plans/drift-by-running-code.md, the running-code identity). Not a
+    git sha on either side: the running sha (_kernel_sha) is resolved lazily and a first read that fails at a busy
+    boot is taken again later, so a kernel whose checkout had moved by then adopted the pulled head as its own and
+    this verdict compared the checkout with itself (the laptop, 2026-09-15: two pulls that changed kernel code drew no
+    restart and it ran 1 h 52 min behind its checkout). `checkout` is accepted for the callers that read a head (the
+    pull route) and not needed: the disk is read on every call, keyed on the files' stats. None when either identity
+    cannot be read or the booted one is forced (ROMP_CODE_IDENT, a lab's stand-in: no claim); False when the two agree;
+    True otherwise, a comment-only edit included (the converge's AST tolerance is the self-converge's, which judges
+    commits; here a byte the process does not run is the fact reported)."""
+    if os.environ.get("ROMP_CODE_IDENT"):
         return None
-    booted = _sha_base(_kernel_sha() or "")
-    checkout = _sha_base(checkout or "") or (_local_head(short=True) or "")
-    if not booted or not checkout:
+    booted, disk = _code_ident(), _checkout_code_ident()
+    if not booted or not disk:
         return None
-    if _shas_agree(booted, checkout):
-        return False
-    key = (booted[:7], checkout[:7])
-    if key in _RESTART_PENDING_MEMO:
-        return _RESTART_PENDING_MEMO[key]
-    failed_at = _RESTART_PENDING_FAILED.get(key)
-    if failed_at is not None and time.time() - failed_at < RESTART_PENDING_RETRY_S:
-        return True                                   # the safe answer stands until the bound; no diff this poll
-    cc = _converge_classes(booted, checkout)
-    if cc is None:
-        if len(_RESTART_PENDING_FAILED) > 64:
-            _RESTART_PENDING_FAILED.clear()
-        _RESTART_PENDING_FAILED[key] = time.time()
-        return True                                   # unreadable this time: the safe answer, remembered only for the bound
-    _RESTART_PENDING_FAILED.pop(key, None)
-    if len(_RESTART_PENDING_MEMO) > 64:
-        _RESTART_PENDING_MEMO.clear()
-    _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
-    return _RESTART_PENDING_MEMO[key]
+    return booted != disk
 
 
 def _rebuild_dist():
@@ -10868,6 +10874,112 @@ def _warm_wanted(s, tm):
     return _session_moved_since_boot(s) or (tm or {}).get("state", "") in _PARSE_WARM_STATES
 
 
+NUDGE_FLOOR_S = 30                    # the bound on the standing snapshot's trust (plans/nudge-walk-events.md): a session no event marked is
+#                                       re-statted once this many seconds after its last stat, so an event this process missed heals within it
+_FILES_STAT_STANDING = {}             # (sid, path) -> [the ten files' stat, monotonic taken]: the last pass's stat, served to later passes
+#                                       until an event marks the session or the floor passes; jobs thread only (pruned to the pass's askers)
+_FILES_STAT_DIRTY = {"sids": set(), "all": True}   # fed by _files_stat_mark from any thread, taken whole by the next pass; "all" at boot
+_FILES_STAT_LOCK = threading.Lock()
+_FILES_STAT_OBSERVED = {"postal": None, "rows": {}, "jdAll": None, "jdBy": {}, "sig": None, "sigMsgs": None}   # the observers, compared pass to
+#                                       pass: the postal log's stat, each live row's (state, since, live-tail revision) and the judge
+#                                       module's write counters (jd.SESSION_FILE_WRITES: the store, journal, archive and episode writers)
+
+
+def _files_stat_mark(sid=None):
+    """One of the ten keyed files moved by this process's hand, or an observer saw one move: the next jobs pass stats `sid`'s
+    files afresh (None: every session's, for a shared file such as the clears log, the ledger, the downtime or the postal
+    log). The writers call this AFTER their write lands, so a pass that took the mark sees the moved file."""
+    with _FILES_STAT_LOCK:
+        if sid is None:
+            _FILES_STAT_DIRTY["all"] = True
+        else:
+            _FILES_STAT_DIRTY["sids"].add(str(sid))
+
+
+def _files_stat_observe_sig(sig):
+    """The pusher's producer signature (a client connected: every discovered transcript's mtime, every states log's and the
+    postal log's) compared with the last one seen: a transcript or states log that moved marks its session, the postal log
+    moving marks every session. With no client the pusher takes no signature and the floor alone sees a file that moves with
+    no other event (a states-log row that changes no state, a transcript growing while its live row stands)."""
+    prev = _FILES_STAT_OBSERVED.get("sig")
+    cur = {}
+    for k, v in sig.items():
+        if k.startswith("__") or k.startswith("n:"):
+            continue                                       # the browser bit, the names files, the judge generation: not keyed files
+        cur[k] = v
+    if prev is not None:
+        for k, v in cur.items():
+            if prev.get(k) != v:
+                if k.startswith("s:"):
+                    _files_stat_mark(k[2:])
+                else:
+                    _files_stat_mark(Path(k).stem)
+        for k in prev:
+            if k not in cur:
+                _files_stat_mark(k[2:] if k.startswith("s:") else Path(k).stem)
+        if sig.get("__msgs__") != _FILES_STAT_OBSERVED.get("sigMsgs"):
+            _files_stat_mark()
+    _FILES_STAT_OBSERVED["sig"] = cur
+    _FILES_STAT_OBSERVED["sigMsgs"] = sig.get("__msgs__")
+
+
+def _files_stat_pass_open(live_map):
+    """The jobs pass's prelude: take the dirty set whole (a mark landing during the pass waits for the next), add what the
+    prelude observes itself (the postal log's stat, written by another process; the judge module's per-session write counters;
+    each live row's state, since and live-tail revision, the backends' in-memory word on a turn's edges and queued sends), and
+    open the pass's shared snapshot. Returns
+    True when this call opened the slot (a caller that already holds one, a test driving the pass inside a cycle, keeps its own)."""
+    with _FILES_STAT_LOCK:
+        sids, every = set(_FILES_STAT_DIRTY["sids"]), _FILES_STAT_DIRTY["all"]
+        _FILES_STAT_DIRTY["sids"].clear(); _FILES_STAT_DIRTY["all"] = False
+    try:
+        _pst = os.stat(str(jd.STATE / "timeline" / "messages.jsonl")); postal = (_pst.st_mtime, _pst.st_size)
+    except OSError:
+        postal = (0.0, 0)
+    if postal != _FILES_STAT_OBSERVED["postal"]:
+        _FILES_STAT_OBSERVED["postal"] = postal
+        every = True
+    writes = getattr(jd, "SESSION_FILE_WRITES", None)      # the judge module's own writers, counted per session (in this process)
+    if isinstance(writes, dict):
+        try:
+            by = dict(writes.get("by") or {})
+        except RuntimeError:                                  # a writer on another thread mid-append: every session, this once
+            by, every = dict(_FILES_STAT_OBSERVED["jdBy"]), True
+        if writes.get("all") != _FILES_STAT_OBSERVED["jdAll"]:
+            _FILES_STAT_OBSERVED["jdAll"] = writes.get("all")
+            every = True
+        prev = _FILES_STAT_OBSERVED["jdBy"]
+        sids.update(sid for sid, n in by.items() if prev.get(sid) != n)
+        sids.update(sid for sid in prev if sid not in by)
+        _FILES_STAT_OBSERVED["jdBy"] = by
+    rows = {}
+    for sid, row in (live_map or {}).items():
+        try:
+            rows[sid] = ((row or {}).get("state"), (row or {}).get("since"), Sessions.live_rev(sid))
+        except Exception:
+            rows[sid] = object()                          # unreadable: never equal, so the session is looked at (when unsure, look)
+        if rows[sid] != _FILES_STAT_OBSERVED["rows"].get(sid):
+            sids.add(str(sid))
+    _FILES_STAT_OBSERVED["rows"] = rows
+    _live_scope.files_dirty = (sids, every)
+    opened = getattr(_live_scope, "files_stat", None) is None
+    if opened:
+        _live_scope.files_stat = {}
+    return opened
+
+
+def _files_stat_pass_close(opened):
+    """The pass's end: the standing snapshot keeps only the sessions this pass asked about (a dead session's entry goes
+    with it), and the slot closes when this pass opened it."""
+    memo = getattr(_live_scope, "files_stat", None)
+    if memo is not None:
+        for k in [k for k in _FILES_STAT_STANDING if k not in memo]:
+            _FILES_STAT_STANDING.pop(k, None)
+    _live_scope.files_dirty = None
+    if opened:
+        _live_scope.files_stat = None
+
+
 def _session_files_stat(s):
     """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
     episode log, the clears log, the postal log, the kernel's downtime log and the nudge ledger, zeros for a missing file:
@@ -10876,8 +10988,26 @@ def _session_files_stat(s):
     check reads the _downtime list, which the downtime log refills). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
     no transcript change at all, and the interrupt tick must re-block on exactly that (its docstring's stale-marker
-    rule; tests/test_kernel_interrupt_machine_cut.py pins it)."""
+    rule; tests/test_kernel_interrupt_machine_cut.py pins it).
+    One snapshot per session per jobs pass (plans/nudge-walk-events.md, 2026-09-15): inside a pass the first asker's stat is kept on
+    the pass's scope and served to every later asker, so the lift, the walk and the interrupt tick read ONE view of the ten files
+    and the pass pays ten stats per alive session, not ten per job; `stats` under memos.nudgeWalk counts the stats paid. Across
+    passes the stat STANDS (_FILES_STAT_STANDING) until an event marks the session (_files_stat_mark: the writers of the ten files
+    in this process, the pass prelude's observers) or NUDGE_FLOOR_S passes, so a quiet pass stats nothing (`served` counts the
+    standing keys served). Outside a pass (a handler's own tick, a test) there is no scope and every ask stats."""
     sid = str(s.get("sid") or "")
+    memo = getattr(_live_scope, "files_stat", None)
+    key = (sid, s.get("path") or "")
+    if memo is not None:
+        if key in memo:
+            return memo[key]
+        dirty = getattr(_live_scope, "files_dirty", None)    # (the sids an event marked, every session marked): taken by the pass prelude
+        stand = _FILES_STAT_STANDING.get(key)
+        if (stand is not None and dirty is not None and not dirty[1] and sid not in dirty[0]
+                and time.monotonic() - stand[1] < NUDGE_FLOOR_S):
+            _NUDGE_WALK_STATS["served"] += 1                # the last pass's stat stands: no event marked the session, the floor holds
+            memo[key] = stand[0]
+            return stand[0]
     out = []
     for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
@@ -10899,7 +11029,12 @@ def _session_files_stat(s):
             out += [st.st_mtime, st.st_size]
         except OSError:
             out += [0.0, 0]
-    return tuple(out)
+    out = tuple(out)
+    _NUDGE_WALK_STATS["stats"] += len(out) // 2   # the stats paid (a served key pays none)
+    if memo is not None:
+        memo[key] = out
+        _FILES_STAT_STANDING[key] = [out, time.monotonic()]
+    return out
 
 
 def _session_moved_since_boot(s):
@@ -11115,7 +11250,7 @@ def _tick_job_skips(job, s):
 # so the walk's bookkeeping does not flap. The first boot with per-stage byte rows (dc8ad7fb, 2026-09-13) spent 58.9 s of a
 # 63 s first cycle in this walk, parsing every alive session cold before a single nudge could be due.
 _NUDGE_HORIZON = threading.local()    # the walking thread's collector: .notes (the flips a look's clock legs declined on)
-_NUDGE_WALK_STATS = {"looks": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
+_NUDGE_WALK_STATS = {"looks": 0, "stats": 0, "served": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
                      "clockDue": 0, "wakeOnly": 0, "unboundedBy": {}}   # unboundedBy: the None notes per leg (T401 follow-up)
 _NUDGE_LOOK_STATS = {}                # sid -> the stat the pass took before its snapshots, for the look (a side map: the session
 #                                       rows are shared, read-only and memoised per cycle, never written into)
@@ -12472,12 +12607,14 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     except OSError:
         postal_stat = (0.0, 0)                            # the postal log's stat FIRST, then the asker index built from that log
     asks_by_target = _nudge_asks_by_target()              # once per pass: the open asks by debtor
-    for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
-        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
-        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
+    with _sub_stage("autoNudge.key"):                 # the ten stats per session (plans/nudge-walk-events.md)
+        for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
+            _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
+            _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
     #                                                       are read, so no snapshot handed to a look is older than the key its memo
     #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
     #                                                       clears log and the store under a memo that then silenced the un-cleared goal)
+    _snap_t = time.monotonic(); _set_stage("jobs.autoNudge.snapshot")   # the ledger, the peer graph and the clear set, closed where the walk begins
     snap = _auto_nudge_data()
     if snap.get(UNPROVED):
         _auto_nudge_pause(snap[UNPROVED])
@@ -12513,6 +12650,10 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     cleared = _cleared_ids()                              # one parsed clear set for every session this pass walks (2026-09-09):
     #                                                       a clear landing mid-pass reaches the later sessions next pass; the
     #                                                       node's own cleared flag, written in the same gesture, covers the gap
+    _set_stage("jobs.autoNudge"); _PERF_STATS.stage("jobs.autoNudge.snapshot", time.monotonic() - _snap_t)
+    _looks_t = time.monotonic(); _set_stage("jobs.autoNudge.looks")   # the looks: one mark over the loop (plans/nudge-walk-events.md)
+    _parse_ms0 = _PERF_STATS.stages.get("jobs.autoNudge.parse", 0.0)   # the parse marks its own time inside the loop: the looks
+    #                                                                     mark is the loop's wall OUTSIDE it, so the parts partition the job
     for _i, s in enumerate(alive):
         if _yielding and getattr(_NUDGE_HORIZON, "cold", 0) >= 1 and getattr(_NUDGE_HORIZON, "cold_last", False):
             _NUDGE_WALK_STATS["deferredSessions"] += len(alive) - _i
@@ -12546,6 +12687,8 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
+    _set_stage("jobs.autoNudge")                          # the looks close with the loop, however it ended: its wall less the parses' (1736 round two)
+    _PERF_STATS.stage("jobs.autoNudge.looks", max(0.0, time.monotonic() - _looks_t - (_PERF_STATS.stages.get("jobs.autoNudge.parse", 0.0) - _parse_ms0) / 1000.0))
     _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()   # the keys were this pass's: a look outside a pass keys for itself
     try:
         _relay_tick(now, alive_ids)                    # T334: a worker's block toward its delegating peer goes out as its
@@ -14534,7 +14677,8 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         # (a synthesized leading idle opens it, vs the human prompt), so the closer-gate below would never
         # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
         _cold = jd._parse_entry(sid) is None          # no cached parse: this look pays it (T401 (2): the yield's event)
-        turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+        with _sub_stage("autoNudge.parse"):        # the parse-store read (a hit while the transcript stands) under its own mark
+            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         _NUDGE_HORIZON.parsed = True
         _NUDGE_WALK_STATS["parses"] += 1
         if _cold:
@@ -20458,6 +20602,28 @@ def _peer_shape_complain(host, field, value, note=None):
           file=sys.stderr, flush=True)
 
 
+_PEER_COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{6}|[a-z]{1,20})$")   # an identity color: #rrggbb, or a CSS color word (fg is often "white")
+_PEER_SESSION_ROWS_MAX = 512
+
+
+def _remote_session_public_row(raw):
+    """ONE row of a peer's /sessions answer, re-read through the shape /remote/<host>/sessions publishes: the
+    session id (a _PEER_KEY_RE id, fullmatch, else the row is dropped: it is what a client sends back to POST
+    /send {id}), the name, its live state and directory as inert bounded text, and the two identity colors
+    (#rrggbb or a CSS color word, else ''). Nothing else the peer sent passes: not its lastSid, not its backend,
+    never a credential."""
+    if not isinstance(raw, dict):
+        return None
+    sid = raw.get("id")
+    if not isinstance(sid, str) or not _PEER_KEY_RE.fullmatch(sid):
+        return None
+
+    def _color(v):
+        return v if isinstance(v, str) and _PEER_COLOR_RE.fullmatch(v) else ""
+    return {"id": sid, "name": _peer_text(raw.get("name"), 128), "state": _peer_text(raw.get("state"), 32),
+            "dir": _peer_text(raw.get("dir"), 512), "bg": _color(raw.get("bg")), "fg": _color(raw.get("fg"))}
+
+
 def _remote_payload_public_row(raw):
     """ONE row of a peer's /tunnels answer, re-read through the shape _remote_public publishes — the
     whitelist tunnels_of applies before the page sees a peer's rows. Every key the panel's sub-row and
@@ -22418,6 +22584,9 @@ def _host_for_sid(sid):
                 return r
     return None
 
+
+_RELAY_TIMEOUT_S = 10   # one bound for every relay of ONE call through a tunnel (/remote/<host>/api-health, /new, /send): a
+                        #  peer that accepts and never answers is reported "not answering" after this, and the redial asked
 
 def _remote_forward(r, path, body):
     """Forward a small CONTROL call (deliver/send/working) to a remote kernel THROUGH its -L tunnel — this is
@@ -30587,6 +30756,7 @@ def _bump_judge_gen_if_changed(before_fp=None):
     _last_judge_fp[0] = cur
     if cur != anchor:
         _judge_gen[0] += 1
+        _files_stat_mark()                           # a judge-written store moved (the judges' own process too): every session's key may have
         return True
     return False
 
@@ -30625,7 +30795,20 @@ _goals_snap_lock = threading.Lock()
 # is the pass's failure, not the version's, so the next pass reads the file again, as every pass did
 # before the memo. Entries for paths gone from the directory are evicted at the next pass, and the
 # compaction sweep after each pass evicts the entries of stores no discovered session owns
-# (_goals_memo_evict_unowned), so the resident set is bounded by the live board.
+# (_goals_memo_evict_unowned), so the resident set is bounded by the live board. THE SWEEP'S RULING IS
+# ALSO THE PASS'S SKIP LIST (review find, 2026-09-15): the sids it evicted as unowned, while their files
+# stay in the directory and no discovered session takes them up again, sit in _goals_memo_unowned, and
+# the pass steps over their files before the stat and the open. Without that the two fought forever: the
+# directory keeps the stores of sessions gone past the discover window and of old transcript episodes
+# (49 files on one installation, 22 owned, 27 orphans holding 7 MB), the pass decoded the 27 as misses,
+# the sweep evicted them again (GET /perf memos.pass read hit 202, miss 582, evict 390; 109 store opens
+# and 68 MB read per 5 s with no mtime moving), for stores nothing rendered or judged reads. The owner
+# list is the sweep's: the discovered sessions (the ones the tiers judge) and the live ones (the ones the
+# feed renders, inside the discover window or not), so nothing rendered or judged is ruled out; what the
+# ruling lags is one sweep: a session that revives or re-enters the window between a sweep and the next
+# pass is read live for that pass (_feed_goals serves a sid absent from the snapshot live), the judges'
+# mid-pass writes showing on its card until the next sweep that runs lifts the ruling (none runs with Task
+# tracking off, and a discover that raises neither rules nor lifts: the ruling then stands as it is).
 # WHAT THE KEY RESTS ON: st_mtime_ns moving between publishes, not the inode. Inode numbers recycle
 # (on ext4, consecutive tmp+rename publishes of one path alternate between two numbers, so the third
 # version can sit on the first's inode), and equal sizes are common (a digit bump, a same-length
@@ -30637,9 +30820,14 @@ _goals_snap_lock = threading.Lock()
 # earlier parse (a stale card until the store's next publish, never a wrong write).
 _goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
-# Bare `+= 1` increments with one writer per key: hit/miss/fail/evict are written only by the producer thread
+# Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
-_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0}   # read by tests and GET /perf (memos.pass)
+_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
+# The sweep's skip list (the memo note above): the sids _goals_memo_evict_unowned ruled unowned whose stores are
+# still in the directory. That function rebuilds it whole on the producer thread, the memo's one writer, and
+# rebinds the name (a swap, never a mutation, as the memo); _begin_goals_pass reads it on the same thread, and
+# GET /perf reads its length (memos.pass unowned).
+_goals_memo_unowned = set()
 
 
 def _goals_memo_decode(data):
@@ -30656,22 +30844,50 @@ def _goals_memo_report():
     out = dict(_goals_memo_stats)
     out["entries"] = len(memo)
     out["bytes"] = sum(k[2] for k, v in memo.values() if v is not _GOALS_MEMO_BAD)
+    out["unowned"] = len(_goals_memo_unowned)          # the stores the next pass steps over (the sweep's ruling)
     return out
 
 
 def _goals_memo_evict_unowned(owned):
-    """Drop the entries of stores no session in `owned` (the discover set's sids) holds. The memo had no
-    cap: every store the directory held stayed decoded in memory between passes, tens of MB on a large
-    board (review find, 2026-09-08). The compaction sweep calls this after the tiers, on the producer
-    thread, the memo's one writer. The price is one decode at the next pass for such a store the pass
-    still lists (what every pass paid before the memo); the stores a discovered session owns keep their
-    entries. A swap, never an in-place mutation: a /perf reader may be iterating the old dict."""
+    """Drop the entries of stores no session in `owned` (the sweep's owner list: the discovered sessions and
+    the live ones) holds, and rule their sids out of the next pass. The memo had no cap: every store the directory held stayed decoded in memory
+    between passes, tens of MB on a large board (review find, 2026-09-08). The compaction sweep calls this
+    after the tiers, on the producer thread, the memo's one writer; the stores an owner holds keep their
+    entries.
+
+    The first version only evicted, and took the price to be one decode at the next pass for such a store
+    the pass still lists. On a real installation it is every pass's decode: the directory keeps the stores
+    of sessions gone past the discover window and of old transcript episodes (49 files, 22 owned, 27
+    orphans of 7 MB together, on one kernel), so every pass decoded the 27 as misses and every sweep
+    evicted them again, forever (GET /perf memos.pass read hit 202, miss 582, evict 390; 109 store opens
+    and 68 MB read per 5 s with no mtime moving), for stores nothing rendered or judged reads: `owned` is
+    the discovered sessions and the live ones together (_compact_goal_stores), the tiers' list and the
+    feed's, and _feed_goals reads a sid absent from the snapshot live (review find, 2026-09-15). So the
+    ruling is kept: _goals_memo_unowned is rebuilt here as the sids evicted now or by an
+    earlier call, minus `owned` (a session owned again is decoded at the next pass) and minus the
+    sids whose file has left the directory (bounded by the files present, never by the sids a process has
+    seen), and _begin_goals_pass steps over those files before the stat and the open. The pass never asks
+    discover itself: the sweep holds the owner list, and the pass stays independent of the walk; so the
+    ruling lags the tiers by one sweep, and a session that revives or re-enters the window between a sweep
+    and the next pass is read live for that one pass, the judges' writes showing on its card until the next
+    sweep that RUNS lifts the ruling: none runs with Task tracking off, and a discover that raises neither
+    rules nor lifts, so the ruling then stands as it is (a session merely idle past the window is live, so
+    not ruled while liveness reads). A swap,
+    never an in-place mutation, for the memo and the set alike: a /perf reader may be iterating the old
+    dict, and the pass reads the set it took at its start."""
+    global _goals_memo_unowned
     memo = _goals_memo[0]
     kept = {path: ent for path, ent in memo.items() if os.path.basename(path)[:-5] in owned}
     gone = len(memo) - len(kept)
     if gone:
         _goals_memo[0] = kept
         _goals_memo_stats["evict"] += gone
+    try:
+        present = {e.name[:-5] for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()}
+    except OSError:
+        present = set()                                # no directory: no store for the pass to step over
+    evicted = {os.path.basename(path)[:-5] for path in memo.keys() - kept.keys()}
+    _goals_memo_unowned = (_goals_memo_unowned | evicted).difference(owned) & present
     return gone
 
 
@@ -30698,19 +30914,29 @@ def _begin_goals_pass():
     such. Any race the other way (content newer than its key) only costs one extra decode next pass;
     it can never pin a stale parse, because the next stat sees a moved key. The one way a stale parse
     CAN pin is the coarse-timestamp blind spot in the memo note above (equal size, recycled inode, same
-    clock tick); on a multigrain-timestamp kernel it does not occur."""
+    clock tick); on a multigrain-timestamp kernel it does not occur.
+
+    A store the compaction sweep ruled unowned (_goals_memo_unowned: no discovered and no live session
+    holds it, and its file is still here) is stepped over before its stat, so it gets neither a memo entry nor a snapshot
+    entry, and _feed_goals reads it live should anything ask; before that the pass decoded every such
+    store as a miss and the sweep evicted it again, pass after pass (review find, 2026-09-15). The pass
+    never asks discover: the sweep's ruling is what it reads, one sweep behind the tiers' own list."""
     # ui/webview/feed-move-ack.test.ts pins the next line's comment text ("stamped BEFORE the reads").
     at = time.time()          # stamped BEFORE the reads and the stats that gate them: a write racing this loop
     snap = {}                 # must count as AFTER them, so it is replayed onto the snapshot, not lost to the read order
     prev = _goals_memo[0]
+    unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
-    hit = miss = fail = 0
+    hit = miss = fail = skip = 0
     try:
         entries = [e for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()]
     except OSError:
         entries = []
     for ent in entries:
         path, sid = ent.path, ent.name[:-5]
+        if sid in unowned:
+            skip += 1                                  # ruled unowned by the last sweep: no stat, no open, no
+            continue                                   # entry; the feed reads it live if asked (_feed_goals)
         try:
             st = ent.stat()
             key = (st.st_ino, st.st_mtime_ns, st.st_size)
@@ -30746,6 +30972,7 @@ def _begin_goals_pass():
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
     _goals_memo_stats["fail"] += fail
+    _goals_memo_stats["skip"] += skip
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
     with _goals_snap_lock:
         _goals_snap[0] = snap
@@ -30764,7 +30991,9 @@ def _end_goals_pass():
 def _feed_goals(sid):
     """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
     never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
-    snapshot → live (it has no prior state to flicker from). See the _goals_snap note above.
+    snapshot → live (it has no prior state to flicker from); so is a sid the pass stepped over because the
+    compaction sweep ruled its store unowned (no discovered and no live session held it at the sweep: the
+    pass took no copy, and a consumer that asks anyway gets the live store, 2026-09-15). See the _goals_snap note above.
 
     USER WRITES PUNCH THROUGH (the user 2026-07-21): a gesture recorded since this snapshot was taken is
     replayed onto it from the override journal — the same durable record load_goals replays, so the user's
@@ -31181,6 +31410,15 @@ def _chat_ident(path):
     return (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
 
 
+def _chat_reg_sig(sid):
+    """Registry content that can change a chat, plus its readable/missing/unreadable state. Host journal
+    acknowledgements and log offsets move during ordinary output without changing the payload; keying on
+    the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
+    ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
+    state, reg = _thread_reg_read(sid)
+    return state, {k: v for k, v in reg.items() if k not in ("hostAck", "hostLogPos")}
+
+
 def _names_digest(snap):
     """The names registry's content as one value for the chat-build signature: a digest of every entry's
     fields (the snapshot _names_snapshot returns, {sid: tab fields}). build_session reads names in many
@@ -31497,7 +31735,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         sig.append((_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None)
         sig.append(_chat_ident(jd.ARCHDIR / (sid + ".json")))         # archive: the ledger headline
         sig.append(_chat_ident(jd.EPIDIR / (sid + ".jsonl")))         # episodes: the note floor, the boundary card
-        sig.append(_chat_ident(jd.STATE / "sdk" / (sid + ".json")))   # reg: forkedFrom, alive, bgLedger, spawnedAt, cwd
+        sig.append(_chat_reg_sig(sid))                             # reg: content and read state, excluding host offsets
         sig.append(_chat_ident(jd.GONEDIR / (sid + ".json")))         # gone: the death marker behind the spawn epoch
         sig.append(_task_store_fp(fsid))   # a store update (incl. a subagent completing a task) refreshes the to-do card
         # a pending DELETE rollback changes the payload with NO transcript write (the parse-cache lesson,
@@ -37273,6 +37511,7 @@ def _episode_boundary_check(sid, path, now):
     # notice and the chat boundary card read it back.
     jd.append_episode_settle(sid, head["uuid"], int(t),
                              [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops])
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
     sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
@@ -37417,6 +37656,7 @@ def _clear_all(item_ids):
     with p.open("a") as f:
         for iid in item_ids:
             f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     skipped = _mark_nodes_cleared(item_ids, True)     # durable node flag → no grouper re-wrap, no column bounce
     # CLEAR IS SILENT (the user 2026-08-23, reversing the 2026-07-24 wrap-up): the session hears
     # NOTHING. The wrap's response turn routinely re-minted the very card the user had just cleared —
@@ -37454,6 +37694,7 @@ def _undo_clear():
     with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
         for iid in restored:
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False)       # so this finds the nodes → un-set the durable flag → real status
     if late:
         # The store read fine (or held nothing archived) a moment ago and faults NOW, after the undo row
@@ -37469,6 +37710,7 @@ def _undo_clear():
             for iid in restored:
                 if iid.rsplit(":", 1)[0] in late:
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+        _files_stat_mark()                            # the re-journal is a clears-log write too
         skipped.update(late)
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
@@ -37573,9 +37815,20 @@ def _compact_goal_stores():
         # owns: none has a cap (review find, 2026-09-08, on the first two; the writer loader's parse memo
         # of 2026-09-15 follows them, and this sweep is what fills it with every store the directory
         # holds). discover is cached behind the transcript directory's fingerprint, so this is the tiers'
-        # own list, not a second walk. A discover that raises evicts nothing: with no owner list there is
-        # no unowned.
+        # own list, not a second walk. A discover that raises evicts nothing and lifts nothing: with no
+        # owner list the pass memo's standing ruling stays as it is.
         owned = {f for f, _p, _a, _n in jd.discover(int(time.time()))}
+        # ...plus every LIVE session, inside that window or not: the feed renders a live session whatever
+        # its transcript's age (_alive_sessions resolves one past the 48 h set through the wide walk), and
+        # the pass memo's ruling below steps over an unowned store's file, so a live session ruled out here
+        # would be read live on every build of every pass (review find on the ruling, 2026-09-15). The
+        # notified-cards bound below unions the same map for the same reason. One owner list, four
+        # consumers: the two judge memos also stop re-parsing such a session's store after every sweep. A
+        # liveness read that raises leaves the discover set as the owner list, said, as before the union.
+        try:
+            owned |= set(_live_map())
+        except Exception:
+            sys.stderr.write("compact: live map unreadable (the discover set alone owns): %s\n" % traceback.format_exc())
         jd._shared_evict_unowned(owned)
         jd._raw_store_evict_unowned(owned)
         _goals_memo_evict_unowned(owned)
@@ -50783,6 +51036,7 @@ def _fleet_view_sig(now, live_map):
     must bust the cache or the reordered cards lag behind the tabs by up to a bucket; the user 2026-07-15),
     or a 5s time bucket so 'X ago'/elapsed keeps advancing when nothing else changes."""
     sig = _producer_sig(True)
+    _files_stat_observe_sig(sig)             # the snapshot's transcript and states-log mtimes: a moved one marks its session (plans/nudge-walk-events.md)
     sig["__judge__"] = _judge_gen[0]
     sig["__jrun__"] = jd.active_change()     # a judge call starting/ending → the card's judging swirl (exact event)
     sig["__bucket__"] = now // 5             # the one remaining CLOCK input — kept until the age tints, the
@@ -51275,7 +51529,8 @@ def _notify_prev_forget_gone(owned):
     """The compaction sweep's bound on the snapshot (review find on the persist, 2026-09-10): forget, in
     memory and on disk, every remembered card whose session is GONE for good, and drop its bell overrides
     with it. Gone means what it means for session-order.json (_gc_session_order): neither alive, nor with
-    a transcript still in the discover window (`owned`, the sweep's own discover set), nor a dead tab the
+    a transcript still in the discover window (`owned`, the sweep's owner list: the discovered sessions
+    and the live ones), nor a dead tab the
     user kept open. The build forgets a card only when its session RENDERS without it, and a session
     gone for good never renders again: its worktree deleted, never revived, its card cleared from the
     dashboard while it was dead (a clear reads the goal store, not the session). So the build alone kept
@@ -53488,6 +53743,21 @@ def _pusher_cycle():
             _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
 
 
+@contextlib.contextmanager
+def _sub_stage(name):
+    """A finer stage INSIDE a tick job, `jobs.<job>.<part>`: the thread's mark for the block (its reads count under the part) and
+    the part's own milliseconds on the ring, so a job whose passes spike names what they paid (plans/nudge-walk-events.md, the
+    measurement's first step). The enclosing job's stage still closes over the whole; the parts sum to at most that."""
+    _t = time.monotonic()
+    prev = getattr(_STAGE_TL, "name", None)
+    _set_stage("jobs." + name)
+    try:
+        yield
+    finally:
+        _set_stage(prev)
+        _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
+
+
 def _job_stage(name, thunk):
     """One tick job as a sub-stage of `jobs` in the cycle's split (T398): the boot's first split said jobs 25 s with 224 MB read
     and nothing finer, so each job here closes its own `jobs.<name>` stage and the row names the job that read. The job is a
@@ -53572,6 +53842,8 @@ def _jobs_pass(now, live_map):
     _t_pass = time.monotonic()
     if not _PERF_STATS._mine():
         _PERF_STATS.cycle_begin("jobs")   # a caller that did not open the pass (a test driving the jobs alone) opens it here
+    _own_stat = _files_stat_pass_open(live_map)   # the dirty set taken, the prelude's observers read, the pass's shared ten-file
+    #                                               snapshot opened when the caller did not (closed below; the cycle's finally too)
     try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
         _job_stage('liftSpentAwaiting', lambda: _lift_spent_awaiting(now, live_map))   # so the nudge tick below never wakes a wait that already ended
     except Exception:
@@ -53649,6 +53921,7 @@ def _jobs_pass(now, live_map):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+    _files_stat_pass_close(_own_stat)
     _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
 
 
@@ -53686,6 +53959,8 @@ def _jobs_cycle():
         _live_scope.sessions = None
         _live_scope.auth = None
         _live_scope.msgsum = None
+        _live_scope.files_stat = None
+        _live_scope.files_dirty = None
         _PERF_STATS.jobs_pass(time.monotonic() - _t, time.thread_time() - _c)
         if first:
             _first_cycle_sampler_stop(_FIRST_PASS_SAMPLER)
@@ -60649,6 +60924,10 @@ class Handler(BaseHTTPRequestHandler):
                 # the API-health signal of an attached host, relayed (T301): one JSON read, that kernel's own
                 # token rewritten in, its document passed through as it answered it
                 return self._remote_api_health(unquote(p[len("/remote/"):-len("/api-health")]))
+            if p.startswith("/remote/") and p.endswith("/sessions"):
+                # an attached host's session roster with its identity colors, re-read through a whitelist: the
+                # same-machine session picker's read, now that a peer's token never rides /tunnels
+                return self._remote_sessions(unquote(p[len("/remote/"):-len("/sessions")]))
             if p.startswith("/remote/") and p.endswith("/ws"):
                 # federated dashboard, viewed off this machine: relay to the attached host's kernel
                 return self._remote_ws(unquote(p[len("/remote/"):-len("/ws")]), u.query)
@@ -61797,6 +62076,14 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path.startswith("/remote/"):
+                # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
+                # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth
+                # gate has run; the peer validates and answers for itself (_remote_control). EVERY POST under
+                # /remote/ lands there, so the relay's own JSON answers cover a path with no host and an op it does
+                # not carry: a split here on a hostless /remote/new raised into the catch-all below, an HTTP 500
+                # whose body was a traceback with absolute paths (the 2026-09-15 read).
+                return self._remote_control(unquote(u.path[len("/remote/"):]), raw_body)
             if u.path == "/new":
                 # Headless session creation (`romp new`, 2026-07-25): the WS createSession op as a
                 # one-shot POST, so a terminal can start a session — SDK by default, the recommended
@@ -62660,7 +62947,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _pull_remote(host)
                 # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
                 # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
-                kcc = _restart_pending(checkout=_fresh_local_head() or "") if ok else None   # the head the pull just moved, read fresh; a failed read answers None, never the cache
+                kcc = _restart_pending() if ok else None   # the disk the pull just moved, read fresh; a refused pull claims nothing
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
                                   "application/json")
             if u.path == "/tunnels/askpull":
@@ -64139,6 +64426,69 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
+    def _remote_control(self, rest, raw_body):
+        """POST /remote/<host>/new and /remote/<host>/send: relay ONE control call to an attached host's own kernel
+        through this kernel's tunnel, which is how an action LANDS on that machine. The /api-health relay's shape:
+        the local auth gate has run, the remote's own token goes in the forwarded request, a dead tunnel is a 502
+        and a redial, an unknown host a 404. The peer applies its own validation (a name it refuses, a backend it
+        lacks) and its status and JSON verdict are mirrored, so its 400 or 409 arrives as a 400 or 409 with its
+        words, never as "not answering". Two ops only: `new` (a session born THERE; this kernel's by-sid forwarding
+        cannot reach a session that does not exist yet) and `send` to a session that host lists (its briefing,
+        before this kernel's supervisor poll has learned the sid, when POST /send here would route it nowhere).
+        The body must be a JSON object and crosses as the peer's route expects it. Every answer this side writes
+        is JSON {ok, error}, so a caller reads one shape. Why not _remote_forward: it folds every non-200 into
+        None, which would report a peer's refusal as a dead tunnel (the /send arm's own lesson).
+        (the user 2026-09-14: the editor plugin's new-experiment command spawns its managing session on the vault's
+        mirror host; it posted to the tunnel port with the peer token /tunnels used to publish, gone since
+        2026-09-08.) `rest` is the path after /remote/, parsed HERE (the dispatcher sends every POST under
+        /remote/), so a path with no host (/remote/new, /remote//send) and an op outside the two are this route's
+        own 404s in the same JSON shape, never the catch-all's 500. The peer's answer is bounded by
+        _RELAY_TIMEOUT_S, the read relays' bound: a peer that accepts and never answers is "not answering" in
+        ten seconds, not thirty."""
+        host, sep, op = rest.rpartition("/")
+        if not host:
+            return self._send(404, json.dumps({"ok": False, "error":
+                "the relay path names no host: POST /remote/<host>/new or /remote/<host>/send"}), "application/json")
+        if op not in ("new", "send"):
+            return self._send(404, json.dumps({"ok": False, "error": "no such relay op %r: new and send relay" % op}),
+                              "application/json")
+        b, berr = _json_object_body(raw_body)
+        if berr:
+            return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, json.dumps({"ok": False, "error": "no attached host %r" % host}),
+                              "application/json")
+        payload = json.dumps(b or {})
+        hdrs = {"Content-Type": "application/json"}
+        if rtok:
+            hdrs["X-Romp-Token"] = rtok
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=_RELAY_TIMEOUT_S)
+        try:
+            conn.request("POST", "/" + op, payload, hdrs)
+            resp = conn.getresponse()
+            body = resp.read(1 << 20)
+            status = resp.status
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, json.dumps({"ok": False, "error":
+                "tunnel to %s is not answering: re-dialing now" % host}), "application/json")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        try:
+            doc = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            doc = None
+        if not isinstance(doc, dict):
+            return self._send(502, json.dumps({"ok": False, "error":
+                "%s answered /%s with HTTP %d and no JSON verdict" % (host, op, status)}), "application/json")
+        return self._send(status, json.dumps(doc), "application/json", cache="no-cache")
+
     def _remote_api_health(self, host):
         """GET /remote/<host>/api-health: relay ONE read of an attached host's API-health signal through this
         kernel's tunnel (T301). The same shape as the /file relay: the local auth gate has run, the remote's own
@@ -64151,7 +64501,7 @@ class Handler(BaseHTTPRequestHandler):
             port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
         if not port:
             return self._send(404, "no attached host %r" % host, "text/plain")
-        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=_RELAY_TIMEOUT_S)
         try:
             conn.request("GET", "/api-health", headers=({"X-Romp-Token": rtok} if rtok else {}))
             resp = conn.getresponse()
@@ -64169,6 +64519,48 @@ class Handler(BaseHTTPRequestHandler):
             # the remote's verdict in prose (an older build's 404, its 401, its 503): the shell names it per host
             return self._send(status, body[:2000].decode("utf-8", "replace") or ("HTTP %d" % status), "text/plain")
         return self._send(200, body, "application/json", cache="no-cache")
+
+    def _remote_sessions(self, host):
+        """GET /remote/<host>/sessions: relay ONE read of an attached host's own /sessions through this kernel's
+        tunnel, in the /api-health relay's shape (the local auth gate has run, the remote's own token goes in the
+        forwarded request, a dead tunnel is a 502 and a redial). The rows come back re-read through
+        _remote_session_public_row: id, name, state, dir and the two identity colors, nothing else. This is how a
+        same-machine client (an editor plugin's session picker) lists a peer's sessions with the colors that host's
+        dashboard draws: since 2026-09-08 a peer's serve token never leaves its machine (/tunnels publishes only
+        hasToken), so the direct read such clients used to make is gone, and the postal bus's roster carries names
+        but no colors. A peer that refused, or an older build without the route, answers in prose with its status
+        mirrored, as /api-health does; a body that is not a list is a 502 naming the host."""
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, "no attached host %r" % host, "text/plain")
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        try:
+            conn.request("GET", "/sessions", headers=({"X-Romp-Token": rtok} if rtok else {}))
+            resp = conn.getresponse()
+            body = resp.read(1 << 22)
+            status = resp.status
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, "tunnel to %s is not answering: re-dialing now" % host, "text/plain")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if status != 200:
+            return self._send(status, body[:2000].decode("utf-8", "replace") or ("HTTP %d" % status), "text/plain")
+        try:
+            rows = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            rows = None
+        if not isinstance(rows, list):
+            return self._send(502, "%s answered /sessions with something other than a list of rows" % host,
+                              "text/plain")
+        pub = [x for x in (_remote_session_public_row(x) for x in rows[:_PEER_SESSION_ROWS_MAX]) if x]
+        return self._send(200, json.dumps({"ok": True, "host": host, "sessions": pub}), "application/json",
+                          cache="no-cache")
 
     def _remote_file(self, host, query, head=False):
         """GET/HEAD /remote/<host>/file — relay ONE preview request to an attached host's kernel

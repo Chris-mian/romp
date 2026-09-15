@@ -28,6 +28,9 @@ where they stack):
      for): the shell's relay alone moves the section, within two frames of the tab's paint;
   f. a card of a CLOSED session (the kernel knows it dead) clicked: the feed's card says closed, so the section stays;
      the chat gets its confirmRevive prompt (dismissed);
+  s. the claim's shape: two shell relays in two tasks inside one animation frame (api, then web) move the head and return
+     it; the observer's record reads api then web while a per-frame poll after the fact reads no move (the poll was the
+     old claim on road g, red twice on CI's faster runners while the record held both values);
   g. the same click on a card the feed still marks live (its word stale by a moment): the section moves on the click
      and comes back on the kernel's answer (the chat's re-announce through the shell, the kernel's marked reaffirm
      frame), so the chat and the section agree again without a hand switch.
@@ -363,12 +366,11 @@ const runLayout = async (tag, width) => {
   await settle(cfg.web, "web");
   await road("f_closed_card_says_closed", async () => {
     await clickTitle(cfg.oldDone);
-    const moved = await waitHead("old", 800);
     await waitFn(() => !!document.getElementById("f-chat").contentDocument.querySelector(".picker-overlay"), null, "the chat never showed the confirmRevive prompt");
     const confirm = await confirmShown();
     await page.mouse.move(2, 2);
-    await page.waitForTimeout(300);
-    const r = { moved, confirm, headNow: await headName() };
+    await page.waitForTimeout(300);   // room for any movement the head would make: the observer's record is the claim
+    const r = { confirm, headNow: await headName() };
     await dismissConfirm();
     return r;
   });
@@ -377,16 +379,33 @@ const runLayout = async (tag, width) => {
   await deliver(payloadOf(true)); await park(); await clearHops();
   await road("g_closed_card_marked_live", async () => {
     await clickTitle(cfg.oldDone);
-    const moved = await waitHead("old", 800);
-    const back = await waitHead("web", 3000);
+    // the movements are read off the observer's record, never sampled: the section moves to old and comes back to web
+    // within a few milliseconds on a fast machine, inside one animation frame, where a per-frame poll never sees the
+    // move (a CI runner read moved False twice while the record held both). Waiting on the record is a wait, not a claim.
+    await waitFn(() => { const hs = (document.getElementById("f-feed").contentWindow.__hops || []).filter((h) => h.ev === "head").map((h) => h.name); return hs.indexOf("old") >= 0 && hs.lastIndexOf("web") > hs.indexOf("old"); }, null, "the section never moved to old and back to web");
     await waitFn(() => !!document.getElementById("f-chat").contentDocument.querySelector(".picker-overlay"), null, "the chat never showed the confirmRevive prompt");
     await page.mouse.move(2, 2);
     await page.waitForTimeout(300);
-    const r = { moved, back, headNow: await headName() };
+    const r = { headNow: await headName() };
     await dismissConfirm();
     return r;
   });
   await deliver(payloadOf(false));
+  // s. the shape of the claim: a head that moves and returns inside one frame (two shell relays in two tasks, api then web,
+  // before the next animation frame). The per-frame poll the road above used to make its claim with samples after both
+  // and reads moved False for a movement that happened; the observer's record holds the sequence. Nothing but the feed
+  // page is involved: the relays are synthetic and no kernel frame follows (the road is the layout's last).
+  await settle(cfg.web, "web");
+  await road("s_move_and_return_inside_one_frame", async () => {
+    await page.evaluate(([api, web]) => new Promise((res) => {
+      const w = document.getElementById("f-feed").contentWindow;
+      w.dispatchEvent(new w.MessageEvent("message", { data: { romp: "activeChat", id: api, gesture: true, nonce: 91 } }));
+      w.setTimeout(() => { w.dispatchEvent(new w.MessageEvent("message", { data: { romp: "activeChat", id: web, gesture: true, nonce: 92 } })); res(null); }, 0);
+    }), [cfg.api, cfg.web]);
+    const pollMoved = await waitHead("api", 300);   // the old claim's shape: one sample per animation frame, after the fact
+    await page.waitForTimeout(100);
+    return { pollMoved, headNow: await headName() };
+  });
   await page.close();
 };
 
@@ -398,10 +417,15 @@ await finish();
 
 def _legs(hops):
     """The hop times relative to the gesture (ms), in order: the first click/key is the gesture."""
-    g = next((h for h in hops if h["ev"] in ("click", "key")), None)
+    g = next((h for h in hops if h["ev"] in ("click", "key")), hops[0] if hops else None)   # a synthetic road has no gesture: its first hop is the clock's zero
     if not g:
         return []
     return [(h["f"], h["ev"], h.get("id") or h.get("name") or h.get("key") or "", round(h["t"] - g["t"], 1), h.get("reaffirm")) for h in hops]
+
+
+def _heads(road):
+    """The section head's recorded names, in order: every change the feed frame's observer saw during the road."""
+    return [h["name"] for h in road["hops"] if h["ev"] == "head"]
 
 
 def _t(road, ev, **match):
@@ -600,14 +624,23 @@ class FeedFocusLatencyServed(unittest.TestCase):
         for tag, L in self._layouts():
             self.assertFalse(L["oldTab"], "%s: the closed session has no tab" % tag)
             f = L["roads"]["f_closed_card_says_closed"]
-            self.assertEqual((f["moved"], f["headNow"]), (False, "web"), "%s: a card the feed knows closed moves the section by nothing: %r" % (tag, f))
+            self.assertEqual((_heads(f), f["headNow"]), ([], "web"), "%s: a card the feed knows closed moves the section by nothing (the observer recorded no head change): %r" % (tag, f))
             self.assertIn("closed", f["confirm"] or "", "%s: the chat got its confirmRevive prompt: %r" % (tag, f["confirm"]))
             self.assertIsNone(_t(f, "recv:activeChat", id=SID_OLD), "%s: no frame for the closed session" % tag)
             g = L["roads"]["g_closed_card_marked_live"]
-            self.assertEqual((g["moved"], g["back"], g["headNow"]), (True, True, "web"),
-                             "%s: a card still marked live moves the section on the click and the kernel's answer brings it back: %r" % (tag, g))
+            self.assertEqual((_heads(g), g["headNow"]), (["old", "web"], "web"),
+                             "%s: a card still marked live moves the section on the click and the kernel's answer brings it back, the observer's record of the head reading exactly old then web:\n%s" % (tag, _legs(g["hops"])))
             self.assertTrue(any(h["ev"] == "recv:activeChat" and h.get("reaffirm") and h["id"] == SID_WEB for h in g["hops"]),
                             "%s: the kernel's marked reaffirm frame for the standing session arrived:\n%s" % (tag, _legs(g["hops"])))
+
+    def test_5_the_head_claim_is_the_observers_sequence_not_a_per_frame_sample(self):
+        """The shape of the claim (a peer's read of two CI reds on unrelated heads): the section can move and return
+        inside one animation frame, and a per-frame poll after the fact reads the move as never having happened while the
+        observer's record holds both values. The road drives that case with two shell relays in two tasks."""
+        for tag, L in self._layouts():
+            s = L["roads"]["s_move_and_return_inside_one_frame"]
+            self.assertEqual((_heads(s), s["headNow"]), (["api", "web"], "web"), "%s: the observer recorded the move and the return: %r" % (tag, _legs(s["hops"])))
+            self.assertFalse(s["pollMoved"], "%s: the per-frame poll, sampling after both, never saw the move: the old claim's shape reads a real movement as none" % tag)
 
 
 if __name__ == "__main__":
