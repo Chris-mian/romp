@@ -852,7 +852,8 @@ class _PerfStats:
             except Exception:
                 memos[key] = {}
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
-        memos["ghostDropped"] = dict(_GHOST_DROPPED)   # the spawned-at ghost floor's drops: bgTasks and agents (2026-09-14)
+        memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
+        #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -3671,9 +3672,11 @@ def _bus_restore_mail(sid, mids):
     """POST /restore to the local bus for a postal banner the SDK backend fed and a connection rebuild stranded
     (SdkSession._return_stranded_mail, 2026-09-12): the bus puts each named message back into the session's new/
     under its ORIGINAL id (its `restore`) and wakes the session, so the mail re-delivers as itself. Returns the set
-    of ids the bus put back — authoritative about the bus's files (an id missing from it is gone from cur/) — and
-    RAISES when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a
-    quiet False here would be the loss this exists to end."""
+    of ids the bus HOLDS: the ones it put back, and (2026-09-14) the ones it answered `unknown` for (its cur/ could
+    not be read, the claim stands and its own retry puts them back), which are neither gone nor to be re-fed on
+    this side's say-so. Authoritative about the bus's files (an id missing from the set is gone from cur/); RAISES
+    when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a quiet False
+    here would be the loss this exists to end."""
     conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=5)
     try:
         conn.request("POST", "/restore", json.dumps({"id": sid, "mids": list(mids)}),
@@ -3685,7 +3688,19 @@ def _bus_restore_mail(sid, mids):
     body = json.loads(data.decode("utf-8", "replace") or "{}") if resp.status == 200 else None
     if not isinstance(body, dict) or not body.get("ok"):
         raise RuntimeError("bus /restore answered %d: %s" % (resp.status, data[:200].decode("utf-8", "replace")))
-    return set(m for m in (body.get("restored") or []) if isinstance(m, str))
+    held = set(m for m in (body.get("unknown") or []) if isinstance(m, str))
+    if held:
+        sys.stderr.write("romp-kernel: the bus holds %d stranded message(s) it could not put back yet (its cur/ cannot be read); "
+                         "neither re-fed nor dropped, the bus's retry puts them back: %s\n" % (len(held), ", ".join(sorted(held))))
+    out = _BusHeld(set(m for m in (body.get("restored") or []) if isinstance(m, str)) | held)
+    out.held = held                                   # the caller's log names the pending fault beside the ids handed back
+    return out
+
+
+class _BusHeld(set):
+    """The set _bus_restore_mail answers: the ids the bus holds (put back, or held under an unreadable cur/ for its retry), with
+    the held ones named in `.held` so SdkSession._return_stranded_mail can say the pending fault in its own line."""
+    held = frozenset()
 
 
 ROMP_VOICE_WORDS = ("romp", "card", "board", "goal", "cleared", "dismissal", "status check", "nudge")
@@ -4631,8 +4646,11 @@ def _state_quarantine(p, st, reason):
         return None
     except OSError as e:
         return "could not be moved aside: %s" % _errno_text(e)
-    sys.stderr.write("romp-kernel: %s could not be parsed (%s); moved aside to %s, the store reads as empty\n"
-                     % (p.name, reason, aside.name))
+    sys.stderr.write("romp-kernel: %s could not be parsed (%s); moved aside to %s, %s\n"
+                     % (p.name, reason, aside.name,
+                        "the flags it held are unknown (the last cleanly read ones stand; with none known mail is held and flag "
+                        "changes are refused until the file is written again)" if p.name == "session-flags.json"
+                        else "the store reads as empty"))
     # The dashboard hears it too (review find, 2026-09-08): a quarantine resets the store to EMPTY, so
     # every bell override, lane flag (postal isolation included) or saved lane order it held reads as
     # a default from here on, and the stderr line alone left that looking like settings resetting
@@ -4641,9 +4659,14 @@ def _state_quarantine(p, st, reason):
     # speaks exactly once. Guarded like _note_state_fault: a notice never turns a successful move
     # into a raise.
     try:
-        _sync_notice("%s could not be parsed and was moved aside to %s; %s it held start over "
-                     "empty until you set them again"
-                     % (p.name, aside.name, _STATE_FILE_HOLDS.get(p.name, "the settings")), ok=False, kind="refused")
+        if p.name == "session-flags.json":
+            # the flags carry DENY boundaries (postal isolation): a quarantine does not reset them to empty (2026-09-14,
+            # the lows PR's round two); the readers keep the last cleanly read flags, or hold mail when none are known
+            tail = ("the flags it held (mail isolation included) are unknown: the last cleanly read ones stand, and with "
+                    "none known mail is held for every session and flag changes are refused until the file is written again")
+        else:
+            tail = "%s it held start over empty until you set them again" % _STATE_FILE_HOLDS.get(p.name, "the settings")
+        _sync_notice("%s could not be parsed and was moved aside to %s; %s" % (p.name, aside.name, tail), ok=False, kind="refused")
     except Exception:
         pass
     return None
@@ -7151,17 +7174,101 @@ def _session_flags_proved():
     """The MUTATION snapshot of the per-session flags: a read fault RAISES (_StateUnreadable) so
     _set_session_flag / _set_notify_session refuse rather than writing a fabricated {} back over
     every session's flags -- including the postalServiceOff isolation boundaries -- under a success
-    ack (the state-readers audit). Only a missing (or freshly-quarantined) file reads as empty."""
-    raw = _read_state_json(jd.STATE / "session-flags.json", expect=dict)
-    return raw if isinstance(raw, dict) else {}
+    ack (the state-readers audit). Only a missing file with no quarantine sidecar beside it reads as
+    empty. A QUARANTINE (torn or wrong-shaped bytes moved aside by _read_state_json, now or on an
+    earlier read: a sidecar beside a missing file) is not an empty store (2026-09-14): the snapshot is
+    the LAST cleanly read flags this process holds (_flags_cache, the same value the mail door reads),
+    so a toggle after a quarantine keeps every other boundary and its write makes the sidecar history;
+    with nothing known the write is REFUSED, loudly, and the store is never rebuilt from empty."""
+    p = jd.STATE / "session-flags.json"
+    hit = _flags_cache.get(str(p))
+    raw = _read_state_json(p, expect=dict)
+    if isinstance(raw, dict):
+        return raw
+    if raw is None and not _flags_quarantined(p):
+        return {}                                    # missing, never quarantined: a fresh install, legitimately empty
+    if hit is not None:
+        return dict(hit[1])                          # the last cleanly read flags: the toggle applies on top of them
+    raise _StateUnreadable(p, _flags_exit_text(p))   # the refusal names the exit: the file to write, and what that does
+
+
+_FLAGS_UNKNOWN_TEXT = ("torn or wrong-shaped bytes were moved aside, so the flags are unknown: %s until the file is "
+                       "written again")   # ...the last cleanly read flags stand / mail is held for every session
+
+
+def _flags_quarantined(p):
+    """A quarantine sidecar stands beside the (missing) flags file: _read_state_json moved torn or wrong-shaped bytes
+    aside, so a missing file here is not a user who set no flags but a store whose contents are UNKNOWN (the isolation
+    boundaries included); an unlistable parent reads as quarantined too (closed, never a quiet empty). A sidecar the
+    store has been written or cleanly read since is history (_retire_flags_quarantine renamed it `.retired-*`, bytes
+    kept), so deleting the flags file later beside an old sidecar is a fresh install, not a re-entered hold."""
+    try:
+        return any(True for _ in p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        return True
+
+
+def _retire_flags_quarantine(p):
+    """The flags store was written, or read cleanly, with quarantine sidecars beside it: the hold they keyed is over.
+    Each `session-flags.json.corrupt-<stamp>` is renamed `.retired-<stamp>` (the bytes stay for forensics; only the
+    mark the readers key on goes), said once on stderr. Best-effort: a rename that fails leaves the mark, and the
+    readers keep holding, which is the safe side."""
+    try:
+        sides = list(p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        return
+    for side in sides:
+        try:
+            os.replace(side, side.with_name(side.name.replace(".corrupt-", ".retired-", 1)))
+            sys.stderr.write("romp-kernel: %s is written again; the quarantine mark %s retired (bytes kept as %s)\n"
+                             % (p.name, side.name, side.name.replace(".corrupt-", ".retired-", 1)))
+        except OSError as e:
+            sys.stderr.write("romp-kernel: the quarantine mark %s could not be retired (%s); the hold stands\n" % (side.name, _errno_text(e)))
+
+
+def _flags_exit_text(p):
+    """The refusal's remedy, the one in-product exit of the fail-closed hold: what to write and what it does."""
+    sides = []
+    try:
+        sides = sorted(s.name for s in p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        pass
+    return ("the session settings file %s was moved aside%s (torn bytes) and no flags are known, so mail is held for every "
+            "session and flag changes are refused. The one exit: write {} to %s to start the settings from empty (every "
+            "session's mail isolation and feed mute is then off until set again). The sidecar keeps the unreadable bytes "
+            "for forensics; they cannot be read back."
+            % (p, (" to " + ", ".join(sides)) if sides else "", p))
+
+
+def _flags_written(p, cur):
+    """A clean write of the flags store landed (`cur`, the object written): the display cache is primed from the file's
+    identity (so a process that only wrote, never displayed, holds a warm last-known copy for the next fault), the read
+    fault episode ends, and any quarantine mark is retired."""
+    try:
+        st = p.stat()
+        _flags_cache[str(p)] = ((st.st_mtime_ns, st.st_size), dict(cur))
+    except OSError:
+        pass
+    _clear_state_fault(p)
+    _retire_flags_quarantine(p)
 
 
 def _session_flags():
+    """The per-session flags for DISPLAY readers, never raising. A missing file with no quarantine sidecar is a genuine
+    state ({}); a stat fault, a read fault, or bytes _read_state_json quarantined (and a missing file with a sidecar
+    beside it) are UNKNOWN: the last cleanly read flags stand, uncached and unproved, with one notice per episode,
+    and with none known the readers that depend on them close their doors (_flags_unknown_cold: mail held). Until
+    2026-09-14 the quarantine read as a clean EMPTY store, which lifted every isolation boundary at once and let a
+    peer's mail land in a session the user had isolated."""
     p = jd.STATE / "session-flags.json"
     hit = _flags_cache.get(str(p))
     try:
         st = p.stat(); key = (st.st_mtime_ns, st.st_size)   # ns + size → no stale hit on rapid toggles
     except FileNotFoundError:
+        if _flags_quarantined(p):
+            _note_state_fault(_StateUnreadable(p, _FLAGS_UNKNOWN_TEXT % ("the last cleanly read flags stand" if hit is not None
+                                                                          else "mail is held for every session")))
+            return hit[1] if hit is not None else {}
         _clear_state_fault(p)
         return {}
     except OSError as e:
@@ -7178,9 +7285,17 @@ def _session_flags():
     except _StateUnreadable as e:
         _note_state_fault(e)
         return hit[1] if hit is not None else {}
+    if raw is None:
+        # the file existed at the stat and its bytes were torn or of the wrong shape: _read_state_json moved them aside
+        # (or a peer's publish replaced the file under every read). UNKNOWN, not empty: the last cleanly read flags
+        # stand, the fault stays noted so _flags_unknown_cold closes the mail door when nothing is known
+        _note_state_fault(_StateUnreadable(p, _FLAGS_UNKNOWN_TEXT % ("the last cleanly read flags stand" if hit is not None
+                                                                      else "mail is held for every session")))
+        return hit[1] if hit is not None else {}
     _clear_state_fault(p)
     d = raw if isinstance(raw, dict) else {}
     _flags_cache[str(p)] = (key, d)
+    _retire_flags_quarantine(p)                      # read cleanly: a quarantine mark beside it is history
     return d
 
 
@@ -7212,6 +7327,7 @@ def _set_session_flag(sid, flag, value):
         else:
             cur.pop(sid, None)
         _write_state_json(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+        _flags_written(jd.STATE / "session-flags.json", cur)   # the cache primed, the fault episode ended, the mark retired
     if flag == "hideFromFeed" and value:
         # Muting takes the session OUT of task tracking → VIEW-CLEAR its current goals: seal them exactly like
         # crossing each card off the feed (cleared.jsonl + the durable node flag), NOT delete — they stay on
@@ -7398,6 +7514,7 @@ def _set_notify_session(sid, value):
         else:
             cur.pop(sid, None)
         _write_state_json(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+        _flags_written(jd.STATE / "session-flags.json", cur)   # the cache primed, the fault episode ended, the mark retired
 
 
 def _prune_notify_cards(live_ids, gone_ids=()):
@@ -26160,7 +26277,22 @@ def _mail_off_why_k(sid):
         return "unreadable"
     if _thread_mail_off(sid):
         return "thread"
-    return "isolation" if (_session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")) else ""
+    iso = _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")   # reads the flags (noting a fault)
+    if _flags_unknown_cold():
+        return "flags"                     # the flags cannot be read and none are known: closed under the door's own word
+    return "isolation" if iso else ""
+
+
+def _flags_unknown_cold():
+    """The session-flags file cannot be read (a stat or read fault, or bytes quarantined) and this process has no
+    last-known copy: the flags' state is UNKNOWN (_session_flags said so once per episode and answered {}), so a mail
+    door that depends on them is closed under "flags" (the UI: mail held, the settings file cannot be read) until a
+    clean read; with a last-known copy the door keeps that answer. The bus's _mail_off_why applies the same rule over
+    the same file (its _session_flags_read), so the two sides agree on every shape WITHIN a process's knowledge; across
+    processes a warm kernel holding a cached clean read paints mail on while a cold bus holds everything under "flags"
+    until the bus reads the file once cleanly (2026-09-14)."""
+    p = str(jd.STATE / "session-flags.json")
+    return p in _state_fault_seen and _flags_cache.get(p) is None
 
 
 def _mail_off_fields(sid):
@@ -28074,7 +28206,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     return out
 
 
-def _bg_tasks(path, spawned_at=None, live=None):
+def _bg_tasks(path, spawned_at=None, live=None, sid=None):
     """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
     'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
     (read fresh). The cached transcript scan (mtime+size, like _background_why) holds the meta; the output is
@@ -28088,6 +28220,8 @@ def _bg_tasks(path, spawned_at=None, live=None):
     background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Both filters run after
     the cache, since they change without the transcript changing."""
     scan = _bg_scan_cached(path)
+    if sid:
+        _count_restamped(sid, path, scan)               # the epoch moved since this process last saw it: what the move dropped
     if live is not None:
         live_ids = {t.get("toolUseId") for t in live if t.get("toolUseId")}
         scan = [tk for tk in scan if tk["id"] in live_ids]
@@ -28457,7 +28591,44 @@ def _agent_alive(row, agent_id, tm, spawned_at):
     return True
 
 
-_GHOST_DROPPED = {"bgTasks": 0, "agents": 0}      # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+_GHOST_DROPPED = {"bgTasks": 0, "agents": 0,     # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+                  "restamped": {"bgTasks": 0, "agents": 0}}   # ...and, a different question, what a RE-STAMP dropped (below)
+_RESTAMPS_OVERRIDE = None    # tests: a restamps table in place of the SDK backend module's
+
+
+def _restamps_table():
+    """The SDK backend's per-process table of epochs it moved, {sid: (previous, new)}, written where the reg's
+    spawnedAt moves (the hello decision, the kernel-child stamp) and consumed here once per entry."""
+    if _RESTAMPS_OVERRIDE is not None:
+        return _RESTAMPS_OVERRIDE
+    return getattr(sys.modules.get("romp_sdk_backend"), "_RESTAMPS", None)
+
+
+def _count_restamped(sid, path, scan):
+    """memos.ghostDropped.restamped: the spawnedAt fix's own question, distinct from the cumulative counters above.
+    `bgTasks`/`agents` count every drop at every build, so a stale row of a task that died with an EARLIER CLI is
+    counted once per build for as long as it stands (the memo's health, never zero on a box with history). This one
+    counts, once per re-stamp, the still-running rows and the unsettled foreground launches whose time lies at or after
+    the reg's PREVIOUS spawnedAt and before the new one: a survivor's work the re-stamp dropped. Seeded from the STAMP
+    site (the backend records (sid, previous, new) where it moves the reg), not from the build's first sight: at a boot
+    the reg moves before the first build, and a table seeded by the build would record the new value and count nothing.
+    Must read zero at every boot from now on (the manager's read of the follow-up, 2026-09-14). Never a clock: two
+    stored epochs against row times."""
+    table = _restamps_table()
+    if not table or sid not in table:
+        return
+    prev, new = table.pop(sid)
+    try:
+        n_tasks = sum(1 for r in scan if r.get("status") == "running" and isinstance(r.get("t"), (int, float))
+                      and prev <= r["t"] < new)
+        st = _agent_launch_state(path)
+        n_agents = sum(1 for tid, t in (st.get("launched") or {}).items()
+                       if tid not in st.get("settled", ()) and isinstance(t, (int, float)) and prev <= t < new)
+    except Exception as e:
+        sys.stderr.write("romp-kernel: restamp count for %s failed: %s: %s\n" % (str(sid)[:8], type(e).__name__, e))
+        return
+    _GHOST_DROPPED["restamped"]["bgTasks"] += n_tasks
+    _GHOST_DROPPED["restamped"]["agents"] += n_agents
 #                                                    (T401: a surviving CLI's launches read as ghosts at every restart until the
 #                                                    spawnedAt fix; zero for survivors on the boot after it is the read)
 
@@ -36265,7 +36436,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             # Reads the CALLER's snapshot — a fresh _live_map() here cost a reg sweep
             # per session build, on the pusher's hottest path (the 2026-08-10 CPU fix).
             "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid),
-                                 live=(live_map.get(str(sid)) or {}).get("bgTasks")),
+                                 live=(live_map.get(str(sid)) or {}).get("bgTasks"), sid=sid),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),

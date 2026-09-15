@@ -5220,6 +5220,35 @@ class SpawnedAtStampedOncePerCli(unittest.TestCase):
         self._drive(be2, s2, root2, [{"road": "spawn-host", "hello": self._hello(self.CLI_B)}])
         self.assertEqual(marked2, [self.SID], "a thread-top spawn marks")
 
+    def test_a_first_hello_naming_the_known_cli_then_a_second_naming_a_fresh_one_moves_once(self):
+        """The follow-up's read, low 1: an attach to the CLI the reg names whose handshake then fails (keep), then a spawn
+        whose hello names a fresh CLI (move): one stamp, with the host's spawn time and the launch's login; and a stale lease
+        beside a surviving CLI (the pre-read would have said spawn) still keeps, since the lease never decides."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "attach", "hello": self._hello(self.CLI_A), "fail": "after-hello"},
+                                          {"road": "spawn-host", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(seen, [(self.T_HOST, "4343:b1")], "the known CLI kept at the first hello; the fresh one stamped at the second")
+        self.assertEqual(s._launched_login, "launch-login")
+        root2, be2, s2 = self._world("on")
+        pid = os.getpid(); start = sb.proc_start(pid)
+        sb.write_lease(root2, {"sid": self.SID, "fsid": self.SID, "name": "web", "pid": pid, "start": start,
+                               "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": self.T0,
+                               "t": time.time() - 3600})                   # a beat an hour stale: the pre-read would call it an orphan
+        seen2 = self._drive(be2, s2, root2, [{"road": "attach", "hello": self._hello(self.CLI_A, login="today")}])
+        self.assertEqual((seen2, self._reg(root2), s2._launched_login), ([], (self.T0, "4242:a1"), "restored-login"))
+
+    def test_a_host_iteration_then_a_kernel_child_iteration_stamp_twice_and_the_child_clears_the_identity(self):
+        """The follow-up's read, low 2: the kernel-child gate at the connect is `self._host is None`, true only because the
+        loop's finally clears the host each iteration. A host iteration (a fresh CLI stamped at its hello, the handshake then
+        fails) followed by a child iteration stamps twice, and the child's stamp clears the identity; a change to that finally
+        that left the host set would skip the child's stamp and fail here."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B), "fail": "after-hello"},
+                                          {"road": "child"}])
+        self.assertEqual(len(seen), 2, seen)
+        self.assertEqual(seen[0], (self.T_HOST, "4343:b1"), "the host's CLI at its hello")
+        self.assertGreater(seen[1][0], self.T0); self.assertEqual(seen[1][1], "", "the kernel child's stamp clears the identity")
+
     def test_the_plain_roads_as_controls(self):
         """The lease before the connect is irrelevant to the decision: a host gone between the reads (a live lease, then a
         spawn), hosts off with a live lease (a kernel child), the reverse race (no lease, then an attach to the CLI the reg
@@ -5243,6 +5272,34 @@ class SpawnedAtStampedOncePerCli(unittest.TestCase):
                 else:
                     self.assertEqual(seen, [], "the CLI the reg names keeps its epoch")
                     self.assertEqual(self._reg(root), (self.T0, "4242:a1"))
+
+class HealCwdPendingUnderAnUnreadableSlug(unittest.TestCase):
+    """The queued low (b): the boot reconcile decided a mid-move reg by two os.path.exists calls, so an unsearchable pending slug
+    with the transcript also at the old slug read as a move that never happened and dropped cwdPending; an unreadable slug
+    takes the loud branch and leaves the flag."""
+
+    SID = "11111111-2222-3333-4444-555555555599"
+
+    def test_an_unreadable_pending_slug_leaves_the_move_pending_and_says_so(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        logs = []
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None, log=logs.append)
+        proj = Path(tempfile.mkdtemp()) / "projects"
+        old, pend = proj / "-tmp-old", proj / "-tmp-new"
+        old.mkdir(parents=True); pend.mkdir(parents=True)
+        (old / (self.SID + ".jsonl")).write_text(""); (pend / (self.SID + ".jsonl")).write_text("")
+        with mock.patch.object(sb, "transcript_path", lambda slug, fsid: str(Path(slug) / (fsid + ".jsonl"))):
+            sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwd": str(old), "cwdPending": str(pend)})
+            os.chmod(pend, 0)
+            try:
+                be._heal_cwd_pending(sb.read_reg(root, self.SID))
+            finally:
+                os.chmod(pend, 0o755)
+        self.assertEqual(sb.read_reg(root, self.SID).get("cwdPending"), str(pend), "the move stays pending: the folder could not be read")
+        self.assertTrue(any("cannot be read" in str(m) for m in logs), logs)
+
 
 class PushSessionCallback(unittest.TestCase):
     """_push_session — the connect handshake's targeted one-session push (2026-08-10). The handshake is
