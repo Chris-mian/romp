@@ -167,11 +167,11 @@ class FederatedDialTerms(unittest.TestCase):
     @classmethod
     def _boot(cls):
         if not os.path.isdir(os.path.join(EXT, "node_modules", "playwright")):
-            raise unittest.SkipTest("extension deps absent (npm ci not run here) — the served lab needs them")
+            raise unittest.SkipTest("extension deps absent (npm ci not run here), the served lab needs them")
         probe = subprocess.run(["node", "-e", "const p=require(process.argv[1]);process.stdout.write(p.chromium.executablePath())",
                                 os.path.join(EXT, "node_modules", "playwright")], capture_output=True, text=True)
         if probe.returncode != 0 or not os.path.exists(probe.stdout.strip()):
-            raise unittest.SkipTest("no playwright browser on this box — the served lab needs one (CI installs none)")
+            raise unittest.SkipTest("no playwright browser on this box, the served lab needs one (CI installs none)")
         cls.lab = tempfile.mkdtemp(prefix="federated-dial-terms-")
         b = subprocess.run(["node", "esbuild.js"], cwd=EXT, capture_output=True, text=True)
         if b.returncode != 0:
@@ -226,7 +226,7 @@ class FederatedDialTerms(unittest.TestCase):
             cls.driver_error = "driver timed out; partial output:\n%s" % so
             return
         if p.returncode == 3:
-            raise unittest.SkipTest("no playwright browser on this box — the served leg needs one (CI installs none)")
+            raise unittest.SkipTest("no playwright browser on this box, the served leg needs one (CI installs none)")
         if p.returncode != 0:
             cls.driver_error = "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:]
             return
