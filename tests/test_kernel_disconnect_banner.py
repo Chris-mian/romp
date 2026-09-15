@@ -161,7 +161,7 @@ process.stdout.write(JSON.stringify({
         # indistinguishable. (A socket the shim ABANDONS leaves none — abandon() disowns its onclose; the
         # watchdog-close row above went down the quiet socket before the abandon, and an armed socket's
         # "-quiet" raise rides the redial.)
-        self.assertIn('if(openSock===this){try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,'
+        self.assertIn('if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,'
                       'reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),'
                       'sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected}', js)
         # …for a socket that OPENED. A handshake that never opened fires onclose too — every redial of an
@@ -259,7 +259,7 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("if(wasReconn){raiseStale();", js, "…and never raises it outright")
         self.assertIn('function clearStale(){stalePending="";', js,
                       "the resync disarms it, so it never appears at all")
-        self.assertIn("if(freshPending){freshPending=false;clearStale();}", js,
+        self.assertIn("if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}", js,   # the reload core's fresh hold ends here too (invisible restarts, 2026-09-14)
                       "the first real frame after it fires the retire")
         # keepalives must NOT count as a resync — the ka branch returns before the retire line
         self.assertLess(js.index('msg.type==="ka"'), js.index("if(freshPending)"),
