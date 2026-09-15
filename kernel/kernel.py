@@ -44473,12 +44473,26 @@ def _note_ws_inbound(client, now=None):
     _reveal_proven(client)     # a push tap handed to this socket while it was unproven has landed (2026-09-06)
 
 
-def _dial_kind(headers):
-    """The one tell for what dialled a socket (2026-09-15, shared with the connect-push split): "page" for a dial carrying an
-    Origin or a User-Agent header (a browser's upgrade carries both), "relay" for one carrying neither. The federation splice
-    (_remote_ws) forwards only the six WebSocket upgrade headers and dials with the remote's own token, so another kernel's
-    relay dial has neither; a CLI dial has the same shape. `headers` is any mapping with .get (the handler's, or a dict)."""
-    return "page" if (headers.get("Origin") or headers.get("User-Agent")) else "relay"
+def _dial_kind(headers, q):
+    """The one tell for what dialled a socket (2026-09-15, shared with the connect-push split), decided by the terms that
+    decide it, in this order:
+      relay  when the dial states relay=1: the term the federation splice (_remote_ws) writes into the query it forwards, the
+             way the shim states proto, reconnect and skeleton; another kernel relaying a browser's pane to this one.
+      page   when the dial carries an Origin or a User-Agent header: a browser's upgrade carries both, a CLI (curl, wget,
+             urllib) a User-Agent; the splice forwards only the six WebSocket upgrade headers, so its dial carries neither.
+      page   when it carries neither term nor header and no instance id: the VS Code extension host dials from Node's ws
+             client, which sends no Origin and no User-Agent, and dials without the shim (app, wid and token only).
+      relay  otherwise: no term, no header, the shim's instance id forwarded: a page relayed by a hub kernel older than the
+             relay term (the header rule is the fallback for that kernel alone, and goes with it).
+    `headers` is any mapping with .get (the handler's, or a dict); `q` the parsed query (parse_qs: name -> [values])."""
+    if (q.get("relay") or [""])[0] == "1":
+        return "relay"
+    if headers.get("Origin") or headers.get("User-Agent"):
+        return "page"
+    return "relay" if (q.get("iid") or [""])[0] else "page"
+
+
+_ws_open_row_failed = False   # set once a wsopen row could not be written, so the stderr line below is said once per process
 
 
 def _note_ws_open(client, reconnect=False, now=None):
@@ -44486,14 +44500,24 @@ def _note_ws_open(client, reconnect=False, now=None):
     an empty client-diag.jsonl read as a broken sink when no browser had been on a page this kernel serves, and a count of
     GET /ws per app read as the attached dashboard's panes when they may have been another kernel's relay dials. The row
     names the app, the dashboard id, the shim's reconnect term and the client's `kind` (_dial_kind at the handshake: page or
-    relay). Returns whether a row was filed; the file's own failure is never the socket's."""
+    relay; hub for the hub side of a spliced upgrade, with the host it was relayed to). Returns whether a row was filed; the
+    file's own failure is never the socket's, and is said on stderr ONCE (the reading rule, an empty file means no page and
+    not a broken sink, holds only while writes succeed, so a failed one must be on the record)."""
+    global _ws_open_row_failed
     try:
         now = time.time() if now is None else now
+        data = {"app": client.get("app"), "kind": client.get("kind"), "reconnect": bool(reconnect),
+                "iid": bool(client.get("iid")), "cid": client.get("cid")}
+        if client.get("host"):
+            data["host"] = str(client.get("host"))
         _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "wsopen",
-                                                                         "data": {"app": client.get("app"), "kind": client.get("kind"), "reconnect": bool(reconnect),
-                                                                                  "iid": bool(client.get("iid")), "cid": client.get("cid")}}) + "\n")
+                                                                         "data": data}) + "\n")
         return True
-    except Exception:
+    except Exception as e:
+        if not _ws_open_row_failed:
+            _ws_open_row_failed = True
+            print("[client-diag] could not file a wsopen row (%s): from here on an empty client-diag.jsonl is not a record of no page" % e,
+                  file=sys.stderr)
         return False
 
 
@@ -62859,7 +62883,7 @@ class Handler(BaseHTTPRequestHandler):
         # `q` above is the connect QUERY; the client's send queue gets its own name — a Queue.get("delta")
         # would block this handler forever (caught by tests/test_kernel.py's socket-error loop test)
         client, sendq, lock = _new_ws_client(app, wid, self.connection, lock=lock)
-        client["kind"] = _dial_kind(self.headers)   # page or relay: the one tell the wsopen row and the connect-push split read
+        client["kind"] = _dial_kind(self.headers, q)   # page or relay: the one tell the wsopen row and the connect-push split read
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         if (q.get("delta") or [""])[0] == "1":
@@ -62971,6 +62995,9 @@ class Handler(BaseHTTPRequestHandler):
         q.pop("token", None)         # whatever the browser sent never travels — with or without a row token
         if rtok:
             q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
+        q["relay"] = ["1"]           # the dial's kind, stated the way the shim states proto, reconnect and skeleton (2026-09-15): the remote
+        #                               kernel's wsopen row and connect-push split read it first; without it the remote had only header absence
+        #                               to go by, and the VS Code extension host's dial (Node's ws client: no Origin, no User-Agent) read as a relay
         try:
             up = socket.create_connection(("127.0.0.1", int(port)), timeout=6)
         except OSError as e:
@@ -62989,6 +63016,10 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             up.close()
             return self._send(502, "tunnel to %s dropped" % host, "text/plain")
+        # the hub side of this upgrade is accepted and spliced, never registered as a client: its own wsopen row, kind hub, names
+        # the host it was relayed to, so the auditor sees the browser's pane here AND its relay dial on the remote (2026-09-15)
+        _note_ws_open({"app": (q.get("app") or ["chat"])[0], "wid": (q.get("wid") or [""])[0], "iid": (q.get("iid") or [""])[0],
+                       "cid": uuid.uuid4().hex[:12], "kind": "hub", "host": host}, reconnect=(q.get("reconnect") or [""])[0] == "1")
         self.close_connection = True             # hijacked socket — no keep-alive after the splice
         down = self.connection
 
