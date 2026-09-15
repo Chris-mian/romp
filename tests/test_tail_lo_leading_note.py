@@ -67,28 +67,109 @@ class TailLoLeadingNote(unittest.TestCase):
         finally:
             km._sessions, km._parse = saved
 
-    def test_tail_run_start_walks_back_from_the_cut_only_while_the_turn_holds(self):
-        """The snap's start is the run of the cut's turn ENDING at the cut, found backward: a forward scan to the first event of
-        that turn anywhere in the list once returned a start before an unrelated stretch when the built list's turn index was
-        not nondecreasing (the review of 2026-09-15). The parse here places one event of the LAST turn early (an echo placed by
-        its send time into an earlier position): tix [0, 5, 1, 1, 2, 2, 5, 5]."""
-        turns = [_turn(i) for i in range(6)]
-        turns[5]["atoms"] = [{"uuid": "x5"}, {"uuid": "y5"}, {"uuid": "z5"}]
-        evs = [{"uuid": "u0"}, {"uuid": "x5"}, {"uuid": "u1"}, {"uuid": "a1"}, {"uuid": "u2"}, {"uuid": "a2"}, {"uuid": "y5"}, {"uuid": "z5"}]
-        saved = (km._sessions, km._parse)
+    def _stubbed(self, turns, tix_override=None):
+        """The regions wire over a synthetic list: discovery, the parse and (optionally) the turn index stubbed."""
+        saved = (km._sessions, km._parse, km._turn_index_of_events, km.WIRE_TAIL, km.build_session)
         km._sessions = lambda now=None, **kw: [{"sid": SID, "name": "web", "path": "/tmp/x.jsonl", "mtime": 0, "anchor": SID}]
         km._parse = lambda path, sid, now: {"turns": turns}
+        if tix_override is not None:
+            km._turn_index_of_events = lambda evs, turns: list(tix_override)
+        return saved
+
+    def _restore(self, saved):
+        km._sessions, km._parse, km._turn_index_of_events, km.WIRE_TAIL, km.build_session = saved
+
+    def _partition(self, evs, cut):
+        """The REAL frame builder (a proto-2 client's full frame, the wire tail lowered to put the cut at `cut`) and the REAL gap
+        reply (loadTurns for [0, tailLo)): the page's events plus the frame's, in order, against the whole list."""
+        km.WIRE_TAIL = len(evs) - cut
+        m = {"type": "session", "id": SID, "events": evs, "status": {}, "floor": 0}
+        km.build_session = lambda sid, now, live_map=None, **kw: m
+        sent = []
+        c = {"send": lambda s: sent.append(__import__("json").loads(s)), "sent": {}, "proto": 2, "echat": {}}
+        km._send_chat_locked(c, m, None, 0, False)
+        frame = sent[-1]
+        reply = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": 0, "hi": frame["tailLo"]}, 1700000000, base=c["echat"][SID])
+        return frame, reply
+
+    def test_the_run_edge_is_one_function_for_the_frame_and_the_gap_page(self):
+        """The rule stated on _turn_run_edge: the run of turn t begins at the first index whose turn index reaches t, and the gap
+        page for [lo, t) ends exactly there. Contiguous shapes (every real build's) and the review's non-monotone stub, driven
+        through the real frame builder and the real gap reply: the page's events plus the frame's are the whole list, once."""
+        turns = [_turn(i) for i in range(6)]
+        turns[5]["atoms"] = [{"uuid": "x5"}, {"uuid": "y5"}, {"uuid": "z5"}]
+        # the ordinary shape: a contiguous last turn, the cut inside it, the run from the turn's first event
+        evs = [{"uuid": "u0", "kind": "user"}, {"uuid": "a0", "kind": "assistant"}, {"uuid": "u1", "kind": "user"}, {"uuid": "a1", "kind": "assistant"},
+               {"uuid": "x5", "kind": "user"}, {"uuid": "y5", "kind": "assistant"}, {"uuid": "z5", "kind": "assistant"}]
+        saved = self._stubbed(turns)
         try:
-            self.assertEqual(km._turn_index_of_events(evs, turns), [0, 5, 1, 1, 2, 2, 5, 5], "the fixture's turn index is not nondecreasing")
-            self.assertEqual(km._tail_run_start(SID, evs, 6, 1700000000), (6, 5), "the run of turn 5 ending at the cut begins at 6; the stray early event is not its head")
-            self.assertEqual(km._tail_run_start(SID, evs, 7, 1700000000), (6, 5), "a cut one later walks back to the same edge")
-            # the ordinary shape: a contiguous last turn, the cut inside it, the start its first event
-            evs2 = [{"uuid": "u0"}, {"uuid": "a0"}, {"uuid": "u1"}, {"uuid": "a1"}, {"uuid": "x5"}, {"uuid": "y5"}, {"uuid": "z5"}]
-            self.assertEqual(km._turn_index_of_events(evs2, turns), [0, 0, 1, 1, 5, 5, 5])
-            self.assertEqual(km._tail_run_start(SID, evs2, 6, 1700000000), (4, 5), "the whole contiguous turn, from its first event")
-            self.assertEqual(km._tail_run_start(SID, evs2, 2, 1700000000), (2, 1), "a cut already at a turn's first event stays")
+            self.assertEqual(km._turn_index_of_events(evs, turns), [0, 0, 1, 1, 5, 5, 5])
+            self.assertEqual(km._turn_run_edge([0, 0, 1, 1, 5, 5, 5], 5), 4)
+            self.assertEqual(km._tail_run_start(SID, evs, 6, 1700000000), (4, 5), "the whole contiguous turn, from its first event")
+            self.assertEqual(km._tail_run_start(SID, evs, 2, 1700000000), (2, 1), "a cut already at a turn's first event stays")
+            frame, reply = self._partition(evs, 6)
+            self.assertEqual((frame["tailLo"], [e["uuid"] for e in frame["events"]]), (5, ["x5", "y5", "z5"]))
+            self.assertEqual([e["uuid"] for e in reply["events"]] + [e["uuid"] for e in frame["events"]], [e["uuid"] for e in evs], "the gap page and the run partition the list")
         finally:
-            km._sessions, km._parse = saved
+            self._restore(saved)
+        # the review's non-monotone index ([0, 5, 1, 1, 2, 2, 5, 5], cut 6): no builder produces it today; the rule keeps the partition
+        saved = self._stubbed(turns, tix_override=[0, 5, 1, 1, 2, 2, 5, 5])
+        try:
+            self.assertEqual(km._turn_run_edge([0, 5, 1, 1, 2, 2, 5, 5], 5), 1, "the first index that reaches turn 5")
+            evs2 = [{"uuid": u} for u in ("u0", "x5", "u1", "a1", "u2", "a2", "y5", "z5")]
+            self.assertEqual(km._tail_run_start(SID, evs2, 6, 1700000000), (1, 5), "the frame's run begins at the edge, the page before it ends there")
+        finally:
+            self._restore(saved)
+
+    def test_the_gap_page_and_the_frame_partition_the_list_on_a_non_monotone_index(self):
+        """The medium of the 2026-09-16 read, through the REAL frame builder and the REAL gap reply alone (no new name touched, so an
+        older kernel reaches the assertion): on the review's stub ([0, 5, 1, 1, 2, 2, 5, 5], cut 6) the gap page for [0, tailLo)
+        plus the frame's resident events are the whole list, once. The backward walk left events 1 to 5 in neither."""
+        turns = [_turn(i) for i in range(6)]
+        turns[5]["atoms"] = [{"uuid": "x5"}, {"uuid": "y5"}, {"uuid": "z5"}]
+        evs2 = [{"uuid": "u0", "kind": "user"}, {"uuid": "x5", "kind": "user"}, {"uuid": "u1", "kind": "user"}, {"uuid": "a1", "kind": "assistant"},
+                {"uuid": "u2", "kind": "user"}, {"uuid": "a2", "kind": "assistant"}, {"uuid": "y5", "kind": "assistant"}, {"uuid": "z5", "kind": "assistant"}]
+        saved = self._stubbed(turns, tix_override=[0, 5, 1, 1, 2, 2, 5, 5])
+        try:
+            frame, reply = self._partition(evs2, 6)
+            self.assertEqual(frame["tailLo"], 5)
+            self.assertEqual([e["uuid"] for e in reply["events"]] + [e["uuid"] for e in frame["events"]], [e["uuid"] for e in evs2],
+                             "pages plus resident are the whole list, once: nothing in neither region, nothing in both")
+        finally:
+            self._restore(saved)
+
+    def test_a_cut_on_an_unplaced_event_inside_a_turn_resolves_to_the_turns_edge(self):
+        """tix [3, 3, -1, 3, 3], cut 2 (on the note): the run begins at the turn's edge, 0; the head of the turn is never stranded.
+        No builder produces a -1 inside a turn today (the index carries the previous placed turn forward); the rule holds anyway."""
+        turns = [_turn(i) for i in range(4)]
+        evs = [{"uuid": "u3", "kind": "user"}, {"uuid": "a3", "kind": "assistant"}, {"uuid": "orphan:1700000000:0", "kind": "note"}, {"uuid": "x3", "kind": "user"}, {"uuid": "y3", "kind": "assistant"}]
+        saved = self._stubbed(turns, tix_override=[3, 3, -1, 3, 3])
+        try:
+            self.assertEqual(km._tail_run_start(SID, evs, 2, 1700000000), (0, 3))
+            frame, reply = self._partition(evs, 2)
+            self.assertEqual([e["uuid"] for e in frame["events"]], [e["uuid"] for e in evs], "the whole turn is the run")
+            self.assertEqual(reply["events"], [], "nothing before it")
+        finally:
+            self._restore(saved)
+
+    def test_the_index_builder_says_once_when_a_turn_index_decreases(self):
+        """The regions' run labels assume a nondecreasing index; _turn_index_of_events says so on stderr ONCE if a build ever
+        produces a decrease (the partition holds regardless, by _turn_run_edge)."""
+        import io, sys as _sys
+        turns = [_turn(i) for i in range(6)]
+        turns[5]["atoms"] = [{"uuid": "x5"}, {"uuid": "y5"}]
+        evs = [{"uuid": "u0"}, {"uuid": "x5"}, {"uuid": "u1"}, {"uuid": "y5"}]   # turn 5's event early: the index reads 0, 5, 1, 5
+        km._tix_decrease_said[0] = False
+        err = io.StringIO(); saved = _sys.stderr; _sys.stderr = err
+        try:
+            self.assertEqual(km._turn_index_of_events(evs, turns), [0, 5, 1, 5])
+            self.assertEqual(km._turn_index_of_events(evs, turns), [0, 5, 1, 5])
+        finally:
+            _sys.stderr = saved
+            km._tix_decrease_said[0] = False
+        lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, "said once, however many builds: %r" % lines)
+        self.assertIn("chat regions: the built list's turn index decreased (1 after 5 at event 2)", lines[0])
 
     def test_tail_lo_none_when_the_whole_floored_list_is_unplaced(self):
         turns = [_turn(0)]

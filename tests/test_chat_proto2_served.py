@@ -71,6 +71,19 @@ class Proto2LongLastTurn(A.RestartOverACheckpointedSession):
                 self.assertIsInstance(frame.get("tailLo"), int, "the frame names the tail run's first turn")
                 records = [e.get("uuid") for e in frame["events"] if e.get("kind") in ("user", "assistant", "tool", "thinking", "compact")]
                 self.assertEqual(records[-1], "aL1", "…through the closing reply (the overlay cards after it ride the suffix, and are not records)")
+                # the partition over the wire: the gap page just before the run ends with the event immediately before the frame's
+                # first, so the page and the run meet with nothing between (one edge function on the kernel: _turn_run_edge)
+                tail_lo = frame["tailLo"]
+                client.send({"type": "loadTurns", "id": WEB, "lo": tail_lo - 1, "hi": tail_lo})
+                page = None
+                for fr in client.frames(60):
+                    if fr.get("type") == "chatTurns" and fr.get("id") == WEB:
+                        page = fr
+                        break
+                self.assertIsNotNone(page, "the gap page for the turn before the run answered")
+                self.assertEqual(page["span"], [tail_lo - 1, tail_lo])
+                page_records = [e.get("uuid") for e in page["events"] if e.get("kind") in ("user", "assistant", "tool", "thinking", "compact")]
+                self.assertEqual(page_records[-1], "a59", "the page ends with the record immediately before the run's first (the last builder turn's reply)")
             finally:
                 client.close()
         finally:
