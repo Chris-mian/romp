@@ -1559,6 +1559,33 @@ def checkpoint_write_dirty_paths(paths=None, budget_s=None):
     return out
 
 
+def _asm_retire_version_mark(meta, doc):
+    """Retire the refusal mark of a version-old sidecar (checkpoint_sweep): the sidecar's bytes kept beside the document as
+    .meta.retired-<stamp> (_asm_retire_refusal_mark), the sidecar rewritten without the `refused` block, one count under
+    removed["refusedMark:version"]. The rewrite's own errors stay HERE (the 1708 read, low 1): inside the sweep loop's try an
+    OSError on the tmp write or the replace (a full disk, a read-only directory) fell to the loop's except, which reads
+    "this document does not verify" and UNLINKED the document, its sidecar and the aside just written, counted under `sweep`,
+    with the .meta.<pid>.tmp left behind. Now a failed rewrite leaves the document and the mark standing (the mark is read
+    before the document, so the leaf keeps parsing whole as before; the next boot retries), removes its tmp, says so once
+    on stderr and counts under removed["refusedMark:versionFailed"]; the document is never removed for a sidecar write."""
+    _asm_retire_refusal_mark(meta)
+    d2 = {k: v for k, v in doc.items() if k != "refused"}
+    mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+    try:
+        mtmp.write_text(json.dumps(d2))
+        os.replace(mtmp, meta)
+    except OSError as e:
+        try:
+            mtmp.unlink()
+        except OSError:
+            pass
+        _asm_removed("refusedMark:versionFailed")
+        _say_once("checkpoint sweep: the refusal mark of %s could not be retired (%s); the mark stands, the document stays" % (meta.name, e))
+        return False
+    _asm_removed("refusedMark:version")
+    return True
+
+
 def checkpoint_sweep():
     """One pass over the checkpoint directory at boot: a document whose recorded file no longer exists, or that does
     not parse, is removed (counted as swept), so cleared and removed sessions do not grow the directory forever."""
@@ -1596,12 +1623,7 @@ def checkpoint_sweep():
                     # here, once: the sidecar's bytes kept beside it as .meta.retired-<stamp>, the sidecar rewritten without the
                     # block (its av, path, files and linked unchanged), so the next parse takes the version-refusal road once and
                     # the settle's write produces the current version's document. A sidecar without av is version-old too
-                    _asm_retire_refusal_mark(meta)
-                    d2 = {k: v for k, v in doc.items() if k != "refused"}
-                    mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
-                    mtmp.write_text(json.dumps(d2))
-                    os.replace(mtmp, meta)
-                    _asm_removed("refusedMark:version")
+                    _asm_retire_version_mark(meta, doc)
         except (OSError, ValueError):
             keep = False
         if not keep:
