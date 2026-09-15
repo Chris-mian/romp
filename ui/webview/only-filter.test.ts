@@ -145,11 +145,11 @@ test("the hash listener is a named handler and comes off the shell's window on p
     removeEventListener(t: string, f: unknown) { this.removed.push(t + (f === this.f ? ":same" : ":other")); } };
   const paneHandlers: Record<string, () => void> = {};
   const pane: any = { addEventListener(t: string, f: () => void) { paneHandlers[t] = f; } };
-  let repaints = 0, rearms = 0;
-  new Function("onlyWindow", "renderTabsAndPrefetch", "window", js)(() => shell, () => { repaints++; rearms++; }, pane);   // the one helper renders and re-arms (PR 1671 round three)
+  let repaints = 0;
+  new Function("onlyWindow", "renderTabs", "window", js)(() => shell, () => { repaints++; }, pane);   // bare renderTabs: the reveal it causes re-arms the prefetch inside renderTabs (PR 1671 round four; strip-reveal-rearm.test.ts)
   assert.deepEqual(shell.added, ["hashchange"], "one listener on the window the filter is read from");
   assert.deepEqual(Object.keys(paneHandlers), ["pagehide"], "the pane's own window carries only the pagehide belt");
   shell.f(); assert.equal(repaints, 1, "the named handler repaints the strip");
-  assert.equal(rearms, 1, "…and re-arms the idle prefetch for the tabs the filter now shows (PR 1661 round two, medium 3)");
+  // (PR 1661 round two, medium 3, asked that the tabs the filter now shows be prefetched: the repaint's reveal detector does it, executed in strip-reveal-rearm.test.ts)
   paneHandlers.pagehide(); assert.deepEqual(shell.removed, ["hashchange:same"], "the same handler comes off on pagehide");
 });
