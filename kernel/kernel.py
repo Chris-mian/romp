@@ -45231,22 +45231,22 @@ def _note_ws_open(client, reconnect=False, now=None):
         return False
 
 
-def _note_history_reply(client, sid, mtype, reply, nbytes, now=None):
-    """One client-diag row per proto-2 history reply (loadTurns/loadOlder/loadAround/loadNewer) the kernel serves to ANY
-    client (2026-09-15). The kernel kept no per-client record of a history round trip, so a scroll-back that stalls
-    could not be read from the SERVING kernel: whether the ask arrived, over what span, and what was answered (events,
-    bytes) or refused. The row names the client's cid and kind (page/relay/hub, plus the host of a relayed side) so a
-    relay client's asks are told from a local page's, the reply's turn span, its event count and wire bytes, and whether
-    it was the head, empty (missing) or a fault (refused, with the reason). Diagnostic only, no behaviour change; the
-    file's own failure is never the reply's and is swallowed (the wsopen row carries the once-per-kernel sink notice)."""
+def _note_history_reply(client, sid, mtype, reply, nbytes, now=None, sent=True):
+    """One client-diag row per history reply (loadTurns/loadOlder/loadAround/loadNewer, proto-2 or the legacy loadOlder
+    arm) the kernel serves to ANY client (2026-09-15). The kernel kept no per-client record of a history round trip, so a
+    scroll-back that stalls could not be read from the SERVING kernel: whether the ask arrived, over what span, and what
+    was answered (events, bytes) or refused. The row names the client's cid and kind (page or relay, the only two
+    _dial_kind assigns) so a relay client's asks are told from a local page's, the reply's turn span, its event count and
+    wire bytes, whether it was the head, empty (missing) or a fault (refused, with the reason), and whether the reply
+    actually left over the wire (sent: a send that raised files sent=False, so an ask that arrived and failed to leave is
+    told from one that never arrived). Diagnostic only, no behaviour change; the file's own failure is never the reply's
+    and is swallowed (the wsopen row carries the once-per-kernel sink notice)."""
     try:
         now = time.time() if now is None else now
         data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "type": mtype,
                 "span": reply.get("span"), "events": len(reply.get("events") or []), "bytes": int(nbytes),
                 "head": bool(reply.get("head")), "missing": bool(reply.get("missing")),
-                "refused": bool(reply.get("fault")), "reason": reply.get("error")}
-        if client.get("host"):
-            data["host"] = str(client.get("host"))
+                "refused": bool(reply.get("fault")), "reason": reply.get("error"), "sent": bool(sent)}
         _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "historyReply",
                                                                         "data": data}) + "\n")
     except Exception:
@@ -62699,6 +62699,7 @@ class Handler(BaseHTTPRequestHandler):
                 if reply is None:                         # no session or no build to answer from (T402): say so, never silence
                     reply = _fault("no session to answer from")
                 if reply is not None:
+                    _sent = False
                     with _client_lock(client):
                         base = reply.pop("_base", None)
                         if isinstance(base, dict) and base.get("first"):   # the tail run's first edge advances (T386 stage 2); the last stands
@@ -62706,8 +62707,11 @@ class Handler(BaseHTTPRequestHandler):
                             if isinstance(old, dict):
                                 client.setdefault("echat", {})[sid] = {"first": base["first"], "last": old.get("last")}
                         _wire = json.dumps(reply)
-                        client["send"](_wire)
-                    _note_history_reply(client, sid, msg["type"], reply, len(_wire))   # one diag row per history reply, for reading a scroll-back from the serving kernel (2026-09-15)
+                        try:
+                            client["send"](_wire); _sent = True
+                        except Exception:
+                            sys.stderr.write("%s: %s\n" % (msg["type"], traceback.format_exc()))   # the send failed; logged as before, and the diag row below records sent=False
+                    _note_history_reply(client, sid, msg["type"], reply, len(_wire), sent=_sent)   # one diag row per history reply, sent=False when the send raised (2026-09-15)
             except Exception:
                 sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))
             return
@@ -62735,13 +62739,18 @@ class Handler(BaseHTTPRequestHandler):
                         reply = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "no build to answer from"}
                 else:
                     reply = {"type": "chatHead", "id": sid, "from": 0, "before": before, "events": []}   # nothing older: the head
-                client["send"](json.dumps(reply))
+                _wire = json.dumps(reply)
+                client["send"](_wire)
+                _note_history_reply(client, sid, "loadOlder", reply, len(_wire), sent=True)   # the legacy scroll-back arm files a diag row too (2026-09-15)
             except Exception as e:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+                _fault = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}
+                _fw = json.dumps(_fault); _fsent = False
                 try:
-                    client["send"](json.dumps({"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}))
+                    client["send"](_fw); _fsent = True
                 except Exception:
                     pass
+                _note_history_reply(client, sid, "loadOlder", _fault, len(_fw), sent=_fsent)   # the fault this arm sends is a row too, sent=False if even it failed (2026-09-15)
             return
         if msg and msg.get("type") == "loadEpisode" and msg.get("id"):
             # The "Conversation cleared" card was expanded → ship the pre-clear episode's events (a one-shot
