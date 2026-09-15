@@ -53095,7 +53095,7 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
 # this code in node with fakes and pins the wiring.
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdSince=0,holdStart=0,holdDiag=false,freshSince=0,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdDue=0,holdStart=0,holdDiag=false,freshSince=0,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
@@ -53125,10 +53125,17 @@ var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
 /* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age since
    the hold BEGAN, not since the last backstop) through a pane's diagnostics door, so a page that never reloads after a deploy is
    readable from the kernel's client-diag.jsonl; once per owed request, latched only once a door took it */
-function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdStart};
+/* the backstop runs the walk at the earliest instant something can have ended by time alone: the fresh window's EDGE (the
+   earliest stamp plus the minute, a known instant) when a window is open, else the bound from now. Re-armed earlier when a
+   walk opens a new window sooner than the timer stands for; never later. The held line's "within a minute of its reconnect"
+   is true because the walk runs AT the edge, not at the next tick of a fixed cadence (the round-three review, item 4). */
+function armBackstop(){var now=Date.now(),due=now+FRESH_HOLD_MS;if(freshSince&&freshSince+FRESH_HOLD_MS<due)due=freshSince+FRESH_HOLD_MS;
+if(holdTimer&&holdDue&&holdDue<=due)return;if(holdTimer)clearTimeout(holdTimer);holdDue=due;
+holdTimer=setTimeout(function(){holdTimer=null;holdDue=0;heldLong();tryFire();},Math.max(0,due-now));}
+function heldLong(){if(!owed||fired||holdDiag)return;if(Date.now()-holdStart<FRESH_HOLD_MS)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdStart};
 try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
-function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}
-var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}}}
+function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}try{if(window.__rompShimPersist)window.__rompShimPersist();}catch(e){}
+var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}try{if(ps[i].__rompShimPersist)ps[i].__rompShimPersist();}catch(e){}}}   /* the shim's own hook: what its queue still holds at this moment is lost with the page, and it says so */
 function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
@@ -53138,7 +53145,7 @@ try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
 if(b){R.waiting=b;var hk=owed.reason+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}   /* keyed on the reason: a second restart inside one hold moves the detail and must not announce the same wait again */
-if(!holdStart)holdStart=Date.now();if(!holdTimer){holdSince=Date.now();holdTimer=setTimeout(function(){holdTimer=null;heldLong();tryFire();},FRESH_HOLD_MS);}   /* the bound's backstop, one per hold: no event ends a hold whose frame or drain never comes, so the walk runs once more when the bound has passed, and a hold still standing is filed */
+if(!holdStart)holdStart=Date.now();armBackstop();
 return;}R.waiting='';holdDiag=false;holdStart=0;fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
 var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;holdDiag=false;}
@@ -53246,7 +53253,7 @@ var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
 var IID="";try{IID=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():"";}catch(e){}if(!IID)IID=String(Math.random()).slice(2)+"-"+Date.now();
-var APP="%s";var LOADEDV=%d;var NOSTALE=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
+var APP="%s";var LABEL="%s";var LOADEDV=%d;var NOSTALE=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 // the reload core's 'fresh' hold (invisible restarts, 2026-09-14): the chat pane alone, the pane the ruling names, armed at the drop and
 // kept through the redial; a Files or Settings page gets no resync frame, so a hold armed there would never end (the round-two review).
 // Stamped once per hold: a flapping socket or a kernel in a crash loop re-arms without moving the stamp, so the core's bound is
@@ -53274,13 +53281,16 @@ document.addEventListener("drop",function(e){if(fileDrag(e))e.preventDefault();}
 // user 2026-09-08): this prompt is for a reconnect to the SAME kernel process (a blip) — a reconnect against a
 // NEW process, and a newer bundle, reload the page by themselves (the reload core above); the "build" bar is
 // only the core's refused fallback.
-function selfBar(t,kind){try{if(document.getElementById("romp-stale-self"))return;
+function selfBar(t,kind){try{var have=document.getElementById("romp-stale-self");
+if(have){if(have.dataset.kind==="warn"&&(kind||"conn")==="conn")have.remove();else return;}   // a warning yields the one slot to the connection bar; nothing else is replaced
 var b=document.createElement("div");b.id="romp-stale-self";b.dataset.kind=kind||"conn";
 b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 var m=document.createElement("span");m.textContent=t;b.appendChild(m);
 var r=document.createElement("button");r.textContent="Reload";
 r.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";
 r.onclick=function(){location.reload();};b.appendChild(r);
+if((kind||"conn")==="warn"){var x=document.createElement("button");x.textContent="Dismiss";x.dataset.act="dismiss";x.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;background:transparent;color:#e6e6e6;border:1px solid #4a4d51";
+x.onclick=function(){b.remove();};b.appendChild(x);}   // a warning is read and dismissed; it must not hold the page's one bar slot for good
 (document.body||document.documentElement).appendChild(b);}catch(e){}}
 function selfStale(){selfBar("romp lost the live connection, so what you see may be stale.","conn");}
 // …and RETIRE that prompt the moment the thing it warns about is demonstrably over (the user 2026-08-01,
@@ -53392,18 +53402,21 @@ var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: 
 // messages queued for a socket that has not come back hold the reload (their loss is the reload's cost), bounded like the fresh hold:
 // after a minute the reload goes anyway, so a dead socket cannot keep a page on an old build (the manager 2026-09-14)
 var sendsSince=0,SENDS_HOLD_MS=60000;
-var sendsDroppedSaid=false,SENDS_DROPPED_KEY="romp:sendsDropped";
-// when the bound ends the hold with messages still queued, the reload that follows takes them: say so once, on the page (the
-// shell's notification center, which survives the reload; a standalone pane's own bar), never a silent loss (the 1698 lows, low 2)
-function sendsDropped(n){if(sendsDroppedSaid)return;sendsDroppedSaid=true;var t=n+" message"+(n===1?"":"s")+" queued for the "+APP+" pane could not be sent before the dashboard reloaded; "+(n===1?"it was":"they were")+" not delivered.";
-try{if(window.parent!==window)window.parent.postMessage({romp:"notify",kind:"warn",text:t},"*");   // the shell's one write path: __rompNotify keeps it across the reload
-else{sessionStorage.setItem(SENDS_DROPPED_KEY,t);selfBar(t,"warn");}}catch(e){}}   // a standalone page reloads in the same task: the line is kept for its re-entry (below)
-window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;sendsDroppedSaid=false;return "";}if(!sendsSince)sendsSince=Date.now();
-if(Date.now()-sendsSince<SENDS_HOLD_MS)return "sends";sendsDropped(queue.length-queuedDiag);return "";};
+var SENDS_DROPPED_KEY="romp:sendsDropped";
+window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;return "";}if(!sendsSince)sendsSince=Date.now();return Date.now()-sendsSince<SENDS_HOLD_MS?"sends":"";};
+// The reload core calls this on every pane right before location.reload(): messages still queued AT THAT MOMENT go with the
+// page, so the loss is said then, from the queue's state then, never at the bound (the round-three review: a socket that
+// returned and flushed after the bound had delivered them). Embedded: the notify bridge the shell's bell listens for, whose
+// center keeps the line across the reload. Standalone: the line is kept in the session store with the page's path and shown
+// once by the next life on the same path (below), since the bar raised now goes with the page.
+window.__rompShimPersist=function(){var n=queue.length-queuedDiag;if(n<=0)return;
+var t=n+" message"+(n===1?"":"s")+" queued for the "+LABEL+" pane could not be sent before the dashboard reloaded; "+(n===1?"it was":"they were")+" not delivered.";
+try{if(window.parent!==window)window.parent.postMessage({romp:"notify",kind:"warn",text:t},"*");
+else sessionStorage.setItem(SENDS_DROPPED_KEY,JSON.stringify({text:t,path:location.pathname}));}catch(e){}};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
-// …and shows the loss line its previous life kept before reloading (sendsDropped): the bar it raised then went with the page
-try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){sessionStorage.removeItem(SENDS_DROPPED_KEY);selfBar(sdk,"warn");}}}catch(e){}
+// …and shows the loss line its previous life kept at the reload (__rompShimPersist), on the same path only, once
+try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){var sdd=JSON.parse(sdk);if(!sdd.path||sdd.path===location.pathname){sessionStorage.removeItem(SENDS_DROPPED_KEY);if(sdd.text)selfBar(String(sdd.text),"warn");}}}}catch(e){}
 try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
@@ -53602,7 +53615,7 @@ pendingWhy="foreground";freshPending=true;armFresh();   // the reconnect's arm r
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, int(v), "true" if no_stale else "false", app, app)
+""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, _pane_label(app), int(v), "true" if no_stale else "false", app, app)
 
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
@@ -54434,6 +54447,13 @@ setTimeout(hide,5000);})();
 # #957 review). Defined above _LANDING_ERRS_JS because that string is built from it at import.
 # Keys stay internal (timeline/fleet); labels are the user-facing names.
 _PANE_ORDER = (("chat", "Chat"), ("timeline", "Sessions"), ("fleet", "Outline"), ("feed", "Feed"), ("files", "Files"))
+
+
+def _pane_label(app):
+    """The label a pane wears on every surface (the rail, the tabs, a line that names it): _PANE_ORDER's word for its key,
+    the key's own capitalised form for a page outside that list (Settings). The shim bakes it as LABEL so a line a pane
+    says about itself never shows an internal key (the round-three review: "the fleet pane")."""
+    return dict(_PANE_ORDER).get(str(app or ""), str(app or "").capitalize())
 
 _LANDING_ERRS_JS = """
 (function(){var icon=document.getElementById('rail-errs'),micon=document.getElementById('merr'),
