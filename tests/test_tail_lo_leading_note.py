@@ -122,7 +122,7 @@ class TailLoLeadingNote(unittest.TestCase):
             self._restore(saved)
 
     def test_the_gap_page_and_the_frame_partition_the_list_on_a_non_monotone_index(self):
-        """The medium of the 2026-09-16 read, through the REAL frame builder and the REAL gap reply alone (no new name touched, so an
+        """The medium of the 2026-09-15 read, through the REAL frame builder and the REAL gap reply alone (no new name touched, so an
         older kernel reaches the assertion): on the review's stub ([0, 5, 1, 1, 2, 2, 5, 5], cut 6) the gap page for [0, tailLo)
         plus the frame's resident events are the whole list, once. The backward walk left events 1 to 5 in neither."""
         turns = [_turn(i) for i in range(6)]
@@ -135,6 +135,36 @@ class TailLoLeadingNote(unittest.TestCase):
             self.assertEqual(frame["tailLo"], 5)
             self.assertEqual([e["uuid"] for e in reply["events"]] + [e["uuid"] for e in frame["events"]], [e["uuid"] for e in evs2],
                              "pages plus resident are the whole list, once: nothing in neither region, nothing in both")
+        finally:
+            self._restore(saved)
+
+    def test_a_cut_inside_the_unplaced_prefix_begins_the_frame_at_the_lists_top(self):
+        """The medium of the 2026-09-15 round-three read, through the REAL index builder, the REAL frame builder and the REAL gap
+        reply: a floor-0 list's head cards carry -1 above turn 0, and a cut inside that prefix (the total minus the wire tail)
+        found turn 0's edge AFTER the cut; capped at the cut, the frame began inside the prefix with tailLo 0, the page laid no
+        gap (no turn lies before 0 to ask for), and the head card before the cut was in neither region. The edge of the first
+        placed turn is the list's top now, so such a frame holds the whole prefix and says the head is known; a cut ON turn 0's
+        first record the same; a cut in turn 1 leaves the prefix to the page for [0, 1), which begins at the top. Prefixes of
+        two and three cards; the partition assertion first, so an older kernel fails on the partition itself."""
+        turns = [_turn(0), _turn(1)]
+        turns[0]["atoms"] = [{"uuid": "u0"}, {"uuid": "a0"}]
+        turns[1]["atoms"] = [{"uuid": "u1"}, {"uuid": "a1"}]
+        body = [{"uuid": "u0", "kind": "user"}, {"uuid": "a0", "kind": "assistant"}, {"uuid": "u1", "kind": "user"}, {"uuid": "a1", "kind": "assistant"}]
+        saved = self._stubbed(turns)
+        try:
+            for prefix, cut, want in ((2, 1, (0, 0)), (3, 1, (0, 0)), (3, 2, (0, 0)), (2, 2, (0, 0)), (3, 3, (0, 0)), (2, 4, (4, 1)), (3, 5, (5, 1))):
+                evs = [{"uuid": "h%d" % i, "kind": "system"} for i in range(prefix)] + body
+                with self.subTest(prefix=prefix, cut=cut):
+                    frame, reply = self._partition(evs, cut)
+                    self.assertEqual([e["uuid"] for e in reply["events"]] + [e["uuid"] for e in frame["events"]], [e["uuid"] for e in evs],
+                                     "pages plus resident are the whole list, once: every head card in exactly one region")
+                    self.assertEqual((len(evs) - len(frame["events"]), frame["tailLo"]), want, "(the run's first index, tailLo)")
+                    self.assertEqual(frame["headKnown"], want[0] == 0, "a frame from the list's top says the head is known")
+            tix = km._turn_index_of_events(evs, turns)
+            self.assertEqual(tix, [-1, -1, -1, 0, 0, 1, 1], "the real builder: the head cards -1 above turn 0")
+            self.assertEqual(km._turn_run_edge(tix, 0), 0, "the first placed turn's edge is the list's top")
+            self.assertEqual(km._turn_run_edge(tix, 1), 5, "a later turn's edge is its first record: no unplaced run before it")
+            self.assertEqual(km._tail_run_start(SID, evs, 2, 1700000000), (0, 0))
         finally:
             self._restore(saved)
 
