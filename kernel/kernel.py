@@ -382,6 +382,10 @@ class _PerfStats:
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
+            self.chat_by_session = {}                 # sid -> {first, last, max, n, cached, bytes}: the per-session chat build
+            #                                           timer (2026-09-14); a row leaves with its session's certified death
+            #                                           (chat_row_drop), reset with the process, sids only, time.monotonic
+            #                                           deltas as the call sites take them
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
             # cold event-model parses this kernel ran (T323 stage 1): the kernel's own _parse misses, per session
@@ -635,22 +639,43 @@ class _PerfStats:
                 b["built"] += 1
                 b["ms"] += dt * 1000.0
 
-    def build_chat(self, cached, dt=0.0, active=False, miss=()):
+    def build_chat(self, cached, dt=0.0, active=False, miss=(), sid=None, nbytes=None):
         """The chat builder's record: build("chat", ...) plus who paid and why. A rebuild counts under
         active_built (the watched tab) or bg_built (a background tab whose signature moved), and a
         background rebuild adds one to bg_miss[label] for EVERY labelled _chat_build_sig component that
         differed from the cached signature (`miss`, from _chat_sig_miss), so the sum over bg_miss can
         exceed bg_built when several inputs moved together. `cold` is a tab with no cached build, `nosig`
         one whose signature could not be taken (no transcript path). Before this the counter said how
-        many chat builds ran and not which tab or which input drove them."""
+        many chat builds ran and not which tab or which input drove them.
+        `sid` (2026-09-14, the process split's measure): beside the aggregate, a per-session row keeps the
+        FIRST build's ms after the boot (set once per process life per sid: the cold build the split keeps
+        asking for), the last, the max (a later rebuild under contention), the build and cached counts, and
+        the leaf's bytes at the last build (`nbytes`), so the largest live transcript's first chat build is a
+        read from /perf, not a claim. `dt` is a time.monotonic delta, as the call sites take it (the aggregate's
+        clock too). The aggregate is untouched."""
         ms = dt * 1000.0
         with self.lock:
             b = self.builds["chat"]
+            row = None
+            if sid:
+                row = self.chat_by_session.get(sid)
+                if row is None:
+                    row = self.chat_by_session[sid] = {"first": None, "last": None, "max": 0.0, "n": 0, "cached": 0, "bytes": None}
+                if nbytes is not None:
+                    row["bytes"] = int(nbytes)
             if cached:
                 b["cached"] += 1
+                if row is not None:
+                    row["cached"] += 1
                 return
             b["built"] += 1
             b["ms"] += ms
+            if row is not None:
+                row["n"] += 1
+                row["last"] = ms
+                row["max"] = max(row["max"], ms)
+                if row["first"] is None:
+                    row["first"] = ms
             if active:
                 b["active_built"] += 1
                 return
@@ -658,6 +683,21 @@ class _PerfStats:
             bm = b["bg_miss"]
             for lab in miss:
                 bm[lab] = bm.get(lab, 0) + 1
+
+    def chat_row_drop(self, sid):
+        """A per-session chat row leaves with the CERTIFIED death of its session: _record_death, the one producer of a
+        death marker (five call sites: the sweep's tick, the kill gesture twice, the boot pass, the self-close), calls this
+        after the marker lands. Nothing else removes a row: a live session, a departure the sweep stood down on or
+        certified alive, a dead session the user keeps open as a tab all keep theirs, so `first` is never minted again by
+        a warm rebuild (rounds one to three of the timer computed a keep from a moving window each tick and forgot what it
+        kept). What else can leave a row, and its bound: a session forgotten or renamed away without a death keeps a row
+        until the process ends; every row was minted by a build of a session on the chat tab list, so the table holds at
+        most the sessions this kernel life ever showed (the names registry's size), reset with the process; and the death
+        sweep's tick drops the row of a departure whose marker another road or process stamped, inside its own walk, only
+        when the tick's own verdict is dead (reg present False, never None; no registry blind; no alive arm), the way the
+        boot pass sweeps the registry: one classifier, never a simpler predicate beside it (round five)."""
+        with self.lock:
+            self.chat_by_session.pop(str(sid), None)
 
     def build_chat_cold_skip(self):
         """A cold tab (no build since the boot) that every connected chat page holds as a skeleton was not built (the
@@ -751,6 +791,9 @@ class _PerfStats:
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
+            builds["chat"]["bySession"] = sorted(              # the per-session timer, sids only, the largest max first
+                ({"sid": sid, **row} for sid, row in self.chat_by_session.items()),
+                key=lambda r: -(r["max"] or 0.0))
             parses = {"kernel": self.parses["kernel"], "hits": self.parses["hits"], "bytes": self.parses["bytes"],
                       "bySid": dict(self.parses["bySid"])}
             sends = {k: {sl: {"count": e[0], "bytes": e[1]} for sl, e in d.items()}
@@ -25842,6 +25885,16 @@ def _death_sweep_tick(now, live_map):
         if present:
             continue                                 # an SDK death is the kill gesture's to stamp
         if not _death_stamp_due(sid):
+            # already stamped (a marker standing that this kernel did not write: another road or process), or a supersession.
+            # The per-session chat build row (/perf) leaves with a CERTIFIED death only, and ONE classifier decides: the row goes
+            # here only when this tick's own verdict is dead, that is reg present is False (never None: an unreadable sdk/ is a
+            # stand-down, as the two other death writers read it), neither registry is blind, and no alive arm fires (not
+            # Codex-owned, no driver thread, no recent life); every other case keeps the row (round five, 2026-09-15: a sweep
+            # with a simpler predicate at the tick's top dropped a live session's row four ways)
+            if (present is False and not sdk_blind and not blind
+                    and not (cx is not None and cx._session(sid) is not None and cx.owns(sid))
+                    and not _sdk_thread_alive(sid) and not _recent_life(sid, now)):
+                _PERF_STATS.chat_row_drop(sid)
             continue
         if sdk_blind or present is None:
             stood_sdk += 1                           # its reg may sit behind the unreadable directory: stand down
@@ -26039,6 +26092,7 @@ def _record_death(sid, now, by):
         sys.stderr.write("record-death %s: %s\n" % (sid, traceback.format_exc()))
         return False
     _record_idle(sid, now)
+    _PERF_STATS.chat_row_drop(sid)                     # the per-session chat build row leaves with the certified death (2026-09-15)
     sys.stderr.write("death: %s recorded (by %s)\n" % (sid, by))   # kill-attribution convention
     return True
 
@@ -49287,7 +49341,7 @@ def _push(targets, connect=False, live_map=None):
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
-                    _PERF_STATS.build_chat(True)
+                    _PERF_STATS.build_chat(True, sid=str(s["sid"]))
                 else:
                     _VIEW_STATS["chatBuildActive" if is_active else "chatBuildBg"] += 1
                     _t0 = time.monotonic()
@@ -49329,7 +49383,11 @@ def _push(targets, connect=False, live_map=None):
                     # against the cached signature, so /perf can say which input drives the rebuilds; the
                     # watched tab's rebuilds are counted under active_built and not attributed
                     _miss = _chat_sig_miss(hit[0] if hit is not None else None, sig)
-                    _PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss)
+                    try:
+                        _nbytes = os.path.getsize(s["path"]) if s.get("path") else None   # the leaf's size beside its build time
+                    except OSError:
+                        _nbytes = None
+                    _PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss, sid=str(s["sid"]), nbytes=_nbytes)
                     if _PERF:                            # the keyword values below cost lookups; skip them when off
                         _perf("chatbuild", sid=str(s["sid"])[:8], cached=0, active=int(is_active),
                               ms=round(_dt * 1000, 1), miss=",".join(_miss),
@@ -49807,11 +49865,28 @@ def _push_session_now(sid):
             _VIEW_STATS["chatSkipCold"] += 1
             _PERF_STATS.build_chat_cold_skip()
             return
+        _t0 = time.monotonic()
         try:
             m = build_session(sid, now, live_map)
         finally:
             _chat_dep_scope.deps = None              # a targeted push caches nothing: its record is nobody's, and a
-        if not m:                                    # later reader on this thread must not append to it
+        _dt = time.monotonic() - _t0                 # later reader on this thread must not append to it
+        try:
+            _nbytes = os.path.getsize(_path) if _path else None
+        except OSError:
+            _nbytes = None
+        _active = sid in {c.get("active") for c in targets if c.get("active")}   # the watched tab, as _push reads it from its clients
+        _PERF_STATS.build_chat(False, _dt, active=_active, miss=("targeted",), sid=sid, nbytes=_nbytes)
+        #   the per-session timer (round three, 2026-09-15): this push builds too (27 attach handshakes at a boot run it), and an
+        #   unrecorded build here warmed the cache the pusher's first recorded build then read, so the row's `first` and `max` and
+        #   the aggregate's `built` missed the worst builds; the label `targeted` says the push, not a signature component, drove it.
+        #   Still not cached: the build ran with no dependency record (deps None above, by design), so a _built_chat entry stored
+        #   from it would carry no signature to invalidate on and the pusher would serve it stale. The row's `first` is the first
+        #   build by the two PUSH roads (_push and this one); three other roads build the same sid from the same leaf and record
+        #   nothing: _page (the chat page's own render), the uuid-anchored history reply and the proto-1 loadOlder wire. In the
+        #   normal flow none precedes the recorded first (a needFull routes to _push_one; a history ask needs an echat base), so
+        #   the first is the cold build; a boot where a history ask came first would read a warm first (round four, 2026-09-15)
+        if not m:
             return
         if _empty_build_regresses(m, _prev_chat_events.get(sid)):
             _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None),
