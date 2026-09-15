@@ -861,7 +861,8 @@ class _PerfStats:
         memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
         #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
         memos["sessionsListing"] = {"built": _SESSIONS_LISTING["built"], "served": _SESSIONS_LISTING["served"],
-                                    "requestBuilt": _SESSIONS_LISTING["requestBuilt"], "missBy": dict(_SESSIONS_LISTING["missBy"])}
+                                    "requestBuilt": _SESSIONS_LISTING["requestBuilt"], "faultBuilt": _SESSIONS_LISTING["faultBuilt"],
+                                    "missBy": dict(_SESSIONS_LISTING["missBy"])}
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -26049,8 +26050,8 @@ def _supervisor_wait_s(now, rows=None):
     return SUPERVISOR_FAST_PASS_S if fast else SUPERVISOR_PASS_S
 
 
-_SESSIONS_LISTING = {"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None,
-                     "built": 0, "served": 0, "requestBuilt": 0, "missBy": {}}   # GET /sessions from the cycle's snapshot
+_SESSIONS_LISTING = {"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None, "fault": None,
+                     "built": 0, "served": 0, "requestBuilt": 0, "faultBuilt": 0, "missBy": {}}   # GET /sessions from the cycle's snapshot
 #                      (plans/sessions-route-from-the-cycle.md): the rows built once per change by the pusher's cycle under an
 #                      exact key, served from memory to every request; `missBy` names the key input that moved
 
@@ -26061,13 +26062,21 @@ def _reg_rev():
     return int(getattr(sys.modules.get("romp_sdk_backend"), "reg_rev", lambda: 0)())
 
 
+def _sessions_listing_reset():
+    """The kept listing back to empty (a test's setUp; the listing is process-global, so a module that stubs the row builder
+    per test must drop what an earlier build kept)."""
+    _SESSIONS_LISTING.update({"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None, "fault": None,
+                              "built": 0, "served": 0, "requestBuilt": 0, "faultBuilt": 0, "missBy": {}})
+
+
 def _sessions_listing_key(live_map, names):
     """The exact key of the /sessions rows (rule 2): every field a row carries is a function of these inputs. The live rows
     (sid, state, since, backend: state and backend ride the row, since moves with a turn's edges), the names snapshot
     (name, dir and the two identity colours: a move rewrites the names entry), the working-notes store (the note per sid,
-    keyed by the store's entries' stats), the registry revision (lastSid rides the SDK registry; a write or a removal moves
-    it) and each row's compacting bit (the live row against the cached parse). A field whose input is not here cannot be
-    added without adding the input."""
+    keyed by the store's entries' stats), the registry revision (lastSid rides the SDK registry; a write moves it; the
+    revision counts THIS process's writes, so a lastSid the outgoing kernel wrote during a handover reaches the rows when
+    another input moves) and each row's compacting bit (the live row against the cached parse). A field whose input is not
+    here cannot be added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
@@ -26077,8 +26086,8 @@ def _sessions_listing_key(live_map, names):
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
-            notes = tuple(sorted((e.name, e.stat().st_mtime_ns, e.stat().st_size) for e in it if e.is_file()))
-    except OSError:
+            notes = tuple(sorted((e.name, e.stat().st_mtime_ns, e.stat().st_size, e.stat().st_ino) for e in it if e.is_file()))
+    except OSError:                                        # (name, mtime_ns, size, ino): the key _working_notes itself memoizes on
         notes = ()
     nm = names if names is not None else {}
     try:
@@ -26106,40 +26115,55 @@ def _sessions_listing_refresh(now, live_map):
     if _SESSIONS_LISTING["key"] == key and _SESSIONS_LISTING["json"] is not None:
         return
     why = _sessions_listing_miss(_SESSIONS_LISTING["key"], key)
-    rows = _session_rows_from(live_map)
-    _SESSIONS_LISTING.update({"key": key, "rows": rows, "json": json.dumps(rows), "built": _SESSIONS_LISTING["built"] + 1,
-                              "threads": None, "threadsKey": None})
-    _SESSIONS_LISTING["missBy"][why] = _SESSIONS_LISTING["missBy"].get(why, 0) + 1
+    try:
+        rows = _session_rows_from(live_map)
+        body = json.dumps(rows)
+    except Exception:
+        _SESSIONS_LISTING["fault"] = time.time()          # the kept listing is stale from here: requests build for themselves
+        raise                                             #  (below) until a build lands; the job's own try writes the line
+    _SESSIONS_LISTING.update({"key": key, "rows": rows, "json": body, "fault": None, "built": _SESSIONS_LISTING["built"] + 1})
+    _SESSIONS_LISTING["missBy"][why] = _SESSIONS_LISTING["missBy"].get(why, 0) + 1   # the thread rows keep their own key (below)
 
 
 def _sessions_listing_serve(threads=False):
     """The route's read: the kept JSON (a cycle old at most), or one build when no cycle has run yet (kept under no key, so
     the first cycle rebuilds it under its own). `threads`: the comment-thread rows appended, kept apart under the registry
     revision and the parents' comments stores (a thread's editable name lives there)."""
-    if _SESSIONS_LISTING["json"] is None:
+    L = _SESSIONS_LISTING
+    if L["json"] is None:
         rows = _session_rows()
-        _SESSIONS_LISTING.update({"rows": rows, "json": json.dumps(rows), "requestBuilt": _SESSIONS_LISTING["requestBuilt"] + 1})
-    _SESSIONS_LISTING["served"] += 1
+        L.update({"rows": rows, "json": json.dumps(rows), "requestBuilt": L["requestBuilt"] + 1})
+    L["served"] += 1
+    if L["fault"] is not None:                                     # the cycle's build failed since the kept listing: it may be
+        body = json.dumps(_session_rows())                         #  stale, so this request builds for itself, as the base did
+        L["faultBuilt"] += 1
+    else:
+        body = L["json"]
     if not threads:
-        return _SESSIONS_LISTING["json"]
+        return body
     tkey = _thread_rows_key()
-    if _SESSIONS_LISTING["threadsKey"] != tkey or _SESSIONS_LISTING["threads"] is None:
-        _SESSIONS_LISTING["threads"] = json.dumps(_thread_rows())
-        _SESSIONS_LISTING["threadsKey"] = tkey
-    body = _SESSIONS_LISTING["json"]
-    th = _SESSIONS_LISTING["threads"]
+    th = L["threads"] if L["threadsKey"] == tkey else None         # both read under the same test: a refresh between them cannot
+    if th is None:                                                 #  hand a None to the join below
+        th = json.dumps(_thread_rows())
+        L["threads"], L["threadsKey"] = th, tkey
     if th == "[]":
         return body
     return body[:-1] + ("," if body != "[]" else "") + th[1:]
 
 
 def _thread_rows_key():
-    """The thread rows' key: the registry revision (a thread's registration, its parent, its life) and the parents'
+    """The thread rows' key: the registry revision (a thread's registration, its parent, its life, and the unreadable-reg
+    bit of its mailbox fields), the session-flags store's stat (postalServiceOff and mailOffWhy read it), and the parents'
     comments stores' stats (its editable name), with the live state of each thread session."""
     be = _sdk()
+    try:
+        fst = (jd.STATE / "session-flags.json").stat()
+        flags = (fst.st_mtime_ns, fst.st_size)
+    except OSError:
+        flags = None
     if not be or not hasattr(be, "thread_sessions"):
-        return ("none", _reg_rev())
-    parts = [_reg_rev()]
+        return ("none", _reg_rev(), flags)
+    parts = [_reg_rev(), flags]
     try:
         for tsid, meta in sorted(be.thread_sessions().items()):
             parent = str(meta.get("threadOf") or "")
@@ -53416,8 +53440,11 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("checkpoint-cycle: %s\n" % traceback.format_exc())
     _t_push = 0.0
+    try:                                  # GET /sessions rows from this cycle's snapshot (plans/sessions-route-from-the-cycle.md):
+        _job_stage('sessionsListing', lambda: _sessions_listing_refresh(now, live_map))   # its own try, so a fault in the key or
+    except Exception:                     #  the build never skips the parked ops below, and the line names the listing
+        sys.stderr.write("sessions-listing: %s\n" % traceback.format_exc())
     try:                                  # parked ops deliver on the settle EVENT this cycle was woken for
-        _job_stage('sessionsListing', lambda: _sessions_listing_refresh(now, live_map))   # GET /sessions rows from this cycle's
         _job_stage('applyPendingOps', lambda: _apply_pending_ops())              # (_wake_kernel, /tick, a park/cancel/move, the 0.5 s backstop) —
         #                                   the parked-parse refresh runs inside, per sid, after the
         #                                   holds (2026-09-05)

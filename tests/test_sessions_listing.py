@@ -7,6 +7,7 @@ send's liveness check), so a session's start, rename and death reach the roster 
 fields the bus reads. Hermetic: a temp state root, two synthetic sessions on disk, the live map stubbed."""
 import http.client
 import inspect
+from unittest import mock
 import json
 import os
 import re
@@ -65,8 +66,12 @@ class _Listing(unittest.TestCase):
             self.saved_clients = list(km._clients); km._clients[:] = []
 
     def _reset(self):
-        getattr(km, "_SESSIONS_LISTING", {}).update({"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None,
-                                                     "built": 0, "served": 0, "requestBuilt": 0, "missBy": {}})   # absent at the base
+        reset = getattr(km, "_sessions_listing_reset", None)
+        if reset is not None:
+            reset()
+        else:                                                          # absent at the base
+            getattr(km, "_SESSIONS_LISTING", {}).update({"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None,
+                                                         "built": 0, "served": 0, "requestBuilt": 0, "missBy": {}})
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES, km.WORKING_DIR, km.Sessions.live, km._sdk) = self.saved
@@ -163,6 +168,61 @@ class OneListingPerChange(_Listing):
         st, _ = self._stats()
         self.assertEqual((st["requestBuilt"], st["built"]), (1, 1))
 
+    def test_a_fault_in_the_listing_never_skips_the_parked_ops_and_requests_build_for_themselves_until_a_build_lands(self):
+        """1752 round two, the medium: the listing job sat inside the pending ops' try, so a raise in the key or the build skipped
+        _apply_pending_ops for the cycle and the stderr line blamed pending operations; now the job has its own try and line,
+        and the served listing falls back to a per-request build while the kept one is stale from a fault."""
+        import io
+        self._cycle()
+        ops = []
+        real_ops = km._apply_pending_ops
+        real_build = getattr(km, "_session_rows_from", km._session_rows)
+        name = "_session_rows_from" if hasattr(km, "_session_rows_from") else "_session_rows"
+        km._apply_pending_ops = lambda: ops.append(1)
+        setattr(km, name, lambda *a, **k: (_ for _ in ()).throw(RuntimeError("the build failed")))
+        err = io.StringIO()
+        try:
+            self.row[SID]["state"] = "working"                       # the key moves: the cycle rebuilds and the build raises
+            with mock.patch.object(sys, "stderr", err):
+                self._cycle()
+            self.assertEqual(ops, [1], "the parked ops still ran this cycle (the base skipped them)")
+            self.assertIn("sessions-listing:", err.getvalue(), "the line names the listing, not pending operations: %r" % err.getvalue()[:200])
+            setattr(km, name, real_build)
+            body = self._body()
+            self.assertEqual(next(r for r in body if r["id"] == SID)["state"], "working", "a request builds for itself while the kept listing is stale")
+            st, _ = self._stats()
+            self.assertEqual(getattr(km, "_SESSIONS_LISTING", {}).get("faultBuilt"), 1, "counted as a fault build")
+            self._cycle()                                              # the next cycle's build lands: served from memory again
+            self.assertIsNone(getattr(km, "_SESSIONS_LISTING", {}).get("fault"))
+            self._body()
+            self.assertEqual(getattr(km, "_SESSIONS_LISTING", {}).get("faultBuilt"), 1, "no fault build once a build landed")
+        finally:
+            km._apply_pending_ops = real_ops
+            setattr(km, name, real_build)
+
+    def test_a_plain_rebuild_keeps_the_thread_rows_under_their_own_key(self):
+        self._cycle()
+        self._body(threads=True)
+        L = getattr(km, "_SESSIONS_LISTING", {})
+        tkey = L.get("threadsKey")
+        self.assertIsNotNone(tkey, "the thread rows were built and keyed")
+        self.row[SID]["state"] = "working"                           # a plain input moves: the listing rebuilds
+        self._cycle()
+        self.assertEqual(L.get("threadsKey"), tkey, "the thread rows keep their key")
+        self.assertIsNotNone(L.get("threads"), "and their rows: no thread build for a plain rebuild")
+        (jd.STATE / "session-flags.json").write_text(json.dumps({SID: {"postalServiceOff": True}}))   # the mailbox fields' store
+        self._body(threads=True)
+        self.assertNotEqual(L.get("threadsKey"), tkey, "the flags store's stat is in the threads key")
+
+    def test_the_notes_key_carries_the_inode_as_the_notes_memo_does(self):
+        key = getattr(km, "_sessions_listing_key", None)
+        self.assertIsNotNone(key, "the listing key exists")
+        (km.WORKING_DIR / SID).write_text("a note")
+        k = key(self.row, {})
+        notes = k[2]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(len(notes[0]), 4, "(name, mtime_ns, size, ino): %r" % (notes[0],))
+
     def test_the_route_serves_the_kept_json_and_threads_ride_their_own_key(self):
         self._cycle()
         srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
@@ -186,6 +246,10 @@ class OneListingPerChange(_Listing):
             srv.shutdown(); srv.server_close()
 
     def test_the_registry_revision_moves_on_the_one_write_path_and_every_writer_goes_through_it(self):
+        """Every write, replace or removal of a file under the SDK registry directory (STATE/sdk/<sid>.json), across kernel/,
+        cli/, postal/ and bin/, goes through write_reg: the census walks each write site and reads the path expression
+        behind it for the SDK registry's marks (`_reg_path(state_dir`, `/ "sdk" /`, `"sdk"` beside `.json`); the Codex
+        backend's registry.json is its own table, which no listing field reads."""
         src = inspect.getsource(sb)
         self.assertIn("REG_REV[0] += 1", inspect.getsource(sb.write_reg), "the write path bumps the revision (the base has none)")
         rev = getattr(sb, "reg_rev", lambda: 0)
@@ -194,10 +258,26 @@ class OneListingPerChange(_Listing):
         self.assertEqual(rev(), rev0 + 1)
         writers = [m.start() for m in re.finditer(r"\bwrite_reg\(", src)]
         self.assertGreaterEqual(len(writers), 10, "the registry's writers all call write_reg")
-        for m in re.finditer(r"_reg_path\([^)]*\)", src):
-            tail = src[m.end():m.end() + 200]
-            self.assertNotRegex(tail, r"\.write_text\(|os\.replace\(|\.unlink\(",
-                                "a registration file written or removed outside write_reg at offset %d" % m.start())
+        root = Path(os.path.dirname(HERE))
+        marks = re.compile(r"_reg_path\((?:self\.)?state_dir|/ \"sdk\" /|\"sdk\"[^\n]*\.json|\.json[^\n]*\"sdk\"")   # the SDK registry's
+        #                                                              marks alone: the Codex backend's registry.json is its own table, read by no listing field
+        offenders = []
+        for sub in ("kernel", "cli", "postal", "bin"):
+            for f in sorted((root / sub).glob("*")):
+                if not f.is_file() or f.suffix not in (".py", "") or f.name.endswith((".bats", ".sh", ".md")):
+                    continue
+                try:
+                    text = f.read_text()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                lines = text.split("\n")
+                for i, line in enumerate(lines):
+                    if not re.search(r"\.write_text\(|os\.replace\(|\.unlink\(|os\.unlink\(|os\.remove\(", line):
+                        continue
+                    window = "\n".join(lines[max(0, i - 6):i + 1])
+                    if marks.search(window) and "def write_reg" not in "\n".join(lines[max(0, i - 12):i + 1]):
+                        offenders.append("%s:%d" % (f.relative_to(root), i + 1))
+        self.assertEqual(offenders, [], "registry files written or removed outside write_reg")
 
 
 if __name__ == "__main__":
