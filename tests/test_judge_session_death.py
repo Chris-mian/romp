@@ -36,6 +36,7 @@ def _wipe(sid):
     for mod in (jd, km.jd):                            # BOTH judge instances share the state dir; a
         mod._gone_memo.pop(sid, None)                  # deleted-then-recreated file within one mtime
         mod._episode_memo.pop(sid, None)               # tick would otherwise serve a stale memo
+        mod._UNREADABLE_LOGGED.discard(str(mod.STATESDIR / (sid + ".jsonl")))   # a read-failure episode ends with the file
 
 
 def _store(status=None, nodes=None):
@@ -129,6 +130,56 @@ class DeathFinalize(unittest.TestCase):
         _write_marker(SID, t=NOW, by="kill")
         jd._death_finalize(SID, _store(), settled=False)
         self.assertNotIn("endedAt", json.loads((jd.GONEDIR / (SID + ".json")).read_text()))
+
+    def _unreadable_rows(self):
+        if not os.path.exists(jd.ERRORS):
+            return []
+        rows = [json.loads(l) for l in open(jd.ERRORS) if l.strip()]
+        return [r for r in rows if r.get("err") == "states-unreadable" and r.get("fsid") == SID]
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file")
+    def test_an_unreadable_states_file_defers_the_finalize(self):
+        # the supersession read is the ONE input that tells a revived session from a really-dead one.
+        # Before the fix a states file that existed but could not be read answered exactly like "no row
+        # newer than the marker": a revived session's marker took the real-end branch, a permanent 'ended'
+        # record naming its still-open cards reached the bell, and nothing could take it back (a finalized
+        # marker is never re-read). Unreadable is not evidence either way: the finalize waits — at the BACK of
+        # the oldest-first drain, the cut walk's move (review fold): a permission bit never clears on its own,
+        # and a marker left at the head would cost the drain one of its DEATH_DRAIN_PER_PASS slots every pass.
+        _write_marker(SID, t=NOW, by="gone")
+        marker = jd.GONEDIR / (SID + ".json")
+        os.utime(marker, (NOW, NOW))                       # the oldest marker in the queue
+        before = marker.stat().st_mtime_ns
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+        sp = jd.STATESDIR / (SID + ".jsonl")
+        with open(sp, "a") as f:
+            f.write(json.dumps({"t": NOW + 60, "state": "waiting"}) + "\n")   # the revival row
+        st = _store(status={SID + ":g1": "working"},
+                    nodes={SID + ":g1": {"id": SID + ":g1", "parentId": None,
+                                         "text": "an unfinished thing", "t": NOW - 100, "log": []}})
+        os.chmod(sp, 0)
+        try:
+            jd._judge_ctx.stage_incomplete = False
+            jd._death_finalize(SID, st, settled=True)
+            m = json.loads((jd.GONEDIR / (SID + ".json")).read_text())
+            self.assertNotIn("endedAt", m, "an unreadable states file is not 'no newer evidence': the finalize waits")
+            self.assertGreater(marker.stat().st_mtime_ns, before,
+                               "…at the BACK of the drain, not its head: the deferred marker is rotated like a cut one")
+            self.assertEqual([k for k in jd.episode_settles(SID) if str(k).startswith("ended:")], [],
+                             "no 'ended' record for a session the pass could not tell from a revived one")
+            self.assertTrue(jd._judge_ctx.stage_incomplete, "the failed read marks the stage: no closer stamp lands")
+            self.assertEqual(len(self._unreadable_rows()), 1, "one loud row")
+            jd._death_finalize(SID, st, settled=True)
+            self.assertNotIn("endedAt", json.loads((jd.GONEDIR / (SID + ".json")).read_text()))
+            self.assertEqual(len(self._unreadable_rows()), 1, "one row per failure episode, not per pass")
+        finally:
+            os.chmod(sp, 0o644)
+        jd._death_finalize(SID, st, settled=True)
+        m = json.loads((jd.GONEDIR / (SID + ".json")).read_text())
+        self.assertTrue(m.get("superseded") and m.get("endedAt") == NOW,
+                        "readable again: the deferred supersession lands and the marker retires")
+        self.assertEqual([k for k in jd.episode_settles(SID) if str(k).startswith("ended:")], [],
+                         "the revived session's open cards were never declared ended")
 
 
 class BellCarriesTheEnd(unittest.TestCase):
