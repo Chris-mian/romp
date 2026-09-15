@@ -53692,6 +53692,7 @@ last.rev=d.rev;last.msg=m;return m;}
 window.__rompLocalSend=send;window.__rompApp=APP;
 window.__rompDiag=function(what,data){try{send({type:"clientDiag",surface:"reload-core",what:what,data:data});}catch(e){}};   // the reload core's breadcrumb door: this pane's socket, the serving kernel (the core itself names no send route)   // federation.ts (the multi-kernel manager) routes local sends + knows the app through these
 var SK="romp-vscode-state-%s"+(COL?":"+COL:"");   // persist webview state to localStorage so UI prefs survive a refresh — per chat column (split screen 2026-09-08)
+window.__rompDialTerms=function(){var a="";try{var st=JSON.parse(localStorage.getItem(SK)||"null");a=(st&&st.activeId)||"";}catch(e){}return{app:APP,iid:IID,active:a,col:COL,skeleton:((SKEL||(RESTART_DIET&&!everConnected))?1:0),provrows:(APP==="fleet"?1:0),proto:readyProto,delta:1};};   // the page's live dial terms for federation.ts to carry to each remote socket (2026-09-15): the same terms the local /ws dial above states, read fresh so a remote redial reflects current state; the reader namespaces iid and strips active per host
 window.acquireVsCodeApi=function(){return{postMessage:function(m){if(window.__rompFed){window.__rompFed.outbound(m);}else{send(m);}},
 getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
 setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();

@@ -111,6 +111,6 @@ test("render.ts speaks proto 2 at ready and routes the proto-2 frames through th
 
 test("federation tells every remote kernel the chat protocol on its socket's open", () => {
   const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
-  assert.ok(FED.includes('if (this.pageProto !== null) { try { ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); }'), "the remote socket's open sends the ready with the protocol the page speaks, 1 included (the follow-up after PR 1584, low 2)");
-  assert.ok(FED.includes('c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto }))'), "…and the page's ready is told to every open remote socket the same way");
+  assert.ok(FED.includes('if (this.pageProto !== null && !conn.dialedReconnect) { try { ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); }'), "the remote socket's open sends the ready with the protocol the page speaks, 1 included (the follow-up after PR 1584, low 2), EXCEPT on a redial whose reconnect=1 is its own handshake (2026-09-15)");
+  assert.ok(FED.includes('if (c.ws && c.ws.readyState === 1 && !c.dialedReconnect) { try { c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto }))'), "…and the page's ready is told to every open remote socket the same way, a redial socket excepted for the same reason");
 });

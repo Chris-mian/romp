@@ -863,6 +863,9 @@ interface Conn {
   lastRecv: number; // epoch ms of the last frame on the CURRENT socket (keepalives count); 0 = none yet
   resumeProvisional: number; // the `resume` stamp lastRecv rests on until a frame confirms it (the watchdog runs at REMOTE_PROVISIONAL_MS meanwhile); 0 = confirmed, or no stamp
   connT: number;    // when the current socket's connect() attempt started — the watchdog's reference point
+  everOpened?: boolean; // a socket for this conn has reached `open` at least once (the shim's everConnected)
+  readyAcked?: boolean; // the remote answered this page's `ready` with a `caps` frame at least once (the shim's readyAcked): the redial gate's latch that the remote served this page whole and holds its sessions
+  dialedReconnect?: boolean; // the CURRENT socket was dialed with reconnect=1, so its open must post NO `ready`: the redial's dial term IS the handshake, and a `ready` would make the remote's ready reset pop `reconnect` and serve the whole board (the shim posts no ready on a redial for the same reason)
   // KERNEL_SETTING messages (newest per type) and the pane's own BOOKKEEPING (newest per key, see
   // BOOKKEEPING) that arrived while this host's socket was down — flushed on the socket's open event
   // (sendRemote/flushPending). Bounded by construction: one entry per setting type, per bookkeeping
@@ -879,6 +882,8 @@ function pendingTypes(c: Conn): string[] {
 
 export class FederationManager {
   app = "chat";
+  private iidFallback = "";   // a stable per-page prefix for the remote iid when this dashboard has no wid, so the iid a hub pane sends is NEVER bare (a bare iid equal to a remote's own local page retires that page's socket): iidNamespace()
+  private lastActiveRemote = "";   // the remote host the last activeTab named (or "" for a local tab): when the active moves OFF it, that host is told a clear, or it keeps building the tab nobody watches first (outbound)
   private conns = new Map<string, Conn>();
   private pageProto: number | null = null;   // the chat protocol the page's ready declared (2), told to every remote kernel's socket
   private frozeAt = 0;   // the Page Lifecycle `freeze` before the current thaw: a socket already overdue at that moment is not stamped by resumed()
@@ -1406,10 +1411,23 @@ export class FederationManager {
       // open, above) and told now to the ones already open
       this.pageProto = m.proto === 2 ? 2 : 1;
       // told whatever the page speaks, the index wire included: a kernel that serves no chat frame before the handshake
-      // (T386 stage 2) would otherwise serve an index page's remote socket nothing (the follow-up after PR 1584, low 2)
+      // (T386 stage 2) would otherwise serve an index page's remote socket nothing (the follow-up after PR 1584, low 2).
+      // NOT to a REDIAL socket (dialedReconnect): a ready there would clear its diet the same way onopen's would (the
+      // symmetry hole is unreachable today, the page posts ready once per renderer life, but the guard closes it).
       for (const c of this.conns.values()) {
-        if (c.ws && c.ws.readyState === 1) { try { c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the socket's own close says */ } }
+        if (c.ws && c.ws.readyState === 1 && !c.dialedReconnect) { try { c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the socket's own close says */ } }
       }
+    }
+    // When the active tab moves OFF a remote host (to a local tab, or another host's), tell the OLD host so it
+    // stops building the tab nobody is watching first: its client.active would otherwise keep the departed sid
+    // (routeOutbound sends the new activeTab to the NEW owner and the local kernel, never the old one). id "" clears
+    // the kernel's client.active (kernel.py _dispatch_ws activeTab). (2026-09-15, low.)
+    if (m && m.type === "activeTab" && typeof m.id === "string") {
+      const nowHost = hostOf(m.id);
+      if (this.lastActiveRemote && this.lastActiveRemote !== nowHost && this.conns.has(this.lastActiveRemote)) {
+        this.sendRemote(this.lastActiveRemote, { type: "activeTab", id: "" });
+      }
+      this.lastActiveRemote = nowHost;
     }
     const routes = routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)));
     if (m && (m.type === "askClear" || m.type === "askClearMany" || m.type === "clearAll")) {
@@ -1622,19 +1640,58 @@ export class FederationManager {
     // from a phone reading the dashboard over `tailscale serve`, that address is the phone itself,
     // and every remote host silently vanished with no disconnected mark (the user 2026-07-30).
     // Same-origin also means the local auth cookie rides the upgrade; the remote kernel's own
-    // credential is added by the relay (_remote_ws), so this URL carries no token at all.
-    const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    // …carrying this dashboard's `wid`, exactly as the pane's own local socket does. Without it a remote
-    // kernel sees every federated viewer as one anonymous client and BROADCASTS its per-viewer messages,
-    // so one dashboard's jump to a remote session yanked every other open dashboard to that tab — the
-    // very cross-window yank the local path fixed (the user 2026-07-29).
-    const w = dashboardWid();
-    const url = `${proto}${location.host}/remote/${encodeURIComponent(host)}/ws?app=${encodeURIComponent(this.app)}`
-      + (w ? `&wid=${encodeURIComponent(w)}` : "");
-    const conn: Conn = { host, ws: null, url, closed: false, live, lastRecv: 0, resumeProvisional: 0, connT: 0, pending: new Map() };
+    // credential is added by the relay (_remote_ws), so this URL carries no token at all. The URL is
+    // built fresh on every dial (remoteDialUrl, called from connect) so a redial reflects the page's
+    // current terms, exactly as the pane's own local socket rebuilds its ?active=/reconnect on each open.
+    const conn: Conn = { host, ws: null, url: "", closed: false, live, lastRecv: 0, resumeProvisional: 0, connT: 0, pending: new Map() };
     this.conns.set(host, conn);
     this.ensureHost(host);
     this.connect(conn);
+  }
+
+  // The remote socket's URL, carrying THIS page's own dial terms for its app so a federated pane is served
+  // the way the local pane is (the design in plans/federated-pane-dial-terms.md): a bare
+  // app+wid dial made the remote build every tab whole with no skeleton diet and no provisional rows, the
+  // cost the user's long chat thread ran on. The terms come from the shim's __rompDialTerms (kernel.py, the
+  // served page's reload core), read fresh here so a redial states current state. `wid` carries this
+  // dashboard's identity, exactly as the pane's own local socket does: without it a remote kernel sees every
+  // federated viewer as one anonymous client and BROADCASTS its per-viewer messages, so one dashboard's jump
+  // to a remote session yanked every other open dashboard to that tab (the user 2026-07-29). `iid` is
+  // namespaced (iidNamespace: the wid, or a stable per-page fallback so it is never bare) so a hub pane's
+  // per-socket identity cannot collide with the remote's OWN local page's iid (the reconnect-supersession
+  // twin-retire key). `active` is the watched tab only when it is THIS host's, stripped to the bare sid the
+  // remote knows. reconnect=1&proto rides a REDIAL that already got a ready acked (the shim's
+  // everConnected && bundleReady && readyAcked gate: the remote served this page whole and holds its
+  // sessions), so the remote holds what it served this page and skeletons the rest; a socket that opened but
+  // never got a ready acked dials as a first dial, holding nothing to reconnect to.
+  private remoteDialUrl(conn: Conn, redial: boolean): string {
+    const host = conn.host;
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const w = dashboardWid();
+    let t: any = null;
+    try { const f = (window as any).__rompDialTerms; if (typeof f === "function") t = f(); } catch (e) { /* no terms → the bare dial, the pre-2026-09-15 behaviour */ }
+    let url = `${proto}${location.host}/remote/${encodeURIComponent(host)}/ws?app=${encodeURIComponent(this.app)}`
+      + (w ? `&wid=${encodeURIComponent(w)}` : "");
+    if (t) {
+      if (t.delta) url += "&delta=1";
+      if (t.iid) url += `&iid=${encodeURIComponent(this.iidNamespace() + ":" + t.iid)}`;
+      if (t.active && hostOf(t.active) === host) url += `&active=${encodeURIComponent(stripHost(host, t.active))}`;
+      if (t.col) url += `&col=${encodeURIComponent(t.col)}`;
+      if (t.skeleton) url += "&skeleton=1";
+      if (t.provrows) url += "&provrows=1";
+    }
+    if (redial && (this.pageProto === 1 || this.pageProto === 2)) url += `&reconnect=1&proto=${this.pageProto}`;
+    return url;
+  }
+
+  /** The namespace prefix for a remote iid: this dashboard's wid, or a stable per-page fallback minted once
+   *  when there is no wid, so the iid a hub pane sends is ALWAYS namespaced and can never equal (and retire)
+   *  a remote's own local page's bare iid. */
+  private iidNamespace(): string {
+    const w = dashboardWid();
+    if (w) return w;
+    if (!this.iidFallback) this.iidFallback = "hub-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    return this.iidFallback;
   }
 
   // HOST-CONNECTION TRIPWIRE (the user 2026-07-31, remote cards blinking in and out): every remote
@@ -1657,6 +1714,12 @@ export class FederationManager {
     conn.connT = Date.now();
     conn.lastRecv = 0;
     conn.resumeProvisional = 0;   // a fresh socket starts unmarked: the provisional rule was the resumed socket's
+    // a REDIAL only when the remote served this page whole before (everOpened && readyAcked) and the page has a
+    // proto to name, mirroring the shim's everConnected && bundleReady && readyAcked gate; then reconnect=1 rides
+    // the URL and this socket's open posts NO ready (the redial's dial term IS the handshake, see onopen)
+    const redial = !!conn.everOpened && !!conn.readyAcked && (this.pageProto === 1 || this.pageProto === 2);
+    conn.dialedReconnect = redial;
+    conn.url = this.remoteDialUrl(conn, redial);   // rebuilt from the page's CURRENT terms every dial
     try {
       ws = new WebSocket(conn.url);
     } catch (e) {
@@ -1667,6 +1730,7 @@ export class FederationManager {
     this.dialEvent(conn.host, true);   // a dial attempt is in flight: the host-down notice's swirl spins
     ws.onopen = () => {
       this.dialEvent(conn.host, false);
+      conn.everOpened = true;   // a socket for this conn has opened (the shim's everConnected): part of the redial gate in connect()
       // settings queued while the socket was down go out FIRST — on the open event itself, never a
       // timer — so nothing sent after the reconnect can overtake them (see flushPending). That is
       // also why the relay-up dispatch below comes AFTER the flush: the chat's upload re-ship rides
@@ -1674,8 +1738,12 @@ export class FederationManager {
       const flushed = this.flushPending(conn);
       // the chat wire this page speaks, told to THIS host's kernel once the page has said it (T323 stage 4b): the
       // bundle's own ready reaches the local kernel alone, so a remote kernel would otherwise never learn the protocol
-      // and serve index frames over a floor'd list; an older remote kernel ignores the field and answers as before
-      if (this.pageProto !== null) { try { ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the next frame says */ } }   // the proto the page speaks, 1 included (low 2)
+      // and serve index frames over a floor'd list; an older remote kernel ignores the field and answers as before.
+      // NOT on a REDIAL socket (dialedReconnect): its reconnect=1&proto in the URL IS the handshake, and a `ready`
+      // here would run the remote's ready reset (_client_reset_chat_base), which pops `reconnect` with nothing to
+      // re-arm the skeleton set, so the redial would be served the whole board (2026-09-15, the shim posts no ready
+      // on its own redial for the same reason).
+      if (this.pageProto !== null && !conn.dialedReconnect) { try { ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the next frame says */ } }   // the proto the page speaks, 1 included (low 2)
       this.diag("hostconn", flushed.length ? { host: conn.host, ev: "open", flushed }
                                            : { host: conn.host, ev: "open" });
       conn.lastRecv = Date.now();   // the watchdog measures this socket's silence from ITS open
@@ -1698,6 +1766,10 @@ export class FederationManager {
         return;
       }
       if (msg && msg.type === "ka") return;
+      // the remote's `caps` frame is its ready arm's word that it PROCESSED this page's ready and served it whole
+      // (kernel.py _send_caps, sent by the ready arm alone): latch it as the redial gate's readyAcked, exactly as
+      // the shim does for its own local socket, so a later redial may state reconnect=1 (connect()).
+      if (msg && msg.type === "caps") conn.readyAcked = true;
       this.inbound(conn.host, msg);
     };
     ws.onclose = (ev: CloseEvent) => {
