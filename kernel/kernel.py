@@ -15,7 +15,7 @@ import collections
 import copy
 import math
 import zlib
-import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util
+import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util, select
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -387,7 +387,10 @@ class _PerfStats:
             #                                           (chat_row_drop), reset with the process, sids only, time.monotonic
             #                                           deltas as the call sites take them
             self.sends = {k: {} for k in self.SEND_KINDS}
-            self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
+            self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0,
+                          "passesLost": 0, "childRestarts": 0, "cpu_ms_child_workers": 0.0, "child": None}   # stage three: the judges'
+            #                                 child (plans/judges-process.md): passes it answered nothing for, its restarts, its
+            #                                 workers' CPU and its last done line   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
             # cold event-model parses this kernel ran (T323 stage 1): the kernel's own _parse misses, per session
             # (sid8) and in total, plus the bytes of the files parsed; the judges' misses ride the snapshot from
             # jd.parse_misses(). The acceptance number of the lazy-transcript work: a boot with no client parses zero.
@@ -749,6 +752,25 @@ class _PerfStats:
         with self.lock:
             self.judge["tierStarts"] += int(n)
 
+    def judge_pass_lost(self):
+        with self.lock:
+            self.judge["passesLost"] += 1
+    def judge_child_restart(self):
+        with self.lock:
+            self.judge["childRestarts"] += 1
+    def judge_child_done(self, done, pid=None):
+        """The child's done line (plans/judges-process.md rule 1): its tier starts and tier CPU join the in-process
+        counters, its workers' CPU is kept apart (the in-process figure comes from this module's pools), and the line
+        itself stands as judge.child for the read."""
+        with self.lock:
+            j = self.judge
+            j["tierStarts"] += int(done.get("tierStarts") or 0)
+            j["cpu_ms_sum"] += float(done.get("tierCpuMs") or 0.0)
+            j["cpu_ms_child_workers"] += float(done.get("workerCpuMs") or 0.0)
+            j["child"] = {"pid": pid, "seq": done.get("seq"), "t": time.time(), "wallMs": done.get("wallMs"),
+                          "tierStarts": done.get("tierStarts"), "tierCpuMs": done.get("tierCpuMs"),
+                          "workerCpuMs": done.get("workerCpuMs"), "failures": done.get("failures"),
+                          "recordCache": done.get("recordCache"), "asmCheckpoint": done.get("asmCheckpoint")}
     def http_request(self, path, dt):
         """dt None: count the request, add no time (the WebSocket upgrade case)."""
         with self.lock:
@@ -52913,6 +52935,165 @@ def _tiers_may_start(tracking=None):
     return bool(tracking) and bool(_live_map()) and not _retry_paused_on()
 
 
+JUDGES_PROCESS_FILE = "judges-process"   # STATE/judges-process: the literal `on` runs the judges in a `romp-judge --serve` child
+#                                          (plans/judges-process.md, stage three of the process split); absent, unreadable or anything
+#                                          else: the in-process tiers, today's road (rule 5: the default flips after the boot measurement)
+JUDGE_CHILD_READY_S = 60.0                 # the child's ready line bound after a start
+JUDGE_CHILD_PASS_HARD_S = 900.0            # the hard bound on one pass: a child that answers nothing by then is killed and restarted
+JUDGE_CHILD_QUIT_S = 5.0                   # how long a quit is given before the kill
+JUDGE_PROTOCOL_VERSIONS = (1,)             # the ready lines this kernel accepts; another version is refused, killed and counted
+
+
+def _judges_in_child():
+    try:
+        return (jd.STATE / JUDGES_PROCESS_FILE).read_text().strip().lower() == "on"
+    except OSError:
+        return False
+
+
+def _judge_child_argv():
+    """The child's command: ROMP_JUDGE_SERVE_CMD (a test's stand-in answering the same lines) or this checkout's
+    bin/romp-judge --serve under this interpreter."""
+    forced = os.environ.get("ROMP_JUDGE_SERVE_CMD")
+    if forced:
+        return shlex.split(forced)
+    return [sys.executable, str(ROOT / "bin" / "romp-judge"), "--serve"]
+
+
+class _JudgeChild:
+    """The kernel's side of the judges' process (plans/judges-process.md): one long-lived `romp-judge --serve` child,
+    JSON lines over its stdin and stdout (its stderr is this process's, every line of it prefixed `romp-judge:`), one
+    `pass` per producer wake answered by one `done`. Started on the first request and after a death; a child that
+    answers nothing by the hard bound is killed; a `ready` line with a protocol version this kernel does not know is
+    refused (killed, counted) rather than accepted. Every failure is counted on /perf (judge.passesLost,
+    judge.childRestarts) and written to stderr; a malformed done is a lost pass, never a silent accept."""
+    def __init__(self):
+        self.proc = None
+        self.seq = 0
+        self.lock = threading.Lock()
+        self.started_once = False
+        self.pid = None
+
+    def _readline(self, timeout):
+        """One line from the child's stdout within `timeout` seconds; None on the bound, "" at EOF."""
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            r, _, _ = select.select([self.proc.stdout], [], [], min(left, 1.0))
+            if r:
+                return self.proc.stdout.readline()
+            if self.proc.poll() is not None:
+                return ""
+
+    def _kill(self, why):
+        p = self.proc
+        self.proc = None
+        if p is None:
+            return
+        sys.stderr.write("judge child: %s (pid %s)\n" % (why, p.pid))
+        try:
+            p.kill()
+            p.wait(timeout=5)
+        except Exception:
+            pass
+
+    def _start(self):
+        """Spawn the child and read its ready line. False (nothing running) when it did not come up."""
+        argv = _judge_child_argv()
+        try:
+            self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, text=True,
+                                         bufsize=1, cwd=str(ROOT), env=dict(os.environ))
+        except Exception as e:
+            sys.stderr.write("judge child: could not start %s: %s\n" % (argv[:2], e))
+            self.proc = None
+            return False
+        if self.started_once:
+            _PERF_STATS.judge_child_restart()
+        self.started_once = True
+        line = self._readline(JUDGE_CHILD_READY_S)
+        try:
+            ready = json.loads(line) if line else None
+        except ValueError:
+            ready = None
+        if not isinstance(ready, dict) or ready.get("op") != "ready":
+            self._kill("no ready line within %.0f s (%r)" % (JUDGE_CHILD_READY_S, (line or "")[:80]))
+            return False
+        if ready.get("protocolVersion") not in JUDGE_PROTOCOL_VERSIONS:
+            self._kill("protocol version %r is not one this kernel speaks %r" % (ready.get("protocolVersion"), JUDGE_PROTOCOL_VERSIONS))
+            return False
+        self.pid = ready.get("pid") or self.proc.pid
+        return True
+
+    def pass_(self, now, tracking=True):
+        """One pass: the request, then the done line within the hard bound. The done dict, or None for a lost pass
+        (the child dead, silent past the bound, or answering something that is not this pass's done)."""
+        with self.lock:
+            if self.proc is None or self.proc.poll() is not None:
+                if self.proc is not None:
+                    self._kill("exited with %s before the pass" % self.proc.poll())
+                if not self._start():
+                    return None
+            self.seq += 1
+            seq = self.seq
+            try:
+                self.proc.stdin.write(json.dumps({"op": "pass", "seq": seq, "now": float(now), "tracking": bool(tracking)}) + "\n")
+                self.proc.stdin.flush()
+            except (OSError, ValueError) as e:
+                self._kill("the request could not be written: %s" % e)
+                return None
+            line = self._readline(JUDGE_CHILD_PASS_HARD_S)
+            if line is None:
+                self._kill("no done within the hard bound of %.0f s" % JUDGE_CHILD_PASS_HARD_S)
+                return None
+            if line == "":
+                self._kill("exited mid-pass with %s" % self.proc.poll())
+                return None
+            try:
+                done = json.loads(line)
+            except ValueError:
+                done = None
+            if not isinstance(done, dict) or done.get("op") != "done" or done.get("seq") != seq:
+                sys.stderr.write("judge child: pass %d answered %r, not its done: the pass is lost\n" % (seq, line[:120]))
+                return None
+            return done
+
+    def stop(self):
+        with self.lock:
+            p = self.proc
+            if p is None:
+                return
+            try:
+                p.stdin.write(json.dumps({"op": "quit"}) + "\n")
+                p.stdin.flush()
+                p.wait(timeout=JUDGE_CHILD_QUIT_S)
+                self.proc = None
+            except Exception:
+                self._kill("did not quit within %.0f s" % JUDGE_CHILD_QUIT_S)
+
+
+_JUDGE_CHILD = _JudgeChild()
+_PRODUCER_ONE_PASS = [False]   # a test's stop sentinel: the producer loop returns after one pass (never set by the kernel)
+
+
+def _judge_child_pass(tracking):
+    """The producer's request to the judges' child for one pass (stage three): nothing when the tiers may not start
+    (tracking off, no live session, retries paused: the same gate as the in-process road, so no kernel-initiated
+    model call), else the pass line and its done fed to /perf's judge block; a lost pass counted and said."""
+    if not _tiers_may_start(tracking):
+        return None
+    done = _JUDGE_CHILD.pass_(time.time(), True)
+    if done is None:
+        _PERF_STATS.judge_pass_lost()
+        return None
+    _PERF_STATS.judge_child_done(done, pid=_JUDGE_CHILD.pid)
+    f = done.get("failures")
+    if isinstance(f, dict) and f.get("count"):
+        sys.stderr.write("judge child: %s judge failure(s) in pass %s, first: %s\n" % (f.get("count"), done.get("seq"), str(f.get("first") or "")[:200]))
+    return done
+
+
 def _run_tier(fn):
     """Run one judge tier (run_index / run_triage) in its own thread, logging a crash instead of letting
     the thread die silently (the per-session futures inside already swallow + log their own errors).
@@ -52959,11 +53140,16 @@ def _producer():
             # segment, an uncaptioned unit, a fresh completion) — so an idle pass costs filesystem stats, not
             # model calls. (_producer_sig stays available but no longer gates triage.)
             tiers = []
+            child_pass = False                        # stage three: the tiers run in the judges' child; the request goes after the join
             tracking = _task_tracking_on()             # the master switch (T404): off, no tier starts, so no kernel-initiated model call
+            in_child = _judges_in_child()             # the switch: STATE/judges-process `on` (plans/judges-process.md rule 5)
             if _tiers_may_start(tracking):
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
-                _PERF_STATS.judge_tiers(len(tiers))    # /perf judge.tierStarts: the lab's proof that off starts nothing
+                if in_child:
+                    child_pass = True                 # no in-process tier: the child's done line carries its tier starts
+                else:
+                    tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
+                    tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
+                    _PERF_STATS.judge_tiers(len(tiers))    # /perf judge.tierStarts: the lab's proof that off starts nothing
             try:                                       # /clear boundaries FIRST (before the snapshot + tiers), so
                 _episode_boundary_tick(time.time())    # this same pass's planner/closer/nudge see a settled store
             except Exception:                          # instead of carrying dead cards into the fresh conversation
@@ -52972,13 +53158,15 @@ def _producer():
                                                        # pre-pass look; later passes anchor on the previous look
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
-            _own_frame = jd.begin_pass_frame()         # ONE evidence frame for BOTH tiers and their worker pools:
+            _own_frame = jd.begin_pass_frame() if not child_pass else False         # ONE evidence frame for BOTH tiers and their worker pools:
                                                        # every judge stage this cycle sees the same frozen world
                                                        # (the user 2026-07-21); the join below ends it
             for t in tiers:
                 t.start()
             for t in tiers:                            # barrier: both tiers finish before the next wake
                 t.join()
+            if child_pass:                             # the request to the child stands where the tiers ran: after the
+                _judge_child_pass(tracking)            #  goals snapshot opened, before the compact and the generation bump
             jd.end_pass_frame(_own_frame)              # evidence unfreezes; the next cycle pins a fresh frame
             try:                                       # AFTER the join → single writer: archive newly-cleared
                 moved = _compact_goal_stores() if tracking else 0   # cards out of the live goal stores (keeps build_feed flat); off, the stores rest (T404)
@@ -53020,7 +53208,10 @@ def _producer():
         # timeline/feed snappy. (the user 2026-06-19: 20s → 3s.)
         # Parked-op delivery is NOT here (2026-09-03): it rides the pusher cycle, woken by the settle itself,
         # so a long pass — a judge stage stuck on one session — can never hold a user's queued input.
+        if _PRODUCER_ONE_PASS[0]:
+            return                                    # the test's drive ends here, its child kept for the next pass
         _producer_wake.wait(3)
+    _JUDGE_CHILD.stop()                            # the loop's end (a stop): the child is told to quit
 
 
 def _pusher_cycle():
