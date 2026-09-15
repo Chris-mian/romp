@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("compacting tab gets an animated compaction bar before the name (NOT the static ⇲ glyph or 🗜 emoji)", () => {
@@ -34,8 +35,8 @@ test("the statusline sweep is phase-synced ONCE per element — a reused #ctx-ba
   // setCtxBar runs on BOTH the fresh bar updateStatusline builds AND the reused #ctx-bar the in-place refresh
   // keeps; re-seeding animationDelay on the reused element restarted the animation — the jump the user saw
   // (2026-07-02). A `swept` dataset flag arms only a fresh scan; the flag clears when it leaves compacting.
-  assert.match(RENDER, /const fresh = !scan\.dataset\.swept;\s*\n\s*if \(fresh\) scan\.dataset\.swept = "1";/);
-  assert.match(RENDER, /if \(scanOff\) delete scanOff\.dataset\.swept;/);
+  assert.match(MODULE, /const fresh = !scan\.dataset\.swept;\s*\n\s*if \(fresh\) scan\.dataset\.swept = "1";/);   // setCtxBar lives in status-controls.ts (T415 part two); the sweep is the chat's hook
+  assert.match(MODULE, /if \(scanOff\) delete scanOff\.dataset\.swept;/);
 });
 
 test("applyCompactSweep phase-syncs across re-renders via a negative wall-clock animation-delay (no restart)", () => {
