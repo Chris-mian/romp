@@ -33,6 +33,15 @@ sys.path.insert(0, HERE)
 import test_ship_reship as _lab   # noqa: E402
 from test_asm_checkpoint_served import transcript   # noqa: E402  the compacted long-transcript builder
 
+# make the state root hermetic BEFORE any load of romp code (test_state_isolation_order.py): the served kernel is
+# its own subprocess, but setUpClass also load_source's romp code to seed the document, so the floor is set here at
+# module top, below the romp_load import and above every load_source
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
+_ST0 = Path(os.environ["XDG_STATE_HOME"]) / "romp"
+_ST0.mkdir(parents=True, exist_ok=True)
+(_ST0 / "session-hosts").write_text("off\n")  # this module mints its own state root: hosts off (CLAUDE.md)
+
 SID = "eeee1111-2222-3333-4444-555555555555"
 COLOR = ("#64b5f6", "#0c1a2e")
 
@@ -134,8 +143,12 @@ class ServedDocumentedHistory(unittest.TestCase):
         os.makedirs(proj, exist_ok=True)
         leaf = os.path.join(proj, SID + ".jsonl")
         now = int(time.time())
-        recs = transcript(now - 86400, turns=600, compact_every=150)   # ~300 events after the cut: longer than the wire tail
+        recs = transcript(now - 86400, turns=600, compact_every=150)   # the writer cuts at the turn before the last settled turn, so the floored tail is the last few events over ~2 turns and everything above is the head gap (the RESULT reads floor near 601, ~5 events, head_from 0)
         Path(leaf).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        # a DURABLE NOTE in the floored tail region (a command gesture in the states log): with a numeric tailLo the
+        # page must still derive the head gap and ask. The leading-note case that broke tailLo is the kernel unit
+        # (test_tail_lo_leading_note.py); here the page's derivation is covered with a note present in the frame.
+        Path(state, "states", SID + ".jsonl").write_text(json.dumps({"t": now - 86400 + 60 * 599, "cmdGesture": "/effort high"}) + "\n")
 
         # SEED the assembly document into the kernel's OWN checkpoints dir, so its first parse restores lazily (cutTurn near tail)
         os.environ["ROMP_KERNEL_NO_OPEN"] = "1"

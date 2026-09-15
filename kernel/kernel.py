@@ -46553,7 +46553,7 @@ def _chat_history_reply(sid, msg, now, base=None):
             out = evs[a:b]
             body_first = _event_key(out[0]) if out else None
             more_before, more_after = a > 0 or floor > 0, b < len(evs)
-            w_span = (tix[a], tix[b - 1]) if b > a else (None, None)
+            w_span = (_first_mapped_turn(tix, a), tix[b - 1]) if b > a else (None, None)   # the head edge: the first placed turn, never -1 for a leading note
         else:
             j = _turn_of_uuid(turns, anchor)
             if j is None or j >= floor:
@@ -46573,7 +46573,7 @@ def _chat_history_reply(sid, msg, now, base=None):
                     w_span = (lo, tix[b - 1])
             else:
                 more_after = True
-        span = [max(0, w_span[0]), w_span[1] + 1] if None not in w_span else None   # the head cards ride turn -1: the span starts at 0
+        span = [w_span[0], w_span[1] + 1] if None not in w_span else None   # w_span[0] is the first placed turn (else None: missing); a leading note never reads as turn 0, and the head cards ride turn -1 below it
         # the window prepends to the tail run when its span reaches the tail's first turn: the base's first edge moves to the
         # window's first event; any other window leaves the base alone (T386 stage 2)
         nb = None

@@ -15,16 +15,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-os.environ.setdefault("XDG_STATE_HOME", tempfile.mkdtemp())
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from romp_load import load_source  # noqa: E402
 
+# make the state root hermetic BEFORE loading romp code (test_state_isolation_order.py): the loader resolves
+# STATE from ROMP_STATE_DIR || XDG_STATE_HOME/romp at import time, so a direct run must not touch the real one
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+_ST = Path(os.environ["XDG_STATE_HOME"]) / "romp"
+_ST.mkdir(parents=True, exist_ok=True)
+(_ST / "session-hosts").write_text("off\n")  # this module mints its own state root: hosts off (CLAUDE.md)
+
 km = load_source("romp_kernel_tail_lo", os.path.join(os.path.dirname(HERE), "bin", "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
-KERNEL_SRC = Path(os.path.dirname(HERE), "kernel", "kernel.py").read_text()
 
 
 def _turn(i):
@@ -70,13 +76,33 @@ class TailLoLeadingNote(unittest.TestCase):
         finally:
             km._sessions, km._parse = saved
 
-    def test_the_sibling_head_clamps_use_the_shared_helper(self):
-        # the same max(0, tix[...]) head clamp sat in _turn_of_key and the loadOlder reply's span; both now route
-        # a leading-note index through _first_mapped_turn rather than clamping it to turn 0
-        self.assertIn("fm = _first_mapped_turn(tix, p)", KERNEL_SRC, "_turn_of_key routes a note key through the helper")
-        self.assertIn("_span_lo = _first_mapped_turn(tix, frm)", KERNEL_SRC, "the loadOlder span's head edge uses the helper")
-        self.assertNotIn("return max(0, tix[head_from])", KERNEL_SRC, "_tail_lo no longer clamps a leading note to 0")
-        self.assertNotIn("[max(0, tix[frm]), max(0, tix[p - 1]) + 1]", KERNEL_SRC, "the loadOlder span no longer clamps its head edge to 0")
+    def _reply(self, msg):
+        # drive the real _chat_history_reply over a floored list led by an orphan note: turns 0..5 in the parse,
+        # the floored list starts at turn 3 (floor 3) but a durable note is flushed ahead of it (tix[0] = -1)
+        turns = [_turn(i) for i in range(6)]
+        evs = [{"uuid": "orphan:1700000000:0", "kind": "note"}]
+        for i in (3, 4, 5):
+            evs += [{"uuid": "u%d" % i}, {"uuid": "a%d" % i}]
+        saved = (km._live_map, km._sessions, km.build_session, km._parse)
+        km._live_map = lambda: {}
+        km._sessions = lambda now=None, **kw: [{"sid": SID, "name": "web", "path": "/tmp/x.jsonl", "mtime": 0, "anchor": SID}]
+        km.build_session = lambda sid, now, live_map, floor=None, **kw: {"events": evs, "floor": 3, "headCards": []}
+        km._parse = lambda path, sid, now: {"turns": turns}
+        try:
+            anchor = km._event_key(evs[3])                    # u4, in the floored list
+            return km._chat_history_reply(SID, dict(msg, **({"before": anchor} if msg["type"] == "loadOlder" else {"uuid": anchor})), 1700000000, None)
+        finally:
+            km._live_map, km._sessions, km.build_session, km._parse = saved
+
+    def test_the_history_reply_head_edges_report_the_first_placed_turn(self):
+        # the two sibling clamps (_turn_of_key, the loadOlder span) and the loadAround window span, executed through
+        # the real _chat_history_reply: a leading note must never make the head edge read as turn 0
+        older = self._reply({"type": "loadOlder"})
+        self.assertEqual(older.get("type"), "chatHead", "loadOlder answers a chatHead: %r" % older)
+        self.assertEqual(older["span"][0], 3, "loadOlder's head-edge span is the first placed turn (3), not 0 (the bug): %r" % older["span"])
+        around = self._reply({"type": "loadAround"})
+        self.assertEqual(around.get("type"), "chatWindow", "loadAround answers a chatWindow: %r" % around)
+        self.assertEqual(around["span"][0], 3, "loadAround's window head-edge span is the first placed turn (3), not 0 (the bug): %r" % around["span"])
 
 
 if __name__ == "__main__":
