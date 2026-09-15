@@ -10849,7 +10849,7 @@ _FILES_STAT_STANDING = {}             # (sid, path) -> [the ten files' stat, mon
 #                                       until an event marks the session or the floor passes; jobs thread only (pruned to the pass's askers)
 _FILES_STAT_DIRTY = {"sids": set(), "all": True}   # fed by _files_stat_mark from any thread, taken whole by the next pass; "all" at boot
 _FILES_STAT_LOCK = threading.Lock()
-_FILES_STAT_OBSERVED = {"postal": None, "rows": {}, "jdAll": None, "jdBy": {}}   # the pass prelude's own observers, compared pass to
+_FILES_STAT_OBSERVED = {"postal": None, "rows": {}, "jdAll": None, "jdBy": {}, "sig": None, "sigMsgs": None}   # the observers, compared pass to
 #                                       pass: the postal log's stat, each live row's (state, since, live-tail revision) and the judge
 #                                       module's write counters (jd.SESSION_FILE_WRITES: the store, journal, archive and episode writers)
 
@@ -10863,6 +10863,33 @@ def _files_stat_mark(sid=None):
             _FILES_STAT_DIRTY["all"] = True
         else:
             _FILES_STAT_DIRTY["sids"].add(str(sid))
+
+
+def _files_stat_observe_sig(sig):
+    """The pusher's producer signature (a client connected: every discovered transcript's mtime, every states log's and the
+    postal log's) compared with the last one seen: a transcript or states log that moved marks its session, the postal log
+    moving marks every session. With no client the pusher takes no signature and the floor alone sees a file that moves with
+    no other event (a states-log row that changes no state, a transcript growing while its live row stands)."""
+    prev = _FILES_STAT_OBSERVED.get("sig")
+    cur = {}
+    for k, v in sig.items():
+        if k.startswith("__") or k.startswith("n:"):
+            continue                                       # the browser bit, the names files, the judge generation: not keyed files
+        cur[k] = v
+    if prev is not None:
+        for k, v in cur.items():
+            if prev.get(k) != v:
+                if k.startswith("s:"):
+                    _files_stat_mark(k[2:])
+                else:
+                    _files_stat_mark(Path(k).stem)
+        for k in prev:
+            if k not in cur:
+                _files_stat_mark(k[2:] if k.startswith("s:") else Path(k).stem)
+        if sig.get("__msgs__") != _FILES_STAT_OBSERVED.get("sigMsgs"):
+            _files_stat_mark()
+    _FILES_STAT_OBSERVED["sig"] = cur
+    _FILES_STAT_OBSERVED["sigMsgs"] = sig.get("__msgs__")
 
 
 def _files_stat_pass_open(live_map):
@@ -12594,6 +12621,8 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     #                                                       node's own cleared flag, written in the same gesture, covers the gap
     _set_stage("jobs.autoNudge"); _PERF_STATS.stage("jobs.autoNudge.snapshot", time.monotonic() - _snap_t)
     _looks_t = time.monotonic(); _set_stage("jobs.autoNudge.looks")   # the looks: one mark over the loop (plans/nudge-walk-events.md)
+    _parse_ms0 = _PERF_STATS.stages.get("jobs.autoNudge.parse", 0.0)   # the parse marks its own time inside the loop: the looks
+    #                                                                     mark is the loop's wall OUTSIDE it, so the parts partition the job
     for _i, s in enumerate(alive):
         if _yielding and getattr(_NUDGE_HORIZON, "cold", 0) >= 1 and getattr(_NUDGE_HORIZON, "cold_last", False):
             _NUDGE_WALK_STATS["deferredSessions"] += len(alive) - _i
@@ -12627,7 +12656,8 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
-    _set_stage("jobs.autoNudge"); _PERF_STATS.stage("jobs.autoNudge.looks", time.monotonic() - _looks_t)   # the looks close with the loop, however it ended
+    _set_stage("jobs.autoNudge")                          # the looks close with the loop, however it ended: its wall less the parses' (1736 round two)
+    _PERF_STATS.stage("jobs.autoNudge.looks", max(0.0, time.monotonic() - _looks_t - (_PERF_STATS.stages.get("jobs.autoNudge.parse", 0.0) - _parse_ms0) / 1000.0))
     _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()   # the keys were this pass's: a look outside a pass keys for itself
     try:
         _relay_tick(now, alive_ids)                    # T334: a worker's block toward its delegating peer goes out as its
@@ -37357,6 +37387,7 @@ def _episode_boundary_check(sid, path, now):
     # notice and the chat boundary card read it back.
     jd.append_episode_settle(sid, head["uuid"], int(t),
                              [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops])
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
     sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
@@ -37501,6 +37532,7 @@ def _clear_all(item_ids):
     with p.open("a") as f:
         for iid in item_ids:
             f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     skipped = _mark_nodes_cleared(item_ids, True)     # durable node flag → no grouper re-wrap, no column bounce
     # CLEAR IS SILENT (the user 2026-08-23, reversing the 2026-07-24 wrap-up): the session hears
     # NOTHING. The wrap's response turn routinely re-minted the very card the user had just cleared —
@@ -37538,6 +37570,7 @@ def _undo_clear():
     with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
         for iid in restored:
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False)       # so this finds the nodes → un-set the durable flag → real status
     if late:
         # The store read fine (or held nothing archived) a moment ago and faults NOW, after the undo row
@@ -37553,6 +37586,7 @@ def _undo_clear():
             for iid in restored:
                 if iid.rsplit(":", 1)[0] in late:
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+        _files_stat_mark()                            # the re-journal is a clears-log write too
         skipped.update(late)
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
@@ -50867,6 +50901,7 @@ def _fleet_view_sig(now, live_map):
     must bust the cache or the reordered cards lag behind the tabs by up to a bucket; the user 2026-07-15),
     or a 5s time bucket so 'X ago'/elapsed keeps advancing when nothing else changes."""
     sig = _producer_sig(True)
+    _files_stat_observe_sig(sig)             # the snapshot's transcript and states-log mtimes: a moved one marks its session (plans/nudge-walk-events.md)
     sig["__judge__"] = _judge_gen[0]
     sig["__jrun__"] = jd.active_change()     # a judge call starting/ending → the card's judging swirl (exact event)
     sig["__bucket__"] = now // 5             # the one remaining CLOCK input — kept until the age tints, the

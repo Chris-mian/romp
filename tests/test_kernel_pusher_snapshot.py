@@ -81,7 +81,7 @@ class _CycleFixture(unittest.TestCase):
         """The ten-file key's standing snapshot, dirty set and observers back to a boot's: no test inherits another's marks."""
         getattr(km, "_FILES_STAT_STANDING", {}).clear()
         getattr(km, "_FILES_STAT_DIRTY", {}).update({"sids": set(), "all": True})
-        getattr(km, "_FILES_STAT_OBSERVED", {}).update({"postal": None, "rows": {}, "jdAll": None, "jdBy": {}})
+        getattr(km, "_FILES_STAT_OBSERVED", {}).update({"postal": None, "rows": {}, "jdAll": None, "jdBy": {}, "sig": None, "sigMsgs": None})
         km._live_scope.files_dirty = None
 
     def tearDown(self):
@@ -622,6 +622,36 @@ class OneTenFileSnapshotPerPass(_CycleFixture):
         self.assertEqual(stats, 10 * len(self.row), "the shared log moved: every session is statted")
         self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
 
+    def test_a_clear_from_the_feed_marks_every_session(self):
+        """1736 round two, medium 2: the kernel's own clears-log writers (Clear-all and every single-card clear, Undo, the
+        conversation-boundary clear) mark every alive session, as the mute path's write does: a Clear re-looks the board on
+        the next pass, never after the floor."""
+        self._pass(); self._pass()
+        km._clear_all([SID + ":g1"])                             # the feed's Clear (and every single-card clear) appends to the clears log
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "every session is statted after a clear: %d stats" % stats)
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+        self._pass()
+        km._undo_clear()
+        self.assertEqual(self._pass()[0], 10 * len(self.row), "an undo is a clears-log write too")
+
+    def test_the_pushers_snapshot_marks_a_session_whose_transcript_grew(self):
+        """1736 round two, the failed claim: the live row never moves on a transcript record, so with a client connected the
+        pusher's producer signature (every transcript's and states log's mtime, taken for the view signature) is the observer
+        that marks the session; with no client the floor alone sees it (the body and the design line say so)."""
+        self._pass(); self._pass()
+        km._fleet_view_sig(NOW, self.row)                        # the signature a connected client's build takes: the first sighting
+        rec = {"type": "assistant", "timestamp": "2026-06-11T00:00:05.000Z", "uuid": "a1", "parentUuid": "u1",
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "hello back"}]}}
+        with open(self.paths[SID], "a") as fh:
+            fh.write(json.dumps(rec) + "\n")                    # the transcript grows; the live row stands
+        os.utime(self.paths[SID], (NOW + 100, NOW + 100))         # a stamp a same-second append could hide
+        km._fleet_view_sig(NOW, self.row)                        # the next build's signature sees the mtime move
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10, "the grown session is statted, the other served: %d stats" % stats)
+        self.assertEqual(parses, 1, "and its look parses the new record")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
     def test_outside_a_pass_every_ask_stats(self):
         """A handler's own tick runs with no pass scope open: nothing is served stale from an earlier pass."""
         s = {"sid": SID, "path": self.paths[SID]}
@@ -629,6 +659,34 @@ class OneTenFileSnapshotPerPass(_CycleFixture):
         before = km._NUDGE_WALK_STATS.get("stats")
         km._session_files_stat(s); km._session_files_stat(s)
         self.assertEqual((km._NUDGE_WALK_STATS.get("stats") or 0) - (before or 0), 20, "two asks, twenty stats, no memo")
+
+
+class TheWalksPartsPartitionTheJob(_CycleFixture):
+    """1736 round two, medium 1: the four sub-stages of jobs.autoNudge (key, snapshot, looks, parse) partition the job; the
+    parse marks its own time inside the loop the looks mark spans, so the looks are the loop's wall outside the parse. Pinned
+    on a pass whose parse dominates: a transcript of thousands of records parsed cold."""
+    def test_the_four_parts_sum_to_the_job_on_a_pass_with_a_real_parse(self):
+        recs, parent = [], None
+        for i in range(4000):
+            u, a = "u%05d" % i, "a%05d" % i
+            recs.append({"type": "user", "uuid": u, "parentUuid": parent, "timestamp": "2026-06-11T00:%02d:%02d.000Z" % (i // 60 % 60, i % 60),
+                         "promptSource": "typed", "message": {"role": "user", "content": "question %d " % i + "x" * 200}})
+            recs.append({"type": "assistant", "uuid": a, "parentUuid": u, "timestamp": "2026-06-11T00:%02d:%02d.500Z" % (i // 60 % 60, i % 60),
+                         "message": {"role": "assistant", "content": [{"type": "text", "text": "answer %d " % i + "y" * 600}]}})
+            parent = a
+        with open(self.paths[SID], "w") as fh:
+            fh.write("\n".join(json.dumps(r) for r in recs) + "\n")
+        keys = ("jobs.autoNudge", "jobs.autoNudge.key", "jobs.autoNudge.snapshot", "jobs.autoNudge.looks", "jobs.autoNudge.parse")
+        before = dict(km._PERF_STATS.snapshot()["stages_ms"])
+        km.Sessions.live = lambda: dict(self.row)
+        with km._clients_lock:
+            km._clients[:] = []
+        km._jobs_cycle()
+        after = km._PERF_STATS.snapshot()["stages_ms"]
+        d = {k: after.get(k, 0.0) - before.get(k, 0.0) for k in keys}
+        job, parts = d["jobs.autoNudge"], sum(d[k] for k in keys[1:])
+        self.assertGreater(d["jobs.autoNudge.parse"], 0.3 * job, "the fixture's parse dominates the job: %r" % d)
+        self.assertLessEqual(abs(parts - job), 0.15 * job + 2.0, "the parts partition the job, no part counted twice: %r" % d)
 
 
 if __name__ == "__main__":
