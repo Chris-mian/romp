@@ -15,7 +15,7 @@ CLI:
 """
 import collections
 import shlex
-import contextlib, copy, hashlib, json, os, re, secrets, shutil, signal, stat, sys, time, subprocess, threading, traceback, importlib.util
+import contextlib, copy, hashlib, json, os, pickle, re, secrets, shutil, signal, stat, sys, time, subprocess, threading, traceback, importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -209,6 +209,8 @@ def _rebind_state(path):
     with _DISK_CONTENT_LOCK:
         _DISK_CONTENT.clear()   # save_goals' disk-side memo is keyed on full store paths, so an old root's
     #                         entries could never hit under the new one; cleared anyway so a rebind starts empty
+    with _RAW_STORE_LOCK:
+        _RAW_STORE.clear()      # the writer loader's parse memo: same full-path keys, same reasoning
     with _ABSENT_FLAGS_LOCK:
         _ABSENT_FLAGS.clear()   # the absent-store predicate memo: same full-path keys, same reasoning
     with _VIEW_CLEARED_LOCK:
@@ -4717,6 +4719,84 @@ def _quarantine_store(path, reason, st):
     return aside
 
 
+# ── the writer loader's parse memo (2026-09-15) ──────────────────────────────────────────────────────
+# load_goals parsed its store file on every call. Every judge stage loads through it per session per pass,
+# and the pusher's tick jobs (the nudge tick's last-moment re-read, the lift, the spend guard) per session
+# per cycle; a busy session's store runs to 2 MB, and a live kernel read and parsed its goal stores about
+# fifteen times a second on the pusher thread. The parse is the cost (about 25 ms for a 2.5 MB store; the
+# read is 0.25 ms), so this memo keeps ONE parse per file version and hands every caller a FRESH object,
+# because load_goals is the WRITER's loader: callers mutate what they get and hand it to save_goals.
+#
+# The entry is the file's identity (inode, mtime_ns, size), its text, and a pickle of the parsed object. A
+# hit is a proof about CONTENT, not identity: the text read this call must equal the entry's (a compare,
+# about 1% of a parse), so the coarse-timestamp blind spot a stat-only key carries (the kernel's pass memo
+# note: inode numbers recycle between consecutive publishes, and an equal-size republish inside one clock
+# tick reproduces the key; a test fixture rewriting a store in place does the same) cannot serve a stale
+# parse to a writer. The stat is by path before the read, as _read_store_json always took it for the
+# quarantine's identity check: a publish landing between the two pairs the old identity with the new
+# text, and the entry is still a true fact about the text it holds, so the next call misses on the moved
+# identity and parses once more; it never answers wrong. The fresh object is pickle.loads of the entry's
+# pickle: about 10 ms for a 2.5 MB store, against 25 ms for the parse and 69 ms for copy.deepcopy of a
+# parsed object, which is why the entry holds a pickle and not the object (and holds far less memory). The
+# pickle is our own, made from the parse in this process, never read from disk. The override journal is not
+# memoized: _finish_load replays it on every load, as before. One entry per store path, dropped when the
+# path reads as absent, cannot be read, or holds bytes that do not parse; the kernel's compaction sweep
+# drops the entries of removed stores (_raw_store_evict_absent) and of stores no discovered session owns
+# (_raw_store_evict_unowned: the sweep itself loads every store the directory holds once after boot, so
+# without it the resident set would be the directory, not the live board), and _rebind_state clears the memo.
+_RAW_STORE = {}                                  # store path → ((st_ino, st_mtime_ns, st_size), text, pickled parse)
+_RAW_STORE_LOCK = threading.Lock()
+_RAW_STORE_STATS = {"hit": 0, "miss": 0, "compare_miss": 0, "evict": 0}
+
+
+def _raw_bump(key):
+    with _RAW_STORE_LOCK:
+        _RAW_STORE_STATS[key] += 1
+
+
+def _raw_store_forget(path_s):
+    with _RAW_STORE_LOCK:
+        _RAW_STORE.pop(path_s, None)
+
+
+def _raw_store_evict_absent():
+    """Drop memo entries whose store file is gone (a removed session); the kernel's compaction sweep calls
+    this beside _disk_memo_evict_absent."""
+    with _RAW_STORE_LOCK:
+        gone = [k for k in _RAW_STORE if not os.path.exists(k)]
+        for k in gone:
+            del _RAW_STORE[k]
+        _RAW_STORE_STATS["evict"] += len(gone)
+    return len(gone)
+
+
+def _raw_store_evict_unowned(owned):
+    """Drop the entries of stores no session in `owned` (the discover set's sids) holds. The memo has no
+    cap, and the compaction sweep fills it with EVERY store the goals directory holds (its first sweep after
+    boot loads each one through load_goals), so without this the text and pickle of every store ever written
+    stayed resident for the process, as the two sibling memos of parsed stores did before their own
+    unowned eviction (review find, 2026-09-08). The kernel's compaction sweep calls this beside
+    _shared_evict_unowned; a later load of an evicted store is a miss that refills it."""
+    with _RAW_STORE_LOCK:
+        gone = [k for k in _RAW_STORE if os.path.basename(k)[:-5] not in owned]
+        for k in gone:
+            del _RAW_STORE[k]
+        _RAW_STORE_STATS["evict"] += len(gone)
+    return len(gone)
+
+
+def raw_store_stats():
+    """The memo's counters plus its occupancy. hit: identity and text matched, a fresh copy of the earlier
+    parse. miss: no entry, or its identity moved. compare_miss: identity matched and the text did not.
+    evict: entries the compaction sweep dropped for removed stores and for stores no discovered session
+    owns. Gauges: entries, and bytes (the text and the pickle held)."""
+    with _RAW_STORE_LOCK:
+        out = dict(_RAW_STORE_STATS)
+        out["entries"] = len(_RAW_STORE)
+        out["bytes"] = sum(len(e[1]) + len(e[2]) for e in _RAW_STORE.values())
+    return out
+
+
 def _read_store_json(path, *, quarantine=False, _tries=3):
     """The parsed JSON object at `path`, or None when the file is ABSENT (a session with no store yet).
 
@@ -4734,24 +4814,45 @@ def _read_store_json(path, *, quarantine=False, _tries=3):
 
     The stat comes BEFORE the read, so the quarantine can tell whether the file it is about to move is
     still the one whose bytes failed (see _quarantine_store); when it is not, a peer published meanwhile
-    and THEIR bytes get their own read, bounded by `_tries` (review find, 2026-09-08)."""
+    and THEIR bytes get their own read, bounded by `_tries` (review find, 2026-09-08).
+
+    The parse is memoized per file version (the _RAW_STORE note above): a read whose identity and text match
+    the entry answers a fresh copy of the earlier parse; any other outcome drops the path's entry."""
+    path_s = str(path)
     try:
         st = path.stat()
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
+        _raw_store_forget(path_s)
         return None
     except UnicodeError as e:
         bad, reason = e, "not UTF-8: %s" % e
+    except OSError:
+        _raw_store_forget(path_s)                    # nothing is remembered about a file that could not be read
+        raise
     else:
+        ident = (st.st_ino, st.st_mtime_ns, st.st_size)
+        with _RAW_STORE_LOCK:
+            ent = _RAW_STORE.get(path_s)
+        if ent is not None and ent[0] == ident:
+            if ent[1] == raw:
+                _raw_bump("hit")
+                return pickle.loads(ent[2])          # a fresh object: the caller may mutate it
+            _raw_bump("compare_miss")
+        else:
+            _raw_bump("miss")
         try:
             value = json.loads(raw)
         except ValueError as e:                      # json.JSONDecodeError is a ValueError
             bad, reason = e, "invalid JSON: %s" % e
         else:
             if isinstance(value, dict):
+                with _RAW_STORE_LOCK:                # pickled BEFORE the caller can touch it: the pristine parse
+                    _RAW_STORE[path_s] = (ident, raw, pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
                 return value
             reason = "top-level JSON value is %s, not an object" % type(value).__name__
             bad = ValueError("%s: %s" % (path, reason))
+    _raw_store_forget(path_s)                        # bytes that did not parse: nothing to remember
     if not quarantine:
         raise bad
     if _quarantine_store(path, reason, st) is not None or _tries <= 1:
