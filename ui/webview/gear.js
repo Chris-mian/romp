@@ -26,6 +26,7 @@ var BN = require('./backend-names.ts');   // the backends' user-facing names and
 var WP = require('./widget-prefs.ts');   // the order arithmetic both widget sections' drags share (moveId)
 var SW = require('./status-widgets.ts');   // the status line's widgets (T409): the Status line section's rows render from its registry, as the line does
 var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
+var SC = require('./status-controls.ts');   // the status line's controls (T415 part two): the preview draws them through the line's own renderer, over a demo status
 var LS = require('./landing-settle.ts');   // gestureEvidence: the chat's rule for telling the user's scroll from the browser's own (the section ask ends only on input, T379 follow-up)
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
@@ -853,10 +854,12 @@ function initGear(post, opts) {
         cfg.host.appendChild(dividerRow);
       }
       if (cfg.preview) {   // the LIVE PREVIEW (the user's addition): the surface as the current choices and order draw it, under the rows
+        // the caption is a TITLE above the box (T415 part two, the user 2026-09-14): the word Preview never sits inside the previewed thing
+        var title = document.createElement('div'); title.className = 'rs-preview-title'; title.textContent = 'Preview';
         var box = document.createElement('div'); box.className = 'rs-preview';
-        var cap = document.createElement('span'); cap.className = 'rs-preview-label'; cap.textContent = 'Preview'; box.appendChild(cap);
         previewBody = document.createElement('div'); previewBody.className = 'rs-preview-body'; box.appendChild(previewBody);
-        cfg.host.parentNode.insertBefore(box, cfg.host.nextSibling);
+        cfg.host.parentNode.insertBefore(title, cfg.host.nextSibling);
+        cfg.host.parentNode.insertBefore(box, title.nextSibling);
       }
     }
     function paint() {
@@ -881,21 +884,25 @@ function initGear(post, opts) {
   // the tab widgets: settings.tabWidgets with tabCtx as the mirror; the demo is a miniature tab with the widget's node
   // where the strip would put it (before the name or after it)
   function widgetPrefs(s) { return TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); }
+  // the demo tab (T415 part two, the user 2026-09-14): the demo record's NAME in its identity colour, the way a real tab wears it
+  // (styles.css .tab.colored .tab-label reads --chip-bg, the strip's own variable; gear.css mirrors the rule for this page), from
+  // one source, the status line's demo record (status-widgets.ts DEMO_RECORD: web, in the accent)
+  function demoTab() { var tab = document.createElement('span'); tab.className = 'tab colored'; tab.style.setProperty('--chip-bg', SW.DEMO_RECORD.color.bg); return tab; }
+  function demoLabel() { var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = SW.DEMO_RECORD.name; return label; }
   var tabSection = widgetSection({
     host: document.getElementById('rs-widgets'), list: TW.titleWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',   // the widgets that render INTO the title; the rings have their own rows below
     order: TW.tabListOrder, divider: { id: TW.NAME_DIVIDER, label: 'session name' }, group: null, groupLabel: null,
     save: function (prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); },
     on: TW.widgetOn, opts: TW.widgetOpts,
     preview: function (prefs) {   // a tab as the strip would draw it: the enabled widgets on each side of the name, in order
-      var tab = document.createElement('span'); tab.className = 'tab';
+      var tab = demoTab();
       TW.composeTabWidgets(tab, 'before', TW.DEMO_SID, TW.DEMO_STATUS, prefs);
-      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web'; tab.appendChild(label);
+      tab.appendChild(demoLabel());
       TW.composeTabWidgets(tab, 'after', TW.DEMO_SID, TW.DEMO_STATUS, prefs);
       return tab;
     },
     demo: function (w, prefs) {
-      var tab = document.createElement('span'); tab.className = 'tab';
-      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web';
+      var tab = demoTab(), label = demoLabel();
       var node = TW.renderWidgetDemo(w, prefs);
       if (w.slot === 'before') { if (node) tab.appendChild(node); tab.appendChild(label); }
       else { tab.appendChild(label); if (node) tab.appendChild(node); }
@@ -912,8 +919,7 @@ function initGear(post, opts) {
     save: tabSection.save,
     on: TW.widgetOn, opts: TW.widgetOpts,
     demo: function (w, prefs) {
-      var tab = document.createElement('span'); tab.className = 'tab';
-      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web'; tab.appendChild(label);
+      var tab = demoTab(); tab.appendChild(demoLabel());   // the demo record's name in its identity colour (T415 part two), the ring on top
       var cls = TW.ringDemoClass(w, prefs); if (cls) tab.classList.add(cls);
       return tab;
     },
@@ -934,8 +940,12 @@ function initGear(post, opts) {
       var chip = document.createElement('span'); chip.className = 'chip rs-sl-chip'; chip.textContent = 'Ready'; line.appendChild(chip);
       var right = document.createElement('span'); right.className = 'rs-sl-right';
       SW.composeStatusWidgets(right, 'right', SW.DEMO_RECORD, prefs);
-      var ctl = document.createElement('span'); ctl.className = 'rs-sl-ctl'; ctl.textContent = 'Auto · Opus 5 · high'; right.appendChild(ctl);
-      var batt = document.createElement('span'); batt.className = 'rs-sl-batt'; batt.textContent = '62%'; right.appendChild(batt);
+      // the controls and the battery through the line's own renderer over the demo status (T415 part two, the user 2026-09-14: the
+      // words and the boxed number previewed nothing): the mode, model and effort badges tinted by the kernel's rank rule on the
+      // selected colormap, the battery filled and coloured by its percentage; no hooks, so nothing opens and nothing compacts
+      var st = SC.demoStatus(cmStops(load().colormap));
+      var meta = document.createElement('span'); meta.className = 'spinner-meta'; SC.syncMetaControls(meta, st, null, {}); right.appendChild(meta);
+      var bar = SC.ctxBar(); SC.setCtxBar(bar, st.ctx, false, SC.pickTone(st.ctxColor, st.ctxTone), false); right.appendChild(bar);   // the tone on the yatharth themes, as the line picks it
       line.appendChild(right);
       return SW.makeInert(line);   // a preview never carries the folder's click act (review round two, low 4)
     },
@@ -944,6 +954,13 @@ function initGear(post, opts) {
     demo: function (w, prefs) { return SW.renderStatusWidgetDemo(w, prefs); },
   });
   function paintWidgets() { tabSection.paint(); ringSection.paint(); statusSection.paint(); }
+  // the previews' tints follow the theme and the colormap (T415 part two): the light theme re-encodes the badges' colours at paint
+  // (ctx-color's readableRgb reads the body's class) and the demo's tints sample the selected map, so a theme flip (the body's class,
+  // applyTheme) and every settings write (the same-document signal save() raises, the storage event from another frame) repaint the
+  // previews, as the chat's line repaints on its own tick
+  if (typeof MutationObserver === 'function') new MutationObserver(function () { paintWidgets(); }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  window.addEventListener('romp:settings', function () { paintWidgets(); });
+  window.addEventListener('storage', function (e) { if (e.key === 'romp:settings') paintWidgets(); });
   // The remaining native selects sweep onto the same builder (the user 2026-08-27, closing the
   // 3-house/3-native split the gauge migration left): a generic adapter over ANY hidden select —
   // options snapshot from sel.options (so the effort selects, whose options arrive from /models
@@ -1396,6 +1413,7 @@ function initGear(post, opts) {
     plasma: [[13, 8, 135], [75, 3, 161], [125, 3, 168], [168, 34, 150], [203, 70, 121], [229, 107, 93], [248, 148, 65], [253, 195, 40], [240, 249, 33]],
     cividis: [[0, 34, 78], [33, 59, 110], [76, 85, 108], [108, 110, 114], [142, 137, 120], [177, 165, 112], [217, 197, 92], [254, 232, 56]] };
   var cmBtn = document.getElementById('rs-cmap-btn'), cmList = document.getElementById('rs-cmap-list');
+  function cmStops(name) { return CMAPS[(name || '').toLowerCase()] || CMAPS.aurora; }   // the map by name, aurora the default as the chat's selectedStops has it (the settings default)
   function cmGrad(name) { var st = CMAPS[(name || '').toLowerCase()] || CMAPS.hawaii;
     return 'linear-gradient(to right,' + st.map(function (c) { return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; }).join(',') + ')'; }
   function cmPaint(name) { if (cmBtn) cmBtn.style.background = cmGrad(name);

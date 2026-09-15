@@ -7,15 +7,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 
 test("MetaKind includes mode; the status carries it; there's a MODE_CHOICES menu", () => {
-  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort"/);
+  assert.match(MODULE, /export type MetaKind = "mode" \| "model" \| "effort"/);   // the kinds live with the controls (T415 part two)
   assert.match(RENDER, /mode\?: string;/);                       // Status.mode
   assert.match(RENDER, /const MODE_CHOICES/);
 });
 
 test("the mode button renders FIRST (left of model) and the picker posts setMode", () => {
-  assert.match(RENDER, /if \(st\.mode\) meta\.appendChild\(metaButton\("mode", prettyMode\(st\.mode\), forSid\)\);\s*\n\s*if \(st\.model\)/);   // sid-scoped for the popover statusline (2026-08-25)
+  assert.match(MODULE, /if \(st\.mode\) meta\.appendChild\(metaButton\("mode", prettyMode\(st\.mode\), forSid, hooks\)\);\s*\n\s*if \(st\.model\)/);   // sid-scoped for the popover statusline (2026-08-25)
   assert.match(RENDER, /"setMode"/);
   assert.match(RENDER, /const META_CHOICES: Record<MetaKind/);   // model/effort + mode share the menu path
 });
@@ -47,8 +48,8 @@ test("every mode wears a tagline, and 'Accept edits' reads 'Accept' everywhere (
   assert.match(RENDER, /\{ label: "Auto", value: "auto", sub: "safe actions run unasked; risky ones still ask" \}/);
   assert.match(RENDER, /\{ label: "Plan", value: "plan", sub: "reads and proposes only — changes nothing" \}/);
   // the rename holds everywhere the mode name renders: the chip/badge…
-  assert.match(RENDER, /case "acceptedits": return "Accept";/);
-  assert.ok(!RENDER.includes('"Accept edits"'), "no surface still says the two-word label");
+  assert.match(MODULE, /case "acceptedits": return "Accept";/);   // prettyMode lives with the badges (T415 part two)
+  assert.ok(!RENDER.includes('"Accept edits"') && !MODULE.includes('"Accept edits"'), "no surface still says the two-word label");
 });
 
 test("no width blowout: every new tagline is no longer than the accepted bypass line (T117 fit rule)", () => {

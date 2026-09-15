@@ -15,6 +15,7 @@ const STYLES = W("styles.css");
 const FEEDCSS = W("feed.css");
 const FEED = W("feed.ts");
 const RENDER = W("render.ts");
+const MODULE = W("status-controls.ts");   // the status line's controls moved here from render.ts (T415 part two)
 const FLEET = W("fleet.ts");
 const FLEETCSS = W("fleet-pane.css");
 
@@ -76,7 +77,7 @@ test("upgraded spots wire through setTip — the native title= on them is gone",
   assert.doesNotMatch(FEED, /a\._jauthBadge\.title =/);
   assert.doesNotMatch(FEED, /a\._retryBadge\.title =/);
   // statusline meta badges, the stop button (two lines: label + explanation), composer attach/send
-  assert.match(RENDER, /setTip\(btn, kind === "model" \? "change model \(sends \/model\)"/);
+  assert.match(MODULE, /setTip\(btn, kind === "model" \? "change model \(sends \/model\)"/);   // the badges build in status-controls.ts (T415 part two)
   assert.match(RENDER, /setTip\(btn, stuck\s*\n\s*\? "Stop retrying\\ninterrupt this thread/);
   assert.match(RENDER, /setTip\(attach, "Attach a file"\)/);
   assert.match(RENDER, /setTip\(sendBtn, "Send \(Enter\)"\)/);

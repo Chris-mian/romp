@@ -1,9 +1,10 @@
-// THE TAB LOCK (T395, the user 2026-09-12): a padlock button in the chat tab strip, right after the + tab and before
-// the tags box, that freezes every way a tab moves (the drag reorder, a drag into another column or the split's edge,
-// the tab menu's Move to rows) until pressed again. Per browser like the gear's settings, fanned out the same way. The
-// drawing is the Sessions pane's lock-to-now glyph, stated once in icons.ts (the timeline is served raw and states the
-// same numbers). Pinned at the source here; tests/test_tab_lock_browser.py drives the served strip (a drag with the lock
-// on moves nothing, the same drag with it off moves the tab; the box's place and dress; screenshots).
+// THE TAB LOCK (T395, the user 2026-09-12; T405: off the strip; T415: a switch in the settings card's Tab strip section): one
+// setting freezes every way a tab moves (the drag reorder, a drag into another column or the split's edge, the tab menu's Move
+// to rows) until it is cleared. Per browser like the gear's other settings, written by the card's switch and fanned out the
+// gear's way (the same-document signal, the host relay). The strip's padlock button and its icons.ts drawing left with T415;
+// the Sessions pane's lock-to-now toggle draws the one padlock now. Pinned at the source here; tests/test_tab_lock_browser.py
+// drives the served dashboard (a drag with the lock on moves nothing, the same drag with it off moves the tab; the gear's jump
+// to the section; screenshots).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -27,17 +28,14 @@ const store: Record<string, string> = {};
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const S = require("./settings") as typeof import("./settings");
 
-test("the padlock is ONE drawing: icons.ts states the Sessions pane's numbers, and the strip imports both states", () => {
+test("the padlock is ONE drawing, the Sessions pane's own since T415 (the strip's copy in icons.ts had no importer left once the lock became the card's switch)", () => {
   for (const d of ["M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2", "M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7"]) {
     assert.ok(TIMELINE.includes(d), "the timeline draws the shackle " + d);
-    assert.ok(ICONS.includes(d), "icons.ts states the same shackle " + d);
+    assert.ok(!ICONS.includes(d), "icons.ts no longer carries a second copy of the shackle " + d);
   }
   assert.match(TIMELINE, /x: 3, y: 6\.2, width: 8, height: 5\.6, rx: 1\.2/, "the timeline's body");
-  assert.match(ICONS, /const LOCK_BODY = '<rect x="3" y="6\.2" width="8" height="5\.6" rx="1\.2"\/>';/, "the same body");
-  assert.match(ICONS, /'<svg viewBox="0 0 15 15" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1\.4"'/, "the timeline's 15-unit drawing and 1.4 stroke, drawn at the tag glyph's 14px so the boxes match (round two)");
-  assert.match(ICONS, /^export const ICON_LOCK = lockSvg\(LOCK_SHACKLE_SEATED\);/m);
-  assert.match(ICONS, /^export const ICON_LOCK_OPEN = lockSvg\(LOCK_SHACKLE_OPEN\);/m);
-  assert.match(TIMELINE, /the same numbers as ui\/webview\/icons\.ts ICON_LOCK \/ ICON_LOCK_OPEN/, "the timeline points back: one drawing, change both");
+  assert.doesNotMatch(ICONS, /ICON_LOCK|lockSvg|LOCK_BODY|LOCK_SHACKLE/, "the dead padlock constants are gone from icons.ts (T415 part two, low 2)");
+  assert.match(TIMELINE, /the one padlock drawing \(T395; the chat strip's copy in ui\/webview\/icons\.ts left with T415/, "the timeline says so");
   assert.match(RENDER, /^import \{ GEAR_GLYPH, ICON_FORK \} from "\.\/icons";/m);   // T405: the strip's gear glyph; the lock icons left render.ts with the gear's menu (T415), icons.ts keeps them for the timeline's drawing
 });
 
@@ -88,8 +86,9 @@ test("the setting: per browser, off by default, only the literal true locks; the
   store["romp:settings"] = JSON.stringify({ tabsLocked: "yes" }); assert.equal(S.loadSettings().tabsLocked, false, "only the literal true");
   store["romp:settings"] = JSON.stringify({ compact: true }); assert.equal(S.loadSettings().tabsLocked, false, "a store from before the key reads unlocked");
   delete store["romp:settings"]; assert.equal(S.loadSettings().tabsLocked, false);
-  assert.match(RENDER, /function setTabsLocked\(on: boolean\): void \{\s*\n\s*settings = saveSettings\(\{ tabsLocked: on \}\);\s*\n\s*try \{ window\.dispatchEvent\(new Event\("romp:settings"\)\); \} catch \{[^}]*\}\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "settingsSync", settings \}\);\s*\n\}/,
-    "the store, the same-document signal (the strip repaints through it), the host relay for VS Code's panes");
+  assert.match(GEAR, /tl\.addEventListener\('change', function \(\) \{ var s = load\(\); s\.tabsLocked = tl\.checked; save\(s\); \}\);/,
+    "the live road (T415): the card's switch writes the store through the gear's save, which fans out the same-document signal and the host relay");
+  assert.doesNotMatch(RENDER, /function setTabsLocked\(/, "the strip's own setter had no caller left and is gone (T415 part two, low 2)");
 });
 
 test("the Sessions pane shares the order, so the padlock holds its drags too: lanes, the dialog's rows and the pills (round one, MEDIUM 1)", () => {
