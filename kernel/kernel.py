@@ -1657,6 +1657,7 @@ def _record_suspend(iv):
     try:                                             #  the two sees the suspension and a stat that will move under its memo; the
         with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:   #  other order let a look record a skippable memo without the
             f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")   #  suspension under the final stat (T401 (2) round six)
+        _files_stat_mark()                           # the downtime log is a keyed file of every session
     except OSError:
         _nudge_memos_forget()                        # the list moved with no file to say so: every nudge memo keyed on the downtime
     #                                                  log is stale, so none may skip (round five, low b)
@@ -1682,8 +1683,26 @@ _SHA_REASK_S = 30           # and how long that failure stands before git is ask
 _CONVERGE_CRASH_T = [0.0]   # when the automatic converge's leg last crashed: one cool-down is held before the retry
 
 
-_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved once
+def _code_ident_of(root):
+    """(identity, stat key) of the kernel code under `root`/kernel: a short sha1 over the bytes of kernel/*.py in path order
+    beside the files' (name, mtime_ns, size), or ("", ()) when the tree cannot be read or holds no kernel code (a hash of
+    nothing would compare equal across different builds). The one recipe behind the booted identity (_code_ident, read at
+    import) and the checkout's (_checkout_code_ident, read from the disk on demand), so the two compare byte for byte."""
+    h = hashlib.sha1()
+    key = []
+    try:
+        for f in sorted(Path(root, "kernel").glob("*.py")):
+            st = f.stat()
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+            key.append((f.name, st.st_mtime_ns, st.st_size))
+    except OSError:
+        return "", ()
+    return (h.hexdigest()[:12] if key else ""), tuple(key)
 
+
+_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved AT IMPORT (below): a lazy read taken after
+#                             a pull moved the checkout would name the new code as the running one (the laptop, 2026-09-15)
 
 def _code_ident():
     """A content identity of the kernel's own code: a short sha1 over the bytes of kernel/*.py in path order,
@@ -1698,20 +1717,30 @@ def _code_ident():
     reload, never a silent stale page."""
     if _CODE_IDENT[0] is None:
         forced = os.environ.get("ROMP_CODE_IDENT")
-        if forced:
-            _CODE_IDENT[0] = forced
-        else:
-            h = hashlib.sha1()
-            seen = 0
-            try:
-                for f in sorted(Path(ROOT, "kernel").glob("*.py")):
-                    h.update(f.name.encode())
-                    h.update(f.read_bytes())
-                    seen += 1
-                _CODE_IDENT[0] = h.hexdigest()[:12] if seen else ""
-            except OSError:
-                _CODE_IDENT[0] = ""
+        _CODE_IDENT[0] = forced if forced else _code_ident_of(ROOT)[0]
     return _CODE_IDENT[0]
+
+
+_code_ident()               # the booted identity is the code on disk NOW, at import, before any pull can move it
+
+
+_CHECKOUT_IDENT = [(), ""]  # the last disk read: the files' stat key and the identity it hashed to
+
+
+def _checkout_code_ident():
+    """The identity of the kernel code the checkout holds NOW, the files on disk (a pull just moved them; a dirty tree's
+    edits count, since the kernel loads from the worktree), keyed on the files' (name, mtime_ns, size) so a poll costs
+    a stat per file and the bytes are hashed only when one moved. Empty when the tree cannot be read."""
+    try:
+        key = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in sorted(Path(ROOT, "kernel").glob("*.py")))
+    except OSError:
+        return ""
+    if not key:
+        return ""
+    if key != _CHECKOUT_IDENT[0]:
+        ident, key = _code_ident_of(ROOT)
+        _CHECKOUT_IDENT[0], _CHECKOUT_IDENT[1] = key, ident
+    return _CHECKOUT_IDENT[1]
 
 
 def _kernel_sha(reask=False):
@@ -7421,6 +7450,7 @@ def _set_session_flag(sid, flag, value):
                     for nid in tops:
                         fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
                 _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
+                _files_stat_mark()                            # the clears log is a keyed file of every session
         except Exception:
             pass
     if flag == "hideFromFeed" and not value:
@@ -8033,6 +8063,8 @@ def _ledger_write_proved(p, what, d, cache, normalize=None):
             _sdk_problem(line)                # the error center: on record once, however many gestures repeat it
         raise
     _ledger_write_failed.pop(what, None)     # a landed write ends the write-fault episode
+    if what == "auto-nudge":
+        _files_stat_mark()                   # the ledger is the tenth keyed file of every session: the next pass stats them all
     _ledger_proved(what, None)               # a proved write ends the episode too
     try:
         st = p.stat()
@@ -9189,50 +9221,24 @@ def _kernel_code_changed(a, b):
     return cc is None or bool(cc["kernel"])
 
 
-_RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
-
-
-RESTART_PENDING_RETRY_S = 30      # how long a failed classification's safe answer stands before git is asked again
-_RESTART_PENDING_FAILED = {}      # key -> when the classification last failed: /version is polled by every reader, and an
-#                                   unreadable pair must not run a git diff (a 20 s subprocess bound) on each poll
-
-
 def _restart_pending(checkout=None):
-    """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
-    checkout's HEAD through the converge's own classification (plans/drift-by-running-code.md). False when the two are
-    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` is the
-    head to judge when the caller read one itself (the pull route, right after its fast-forward): None means the
-    polls' cached head, and an EMPTY string means the caller's fresh read failed, which is answered None, never the
-    cache (the round-three review's low 1: the cache still named the head before the fast-forward). Keyed on the two
-    commits' seven-character prefixes, so the route's full sha and the poll's short one share one entry. Only a verdict
-    that was READ is kept: a classification that failed (a git flake, an index lock right after a merge) answers True,
-    the safe converge, and holds that answer for RESTART_PENDING_RETRY_S before git is asked again, so a poll storm
-    over an unreadable pair costs one diff per bound rather than one per poll."""
-    if checkout is not None and not checkout:
+    """Whether this checkout holds kernel code the running process does not execute: the identity of the code this
+    process loaded at import (_code_ident, the bytes of kernel/*.py then) against the identity of the kernel/*.py on
+    disk now (_checkout_code_ident), byte for byte (plans/drift-by-running-code.md, the running-code identity). Not a
+    git sha on either side: the running sha (_kernel_sha) is resolved lazily and a first read that fails at a busy
+    boot is taken again later, so a kernel whose checkout had moved by then adopted the pulled head as its own and
+    this verdict compared the checkout with itself (the laptop, 2026-09-15: two pulls that changed kernel code drew no
+    restart and it ran 1 h 52 min behind its checkout). `checkout` is accepted for the callers that read a head (the
+    pull route) and not needed: the disk is read on every call, keyed on the files' stats. None when either identity
+    cannot be read or the booted one is forced (ROMP_CODE_IDENT, a lab's stand-in: no claim); False when the two agree;
+    True otherwise, a comment-only edit included (the converge's AST tolerance is the self-converge's, which judges
+    commits; here a byte the process does not run is the fact reported)."""
+    if os.environ.get("ROMP_CODE_IDENT"):
         return None
-    booted = _sha_base(_kernel_sha() or "")
-    checkout = _sha_base(checkout or "") or (_local_head(short=True) or "")
-    if not booted or not checkout:
+    booted, disk = _code_ident(), _checkout_code_ident()
+    if not booted or not disk:
         return None
-    if _shas_agree(booted, checkout):
-        return False
-    key = (booted[:7], checkout[:7])
-    if key in _RESTART_PENDING_MEMO:
-        return _RESTART_PENDING_MEMO[key]
-    failed_at = _RESTART_PENDING_FAILED.get(key)
-    if failed_at is not None and time.time() - failed_at < RESTART_PENDING_RETRY_S:
-        return True                                   # the safe answer stands until the bound; no diff this poll
-    cc = _converge_classes(booted, checkout)
-    if cc is None:
-        if len(_RESTART_PENDING_FAILED) > 64:
-            _RESTART_PENDING_FAILED.clear()
-        _RESTART_PENDING_FAILED[key] = time.time()
-        return True                                   # unreadable this time: the safe answer, remembered only for the bound
-    _RESTART_PENDING_FAILED.pop(key, None)
-    if len(_RESTART_PENDING_MEMO) > 64:
-        _RESTART_PENDING_MEMO.clear()
-    _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
-    return _RESTART_PENDING_MEMO[key]
+    return booted != disk
 
 
 def _rebuild_dist():
@@ -10839,6 +10845,112 @@ def _warm_wanted(s, tm):
     return _session_moved_since_boot(s) or (tm or {}).get("state", "") in _PARSE_WARM_STATES
 
 
+NUDGE_FLOOR_S = 30                    # the bound on the standing snapshot's trust (plans/nudge-walk-events.md): a session no event marked is
+#                                       re-statted once this many seconds after its last stat, so an event this process missed heals within it
+_FILES_STAT_STANDING = {}             # (sid, path) -> [the ten files' stat, monotonic taken]: the last pass's stat, served to later passes
+#                                       until an event marks the session or the floor passes; jobs thread only (pruned to the pass's askers)
+_FILES_STAT_DIRTY = {"sids": set(), "all": True}   # fed by _files_stat_mark from any thread, taken whole by the next pass; "all" at boot
+_FILES_STAT_LOCK = threading.Lock()
+_FILES_STAT_OBSERVED = {"postal": None, "rows": {}, "jdAll": None, "jdBy": {}, "sig": None, "sigMsgs": None}   # the observers, compared pass to
+#                                       pass: the postal log's stat, each live row's (state, since, live-tail revision) and the judge
+#                                       module's write counters (jd.SESSION_FILE_WRITES: the store, journal, archive and episode writers)
+
+
+def _files_stat_mark(sid=None):
+    """One of the ten keyed files moved by this process's hand, or an observer saw one move: the next jobs pass stats `sid`'s
+    files afresh (None: every session's, for a shared file such as the clears log, the ledger, the downtime or the postal
+    log). The writers call this AFTER their write lands, so a pass that took the mark sees the moved file."""
+    with _FILES_STAT_LOCK:
+        if sid is None:
+            _FILES_STAT_DIRTY["all"] = True
+        else:
+            _FILES_STAT_DIRTY["sids"].add(str(sid))
+
+
+def _files_stat_observe_sig(sig):
+    """The pusher's producer signature (a client connected: every discovered transcript's mtime, every states log's and the
+    postal log's) compared with the last one seen: a transcript or states log that moved marks its session, the postal log
+    moving marks every session. With no client the pusher takes no signature and the floor alone sees a file that moves with
+    no other event (a states-log row that changes no state, a transcript growing while its live row stands)."""
+    prev = _FILES_STAT_OBSERVED.get("sig")
+    cur = {}
+    for k, v in sig.items():
+        if k.startswith("__") or k.startswith("n:"):
+            continue                                       # the browser bit, the names files, the judge generation: not keyed files
+        cur[k] = v
+    if prev is not None:
+        for k, v in cur.items():
+            if prev.get(k) != v:
+                if k.startswith("s:"):
+                    _files_stat_mark(k[2:])
+                else:
+                    _files_stat_mark(Path(k).stem)
+        for k in prev:
+            if k not in cur:
+                _files_stat_mark(k[2:] if k.startswith("s:") else Path(k).stem)
+        if sig.get("__msgs__") != _FILES_STAT_OBSERVED.get("sigMsgs"):
+            _files_stat_mark()
+    _FILES_STAT_OBSERVED["sig"] = cur
+    _FILES_STAT_OBSERVED["sigMsgs"] = sig.get("__msgs__")
+
+
+def _files_stat_pass_open(live_map):
+    """The jobs pass's prelude: take the dirty set whole (a mark landing during the pass waits for the next), add what the
+    prelude observes itself (the postal log's stat, written by another process; the judge module's per-session write counters;
+    each live row's state, since and live-tail revision, the backends' in-memory word on a turn's edges and queued sends), and
+    open the pass's shared snapshot. Returns
+    True when this call opened the slot (a caller that already holds one, a test driving the pass inside a cycle, keeps its own)."""
+    with _FILES_STAT_LOCK:
+        sids, every = set(_FILES_STAT_DIRTY["sids"]), _FILES_STAT_DIRTY["all"]
+        _FILES_STAT_DIRTY["sids"].clear(); _FILES_STAT_DIRTY["all"] = False
+    try:
+        _pst = os.stat(str(jd.STATE / "timeline" / "messages.jsonl")); postal = (_pst.st_mtime, _pst.st_size)
+    except OSError:
+        postal = (0.0, 0)
+    if postal != _FILES_STAT_OBSERVED["postal"]:
+        _FILES_STAT_OBSERVED["postal"] = postal
+        every = True
+    writes = getattr(jd, "SESSION_FILE_WRITES", None)      # the judge module's own writers, counted per session (in this process)
+    if isinstance(writes, dict):
+        try:
+            by = dict(writes.get("by") or {})
+        except RuntimeError:                                  # a writer on another thread mid-append: every session, this once
+            by, every = dict(_FILES_STAT_OBSERVED["jdBy"]), True
+        if writes.get("all") != _FILES_STAT_OBSERVED["jdAll"]:
+            _FILES_STAT_OBSERVED["jdAll"] = writes.get("all")
+            every = True
+        prev = _FILES_STAT_OBSERVED["jdBy"]
+        sids.update(sid for sid, n in by.items() if prev.get(sid) != n)
+        sids.update(sid for sid in prev if sid not in by)
+        _FILES_STAT_OBSERVED["jdBy"] = by
+    rows = {}
+    for sid, row in (live_map or {}).items():
+        try:
+            rows[sid] = ((row or {}).get("state"), (row or {}).get("since"), Sessions.live_rev(sid))
+        except Exception:
+            rows[sid] = object()                          # unreadable: never equal, so the session is looked at (when unsure, look)
+        if rows[sid] != _FILES_STAT_OBSERVED["rows"].get(sid):
+            sids.add(str(sid))
+    _FILES_STAT_OBSERVED["rows"] = rows
+    _live_scope.files_dirty = (sids, every)
+    opened = getattr(_live_scope, "files_stat", None) is None
+    if opened:
+        _live_scope.files_stat = {}
+    return opened
+
+
+def _files_stat_pass_close(opened):
+    """The pass's end: the standing snapshot keeps only the sessions this pass asked about (a dead session's entry goes
+    with it), and the slot closes when this pass opened it."""
+    memo = getattr(_live_scope, "files_stat", None)
+    if memo is not None:
+        for k in [k for k in _FILES_STAT_STANDING if k not in memo]:
+            _FILES_STAT_STANDING.pop(k, None)
+    _live_scope.files_dirty = None
+    if opened:
+        _live_scope.files_stat = None
+
+
 def _session_files_stat(s):
     """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
     episode log, the clears log, the postal log, the kernel's downtime log and the nudge ledger, zeros for a missing file:
@@ -10847,8 +10959,26 @@ def _session_files_stat(s):
     check reads the _downtime list, which the downtime log refills). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
     no transcript change at all, and the interrupt tick must re-block on exactly that (its docstring's stale-marker
-    rule; tests/test_kernel_interrupt_machine_cut.py pins it)."""
+    rule; tests/test_kernel_interrupt_machine_cut.py pins it).
+    One snapshot per session per jobs pass (plans/nudge-walk-events.md, 2026-09-15): inside a pass the first asker's stat is kept on
+    the pass's scope and served to every later asker, so the lift, the walk and the interrupt tick read ONE view of the ten files
+    and the pass pays ten stats per alive session, not ten per job; `stats` under memos.nudgeWalk counts the stats paid. Across
+    passes the stat STANDS (_FILES_STAT_STANDING) until an event marks the session (_files_stat_mark: the writers of the ten files
+    in this process, the pass prelude's observers) or NUDGE_FLOOR_S passes, so a quiet pass stats nothing (`served` counts the
+    standing keys served). Outside a pass (a handler's own tick, a test) there is no scope and every ask stats."""
     sid = str(s.get("sid") or "")
+    memo = getattr(_live_scope, "files_stat", None)
+    key = (sid, s.get("path") or "")
+    if memo is not None:
+        if key in memo:
+            return memo[key]
+        dirty = getattr(_live_scope, "files_dirty", None)    # (the sids an event marked, every session marked): taken by the pass prelude
+        stand = _FILES_STAT_STANDING.get(key)
+        if (stand is not None and dirty is not None and not dirty[1] and sid not in dirty[0]
+                and time.monotonic() - stand[1] < NUDGE_FLOOR_S):
+            _NUDGE_WALK_STATS["served"] += 1                # the last pass's stat stands: no event marked the session, the floor holds
+            memo[key] = stand[0]
+            return stand[0]
     out = []
     for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
@@ -10870,7 +11000,12 @@ def _session_files_stat(s):
             out += [st.st_mtime, st.st_size]
         except OSError:
             out += [0.0, 0]
-    return tuple(out)
+    out = tuple(out)
+    _NUDGE_WALK_STATS["stats"] += len(out) // 2   # the stats paid (a served key pays none)
+    if memo is not None:
+        memo[key] = out
+        _FILES_STAT_STANDING[key] = [out, time.monotonic()]
+    return out
 
 
 def _session_moved_since_boot(s):
@@ -11086,7 +11221,7 @@ def _tick_job_skips(job, s):
 # so the walk's bookkeeping does not flap. The first boot with per-stage byte rows (dc8ad7fb, 2026-09-13) spent 58.9 s of a
 # 63 s first cycle in this walk, parsing every alive session cold before a single nudge could be due.
 _NUDGE_HORIZON = threading.local()    # the walking thread's collector: .notes (the flips a look's clock legs declined on)
-_NUDGE_WALK_STATS = {"looks": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
+_NUDGE_WALK_STATS = {"looks": 0, "stats": 0, "served": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
                      "clockDue": 0, "wakeOnly": 0, "unboundedBy": {}}   # unboundedBy: the None notes per leg (T401 follow-up)
 _NUDGE_LOOK_STATS = {}                # sid -> the stat the pass took before its snapshots, for the look (a side map: the session
 #                                       rows are shared, read-only and memoised per cycle, never written into)
@@ -12443,12 +12578,14 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     except OSError:
         postal_stat = (0.0, 0)                            # the postal log's stat FIRST, then the asker index built from that log
     asks_by_target = _nudge_asks_by_target()              # once per pass: the open asks by debtor
-    for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
-        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
-        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
+    with _sub_stage("autoNudge.key"):                 # the ten stats per session (plans/nudge-walk-events.md)
+        for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
+            _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
+            _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
     #                                                       are read, so no snapshot handed to a look is older than the key its memo
     #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
     #                                                       clears log and the store under a memo that then silenced the un-cleared goal)
+    _snap_t = time.monotonic(); _set_stage("jobs.autoNudge.snapshot")   # the ledger, the peer graph and the clear set, closed where the walk begins
     snap = _auto_nudge_data()
     if snap.get(UNPROVED):
         _auto_nudge_pause(snap[UNPROVED])
@@ -12484,6 +12621,10 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     cleared = _cleared_ids()                              # one parsed clear set for every session this pass walks (2026-09-09):
     #                                                       a clear landing mid-pass reaches the later sessions next pass; the
     #                                                       node's own cleared flag, written in the same gesture, covers the gap
+    _set_stage("jobs.autoNudge"); _PERF_STATS.stage("jobs.autoNudge.snapshot", time.monotonic() - _snap_t)
+    _looks_t = time.monotonic(); _set_stage("jobs.autoNudge.looks")   # the looks: one mark over the loop (plans/nudge-walk-events.md)
+    _parse_ms0 = _PERF_STATS.stages.get("jobs.autoNudge.parse", 0.0)   # the parse marks its own time inside the loop: the looks
+    #                                                                     mark is the loop's wall OUTSIDE it, so the parts partition the job
     for _i, s in enumerate(alive):
         if _yielding and getattr(_NUDGE_HORIZON, "cold", 0) >= 1 and getattr(_NUDGE_HORIZON, "cold_last", False):
             _NUDGE_WALK_STATS["deferredSessions"] += len(alive) - _i
@@ -12517,6 +12658,8 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
+    _set_stage("jobs.autoNudge")                          # the looks close with the loop, however it ended: its wall less the parses' (1736 round two)
+    _PERF_STATS.stage("jobs.autoNudge.looks", max(0.0, time.monotonic() - _looks_t - (_PERF_STATS.stages.get("jobs.autoNudge.parse", 0.0) - _parse_ms0) / 1000.0))
     _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()   # the keys were this pass's: a look outside a pass keys for itself
     try:
         _relay_tick(now, alive_ids)                    # T334: a worker's block toward its delegating peer goes out as its
@@ -14505,7 +14648,8 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         # (a synthesized leading idle opens it, vs the human prompt), so the closer-gate below would never
         # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
         _cold = jd._parse_entry(sid) is None          # no cached parse: this look pays it (T401 (2): the yield's event)
-        turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+        with _sub_stage("autoNudge.parse"):        # the parse-store read (a hit while the transcript stands) under its own mark
+            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         _NUDGE_HORIZON.parsed = True
         _NUDGE_WALK_STATS["parses"] += 1
         if _cold:
@@ -20429,6 +20573,28 @@ def _peer_shape_complain(host, field, value, note=None):
           file=sys.stderr, flush=True)
 
 
+_PEER_COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{6}|[a-z]{1,20})$")   # an identity color: #rrggbb, or a CSS color word (fg is often "white")
+_PEER_SESSION_ROWS_MAX = 512
+
+
+def _remote_session_public_row(raw):
+    """ONE row of a peer's /sessions answer, re-read through the shape /remote/<host>/sessions publishes: the
+    session id (a _PEER_KEY_RE id, fullmatch, else the row is dropped: it is what a client sends back to POST
+    /send {id}), the name, its live state and directory as inert bounded text, and the two identity colors
+    (#rrggbb or a CSS color word, else ''). Nothing else the peer sent passes: not its lastSid, not its backend,
+    never a credential."""
+    if not isinstance(raw, dict):
+        return None
+    sid = raw.get("id")
+    if not isinstance(sid, str) or not _PEER_KEY_RE.fullmatch(sid):
+        return None
+
+    def _color(v):
+        return v if isinstance(v, str) and _PEER_COLOR_RE.fullmatch(v) else ""
+    return {"id": sid, "name": _peer_text(raw.get("name"), 128), "state": _peer_text(raw.get("state"), 32),
+            "dir": _peer_text(raw.get("dir"), 512), "bg": _color(raw.get("bg")), "fg": _color(raw.get("fg"))}
+
+
 def _remote_payload_public_row(raw):
     """ONE row of a peer's /tunnels answer, re-read through the shape _remote_public publishes — the
     whitelist tunnels_of applies before the page sees a peer's rows. Every key the panel's sub-row and
@@ -22389,6 +22555,9 @@ def _host_for_sid(sid):
                 return r
     return None
 
+
+_RELAY_TIMEOUT_S = 10   # one bound for every relay of ONE call through a tunnel (/remote/<host>/api-health, /new, /send): a
+                        #  peer that accepts and never answers is reported "not answering" after this, and the redial asked
 
 def _remote_forward(r, path, body):
     """Forward a small CONTROL call (deliver/send/working) to a remote kernel THROUGH its -L tunnel — this is
@@ -30558,6 +30727,7 @@ def _bump_judge_gen_if_changed(before_fp=None):
     _last_judge_fp[0] = cur
     if cur != anchor:
         _judge_gen[0] += 1
+        _files_stat_mark()                           # a judge-written store moved (the judges' own process too): every session's key may have
         return True
     return False
 
@@ -31211,6 +31381,15 @@ def _chat_ident(path):
     return (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
 
 
+def _chat_reg_sig(sid):
+    """Registry content that can change a chat, plus its readable/missing/unreadable state. Host journal
+    acknowledgements and log offsets move during ordinary output without changing the payload; keying on
+    the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
+    ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
+    state, reg = _thread_reg_read(sid)
+    return state, {k: v for k, v in reg.items() if k not in ("hostAck", "hostLogPos")}
+
+
 def _names_digest(snap):
     """The names registry's content as one value for the chat-build signature: a digest of every entry's
     fields (the snapshot _names_snapshot returns, {sid: tab fields}). build_session reads names in many
@@ -31527,7 +31706,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         sig.append((_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None)
         sig.append(_chat_ident(jd.ARCHDIR / (sid + ".json")))         # archive: the ledger headline
         sig.append(_chat_ident(jd.EPIDIR / (sid + ".jsonl")))         # episodes: the note floor, the boundary card
-        sig.append(_chat_ident(jd.STATE / "sdk" / (sid + ".json")))   # reg: forkedFrom, alive, bgLedger, spawnedAt, cwd
+        sig.append(_chat_reg_sig(sid))                             # reg: content and read state, excluding host offsets
         sig.append(_chat_ident(jd.GONEDIR / (sid + ".json")))         # gone: the death marker behind the spawn epoch
         sig.append(_task_store_fp(fsid))   # a store update (incl. a subagent completing a task) refreshes the to-do card
         # a pending DELETE rollback changes the payload with NO transcript write (the parse-cache lesson,
@@ -37303,6 +37482,7 @@ def _episode_boundary_check(sid, path, now):
     # notice and the chat boundary card read it back.
     jd.append_episode_settle(sid, head["uuid"], int(t),
                              [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops])
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
     sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
@@ -37447,6 +37627,7 @@ def _clear_all(item_ids):
     with p.open("a") as f:
         for iid in item_ids:
             f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     skipped = _mark_nodes_cleared(item_ids, True)     # durable node flag → no grouper re-wrap, no column bounce
     # CLEAR IS SILENT (the user 2026-08-23, reversing the 2026-07-24 wrap-up): the session hears
     # NOTHING. The wrap's response turn routinely re-minted the very card the user had just cleared —
@@ -37484,6 +37665,7 @@ def _undo_clear():
     with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
         for iid in restored:
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False)       # so this finds the nodes → un-set the durable flag → real status
     if late:
         # The store read fine (or held nothing archived) a moment ago and faults NOW, after the undo row
@@ -37499,6 +37681,7 @@ def _undo_clear():
             for iid in restored:
                 if iid.rsplit(":", 1)[0] in late:
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+        _files_stat_mark()                            # the re-journal is a clears-log write too
         skipped.update(late)
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
@@ -50824,6 +51007,7 @@ def _fleet_view_sig(now, live_map):
     must bust the cache or the reordered cards lag behind the tabs by up to a bucket; the user 2026-07-15),
     or a 5s time bucket so 'X ago'/elapsed keeps advancing when nothing else changes."""
     sig = _producer_sig(True)
+    _files_stat_observe_sig(sig)             # the snapshot's transcript and states-log mtimes: a moved one marks its session (plans/nudge-walk-events.md)
     sig["__judge__"] = _judge_gen[0]
     sig["__jrun__"] = jd.active_change()     # a judge call starting/ending → the card's judging swirl (exact event)
     sig["__bucket__"] = now // 5             # the one remaining CLOCK input — kept until the age tints, the
@@ -53156,6 +53340,21 @@ def _pusher_cycle():
             _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
 
 
+@contextlib.contextmanager
+def _sub_stage(name):
+    """A finer stage INSIDE a tick job, `jobs.<job>.<part>`: the thread's mark for the block (its reads count under the part) and
+    the part's own milliseconds on the ring, so a job whose passes spike names what they paid (plans/nudge-walk-events.md, the
+    measurement's first step). The enclosing job's stage still closes over the whole; the parts sum to at most that."""
+    _t = time.monotonic()
+    prev = getattr(_STAGE_TL, "name", None)
+    _set_stage("jobs." + name)
+    try:
+        yield
+    finally:
+        _set_stage(prev)
+        _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
+
+
 def _job_stage(name, thunk):
     """One tick job as a sub-stage of `jobs` in the cycle's split (T398): the boot's first split said jobs 25 s with 224 MB read
     and nothing finer, so each job here closes its own `jobs.<name>` stage and the row names the job that read. The job is a
@@ -53240,6 +53439,8 @@ def _jobs_pass(now, live_map):
     _t_pass = time.monotonic()
     if not _PERF_STATS._mine():
         _PERF_STATS.cycle_begin("jobs")   # a caller that did not open the pass (a test driving the jobs alone) opens it here
+    _own_stat = _files_stat_pass_open(live_map)   # the dirty set taken, the prelude's observers read, the pass's shared ten-file
+    #                                               snapshot opened when the caller did not (closed below; the cycle's finally too)
     try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
         _job_stage('liftSpentAwaiting', lambda: _lift_spent_awaiting(now, live_map))   # so the nudge tick below never wakes a wait that already ended
     except Exception:
@@ -53317,6 +53518,7 @@ def _jobs_pass(now, live_map):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+    _files_stat_pass_close(_own_stat)
     _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
 
 
@@ -53354,6 +53556,8 @@ def _jobs_cycle():
         _live_scope.sessions = None
         _live_scope.auth = None
         _live_scope.msgsum = None
+        _live_scope.files_stat = None
+        _live_scope.files_dirty = None
         _PERF_STATS.jobs_pass(time.monotonic() - _t, time.thread_time() - _c)
         if first:
             _first_cycle_sampler_stop(_FIRST_PASS_SAMPLER)
@@ -60317,6 +60521,10 @@ class Handler(BaseHTTPRequestHandler):
                 # the API-health signal of an attached host, relayed (T301): one JSON read, that kernel's own
                 # token rewritten in, its document passed through as it answered it
                 return self._remote_api_health(unquote(p[len("/remote/"):-len("/api-health")]))
+            if p.startswith("/remote/") and p.endswith("/sessions"):
+                # an attached host's session roster with its identity colors, re-read through a whitelist: the
+                # same-machine session picker's read, now that a peer's token never rides /tunnels
+                return self._remote_sessions(unquote(p[len("/remote/"):-len("/sessions")]))
             if p.startswith("/remote/") and p.endswith("/ws"):
                 # federated dashboard, viewed off this machine: relay to the attached host's kernel
                 return self._remote_ws(unquote(p[len("/remote/"):-len("/ws")]), u.query)
@@ -61465,6 +61673,14 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path.startswith("/remote/"):
+                # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
+                # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth
+                # gate has run; the peer validates and answers for itself (_remote_control). EVERY POST under
+                # /remote/ lands there, so the relay's own JSON answers cover a path with no host and an op it does
+                # not carry: a split here on a hostless /remote/new raised into the catch-all below, an HTTP 500
+                # whose body was a traceback with absolute paths (the 2026-09-15 read).
+                return self._remote_control(unquote(u.path[len("/remote/"):]), raw_body)
             if u.path == "/new":
                 # Headless session creation (`romp new`, 2026-07-25): the WS createSession op as a
                 # one-shot POST, so a terminal can start a session — SDK by default, the recommended
@@ -62328,7 +62544,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _pull_remote(host)
                 # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
                 # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
-                kcc = _restart_pending(checkout=_fresh_local_head() or "") if ok else None   # the head the pull just moved, read fresh; a failed read answers None, never the cache
+                kcc = _restart_pending() if ok else None   # the disk the pull just moved, read fresh; a refused pull claims nothing
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
                                   "application/json")
             if u.path == "/tunnels/askpull":
@@ -63807,6 +64023,69 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
+    def _remote_control(self, rest, raw_body):
+        """POST /remote/<host>/new and /remote/<host>/send: relay ONE control call to an attached host's own kernel
+        through this kernel's tunnel, which is how an action LANDS on that machine. The /api-health relay's shape:
+        the local auth gate has run, the remote's own token goes in the forwarded request, a dead tunnel is a 502
+        and a redial, an unknown host a 404. The peer applies its own validation (a name it refuses, a backend it
+        lacks) and its status and JSON verdict are mirrored, so its 400 or 409 arrives as a 400 or 409 with its
+        words, never as "not answering". Two ops only: `new` (a session born THERE; this kernel's by-sid forwarding
+        cannot reach a session that does not exist yet) and `send` to a session that host lists (its briefing,
+        before this kernel's supervisor poll has learned the sid, when POST /send here would route it nowhere).
+        The body must be a JSON object and crosses as the peer's route expects it. Every answer this side writes
+        is JSON {ok, error}, so a caller reads one shape. Why not _remote_forward: it folds every non-200 into
+        None, which would report a peer's refusal as a dead tunnel (the /send arm's own lesson).
+        (the user 2026-09-14: the editor plugin's new-experiment command spawns its managing session on the vault's
+        mirror host; it posted to the tunnel port with the peer token /tunnels used to publish, gone since
+        2026-09-08.) `rest` is the path after /remote/, parsed HERE (the dispatcher sends every POST under
+        /remote/), so a path with no host (/remote/new, /remote//send) and an op outside the two are this route's
+        own 404s in the same JSON shape, never the catch-all's 500. The peer's answer is bounded by
+        _RELAY_TIMEOUT_S, the read relays' bound: a peer that accepts and never answers is "not answering" in
+        ten seconds, not thirty."""
+        host, sep, op = rest.rpartition("/")
+        if not host:
+            return self._send(404, json.dumps({"ok": False, "error":
+                "the relay path names no host: POST /remote/<host>/new or /remote/<host>/send"}), "application/json")
+        if op not in ("new", "send"):
+            return self._send(404, json.dumps({"ok": False, "error": "no such relay op %r: new and send relay" % op}),
+                              "application/json")
+        b, berr = _json_object_body(raw_body)
+        if berr:
+            return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, json.dumps({"ok": False, "error": "no attached host %r" % host}),
+                              "application/json")
+        payload = json.dumps(b or {})
+        hdrs = {"Content-Type": "application/json"}
+        if rtok:
+            hdrs["X-Romp-Token"] = rtok
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=_RELAY_TIMEOUT_S)
+        try:
+            conn.request("POST", "/" + op, payload, hdrs)
+            resp = conn.getresponse()
+            body = resp.read(1 << 20)
+            status = resp.status
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, json.dumps({"ok": False, "error":
+                "tunnel to %s is not answering: re-dialing now" % host}), "application/json")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        try:
+            doc = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            doc = None
+        if not isinstance(doc, dict):
+            return self._send(502, json.dumps({"ok": False, "error":
+                "%s answered /%s with HTTP %d and no JSON verdict" % (host, op, status)}), "application/json")
+        return self._send(status, json.dumps(doc), "application/json", cache="no-cache")
+
     def _remote_api_health(self, host):
         """GET /remote/<host>/api-health: relay ONE read of an attached host's API-health signal through this
         kernel's tunnel (T301). The same shape as the /file relay: the local auth gate has run, the remote's own
@@ -63819,7 +64098,7 @@ class Handler(BaseHTTPRequestHandler):
             port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
         if not port:
             return self._send(404, "no attached host %r" % host, "text/plain")
-        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=_RELAY_TIMEOUT_S)
         try:
             conn.request("GET", "/api-health", headers=({"X-Romp-Token": rtok} if rtok else {}))
             resp = conn.getresponse()
@@ -63837,6 +64116,48 @@ class Handler(BaseHTTPRequestHandler):
             # the remote's verdict in prose (an older build's 404, its 401, its 503): the shell names it per host
             return self._send(status, body[:2000].decode("utf-8", "replace") or ("HTTP %d" % status), "text/plain")
         return self._send(200, body, "application/json", cache="no-cache")
+
+    def _remote_sessions(self, host):
+        """GET /remote/<host>/sessions: relay ONE read of an attached host's own /sessions through this kernel's
+        tunnel, in the /api-health relay's shape (the local auth gate has run, the remote's own token goes in the
+        forwarded request, a dead tunnel is a 502 and a redial). The rows come back re-read through
+        _remote_session_public_row: id, name, state, dir and the two identity colors, nothing else. This is how a
+        same-machine client (an editor plugin's session picker) lists a peer's sessions with the colors that host's
+        dashboard draws: since 2026-09-08 a peer's serve token never leaves its machine (/tunnels publishes only
+        hasToken), so the direct read such clients used to make is gone, and the postal bus's roster carries names
+        but no colors. A peer that refused, or an older build without the route, answers in prose with its status
+        mirrored, as /api-health does; a body that is not a list is a 502 naming the host."""
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, "no attached host %r" % host, "text/plain")
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        try:
+            conn.request("GET", "/sessions", headers=({"X-Romp-Token": rtok} if rtok else {}))
+            resp = conn.getresponse()
+            body = resp.read(1 << 22)
+            status = resp.status
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, "tunnel to %s is not answering: re-dialing now" % host, "text/plain")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if status != 200:
+            return self._send(status, body[:2000].decode("utf-8", "replace") or ("HTTP %d" % status), "text/plain")
+        try:
+            rows = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            rows = None
+        if not isinstance(rows, list):
+            return self._send(502, "%s answered /sessions with something other than a list of rows" % host,
+                              "text/plain")
+        pub = [x for x in (_remote_session_public_row(x) for x in rows[:_PEER_SESSION_ROWS_MAX]) if x]
+        return self._send(200, json.dumps({"ok": True, "host": host, "sessions": pub}), "application/json",
+                          cache="no-cache")
 
     def _remote_file(self, host, query, head=False):
         """GET/HEAD /remote/<host>/file — relay ONE preview request to an attached host's kernel
