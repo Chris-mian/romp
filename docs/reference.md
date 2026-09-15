@@ -2861,6 +2861,15 @@ frames it received is measured in the panes themselves, by
   more also posts a `slowframe` row at once, carrying the long-frame
   attribution when the browser reports one for that frame; at most five such
   rows a minute per pane, the rest counted in the minute row.
+- The kernel files one `wsopen` row (surface `kernel`) per socket it accepts: the
+  app, the dashboard id, whether the dial was a reconnect, and the `kind`:
+  `page` for a dial carrying an Origin or a User-Agent header (a browser's
+  upgrade carries both), `relay` for one carrying neither (the federation splice
+  forwards only the WebSocket upgrade headers and dials with the remote's own
+  token; a CLI dial has the same shape). One helper decides, and the connect
+  push's per-app split reads the same verdict.
+  So an empty file means no browser was on a page this kernel serves, not a
+  broken sink, and a browser's panes are told from another kernel's relay dials.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about

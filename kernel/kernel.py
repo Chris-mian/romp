@@ -44473,6 +44473,30 @@ def _note_ws_inbound(client, now=None):
     _reveal_proven(client)     # a push tap handed to this socket while it was unproven has landed (2026-09-06)
 
 
+def _dial_kind(headers):
+    """The one tell for what dialled a socket (2026-09-15, shared with the connect-push split): "page" for a dial carrying an
+    Origin or a User-Agent header (a browser's upgrade carries both), "relay" for one carrying neither. The federation splice
+    (_remote_ws) forwards only the six WebSocket upgrade headers and dials with the remote's own token, so another kernel's
+    relay dial has neither; a CLI dial has the same shape. `headers` is any mapping with .get (the handler's, or a dict)."""
+    return "page" if (headers.get("Origin") or headers.get("User-Agent")) else "relay"
+
+
+def _note_ws_open(client, reconnect=False, now=None):
+    """One client-diag row per socket the kernel ACCEPTS (2026-09-15). The kernel kept no durable record of page connections, so
+    an empty client-diag.jsonl read as a broken sink when no browser had been on a page this kernel serves, and a count of
+    GET /ws per app read as the attached dashboard's panes when they may have been another kernel's relay dials. The row
+    names the app, the dashboard id, the shim's reconnect term and the client's `kind` (_dial_kind at the handshake: page or
+    relay). Returns whether a row was filed; the file's own failure is never the socket's."""
+    try:
+        now = time.time() if now is None else now
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "wsopen",
+                                                                         "data": {"app": client.get("app"), "kind": client.get("kind"), "reconnect": bool(reconnect),
+                                                                                  "iid": bool(client.get("iid")), "cid": client.get("cid")}}) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -62835,6 +62859,7 @@ class Handler(BaseHTTPRequestHandler):
         # `q` above is the connect QUERY; the client's send queue gets its own name — a Queue.get("delta")
         # would block this handler forever (caught by tests/test_kernel.py's socket-error loop test)
         client, sendq, lock = _new_ws_client(app, wid, self.connection, lock=lock)
+        client["kind"] = _dial_kind(self.headers)   # page or relay: the one tell the wsopen row and the connect-push split read
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         if (q.get("delta") or [""])[0] == "1":
@@ -62883,6 +62908,7 @@ class Handler(BaseHTTPRequestHandler):
         if col:
             client["col"] = col
         _register_ws_client(client)
+        _note_ws_open(client, reconnect=reconnect)   # the durable record of this open: app, wid, kind (page or relay), reconnect
         if client.get("reconnect"):
             _pusher_wake.set()   # the reconnect is the event; without this it waited out the 0.5-3 s backstop
         try:
