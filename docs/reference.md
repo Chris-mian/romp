@@ -1327,10 +1327,15 @@ are written when a session's turn settles or its states log moves, and all of
 them at exit; checkpoints of files that no longer exist are swept at boot. A
 compaction appends records and changes nothing here.
 
-The assembly checkpoint (2026-09-11) does the same for the parse itself. When a
-session's tree holds a compaction boundary, a second document beside the fold
-checkpoint records everything before the cut (the turn that holds the last
-boundary, or the `/compact` command's turn for a manual one) as identities and
+The assembly checkpoint (2026-09-11) does the same for the parse itself. A
+second document beside the fold checkpoint records everything before the cut
+(since 2026-09-15 the turn before the last SETTLED turn, a turn whose result
+landed and whose next turn exists, or the turn that holds the last compaction
+boundary, whichever is later; before that only the boundary's turn, so a
+session that never compacted had no document. A standing document is
+rewritten with a later cut only when the tail past its cut has grown to an
+eighth of the pre-cut bytes or a compaction landed past it, so the rewrites
+over a session's life are a logarithm of its growth) as identities and
 record locations: each record's uuid, verdict, type, order, time and file, each
 emitted atom's scalar fields and the identity facts the ids and the turn
 segmentation read, the kept chain, the gate facts, the emit carry with its text
@@ -1825,7 +1830,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   which marks a document whose only defect was the missing bit until the
   next accepted write clears it, a bounded cost, is marked refused in its
   sidecar at the leaf's stat (under
-  the key lock, re-read after the write), and while that stat stands every
+  the key lock, re-read after the write) ONLY when the accepted rewrite
+  reproduced the refused cut; a rewrite that moved the cut (since 2026-09-15
+  the cut advances with the settled turns and with a compaction) is counted
+  `write:afterRefusalMovedCut` and not marked, since the writer retired the
+  old mark with the sidecar it replaced (its bytes kept beside it as
+  `.meta.retired-<stamp>`, swept with the document) and the new tail is
+  proven at the next restore; while a mark stands every
   road goes straight to the whole or cold parse with no proof and no rewrite
   (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
   the leaf moves or a write the writer accepts replaces the sidecar; a cyclic resolved
@@ -1969,7 +1980,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   at load or at that first read, counted once),
   `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
-  (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
+  (`noEntry`, `restored`, `written`, `noCut`, `reuse`, `closure`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
   `offsets` is no reader entry at all, a tail entry (one read from a
   checkpoint's offset, its base above zero), or an entry holding fewer records
