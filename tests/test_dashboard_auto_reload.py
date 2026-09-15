@@ -32,13 +32,15 @@ var SEL = { rangeCount: 0, isCollapsed: true, toString: function () { return "";
 var COMPOSER = { tagName: "TEXTAREA", value: "" };              // the chat composer, one editable among any
 var FOCUSED = true;                                             // document.hasFocus()
 var IFRAMES = [];
+var SPLASH = [], HEALTH_BOOT = null;                            // the restart button's splash classes; the boot id /healthz answers with
 var document = {
+  createElement: function () { return { id: "", innerHTML: "", classList: { add: function (c) { SPLASH.push("+" + c); }, remove: function (c) { SPLASH.push("-" + c); } } }; },
   addEventListener: function (t, f) { (LISTENERS[t] = LISTENERS[t] || []).push(f); },
   getSelection: function () { return SEL; },
   hasFocus: function () { return FOCUSED; },
   getElementById: function (id) { return id === "composer-input" ? COMPOSER : null; },
   activeElement: null,
-  body: { classList: { remove: function () { REMOVED.push(Array.prototype.slice.call(arguments)); } } },
+  body: { classList: { remove: function () { REMOVED.push(Array.prototype.slice.call(arguments)); } }, appendChild: function () {} },
   querySelectorAll: function () { return IFRAMES; }
 };
 var TIMERS = [], _setTimeout = globalThis.setTimeout;
@@ -53,7 +55,8 @@ var sessionStorage = {
   removeItem: function (k) { delete STORE[k]; }
 };
 var VERSION = null;
-function fetch(u) { FETCHES.push(u); return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(VERSION); } }); }   // ok and status: the core checks them before the body
+function fetch(u) { FETCHES.push(u); return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(VERSION); },
+  headers: { get: function (k) { return k === "X-Romp-Boot" ? HEALTH_BOOT : null; } } }); }   // ok and status: the core checks them before the body; the boot header: the restart button's poll
 function emit(t) { (LISTENERS[t] || []).forEach(function (f) { f({}); }); }
 function wemit(t) { (WLISTENERS[t] || []).forEach(function (f) { f({}); }); }
 function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
@@ -151,10 +154,10 @@ out({ after: state() });""", code="abc1234")
         self.assertEqual(s["after"]["stored"]["reason"], "restart")
 
     def test_the_fresh_hold_is_read_from_the_panes_the_shell_holds_and_a_pane_that_never_arms_it_holds_nothing(self):
-        """The round-two review's medium: busy() walks every pane the shell holds. A Files or Settings pane gets no resync frame,
-        so a hold armed there would never end; the shim arms the flag in the chat pane alone (its own test), and here the walk
-        is executed over two panes: the chat pane holds while its flag stands, the other pane never does, and the chat pane's
-        ending event fires the reload."""
+        """The shell's walk over its panes, executed over two fakes of busyHere: the chat pane holds while its flag stands, the
+        other pane never does, and the chat pane's ending event fires the reload. A pin, green at the round-one head: the walk
+        existed there. The round-two medium (the shim arming the hold in every pane, the Files page never clearing it) has its
+        red in ui/webview/pane-shim-stale.test.ts, which runs the real shim; the fakes here stand in for what that shim does."""
         s = run_core("""
 var R = window.__rompReload;
 var chat = { pending: true, since: Date.now() };
@@ -224,14 +227,91 @@ R.noteVersion({ boot: "2.2", dist_ver: 7, code_ident: "abc1234" }); R.noteVersio
 var one = R.restarted();
 R.noteVersion({ boot: "3.3", dist_ver: 7, code_ident: "abc1234" }); var two = R.restarted();
 window.__rompFreshPending = true; window.__rompFreshPendingSince = Date.now();
+var heldCalls = 0; R.held = function () { heldCalls++; };
 R.noteVersion({ boot: "4.4", dist_ver: 7, code_ident: "def5678" }); R.noteVersion({ boot: "5.5", dist_ver: 7, code_ident: "def5678" });
 var owed = state().owed;
 window.__rompFreshPending = false; R.ended(); await tick(); await tick();
-out({ one: one, two: two, owed: owed, after: state() });""", code="abc1234")
+out({ one: one, two: two, owed: owed, heldCalls: heldCalls, after: state() });""", code="abc1234")
         self.assertEqual(s["one"], 1, "two polls of one restarted kernel count one restart")
         self.assertEqual(s["two"], 2, "a further boot id counts again")
         self.assertEqual(s["owed"]["detail"], "5.5", "the held request names the latest boot")
+        self.assertEqual(s["heldCalls"], 1, "one wait, announced once: the second restart moves the detail, not the reason (round three, low 2)")
         self.assertEqual(s["after"]["stored"]["detail"], "5.5")
+
+    def test_both_held_maps_render_the_fresh_wording_when_run(self):
+        """The held hooks executed (round three, low 3): the pane's (installed by the shim on a standalone page, rendering into
+        its bar) and the shell's (installed by the stale block, a notification-center line), each sliced from its source and
+        run under node over fakes of the sink: the fresh hold renders the wording that names the chat pane and the bound, a
+        gesture hold renders nothing."""
+        node = shutil.which("node")
+        if not node:
+            raise unittest.SkipTest("node not installed")
+        shim = km._shim("chat", 5)
+        a = shim.index("window.__rompReload.held=function(b){")
+        pane_fn = shim[a + len("window.__rompReload.held="):shim.index("};", a) + 2]
+        stale = km._STALE_JS
+        b = stale.index("RL.held=function(b){")
+        shell_fn = stale[b + len("RL.held="):stale.index("};", b) + 2]
+        js = """
+var OUT = [];
+var window = { __rompNotify: function (k, t) { OUT.push(["shell", k, t]); } };
+function selfBar(t, k) { OUT.push(["pane", k, t]); }
+var pane = %s;
+var shell = %s;
+["fresh", "pointer", "typing", "upload"].forEach(function (b) { pane(b, { reason: "restart" }); shell(b, { reason: "restart" }); });
+process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
+""" % (pane_fn, shell_fn)
+        d = tempfile.mkdtemp(prefix="held-maps-")
+        path = os.path.join(d, "held.js")
+        with open(path, "w") as f:
+            f.write(js)
+        r = subprocess.run([node, path], capture_output=True, text=True, timeout=60)
+        shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(r.returncode, 0, "node failed:\n" + r.stderr)
+        line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULT:")), None)
+        out = json.loads(line[len("RESULT:"):])
+        wording = "The dashboard will reload onto the new build once the reconnected chat pane has its first frame, a minute at most."
+        self.assertEqual([o for o in out if o[0] == "pane"],
+                         [["pane", "held", wording], ["pane", "held", "The dashboard will reload once the upload in progress finishes."]],
+                         "the pane's bar: the fresh wording and the upload's; nothing for the gesture holds")
+        self.assertEqual([o for o in out if o[0] == "shell"],
+                         [["shell", "reload", wording], ["shell", "reload", "The dashboard will reload once the upload in progress finishes."]],
+                         "the shell's notification center: the same")
+
+    def test_the_settings_restart_button_hands_the_new_kernels_answer_to_the_reload_core(self):
+        """Round three, low 5b: the rail's restart button polled /healthz until a NEW boot id answered and then reloaded the page
+        unconditionally, an exception to the ruling. Now the flip drops the splash and hands the decision to the reload core:
+        the same code restarted reloads nothing (the panes redial), a changed build owes the reload as any restart does. The
+        button's function is sliced from the served landing and run over the harness's fetch (a /healthz answering with the
+        boot header, then /version), the core baked beside it."""
+        html = km._landing()
+        a = html.index("window.__rompRestart=function(){")
+        fn = html[a:html.index("var rf=document.getElementById('rail-refresh');", a)]
+        self.assertNotIn("if(b&&b!==%s)location.reload()" % json.dumps(km._BOOT_ID), fn, "the flip no longer reloads by itself")
+        self.assertIn("window.__rompReload.checkBoot()", fn)
+        same = run_core(fn + """
+var R = window.__rompReload;
+HEALTH_BOOT = "9.9"; VERSION = { boot: "9.9", dist_ver: 7, code_ident: "abc1234" };
+window.__rompRestart();
+var polls = TIMERS.map(function (t) { return t.ms; });
+TIMERS.shift().f(); await tick(); await tick(); await tick(); await tick();
+out({ polls: polls, splash: SPLASH, fetches: FETCHES, restarted: R.restarted(), after: state() });""", code="abc1234")
+        self.assertEqual(same["polls"], [500], "one poll armed for the new kernel's answer")
+        self.assertEqual(same["fetches"][:1], ["/restart"])
+        self.assertIn("/healthz", same["fetches"])
+        self.assertIn("/version", same["fetches"], "the flip asked the core, which read /version")
+        self.assertEqual(same["restarted"], 1, "the core counted the restart")
+        self.assertEqual(same["after"]["reloads"], 0, "the same code restarted: the board stays")
+        self.assertIsNone(same["after"]["owed"])
+        self.assertEqual(same["splash"][-1], "+gone", "the splash the button raised is dropped when the new kernel answers")
+        changed = run_core(fn + """
+var R = window.__rompReload;
+HEALTH_BOOT = "9.9"; VERSION = { boot: "9.9", dist_ver: 7, code_ident: "def5678" };
+window.__rompRestart(); TIMERS.shift().f(); await tick(); await tick(); await tick(); await tick();
+out({ after: state() });""", code="abc1234")
+        self.assertEqual(changed["after"]["reloads"], 1, "a changed build reloads through the core, as any restart does")
+        self.assertEqual(changed["after"]["stored"]["reason"], "restart")
+        self.assertEqual(changed["after"]["stored"]["detail"], "9.9")
 
     def test_the_code_identity_changes_with_the_bytes_of_the_kernel_code(self):
         """Low d of the round-two review: a dirty tree reads the same git sha before and after an edit, so the identity the core
@@ -262,6 +342,9 @@ out({ one: one, two: two, owed: owed, after: state() });""", code="abc1234")
                 del os.environ["ROMP_CODE_IDENT"]
                 km._CODE_IDENT[0] = None
             self.assertEqual(km._version_info()["code_ident"], km._code_ident(), "/version carries the identity the core compares")
+            os.remove(os.path.join(d, "kernel", "a.py"))
+            km._CODE_IDENT[0] = None
+            self.assertEqual(km._code_ident(), "", "no kernel code at all reads empty, never a hash of nothing that compares equal across builds (round three, low 5a)")
         finally:
             km.ROOT = old_root
             km._CODE_IDENT[0] = None
@@ -272,8 +355,8 @@ out({ one: one, two: two, owed: owed, after: state() });""", code="abc1234")
         self.assertIn('if(openSock===this){armFresh();', js, "the drop arms the hold the core reads: the shell's socket may reopen and ask /version before this pane redials")
         self.assertIn('pendingWhy="";freshPending=true;armFresh();', js, "the reopen restamps it")
         self.assertIn('pendingWhy="foreground";freshPending=true;armFresh();', js, "and the foreground redial")
-        self.assertIn('function armFresh(){if(APP==="chat"){window.__rompFreshPending=true;window.__rompFreshPendingSince=Date.now();}}', js,
-                      "the chat pane alone, stamped for the bound (ui/webview/pane-shim-stale.test.ts runs it)")
+        self.assertIn('function armFresh(){if(APP==="chat"){if(!window.__rompFreshPending)window.__rompFreshPendingSince=Date.now();window.__rompFreshPending=true;}}', js,
+                      "the chat pane alone, stamped once per hold for the bound (ui/webview/pane-shim-stale.test.ts runs it)")
         self.assertIn('if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}', js,
                       "the first real frame clears it and is the ending event")
         core = km._reload_core_js(5, "1.1", "abc")

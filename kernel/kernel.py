@@ -1641,19 +1641,22 @@ def _code_ident():
     and after an edit, so an edit-and-restart from a checkout with uncommitted changes would keep the old page
     code against the new kernel. Bytes change with every edit, committed or not. ROMP_CODE_IDENT stands in for
     the computed value (a served lab's relaunch as a changed build, tests/test_dashboard_reload_served.py).
-    Empty when the tree cannot be read: the core treats an empty or absent identity as changed, so the
-    fail-safe is today's reload, never a silent stale page."""
+    Empty when the tree cannot be read or holds no kernel code (a hash of nothing would compare equal across
+    different builds): the core treats an empty or absent identity as changed, so the fail-safe is today's
+    reload, never a silent stale page."""
     if _CODE_IDENT[0] is None:
         forced = os.environ.get("ROMP_CODE_IDENT")
         if forced:
             _CODE_IDENT[0] = forced
         else:
             h = hashlib.sha1()
+            seen = 0
             try:
                 for f in sorted(Path(ROOT, "kernel").glob("*.py")):
                     h.update(f.name.encode())
                     h.update(f.read_bytes())
-                _CODE_IDENT[0] = h.hexdigest()[:12]
+                    seen += 1
+                _CODE_IDENT[0] = h.hexdigest()[:12] if seen else ""
             except OSError:
                 _CODE_IDENT[0] = ""
     return _CODE_IDENT[0]
@@ -52165,7 +52168,7 @@ try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reaso
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
-if(b){R.waiting=b;var hk=key(owed)+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}
+if(b){R.waiting=b;var hk=owed.reason+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}   /* keyed on the reason: a second restart inside one hold moves the detail and must not announce the same wait again */
 if(b==='fresh'&&!freshTimer)freshTimer=setTimeout(function(){freshTimer=null;tryFire();},FRESH_HOLD_MS);   /* the bound's backstop: no event ends a hold whose frame never comes, so the walk runs once more when the bound has passed */
 return;}R.waiting='';fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
@@ -52272,8 +52275,10 @@ var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
 var IID="";try{IID=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():"";}catch(e){}if(!IID)IID=String(Math.random()).slice(2)+"-"+Date.now();
 var APP="%s";var LOADEDV=%d;var NOSTALE=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 // the reload core's 'fresh' hold (invisible restarts, 2026-09-14): the chat pane alone, the pane the ruling names, armed at the drop and
-// restamped at the redial; a Files or Settings page gets no resync frame, so a hold armed there would never end (the round-two review)
-function armFresh(){if(APP==="chat"){window.__rompFreshPending=true;window.__rompFreshPendingSince=Date.now();}}
+// kept through the redial; a Files or Settings page gets no resync frame, so a hold armed there would never end (the round-two review).
+// Stamped once per hold: a flapping socket or a kernel in a crash loop re-arms without moving the stamp, so the core's bound is
+// a minute per hold, as the held wording says (round three, low 1)
+function armFresh(){if(APP==="chat"){if(!window.__rompFreshPending)window.__rompFreshPendingSince=Date.now();window.__rompFreshPending=true;}}
 var PROVISIONAL_MS=15000,resumeProvisional=0;   // a resumed keep is PROVISIONAL (review find, 2026-09-08): the `resume` stamp below re-bases the watchdog on a socket the browser still holds OPEN, but the far end can have died without a FIN reaching the browser, and only the kernel's next frame can tell. Until one lands the watchdog runs at 1.5 keepalive periods (KEEPALIVE_S is 10 s, so 15 s: one beat may be in flight, two missing is silence) instead of STALE_MS. resumeProvisional holds the stamp a kept socket rests on; 0 once a frame confirmed it (or the socket is a fresh one)
 var connT=0;   // when the current socket's connect() attempt started — the progress watchdog's reference point
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
@@ -55100,7 +55105,10 @@ boot.classList.remove('gone');
 try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
 var n=0;(function again(){setTimeout(function(){n++;
 fetch('/healthz',{cache:'no-store'}).then(function(r){var b=(r&&r.ok)?r.headers.get('X-Romp-Boot'):null;
-if(b&&b!==__ROMP_BOOT__)location.reload();else if(n<240)again();else location.reload();})
+// the NEW kernel answers: the reload core decides (invisible restarts, 2026-09-14). The same code restarted: no reload, the panes
+// redial and the board updates in place. A changed build: the reload lands once the chat pane has its first frame. A page
+// without the core reloads as before; so does the poll's own backstop.
+if(b&&b!==__ROMP_BOOT__){boot.classList.add('gone');if(window.__rompReload)window.__rompReload.checkBoot();else location.reload();}else if(n<240)again();else location.reload();})
 .catch(function(){if(n<240)again();else location.reload();});},500);})();};
 var rf=document.getElementById('rail-refresh');
 if(rf)rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();};

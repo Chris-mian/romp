@@ -403,15 +403,19 @@ test("only the chat pane's reconnect arms the reload core's fresh hold, stamped,
   assert.equal(h.win.__rompFreshPending, undefined, "the first dial is not a reconnect: nothing to hold");
   h.ws.close();
   assert.equal(h.win.__rompFreshPending, true, "the drop arms the hold: the shell's own socket may reopen and ask /version before this pane redials");
-  const since = h.win.__rompFreshPendingSince;
-  assert.ok(since > 0, "stamped, so the core can bound it");
+  assert.equal(h.win.__rompFreshPendingSince, 1_000_000, "stamped at the drop, so the core can bound it");
+  h.now = 1_030_000;
   h.runTimers(); h.ws.open();
   assert.equal(h.win.__rompFreshPending, true, "the reconnect keeps it");
-  assert.ok(h.win.__rompFreshPendingSince >= since, "and restamps it");
+  assert.equal(h.win.__rompFreshPendingSince, 1_000_000, "and keeps the stamp: the bound is per hold, not per arm");
+  h.ws.close(); h.now = 1_050_000; h.runTimers(); h.ws.open();          // a flapping socket, or a kernel in a crash loop
+  assert.equal(h.win.__rompFreshPendingSince, 1_000_000, "a re-arm inside the hold does not move the stamp (round three, low 1)");
   h.ws.msg({ type: "ka", dv: 0 });
   assert.equal(h.win.__rompFreshPending, true, "a keepalive is not the frame");
   h.ws.msg({ type: "resync", ops: [] });
   assert.equal(h.win.__rompFreshPending, false, "the first real frame clears it");
+  h.now = 1_090_000; h.ws.close();
+  assert.equal(h.win.__rompFreshPendingSince, 1_090_000, "the next hold stamps afresh");
   for (const [app, noStale] of [["files", true], ["settings", true], ["feed", false]] as [string, boolean][]) {
     const g = new Harness(shimJs(app, noStale));
     g.ws.open(); g.bundleReady(); g.ws.close(); g.runTimers(); g.ws.open();
