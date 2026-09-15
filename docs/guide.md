@@ -815,7 +815,10 @@ switches indented under it, and a button:
   then Notifications, then Romp; in a desktop browser, the site permission
   beside the address). Turning this off silences only this device. With the
   main switch off, the row says the device is set up but nothing arrives until
-  the main switch is on.
+  the main switch is on. What the kernel needs for this, the Python
+  `cryptography` package, the installer sets up; if the row says the package is
+  missing, run `bin/romp-sdk-setup` on the machine running Romp and turn it on
+  again.
 - **Also when a turn finishes**, also under it, adds a notification every time
   any session finishes a turn you started, with the session's name and the
   first line of what it said. Turns a session starts on its own, such as
