@@ -47069,9 +47069,13 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
 
 def _tail_run_start(sid, evs, head_from, now):
     """(head_from, tailLo) for a proto-2 full frame whose cut `head_from` may fall inside a turn: the turn of the first placed
-    event at or after the cut (as _tail_lo reads it), and the index of that turn's FIRST placed event, at or before the cut,
-    so the run the page holds begins where the turn does. A parse that cannot place the cut leaves both as they were (the
-    plain cut, tailLo None: the page then asks by the tail's first key, loadOlder, as before)."""
+    event at or after the cut, and the index where that turn's run of events ending at the cut BEGINS, so the run the page
+    holds begins where the turn does. The scan walks BACKWARD from the cut while the turn index stays the cut's turn: the
+    built list's turn index is not promised nondecreasing (a placed echo, a note taking its neighbour's turn), and a forward
+    scan to the first event of that turn anywhere in the list once returned a start before an unrelated stretch (the review
+    of 2026-09-15: [0, 5, 1, 1, 2, 2, 5, 5], cut 6, gave 1 for turn 5; the run's edge is 6). A cut on an unplaced event (a
+    leading note) keeps the cut: the note leads the run, as the leading-note clamp always had it. A parse that cannot place
+    the cut leaves both as they were (the plain cut, tailLo None: the page then asks by the tail's first key, loadOlder)."""
     try:
         sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
         if sess is None or head_from >= len(evs):
@@ -47080,24 +47084,13 @@ def _tail_run_start(sid, evs, head_from, now):
         t = _first_mapped_turn(tix, head_from) if head_from < len(tix) else None
         if t is None:
             return head_from, None
-        start = next((i for i, ti in enumerate(tix) if ti >= t), head_from)   # the turn's first placed event (the loadTurns page's own edge)
-        return min(start, head_from), t
+        start = head_from
+        if tix[start] == t:
+            while start > 0 and tix[start - 1] == t:
+                start -= 1
+        return start, t
     except Exception:
         return head_from, None
-
-
-def _tail_lo(sid, evs, head_from, now):
-    """The TURN index of the wire tail's first event (T386 stage 2): the page's tail run begins there, and the turns before it
-    are its head gap until it asks for them by span. None when the parse cannot say (the page then asks by the tail's first
-    key, loadOlder, as before)."""
-    try:
-        sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
-        if sess is None or head_from >= len(evs):
-            return None
-        tix = _turn_index_of_events(evs, _parse(sess["path"], sid, now)["turns"])
-        return _first_mapped_turn(tix, head_from) if head_from < len(tix) else None   # never max(0, -1)=0 for a leading note (the tail run begins at the first placed turn)
-    except Exception:
-        return None
 
 
 def _send_chat_locked(c, m, ms, change_from, led_changed):

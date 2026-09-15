@@ -6,7 +6,8 @@ tail-run's first turn (tailLo) was `max(0, tix[head_from])`, which clamped -1 to
 from turn 0, no head gap, headKnown true, and never asked for the history above the floor: the reported symptom.
 
 Executed on the real functions (no document, no browser): a synthetic floored list led by an orphan note, over a
-parse whose turns do not carry that note's uuid. `_tail_lo` must report the first PLACED turn, never 0. The two
+parse whose turns do not carry that note's uuid. `_tail_run_start`, the frame's one reader of the tail run's first turn since
+the snap of 2026-09-15 (it replaced `_tail_lo`), must report the first PLACED turn, never 0. The two
 sibling clamps (`_turn_of_key` and the loadOlder span, same file) are pinned to the shared `_first_mapped_turn`.
 SYNTHETIC fixtures only (placeholder uuids)."""
 import os
@@ -59,9 +60,33 @@ class TailLoLeadingNote(unittest.TestCase):
             tix = km._turn_index_of_events(evs, turns)
             self.assertEqual(tix[0], -1, "the leading note is unplaced (tix -1): %r" % tix)
             self.assertEqual(tix[1], 3, "the first real event is turn 3: %r" % tix)
-            got = km._tail_lo(SID, evs, 0, 1700000000)
+            start, got = km._tail_run_start(SID, evs, 0, 1700000000)
             self.assertEqual(got, 3, "tailLo is the first PLACED turn (3), not 0: a leading note must not read as the head")
             self.assertNotEqual(got, 0, "the bug reported 0 (max(0, -1)), collapsing the head gap")
+            self.assertEqual(start, 0, "the run keeps the leading note at its head: a cut on an unplaced event stays")
+        finally:
+            km._sessions, km._parse = saved
+
+    def test_tail_run_start_walks_back_from_the_cut_only_while_the_turn_holds(self):
+        """The snap's start is the run of the cut's turn ENDING at the cut, found backward: a forward scan to the first event of
+        that turn anywhere in the list once returned a start before an unrelated stretch when the built list's turn index was
+        not nondecreasing (the review of 2026-09-15). The parse here places one event of the LAST turn early (an echo placed by
+        its send time into an earlier position): tix [0, 5, 1, 1, 2, 2, 5, 5]."""
+        turns = [_turn(i) for i in range(6)]
+        turns[5]["atoms"] = [{"uuid": "x5"}, {"uuid": "y5"}, {"uuid": "z5"}]
+        evs = [{"uuid": "u0"}, {"uuid": "x5"}, {"uuid": "u1"}, {"uuid": "a1"}, {"uuid": "u2"}, {"uuid": "a2"}, {"uuid": "y5"}, {"uuid": "z5"}]
+        saved = (km._sessions, km._parse)
+        km._sessions = lambda now=None, **kw: [{"sid": SID, "name": "web", "path": "/tmp/x.jsonl", "mtime": 0, "anchor": SID}]
+        km._parse = lambda path, sid, now: {"turns": turns}
+        try:
+            self.assertEqual(km._turn_index_of_events(evs, turns), [0, 5, 1, 1, 2, 2, 5, 5], "the fixture's turn index is not nondecreasing")
+            self.assertEqual(km._tail_run_start(SID, evs, 6, 1700000000), (6, 5), "the run of turn 5 ending at the cut begins at 6; the stray early event is not its head")
+            self.assertEqual(km._tail_run_start(SID, evs, 7, 1700000000), (6, 5), "a cut one later walks back to the same edge")
+            # the ordinary shape: a contiguous last turn, the cut inside it, the start its first event
+            evs2 = [{"uuid": "u0"}, {"uuid": "a0"}, {"uuid": "u1"}, {"uuid": "a1"}, {"uuid": "x5"}, {"uuid": "y5"}, {"uuid": "z5"}]
+            self.assertEqual(km._turn_index_of_events(evs2, turns), [0, 0, 1, 1, 5, 5, 5])
+            self.assertEqual(km._tail_run_start(SID, evs2, 6, 1700000000), (4, 5), "the whole contiguous turn, from its first event")
+            self.assertEqual(km._tail_run_start(SID, evs2, 2, 1700000000), (2, 1), "a cut already at a turn's first event stays")
         finally:
             km._sessions, km._parse = saved
 
@@ -72,7 +97,7 @@ class TailLoLeadingNote(unittest.TestCase):
         km._sessions = lambda now=None, **kw: [{"sid": SID, "name": "web", "path": "/tmp/x.jsonl", "mtime": 0, "anchor": SID}]
         km._parse = lambda path, sid, now: {"turns": turns}
         try:
-            self.assertIsNone(km._tail_lo(SID, evs, 0, 1700000000), "None when the parse cannot place the head (the page asks by the tail's first key)")
+            self.assertEqual(km._tail_run_start(SID, evs, 0, 1700000000), (0, None), "the plain cut and None when the parse cannot place the head (the page asks by the tail's first key)")
         finally:
             km._sessions, km._parse = saved
 

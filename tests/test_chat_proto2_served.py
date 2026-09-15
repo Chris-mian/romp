@@ -20,6 +20,63 @@ WEB = A.WEB
 MAX_PAGES = 400                                             # the walks are bounded: a fixture this size takes a few dozen
 
 
+class Proto2LongLastTurn(A.RestartOverACheckpointedSession):
+    """The tail run at a turn boundary over a real hermetic kernel (the snap of 2026-09-15, kernel.py _tail_run_start): a LAST
+    turn longer than the wire tail (an opening reply, 300 tool calls, a closing reply). The proto-2 frame begins at that turn's
+    first record and carries the opening reply, so the page holds the turn whole from its start; before the snap the frame
+    began at the cut inside the turn and the turn's head was in neither the run nor the head gap."""
+    test_the_second_kernel_restores_the_assembly_from_the_first_kernels_document = None   # the parent's own test: not re-run here
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        t0 = int(time.time()) - 86400
+        recs = A.transcript(t0, turns=60, compact_every=25)
+        t, parent = t0 + 60 * 60 + 100, recs[-1]["uuid"]
+        recs.append({"type": "user", "uuid": "uL", "parentUuid": parent, "timestamp": iso(t), "promptSource": "typed", "cwd": "/w/notes-api",
+                     "message": {"role": "user", "content": "run the whole sweep and report 0"}})
+        recs.append({"type": "assistant", "uuid": "aL0", "parentUuid": "uL", "timestamp": iso(t + 5), "cwd": "/w/notes-api",
+                     "message": {"role": "assistant", "content": [{"type": "text", "text": "Starting the sweep; the figures land as each stage finishes."}], "stop_reason": "tool_use"}})
+        parent = "aL0"
+        for i in range(300):
+            tu, tr = "tL%d" % i, "rL%d" % i
+            recs.append({"type": "assistant", "uuid": tu, "parentUuid": parent, "timestamp": iso(t + 10 + 2 * i), "cwd": "/w/notes-api",
+                         "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tuL%d" % i, "name": "Bash", "input": {"command": "uv run python stage.py %d" % i}}], "stop_reason": "tool_use"}})
+            recs.append({"type": "user", "uuid": tr, "parentUuid": tu, "timestamp": iso(t + 11 + 2 * i),
+                         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tuL%d" % i, "content": "ok %d" % i}]}})
+            parent = tr
+        recs.append({"type": "assistant", "uuid": "aL1", "parentUuid": parent, "timestamp": iso(t + 620), "cwd": "/w/notes-api",
+                     "message": {"role": "assistant", "content": [{"type": "text", "text": "Sweep done; every stage reported."}], "stop_reason": "end_turn"}})
+        with open(cls.leaf, "w") as fh:
+            fh.write("".join(json.dumps(r) + "\n" for r in recs))
+
+    def _open(self, port):
+        client = ChatClient(port, self.token, WEB)
+        client.send({"type": "ready", "proto": 2})
+        for fr in client.frames(60):
+            if fr.get("type") == "session" and fr.get("id") == WEB:
+                return client, fr
+        self.fail("no session frame for web within 60 s")
+
+    def test_a_long_last_turn_is_held_whole_from_its_first_record(self):
+        k, port, log = self._boot()
+        try:
+            client, frame = self._open(port)
+            try:
+                uuids = [e.get("uuid") for e in frame["events"]]
+                self.assertEqual(frame.get("proto"), 2)
+                self.assertEqual(uuids[0], "uL", "the run begins at the long turn's first record, not at the cut 250 events from the end: %r" % uuids[:3])
+                self.assertIn("aL0", uuids, "the turn's opening reply, before the cut, is in the run")
+                self.assertGreater(len(uuids), 300, "the frame carries the whole turn: its 300 tool calls and both replies")
+                self.assertIsInstance(frame.get("tailLo"), int, "the frame names the tail run's first turn")
+                records = [e.get("uuid") for e in frame["events"] if e.get("kind") in ("user", "assistant", "tool", "thinking", "compact")]
+                self.assertEqual(records[-1], "aL1", "…through the closing reply (the overlay cards after it ride the suffix, and are not records)")
+            finally:
+                client.close()
+        finally:
+            self._stop(k)
+
+
 class Proto2Wire(A.RestartOverACheckpointedSession):
     test_the_second_kernel_restores_the_assembly_from_the_first_kernels_document = None   # the parent's own test: not re-run here
 
@@ -85,7 +142,12 @@ class Proto2Wire(A.RestartOverACheckpointedSession):
             c1, f1, dt1 = self._open(p1, 2)
             self.assertEqual((f1.get("proto"), f1["headKnown"], f1["headTotal"]), (2, False, None),
                              "a whole parse longer than the wire tail: the head not reached")
-            self.assertLessEqual(len(f1["events"]), 250)
+            # the tail run's law since the snap of 2026-09-15: the frame is at least the wire tail (250 events) and BEGINS at a
+            # turn's first event (the cut moves up to it), never inside a turn; this replaces a 250 ceiling that held only while
+            # the fixture's cut happened to land on a turn start (the builder at floor 0 gives a 251-event frame)
+            self.assertGreaterEqual(len(f1["events"]), 250, "the frame carries at least the wire tail")
+            self.assertIn(f1["events"][0]["uuid"].split(":")[0][0], ("u", "b", "s"),
+                          "the run begins at a turn's first record (a prompt, or a compaction's boundary or summary), not at an assistant record: %r" % f1["events"][0].get("uuid"))
             c1.close()
             time.sleep(2.0)
         finally:
