@@ -393,7 +393,8 @@ class DriftOnTheCheckout(unittest.TestCase):
             self.assertTrue(km._restart_pending(), "unreadable this time: the safe answer")
             self.assertEqual(km._RESTART_PENDING_MEMO, {}, "and nothing remembered as a verdict")
             km._converge_classes = lambda a, b: {"kernel": [], "bus": [], "skip": ["docs/a.md"], "ast_equal": []}
-            km._RESTART_PENDING_FAILED[(REMOTE[:7], LOCAL[:7])] -= km.RESTART_PENDING_RETRY_S + 1   # the safe answer's bound passes
+            if hasattr(km, "_RESTART_PENDING_FAILED"):
+                km._RESTART_PENDING_FAILED[(REMOTE[:7], LOCAL[:7])] -= km.RESTART_PENDING_RETRY_S + 1   # the safe answer's bound passes
             self.assertFalse(km._restart_pending(), "the next read judges again: a docs-only pair, nothing pending")
             self.assertEqual(km._RESTART_PENDING_MEMO, {(REMOTE[:7], LOCAL[:7]): False}, "a verdict that was read is kept, keyed on the seven-character prefixes")
             km._converge_classes = lambda a, b: None
@@ -406,7 +407,7 @@ class DriftOnTheCheckout(unittest.TestCase):
         # the round-three review's low 1: the route reads the head the pull just moved; when that read fails, the polls'
         # cache still names the head before the fast-forward and would answer False for a pair that changed kernel code
         saved = (km._kernel_sha, km._converge_classes)
-        km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+        km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
         try:
             km._kernel_sha = lambda reask=False: LOCAL[:8]                        # booted at the cached head: the cache would say False
             km._converge_classes = lambda a, b: {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
@@ -414,14 +415,14 @@ class DriftOnTheCheckout(unittest.TestCase):
             self.assertFalse(km._restart_pending(), "the poll path, with no head of its own, reads the cache as before")
         finally:
             km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+            km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
 
     def test_an_unreadable_pair_costs_one_classification_per_bound_not_one_per_poll(self):
         # the round-three review's low 2: /version is auth-exempt and polled by every reader; a git diff per poll over an
         # unreadable pair is a 20 s subprocess each time
         saved = (km._kernel_sha, km._converge_classes)
         calls = []
-        km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+        km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
         try:
             km._kernel_sha = lambda reask=False: REMOTE[:8]
             km._converge_classes = lambda a, b: calls.append(1) or None
@@ -437,13 +438,13 @@ class DriftOnTheCheckout(unittest.TestCase):
             self.assertNotIn(key, km._RESTART_PENDING_FAILED, "and clears the failure")
         finally:
             km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+            km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
 
     def test_the_route_s_full_sha_and_the_poll_s_short_one_share_one_memo_entry(self):
         # the round-three review's low 3: two keys for one commit meant two classifications
         saved = (km._kernel_sha, km._converge_classes)
         calls = []
-        km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+        km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
         try:
             km._kernel_sha = lambda reask=False: REMOTE[:8]
             km._converge_classes = lambda a, b: calls.append(1) or {"kernel": ["kernel/kernel.py"], "bus": [], "skip": [], "ast_equal": []}
@@ -453,7 +454,7 @@ class DriftOnTheCheckout(unittest.TestCase):
             self.assertEqual(list(km._RESTART_PENDING_MEMO), [(REMOTE[:7], LOCAL[:7])])
         finally:
             km._kernel_sha, km._converge_classes = saved
-            km._RESTART_PENDING_MEMO.clear(); km._RESTART_PENDING_FAILED.clear()
+            km._RESTART_PENDING_MEMO.clear(); getattr(km, "_RESTART_PENDING_FAILED", {}).clear()   # the table is this change's: absent at the base, the red is the assertion
 
     def test_the_pull_route_answers_with_the_peers_verdict_read_on_the_fresh_head(self):
         """The route driven: POST /tunnels/pull on a live handler with the pull itself stubbed. Its answer carries the

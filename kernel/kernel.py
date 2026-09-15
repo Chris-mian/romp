@@ -9194,13 +9194,6 @@ def _restart_pending(checkout=None):
         _RESTART_PENDING_MEMO.clear()
     _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
     return _RESTART_PENDING_MEMO[key]
-    cc = _converge_classes(booted, checkout)
-    if cc is None:
-        return True                                   # unreadable this time: the safe answer, remembered by nobody
-    if len(_RESTART_PENDING_MEMO) > 64:
-        _RESTART_PENDING_MEMO.clear()
-    _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
-    return _RESTART_PENDING_MEMO[key]
 
 
 def _rebuild_dist():
