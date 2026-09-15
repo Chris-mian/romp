@@ -101,7 +101,7 @@ class RewoundMemo(Harness):
         src = inspect.getsource(jd._per_file_rewound)
         self.assertIn("em.file_rewound(fp, rompuuid=fsid", src, "the leaf: the document's pre-cut verdicts and the tail")
         self.assertIn("em.rewound_uuids(fp, drop=fp not in lineage and not _sdk_owned(fp.stem))", src, "a dead file: the memo, its entry dropped; a lineage file or a registered session's own file resident")
-        self.assertLess(src.index("if fp == leaf and len(files) == 1 and em.asm_document_seeds(fp):"), src.index("em.rewound_uuids(fp, drop="),
+        self.assertLess(src.index("if fp == leaf and em.asm_document_seeds(fp):"), src.index("em.rewound_uuids(fp, drop="),
                         "the leaf road decided first, and only for a leaf with an assembly document")
 
     def test_an_over_cap_set_is_recorded_as_such_and_walked_again(self):
