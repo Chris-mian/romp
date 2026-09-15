@@ -1059,8 +1059,9 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              "gate-stamp" (the evidence gate could not write a tier's stamp after a complete run; the run
              counts bypassed and the session stays due: _gated), "states-unreadable", "cleared-unreadable",
              "stall-unreadable", "captions-unreadable", "episodes-unreadable", "marker-unreadable",
-             "archive-unreadable" (a side file the evidence gate stat'd into a tier's signature exists and
-             could not be read or parsed by the stage: the run is marked incomplete and stamps nothing, one
+             "archive-unreadable", "reg-unreadable" (the eight side-file kinds: a file the evidence gate
+             stat'd or read by value into a tier's signature exists and could not be read or parsed: the
+             gate runs the stage without a stamp, or the stage's own read marks the run incomplete, one
              row per failure episode: _read_failed)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.

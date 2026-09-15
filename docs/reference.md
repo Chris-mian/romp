@@ -1818,8 +1818,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the key lock, re-read after the write), and while that stat stands every
   road goes straight to the whole or cold parse with no proof and no rewrite
   (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
-  the leaf moves or a write the writer accepts replaces the sidecar; a whole parse whose resolved graph is cyclic writes no
-  document (`skipped.cycle`); a record without a uuid is not a node of the
+  the leaf moves or a write the writer accepts replaces the sidecar; a cyclic resolved
+  graph (a reused uuid closing a ring) no longer refuses the document: the
+  writer's spine walk ends at the first revisit as the parse's own walk does,
+  so the document's spine is the one the chat shows (until 2026-09-14 a
+  hop-bounded walk refused the whole document under `skipped.cycle`, retried
+  at every settle); a record without a uuid is not a node of the
   chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
@@ -2067,7 +2071,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the retry state, the live background-task rows, the watches, the awaiting
   stamp, the shared files, the cwd's branch and repository, the instruction
   files, and the files and postal values the last build embedded). `chat`
-  also carries `active_built` and `bg_built` (rebuilds of the watched tab
+  also carries `coldSkipped` (one count per tab per push the cold-tab gate skipped:
+  a tab with a transcript, not built since the boot, watched by no connected chat client,
+  held as a skeleton by every connected chat client, with no Sessions pane connected, and with
+  a live row to state its status from (a tab with no live row is built, not skipped); the
+  same tab counts again on every later push until the page asks for it, 2026-09-14),
+  `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
   an input moved while they ran; the next cycle builds them again) and
   `bg_miss`, a map from each labelled component of that signature

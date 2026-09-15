@@ -645,6 +645,7 @@ class _LiveBus(unittest.TestCase):
         if hasattr(ps, "_TL_FAULT"):
             ps._TL_FAULT[0] = False
         getattr(ps, "_UNREADABLE_SAID", set()).clear()
+        getattr(ps, "_INBOX_UNREADABLE_SAID", set()).clear()      # the once-per-spell sentinel the unlistable-inbox test counts
 
     def tearDown(self):
         ps.TLDIR, ps._log, ps.resolve_recipient = self._saved
@@ -659,6 +660,34 @@ class _LiveBus(unittest.TestCase):
         os.close(fd)
         self.addCleanup(lambda: os.unlink(path))
         ps.TLDIR = Path(path) / "timeline"
+
+
+class InboxThatCannotBeListedAnswersAFault(_LiveBus):
+    """A new/ that cannot be listed (EACCES here) answers /inbox and /drain as a 503 with the reason and an `unreadable`
+    field beside empty rows, so the MCP tool and `romp mail inbox` show the fault (their client raises BusError on the
+    error text) and no client reads "no new messages" where mail sits unread (the manager's correction, 2026-09-14)."""
+
+    @unittest.skipIf(os.geteuid() == 0, "root lists a mode-0 directory; the fault cannot be staged")
+    def test_inbox_and_drain_answer_503_with_the_reason_and_recover(self):
+        import shutil
+        shutil.rmtree(ps.MAILROOT / _RCP, ignore_errors=True)
+        ps.deliver(_RCP, "web", _SND, "sits unread", kind="coordinate")
+        newd = ps.MAILROOT / _RCP / "new"
+        os.chmod(newd, 0)
+        try:
+            status, body = _call(self.port, "/inbox?id=%s&peek=1" % _RCP)
+            self.assertEqual(status, 503); self.assertIn("cannot be listed", body["error"]); self.assertEqual(body["messages"], [])
+            self.assertIn("cannot be listed", body["unreadable"])
+            status, body = _call(self.port, "/drain?id=%s" % _RCP)
+            self.assertEqual((status, body["messages"]), (503, [])); self.assertIn("cannot be listed", body["unreadable"])
+            _call(self.port, "/inbox?id=%s&peek=1" % _RCP)
+            self.assertEqual(sum("cannot be listed" in m for m in self.logged), 1,
+                             "the BUS log carries the reason once per fault spell across the polls (round four: the clients' "
+                             "stderr has no reader in the Stop hook): %r" % self.logged)
+        finally:
+            os.chmod(newd, 0o755)
+        status, body = _call(self.port, "/inbox?id=%s&peek=1" % _RCP)
+        self.assertEqual((status, [m["body"] for m in body["messages"]]), (200, ["sits unread"]), "listable again: the mail is there")
 
 
 class InboxSurvivesAnUnreadableFile(_LiveBus):
