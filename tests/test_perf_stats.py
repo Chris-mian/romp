@@ -267,14 +267,9 @@ class Collector(unittest.TestCase):
         self.assertEqual(sorted(r["sid"] for r in self.st.snapshot()["builds"]["chat"]["bySession"]), sorted([A, C]))
         self.st.chat_rows_keep(set())                                         # an empty set (a hiccup) drops nothing
         self.assertEqual(len(self.st.snapshot()["builds"]["chat"]["bySession"]), 2)
-        # the death sweep's tick drives the keep at its END (tests/test_sdk_registry_blind.py, ChatBuildRowsFollowTheTick:
-        # a stand-down keeps every row, a kept-open dead tab keeps its row, a session gone from the registry loses its row).
-        # The two call sites live in the chat push: every build_chat call in the push hands the sid, the built one its bytes
-        src = Path(os.path.join(BIN, "romp-kernel")).read_text()
-        calls = re.findall(r"_PERF_STATS\.build_chat\(([^\n]*)\)", src)
-        self.assertEqual(len(calls), 2, calls)
-        self.assertTrue(all('sid=str(s["sid"])' in c for c in calls), "both call sites hand the sid: %r" % calls)
-        self.assertEqual(sum("nbytes=_nbytes" in c for c in calls), 1, "the built call site hands the leaf's bytes: %r" % calls)
+        # the death sweep's tick drives the keep at its END over the complement of the stamped set (tests/test_sdk_registry_blind.py,
+        # ChatBuildRowsFollowTheTick); the call sites are executed, not read: PushStages below drives the real _push and the real
+        # _push_session_now and reads the rows from the snapshot (round three: the regex over the kernel source went)
 
     def test_stages_builds_judge(self):
         self.st.stage("push.chat", 0.5); self.st.stage("push.chat", 0.25); self.st.stage("jobs", 0.1)
@@ -907,6 +902,44 @@ class PushStages(unittest.TestCase):
         self.assertEqual(snap2["builds"]["chat"]["built"] - snap1["builds"]["chat"]["built"], 0)
         self.assertLess(snap2["stages_ms"]["push.chat"] - snap1["stages_ms"]["push.chat"], 5.0,
                         "a cached tab costs the chat stage no build")
+
+    def test_the_per_session_row_is_fed_by_the_real_push_with_the_leafs_bytes_and_a_cached_second_push(self):
+        # round three, low 2: the wiring executed instead of a regex over the kernel source: the built site hands the sid and
+        # the leaf's byte size, the cached site hands the sid; a second push over the same transcript raises `cached` and leaves n
+        km._PERF_STATS.chat_by_session.pop(SID, None)
+        km._push([self.chat, self.tl])
+        rows = {r["sid"]: r for r in km._PERF_STATS.snapshot()["builds"]["chat"]["bySession"]}
+        self.assertIn(SID, rows, "the built site hands the sid: %s" % sorted(rows))
+        row = rows[SID]
+        self.assertEqual((row["n"], row["cached"], row["bytes"]), (1, 0, os.path.getsize(self.transcript)), row)
+        self.assertGreaterEqual(row["first"], 5.0, "the build's sleep is the first build's ms"); self.assertEqual((row["last"], row["max"]), (row["first"], row["first"]))
+        km._push([self.chat, self.tl])
+        row2 = {r["sid"]: r for r in km._PERF_STATS.snapshot()["builds"]["chat"]["bySession"]}[SID]
+        self.assertEqual((row2["n"], row2["cached"], row2["first"]), (1, 1, row["first"]), "the cached site hands the sid; n and first stand")
+
+    def test_the_targeted_push_records_its_build_in_the_row_and_the_aggregate(self):
+        # round three, low 1: _push_session_now built through build_session and recorded nothing, so the row's first (the number
+        # the timer exists to read) could be a build over a cache an unrecorded handshake push had warmed; it records under the
+        # label `targeted` now and still caches nothing (no dependency record: a stored entry would have no signature)
+        km._PERF_STATS.chat_by_session.pop(SID, None)
+        saved = (list(km._clients), km._PERF_STATS.snapshot()["builds"]["chat"])
+        with km._clients_lock:
+            km._clients[:] = [self.chat]
+        try:
+            km._push_session_now(SID)
+        finally:
+            with km._clients_lock:
+                km._clients[:] = saved[0]
+        self.assertEqual(self.builds, 1, "the targeted push built the session")
+        snap = km._PERF_STATS.snapshot()["builds"]["chat"]
+        row = {r["sid"]: r for r in snap["bySession"]}.get(SID)
+        self.assertIsNotNone(row, "the targeted push feeds the per-session row")
+        self.assertEqual((row["n"], row["cached"], row["bytes"]), (1, 0, os.path.getsize(self.transcript)), row)
+        self.assertGreaterEqual(row["first"], 5.0)
+        self.assertEqual(snap["built"] - saved[1]["built"], 1, "and the aggregate")
+        self.assertEqual(snap["bg_miss"].get("targeted", 0) - saved[1]["bg_miss"].get("targeted", 0), 1, "attributed to the push, not a signature component")
+        self.assertNotIn(SID, km._built_chat, "still not cached: the build ran with no dependency record")
+        self.assertIn("session", [f["type"] for f in self.chat_frames])
 
     def test_the_seams_stay_where_the_stages_are_defined(self):
         # the order of the four stage records in _push is the definition of the split; pinned beside the

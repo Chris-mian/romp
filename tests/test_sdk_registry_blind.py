@@ -172,6 +172,44 @@ class ChatBuildRowsFollowTheTick(_Root):
         self.assertIsNotNone(_marker(SID2), "stamped by the sweep")
         self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "the row goes with the session gone from the registry")
 
+    def test_a_departure_certified_alive_by_another_arm_keeps_its_chat_build_row(self):
+        """Round three: the keep is the complement of the STAMPED set, so an arm that certifies a departure alive and stamps
+        nothing keeps its row, whichever arm: the Codex registry says alive after a live-map blink; an SDK reg vanished under
+        a driver thread still running; a stamp not due. Round two enumerated the surviving arms and missed these, so a live
+        session's 4200 ms cold build was dropped by the tick and a 12 ms warm rebuild minted its `first` again."""
+        class _Codex:
+            def _session(self, sid):
+                return {"sid": sid} if sid == SID2 else None
+            def owns(self, sid):
+                return sid == SID2
+        arms = {
+            "the Codex registry says alive after a live-map blink": lambda: setattr(km, "_codex", lambda: _Codex()),
+            "an SDK reg gone under a running driver thread": lambda: setattr(km, "_sdk_thread_alive", lambda sid: sid == SID2),
+            "a stamp not due": lambda: setattr(km, "_death_stamp_due", lambda sid: sid != SID2),
+        }
+        saved = {nm: getattr(km, nm) for nm in ("_codex", "_sdk_thread_alive", "_death_stamp_due")}
+        kept = []                                                     # every arm's verdict, asserted OUTSIDE the subtests too
+        for label, arm in arms.items():
+            with self.subTest(arm=label):
+                try:
+                    rows = self._seed()
+                    self._rows(SID, SID2)
+                    km._death_sweep_tick(NOW, rows)
+                    os.unlink(jd.SDKDIR / (SID2 + ".json"))               # no SDK reg: the arms below decide
+                    arm()
+                    with contextlib.redirect_stderr(self.err):
+                        km._death_sweep_tick(NOW + 1, {SID: rows[SID]})   # SID2 departed the live map
+                    self.assertIsNone(_marker(SID2), "%s: nothing stamped" % label)
+                    self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "%s: the row stays with an unstamped departure" % label)
+                    kept.append(label)
+                finally:
+                    for nm, v in saved.items():
+                        setattr(km, nm, v)
+                    for f in jd.SDKDIR.glob("*.json"):
+                        f.unlink()
+                    self._restore_rows()
+        self.assertEqual(len(kept), len(arms), "every unstamped arm kept the row: %s" % kept)
+
     def test_a_departure_whose_registry_row_stands_keeps_its_chat_build_row(self):
         rows = self._seed()
         self._rows(SID, SID2)

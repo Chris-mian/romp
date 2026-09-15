@@ -685,12 +685,14 @@ class _PerfStats:
                 bm[lab] = bm.get(lab, 0) + 1
 
     def chat_rows_keep(self, alive):
-        """The per-session chat rows are bounded by the sessions the death sweep KNOWS at the end of its tick (no
-        literal cap; the set is sized to the machine's sessions): the live map, every departure the tick stood down
-        on (an unreadable registry, recent life with no reg: re-asked next tick), and every departure whose registry
-        row exists (a dead session the user keeps open as a chat tab keeps its row, so its `first` is never minted
-        again by a warm rebuild). A row goes only with a session gone from the registry. An empty set drops nothing:
-        a table emptied by a hiccup would lose the boot's first builds (round two of the timer, 2026-09-15)."""
+        """The per-session chat rows are bounded by the death sweep's tick (no literal cap; the set is sized to the
+        machine's sessions): a row leaves ONLY with a departure the tick certified dead (`_record_death`); every other
+        session keeps its row: the live map, and every departure the tick did not stamp, whatever arm left it unstamped
+        (a stand-down on an unreadable registry or recent life, a registry row standing for a dead session the user
+        keeps open as a tab, a registry that says alive after a live-map blink, a driver thread still running, a stamp
+        not due), so a live session's `first` is never minted again by a warm rebuild. The caller passes the complement
+        of the stamped set, never an enumeration of surviving arms (round three, 2026-09-15). An empty set drops
+        nothing: a table emptied by a hiccup would lose the boot's first builds."""
         alive = set(alive or ())
         if not alive:
             return
@@ -25736,11 +25738,13 @@ def _death_sweep_tick(now, live_map):
     _prev_live_sids[0] = cur
     if prev is None:
         return
-    keep = set(cur)                                       # the sessions whose per-session chat build rows stay (chat_rows_keep, at the
-    #                                                       END of the tick): the live map, every departure this tick stood down on
-    #                                                       (re-added to _prev_live_sids below), and every departure whose registry row
-    #                                                       exists (a dead session the user keeps open as a tab): a row goes only with a
-    #                                                       session gone from the registry, never with a stand-down (round two, 2026-09-15)
+    stamped = set()                                       # the departures this tick certified dead: the ONLY sessions whose per-session
+    #                                                       chat build rows leave (chat_rows_keep, at the END of the tick, over the complement:
+    #                                                       the live map plus every departure NOT stamped, whatever arm left it unstamped: a
+    #                                                       stand-down, a registry row standing, a registry that says alive after a live-map
+    #                                                       blink, a driver thread still running, a stamp not due). Round two enumerated the
+    #                                                       surviving arms and missed two, which dropped a live session's row and let a warm
+    #                                                       rebuild mint its first again (round three, 2026-09-15)
     cx = _codex()
     blind = _codex_records_blind(cx)
     sdk_blind = _sdk_records_blind()
@@ -25748,7 +25752,6 @@ def _death_sweep_tick(now, live_map):
     for sid in prev - cur:
         present = _sdk_reg_exists(sid)
         if present:
-            keep.add(sid)                            # a registry row stands: its chat build row stays with it
             continue                                 # an SDK death is the kill gesture's to stamp
         if not _death_stamp_due(sid):
             continue
@@ -25770,6 +25773,7 @@ def _death_sweep_tick(now, live_map):
             _prev_live_sids[0].add(sid)              # aside, not an end — stand down, per sid, and re-ask every tick
             continue                                 # so the stamp lands the tick its life ages out, not at the next boot
         _record_death(sid, now, "gone")
+        stamped.add(sid)
     if stood_life:
         _LIVE_READ_FAILS["count"] += stood_life
         sys.stderr.write("death-sweep: %d departed sid(s) hold no reg but show recent life — stood down, not stamped "
@@ -25778,8 +25782,7 @@ def _death_sweep_tick(now, live_map):
         sys.stderr.write("death-sweep: the SDK registry directory cannot be read — %d departed sid(s) not stamped this tick\n" % stood_sdk)
     if stood:
         sys.stderr.write("death-sweep: the Codex registry cannot be read — %d departed sid(s) not stamped this tick\n" % stood)
-    _PERF_STATS.chat_rows_keep(keep | _prev_live_sids[0])   # the rows leave with their sessions, decided at the tick's END: the stood-down
-    #                                                       departures (re-asked next tick) and the registry-known ones keep theirs
+    _PERF_STATS.chat_rows_keep(cur | ((prev - cur) - stamped))   # the rows leave with the sessions this tick stamped dead, nothing else
 
 
 def _death_boot_pass(now=None):
@@ -49698,11 +49701,23 @@ def _push_session_now(sid):
             _VIEW_STATS["chatSkipCold"] += 1
             _PERF_STATS.build_chat_cold_skip()
             return
+        _t0 = time.monotonic()
         try:
             m = build_session(sid, now, live_map)
         finally:
             _chat_dep_scope.deps = None              # a targeted push caches nothing: its record is nobody's, and a
-        if not m:                                    # later reader on this thread must not append to it
+        _dt = time.monotonic() - _t0                 # later reader on this thread must not append to it
+        try:
+            _nbytes = os.path.getsize(_path) if _path else None
+        except OSError:
+            _nbytes = None
+        _PERF_STATS.build_chat(False, _dt, active=False, miss=("targeted",), sid=sid, nbytes=_nbytes)
+        #   the per-session timer (round three, 2026-09-15): this push builds too (27 attach handshakes at a boot run it), and an
+        #   unrecorded build here warmed the cache the pusher's first recorded build then read, so the row's `first` and `max` and
+        #   the aggregate's `built` missed the worst builds; the label `targeted` says the push, not a signature component, drove it.
+        #   Still not cached: the build ran with no dependency record (deps None above, by design), so a _built_chat entry stored
+        #   from it would carry no signature to invalidate on and the pusher would serve it stale
+        if not m:
             return
         if _empty_build_regresses(m, _prev_chat_events.get(sid)):
             _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None),
