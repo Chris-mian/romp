@@ -36,7 +36,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment
 
 NAMES = ["web", "api", "tests"]
 CTX = {"web": 20, "api": 62, "tests": 95}   # the persisted context fill each session shows (the sdk registry's liveCtx)

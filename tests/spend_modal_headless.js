@@ -1,4 +1,4 @@
-// Drives the served landing page (tests/test_spend_modal_headless.py serves it) with playwright:
+// Drives the served landing page (tests/test_spend_modal_headless_served.py serves it) with playwright:
 // click the usage readout → the spend modal opens over the dimmed dashboard, renders the per-session
 // table + the stacked histogram with its unattributed stack, the toggles re-render, a segment hover
 // shows the tooltip, Escape closes it. Prints one JSON line of observations; screenshots when asked.

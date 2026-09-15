@@ -44,7 +44,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
 
 SID = "aaaaaaaa-1111-2222-3333-444444444444"
 U_UUID = "11111111-2222-3333-4444-555555555555"

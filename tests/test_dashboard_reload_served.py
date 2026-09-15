@@ -38,7 +38,7 @@ SID = "11111111-2222-4333-8444-000000000201"
 
 import sys
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment and the cfg.relaunch stanza (the module,
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment and the cfg.relaunch stanza (the module,
 #                                   not its classes: an imported TestCase would be collected here a second time)
 
 
@@ -229,7 +229,7 @@ class ServedAutoReload(unittest.TestCase):
         os.makedirs(os.path.join(state, "names"), exist_ok=True)
         os.makedirs(os.path.join(state, "sdk"), exist_ok=True)
         os.makedirs(cwd, exist_ok=True)
-        # one synthetic SDK session so the chat page has a tab (the test_ship_reship lab shape); its transcript
+        # one synthetic SDK session so the chat page has a tab (the test_ship_reship_served lab shape); its transcript
         # holds only CLOSED turns, so the boot reconcile never tries to resume it and no CLI is ever spawned
         Path(state, "names", SID).write_text("web\t%s\t\t\n" % cwd)
         Path(state, "sdk", SID + ".json").write_text(json.dumps(

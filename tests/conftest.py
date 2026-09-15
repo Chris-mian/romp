@@ -287,7 +287,7 @@ os.environ["ROMP_CLAUDE_BIN"] = "/bin/false"
 # module's work_api_key handed http.client a credential it rejects before a socket opens), but any
 # in-process _sdk() call is one exported key away from a real request no test asserts on, on a key
 # the test never chose. The kernel-SPAWNING tests floor it in their subprocess env
-# (test_gear_select_matrix, test_ship_reship, test_awaiting_box_sync); this floors every test,
+# (test_gear_select_matrix_served, test_ship_reship_served, test_awaiting_box_sync_served); this floors every test,
 # whatever the developer's shell exports.
 # Set, not setdefault: "off" is the only value the switch recognises, so no outer intent is being
 # overridden. The catalog suite unsets the var inside its own tests — FetchAndFallback pops it in

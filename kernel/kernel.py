@@ -8731,7 +8731,7 @@ def _consume_update_report(running_only=False, _tries=3):
 
 
 def _update_checks_off():
-    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env) runs none of the
+    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship_served.py kernel_env) runs none of the
     update loop's three checks. The release check reads the release remote's tags, the main-drift check the remote's
     main (git ls-remote, both), and either raises the shell's update banner over the page under test; the converge
     check reads the checkout. CI 2026-09-13: the banner sat on the settings pills and took a lab's clicks, first from the

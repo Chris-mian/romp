@@ -32,7 +32,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
 
 SID = "aaaaaaaa-1111-2222-3333-444444444444"
 TURNS = 320   # 640 events: past the wire tail, so older history stays on the server and the page's run is a tail

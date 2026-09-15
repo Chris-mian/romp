@@ -20,7 +20,7 @@
 // ephemeralWarnToast marks it data-ephemeral for the reading to skip. The record is text only, on purpose: a toast
 // has no action beyond its dismissal today, and a future toast with one would replay as its words alone. Pure and
 // DOM-free so node --test executes both readings (reload-notices.test.ts); the served scenario is
-// tests/test_ship_reship.py NackNoticeSurvivesReload.
+// tests/test_ship_reship_served.py NackNoticeSurvivesReload.
 
 /** This tab's sessionStorage key for the record (beside the scroll record's romp:reloadScroll). */
 export const RELOAD_NOTICES_KEY = "romp:reloadNotices";
