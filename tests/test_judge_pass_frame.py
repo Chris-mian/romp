@@ -468,7 +468,7 @@ class PassFrame(unittest.TestCase):
         self.assertLess(psrc.index("frame = begin_pass_frame()"), psrc.index("t.start()"), "opened before a tier starts")
         self.assertRegex(psrc, r"finally:\n\s+end_pass_frame\(frame\)", "and ends it in a finally (leak-proof)")
         ksrc = open(os.path.join(os.path.dirname(BIN), "kernel", "kernel.py")).read()
-        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking))", ksrc, "the kernel producer runs the shared body")
+        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)", ksrc, "the kernel producer runs the shared body")
         self.assertNotIn("jd.begin_pass_frame()", ksrc, "and opens no frame of its own")
 
 

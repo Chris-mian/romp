@@ -19522,7 +19522,9 @@ def _dump_goals():
 # run_pass, the SAME function the in-process producer calls (round two: a copy of the producer had drifted three ways before
 # it ever ran). Every counter on the done line is a PER-PASS figure: wallMs, tierCpuMs and workerCpuMs are the pass's own,
 # and the recordCache, asmCheckpoint, parses and goalIo blocks are the differences against the previous pass's snapshot (the
-# kernel feeds its /perf counters per pass); `recovered` is this process's judge-module recovery flag, consumed by the child
+# kernel feeds its /perf counters per pass) except their GAUGES (_SERVE_GAUGES: recordCache's entries, bytes, budgetBytes and
+# countCap; asmCheckpoint's restoreMs and asmDocMemo), which ride as current values; `recovered` is this process's judge-module
+# recovery flag, consumed by the child
 # and acted on by the kernel (the give-up re-arm after a rate-limit storm ends). One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and
 # DROPPED, never queued, so a stuck tier cannot pile requests behind the kernel's bound (the kernel sends one per wake; this
 # is the fail-safe). Every stderr line of the process carries the prefix `romp-judge: ` so the kernel can attribute the
@@ -19542,9 +19544,15 @@ class _PrefixedStream:
         with self._lock:
             ends = s.endswith("\n")
             body = s[:-1] if ends else s
-            text = (self._prefix if self._at_start else "") + ("\n" + self._prefix).join(body.split("\n")) + ("\n" if ends else "")
+            pieces = body.split("\n")
+            out = []
+            for i, piece in enumerate(pieces):
+                at_start = self._at_start if i == 0 else True
+                if at_start and not piece.startswith(self._prefix):   # a line judge.py already prefixed is not prefixed twice
+                    piece = self._prefix + piece
+                out.append(piece)
             self._at_start = ends
-            self._raw.write(text)
+            self._raw.write("\n".join(out) + ("\n" if ends else ""))
         return len(s)
 
     def flush(self):
@@ -19653,17 +19661,18 @@ def _serve_fault_parse(spec):
         return None, None
     parts = spec.split(":")
     kind = parts[0]
-    tier = parts[1] if len(parts) > 1 else ""
+    shape_ok = (kind in ("raise", "stray") and len(parts) == 2) or (kind == "sleep" and len(parts) == 3)
+    if not shape_ok:                                  # the shape first, so 'garbage' is named as a shape, not as a missing tier
+        return None, "not raise:<tier>, sleep:<tier>:<seconds> or stray:<tier>: %r" % spec
+    tier = parts[1]
     if tier not in _SERVE_FAULT_TIERS:
         return None, "no such tier %r (index or triage)" % tier
-    if kind in ("raise", "stray") and len(parts) == 2:
-        return (kind, tier), None
-    if kind == "sleep" and len(parts) == 3:
+    if kind == "sleep":
         try:
             return ("sleep", tier, float(parts[2])), None
         except ValueError:
             return None, "sleep wants seconds, got %r" % parts[2]
-    return None, "not raise:<tier>, sleep:<tier>:<seconds> or stray:<tier>: %r" % spec
+    return (kind, tier), None
 
 
 def _serve_fault(tier):
@@ -19693,12 +19702,20 @@ def _serve_counter_blocks():
             "goalIo": goal_io_stats()}
 
 
-def _serve_delta(prev, cur):
-    """`cur` minus `prev` for every number in a nested counter block (dicts of numbers, dicts of dicts); a key new since the
-    previous snapshot counts whole; a non-numeric value (a cap, a multiple, a name) rides as its current value."""
+_SERVE_GAUGES = {                                 # the keys of each block that are GAUGES (a current size, a cap, the last
+    "recordCache": ("entries", "bytes", "budgetBytes", "countCap"),   #  restore's timings), not counters: they ride as their
+    "asmCheckpoint": ("restoreMs", "asmDocMemo"),                     #  current values, never as a difference (round three)
+    "parses": (), "goalIo": ()}
+
+
+def _serve_delta(prev, cur, gauges=()):
+    """`cur` minus `prev` for every COUNTER in a nested block (dicts of numbers, dicts of dicts); a key new since the previous
+    snapshot counts whole; a non-numeric value (a name) rides as its current value, and so does every top-level key named in
+    `gauges` with its whole subtree (a cache's current entries and bytes, a cap, the last restore's timings): a shrunk cache
+    reads its size, never a negative, and a cap never reads zero (round three)."""
     if isinstance(cur, dict):
         prev = prev if isinstance(prev, dict) else {}
-        return {k: _serve_delta(prev.get(k), v) for k, v in cur.items()}
+        return {k: (v if k in gauges else _serve_delta(prev.get(k), v)) for k, v in cur.items()}
     if isinstance(cur, bool) or not isinstance(cur, (int, float)):
         return cur
     if isinstance(prev, bool) or not isinstance(prev, (int, float)):
@@ -19723,7 +19740,7 @@ def _serve_pass(req, emit):
     res = run_pass(may_start, now=now, before_tier=_serve_fault)
     failures = res["failures"]
     cur = _serve_counter_blocks()
-    deltas = {k: _serve_delta(_SERVE_PREV.get(k), v) for k, v in cur.items()}
+    deltas = {k: _serve_delta(_SERVE_PREV.get(k), v, _SERVE_GAUGES.get(k, ())) for k, v in cur.items()}
     _SERVE_PREV.update(cur)
     emit({"op": "done", "seq": seq, "wallMs": round(res["wallS"] * 1000.0, 3), "tierStarts": res["tierStarts"],
           "tierCpuMs": round(res["tierCpuS"] * 1000.0, 3), "workerCpuMs": round(judge_worker_cpu_ms() - worker0, 3),

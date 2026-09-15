@@ -44,6 +44,8 @@ if log:
 if len(sys.argv) > 1 and sys.argv[1] in ("-v", "--version"):
     print("2.1.0 (fake)"); sys.exit(0)
 sys.stdin.read()
+import time
+time.sleep(float(os.environ.get("SERVE_TEST_CLAUDE_SLEEP") or 0))
 env = json.load(open(os.environ["SERVE_TEST_ENVELOPE"]))
 env["result"] = "A short synthetic caption."
 print(json.dumps(env))
@@ -263,10 +265,16 @@ class OnePass(Harness):
                     yield from numbers(v, path + k + ".")
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     yield path + k, v
+        gauges = {"recordCache": ("entries", "bytes", "budgetBytes", "countCap"), "asmCheckpoint": ("restoreMs", "asmDocMemo")}
         for name in ("recordCache", "asmCheckpoint", "parses", "goalIo"):                 # the two blocks the base carried first,
-            nonzero = [(k, v) for k, v in numbers(second.get(name) or {}) if v and k.split(".")[-1] not in   #  so its red is the totals
-                       ("budgetBytes", "countCap", "capBytes", "multiple", "parseMultiple", "entries", "bytes")]
+            nonzero = [(k, v) for k, v in numbers(second.get(name) or {}) if v and k.split(".")[0] not in gauges.get(name, ())]
             self.assertEqual(nonzero, [], "%s: an idle pass reports a zero delta for every counter (the base reported the process totals)" % name)
+        for name, keys in gauges.items():                                               # round three: the gauges ride as current
+            for key in keys:
+                self.assertEqual(second[name][key], first[name][key], "%s.%s is a gauge: the same current value on both passes, never a difference" % (name, key))
+        self.assertGreater(second["recordCache"]["budgetBytes"], 0); self.assertGreater(second["recordCache"]["countCap"], 0)
+        self.assertGreaterEqual(second["recordCache"]["entries"], 0); self.assertGreaterEqual(second["asmCheckpoint"]["restoreMs"].get("total", 0), 0)
+        self.assertGreater(second["asmCheckpoint"]["asmDocMemo"]["capBytes"], 0, "a cap never reads zero on the second pass")
         self.assertEqual(second.get("parses"), {"misses": 0, "hits": 0}, "the parse store's misses and hits ride the line")
         self.assertGreaterEqual((first.get("parses") or {}).get("misses", 0), 1, "the working pass parsed through the store")
         self.assertEqual(sorted(second.get("goalIo") or {}), sorted(jd.goal_io_stats()))
@@ -275,21 +283,38 @@ class OnePass(Harness):
     def test_sigterm_mid_pass_exits_promptly_and_leaves_no_half_written_store(self):
         """A check the kernel seam relies on: the kernel ends the child by quit, then SIGTERM on its exit road (and a parent
         death signal at spawn); a child mid-pass must die at once on SIGTERM, its tier threads with it, and every store it
-        was writing is either the old bytes or the new (the stores' atomic replace), never a temp file left behind."""
-        root = self.state_root("term"); c = self.child(root, ROMP_JUDGE_SERVE_FAULT="sleep:index:30")
-        self.assertEqual(c.line()["op"], "ready")
-        c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
-        time.sleep(0.5)                                                                # inside the held tier
-        t0 = time.monotonic(); c.proc.terminate()
-        try:
-            c.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.fail("the child did not exit within 5 s of SIGTERM")
-        self.assertLess(time.monotonic() - t0, 2.0, "prompt")
-        self.assertEqual(c.proc.returncode, -15)
-        strays = [str(p) for p in Path(root).rglob("*") if p.is_file() and (p.name.endswith(".tmp") or ".tmp." in p.name)]
-        self.assertEqual(strays, [], "no half-written store")
-        self.assertTrue(c.lines.empty(), "no done line for a killed pass")
+        was writing is either the old bytes or the new (the stores' atomic replace), never a temp file left behind. Round
+        three: the kill lands in a pass that is WORKING (the fake CLI answers after half a second, so the tiers are between
+        their model calls and their store writes), at three offsets, and every store left behind parses."""
+        for offset in (0.05, 0.25, 0.6):
+            with self.subTest(offset=offset):
+                root = self.state_root("term-%d" % int(offset * 100)); c = self.child(root, SERVE_TEST_CLAUDE_SLEEP="0.5")
+                self.assertEqual(c.line()["op"], "ready")
+                c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
+                time.sleep(offset)                                                         # inside a working pass
+                t0 = time.monotonic(); c.proc.terminate()
+                try:
+                    c.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.fail("the child did not exit within 5 s of SIGTERM")
+                self.assertLess(time.monotonic() - t0, 2.0, "prompt")
+                self.assertEqual(c.proc.returncode, -15)
+                strays, parsed = [], 0
+                for p in Path(root).rglob("*"):
+                    if not p.is_file():
+                        continue
+                    if p.name.endswith(".tmp") or ".tmp." in p.name:
+                        strays.append(str(p)); continue
+                    if p.suffix == ".json":
+                        json.loads(p.read_text() or "null"); parsed += 1
+                    elif p.suffix == ".jsonl":
+                        for line in p.read_text().splitlines():
+                            if line.strip():
+                                json.loads(line)
+                        parsed += 1
+                self.assertEqual(strays, [], "no half-written store")
+                self.assertGreaterEqual(parsed, 1, "the stores left behind parse (the kill landed after the first write or before any)")
+                self.assertTrue(c.lines.empty(), "no done line for a killed pass")
 
     def test_stray_writes_to_file_descriptor_one_never_reach_the_channel(self):
         """Round two: the name swap (sys.stdout = stderr) left an os.write(1), a print to a captured stream and a child
@@ -310,7 +335,8 @@ class OnePass(Harness):
     def test_a_malformed_fault_knob_is_refused_loudly_and_ignored(self):
         """Round two: 'boom:index', 'sleep:index' and 'raise:nosuchtier' each matched positionally and were ignored in silence;
         the knob is parsed once at serve start, a value that is not one of its shapes is said on stderr and applies nothing."""
-        for bad, why in (("boom:index", "not raise"), ("sleep:index", "not raise"), ("raise:nosuchtier", "no such tier"), ("sleep:index:soon", "wants seconds")):
+        for bad, why in (("boom:index", "not raise"), ("sleep:index", "not raise"), ("raise:nosuchtier", "no such tier"), ("sleep:index:soon", "wants seconds"),
+                         ("garbage", "not raise")):                                           # round three: the shape before the tier
             with self.subTest(knob=bad):
                 root = self.state_root("knob-" + bad.replace(":", "-")); c = self.child(root, ROMP_JUDGE_SERVE_FAULT=bad)
                 self.assertEqual(c.line()["op"], "ready")
@@ -374,6 +400,38 @@ class Roads(Harness):
         self.assertIn("romp-judge: serve: exiting", "".join(c.err))
 
 
+class Deltas(unittest.TestCase):
+    def test_gauges_ride_as_current_values_and_counters_as_differences(self):
+        """Round three: the delta differenced EVERY number, so a cache that shrank reported negative entries and bytes, the
+        caps read zero from the second pass on and the last restore's timings went negative; the gauges of a block ride as
+        their current values, the counters as differences, a new key whole."""
+        prev = {"entries": 5, "bytes": 5000, "budgetBytes": 100, "countCap": 8, "inserts": 3, "wholeReads": {"a": {"count": 2, "bytes": 10}}}
+        cur = {"entries": 2, "bytes": 1800, "budgetBytes": 100, "countCap": 8, "inserts": 4, "wholeReads": {"a": {"count": 3, "bytes": 15}, "b": {"count": 1, "bytes": 7}}}
+        gauges = getattr(jd, "_SERVE_GAUGES", {})                                        # getattr: a copy at the round-two head reds on the numbers
+        got = jd._serve_delta(prev, cur, *([gauges["recordCache"]] if gauges else []))
+        self.assertEqual(got, {"entries": 2, "bytes": 1800, "budgetBytes": 100, "countCap": 8, "inserts": 1,
+                               "wholeReads": {"a": {"count": 1, "bytes": 5}, "b": {"count": 1, "bytes": 7}}},
+                         "a shrunk cache reads its size, the caps their value, the counters their difference (the base read entries -3, bytes -3200, budgetBytes 0)")
+        asm_prev = {"restoreMs": {"total": 10.5}, "asmDocMemo": {"entries": 3, "bytes": 30, "capBytes": 99, "multiple": 10}, "parse": {"restore": 4}}
+        asm_cur = {"restoreMs": {"total": 10.404}, "asmDocMemo": {"entries": 2, "bytes": 20, "capBytes": 99, "multiple": 10}, "parse": {"restore": 6}}
+        got = jd._serve_delta(asm_prev, asm_cur, *([gauges["asmCheckpoint"]] if gauges else []))
+        self.assertEqual(got, {"restoreMs": {"total": 10.404}, "asmDocMemo": {"entries": 2, "bytes": 20, "capBytes": 99, "multiple": 10}, "parse": {"restore": 2}})
+        self.assertEqual(set(jd._SERVE_GAUGES), {"recordCache", "asmCheckpoint", "parses", "goalIo"}, "one gauge list per block")
+
+    def test_the_fault_knob_names_the_shape_before_the_tier(self):
+        self.assertEqual(jd._serve_fault_parse("garbage")[1][:44], "not raise:<tier>, sleep:<tier>:<seconds> or ")
+        self.assertEqual(jd._serve_fault_parse("raise:nosuchtier")[1], "no such tier 'nosuchtier' (index or triage)")
+        self.assertEqual(jd._serve_fault_parse("sleep:index:1.5"), (("sleep", "index", 1.5), None))
+        self.assertEqual(jd._serve_fault_parse(""), (None, None))
+
+    def test_the_prefixed_stream_never_doubles_a_prefix(self):
+        import io
+        raw = io.StringIO(); ps = jd._PrefixedStream(raw, "romp-judge: ")
+        ps.write("romp-judge: already prefixed\n"); ps.write("plain\n"); ps.write("two "); ps.write("parts\nromp-judge: again\n")
+        self.assertEqual(raw.getvalue(), "romp-judge: already prefixed\nromp-judge: plain\nromp-judge: two parts\nromp-judge: again\n",
+                         "a line judge.py already prefixed is not prefixed twice (the base wrote romp-judge: romp-judge: ...)")
+
+
 class Pins(unittest.TestCase):
     def test_main_dispatches_serve_and_the_usage_names_it(self):
         import inspect
@@ -388,7 +446,7 @@ class Pins(unittest.TestCase):
         import inspect
         self.assertIn("res = run_pass(may_start, now=now, before_tier=_serve_fault)", inspect.getsource(jd._serve_pass))
         ksrc = open(os.path.join(ROOT, "kernel", "kernel.py")).read()
-        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking))", ksrc, "the producer calls the same body")
+        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)", ksrc, "the producer calls the same body")
         self.assertNotIn("def _run_tier(", ksrc, "no copy of the tier runner in the kernel")
         self.assertNotIn("jd.begin_pass_frame()", ksrc, "the frame is the body's")
         body = inspect.getsource(jd.run_pass)

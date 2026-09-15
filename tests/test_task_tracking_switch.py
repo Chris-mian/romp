@@ -255,8 +255,11 @@ class TheProducerGate(_Base):
     def test_the_producer_keeps_its_two_literal_tier_threads_behind_the_predicate(self):
         import inspect, re
         body = inspect.getsource(km._producer)
-        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking))", body, "the predicate's answer gates the shared pass body")
-        self.assertIn('_PERF_STATS.judge_tiers(res["tierStarts"])', body, "the counter reads the body's tier starts")
+        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)", body, "the predicate's answer gates the shared pass body")
+        self.assertIn("def _tier_started(name):", inspect.getsource(km._tier_started), "each tier counts at its start")
+        before = km._PERF_STATS.snapshot()["judge"]["tierStarts"]; km._tier_started("index")
+        self.assertEqual(km._PERF_STATS.snapshot()["judge"]["tierStarts"], before + 1, "the hook counts one tier as it starts (round three: a read mid-pass sees the running tiers)")
+        self.assertNotIn('judge_tiers(res["tierStarts"])', body, "and not again after the barrier")
         guard = re.search(r"    if may_start:\n(.*?)\n    frame = begin_pass_frame\(\)", inspect.getsource(km.jd.run_pass), re.S)
         self.assertTrue(guard, "one guard for both tiers, in the shared body")
         self.assertIn('"index", acc, before_tier), name="index"', guard.group(1))

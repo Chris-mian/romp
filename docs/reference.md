@@ -2646,8 +2646,11 @@ object per line). The child announces `{"op":"ready","pid","judgeVersion","proto
 "parses","goalIo"}` per pass. Every counter on it is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are the
 pass's own, `failures` its tier crashes, and the four blocks (`recordCache` and `asmCheckpoint` from the event model,
 `parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes) are the DIFFERENCES
-against the previous pass's snapshot, so the kernel can feed its `/perf` counters per pass; a non-numeric value in a block
-(a cap, a multiple) rides as its current value. `recovered` is the child's judge-module recovery flag (the once-per-storm
+against the previous pass's snapshot for every counter, so the kernel can feed its `/perf` counters per pass, while each
+block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes` (the cache's contents now),
+`budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the keys `restoreMs` (the last restore's timings) and
+`asmDocMemo` (the document memo's size and cap); `parses` and `goalIo` carry counters only. A non-numeric value (a name)
+rides as current too. `recovered` is the child's judge-module recovery flag (the once-per-storm
 edge `consume_judge_recovery` reads), consumed by the child and acted on by the kernel, which re-arms its given-up cards on
 it as the in-process pass does. `mayStart` is the
 kernel's composite gate, the same predicate the in-process pass reads (the Task tracking switch, a live session, retries not

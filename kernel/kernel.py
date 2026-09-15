@@ -52913,6 +52913,12 @@ def _tiers_may_start(tracking=None):
     return bool(tracking) and bool(_live_map()) and not _retry_paused_on()
 
 
+def _tier_started(name):
+    """run_pass's before_tier in the kernel: one tier thread started, counted under /perf judge.tierStarts at its START (the
+    lab's proof that the switch off starts nothing reads the counter mid-pass too; round three of the judge child)."""
+    _PERF_STATS.judge_tiers(1)
+
+
 @_stage_marked("producer")                                # the tiers' driver: its own parses count under it (T401 (5a))
 def _producer():
     _prev_wall = _prev_mono = None
@@ -52949,11 +52955,12 @@ def _producer():
                                                        # pre-pass look; later passes anchor on the previous look
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
-            res = jd.run_pass(_tiers_may_start(tracking))   # THE pass body, shared with the serve child (judge.py run_pass,
-                                                       # stage three round two): both tiers in parallel under ONE evidence
-                                                       # frame (the user 2026-07-21), the barrier, the CPU accounting, the
-                                                       # frame ended in its finally; the gate's three inputs are read HERE
-            _PERF_STATS.judge_tiers(res["tierStarts"])   # /perf judge.tierStarts: the lab's proof that off starts nothing
+            res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)   # THE pass body, shared with the serve
+                                                       # child (judge.py run_pass, stage three round two): both tiers in parallel
+                                                       # under ONE evidence frame (the user 2026-07-21), the barrier, the CPU
+                                                       # accounting, the frame ended in its finally; the gate's three inputs are
+                                                       # read HERE; each tier counts under /perf judge.tierStarts as it STARTS
+                                                       # (_tier_started), so a read mid-pass sees the running tiers (round three)
             _PERF_STATS.judge_cpu(res["tierCpuS"])       # the tier threads' own CPU; the pool workers account theirs in judge.py
             try:                                       # AFTER the join → single writer: archive newly-cleared
                 moved = _compact_goal_stores() if tracking else 0   # cards out of the live goal stores (keeps build_feed flat); off, the stores rest (T404)

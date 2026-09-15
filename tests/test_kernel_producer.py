@@ -25,7 +25,7 @@ class ProducerPolicy(unittest.TestCase):
     def test_triage_runs_always_for_a_live_session_not_browser_gated(self):
         body = self._producer_body()
         # both tiers start together inside the ONE shared pass body (judge.py run_pass), which the producer calls with the gate
-        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking))", body)
+        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)", body)
         jsrc = Path(os.path.join(os.path.dirname(HERE), "kernel", "judge.py")).read_text()
         self.assertIn('lambda: run_index(now=now), "index", acc, before_tier), name="index"', jsrc)
         self.assertIn('lambda: run_triage(now=now), "triage", acc, before_tier), name="triage"', jsrc)
@@ -37,7 +37,7 @@ class ProducerPolicy(unittest.TestCase):
         body = self._producer_body()
         # index + triage appends sit inside ONE guard: _tiers_may_start (a live session, retries not paused, the Task
         # tracking switch on; T404), a predicate executed in tests/test_task_tracking_switch.py
-        self.assertIn("jd.run_pass(_tiers_may_start(tracking))", body, "the predicate's answer is what the shared pass body gets")
+        self.assertIn("jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)", body, "the predicate's answer is what the shared pass body gets")
         self.assertIn("def _tiers_may_start(tracking=None):", SRC)
         self.assertIn("return bool(tracking) and bool(_live_map()) and not _retry_paused_on()", SRC, "the predicate's three inputs")
         jsrc = Path(os.path.join(os.path.dirname(HERE), "kernel", "judge.py")).read_text()
