@@ -45805,8 +45805,12 @@ def _held_as_skeleton_by_all(sid, clients):
             # A client that declared the diet but whose set is not resolved yet (its redial or skeleton dial armed
             # `reconnect`, and no strip sender has reached it: round two, low 2, a connect push targeting another column)
             # will hold every tab but its watched one as a skeleton once it is (_resolve_reconnect's rule), so it is read
-            # that way here; a client with no diet, or no watched tab, holds nothing as a skeleton.
-            if (c.get("reconnect") or c.get("skeletonOnReady")) and c.get("active") and sid != str(c.get("active")) \
+            # that way here; a client with no diet, or no watched tab, holds nothing as a skeleton. A RELAY diet client
+            # with NO watched tab holds EVERY tab as a skeleton (the federated no-active rule above), so the per-session
+            # push route does not build a tab the resolve is about to skeleton (2026-09-15, cost only).
+            _act = c.get("active")
+            _held_here = (_act and sid != str(_act)) or (not _act and c.get("dietSkeleton") and c.get("kind") == "relay")
+            if (c.get("reconnect") or c.get("skeletonOnReady")) and _held_here \
                     and sid not in (c.get("echat") or {}):
                 continue
             return False
@@ -45875,9 +45879,24 @@ def _resolve_reconnect(c, chat_list):
             # this socket; without the stamp a tap for this window parked for the rest of the page's life.
             c["ready"] = True
         act = c.get("active")
-        if not act:
-            return not fresh
         held = c.get("echat") or {}
+        if not act:
+            # No active hint. A RELAY client that DIETED (skeleton=1 at the handshake: `dietSkeleton`, kind `relay`)
+            # still gets the diet with no session watched: EVERY transcript-bearing tab is a skeleton and none is the
+            # one full (2026-09-15, the federated dial: a remote none of whose tabs the hub watches is dialed skeleton=1
+            # with no active, and without this it was served the whole board, so the diet reached only the one remote
+            # whose tab was watched). `_skeleton_for` with an active that names no session is exactly this set (its own
+            # remote/closed-id case). Scoped to the RELAY client (the hub pane's dial through the splice): a LOCAL served
+            # page also dials skeleton=1 with no active in real states (a reload whose blob holds no activeId, a fresh
+            # profile with no blob, localStorage throwing, a later column whose seed lost its active), and its page-side
+            # recovery (staleActiveFallback, the idle prefetch) is not yet browser-proven, so a local page keeps the
+            # fail-safe whole push here until a served lab drives it (the follow-up). A non-diet reconnect (a plain page
+            # whose blob named no tab) keeps the whole push too: the kernel cannot know what it shows.
+            if c.get("dietSkeleton") and c.get("kind") == "relay":
+                skel = [sid for sid in _skeleton_for(c, "", chat_list) if sid not in held]
+                c["skeleton"] = set(skel)
+                c["skeletonOrder"] = skel
+            return not fresh
         skel = [sid for sid in _skeleton_for(c, str(act), chat_list) if sid not in held]
         c["skeleton"] = set(skel)
         c["skeletonOrder"] = skel
@@ -63380,6 +63399,7 @@ class Handler(BaseHTTPRequestHandler):
             # guard never lifting: no reveal aimed at it, a parked one never consumed; review find 2026-09-11). A redial
             # is served like any redial: `reconnect` alone, the first strip's pop stamps it and lands a parked reveal.
             client["reconnect"] = True
+            client["dietSkeleton"] = True   # durable (never popped): this client dialed the diet, so _resolve_reconnect skeletons ALL its tabs even with no active hint (an unwatched federated remote), where a plain reconnect keeps the fail-safe whole push
             if not reconnect:
                 client["skeletonOnReady"] = True
         if col:

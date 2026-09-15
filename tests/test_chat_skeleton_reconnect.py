@@ -355,11 +355,11 @@ class SkeletonReconnect(unittest.TestCase):
         # column's REDIAL (the shim reads skeleton=1 off the address on every dial, reconnect=1 once its gate passes):
         # `reconnect` alone — its page said ready on an earlier socket, so no arm would ever pop the flag, and armed it
         # left the client unstamped for the page's life (review find 2026-09-11; test_11_c runs the cycle)
-        for path, expect, view, flag in (("/ws?app=chat&delta=1&iid=page-9&active=%s&reconnect=1" % S1, True, False, False),
-                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s" % S1, False, False, False),
-                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&skeleton=1" % S1, True, True, True),
-                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&reconnect=1&skeleton=1" % S1, True, True, False),
-                                         ("/ws?app=feed&delta=1&iid=page-9&active=%s&skeleton=1" % S1, False, False, False)):   # a non-chat socket carrying the term arms nothing (PR 1661 round two; the follow-up's executed row)
+        for path, expect, view, flag, diet in (("/ws?app=chat&delta=1&iid=page-9&active=%s&reconnect=1" % S1, True, False, False, False),
+                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s" % S1, False, False, False, False),
+                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&skeleton=1" % S1, True, True, True, True),
+                                         ("/ws?app=chat&delta=1&iid=page-9&active=%s&col=2&reconnect=1&skeleton=1" % S1, True, True, False, True),
+                                         ("/ws?app=feed&delta=1&iid=page-9&active=%s&skeleton=1" % S1, False, False, False, False)):   # a non-chat socket carrying the term arms nothing (PR 1661 round two; the follow-up's executed row)
             got = []
             real_reg, real_recv = km._register_ws_client, km._ws_recv
             km._register_ws_client = lambda c: (got.append(c), km._clients.append(c))
@@ -390,6 +390,10 @@ class SkeletonReconnect(unittest.TestCase):
                 self.assertIs(c.get("skeletonOnReady"), True, "a later chat column's first dial: the flag that survives the ready arm's reset")
             else:
                 self.assertNotIn("skeletonOnReady", c, path + ": a redial (or no skeleton) arms no flag no arm would pop")
+            if diet:
+                self.assertIs(c.get("dietSkeleton"), True, path + ": a skeleton=1 chat dial marks the client dieted (durable), so a no-active resolve skeletons ALL its tabs")
+            else:
+                self.assertNotIn("dietSkeleton", c, path + ": no skeleton=1 (or a non-chat socket) marks no diet")
 
     # ── item 10 ──
     def test_10_source_pins_every_strip_sender_resolves_and_uses_the_one_builder(self):
@@ -685,24 +689,52 @@ class SkeletonReconnect(unittest.TestCase):
         finally:
             km._PENDING_REVEAL[0] = None
 
-    def test_11_b_a_skeleton_dial_with_no_active_hint_is_served_whole_and_stamps_only_at_the_ready(self):
-        # a missing or corrupt blob: the shim sends no hint, the kernel cannot know what the column shows → the whole
-        # push, the fail-safe _resolve_reconnect already has (test_07); the ready arm's stamp is still the only one
-        c = self._client(reconnect=True, skeletonOnReady=True)
+    def test_11_b_a_relay_skeleton_dial_with_no_active_diets_all_its_tabs_through_the_cycle_and_ready(self):
+        # LOW (2026-09-15, the federated dial), the full flow that pins the ready arm's reset ORDER: a RELAY fresh
+        # skeleton dial (kind relay, skeletonOnReady) with NO active hint diets every transcript-bearing tab. Before
+        # the ready the strip lists all of them as skeletons with a status each and NO full (the pre-ready gate holds
+        # the fulls for the arm's push); at the ready _client_reset_chat_base pops the set and re-arms from
+        # skeletonOnReady, the durable dietSkeleton survives, and the connect push rebuilds the SAME all-tabs set, so a
+        # skeletoned tab is never sent full. A LOCAL page in the same state keeps the whole push (test_11_e).
+        c = self._client(kind="relay", reconnect=True, skeletonOnReady=True, dietSkeleton=True)   # no active
         km._push([c])
-        self.assertEqual(self._sessions(c), [], "no session frame before the ready, hint or no hint (the arm's push serves them)")
-        self.assertNotIn("skeleton", self._tab_orders(c)[0])
-        self.assertNotIn("skeleton", c)
-        self.assertNotIn("ready", c, "a pre-ready pop stamps nothing, hint or no hint")
+        self.assertEqual(self._sessions(c), [], "no full before the ready (the arm's push serves the diet)")
+        self.assertEqual(self._tab_orders(c)[0].get("skeleton"), [S3, S1, S2], "the strip lists every transcript-bearing tab as a skeleton")
+        self.assertEqual(sorted(c.get("skeleton") or []), sorted([S1, S2, S3]))
+        self.assertNotIn("ready", c, "a pre-ready pop stamps nothing")
         self.assertIsNone(c.get("reconnect"))
         c["_frames"].clear()
         h = _Self(lambda cl: km._push([cl], connect=True))
         with contextlib.redirect_stderr(io.StringIO()):
             km.Handler._dispatch_ws(h, {"type": "ready"}, c)
         self.assertNotIn("skeletonOnReady", c)
-        self.assertEqual(sorted(self._sessions(c)), sorted(TAB_ORDER), "whole again at the ready")
-        self.assertNotIn("skeleton", c)
+        self.assertEqual(sorted(c.get("skeleton") or []), sorted([S1, S2, S3]), "the all-tabs set survives the ready reset")
+        for sid in (S1, S2, S3):
+            self.assertNotIn(sid, self._sessions(c), "a skeletoned tab is never sent full, even at the ready")
         self.assertIs(c.get("ready"), True)
+
+    def test_11_e_the_no_active_diet_is_scoped_to_relay_clients(self):
+        # the resolve's no-active diet builds the all-tabs set ONLY for a RELAY client (the hub pane through the
+        # splice); a LOCAL page (kind page) that dialed the diet with no active, and a plain reconnect, both keep the
+        # fail-safe whole push; a local page's page-side recovery is not browser-proven yet (the follow-up).
+        rows = km._chat_tab_sessions(0, {})
+        relay = {"app": "chat", "kind": "relay", "reconnect": True, "dietSkeleton": True}
+        self.assertTrue(km._resolve_reconnect(relay, rows))
+        self.assertEqual(relay.get("skeletonOrder"), [S3, S1, S2], "every transcript-bearing tab a skeleton, cheapest first")
+        self.assertNotIn(S4, relay.get("skeleton") or set(), "the transcript-less tab is built whole")
+        local = {"app": "chat", "kind": "page", "reconnect": True, "dietSkeleton": True}
+        self.assertTrue(km._resolve_reconnect(local, rows))
+        self.assertIsNone(local.get("skeleton"), "a LOCAL diet page with no active is served whole (pending the follow-up)")
+        plain = {"app": "chat", "kind": "relay", "reconnect": True}   # relay but did NOT diet
+        self.assertTrue(km._resolve_reconnect(plain, rows))
+        self.assertIsNone(plain.get("skeleton"), "a non-diet reconnect with no active is served whole")
+        # FOLD 2, the cold-tab gate on an UNRESOLVED diet client (reconnect armed, no set yet): a relay diet client
+        # with no active is read as holding EVERY tab as a skeleton, so the per-session route builds none it will
+        # skeleton (cost only); a local diet page holds nothing (whole push).
+        relay_unresolved = {"app": "chat", "kind": "relay", "reconnect": True, "dietSkeleton": True}
+        self.assertTrue(km._held_as_skeleton_by_all(S1, [relay_unresolved]), "an unresolved relay diet client with no active holds every tab as a skeleton")
+        local_unresolved = {"app": "chat", "kind": "page", "reconnect": True, "dietSkeleton": True}
+        self.assertFalse(km._held_as_skeleton_by_all(S1, [local_unresolved]), "a local unresolved diet page holds nothing")
 
     # ── item 12 ──
     def test_12_a_reveal_parked_while_the_page_had_no_socket_lands_behind_the_redials_first_strip(self):
