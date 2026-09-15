@@ -1264,8 +1264,12 @@ class CodexBackend:
         c = self._get_client()
         if c is None:
             # the entry still exists so the failure is VISIBLE on the lane (launch_error),
-            # never a silently-missing session
-            s = _Session(sid, "pending-%s" % sid[:8], name, cwd)
+            # never a silently-missing session. The identity colour the caller picked rides on
+            # the row and into names/ exactly as on the success path: a placeholder that dropped
+            # it ran colourless for its whole life (the later thread create and the load-time
+            # republish both copy the row's empty colour forward) and the kernel's picker, which
+            # counts held colours from names/, handed the same colour to the next session
+            s = _Session(sid, "pending-%s" % sid[:8], name, cwd, color=bg)
             s.launch_error = {"text": self._client_failure_text(), "at": time.time(),
                               "limit": False}
             with s.lock:
@@ -1279,8 +1283,9 @@ class CodexBackend:
                     with self._sessions_lock:
                         self._sessions.pop(sid, None)
                     raise
-            self._publish_spawn_name(s)    # a LIVE launch-error row without a shared name let a
-            #                                retry mint a duplicate live "web" (the v1.3.12 audit)
+            self._publish_spawn_name(s, bg, fg)    # a LIVE launch-error row without a shared name
+            #                                        let a retry mint a duplicate live "web" (the
+            #                                        v1.3.12 audit)
             return sid
         try:
             resp = c.thread_start({"cwd": cwd, **_approval_params(),
@@ -1288,7 +1293,7 @@ class CodexBackend:
             tid = resp.thread.id
             model = getattr(resp, "model", "") or ""
         except Exception as e:
-            s = _Session(sid, "failed-%s" % sid[:8], name, cwd)
+            s = _Session(sid, "failed-%s" % sid[:8], name, cwd, color=bg)
             s.launch_error = {"text": "codex thread/start failed: %s" % e, "at": time.time(),
                               "limit": False}
             with s.lock:
@@ -1299,7 +1304,7 @@ class CodexBackend:
                     with self._sessions_lock:
                         self._sessions.pop(sid, None)
                     raise
-            self._publish_spawn_name(s)    # same rule as the client-missing branch above
+            self._publish_spawn_name(s, bg, fg)    # same rules as the client-missing branch above
             return sid
         s = _Session(sid, tid, name, cwd, model=model, color=bg)
         s.loaded = True
