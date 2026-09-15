@@ -22,12 +22,26 @@ sentence, and never through --from; the Claude variable wins when both are set, 
 said; recall needs the sender's identity like inbox, sent and working do (a recall is of the caller's OWN mail, and
 the bus answers an empty from_id with a bare 400 "missing from_id", which is what a broken Codex shell used to hear)
 and refuses with the reason; `agents`, which needs no identity, says nothing about it.
+
+A third identity fault is the environment's AGE (2026-09-15): a session's postal MCP server is a child started
+with the CLI, so its CLAUDE_CODE_SESSION_ID is the transcript id of that moment for the process's whole life,
+while a /clear mints a new one under the same romp sid and the kernel's row moves its lastSid to it. The stale id
+matched no row by id or by lastSid, and the fallback signed every tool-sent message with it ("from an unidentified
+session") and read a mailbox nobody delivers to, until the CLI restarted. StaleFsidIdentity pins the third join
+_self_row makes for that case: the kernel's GET /sessions/by-fsid, the authority on which live session owned a
+prior transcript, answering with that one session's row; a refusal or an unreachable kernel keeps the old
+fallback, and the exact-id, lastSid and Codex paths never ask. KernelGetContract drives the REAL _kernel_get and
+_kernel_session_by_fsid against a loopback stand-in for the kernel: the seam StaleFsidIdentity stubs is pinned there.
 """
 import contextlib
 import io
 import json
 import os
+import socket
+import threading
 import unittest
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from romp_load import load_source
 import tempfile
@@ -379,6 +393,345 @@ class CodexSelfIdentity(unittest.TestCase):
                 self.assertEqual((text, is_err), ("Not inside a romp session.", True))
         finally:
             pm._LOCAL_CONFIRMED[0] = False
+
+
+OLD_FSID = "aaaaaaaa-2222-3333-4444-555555555501"   # the transcript web's CLI had when its postal MCP server started
+NEW_FSID = "aaaaaaaa-2222-3333-4444-555555555502"   # the one its /clear minted: the row's lastSid now
+WEB = "11111111-2222-3333-4444-5555555555a1"
+API = "11111111-2222-3333-4444-5555555555a2"
+T_WEB = "66666666-7777-8888-9999-0000000000a1"      # a comment thread of web
+OLD_TFSID = "aaaaaaaa-2222-3333-4444-555555555511"  # the thread's transcript before ITS /clear
+NEW_TFSID = "aaaaaaaa-2222-3333-4444-555555555512"  # the one its /clear minted
+THREAD_REG = pm.STATE.parent / "sdk" / (T_WEB + ".json")   # the reg the bus's thread rule reads (_thread_of)
+
+
+class StaleFsidIdentity(unittest.TestCase):
+    """A session's postal MCP server is a child started with the CLI, and its CLAUDE_CODE_SESSION_ID is fixed for
+    the process's life; a /clear mints a new transcript id under the same romp sid, so the kernel's row moves its
+    lastSid while the server still carries the PRE-clear id. That id matched no row by id or by lastSid, so
+    _self_identity fell back to it: every message the session sent through its tools arrived "from an
+    unidentified session" and check_inbox read a mailbox keyed by a transcript id nobody delivers to, until the
+    CLI restarted (reproduced 2026-09-15; a `romp mail send` from a fresh shell, whose env carried the current id,
+    was attributed). _self_row's third join asks the kernel, the authority on which session owned a prior id
+    (GET /sessions/by-fsid, through _kernel_get, the seam stubbed here), and uses the ONE row it answers with;
+    a 404, a 409 or an unreachable kernel keeps the old fallback, and the exact-id, lastSid and Codex paths never
+    ask. Synthetic ids only."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "ROMP_SESSIONS_FILE")}
+        os.environ.pop("CODEX_THREAD_ID", None)
+        self.rows = [
+            {"id": WEB, "name": "web", "dir": "/tmp/notes-api", "state": "idle", "working": "", "bg": "", "fg": "",
+             "compacting": False, "lastSid": NEW_FSID, "backend": "sdk"},
+            {"id": API, "name": "api", "dir": "/tmp/notes-api", "state": "idle", "working": "", "bg": "", "fg": "",
+             "compacting": False, "lastSid": API, "backend": "sdk"},
+            {"id": CODEX_WEB, "name": "tests", "dir": "/tmp/notes-api", "state": "idle", "working": "",
+             "lastSid": CODEX_WEB, "backend": "codex"}]
+        self.sess = Path(os.environ["XDG_STATE_HOME"]) / "stale-fsid-sessions.json"
+        self._listing(self.rows)
+        os.environ["ROMP_SESSIONS_FILE"] = str(self.sess)
+        self.err = io.StringIO()
+        self.calls, self.asked = [], []
+        self.kernel = {OLD_FSID: self.rows[0]}   # what GET /sessions/by-fsid knows: fsid -> the row; anything else 404s
+        self.refusal = None                       # a canned refusal dict for every ask (a 409), when set
+        self.down = False                         # the kernel unreachable: the seam answers None
+        self._saved = (pm.ensure, pm._http, getattr(pm, "_kernel_get", None))
+        pm.ensure = lambda: True
+        pm._http = self._transport
+        pm._kernel_get = self._kernel_get
+        REG.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        pm.ensure, pm._http = self._saved[:2]
+        if self._saved[2] is None:
+            del pm._kernel_get
+        else:
+            pm._kernel_get = self._saved[2]
+        for k, v in self._env.items():
+            restore_env(k, v)
+        for f in (REG, THREAD_REG):
+            if f.exists():
+                f.unlink()
+        pm._LOCAL_CONFIRMED[0] = False
+
+    def _listing(self, rows):
+        self.sess.write_text(json.dumps(rows))
+
+    def _transport(self, method, path, payload=None):
+        self.calls.append((method, path, payload))
+        if path == "/send":
+            return {"note": "delivered to '%s'" % payload["to"]}
+        return {"messages": [], "agents": [], "sent": [], "removed": [], "kept": []}
+
+    def _kernel_get(self, path, timeout=2, said_once=()):
+        """The kernel's one-document GET seam, answering as the real _kernel_get does: the row on a 200, the
+        refusal dict on a 4xx, None when the kernel is unreachable. Records every ask (KernelGetContract pins
+        the real function, `said_once` included)."""
+        self.assertTrue(path.startswith("/sessions/by-fsid?"), "the only document the identity asks for: %s" % path)
+        fsid = urllib.parse.parse_qs(path.split("?", 1)[1])["fsid"][0]
+        self.asked.append(fsid)
+        if self.down:
+            return None
+        if self.refusal is not None:
+            return dict(self.refusal)
+        if fsid in self.kernel:
+            return dict(self.kernel[fsid])
+        return {"ok": False, "status": 404, "error": "no live session has transcript %s" % fsid}
+
+    def _resolve(self, fsid):
+        os.environ["CLAUDE_CODE_SESSION_ID"] = fsid
+        del self.asked[:]
+        with contextlib.redirect_stderr(self.err):
+            return pm._self_identity()
+
+    def _run(self, fn, *args):
+        del self.calls[:]
+        with contextlib.redirect_stderr(self.err), contextlib.redirect_stdout(io.StringIO()):
+            rc = fn(*args)
+        return rc, list(self.calls)
+
+    def test_a_pre_clear_id_resolves_to_the_sessions_row_through_the_kernel(self):
+        # red on main: the stale id matches nothing on the listing, so the identity is (OLD_FSID, None) — the
+        # unattributed sender. The kernel is asked ONCE, for exactly that id, and its row is the identity.
+        self.assertEqual(self._resolve(OLD_FSID), (WEB, "web"))
+        self.assertEqual(self.asked, [OLD_FSID])
+        self.assertEqual((pm.my_id(), pm.my_name()), (WEB, "web"))
+        self.assertEqual(self.err.getvalue(), "", "a clean resolution says nothing")
+
+    def test_a_send_and_an_inbox_read_from_the_stale_process_carry_the_row_id(self):
+        # end to end through the real command and the real tool: the mail's from_id is the stable sid and its
+        # from the live name (red on main: from_id OLD_FSID, from "unknown"), and the inbox read is of web's box
+        os.environ["CLAUDE_CODE_SESSION_ID"] = OLD_FSID
+        rc, calls = self._run(pm.cli_send, ["--kind", "coordinate", "api", "the web tests are green"])
+        self.assertEqual(rc, 0, self.err.getvalue())
+        posts = [b for m, p, b in calls if p == "/send"]
+        self.assertEqual(len(posts), 1, calls)
+        self.assertEqual((posts[0]["from_id"], posts[0]["from"]), (WEB, "web"))
+        rc, calls = self._run(pm.cli_inbox, False)
+        self.assertEqual(rc, 0, self.err.getvalue())
+        self.assertEqual([p for _, p, _ in calls], ["/inbox?id=%s&peek=0" % WEB])
+        with contextlib.redirect_stderr(self.err):
+            text, is_err = pm._mcp_call("send_message", {"to": "api", "body": "the web tests are green",
+                                                          "kind": "coordinate"})
+            self.assertFalse(is_err, text)
+            posts = [b for m, p, b in self.calls if p == "/send"]
+            self.assertEqual((posts[-1]["from_id"], posts[-1]["from"]), (WEB, "web"))
+            del self.calls[:]
+            text, is_err = pm._mcp_call("check_inbox", {})
+            self.assertFalse(is_err, text)
+            self.assertEqual([p.split("&")[0] for _, p, _ in self.calls if p.startswith("/inbox?")], ["/inbox?id=%s" % WEB])
+        self.assertNotIn(OLD_FSID, json.dumps(self.calls), "the stale transcript id never reaches the bus")
+
+    def test_a_refusal_or_an_unreachable_kernel_keeps_the_env_fallback(self):
+        # nothing regresses: when the kernel does not know the id (404), refuses to choose (409) or cannot be
+        # reached, the identity is what it was before this join — the env id, no name — and the send goes out
+        # under it as it did
+        self.kernel = {}
+        self.assertEqual(self._resolve(OLD_FSID), (OLD_FSID, None))
+        self.assertEqual(self.asked, [OLD_FSID])
+        self.refusal = {"ok": False, "status": 409,
+                        "error": "2 live sessions claim transcript %s (%s, %s); refusing to guess which" % (OLD_FSID, API, WEB)}
+        self.assertEqual(self._resolve(OLD_FSID), (OLD_FSID, None))
+        self.refusal, self.down = None, True
+        self.assertEqual(self._resolve(OLD_FSID), (OLD_FSID, None))
+        rc, calls = self._run(pm.cli_send, ["--kind", "coordinate", "api", "still sending"])
+        self.assertEqual(rc, 0, self.err.getvalue())
+        self.assertEqual([b["from_id"] for m, p, b in calls if p == "/send"], [OLD_FSID])
+
+    def test_an_empty_listing_is_not_asked_about(self):
+        # the kernel down or no live session at all: neither can own the id, so no second fetch is made
+        self._listing([])
+        self.assertEqual(self._resolve(OLD_FSID), (OLD_FSID, None))
+        self.assertEqual(self.asked, [])
+
+    def test_a_cleared_comment_threads_stale_id_resolves_to_its_thread_row_and_its_send_is_refused(self):
+        # a comment thread's mail is OFF until the user breaks it out (T356), and the sender gate decides that from
+        # the reg under the RESOLVED id. Red on main: the thread's stale id resolved to itself, no reg sits under a
+        # transcript id, so the gate read an ordinary session and the thread's send went out — unattributed AND
+        # past the rule. The kernel answers the stale id with the thread's row (thread/parent as the ?threads=1
+        # listing carries them), the identity is the thread's, and the gate refuses with the thread's own words
+        trow = {"id": T_WEB, "name": "web-comment-1", "dir": "/tmp/notes-api", "state": "idle", "working": "",
+                "thread": True, "parent": WEB, "lastSid": NEW_TFSID, "backend": "sdk",
+                "postalServiceOff": True, "mailOffWhy": "thread"}
+        self._listing(self.rows + [trow])
+        self.kernel[OLD_TFSID] = trow
+        THREAD_REG.parent.mkdir(parents=True, exist_ok=True)
+        THREAD_REG.write_text(json.dumps({"sid": T_WEB, "alive": True, "threadOf": WEB, "lastSid": NEW_TFSID}))
+        self.assertEqual(self._resolve(OLD_TFSID), (T_WEB, "web-comment-1"))
+        self.assertEqual(self.asked, [OLD_TFSID])
+        row = pm._self_row(OLD_TFSID)
+        self.assertEqual((row.get("thread"), row.get("parent")), (True, WEB), "the row is marked as the listing marks it")
+        self.assertEqual(pm._mail_off_why(pm.my_id()), "thread")
+        rc, calls = self._run(pm.cli_send, ["--kind", "coordinate", "api", "a note from the thread"])
+        self.assertEqual(rc, 1)
+        self.assertEqual([p for _, p, _ in calls if p == "/send"], [], "nothing reaches the bus")
+        self.assertIn(pm.THREAD_MAIL_OFF_SENDER, self.err.getvalue())
+        self.assertEqual(self._resolve(NEW_TFSID), (T_WEB, "web-comment-1"), "the thread's current id: the lastSid join")
+        self.assertEqual(self.asked, [])
+
+    def test_the_current_id_the_stable_id_and_a_codex_thread_never_ask(self):
+        # the two joins that already resolved (the user 2026-07-27) and the Codex resolver (2026-09-15) are
+        # untouched: each answers off the listing, and the kernel hears no by-fsid question
+        self.assertEqual(self._resolve(NEW_FSID), (WEB, "web"), "the CURRENT transcript id: the lastSid join")
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self._resolve(WEB), (WEB, "web"), "the stable sid: the exact join")
+        self.assertEqual(self.asked, [])
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        os.environ["CODEX_THREAD_ID"] = "thread-web"
+        REG.write_text(json.dumps({CODEX_WEB: _row("thread-web", "web")}))
+        del self.asked[:]
+        with contextlib.redirect_stderr(self.err):
+            self.assertEqual(pm._self_identity(), (CODEX_WEB, "tests"), "a Codex thread: the registry, then the exact join")
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self.err.getvalue(), "")
+
+
+def _dead_port():
+    """A loopback port nothing listens on (bound, read, released)."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class _KernelStub(BaseHTTPRequestHandler):
+    """A loopback stand-in for the kernel's GET routes, answering the way the real Handler does for the
+    documents _kernel_get is asked for: the token checked first (a JSON 403 without it), a /sessions/by-fsid
+    row from `rows` on a hit and the route's JSON 404 on a miss, a JSON 409 refusal, a 2xx whose body is
+    not JSON, and a plain-text 404 "not found" for any other path (a kernel from before a route existed)."""
+    rows = {}
+    token = ""
+
+    def do_GET(self):
+        if self.headers.get("X-Romp-Token") != self.token:
+            return self._send(403, json.dumps({"ok": False, "error": "forbidden"}))
+        if self.path.startswith("/sessions/by-fsid?"):
+            fsid = urllib.parse.parse_qs(self.path.split("?", 1)[1]).get("fsid", [""])[0]
+            row = self.rows.get(fsid)
+            if row is not None:
+                return self._send(200, json.dumps(row))
+            return self._send(404, json.dumps({"ok": False, "error": "no live session has transcript %s" % fsid}))
+        if self.path == "/conflict":
+            return self._send(409, json.dumps({"ok": False, "error": "2 live sessions claim it; refusing to guess which"}))
+        if self.path == "/junk":
+            return self._send(200, "not json", "text/plain")
+        return self._send(404, "not found", "text/plain")
+
+    def _send(self, code, body, ctype="application/json"):
+        data = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
+        pass
+
+
+class KernelGetContract(unittest.TestCase):
+    """The real _kernel_get and _kernel_session_by_fsid against a loopback kernel stand-in (StaleFsidIdentity
+    stubs the seam; this pins what the seam is): the parsed body on a 2xx; a logged {"ok": False, "status",
+    "error"} for a refusal, the kernel's own text sliced in; None when the body is not JSON, the kernel is
+    unreachable, or the ROMP_SESSIONS_FILE seam is set even with a kernel listening; the token on every ask; a
+    by-fsid row becoming the agent row (a thread's with thread and parent) and every refusal None; and the
+    route's designed 404 said once per process while a 409 is said each time."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), _KernelStub)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.base = "http://127.0.0.1:%d" % cls.srv.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def setUp(self):
+        self._seam = os.environ.get("ROMP_SESSIONS_FILE")
+        os.environ.pop("ROMP_SESSIONS_FILE", None)          # the real calls: no seam in the way
+        self._base, self._token = pm.KERNEL_BASE, pm.SERVE_TOKEN
+        pm.KERNEL_BASE = self.base
+        _KernelStub.rows, _KernelStub.token = {}, pm.SERVE_TOKEN
+        pm._KERNEL_GET_SAID.clear()
+        self.err = io.StringIO()
+
+    def tearDown(self):
+        pm.KERNEL_BASE, pm.SERVE_TOKEN = self._base, self._token
+        restore_env("ROMP_SESSIONS_FILE", self._seam)
+        pm._KERNEL_GET_SAID.clear()
+
+    def _get(self, path, **kw):
+        with contextlib.redirect_stderr(self.err):
+            return pm._kernel_get(path, **kw)
+
+    def _by(self, fsid):
+        with contextlib.redirect_stderr(self.err):
+            return pm._kernel_session_by_fsid(fsid)
+
+    def _said(self, status):
+        return [l for l in self.err.getvalue().splitlines() if "kernel refused GET" in l and "HTTP %d" % status in l]
+
+    def test_the_three_answers(self):
+        _KernelStub.rows = {OLD_FSID: {"id": WEB, "name": "web"}}
+        self.assertEqual(self._get("/sessions/by-fsid?fsid=" + OLD_FSID), {"id": WEB, "name": "web"})
+        miss = self._get("/sessions/by-fsid?fsid=" + NEW_FSID)
+        self.assertEqual((miss["ok"], miss["status"]), (False, 404), miss)
+        self.assertIn("no live session has transcript " + NEW_FSID, miss["error"])
+        old = self._get("/sessions/by-fsid-from-the-future")        # a kernel without the route: plain 404 text
+        self.assertEqual((old["ok"], old["status"], old["error"]), (False, 404, "not found"))
+        self.assertIsNone(self._get("/junk"), "a 2xx whose body is not JSON is no answer")
+        self.assertEqual(len(self._said(404)), 2, "each refusal said, with its status:\n" + self.err.getvalue())
+        pm.KERNEL_BASE = "http://127.0.0.1:%d" % _dead_port()
+        self.assertIsNone(self._get("/sessions/by-fsid?fsid=" + OLD_FSID), "unreachable: None, the caller degrades")
+
+    def test_the_token_rides_every_ask(self):
+        _KernelStub.rows = {OLD_FSID: {"id": WEB, "name": "web"}}
+        pm.SERVE_TOKEN = "not-the-kernels-token"
+        denied = self._get("/sessions/by-fsid?fsid=" + OLD_FSID)
+        self.assertEqual((denied["ok"], denied["status"]), (False, 403), denied)
+        self.assertIsNone(self._by(OLD_FSID), "a refused lookup resolves no identity")
+
+    def test_the_no_kernel_seam_answers_none_even_with_a_kernel_listening(self):
+        _KernelStub.rows = {OLD_FSID: {"id": WEB, "name": "web"}}
+        os.environ["ROMP_SESSIONS_FILE"] = "/nonexistent"
+        self.assertIsNone(self._get("/sessions/by-fsid?fsid=" + OLD_FSID))
+        self.assertIsNone(self._by(OLD_FSID))
+        self.assertEqual(self.err.getvalue(), "", "nothing was asked, nothing is said")
+
+    def test_a_by_fsid_row_becomes_the_agent_row_and_every_refusal_is_none(self):
+        crafted = "aaaaaaaa-2222-3333-4444-555555555577"
+        _KernelStub.rows = {
+            OLD_FSID: {"id": WEB, "name": "web", "dir": "/tmp/notes-api", "state": "idle", "working": "",
+                       "bg": "", "fg": "", "compacting": False, "lastSid": NEW_FSID, "backend": "sdk"},
+            OLD_TFSID: {"id": T_WEB, "name": "web-comment-1", "dir": "/tmp/notes-api", "state": "idle",
+                        "working": "", "thread": True, "parent": WEB, "lastSid": NEW_TFSID, "backend": "sdk",
+                        "postalServiceOff": True, "mailOffWhy": "thread"},
+            crafted: {"id": "../escape", "name": "x"}}
+        row = self._by(OLD_FSID)
+        self.assertEqual((row["id"], row["name"], row["lastSid"], row["dir"]), (WEB, "web", NEW_FSID, "/tmp/notes-api"))
+        trow = self._by(OLD_TFSID)
+        self.assertEqual((trow["id"], trow.get("thread"), trow.get("parent")), (T_WEB, True, WEB),
+                         "a thread's row keeps thread and parent through the agent-row shape")
+        self.assertIsNone(self._by(crafted), "a row whose id is not a session id is refused")
+        self.assertIsNone(self._by(NEW_FSID), "404, no owner: None")
+        pm.KERNEL_BASE = self.base.rstrip("0123456789") + str(_dead_port())
+        self.assertIsNone(self._by(OLD_FSID), "unreachable: None")
+
+    def test_a_designed_miss_is_said_once_per_process_and_a_refusal_every_time(self):
+        for _ in range(3):
+            self.assertIsNone(self._by(NEW_FSID))
+        self.assertEqual(len(self._said(404)), 1, "one line for the same miss asked three times:\n" + self.err.getvalue())
+        self.assertIsNone(self._by(OLD_FSID))
+        self.assertEqual(len(self._said(404)), 2, "another id's miss is its own first line")
+        for _ in range(2):
+            self.assertEqual(self._get("/conflict")["status"], 409)
+        self.assertEqual(len(self._said(409)), 2, "a refusal that is not the designed answer is said each time")
+        for _ in range(2):
+            self._get("/sessions/by-fsid?fsid=" + NEW_FSID)
+        self.assertEqual(len(self._said(404)), 4, "a caller that did not ask for once-per-process hears every one")
 
 
 if __name__ == "__main__":

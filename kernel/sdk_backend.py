@@ -758,11 +758,15 @@ def canon_dir(raw: str) -> tuple[str, str]:
     return true_case(os.path.realpath(p)), ""
 
 
-def known_fsids(state_dir: Path, sid: str, reg: dict | None = None) -> set[str]:
+def known_fsids(state_dir: Path, sid: str, reg: dict | None = None, faults: list | None = None) -> set[str]:
     """Every transcript fsid romp has on record for `sid`: the sid itself, the reg's lastSid, each
     /clear episode head (episodes/<sid>.jsonl, fsid per row) and both ends of every resume fork
     (states/<sid>.jsonl resumeFork rows). These are the files that share the session's project slug and
-    that romp's episode/lineage readers derive from the stored cwd — the set a move has to carry."""
+    that romp's episode/lineage readers derive from the stored cwd — the set a move has to carry. A ledger
+    that is not there contributes nothing; one that IS there but would not read (EACCES, EIO, EMFILE, a
+    directory in its place) contributes nothing either, and its name is appended to `faults` when the
+    caller passes a list, so a memo over this answer can tell an absent record from a transient miss
+    (SdkBackend.known_fsids)."""
     out = {str(sid)}
     reg = reg if reg is not None else (read_reg(state_dir, sid) or {})
     if reg.get("lastSid"):
@@ -771,7 +775,9 @@ def known_fsids(state_dir: Path, sid: str, reg: dict | None = None) -> set[str]:
                       ("states", lambda r: [(r.get("resumeFork") or {}).get(k) for k in ("from", "to")])):
         try:
             lines = (Path(state_dir) / sub / (str(sid) + ".jsonl")).read_text().splitlines()
-        except OSError:
+        except OSError as e:
+            if faults is not None and e.errno not in (errno.ENOENT, errno.ENOTDIR):
+                faults.append(sub)
             continue
         for line in lines:
             try:
@@ -9488,6 +9494,7 @@ class SdkBackend:
         self._notify = notify              # notify(app, msg) -> push to clients (kernel._send_to_app)
         self._poke_cb = poke               # wake the kernel's producer/judges (optional)
         self._owns_memo: dict = {}         # sid -> ((reg mtime_ns, size), owns?) — see owns()
+        self._known_fsids_memo: dict = {}  # sid -> ((reg, episodes, states) stat keys, frozenset of fsids) — see known_fsids()
         self._push_cb = push               # wake the kernel's PUSHER → immediate chat push (live tail)
         self._push_session_cb = push_session   # targeted ONE-session push (kernel _push_session_now) for
         #   per-session chip events (the connect handshake): a wake alone leaves the flip riding the next
@@ -14639,6 +14646,53 @@ class SdkBackend:
         ok = bool(reg)
         self._owns_memo[sid] = (key, ok)
         return ok
+
+    def known_fsids(self, sid: str) -> set[str]:
+        """Every transcript fsid this backend has on record for `sid`: the module's known_fsids over this
+        backend's state dir (the sid, the reg's lastSid, each /clear episode head, both ends of every resume
+        fork). The kernel's GET /sessions/by-fsid reads it to answer which live session has owned a given
+        transcript id: a session's postal MCP server is a child started with the CLI and keeps the
+        CLAUDE_CODE_SESSION_ID of that moment for its whole life, a /clear mints a new transcript id under
+        the same sid, and these records are the authority on which session the prior id belonged to
+        (2026-09-15: every message a post-/clear session sent through its tools arrived unattributed).
+        Memoized per sid on the (mtime_ns, size, inode) of its three records — the reg, episodes/<sid>.jsonl
+        and states/<sid>.jsonl, None for one that is absent — because that route asks this for EVERY live
+        session and thread on every ask, and the bus asks per postal command from every post-/clear session
+        for the rest of its CLI's life (and per 30 s heartbeat until its bus confirms the session local; for
+        the whole life in legacy singleton mode): unmemoized, each ask re-read and re-parsed
+        every session's whole states ledger (a row per state change; the largest run to thousands) on the
+        kernel's HTTP threads. Unchanged records cost three stats. The reg is rewritten by rename and the
+        ledgers only ever grow, so the key misses exactly when a record changes. A read that FAULTED on a
+        record the stat found (EMFILE, EIO, a torn reg) is answered but not memoized, by owns()'s rule
+        (review find on #933): latching the partial set would 404 the session's own prior transcript until
+        one of its records next changed, and the next call re-reads instead. The line that says so is keyed
+        per sid in the problem ring, so a record that stays unreadable counts on one entry instead of
+        appending one per ask (the ring's sequence is the feed's cache key)."""
+        paths = (_reg_path(self.state_dir, sid),
+                 Path(self.state_dir) / "episodes" / (str(sid) + ".jsonl"),
+                 Path(self.state_dir) / "states" / (str(sid) + ".jsonl"))
+        key = []
+        for p in paths:
+            try:
+                st = p.stat()
+                key.append((st.st_mtime_ns, st.st_size, st.st_ino))
+            except OSError:
+                key.append(None)
+        key = tuple(key)
+        hit = self._known_fsids_memo.get(sid)
+        if hit is not None and hit[0] == key:
+            return set(hit[1])
+        reg = read_reg_for_rmw(self.state_dir, sid)     # {} = genuinely absent; None = there but would not read
+        faults: list = []
+        out = known_fsids(self.state_dir, sid, reg if reg is not None else {}, faults=faults)
+        if reg is None or faults:
+            self._known_fsids_memo.pop(sid, None)        # would not read: do not latch; re-read next call
+            self._log("known_fsids(%s): a record the stat found would not read (%s) — answered, not cached"
+                      % (sid[:8], ", ".join(["reg"] * (reg is None) + faults)),
+                      problem=True, key=("known_fsids", sid))
+        else:
+            self._known_fsids_memo[sid] = (key, frozenset(out))
+        return out
 
     def ensure_scheduled(self) -> int:
         """Keep a CLI process ALIVE for every session with ARMED SESSION TIMERS (reg sessionCrons, the
