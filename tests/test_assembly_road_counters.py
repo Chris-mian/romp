@@ -162,8 +162,12 @@ class AssemblyRoadCounters(Harness):
                      G.uline(t0 + 62, "abandoned after the first compaction", "u3x", "s0"),
                      G.aline(t0 + 63, "abandoned reply", "a3x", "u3x", stop="end_turn")]
         recs += [G.compact_line(t0 + 600, "b1", "a3"), G.compact_summary_line(t0 + 601, "s1", "b1"),
-                G.uline(t0 + 610, "after the compaction", "u4", "s1"), G.aline(t0 + 620, "fourth reply", "a4", "u4", stop="end_turn"),
+                G.uline(t0 + 610, "after the compaction", "u4", "s1"), G.aline(t0 + 620, "fourth reply", "a4", "u4", stop="tool_use"),
                 G.uline(t0 + 630, "then more", "u5", "a4"), G.aline(t0 + 640, "fifth reply", "a5", "u5", stop="end_turn")]
+        #        the fourth turn never settles (its reply stopped for a tool whose result the file never recorded; the user typed
+        #        again): since stage one b (2026-09-15) the cut is the boundary before the last SETTLED turn with a follower, and
+        #        every shape below is about the compaction's cut with a3 the pre-cut tip, so the compaction's turn must be that
+        #        turn: with the fourth turn settled the cut would sit before u4 and the tip would be the summary s1
         path = self.write(name, recs)
         if resume:
             sib = os.path.join(os.path.dirname(path), self.SIBLING + ".jsonl")
