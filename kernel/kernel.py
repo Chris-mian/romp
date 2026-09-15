@@ -288,8 +288,8 @@ class _PerfStats:
                                    memos.shared), save_goals calls, and the saves that reached the
                                    disk (a byte-identical republish is a save without a write)
       memos                        pass / shared / chain: the judge pass's stat-keyed store memo
-                                   (_goals_memo_report: hit, miss, fail, evict, punch, entries,
-                                   bytes), the pusher's shared read-only store cache
+                                   (_goals_memo_report: hit, miss, fail, evict, punch, skip, entries,
+                                   bytes, unowned), the pusher's shared read-only store cache
                                    (judge.shared_store_stats) and the write-moment chain memo
                                    (judge.chain_memo_stats); intrMarks / statesOverlay: the
                                    interrupt-marks memo (_intr_marks_memo_report: hit, miss, evict,
@@ -740,7 +740,7 @@ class _PerfStats:
             j["ms_last"] = ms
 
     def judge_cpu(self, cpu_dt):
-        """A judge tier thread's own CPU seconds for one tier run (_run_tier)."""
+        """A judge tier thread's own CPU seconds for one tier run (judge.py's _run_tier, the shared runner)."""
         with self.lock:
             self.judge["cpu_ms_sum"] += cpu_dt * 1000.0
 
@@ -860,6 +860,7 @@ class _PerfStats:
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
         memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
         #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
+        memos["convergeDeclined"] = _CONVERGE_DECLINED[0]   # converges that asked no restart because this kernel was leaving
         memos["sessionsListing"] = {"built": _SESSIONS_LISTING["built"], "served": _SESSIONS_LISTING["served"],
                                     "requestBuilt": _SESSIONS_LISTING["requestBuilt"], "faultBuilt": _SESSIONS_LISTING["faultBuilt"],
                                     "missBy": dict(_SESSIONS_LISTING["missBy"])}
@@ -9367,10 +9368,14 @@ def _in_place_converge(target):
     return False
 
 
+_CONVERGE_DECLINED = [0]   # converges that found this kernel leaving and asked no restart (memos.convergeDeclined on /perf): the
+#                            2026-09-15 deploy read showed a dying kernel's converge killing its two-second-old successor
 _DEPLOY_RESTART_REASONS = ("main-converge", "p2p-update", "self-update",   # ledger reasons that ARE a
                            "kernel-asks-manager-restart-all: self-update")   # deploy restart of this kernel
 _NO_RESTART_ACTIONS = {"main-converge-skip", "bus-converge", "end-on-idle",   # audit rows that restart no
-                       "quiet-window"}   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
+                       "quiet-window", "main-converge-declined",   # (a converge that found this kernel already leaving asked no restart)
+                       "restart-folded", "restart-trailing", "restart-trailing-current"}   # (the manager's notes of a request that rode a
+#                                                                                        restart in flight, or a trail found current)   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
                                          #  the restart it releases writes its own manager-sigterm note)
 #                                                                              kernel (in-place converges; a
 #                                                                              session's own self-close ask)
@@ -9683,6 +9688,23 @@ def _main_drift_check():
 _PORT_FROM_ENV = object()
 
 
+def _converge_declined_shutting_down(kind, phase, sha):
+    """The converge found this kernel already leaving (_TERMINATING: the exit path holds the lock): it asks no restart,
+    since the successor boots on the disk as it stands and a request now would kill THAT kernel (the 2026-09-15 deploy
+    read: the running kernel decided a converge, a peer's push restarted it a second later, and the dying kernel's
+    request killed its two-second-old successor). One audit row (`main-converge-declined`, why shutting-down, `phase`
+    before-pull with the target it did not pull, or after-pull with the checkout it moved) and one count on /perf
+    (memos.convergeDeclined), so a deploy read sees the decline where it used to see a second sigterm."""
+    _CONVERGE_DECLINED[0] += 1
+    _audit_restart_request("main-converge-declined", tag=kind, why="shutting-down", phase=phase, sha=sha)
+    if phase == "before-pull":
+        _converge_say("main is at %s but this kernel is leaving: no pull, no restart asked; the next kernel converges on its own"
+                      % (sha or "?")[:8])
+    else:
+        _converge_say("main converged on disk while this kernel was leaving: no restart asked; the successor's own answer is checked against the disk")
+    return True
+
+
 def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target=""):
     """Converge on newest main: advance the checkout (fast-forward only; a DIRTY shared tree refuses
     LOUDLY — peer sessions' uncommitted work is never discarded) and bounce every kernel through the
@@ -9702,6 +9724,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
     Returns True when a converge ran and succeeded (the in-place rebuild, or the restart requested of the
     manager) and False on every refusal, so the caller's crash-hold clear keys on the outcome and not on the
     return (the follow-up review's second round)."""
+    if _TERMINATING[0]:                               # this kernel is already leaving (the manager's SIGTERM landed): its
+        return _converge_declined_shutting_down(kind, "before-pull", target)   #  successor converges on its own; no pull, no request
     if kind == "pull":
         remote = _release_remote()
         target = _sha8(target)
@@ -9793,6 +9817,9 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
         if not ok:
             _sync_notice("pre-restart bundle rebuild failed (%s) — restarting anyway; the new "
                          "kernel rebuilds at boot" % err, ok=False)
+    if _TERMINATING[0]:                               # the SIGTERM landed while the pull ran (the 2026-09-15 deploy: a peer's push
+        return _converge_declined_shutting_down(kind, "after-pull", _checkout_sha())   #  and this converge raced; the request killed
+    #                                                                                     the two-second-old successor)
     if manager_port is _PORT_FROM_ENV:
         manager_port = os.environ.get("ROMP_MANAGER_PORT")
     try:
@@ -30893,7 +30920,20 @@ _goals_snap_lock = threading.Lock()
 # is the pass's failure, not the version's, so the next pass reads the file again, as every pass did
 # before the memo. Entries for paths gone from the directory are evicted at the next pass, and the
 # compaction sweep after each pass evicts the entries of stores no discovered session owns
-# (_goals_memo_evict_unowned), so the resident set is bounded by the live board.
+# (_goals_memo_evict_unowned), so the resident set is bounded by the live board. THE SWEEP'S RULING IS
+# ALSO THE PASS'S SKIP LIST (review find, 2026-09-15): the sids it evicted as unowned, while their files
+# stay in the directory and no discovered session takes them up again, sit in _goals_memo_unowned, and
+# the pass steps over their files before the stat and the open. Without that the two fought forever: the
+# directory keeps the stores of sessions gone past the discover window and of old transcript episodes
+# (49 files on one installation, 22 owned, 27 orphans holding 7 MB), the pass decoded the 27 as misses,
+# the sweep evicted them again (GET /perf memos.pass read hit 202, miss 582, evict 390; 109 store opens
+# and 68 MB read per 5 s with no mtime moving), for stores nothing rendered or judged reads. The owner
+# list is the sweep's: the discovered sessions (the ones the tiers judge) and the live ones (the ones the
+# feed renders, inside the discover window or not), so nothing rendered or judged is ruled out; what the
+# ruling lags is one sweep: a session that revives or re-enters the window between a sweep and the next
+# pass is read live for that pass (_feed_goals serves a sid absent from the snapshot live), the judges'
+# mid-pass writes showing on its card until the next sweep that runs lifts the ruling (none runs with Task
+# tracking off, and a discover that raises neither rules nor lifts: the ruling then stands as it is).
 # WHAT THE KEY RESTS ON: st_mtime_ns moving between publishes, not the inode. Inode numbers recycle
 # (on ext4, consecutive tmp+rename publishes of one path alternate between two numbers, so the third
 # version can sit on the first's inode), and equal sizes are common (a digit bump, a same-length
@@ -30905,9 +30945,14 @@ _goals_snap_lock = threading.Lock()
 # earlier parse (a stale card until the store's next publish, never a wrong write).
 _goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
-# Bare `+= 1` increments with one writer per key: hit/miss/fail/evict are written only by the producer thread
+# Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
-_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0}   # read by tests and GET /perf (memos.pass)
+_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
+# The sweep's skip list (the memo note above): the sids _goals_memo_evict_unowned ruled unowned whose stores are
+# still in the directory. That function rebuilds it whole on the producer thread, the memo's one writer, and
+# rebinds the name (a swap, never a mutation, as the memo); _begin_goals_pass reads it on the same thread, and
+# GET /perf reads its length (memos.pass unowned).
+_goals_memo_unowned = set()
 
 
 def _goals_memo_decode(data):
@@ -30924,22 +30969,50 @@ def _goals_memo_report():
     out = dict(_goals_memo_stats)
     out["entries"] = len(memo)
     out["bytes"] = sum(k[2] for k, v in memo.values() if v is not _GOALS_MEMO_BAD)
+    out["unowned"] = len(_goals_memo_unowned)          # the stores the next pass steps over (the sweep's ruling)
     return out
 
 
 def _goals_memo_evict_unowned(owned):
-    """Drop the entries of stores no session in `owned` (the discover set's sids) holds. The memo had no
-    cap: every store the directory held stayed decoded in memory between passes, tens of MB on a large
-    board (review find, 2026-09-08). The compaction sweep calls this after the tiers, on the producer
-    thread, the memo's one writer. The price is one decode at the next pass for such a store the pass
-    still lists (what every pass paid before the memo); the stores a discovered session owns keep their
-    entries. A swap, never an in-place mutation: a /perf reader may be iterating the old dict."""
+    """Drop the entries of stores no session in `owned` (the sweep's owner list: the discovered sessions and
+    the live ones) holds, and rule their sids out of the next pass. The memo had no cap: every store the directory held stayed decoded in memory
+    between passes, tens of MB on a large board (review find, 2026-09-08). The compaction sweep calls this
+    after the tiers, on the producer thread, the memo's one writer; the stores an owner holds keep their
+    entries.
+
+    The first version only evicted, and took the price to be one decode at the next pass for such a store
+    the pass still lists. On a real installation it is every pass's decode: the directory keeps the stores
+    of sessions gone past the discover window and of old transcript episodes (49 files, 22 owned, 27
+    orphans of 7 MB together, on one kernel), so every pass decoded the 27 as misses and every sweep
+    evicted them again, forever (GET /perf memos.pass read hit 202, miss 582, evict 390; 109 store opens
+    and 68 MB read per 5 s with no mtime moving), for stores nothing rendered or judged reads: `owned` is
+    the discovered sessions and the live ones together (_compact_goal_stores), the tiers' list and the
+    feed's, and _feed_goals reads a sid absent from the snapshot live (review find, 2026-09-15). So the
+    ruling is kept: _goals_memo_unowned is rebuilt here as the sids evicted now or by an
+    earlier call, minus `owned` (a session owned again is decoded at the next pass) and minus the
+    sids whose file has left the directory (bounded by the files present, never by the sids a process has
+    seen), and _begin_goals_pass steps over those files before the stat and the open. The pass never asks
+    discover itself: the sweep holds the owner list, and the pass stays independent of the walk; so the
+    ruling lags the tiers by one sweep, and a session that revives or re-enters the window between a sweep
+    and the next pass is read live for that one pass, the judges' writes showing on its card until the next
+    sweep that RUNS lifts the ruling: none runs with Task tracking off, and a discover that raises neither
+    rules nor lifts, so the ruling then stands as it is (a session merely idle past the window is live, so
+    not ruled while liveness reads). A swap,
+    never an in-place mutation, for the memo and the set alike: a /perf reader may be iterating the old
+    dict, and the pass reads the set it took at its start."""
+    global _goals_memo_unowned
     memo = _goals_memo[0]
     kept = {path: ent for path, ent in memo.items() if os.path.basename(path)[:-5] in owned}
     gone = len(memo) - len(kept)
     if gone:
         _goals_memo[0] = kept
         _goals_memo_stats["evict"] += gone
+    try:
+        present = {e.name[:-5] for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()}
+    except OSError:
+        present = set()                                # no directory: no store for the pass to step over
+    evicted = {os.path.basename(path)[:-5] for path in memo.keys() - kept.keys()}
+    _goals_memo_unowned = (_goals_memo_unowned | evicted).difference(owned) & present
     return gone
 
 
@@ -30966,19 +31039,29 @@ def _begin_goals_pass():
     such. Any race the other way (content newer than its key) only costs one extra decode next pass;
     it can never pin a stale parse, because the next stat sees a moved key. The one way a stale parse
     CAN pin is the coarse-timestamp blind spot in the memo note above (equal size, recycled inode, same
-    clock tick); on a multigrain-timestamp kernel it does not occur."""
+    clock tick); on a multigrain-timestamp kernel it does not occur.
+
+    A store the compaction sweep ruled unowned (_goals_memo_unowned: no discovered and no live session
+    holds it, and its file is still here) is stepped over before its stat, so it gets neither a memo entry nor a snapshot
+    entry, and _feed_goals reads it live should anything ask; before that the pass decoded every such
+    store as a miss and the sweep evicted it again, pass after pass (review find, 2026-09-15). The pass
+    never asks discover: the sweep's ruling is what it reads, one sweep behind the tiers' own list."""
     # ui/webview/feed-move-ack.test.ts pins the next line's comment text ("stamped BEFORE the reads").
     at = time.time()          # stamped BEFORE the reads and the stats that gate them: a write racing this loop
     snap = {}                 # must count as AFTER them, so it is replayed onto the snapshot, not lost to the read order
     prev = _goals_memo[0]
+    unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
-    hit = miss = fail = 0
+    hit = miss = fail = skip = 0
     try:
         entries = [e for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()]
     except OSError:
         entries = []
     for ent in entries:
         path, sid = ent.path, ent.name[:-5]
+        if sid in unowned:
+            skip += 1                                  # ruled unowned by the last sweep: no stat, no open, no
+            continue                                   # entry; the feed reads it live if asked (_feed_goals)
         try:
             st = ent.stat()
             key = (st.st_ino, st.st_mtime_ns, st.st_size)
@@ -31014,6 +31097,7 @@ def _begin_goals_pass():
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
     _goals_memo_stats["fail"] += fail
+    _goals_memo_stats["skip"] += skip
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
     with _goals_snap_lock:
         _goals_snap[0] = snap
@@ -31032,7 +31116,9 @@ def _end_goals_pass():
 def _feed_goals(sid):
     """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
     never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
-    snapshot → live (it has no prior state to flicker from). See the _goals_snap note above.
+    snapshot → live (it has no prior state to flicker from); so is a sid the pass stepped over because the
+    compaction sweep ruled its store unowned (no discovered and no live session held it at the sweep: the
+    pass took no copy, and a consumer that asks anyway gets the live store, 2026-09-15). See the _goals_snap note above.
 
     USER WRITES PUNCH THROUGH (the user 2026-07-21): a gesture recorded since this snapshot was taken is
     replayed onto it from the override journal — the same durable record load_goals replays, so the user's
@@ -37854,9 +37940,20 @@ def _compact_goal_stores():
         # owns: none has a cap (review find, 2026-09-08, on the first two; the writer loader's parse memo
         # of 2026-09-15 follows them, and this sweep is what fills it with every store the directory
         # holds). discover is cached behind the transcript directory's fingerprint, so this is the tiers'
-        # own list, not a second walk. A discover that raises evicts nothing: with no owner list there is
-        # no unowned.
+        # own list, not a second walk. A discover that raises evicts nothing and lifts nothing: with no
+        # owner list the pass memo's standing ruling stays as it is.
         owned = {f for f, _p, _a, _n in jd.discover(int(time.time()))}
+        # ...plus every LIVE session, inside that window or not: the feed renders a live session whatever
+        # its transcript's age (_alive_sessions resolves one past the 48 h set through the wide walk), and
+        # the pass memo's ruling below steps over an unowned store's file, so a live session ruled out here
+        # would be read live on every build of every pass (review find on the ruling, 2026-09-15). The
+        # notified-cards bound below unions the same map for the same reason. One owner list, four
+        # consumers: the two judge memos also stop re-parsing such a session's store after every sweep. A
+        # liveness read that raises leaves the discover set as the owner list, said, as before the union.
+        try:
+            owned |= set(_live_map())
+        except Exception:
+            sys.stderr.write("compact: live map unreadable (the discover set alone owns): %s\n" % traceback.format_exc())
         jd._shared_evict_unowned(owned)
         jd._raw_store_evict_unowned(owned)
         _goals_memo_evict_unowned(owned)
@@ -41178,6 +41275,18 @@ SPEND_GUARD_MEMO_SLACK_S = 60       # a file's window rows are scanned this much
 #                                     memo serves the next cycles' (later) windows without a re-scan
 SPEND_GUARD_LATCH_MAX = 1000        # latch entries kept for sessions no longer live (the oldest go first)
 _SPEND_GUARD = {}                   # sid -> {"over": bool, "t": the crossing (or clearing) epoch, "rate": $/h then}
+_SPEND_CAN_PREV = {}                # sid -> whether the session could spend on the last pass (plans/spend-guard-events.md: the edge
+#                                     from spending to idle is statted once more, so the files a turn wrote as it ended are read)
+
+
+def _spend_can_spend(tm):
+    """Whether a session can spend now (plans/spend-guard-events.md rule 1): its live row says working, or its backend
+    reports a live subagent or a background task for it (a background agent writes its transcript under the tree while
+    the parent's row stands idle). Both sets ride the backend snapshot's row (`subagents`, `bgTasks`), filled by the
+    SubagentStart/Stop hooks and the task lifecycle stream on the direct road and through the host's relay of the same
+    frames on the host-attached road. An absent row (a dormant session) cannot spend."""
+    tm = tm or {}
+    return tm.get("state") == "working" or bool(tm.get("subagents")) or bool(tm.get("bgTasks"))
 _SPEND_GUARD_SEEDED = [False]       # the latch was read back from the ledger once this kernel life
 _SPEND_ROWS_CACHE = {}              # file -> ((mtime, size, base), floor, [(t, usd), ...], last use): the window rows, memoized on the stamp
 SPEND_GUARD_ROWS_CACHE_MAX = 4000   # window-row memo entries kept; over it the least recently used go (a kernel life sees
@@ -41188,7 +41297,7 @@ SPEND_GUARD_RESTAT_PER_CYCLE = 400  # after a memo LOAD every file is statted on
 #                                     no directory's mtime, so only the file's stat finds it), spread at most this many per cycle: a
 #                                     warm stat is about 5 us (the largest tree's 2,581 files listed in 15 ms), so a cycle carries
 #                                     about 2 ms and that tree is whole again within seven cycles, well inside the 30 s rescan bound
-_SPEND_TREE_STATS = {"dirStats": 0, "fileStats": 0, "entryStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0,
+_SPEND_TREE_STATS = {"served": 0, "dirStats": 0, "fileStats": 0, "entryStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0,
                      "swept": 0, "dropped": 0, "dumpSkipped": 0, "evicted": 0, "writeFailed": 0}    # the guard's tree reads, cumulative (GET /perf memos.spendTree; `romp perf` reads two snapshots as
 #                                     rates): a boot read shows one stat per directory, the spread file re-stat and no listing when the
 #                                     persisted memo stood; entryStats are the per-entry stats a listing performs (one per DirEntry)
@@ -41445,7 +41554,7 @@ def _spend_tree_list_dir(d, m, known):
             continue
 
 
-def _spend_window_files(leaf, since, now=None):
+def _spend_window_files(leaf, since, now=None, stat=True):
     """The leaf transcript and every agent transcript beside it that changed at or after `since` (Task agents at the top
     of <sid>/subagents/, Workflow agents under workflows/wf_<id>/, the recursive tree the review asked for), from a memo
     of the session's tree rather than a walk per call (the round-two review's MEDIUM: the walk ran per live session on
@@ -41457,7 +41566,12 @@ def _spend_window_files(leaf, since, now=None):
     `since`: a file that may still be growing is never read stale), and the COLD ones once per SPEND_GUARD_TREE_RESCAN_S,
     so an agent that wakes after a long tool call is seen within that bound, a twentieth of the window. The first call
     lists the tree whole, or loads the persisted memo (_spend_tree_load: the listings saved, one stat per file spread
-    over the cycles that follow). Steady state per cycle: one stat per directory plus one per hot file."""
+    over the cycles that follow). Steady state per cycle: one stat per directory plus one per hot file.
+    `stat` False (plans/spend-guard-events.md: the session's row is idle and its backend reports nothing running) serves the
+    standing list from the memo's own mtimes with no stat at all, once the memo has been statted at least once (a loaded
+    memo's spread re-stat must drain first: the previous kernel's stats are not trusted until every file was seen once)
+    and while the floor holds (SPEND_GUARD_TREE_RESCAN_S since the last stat, the bound on the memo's trust); `served`
+    under memos.spendTree counts those passes."""
     now = time.time() if now is None else now
     key = str(leaf)
     base, ext = os.path.splitext(key)
@@ -41483,6 +41597,11 @@ def _spend_window_files(leaf, since, now=None):
             for k in sorted(_SPEND_TREE_CACHE, key=lambda k: _SPEND_TREE_CACHE[k]["seen"])[:len(_SPEND_TREE_CACHE) - SPEND_GUARD_LATCH_MAX]:
                 _SPEND_TREE_CACHE.pop(k, None)
     m["seen"] = now
+    if not fresh and not stat and "restat" not in m and now - m.get("lastStat", 0.0) < SPEND_GUARD_TREE_RESCAN_S:
+        _SPEND_TREE_STATS["served"] += 1                 # idle and inside the floor: the standing list, no stat (rule 1)
+        floor = since - SPEND_GUARD_MEMO_SLACK_S
+        return [key] + [p for p, mt in m["files"].items() if mt >= floor]
+    m["lastStat"] = now                                  # the stat road: the floor counts from here
     if not fresh:
         for d, mt in list(m["dirs"].items()):
             try:
@@ -41599,14 +41718,14 @@ def _spend_file_rows(f, since, prices, dearest):
     return [r for r in rows if r[0] >= since]
 
 
-def _spend_window_usd(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None):
+def _spend_window_usd(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None, stat=True):
     """Dollars the session spent in the last `window_s` seconds: the leaf's and its agent files' rows in the window
     (_spend_file_rows), priced by `prices` (the merged table by default, without the feed refresh)."""
     if prices is None:
         prices = _model_prices(int(now), refresh=False)   # never a network fetch from the pusher's path
     dearest = max(prices.values(), key=lambda p: float(p.get("out") or 0)) if prices else None
     since = now - window_s
-    return sum(c for f in _spend_window_files(leaf, since, now) for _t, c in _spend_file_rows(f, since, prices, dearest))
+    return sum(c for f in _spend_window_files(leaf, since, now, stat=stat) for _t, c in _spend_file_rows(f, since, prices, dearest))
 
 
 def _spend_guard_seed():
@@ -41639,9 +41758,9 @@ def _spend_guard_seed():
                                        "seeded": True}
 
 
-def _spend_rate_usd_per_hour(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None):
-    """The session's spend over the window, scaled to an hour."""
-    return _spend_window_usd(leaf, now, window_s, prices) * 3600.0 / float(window_s)
+def _spend_rate_usd_per_hour(leaf, now, window_s=SPEND_GUARD_WINDOW_S, prices=None, stat=True):
+    """The session's spend over the window, scaled to an hour (`stat` False: from the memo, see _spend_window_files)."""
+    return _spend_window_usd(leaf, now, window_s, prices, stat=stat) * 3600.0 / float(window_s)
 
 
 def _usd_words(x):
@@ -41785,8 +41904,12 @@ def _spend_guard_tick(now, live_map, sessions=None, be=None, clients=None, price
             continue
         live.add(sid)
         live_paths.add(str(path))
+        can = _spend_can_spend((live_map or {}).get(sid))              # rule 1: statted while the session can spend, or on the edge
+        dirty = getattr(_live_scope, "files_dirty", None)             #  after it stopped, or when the nudge prelude's observers marked
+        stat = can or _SPEND_CAN_PREV.get(sid, True) or bool(dirty and (dirty[1] or sid in dirty[0]))   #  its files (a transcript
+        _SPEND_CAN_PREV[sid] = can                                    #  under the tree moved); else served from the memo within the floor
         try:
-            rate = _spend_rate_usd_per_hour(path, now, prices=prices)
+            rate = _spend_rate_usd_per_hour(path, now, prices=prices, stat=stat)
         except Exception:
             sys.stderr.write("spend-guard rate (%s): %s\n" % (sid[:8], traceback.format_exc()))
             continue
@@ -41802,6 +41925,8 @@ def _spend_guard_tick(now, live_map, sessions=None, be=None, clients=None, price
     if len(_SPEND_GUARD) > SPEND_GUARD_LATCH_MAX:
         for sid in sorted((k for k in _SPEND_GUARD if k not in live), key=lambda k: _SPEND_GUARD[k].get("t") or 0)[:len(_SPEND_GUARD) - SPEND_GUARD_LATCH_MAX]:
             _SPEND_GUARD.pop(sid, None)
+    for k in [k for k in _SPEND_CAN_PREV if k not in live]:
+        _SPEND_CAN_PREV.pop(k, None)
     _spend_tree_memo_prune(live_paths)
 
 
@@ -45286,6 +45411,28 @@ def _note_ws_open(client, reconnect=False, now=None):
             print("[client-diag] could not file a wsopen row (%s): from here on an empty client-diag.jsonl is not a record of no page" % e,
                   file=sys.stderr)
         return False
+
+
+def _note_history_reply(client, sid, mtype, reply, nbytes, now=None, sent=True):
+    """One client-diag row per history reply (loadTurns/loadOlder/loadAround/loadNewer, proto-2 or the legacy loadOlder
+    arm) the kernel serves to ANY client (2026-09-15). The kernel kept no per-client record of a history round trip, so a
+    scroll-back that stalls could not be read from the SERVING kernel: whether the ask arrived, over what span, and what
+    was answered (events, bytes) or refused. The row names the client's cid and kind (page or relay, the only two
+    _dial_kind assigns) so a relay client's asks are told from a local page's, the reply's turn span, its event count and
+    wire bytes, whether it was the head, empty (missing) or a fault (refused, with the reason), and whether the reply
+    actually left over the wire (sent: a send that raised files sent=False, so an ask that arrived and failed to leave is
+    told from one that never arrived). Diagnostic only, no behaviour change; the file's own failure is never the reply's
+    and is swallowed (the wsopen row carries the once-per-kernel sink notice)."""
+    try:
+        now = time.time() if now is None else now
+        data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "type": mtype,
+                "span": reply.get("span"), "events": len(reply.get("events") or []), "bytes": int(nbytes),
+                "head": bool(reply.get("head")), "missing": bool(reply.get("missing")),
+                "refused": bool(reply.get("fault")), "reason": reply.get("error"), "sent": bool(sent)}
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "historyReply",
+                                                                        "data": data}) + "\n")
+    except Exception:
+        pass
 
 
 def _note_chat_withheld_at_close(client, now=None):
@@ -51557,7 +51704,8 @@ def _notify_prev_forget_gone(owned):
     """The compaction sweep's bound on the snapshot (review find on the persist, 2026-09-10): forget, in
     memory and on disk, every remembered card whose session is GONE for good, and drop its bell overrides
     with it. Gone means what it means for session-order.json (_gc_session_order): neither alive, nor with
-    a transcript still in the discover window (`owned`, the sweep's own discover set), nor a dead tab the
+    a transcript still in the discover window (`owned`, the sweep's owner list: the discovered sessions
+    and the live ones), nor a dead tab the
     user kept open. The build forgets a card only when its session RENDERS without it, and a session
     gone for good never renders again: its worktree deleted, never revived, its card cleared from the
     dashboard while it was dead (a clear reads the goal store, not the session). So the build alone kept
@@ -53224,21 +53372,10 @@ def _tiers_may_start(tracking=None):
     return bool(tracking) and bool(_live_map()) and not _retry_paused_on()
 
 
-def _run_tier(fn):
-    """Run one judge tier (run_index / run_triage) in its own thread, logging a crash instead of letting
-    the thread die silently (the per-session futures inside already swallow + log their own errors).
-    The thread's own CPU over the run goes to /perf's judge.cpu_ms_sum; the per-session workers the
-    tier runs in judge.py's pools account for theirs there (judge_worker_cpu_ms)."""
-    _c0 = time.thread_time()
-    _prev = getattr(_STAGE_TL, "name", None)
-    _set_stage("judge." + threading.current_thread().name)   # the tier's reads, builds and hydrations count under judge.<tier> (T401 (5a))
-    try:
-        fn()
-    except Exception:
-        sys.stderr.write("producer tier: %s\n" % traceback.format_exc())
-    finally:
-        _set_stage(_prev)
-        _PERF_STATS.judge_cpu(time.thread_time() - _c0)
+def _tier_started(name):
+    """run_pass's before_tier in the kernel: one tier thread started, counted under /perf judge.tierStarts at its START (the
+    lab's proof that the switch off starts nothing reads the counter mid-pass too; round three of the judge child)."""
+    _PERF_STATS.judge_tiers(1)
 
 
 @_stage_marked("producer")                                # the tiers' driver: its own parses count under it (T401 (5a))
@@ -53256,7 +53393,6 @@ def _producer():
             _record_suspend(_iv)                        # → the timeline closes turns left open across it
         _prev_wall, _prev_mono = _nw, _nm
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
-        _own_frame = False       # set once the pass frame opens; the finally below can then never leak it
         _t_pass = time.monotonic()
         try:
             # Two tiers, run in PARALLEL (the user 2026-06-17) — they share no store and triage never
@@ -53269,12 +53405,7 @@ def _producer():
             # hits (jd PCACHE) and each judge only makes an LLM call when it has real new work (an unplaced
             # segment, an uncaptioned unit, a fresh completion) — so an idle pass costs filesystem stats, not
             # model calls. (_producer_sig stays available but no longer gates triage.)
-            tiers = []
             tracking = _task_tracking_on()             # the master switch (T404): off, no tier starts, so no kernel-initiated model call
-            if _tiers_may_start(tracking):
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
-                _PERF_STATS.judge_tiers(len(tiers))    # /perf judge.tierStarts: the lab's proof that off starts nothing
             try:                                       # /clear boundaries FIRST (before the snapshot + tiers), so
                 _episode_boundary_tick(time.time())    # this same pass's planner/closer/nudge see a settled store
             except Exception:                          # instead of carrying dead cards into the fresh conversation
@@ -53283,14 +53414,13 @@ def _producer():
                                                        # pre-pass look; later passes anchor on the previous look
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
-            _own_frame = jd.begin_pass_frame()         # ONE evidence frame for BOTH tiers and their worker pools:
-                                                       # every judge stage this cycle sees the same frozen world
-                                                       # (the user 2026-07-21); the join below ends it
-            for t in tiers:
-                t.start()
-            for t in tiers:                            # barrier: both tiers finish before the next wake
-                t.join()
-            jd.end_pass_frame(_own_frame)              # evidence unfreezes; the next cycle pins a fresh frame
+            res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)   # THE pass body, shared with the serve
+                                                       # child (judge.py run_pass, stage three round two): both tiers in parallel
+                                                       # under ONE evidence frame (the user 2026-07-21), the barrier, the CPU
+                                                       # accounting, the frame ended in its finally; the gate's three inputs are
+                                                       # read HERE; each tier counts under /perf judge.tierStarts as it STARTS
+                                                       # (_tier_started), so a read mid-pass sees the running tiers (round three)
+            _PERF_STATS.judge_cpu(res["tierCpuS"])       # the tier threads' own CPU; the pool workers account theirs in judge.py
             try:                                       # AFTER the join → single writer: archive newly-cleared
                 moved = _compact_goal_stores() if tracking else 0   # cards out of the live goal stores (keeps build_feed flat); off, the stores rest (T404)
                 if moved:                              # the first pass migrates the whole backlog of cleared nodes.
@@ -53322,7 +53452,6 @@ def _producer():
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
             _end_goals_pass()      # safety net: never leave a pass's snapshot stuck if the pass raised mid-flight
-            jd.end_pass_frame(_own_frame)   # …nor the evidence frame (idempotent with the normal-path end above)
             _PERF_STATS.judge_pass(time.monotonic() - _t_pass)
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
         # instead of waiting out the backstop. The 3s is only a BACKSTOP — for changes we don't get poked
@@ -61945,8 +62074,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True, "id": fsid, "name": nm}),
                                   "application/json")
             if u.path == "/rename":
-                # Headless rename (`romp rename`, the user 2026-08-23 via the SynthProbe fleet
-                # restructuring): the renameSession WS op as a one-shot POST, the exact sibling of
+                # Headless rename (`romp rename`, the user 2026-08-23, restructuring another project's
+                # sessions): the renameSession WS op as a one-shot POST, the exact sibling of
                 # /fork — which exists precisely because hand-driving a WS op with the dashboard
                 # token is surgery nobody should repeat. Body: {"target": <live name or sid>,
                 # "name": <new-name>}. Sessions are uuid-keyed with the name as a label, so a rename
@@ -62735,13 +62864,19 @@ class Handler(BaseHTTPRequestHandler):
                 if reply is None:                         # no session or no build to answer from (T402): say so, never silence
                     reply = _fault("no session to answer from")
                 if reply is not None:
+                    _sent = False
                     with _client_lock(client):
                         base = reply.pop("_base", None)
                         if isinstance(base, dict) and base.get("first"):   # the tail run's first edge advances (T386 stage 2); the last stands
                             old = client.get("echat", {}).get(sid)
                             if isinstance(old, dict):
                                 client.setdefault("echat", {})[sid] = {"first": base["first"], "last": old.get("last")}
-                        client["send"](json.dumps(reply))
+                        _wire = json.dumps(reply)
+                        try:
+                            client["send"](_wire); _sent = True
+                        except Exception:
+                            sys.stderr.write("%s: %s\n" % (msg["type"], traceback.format_exc()))   # the send failed; logged as before, and the diag row below records sent=False
+                    _note_history_reply(client, sid, msg["type"], reply, len(_wire), sent=_sent)   # one diag row per history reply, sent=False when the send raised (2026-09-15)
             except Exception:
                 sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))
             return
@@ -62769,13 +62904,18 @@ class Handler(BaseHTTPRequestHandler):
                         reply = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "no build to answer from"}
                 else:
                     reply = {"type": "chatHead", "id": sid, "from": 0, "before": before, "events": []}   # nothing older: the head
-                client["send"](json.dumps(reply))
+                _wire = json.dumps(reply)
+                client["send"](_wire)
+                _note_history_reply(client, sid, "loadOlder", reply, len(_wire), sent=True)   # the legacy scroll-back arm files a diag row too (2026-09-15)
             except Exception as e:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+                _fault = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}
+                _fw = json.dumps(_fault); _fsent = False
                 try:
-                    client["send"](json.dumps({"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}))
+                    client["send"](_fw); _fsent = True
                 except Exception:
                     pass
+                _note_history_reply(client, sid, "loadOlder", _fault, len(_fw), sent=_fsent)   # the fault this arm sends is a row too, sent=False if even it failed (2026-09-15)
             return
         if msg and msg.get("type") == "loadEpisode" and msg.get("id"):
             # The "Conversation cleared" card was expanded → ship the pre-clear episode's events (a one-shot
