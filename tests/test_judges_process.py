@@ -295,9 +295,9 @@ class FailureRoads(_Child):
         km = self.km
         self._on()
         self._pass()
-        child = km._JUDGE_CHILD
-        proc = child.proc
-        self.assertIsNotNone(proc)
+        child = getattr(km, "_JUDGE_CHILD", None)
+        proc = getattr(child, "proc", None)
+        self.assertIsNotNone(proc, "a child runs after a pass on the child road (the base has none)")
         rec = self.jd.STATE / "judge-child.json"
         self.assertTrue(rec.exists(), "the pid record is written at the spawn")
         self.assertEqual(json.loads(rec.read_text())["parent"], os.getpid())
@@ -317,12 +317,17 @@ class FailureRoads(_Child):
         gone = subprocess.Popen(["true"]); gone.wait(); dead = gone.pid   # a pid nothing runs under any more: the "kernel" that left it
         try:
             (self.jd.STATE / "judge-child.json").write_text(json.dumps({"pid": orphan.pid, "parent": dead, "t": 1}))
-            km._JUDGE_CHILD.__init__()
+            if hasattr(km, "_JUDGE_CHILD"):
+                km._JUDGE_CHILD.__init__()
             n0 = self._judge().get("orphansSwept")
             self._pass()                                          # the first request sweeps before it spawns
-            self.assertIsNotNone(orphan.poll() if orphan.poll() is not None else orphan.wait(timeout=5), "the orphan is ended")
+            try:
+                orphan.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            self.assertIsNotNone(orphan.poll(), "the orphan is ended (the base sweeps nothing)")
             self.assertEqual((self._judge().get("orphansSwept") or 0) - (n0 or 0), 1)
-            self.assertEqual(json.loads((self.jd.STATE / "judge-child.json").read_text())["pid"], km._JUDGE_CHILD.proc.pid,
+            self.assertEqual(json.loads((self.jd.STATE / "judge-child.json").read_text())["pid"], getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None) and km._JUDGE_CHILD.proc.pid,
                              "the record now names this kernel's own child")
         finally:
             if orphan.poll() is None:
@@ -336,10 +341,12 @@ class FailureRoads(_Child):
         other.stdout.readline()
         try:
             (self.jd.STATE / "judge-child.json").write_text(json.dumps({"pid": other.pid, "parent": os.getppid(), "t": 1}))
-            km._JUDGE_CHILD.__init__()
+            if hasattr(km, "_JUDGE_CHILD"):
+                km._JUDGE_CHILD.__init__()
             self._pass()
             self.assertIsNone(other.poll(), "another live kernel's child is its own")
             self.assertEqual(self._judge().get("orphansSwept") or 0, 0)
+            self.assertIsNotNone(getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None), "and this kernel's own child was started beside it")
         finally:
             other.kill()
 
@@ -360,24 +367,24 @@ class FailureRoads(_Child):
         with km._SYNC_LOCK:
             texts = [n["text"] for n in km._SYNC_NOTICES]
         self.assertTrue(any("judges' process lost 3 passes" in t and km.JUDGES_PROCESS_FILE in t for t in texts), "said where the user looks: %r" % texts)
-        self.assertFalse(km._judges_in_child(), "the switch reads off while the latch stands")
+        self.assertFalse(getattr(km, "_judges_in_child", lambda: False)(), "the switch reads off while the latch stands")
         self._pass()
         self.assertEqual(sorted(called), ["index", "triage"], "the fourth pass runs the tiers in process")
         self.assertEqual(self._judge().get("passesLost"), 3, "and loses nothing more")
         self.switch.write_text("on \n")                            # the file written again: the latch lifts
-        self.assertTrue(km._judges_in_child())
+        self.assertTrue(getattr(km, "_judges_in_child", lambda: False)())
 
     def test_the_switch_turning_off_ends_an_idle_child_on_that_pass(self):
         km = self.km
         self._on()
         self._pass()
-        self.assertIsNotNone(km._JUDGE_CHILD.proc)
+        self.assertIsNotNone(getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None), "a child runs with the switch on")
         self.switch.unlink()
         called = []
         self.jd.run_index = lambda now=None: called.append("index")
         self.jd.run_triage = lambda now=None: called.append("triage")
         self._pass()
-        self.assertIsNone(km._JUDGE_CHILD.proc, "the child is ended on the off pass")
+        self.assertIsNone(getattr(getattr(km, "_JUDGE_CHILD", None), "proc", None), "the child is ended on the off pass")
         self.assertEqual(sorted(called), ["index", "triage"])
 
     def test_an_unreadable_switch_reads_off_and_says_so_once(self):
@@ -385,13 +392,14 @@ class FailureRoads(_Child):
         with km._SYNC_LOCK:
             del km._SYNC_NOTICES[:]
         self.switch.write_bytes(b"\xff\xfe on")                    # not UTF-8: used to raise inside the pass and skip every wake
-        self.assertFalse(km._judges_in_child()); self.assertFalse(km._judges_in_child())
+        read = getattr(km, "_judges_in_child", lambda: None)
+        self.assertFalse(read()); self.assertFalse(read())
         with km._SYNC_LOCK:
             texts = [n["text"] for n in km._SYNC_NOTICES]
         self.assertEqual(len(texts), 1, "said once: %r" % texts)
         self.assertIn("could not be read", texts[0])
         self.switch.unlink(); self.switch.mkdir()                  # a directory where the file should be: an OSError, off, said
-        self.assertFalse(km._judges_in_child())
+        self.assertFalse(read())
         self.switch.rmdir()
         with km._SYNC_LOCK:
             self.assertEqual(len(km._SYNC_NOTICES), 2)
