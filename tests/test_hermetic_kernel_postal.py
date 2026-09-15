@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every lab kernel a test starts as a PROCESS is hermetic about the postal bus (2026-09-10): its environment carries
 ROMP_POSTAL_CLIENT_ONLY=1 (the kernel's boot-time ensure then starts no bus) and its own ROMP_POSTAL_PORT (an ephemeral
-port, never the machine's fixed one) and ROMP_POSTAL_PEERS=0, the trio tests/test_ship_reship.py kernel_env gives.
+port, never the machine's fixed one) and ROMP_POSTAL_PEERS=0, the trio tests/test_ship_reship_served.py kernel_env gives.
 
 Why a guard: one served test built its kernel environment by hand without the trio. Its kernel ran the postal
 service's `ensure`, which starts the bus detached (its own session, so the kernel's death never reaches it) on the
@@ -34,7 +34,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
 
 CALL = re.compile(r"(?:subprocess\.(?:Popen|run|check_output|check_call|call)|(?<![\w.])Popen)\s*\(")
 # the kernel's path as an argv spells it: the script's name, the bare CLI (not the other bin/romp-* scripts), a path

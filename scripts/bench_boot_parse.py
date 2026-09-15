@@ -59,7 +59,7 @@ def synthetic_transcript(t0, turns, seed):
 
 
 def build_world(lab, sessions, turns, seed=1):
-    import test_ship_reship as _lab
+    import test_ship_reship_served as _lab
     state = os.path.join(lab, "xdg", "romp"); claude = os.path.join(lab, "claude"); cwd = os.path.join(lab, "proj")
     for d in ("names", "sdk", "states"):
         os.makedirs(os.path.join(state, d), exist_ok=True)

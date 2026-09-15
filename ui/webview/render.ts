@@ -13498,7 +13498,7 @@ function persistScrollForReload(): void {
 // was already empty). Their texts ride THIS tab's sessionStorage (reload-notices.ts; per tab for the scroll record's
 // reason) and the fresh page shows them again once,
 // after the loss toast. The core's synchronous hook alone writes them: a navigation of the user's own (pagehide) says
-// nothing twice, the way the loss toast fires once and not on every load (tests/test_ship_reship.py ReloadLossToast),
+// nothing twice, the way the loss toast fires once and not on every load (tests/test_ship_reship_served.py ReloadLossToast),
 // while the scroll record rides both as before.
 function persistNoticesForReload(): void {
   try { keepReloadNotices(sessionStorage, liveNotices(document.getElementById("warn-toasts"))); } catch { /* ignore */ }

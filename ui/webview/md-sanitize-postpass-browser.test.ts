@@ -14,7 +14,7 @@
 //   • An author's <style>, <form> and <button> in a message are gone, an author's id is prefixed, a checkbox written
 //     by hand is forced disabled and a click leaves it unchecked.
 //   • The registry: a pass registered twice runs once per sanitize; a second run of the fill is a no-op.
-// Skips with a stated reason when no playwright browser is installed (CI installs none; tests/test_spend_modal_headless.py
+// Skips with a stated reason when no playwright browser is installed (CI installs none; tests/test_spend_modal_headless_served.py
 // is the precedent, skipping without a playwright install). Synthetic values only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";

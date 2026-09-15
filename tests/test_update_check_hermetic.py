@@ -4,7 +4,7 @@ network (git ls-remote), and when the checkout's release is older than the newes
 banner, a fixed alert at the top of the window. On CI that banner sat over the settings panel's pills and took every
 click of the tab widgets lab (main red at the tab widgets merge), while the same lab passed on a machine whose
 checkout read newer. So: ROMP_UPDATE_CHECK=off stands the check down before any read, every lab kernel runs with it
-(tests/test_ship_reship.py kernel_env), and the driver's relaunch keeps it. Synthetic; hermetic state; no network."""
+(tests/test_ship_reship_served.py kernel_env), and the driver's relaunch keeps it. Synthetic; hermetic state; no network."""
 import os
 import tempfile
 import unittest
@@ -25,7 +25,7 @@ km = load_source("romp_kernel_update_check_hermetic", os.path.join(BIN, "romp-ke
 
 import sys  # noqa: E402
 sys.path.insert(0, HERE)
-import test_ship_reship as lab  # noqa: E402  the lab kernel environment under test
+import test_ship_reship_served as lab  # noqa: E402  the lab kernel environment under test
 
 
 class UpdateCheckSeam(unittest.TestCase):

@@ -1850,6 +1850,7 @@ def _version_info():
             # per-install: SDK sessions ask for reasoning summaries (gear checkbox). Top-level only — not
             # in the "settings" sub-dict below, whose mixed marks promise a cross-machine write this never makes
             "thinkingSummaries": _thinking_summaries_on(),
+            "wholeChatFrames": _whole_chat_frames_on(),   # the Whole chat frames switch (2026-09-15): per-install, the gear's row reads it
             "taskTracking": _mv["taskTracking"],   # the master switch (T404): the gear's row and the shell's rail read it; one snapshot with its stamp
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
@@ -8293,6 +8294,46 @@ def _set_file_editing(enabled, gt=None):
 # thinking OFF this toggle also turns adaptive thinking on (the SDK has no display-only field); the
 # sub-copy says that too, and sdk_backend logs it when a cap is present.
 THINKING_SUMMARIES_FILE = "thinking-summaries.json"   # same name sdk_backend.THINKING_SUMMARIES_FILE reads
+WHOLE_CHAT_FRAMES_FILE = "whole-chat-frames.json"     # the Whole chat frames switch (2026-09-15): every chat tab built from turn 0
+
+
+def _whole_chat_frames_on():
+    """The Whole chat frames switch (2026-09-15, the night stage one b landed): while ON, every chat tab is built from turn 0
+    for every client, protocol 2 included, as if an index client were connected (_chat_floor0_of), instead of from the
+    assembly document's cut with the region above the cut left to the page's history wire. OFF unless this install's file
+    says yes (absent, unreadable or malformed all read False); ROMP_CHAT_FLOOR0=1 seeds the file at boot when none exists.
+    Read live at every pusher cycle (a few bytes), so a flip from the gear or a WS op takes effect on the next push with no
+    restart; the flip dirties the view caches (the chat signature carries the floor, so every tab rebuilds). The reversible
+    lever for a page that cannot fill the regions above a documented tab's cut: on until the page fix lands, then off."""
+    try:
+        return bool(json.loads((jd.STATE / WHOLE_CHAT_FRAMES_FILE).read_text()).get("enabled"))
+    except Exception:
+        return False
+
+
+def _set_whole_chat_frames(enabled, gt=None):
+    """Returns the applied gesture stamp (epoch ms), or None when the gesture was its own echo, a stale `gt` stood down, or
+    the store write failed (OSError: loud on stderr, nothing applied; caught here like _set_thinking_summaries'). Read-check-
+    write under _SETTINGS_LOCK, like its siblings; an applied flip dirties the view caches and wakes the pusher, the rule
+    every kernel setting flip keeps (the feed cache and the chat tabs must not serve the old floor)."""
+    with _SETTINGS_LOCK:
+        try:
+            prev = json.loads((jd.STATE / WHOLE_CHAT_FRAMES_FILE).read_text())
+        except Exception:
+            prev = None
+        prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
+        if _gesture_echo(gt, prev_gt, isinstance(prev, dict) and bool(prev.get("enabled")) == bool(enabled)):
+            return None
+        if _setting_stale("whole-chat-frames", gt, prev_gt):
+            return None
+        stamp = gt if gt is not None else int(time.time() * 1000)
+        try:
+            _atomic_write(jd.STATE / WHOLE_CHAT_FRAMES_FILE, json.dumps({"enabled": bool(enabled), "gt": stamp}))
+        except OSError as e:
+            sys.stderr.write("setting whole-chat-frames: write failed (%s): nothing applied\n" % e)
+            return None
+    _mark_views_dirty()                                   # the floor moved for every tab: rebuild and push now
+    return stamp
 
 
 def _thinking_summaries_on():
@@ -8775,7 +8816,7 @@ def _consume_update_report(running_only=False, _tries=3):
 
 
 def _update_checks_off():
-    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env) runs none of the
+    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship_served.py kernel_env) runs none of the
     update loop's three checks. The release check reads the release remote's tags, the main-drift check the remote's
     main (git ls-remote, both), and either raises the shell's update banner over the page under test; the converge
     check reads the checkout. CI 2026-09-13: the banner sat on the settings pills and took a lab's clicks, first from the
@@ -11128,6 +11169,8 @@ _load_tick_seen()               # the previous kernel's last evaluations, if it 
 _load_intr_marks()              # and its interrupt-marks memo (T401 (3) target 3)
 try:
     em.checkpoint_sweep()       # checkpoints of files that are gone (cleared, removed sessions) leave with the boot (T323 stage 3)
+    if os.environ.get("ROMP_CHAT_FLOOR0") == "1" and not (jd.STATE / WHOLE_CHAT_FRAMES_FILE).exists():
+        _set_whole_chat_frames(True)   # the boot-time fallback SEEDS the Whole chat frames switch once; the gear owns it after
 except Exception:
     pass
 
@@ -46633,6 +46676,8 @@ def _chat_floor0_of(chat_clients, now=None):
     either, however it is stamped: _resolve_reconnect's pop stamps a reconnect=1 dial `ready` with no proto term, and the
     wait above runs out on it, and each used to drag every client to floor 0 for a socket that saw nothing (the follow-up
     after PR 1584, low 3)."""
+    if _whole_chat_frames_on():                          # the Whole chat frames switch (2026-09-15): every tab from turn 0, live
+        return True
     now = _ws_clock() if now is None else now
     return any(c.get("proto") == 1 or (c.get("proto") is None and (c.get("ready") or now - c.get("t0", now) > READY_WAIT_S))
                for c in chat_clients if c.get("handshake") is not False)
@@ -47184,6 +47229,8 @@ def _setting_kept_value(name):
         return _update_mode()
     if name == "thinking-summaries":
         return _thinking_summaries_on()
+    if name == "whole-chat-frames":
+        return _whole_chat_frames_on()
     if name == "task-tracking":
         return _task_tracking_on()
     return jd._state_str(name, "")   # the judge-tier stores are bare value files
@@ -47362,7 +47409,7 @@ def _adopt_peer_settings(host, rver):
 
 # Every gt-gated store, by the name _setting_stale is called with — the vocabulary the settingStale
 # frame and the gear's STALE_LABELS already share, so /version's settingsGt speaks the same one.
-_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "task-tracking",
+_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "task-tracking",
               "judge-model", "index-model", "judge-effort", "index-effort", "judge-concurrency",
               "distill-model", "distill-effort", "comment-model", "comment-effort", "comment-fast",
               "judge-fast", "distill-fast", "index-fast")
@@ -47378,9 +47425,10 @@ def _setting_stored_gt(name):
         return _gt_int(_auto_nudge_data().get("compactSuggestGt"))
     if name == "update-mode":
         return _update_mode_gt()
-    if name in ("file-editing", "thinking-summaries"):
+    if name in ("file-editing", "thinking-summaries", "whole-chat-frames"):
         try:
             d = json.loads((jd.STATE / (THINKING_SUMMARIES_FILE if name == "thinking-summaries"
+                                        else WHOLE_CHAT_FRAMES_FILE if name == "whole-chat-frames"
                                         else "file-editing.json")).read_text())
             return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
         except Exception:
@@ -62240,6 +62288,15 @@ class Handler(BaseHTTPRequestHandler):
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
             if _set_thinking_summaries(enabled, gt=_gesture_ms(msg)) is None:
+                _tell_stale_gesture(client, msg)
+        elif msg and msg.get("type") == "setWholeChatFrames" and msg.get("enabled") is not None:
+            # The gear's Whole chat frames switch (2026-09-15): kernel-side, PER-INSTALL like setThinkingSummaries (the
+            # floor is this kernel's build decision), gt-gated all the same; the setter dirties the views itself
+            enabled, ferr = _as_bool(msg.get("enabled"), "enabled")
+            if ferr:
+                _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
+                return
+            if _set_whole_chat_frames(enabled, gt=_gesture_ms(msg)) is None:
                 _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") == "setTaskTracking" and msg.get("enabled") is not None:
             # The gear's Task tracking master switch (T404): kernel-side, gt-gated like its siblings, a

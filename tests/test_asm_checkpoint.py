@@ -1313,6 +1313,95 @@ class SettledCut(Harness):
         self.assertEqual((modes, got), (["restore"], cold), "the next restore proves the new document: %s" % em.asm_checkpoint_stats())
 
 
+
+class VersionOldMarksRetireAtTheSweep(Harness):
+    """plans/checkpoint-mark-version-retirement.md (2026-09-15): a refusal mark belongs to the cut rule it was made under. The mark
+    is read before the document, so a mark made against a version 6 document sent its idle leaf to the cold walk at every boot
+    and the load's version check never reached it (sixteen leaves at the measurement boot after stage one b). The boot sweep
+    retires the mark of a sidecar whose `av` is below the current version: the bytes kept as .meta.retired-<stamp>, the sidecar
+    rewritten without the block, one count under removed["refusedMark:version"]; the next parse takes the version-refusal road
+    once, the settle writes the current document, and the parse after that restores equal to the cold parse."""
+    def _documented(self, name="vold"):
+        records, sent = G.SINGLE_FILE["manual_compact_detached"]
+        path = self.write(name, records(), sent=sent)
+        self.fresh(); self.parse(path)
+        self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
+        cp = em._asm_ckpt_file(path)
+        return path, cp, cp.with_name(cp.name + ".meta")
+
+    def _mark(self, path, meta, av):
+        """A sidecar rewritten by hand: the given `av` and a `refused` block at the leaf's current stat (the marked shape)."""
+        d = json.loads(meta.read_text())
+        st = em._asm_leaf_stat(path)
+        d["refused"] = {"reason": "shape", "size": st[0], "mtime": st[1]}
+        if av is None:
+            d.pop("av", None)
+        else:
+            d["av"] = av
+        meta.write_text(json.dumps(d))
+        if av != em._ASM_CKPT_V:
+            doc = _doc(path); doc["av"] = 6 if av is None else av        # the document itself is the older version too (the real shape)
+            _write_doc(path, doc)
+        self.assertTrue(em._asm_refusal_stands(path), "the mark stands for the leaf's stat")
+
+    def test_a_version_6_mark_is_retired_at_the_sweep_and_the_next_settle_writes_the_current_document(self):
+        path, cp, meta = self._documented()
+        self._mark(path, meta, 6)
+        em._ASM_CKPT_STATS["removed"] = {}; em._ASM_CKPT_STATS["fallbacks"] = {}
+        em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"refusedMark:version": 1}, em.asm_checkpoint_stats()["removed"])
+        self.assertTrue(cp.exists(), "the document itself stays")
+        side = json.loads(meta.read_text())
+        self.assertNotIn("refused", side); self.assertEqual(side["av"], 6, "the sidecar keeps its version, path, files and linked")
+        self.assertEqual(sorted(side), ["av", "files", "linked", "path"])
+        asides = sorted(meta.parent.glob(meta.name + ".retired-*"))
+        self.assertEqual(len(asides), 1, asides)
+        self.assertEqual(json.loads(asides[0].read_text())["refused"]["reason"], "shape", "the old bytes are kept beside the document")
+        self.assertFalse(em._asm_refusal_stands(path), "the mark no longer stands")
+        cold = self.cold(path)
+        self.fresh(); modes = []; got = _strip(self.parse(path, modes))
+        self.assertEqual(modes, ["full"]); self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "the version-refusal road, once")
+        self.assertEqual(got, cold)
+        self.assertTrue(self.doc(path), "the settle writes the current document: %s" % em.asm_checkpoint_stats()["skipped"])
+        self.assertEqual(_doc(path)["av"], em._ASM_CKPT_V)
+        got, modes, _n = self.restored(path)
+        self.assertEqual((modes, got), (["restore"], cold), "and the parse after that restores")
+        em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"refusedMark:version": 1, "fallback:version": 1},
+                         "nothing more to retire at the next boot; the version-6 document itself left under the load's version refusal")
+
+    def test_a_sidecar_without_a_version_is_version_old_too(self):
+        path, cp, meta = self._documented("noav")
+        self._mark(path, meta, None)
+        em._ASM_CKPT_STATS["removed"] = {}
+        em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"refusedMark:version": 1})
+        self.assertFalse(em._asm_refusal_stands(path)); self.assertNotIn("refused", json.loads(meta.read_text()))
+
+    def test_a_current_version_mark_stands_and_a_version_old_sidecar_without_a_mark_is_untouched(self):
+        path, cp, meta = self._documented("cur")
+        self._mark(path, meta, em._ASM_CKPT_V)
+        em._ASM_CKPT_STATS["removed"] = {}
+        em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {}, "a mark made under the current rule stands")
+        self.assertTrue(em._asm_refusal_stands(path)); self.assertEqual(list(meta.parent.glob(meta.name + ".retired-*")), [])
+        path2, cp2, meta2 = self._documented("oldnomark")
+        d = json.loads(meta2.read_text()); d["av"] = 6; meta2.write_text(json.dumps(d))
+        before = meta2.read_bytes()
+        em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {}, "no mark, nothing to retire")
+        self.assertEqual(meta2.read_bytes(), before, "the sidecar is untouched"); self.assertEqual(list(meta2.parent.glob(meta2.name + ".retired-*")), [])
+
+    def test_a_gone_document_leaves_with_its_retired_asides(self):
+        path, cp, meta = self._documented("gone")
+        self._mark(path, meta, 6)
+        em.checkpoint_sweep()
+        self.assertEqual(len(list(meta.parent.glob(meta.name + ".retired-*"))), 1)
+        os.unlink(path)                                                  # the transcript is gone: the sweep removes the document
+        em.checkpoint_sweep()
+        self.assertFalse(cp.exists()); self.assertFalse(meta.exists()); self.assertEqual(list(meta.parent.glob(meta.name + ".retired-*")), [])
+
+
 class HydrationAttribution(Harness):
     def test_a_shared_text_reader_is_attributed_with_its_caller(self):
         """T377: the boot's 1.06 GB of hydration read as `_unit_text`, the judges' shared text reader, which every walker calls;

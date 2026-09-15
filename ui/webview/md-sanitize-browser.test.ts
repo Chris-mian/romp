@@ -10,7 +10,7 @@
 // note through openFileView and reads the rendered DOM: styles resolved, boxes measured, elementFromPoint at the
 // close button's centre. Content wider than the column is measured too: under containment the body cannot scroll
 // to it, so an inline svg, canvas or video is capped at the column and a table scrolls sideways on its own. Skips
-// with a stated reason when no playwright browser is installed (CI installs none; tests/test_spend_modal_headless.py
+// with a stated reason when no playwright browser is installed (CI installs none; tests/test_spend_modal_headless_served.py
 // is the precedent, skipping without a playwright install). Synthetic values only: an invented note under a
 // TESTHOST path, a placeholder sid.
 import { test } from "node:test";

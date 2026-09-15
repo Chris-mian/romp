@@ -198,6 +198,13 @@ var GEAR_HTML =
   '<span><b>Thinking summaries</b>' +
   '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display. Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
   '</span></label>' +
+  // WHOLE CHAT FRAMES (2026-09-15): every chat tab built from turn 0 for every page, instead of from the saved document's cut
+  // with the history above it fetched on demand; the lever for a page that cannot fill the region above the cut. Per-install,
+  // like Thinking summaries: the floor is this kernel's build decision; the kernel reads it live at every push
+  "<label class='rs-row'><input type=checkbox id=rs-wholechat>" +
+  '<span><b>Whole chat frames</b>' +
+  '<span class=rs-sub>Build every chat tab from its first turn on every push, instead of from the saved checkpoint with the earlier turns loaded as you scroll. Costs the kernel the whole build of every tab; off is the normal setting.' +
+  '</span></label>' +
   // TAB STRIP (T415, the user 2026-09-14): the strip's gear jumps the panel here (data-section is the anchor showSection scrolls
   // the card to), a small section of the strip's own settings ABOVE Tab widgets; the tab lock (T395; a row in the gear's menu
   // since T405) is its checkbox row, the house grammar of every other row, saved through the one gear save the strip hears
@@ -375,6 +382,7 @@ function initGear(post, opts) {
     fe = document.getElementById('rs-fileedit'),
     pn = { timeline: document.getElementById('rs-pane-timeline'), fleet: document.getElementById('rs-pane-fleet'), feed: document.getElementById('rs-pane-feed') },
     ths = document.getElementById('rs-thinksum'),
+    wcf = document.getElementById('rs-wholechat'),
     tk = document.getElementById('rs-tasktrack'),
     ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
   // No default for tabWidgets (round one, HIGH): an injected empty object won over a pre-widgets store's tabCtx, so the
@@ -1016,6 +1024,8 @@ function initGear(post, opts) {
   // membership), so it neither queues for nor reaches another machine. Stamped all the same: two
   // dashboards on one kernel still race, and the kernel orders every setting by `gt`.
   if (ths) ths.addEventListener('change', function () { post({ type: 'setThinkingSummaries', enabled: ths.checked, gt: gclock.stamp('thinking-summaries') }); });
+  // Whole chat frames (2026-09-15): per-install like Thinking summaries (the LOCAL kernel's floor), not a KERNEL_SETTING; stamped
+  if (wcf) wcf.addEventListener('change', function () { post({ type: 'setWholeChatFrames', enabled: wcf.checked, gt: gclock.stamp('whole-chat-frames') }); });
   // THE TASK TRACKING SWITCH (T404): the kernel's setting (gt-gated, a KERNEL_SETTING across machines). The click POSTS and
   // nothing more: the dependent controls dress and the shell hears the flip (a taskTracking message: the rail's Outline and
   // Feed buttons and any open pane of theirs, ahead of its next /version read) on the KERNEL'S ECHO, the taskTracking frame
@@ -1470,12 +1480,13 @@ function initGear(post, opts) {
     'comment-model': 'Comment model', 'comment-effort': 'Comment effort',
     'comment-fast': 'Fast comment threads',
     'judge-fast': 'Fast mode (triage judges)', 'distill-fast': 'Fast mode (distilling judges)', 'index-fast': 'Fast mode (indexing judges)',
-    'thinking-summaries': 'Thinking summaries' };
+    'thinking-summaries': 'Thinking summaries', 'whole-chat-frames': 'Whole chat frames' };
   // store name → the message type that sets it: the whitelist for the toast's Apply anyway (a frame
   // may re-issue the one setting it names, nothing else) and the completeness pin's map
   // (gear.test.ts checks every emitter stamps through the clock under its own store name)
   var STALE_TYPE = { 'auto-nudge': 'setAutoNudge', 'compact-suggest': 'setCompactSuggest', 'task-tracking': 'setTaskTracking',
     'file-editing': 'setFileEditing', 'update-mode': 'setUpdateMode', 'thinking-summaries': 'setThinkingSummaries',
+    'whole-chat-frames': 'setWholeChatFrames',
     'judge-model': 'setJudgeModel', 'judge-effort': 'setJudgeEffort',
     'index-model': 'setIndexModel', 'index-effort': 'setIndexEffort', 'judge-concurrency': 'setJudgeConcurrency',
     'distill-model': 'setDistillModel', 'distill-effort': 'setDistillEffort',
@@ -1786,6 +1797,7 @@ function initGear(post, opts) {
       fillMixedMarks(v, rows);
     }).catch(function () { fillAutoNudge(v.autoNudge, []); fillMixedMarks(v, []); });
     if (ths) ths.checked = !!v.thinkingSummaries;   // per-install opt-in: this kernel's persisted answer is authoritative
+    if (wcf) wcf.checked = !!v.wholeChatFrames;     // the Whole chat frames switch: the same per-install rule
     if (tk) { tk.checked = v.taskTracking !== false; dressTracking(tk.checked); }   // the master switch (T404): absent reads on
     if (fe) fe.checked = !!v.fileEditing;   // the kernel's persisted opt-in is authoritative (see the viewer's consent popup)
     if (cvm) cvm.checked = !!v.conserveMemory;   // T148: the kernel's persisted conserve flag is authoritative
