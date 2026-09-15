@@ -253,6 +253,10 @@ fs.writeSync(1, "KPID:" + k2.pid + "\n");
 // that must catch the busy window: on a fast heal the first poll of the wait below found the pane idle and read no hold
 // (a CI red of 2026-09-15). The FIRST hold is kept: the chat pane's redial holds on fresh too once invisible restarts landed.
 await page.evaluate(() => { window.__probe = 1; const R = window.__rompReload; if (R) {
+  // the hold may already be announced: the pane's reopen asks /version and the core owes the restart's reload before this
+  // driver gets here (a fast relaunch), and the core announces a hold once per reason, so a wrapper installed now would hear
+  // nothing (a CI red of 2026-09-15 on two unrelated heads). The core's own record says what it waits on: read it first.
+  if (R.owed() && !R.fired() && R.waiting) window.__t272HeldWhileBusy = String(R.waiting);
   const prev = R.held; R.held = (b, o) => { if (!window.__t272HeldWhileBusy) window.__t272HeldWhileBusy = String(b); if (prev) prev(b, o); };
   R.request("restart", "forced-by-the-test"); } }).catch(() => {});
 // today (pre-fix) this wait dies: the chip pulses forever and the held send never fires.

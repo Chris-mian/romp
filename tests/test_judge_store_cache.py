@@ -617,5 +617,221 @@ class SharedStoreCache(unittest.TestCase):
         self.assertEqual(self._delta("poisoned"), 0, "none of these is a write to the shared object")
 
 
+
+class WriterParseMemo(unittest.TestCase):
+    """load_goals' parse memo (kernel/judge.py, the _RAW_STORE note above _read_store_json). The WRITER's loader
+    parsed its store file on every call: a live kernel read and parsed its goal stores about fifteen times a
+    second on the pusher thread, for stores up to 2 MB. Now one parse per file version, verified on EVERY call
+    by the file's identity (inode, mtime_ns, size) PLUS a compare of the text just read, and a FRESH object
+    per call (a pickle.loads of the memoized parse), because every caller may mutate what it gets and hand it
+    to save_goals. The override journal is replayed on every load, as before. This module's private synthetic
+    sid and a fresh state root per test (the journal lives under it)."""
+
+    def setUp(self):
+        self._saved = jd.STATE
+        self.td = tempfile.TemporaryDirectory()
+        jd._rebind_state(Path(self.td.name))         # also clears the memo
+
+    def tearDown(self):
+        jd._rebind_state(self._saved)
+        self.td.cleanup()
+
+    def _nid(self, n):
+        return "%s:g%d" % (SID, n)
+
+    def _file(self):
+        return jd.GOALDIR / (SID + ".json")
+
+    def _seed(self, text="A goal"):
+        """One working top goal, published by the real writer; returns the store path."""
+        s = {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {},
+             "placements": {}, "status": {}}
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": text}], [])
+        jd.rollup_status(s, session_closed=False)
+        jd.save_goals(SID, s)
+        return self._file()
+
+    @staticmethod
+    def _ident(path):
+        st = os.stat(path)
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+    @contextlib.contextmanager
+    def _counting(self, path):
+        """Count the parses of THIS store's text (json.loads calls whose argument is the file's text, so a
+        journal row or a settings file parsed on the way is not counted) and the reads of its path."""
+        text, real_loads, real_read = path.read_text(), json.loads, Path.read_text
+        n = {"parses": 0, "reads": 0}
+
+        def counting_loads(s, *a, **k):
+            if s == text:
+                n["parses"] += 1
+            return real_loads(s, *a, **k)
+
+        def counting_read(q, *a, **k):
+            if q == path:
+                n["reads"] += 1
+            return real_read(q, *a, **k)
+        with mock.patch.object(json, "loads", counting_loads), mock.patch.object(Path, "read_text", counting_read):
+            yield n
+
+    def test_an_unchanged_file_is_parsed_once_across_many_loads(self):
+        p = self._seed()
+        with self._counting(p) as n:
+            stores = [jd.load_goals(SID) for _ in range(5)]
+        self.assertEqual(n["parses"], 1, "five loads of an unchanged file: one parse (it was five)")
+        self.assertEqual(n["reads"], 5, "...and five reads: a hit is proved by the text, not by the stat alone")
+        self.assertEqual(len({id(s) for s in stores}), 5, "five objects")
+        for s in stores[1:]:
+            self.assertEqual(_norm(s), _norm(stores[0]), "every load answers the file's content")
+            self.assertIsInstance(s["nodes"][self._nid(1)], jd.GuardedNode, "guarded like any load")
+            self.assertEqual(s["_baseRev"], stores[0]["_baseRev"], "and carries the CAS base")
+
+    def test_a_publish_through_the_writer_moves_the_identity_and_is_read_at_once(self):
+        p = self._seed()
+        a = jd.load_goals(SID)                       # the fill
+        before, s0 = self._ident(p), jd.raw_store_stats()
+        jd.apply_plan(a, "s2", T0 + 10, [{"do": "mint", "why": "y", "text": "A second goal"}], [])
+        jd.rollup_status(a, session_closed=False)
+        jd.save_goals(SID, a)                        # the real writer: a fresh temp renamed over the path
+        after = self._ident(p)
+        self.assertNotEqual(before[0], after[0], "save_goals publishes a new inode, never a rewrite in place")
+        with self._counting(p) as n:
+            b = jd.load_goals(SID)
+        self.assertEqual(n["parses"], 1, "a moved identity is a miss: one parse")
+        self.assertEqual(len(b["nodes"]), 2, "the publish is read at once")
+        self.assertEqual(jd.raw_store_stats()["miss"] - s0["miss"], 1)
+        self.assertEqual(_norm(jd.load_goals(SID)), _norm(b), "...and memoized under the new identity")
+
+    def test_an_equal_size_rewrite_in_place_inside_one_mtime_tick_is_read(self):
+        """The blind spot of a stat-only key, closed by the text compare: same inode, same size, the same
+        mtime_ns (forced with utime, what a coarse-timestamp kernel leaves), other bytes. No writer of romp's
+        does this (they rename a temp), but a fixture rewriting a store in place does, and so does an
+        equal-size republish onto a recycled inode inside one clock tick; the load answers the file's content."""
+        p = self._seed("A goal")
+        jd.load_goals(SID)                           # the fill
+        st, s0 = os.stat(p), jd.raw_store_stats()
+        text = p.read_text()
+        self.assertIn("A goal", text)
+        p.write_text(text.replace("A goal", "B goal"))                 # in place: same inode, same size
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))               # the same tick
+        self.assertEqual(self._ident(p), (st.st_ino, st.st_mtime_ns, st.st_size), "the identity did not move")
+        b = jd.load_goals(SID)
+        self.assertEqual(b["nodes"][self._nid(1)]["text"], "B goal", "the file's content, not the earlier parse")
+        self.assertEqual(jd.raw_store_stats()["compare_miss"] - s0["compare_miss"], 1)
+        self.assertEqual(jd.load_goals(SID)["nodes"][self._nid(1)]["text"], "B goal", "...and the entry followed")
+
+    def test_two_loads_are_distinct_objects_and_a_mutation_never_leaks(self):
+        """load_goals is the writer's loader: load, edit, save is the normal pattern, so a memo that handed out
+        one shared object would let one caller's edit surface in another's store, or in the memo itself."""
+        self._seed()
+        a = jd.load_goals(SID)                       # the fill: the parse itself
+        b = jd.load_goals(SID)                       # a hit: the memo's copy
+        c = jd.load_goals(SID)                       # another
+        nid = self._nid(1)
+        self.assertIsNot(a, b)
+        self.assertIsNot(b, c)
+        self.assertIsNot(b["nodes"], c["nodes"])
+        self.assertIsNot(b["nodes"][nid], c["nodes"][nid])
+        self.assertIsNot(b["nodes"][nid]["log"], c["nodes"][nid]["log"])
+        b["seq"] = 999
+        b["nodes"][nid]["summary"] = "Edited in one caller's copy."
+        b["placements"]["x"] = {"seg": 1}
+        d = jd.load_goals(SID)
+        for other in (a, c, d):
+            self.assertNotEqual(other["seq"], 999)
+            self.assertNotIn("summary", other["nodes"][nid])
+            self.assertNotIn("x", other["placements"])
+
+    def test_the_override_journal_replays_on_every_load_including_a_hit(self):
+        p = self._seed()
+        a = jd.load_goals(SID)                       # the fill
+        nid = self._nid(1)
+        self.assertFalse(a["nodes"][nid].get("nodeComplete"))
+        jd.append_override(SID, nid, "resolve", T0 + 60)   # the journal moves; the store file does not
+        with self._counting(p) as n:
+            b = jd.load_goals(SID)
+        self.assertEqual(n["parses"], 0, "the store file is unchanged: no parse")
+        self.assertTrue(b["nodes"][nid]["nodeComplete"], "the journaled resolve is applied on this load")
+        self.assertIn(nid, b.get("confirming") or [], "and the rollup followed it")
+        self.assertTrue(jd.load_goals(SID)["nodes"][nid]["nodeComplete"], "...and on the next")
+
+    def test_a_vanished_store_drops_its_entry_and_the_sweep_evicts_removed_stores(self):
+        p = self._seed()
+        jd.load_goals(SID)
+        self.assertEqual(jd.raw_store_stats()["entries"], 1)
+        p.unlink()
+        self.assertEqual(jd._raw_store_evict_absent(), 1, "the compaction sweep's eviction drops a removed store's entry")
+        self.assertEqual(jd.raw_store_stats()["entries"], 0)
+        self.assertEqual(jd.load_goals(SID)["nodes"], {}, "an absent file is the fresh store")
+        self._seed()
+        jd.load_goals(SID)
+        self.assertEqual(jd.raw_store_stats()["entries"], 1)
+        p.unlink()
+        self.assertEqual(jd.load_goals(SID)["nodes"], {})
+        self.assertEqual(jd.raw_store_stats()["entries"], 0, "a load that finds no file drops the entry too")
+
+    def test_the_sweep_evicts_the_entries_of_stores_no_discovered_session_owns(self):
+        """The memo has no cap, and the compaction sweep fills it with every store the goals directory holds
+        (its first sweep after boot loads each one), so a store whose session left the discover window while
+        its file stayed on disk would keep its text and pickle resident for the process. The sweep drops the
+        entries of stores no discovered session owns, as it does for the two sibling memos of parsed stores;
+        a later load of an evicted store is a miss that refills it."""
+        sid2 = "77777777-8888-4999-aaaa-cccccccccccc"   # a second private synthetic sid: two stores on disk
+        self._seed()
+        s = {"rompUuid": sid2, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {},
+             "placements": {}, "status": {}}
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Another session's goal"}], [])
+        jd.rollup_status(s, session_closed=False)
+        jd.save_goals(sid2, s)
+        jd.load_goals(SID)
+        jd.load_goals(sid2)
+        s0 = jd.raw_store_stats()
+        self.assertEqual(s0["entries"], 2)
+        self.assertEqual(jd._raw_store_evict_unowned({SID, sid2}), 0, "both stores are owned: nothing evicted")
+        self.assertEqual(jd.raw_store_stats()["entries"], 2)
+        self.assertEqual(jd._raw_store_evict_unowned({SID}), 1, "the store no discovered session owns is dropped")
+        self.assertEqual(jd.raw_store_stats()["entries"], 1)
+        self.assertEqual(jd.raw_store_stats()["evict"] - s0["evict"], 1)
+        self.assertTrue((jd.GOALDIR / (sid2 + ".json")).exists(), "the file itself is untouched")
+        with self._counting(jd.GOALDIR / (SID + ".json")) as n:
+            jd.load_goals(SID)
+        self.assertEqual(n["parses"], 0, "the owned store's entry survived: a hit")
+        miss0 = jd.raw_store_stats()["miss"]
+        b = jd.load_goals(sid2)                      # read again: one miss refills it
+        self.assertEqual(b["nodes"]["%s:g1" % sid2]["text"], "Another session's goal")
+        self.assertEqual(jd.raw_store_stats()["miss"] - miss0, 1)
+        self.assertEqual(jd.raw_store_stats()["entries"], 2)
+        self.assertEqual(jd._raw_store_evict_unowned(set()), 2, "no owner at all: every entry goes")
+        self.assertEqual(jd.raw_store_stats()["entries"], 0)
+
+    def test_a_read_fault_raises_as_before_and_nothing_is_remembered(self):
+        p = self._seed()
+        jd.load_goals(SID)
+        real = Path.read_text
+
+        def faulting(q, *a, **k):
+            if q == p:
+                raise OSError(errno.EIO, "Input/output error", str(q))
+            return real(q, *a, **k)
+        with mock.patch.object(Path, "read_text", faulting):
+            with self.assertRaises(OSError) as cm:
+                jd.load_goals(SID)
+        self.assertEqual(cm.exception.errno, errno.EIO, "the fault itself, never an empty store")
+        self.assertEqual(jd.raw_store_stats()["entries"], 0, "nothing is remembered about a file that did not read")
+        self.assertEqual(len(jd.load_goals(SID)["nodes"]), 1, "reads again once the fault clears")
+        self.assertEqual(jd.raw_store_stats()["entries"], 1)
+
+    def test_unparseable_bytes_are_quarantined_as_before_and_nothing_is_remembered(self):
+        p = self._seed()
+        jd.load_goals(SID)
+        p.write_text("{not json")
+        with contextlib.redirect_stderr(io.StringIO()):
+            s = jd.load_goals(SID)
+        self.assertEqual(s["nodes"], {}, "the fresh store: the bad bytes were moved aside")
+        self.assertTrue(list(jd.GOALDIR.glob(SID + ".json.corrupt-*")), "...and preserved")
+        self.assertEqual(jd.raw_store_stats()["entries"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

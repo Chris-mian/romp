@@ -10,6 +10,8 @@ list. Synthetic transcripts only (the stage 4a served fixture's builder and the 
 import contextlib
 import io
 import json
+from unittest import mock
+import inspect
 import os
 import shutil
 import sys
@@ -869,6 +871,30 @@ class Proto2Wire(Harness):
         self.assertIsNone(km._set_whole_chat_frames(False, gt=stamp), "the same value under the same stamp is the gesture's own echo: nothing applied")
         self.assertIsNone(km._set_whole_chat_frames(True, gt=stamp - 1), "an older gesture stands down")
         self.assertFalse(km._whole_chat_frames_on())
+
+    def test_the_boot_seed_of_the_whole_chat_frames_switch_runs_after_every_definition_it_reaches_and_seeds_once(self):
+        """The 1704 read, low 1: the ROMP_CHAT_FLOOR0 seed sat in a module-level try beside the boot sweep, where the setter's
+        _mark_views_dirty call raised NameError (defined far below), swallowed by the bare except: the store write landed and
+        nothing after it ran. The seed is a function main() calls once the module is loaded: with the env set and no store it
+        seeds ON and dirties the views; a standing store is never overwritten (a later flip survives a second boot with the
+        env set); without the env nothing happens."""
+        store = km.jd.STATE / km.WHOLE_CHAT_FRAMES_FILE
+        self.addCleanup(lambda: store.unlink(missing_ok=True))
+        with mock.patch.dict(os.environ, {"ROMP_CHAT_FLOOR0": "1"}):
+            d0 = km._views_dirty[0]
+            self.assertTrue(km._seed_whole_chat_frames(), "no store, the env set: seeded")
+            self.assertTrue(km._whole_chat_frames_on()); self.assertGreater(km._views_dirty[0], d0, "the flip dirties the views: no NameError")
+            self.assertIsNotNone(km._set_whole_chat_frames(False), "the user flips it off later")
+            self.assertFalse(km._seed_whole_chat_frames(), "a second boot with the env set leaves the flip alone")
+            self.assertFalse(km._whole_chat_frames_on())
+        store.unlink(missing_ok=True)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ROMP_CHAT_FLOOR0", None)
+            self.assertFalse(km._seed_whole_chat_frames(), "no env: nothing seeded"); self.assertFalse(store.exists())
+        src = Path(os.path.join(BIN, "romp-kernel")).read_text()
+        self.assertIn("    _seed_whole_chat_frames()", inspect.getsource(km.main), "main calls the seed after every definition is loaded")
+        sweep_at = src.index("em.checkpoint_sweep()")
+        self.assertNotIn("_set_whole_chat_frames", src[sweep_at - 200: sweep_at + 400], "no seed inside the module-level try beside the boot sweep")
 
     def test_the_base_rule_over_a_list_longer_than_the_wire_tail_and_a_floor_move(self):
         """Review find N: the earlier fixture's floor'd list fit the wire tail whole (pf 0). Here the tail is longer: a change

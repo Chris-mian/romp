@@ -8,6 +8,8 @@ the whole parse's byte for byte (turn ids, segment ids, atom uuids and bodies); 
 a compaction landing after the document demotes to a whole parse; a rewrite under the cut's guard, a wrong version, a
 moved session and a corrupt document each fall back loudly, counted; a body read before hydration is loud; the bytes
 the restore reads are the document, the cut's guard and the tail. Synthetic transcripts only (the golden builders)."""
+import contextlib
+import io
 import json
 import os
 import time
@@ -944,7 +946,6 @@ class ConvergeAssembly(Harness):
         path = self.idle_leaf("blip"); km = self.km
         with em._JSONL_CACHE_LOCK:
             em._JSONL_CACHE.pop(path, None)                        # the record entry gone: the writer has no offsets (a blip)
-        import io
         err = io.StringIO(); saved = sys.stderr; sys.stderr = err
         try:
             reasons = []
@@ -1391,6 +1392,36 @@ class VersionOldMarksRetireAtTheSweep(Harness):
         em.checkpoint_sweep()
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {}, "no mark, nothing to retire")
         self.assertEqual(meta2.read_bytes(), before, "the sidecar is untouched"); self.assertEqual(list(meta2.parent.glob(meta2.name + ".retired-*")), [])
+
+    def test_a_failed_sidecar_rewrite_leaves_the_document_and_the_mark_and_counts_its_own_reason(self):
+        """The 1708 read, low 1: the retirement's sidecar rewrite sat inside the sweep loop's try, whose except reads "this
+        document does not verify", so an OSError on the rewrite (a full disk, a read-only directory) UNLINKED the document, its
+        sidecar and the aside just written, counted under `sweep`, and left the .meta.<pid>.tmp behind. The rewrite's errors
+        stay in the retirement: the document and the mark stand, the tmp is removed, the failure is counted under its own
+        reason and said once; the next boot retries."""
+        path, cp, meta = self._documented("enospc")
+        self._mark(path, meta, 6)
+        before_doc, before_meta = cp.read_bytes(), meta.read_bytes()
+        em._ASM_CKPT_STATS["removed"] = {}
+        real_replace = em.os.replace
+        def failing_replace(src, dst):
+            if str(dst).endswith(".meta"):
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst)
+        err = io.StringIO()
+        with mock.patch.object(em.os, "replace", failing_replace), contextlib.redirect_stderr(err):
+            em.checkpoint_sweep()
+        self.assertTrue(cp.exists(), "the document stays"); self.assertEqual(cp.read_bytes(), before_doc, "…byte for byte")
+        self.assertEqual(meta.read_bytes(), before_meta, "the sidecar stays with its mark")
+        self.assertTrue(em._asm_refusal_stands(path), "the mark stands: the next boot retries")
+        self.assertEqual(list(meta.parent.glob("*.tmp")), [], "no tmp left behind")
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"refusedMark:versionFailed": 1}, "counted under its own reason, nothing swept")
+        self.assertIn("could not be retired", err.getvalue()); self.assertEqual(err.getvalue().count("could not be retired"), 1, "said once")
+        em._ASM_CKPT_STATS["removed"] = {}
+        with contextlib.redirect_stderr(io.StringIO()):
+            em.checkpoint_sweep()                                        # the disk back: the retirement lands
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"refusedMark:version": 1})
+        self.assertFalse(em._asm_refusal_stands(path)); self.assertTrue(cp.exists())
 
     def test_a_gone_document_leaves_with_its_retired_asides(self):
         path, cp, meta = self._documented("gone")

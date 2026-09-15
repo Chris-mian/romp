@@ -132,10 +132,13 @@ class WiringPins(unittest.TestCase):
     def test_the_compaction_sweep_evicts_the_caches_absent_paths(self):
         src = inspect.getsource(km._compact_goal_stores)
         self.assertIn("jd._disk_memo_evict_absent()", src)
+        self.assertIn("jd._raw_store_evict_absent()", src)   # the writer loader's parse memo (2026-09-15)
         self.assertIn("jd._shared_evict_absent()", src)
-        # ...and, for the two memos holding PARSED stores, the entries of stores no discovered session owns
-        # (review find, 2026-09-08: neither had a cap)
+        # ...and, for the three memos holding PARSED stores, the entries of stores no discovered session owns
+        # (review find, 2026-09-08: neither of the first two had a cap; the writer loader's parse memo of
+        # 2026-09-15 is filled by this very sweep, so it needs the same trim)
         self.assertIn("jd._shared_evict_unowned(", src)
+        self.assertIn("jd._raw_store_evict_unowned(", src)
         self.assertIn("_goals_memo_evict_unowned(", src)
 
 

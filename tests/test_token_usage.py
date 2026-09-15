@@ -8,8 +8,11 @@ import json
 import os
 import pathlib
 import tempfile
+import shutil
+import time
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 from romp_load import load_source
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "bin")
@@ -201,6 +204,180 @@ class SessionTokens(unittest.TestCase):
             os.symlink(other, sid_dir / "subagents")
             self.assertEqual(km._subagent_transcripts(p), [])
             self.assertEqual(km._session_tokens(p, NOW - 3600), {"in": 10, "out": 5, "cache_w": 0, "cache_r": 0})
+
+
+class SubagentDirectoryMemo(unittest.TestCase):
+    """_subagent_transcripts memoises each directory's LISTING on the directory's own (mtime_ns, ino).
+    Before it, every call read every directory of a session's subagents tree, and the analytics build
+    calls it once per session discovered in its window, live or not, on the HTTP handler thread: five
+    live sessions held 3,577 agent transcripts under 1,292 directories (one of them 326 past
+    workflows' directories), every one read per pass. A directory's mtime moves when an entry is
+    added, removed or renamed, not when a file under it grows, so the memo may skip only the LISTING,
+    never the per-file stat (_transcript_tok_rows') that sees a subagent transcript grow. A directory
+    changed within the last two seconds is listed but not served (git's racy-stamp rule: the
+    filesystem's clock is coarser than the wall clock, and an entry landing in the listing's tick would
+    carry the memoised stamp), so the tree here is SETTLED in setUp, every directory stamped a minute
+    ago the way a session's past workflows' directories are, and a stamp a test moves goes to a later
+    value that is still settled (_bump). Synthetic tree: a main transcript, one Task agent at the top
+    of subagents/, two Workflow agents one level down each."""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        d = self.td.name
+        self.p = os.path.join(d, "11111111-2222-3333-4444-555555555555.jsonl")
+        with open(self.p, "w") as f:
+            f.write(_asst({"input_tokens": 10, "output_tokens": 5}, iso(NOW - 100), mid="m1") + "\n")
+        self.sub = pathlib.Path(d) / "11111111-2222-3333-4444-555555555555" / "subagents"
+        self.wfs = self.sub / "workflows"
+        self.wf1, self.wf2 = self.wfs / "wf_1111-2222", self.wfs / "wf_3333-4444"
+        self.wf1.mkdir(parents=True); self.wf2.mkdir()
+        self.a1, self.c3, self.d4 = self.sub / "agent-a1.jsonl", self.wf1 / "agent-c3.jsonl", self.wf2 / "agent-d4.jsonl"
+        self.a1.write_text(_asst({"input_tokens": 100, "output_tokens": 50}, iso(NOW - 90), mid="m2") + "\n")
+        self.c3.write_text(_asst({"input_tokens": 1000, "output_tokens": 500}, iso(NOW - 80), mid="m3") + "\n")
+        self.d4.write_text(_asst({"input_tokens": 10000, "output_tokens": 5000}, iso(NOW - 70), mid="m4") + "\n")
+        self.dirs = sorted(str(x) for x in (self.sub, self.wfs, self.wf1, self.wf2))
+        self.old, self.tick = time.time_ns() - 60 * 10**9, 0   # a minute ago: past the racy window, so the memo serves it
+        for x in self.dirs:
+            self._bump(x)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _counted(self, path=None):
+        """_session_tokens over the window for the main transcript `path` (the tree's by default), with the
+        directory listings (os.scandir) and the transcript stats (os.stat on a .jsonl) it made:
+        (totals, [directories listed], [files statted])."""
+        listed, statted = [], []
+        real_scandir, real_stat = os.scandir, os.stat
+
+        def scandir(path=".", *a, **kw):
+            listed.append(str(path))
+            return real_scandir(path, *a, **kw)
+
+        def stat(path, *a, **kw):
+            if str(path).endswith(".jsonl"):
+                statted.append(str(path))
+            return real_stat(path, *a, **kw)
+        with mock.patch.object(os, "scandir", scandir), mock.patch.object(os, "stat", stat):
+            return km._session_tokens(path or self.p, NOW - 3600), sorted(listed), sorted(statted)
+
+    def _bump(self, d):
+        """`d`'s mtime moved to a later nanosecond value that is still a minute old: the memo sees the change,
+        and the directory is settled, so it serves the new listing from then on; never the clock's tick."""
+        self.tick += 1
+        st = os.lstat(d)
+        os.utime(d, ns=(st.st_atime_ns, self.old + self.tick * 1_000_000))
+
+    def test_a_second_call_with_nothing_changed_lists_no_directory_and_still_stats_every_file(self):
+        tot, listed, statted = self._counted()
+        self.assertEqual(tot["in"], 11110)
+        self.assertEqual(listed, self.dirs, "the first call lists every directory of the tree once")
+        self.assertEqual(statted, sorted([self.p, str(self.a1), str(self.c3), str(self.d4)]))
+        tot, listed, statted = self._counted()
+        self.assertEqual(tot["in"], 11110)
+        self.assertEqual(listed, [], "nothing changed: no directory is read again")
+        self.assertEqual(statted, sorted([self.p, str(self.a1), str(self.c3), str(self.d4)]),
+                         "…while every transcript is still statted, the stamp that sees one grow")
+
+    def test_a_file_added_to_one_directory_relists_that_directory_alone_and_its_rows_count(self):
+        self._counted()
+        (self.wf2 / "agent-e5.jsonl").write_text(_asst({"input_tokens": 1, "output_tokens": 1}, iso(NOW - 10), mid="m5") + "\n")
+        self._bump(self.wf2)
+        tot, listed, _ = self._counted()
+        self.assertEqual(listed, [str(self.wf2)], "the directory whose stamp moved is listed again, and only it")
+        self.assertEqual(tot["in"], 11111, "the new subagent's rows count")
+        _, listed, _ = self._counted()
+        self.assertEqual(listed, [], "and the new listing is the memo's now")
+
+    def test_a_directory_changed_within_two_seconds_is_listed_again_until_it_settles_so_a_same_tick_entry_is_seen(self):
+        """The filesystem's clock is coarser than the wall clock, so a directory's stamp cannot tell the listing
+        from an entry that landed in the same tick after it; a stamp that fresh is not trusted (git's racy-stamp
+        rule) and the directory is listed on every call until it has been quiet for two seconds."""
+        self._counted()
+        (self.wf2 / "agent-e5.jsonl").write_text(_asst({"input_tokens": 1, "output_tokens": 1}, iso(NOW - 10), mid="m5") + "\n")
+        tot, listed, _ = self._counted()                      # the write stamped wf2 with the clock's now
+        self.assertEqual((listed, tot["in"]), ([str(self.wf2)], 11111), "the changed directory is listed, and only it")
+        self.assertIsNone(km._subagent_dir_memo[str(self.wf2)][0], "changed just now: kept for its names, its stamp not trusted")
+        _, listed, _ = self._counted()
+        self.assertEqual(listed, [str(self.wf2)], "…and listed again while it is that fresh")
+        # an entry landing in the listing's own tick: written, then the directory's stamp put back where the listing saw it
+        st = os.lstat(self.wf2)
+        (self.wf2 / "agent-f6.jsonl").write_text(_asst({"input_tokens": 1, "output_tokens": 1}, iso(NOW - 9), mid="m6") + "\n")
+        os.utime(self.wf2, ns=(st.st_atime_ns, st.st_mtime_ns))
+        tot, listed, _ = self._counted()
+        self.assertEqual((listed, tot["in"]), ([str(self.wf2)], 11112), "seen: the directory was not being served from the memo")
+        self._bump(self.wf2)                                   # quiet for a minute now
+        _, listed, _ = self._counted()
+        self.assertEqual(listed, [str(self.wf2)], "settled: listed once more on the moved stamp…")
+        self.assertIsInstance(km._subagent_dir_memo[str(self.wf2)][0], int)
+        _, listed, _ = self._counted()
+        self.assertEqual(listed, [], "…and served from the memo after")
+
+    def test_rows_appended_to_a_subagent_file_surface_with_its_directory_untouched(self):
+        self._counted()
+        dst = os.lstat(self.wf1)
+        with self.c3.open("a") as f:
+            f.write(_asst({"input_tokens": 1, "output_tokens": 1}, iso(NOW - 5), mid="m6") + "\n")
+        os.utime(self.wf1, ns=(dst.st_atime_ns, dst.st_mtime_ns))    # a grown file leaves its directory's mtime where it was
+        tot, listed, statted = self._counted()
+        self.assertEqual(listed, [], "no directory changed, none is read")
+        self.assertIn(str(self.c3), statted)
+        self.assertEqual(tot["in"], 11111, "the grown transcript's new row surfaces through its own stat")
+
+    def test_a_removed_directory_drops_from_the_memo_and_a_removed_root_empties_it(self):
+        self._counted()
+        self.assertEqual(sorted(k for k in km._subagent_dir_memo if k.startswith(str(self.sub))), self.dirs)
+        shutil.rmtree(self.wf2)
+        self._bump(self.wfs)
+        tot, listed, _ = self._counted()
+        self.assertEqual(listed, [str(self.wfs)], "the parent that lost an entry is listed again, alone")
+        self.assertEqual(tot["in"], 1110, "the removed workflow's rows are gone")
+        self.assertNotIn(str(self.wf2), km._subagent_dir_memo, "a removed directory leaves the memo")
+        self.assertIn(str(self.wf1), km._subagent_dir_memo)
+        shutil.rmtree(self.sub)
+        tot, listed, _ = self._counted()
+        self.assertEqual((tot["in"], listed), (10, []), "no subagents tree: the main transcript alone, as before")
+        self.assertEqual([k for k in km._subagent_dir_memo if k.startswith(str(self.sub))], [],
+                         "a removed root takes every directory under it out of the memo")
+
+    def test_a_session_without_a_subagents_tree_makes_no_pass_over_the_memo(self):
+        """The analytics build reaches every session in its window, most with no subagents tree at all: a root
+        that was never in the memo has nothing under it there either, so forgetting it costs no pass over the
+        memo's keys (the memo's size, per such session, before). A root that WAS in it pays the one pass."""
+        class Counting(dict):
+            passes = 0
+
+            def __iter__(self):
+                self.passes += 1
+                return super().__iter__()
+        foreign = "/TESTHOST/other/22222222-2222-3333-4444-666666666666/subagents"
+        memo = Counting({foreign: (1, 1, [], [])})               # another session's directory, in the memo already
+        lone = os.path.join(self.td.name, "33333333-2222-3333-4444-777777777777.jsonl")
+        with open(lone, "w") as f:
+            f.write(_asst({"input_tokens": 3, "output_tokens": 1}, iso(NOW - 50), mid="m9") + "\n")
+        with mock.patch.object(km, "_subagent_dir_memo", memo):
+            self._counted()                                        # the settled tree, memoised
+            self.assertEqual(sorted(k for k in memo if k != foreign), self.dirs)
+            memo.passes = 0
+            for _ in range(2):
+                tot, listed, _ = self._counted(lone)
+                self.assertEqual((tot["in"], listed), (3, []), "the main transcript alone, nothing listed")
+            self.assertEqual(memo.passes, 0, "a root never memoised is forgotten without a pass over the memo")
+            shutil.rmtree(self.sub)
+            self._counted()
+            self.assertEqual(memo.passes, 1, "a memoised root gone: the one pass that drops what was under it")
+            self.assertEqual(list(memo), [foreign], "…and only that: the other session's entry stands")
+
+    def test_a_symlink_in_a_memoised_directory_s_place_is_not_followed(self):
+        self._counted()
+        other = pathlib.Path(self.td.name) / "elsewhere"
+        other.mkdir()
+        (other / "agent-zz.jsonl").write_text(_asst({"input_tokens": 7777, "output_tokens": 7777}, iso(NOW - 60), mid="m7") + "\n")
+        shutil.rmtree(self.wf2)
+        os.symlink(other, self.wf2)
+        self._bump(self.wfs)
+        tot, _, _ = self._counted()
+        self.assertEqual(tot["in"], 1110, "the symlinked directory is neither followed nor kept")
+        self.assertNotIn(str(self.wf2), km._subagent_dir_memo)
 
 
 class JudgeUsageIncrementalCache(unittest.TestCase):
