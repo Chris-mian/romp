@@ -88,7 +88,7 @@ test("the column partition (the chat split, 2026-09-11): the sets are read once 
   assert.match(RENDER, /function heldHere\(id: string\): boolean \{ return isSubId\(id\) \|\| isProvisionalId\(id\) \|\| columnHolds\(colSets, COL, id\); \}/,
     "a sub-agent viewer and a provisional tab are the page's own; every other id is the shell's sets' to place");
   assert.match(RENDER, /function tabInView\(id: string\): boolean \{ return \(id === peekId \|\| chatVisible\(id\)\) && heldHere\(id\); \}/);
-  assert.match(RENDER, /^import \{ colFromSearch, columnHolds, type ColSets \} from "\.\/chat-columns";/m);
+  assert.match(RENDER, /^import \{ colFromSearch, columnHolds, columnEmptiness, type ColSets \} from "\.\/chat-columns";/m);   // …and the emptiness verdict (the host rule, 2026-09-14)
   assert.match(RENDER, /^const COL = colFromSearch\(location\.search\);/m);
   // the skip line and the signature list are unchanged: the partition reaches the signature through ids and visibleIds
   assert.match(fn, /if \(stripSig === tabStripSig && !\(mslotEl && !mslotEl\.firstChild\)\) \{ stripAftermath\(visibleIds, ids\); return; \}/);

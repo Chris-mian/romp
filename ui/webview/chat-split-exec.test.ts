@@ -3,7 +3,8 @@
 // with esbuild (the skeleton-tabs-wiring.test.ts chipWorld pattern) over a fake parent window that plays the shell —
 // __rompChatSets / __rompChatTarget / __rompClaimSession and a counting postMessage — and driven the way renderTabs and
 // the message handler drive them: the emptiness post (once per emptiness, reset by a member listed again; never before
-// the first strip, never for the first column, never over a create in flight), the stale-active fallback (the partition's
+// the first strip, never for the first column, never over a create in flight, never for a member whose host has not
+// reported on this socket — the host-prefixed tab whose new column folded under it, 2026-09-14), the stale-active fallback (the partition's
 // only: a page with no sets boots as before; the first visible member after the timer; a wanted tab held elsewhere
 // retired; re-checked at fire time), the hop to the owner (once, into the owner's frame, never this frame), the claim of a
 // created session, the offer of orphaned state, and the adoption of a moved tab's state onto every slice. The pure
@@ -13,12 +14,12 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { columnHolds, type ColSets } from "./chat-columns";
+import { columnHolds, columnEmptiness, type ColSets } from "./chat-columns";
 import { isProvisionalId } from "./provisional";
 import { isSubId } from "./subagent-view";
 import { StagedStack } from "./staged-messages";
 import { syncSessionsFromTabMeta } from "./tab-meta";
-import { reconcileTabOrder, retainLiveOmitted, localStrip } from "./tab-order";
+import { reconcileTabOrder, retainLiveOmitted, localStrip, stripHost } from "./tab-order";
 import { hostOf } from "./host-prefix";
 
 const requireCjs = createRequire(__filename);
@@ -47,14 +48,14 @@ type Api = {
   adoptSessionState: (sid: unknown, state: unknown) => void;
   heldHere: (id: string) => boolean;
   state: () => { activeId: string | null; wantActive: string | null; colSets: ColSets | null; colEmptyPosted: boolean; tabOrderSeen: boolean };
-  set: (p: { activeId?: string | null; wantActive?: string | null; provisionalId?: string | null; tabOrderSeen?: boolean; failed?: string[] }) => void;
+  set: (p: { activeId?: string | null; wantActive?: string | null; provisionalId?: string | null; tabOrderSeen?: boolean; failed?: string[]; hostsSeen?: string[] }) => void;
   maps: { drafts: Map<string, string>; composerCitations: Map<string, unknown[]>; composerFiles: Map<string, string[]>; stagedMsgs: StagedStack };
 };
 type World = { api: Api; HOOKS: Hooks; W: { sets: ColSets | null; owner: ((sid: string) => unknown) | null }; me: { id: string }; other: { id: string; contentWindow: unknown } };
 
 /** A column page: `col` is its number ("" for the first column), `sets` what the shell's __rompChatSets answers. */
 function world(o: { col?: string; sets?: ColSets | null; tabOrderSeen?: boolean; activeId?: string | null; provisionalId?: string | null;
-                    wantActive?: string | null; failed?: string[]; owner?: ((sid: string) => unknown) | null }): World {
+                    wantActive?: string | null; failed?: string[]; owner?: ((sid: string) => unknown) | null; hostsSeen?: string[] }): World {
   const HOOKS: Hooks = { posts: [], forwarded: [], focused: 0, claims: [], timers: [], activated: [], reads: 0, persisted: 0, loaded: [] };
   const me = { id: "f-chat-" + (o.col || "1") };
   const other = { id: "f-chat", contentWindow: { postMessage(m: Record<string, unknown>) { HOOKS.forwarded.push(m); }, focus() { HOOKS.focused++; } } };
@@ -70,12 +71,13 @@ function world(o: { col?: string; sets?: ColSets | null; tabOrderSeen?: boolean;
     [line("heldHere"), line("tabInView"), fn("forwardToOwner"), fn("claimSession"), fn("noteColumnEmptiness"),
      fn("orphanStateSids"), fn("noteOrphanState"), fn("staleActiveFallback"), fn("adoptSessionState")].join("\n"), { loader: "ts" }).code;
   const prelude = `
-    const { columnHolds, isProvisionalId, isSubId, StagedStack, HOOKS } = W;
+    const { columnHolds, columnEmptiness, isProvisionalId, isSubId, StagedStack, HOOKS } = W;
     const COL = W.col;
     let colSets = W.sets, tabOrderSeen = W.tabOrderSeen, activeId = W.activeId, provisionalId = W.provisionalId, wantActive = W.wantActive;
     let vanishedId = null;   // T357's tab-that-left; never set in these worlds (the fallback yields to it, pinned in chat-split.test.ts)
     const failedProvisionals = new Set(W.failed || []);
     let colEmptyPosted = false; const closingTabs = new Map(); let boardLive = new Set();
+    const hostsSeen = new Set(W.hostsSeen);   // the hosts whose own strip has landed: the local kernel ("") in every world unless a test says otherwise
     const readColSets = () => { HOOKS.reads++; return W.shell.sets; };
     const syncTabKeysWithStrip = () => {};   // per-tab hot keys (2026-09-10): none in these worlds
     const peekId = null; const chatVisible = () => true;
@@ -90,14 +92,15 @@ function world(o: { col?: string; sets?: ColSets | null; tabOrderSeen?: boolean;
       forwardToOwner, claimSession, orphanStateSids, adoptSessionState, heldHere,
       state: () => ({ activeId, wantActive, colSets, colEmptyPosted, tabOrderSeen }),
       set: (p) => { if ("activeId" in p) activeId = p.activeId; if ("wantActive" in p) wantActive = p.wantActive; if ("provisionalId" in p) provisionalId = p.provisionalId;
-                    if ("tabOrderSeen" in p) tabOrderSeen = p.tabOrderSeen; if ("failed" in p) { failedProvisionals.clear(); for (const f of p.failed) failedProvisionals.add(f); } },
+                    if ("tabOrderSeen" in p) tabOrderSeen = p.tabOrderSeen; if ("failed" in p) { failedProvisionals.clear(); for (const f of p.failed) failedProvisionals.add(f); }
+                    if ("hostsSeen" in p) for (const h of p.hostsSeen) hostsSeen.add(h); },
       maps: { drafts, composerCitations, composerFiles, stagedMsgs },
     };
   `;
   const make = new Function("W", "window", prelude + js + epilogue) as (w: unknown, win: unknown) => Api;
-  const api = make({ columnHolds, isProvisionalId, isSubId, StagedStack, HOOKS, col: o.col || "", sets: W.sets, shell: W,
+  const api = make({ columnHolds, columnEmptiness, isProvisionalId, isSubId, StagedStack, HOOKS, col: o.col || "", sets: W.sets, shell: W,
                      tabOrderSeen: o.tabOrderSeen ?? true, activeId: o.activeId ?? null, provisionalId: o.provisionalId ?? null,
-                     wantActive: o.wantActive ?? null, failed: o.failed || [] }, win);
+                     wantActive: o.wantActive ?? null, failed: o.failed || [], hostsSeen: o.hostsSeen ?? [""] }, win);
   return { api, HOOKS, W, me, other };
 }
 const fire = (h: Hooks): void => { const t = h.timers.splice(0); for (const f of t) f(); };
@@ -142,6 +145,51 @@ test("a create in flight, or a failed one still holding its text, keeps the colu
   assert.deepEqual(w.HOOKS.posts, [], "a failed create holding its text keeps it too, until its ✕ discards it");
   w.api.set({ failed: [] }); w.api.render([WEB]);
   assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [API], crossed: [] }], "with the create gone the emptiness is said");
+});
+
+const REMOTE = "TESTHOST:11111111-2222-3333-4444-555555555504";   // a remote host's session, as `order` carries it under federation
+const REMOTE2 = "TESTHOST:11111111-2222-3333-4444-555555555505";
+const FAR = "OTHERHOST:11111111-2222-3333-4444-555555555506";
+
+test("a member whose host has not reported on this socket is never called absent: the column stands through the local strip and speaks only once that host's own strip lands without it", () => {
+  // the user's board (2026-09-14): the dashboard's kernel is local (host ""), the dragged tab rides a remote host's prefix.
+  // The new column's first strip is the LOCAL kernel's — tabOrderSeen armed, hostsSeen {""} — and it lists only local ids.
+  const w = world({ col: "2", sets: { "2": [REMOTE] } });
+  w.api.render([WEB, API]);
+  assert.deepEqual(w.HOOKS.posts, [], "the member's host has not reported: nothing is known about it, the column stands");
+  w.api.render([WEB]); w.api.render([]);
+  assert.deepEqual(w.HOOKS.posts, [], "…however many local strips land without it");
+  assert.equal(w.api.state().colEmptyPosted, false, "no latch was armed for a verdict never reached");
+  // the remote host's own strip lands (applyTabOrder adds its host) and lists the member: held, as any listed member
+  w.api.set({ hostsSeen: ["TESTHOST"] }); w.api.render([WEB, REMOTE]);
+  assert.deepEqual(w.HOOKS.posts, [], "listed by its own host: present");
+  // …and a later strip from that host omits it: now the emptiness is real and said once
+  w.api.render([WEB]);
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [REMOTE], crossed: [] }], "its host has reported and does not list it: gone");
+  w.api.render([WEB]);
+  assert.equal(w.HOOKS.posts.length, 1, "said once per emptiness");
+  // the host seen and the member unlisted from the start (a reload after the session ended on its host): empty at once
+  const ended = world({ col: "2", sets: { "2": [REMOTE] }, hostsSeen: ["", "TESTHOST"] });
+  ended.api.render([WEB]);
+  assert.deepEqual(ended.HOOKS.posts, [{ romp: "colEmpty", gone: [REMOTE], crossed: [] }]);
+  // mixed members: one host reported and does not list its member, the other has not reported → unknown, not empty
+  const mixed = world({ col: "2", sets: { "2": [API, FAR] } });
+  mixed.api.render([WEB]);
+  assert.deepEqual(mixed.HOOKS.posts, [], "the local member is gone but the far host has not spoken: the column is not judged empty");
+  mixed.api.set({ hostsSeen: ["OTHERHOST"] }); mixed.api.render([WEB]);
+  assert.deepEqual(mixed.HOOKS.posts, [{ romp: "colEmpty", gone: [API, FAR], crossed: [] }], "every member's host has reported: empty");
+  // the remote-host page (the earlier probe): a column whose only strip so far is ANOTHER host's fresh push — the local
+  // kernel's own strip not yet here — says nothing about a local member either
+  const farFirst = world({ col: "2", sets: { "2": [API] }, tabOrderSeen: false, hostsSeen: ["TESTHOST"] });
+  farFirst.api.set({ tabOrderSeen: true }); farFirst.api.render([REMOTE, REMOTE2]);
+  assert.deepEqual(farFirst.HOOKS.posts, [], "the local host has not reported on this socket: its member is unknown, not gone");
+  farFirst.api.set({ hostsSeen: [""] }); farFirst.api.render([REMOTE, REMOTE2]);
+  assert.deepEqual(farFirst.HOOKS.posts, [{ romp: "colEmpty", gone: [API], crossed: [] }]);
+  // the live set still guards a member whose host has reported (T258), and the user's own cross still overrides the live set
+  const live = world({ col: "2", sets: { "2": [REMOTE] }, hostsSeen: ["", "TESTHOST"] });
+  live.api.set({ hostsSeen: [] });
+  live.api.render([WEB]);
+  assert.equal(live.HOOKS.posts.length, 1, "a control: host seen, unlisted, not live → empty");
 });
 
 test("the stale-active fallback belongs to the partition: no sets, nothing scheduled; with sets, the first visible member after the timer, a wanted tab held elsewhere retired", () => {
@@ -285,7 +333,7 @@ type StripApi = {
   frame: (o: string[], tabs: { id: string; name: string }[], report: { reemit?: boolean; freshHost?: string } | undefined, live: string[]) => void;
   cross: (id: string) => void;
   tick: (ms: number) => void;
-  state: () => { tabOrderSeen: boolean; order: string[]; tabMeta: string[]; closing: string[]; colEmptyPosted: boolean };
+  state: () => { tabOrderSeen: boolean; order: string[]; tabMeta: string[]; closing: string[]; colEmptyPosted: boolean; hostsSeen: string[] };
 };
 function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string | null }): { api: StripApi; HOOKS: StripHooks; W: { sets: ColSets | null } } {
   const HOOKS: StripHooks = { posts: [], renders: [], dismissed: [], toasts: [], shown: 0 };
@@ -295,10 +343,10 @@ function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string 
   const js = requireCjs("esbuild").transformSync(
     [line("heldHere"), line("tabInView"), fn("stripLists"), fn("ackClosingTabs"), fn("applyTabOrder"), fn("noteColumnEmptiness")].join("\n"), { loader: "ts" }).code;
   const prelude = `
-    const { columnHolds, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, HOOKS } = W;
+    const { columnHolds, columnEmptiness, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, stripHost, HOOKS } = W;
     const COL = W.col;
     let colSets = W.sets, tabOrderSeen = false, activeId = null, provisionalId = null, wantActive = W.wantActive, vanishedId = null;
-    const failedProvisionals = new Set(); let colEmptyPosted = false; let boardLive = new Set();
+    const failedProvisionals = new Set(); let colEmptyPosted = false; let boardLive = new Set(); const hostsSeen = new Set();
     const readColSets = () => W.shell.sets;
     const syncTabKeysWithStrip = () => {};   // per-tab hot keys (2026-09-10): none in these worlds
     const peekId = null; const chatVisible = () => true;
@@ -317,11 +365,11 @@ function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string 
       frame: (o, tabs, report, live) => applyTabOrder(o, tabs, report, live),
       cross: (id) => { closingTabs.set(id, Date.now()); dismissSession(id, "close"); renderTabs(); },
       tick: (ms) => { clock += ms; },
-      state: () => ({ tabOrderSeen, order: order.slice(), tabMeta: [...tabMeta.keys()], closing: [...closingTabs.keys()], colEmptyPosted }),
+      state: () => ({ tabOrderSeen, order: order.slice(), tabMeta: [...tabMeta.keys()], closing: [...closingTabs.keys()], colEmptyPosted, hostsSeen: [...hostsSeen].sort() }),
     };
   `;
   const make = new Function("W", "window", prelude + js + epilogue) as (w: unknown, win: unknown) => StripApi;
-  const api = make({ columnHolds, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, HOOKS,
+  const api = make({ columnHolds, columnEmptiness, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, stripHost, HOOKS,
                      col: o.col, sets: W.sets, shell: W, wantActive: o.wantActive ?? null }, win);
   return { api, HOOKS, W };
 }
@@ -351,6 +399,35 @@ test("provenance: a remote host's fresh push ahead of the local strip arms nothi
   const s = stripWorld({ col: "2", sets: { "2": [API] } });
   s.api.frame([WEB, API], T3.slice(0, 2), { reemit: false, freshHost: undefined }, [WEB, API]);   // the dispatch's shape for a frame the kernel sent directly
   assert.equal(s.api.state().tabOrderSeen, true, "no federation: the frame is the kernel's");
+});
+
+test("the host-prefixed drop (the user 2026-09-14): a new column on a remote host's tab stands through the local kernel's first strip, its host's own strip lists the member, and only that host's later omission folds it", () => {
+  // the shell's store after the drop: column 2 holds the remote session; the fresh page's manager has attached TESTHOST
+  // (hostsPending names it) and the LOCAL kernel's strip lands first — it lists this kernel's sessions and nothing of TESTHOST's
+  const R = "TESTHOST:" + U, RT = [{ id: R, name: "TESTHOST:remote" }];
+  const w = stripWorld({ col: "2", sets: { "2": [R] }, wantActive: R });
+  w.api.frame([WEB, API, TESTS], T3, { freshHost: "" }, [WEB, API, TESTS]);
+  assert.equal(w.api.state().tabOrderSeen, true, "the board has been heard…");
+  assert.deepEqual(w.api.state().hostsSeen, [""], "…from the local kernel alone");
+  assert.deepEqual(w.HOOKS.posts, [], "the member's host has not reported: the column stands (before the fix this posted colEmpty and the shell folded the column ~250 ms after the drop)");
+  w.api.frame([WEB, API, TESTS], T3, { reemit: true }, [WEB, API, TESTS]);   // a storage event's re-emission from the store: still local-only
+  assert.deepEqual(w.api.state().hostsSeen, [""], "a re-emission is nobody's fresh word: it names no host");
+  assert.deepEqual(w.HOOKS.posts, []);
+  // TESTHOST's own strip lands: the merged order now carries its slice, and the member is listed
+  w.api.frame([WEB, API, TESTS, R], [...T3, ...RT], { freshHost: "TESTHOST" }, [WEB, API, TESTS, R]);
+  assert.deepEqual(w.api.state().hostsSeen, ["", "TESTHOST"], "its host has reported on this socket");
+  assert.ok(w.HOOKS.renders.at(-1)?.includes(R), "the strip lists the member (renderTabs' ids are the whole board; the partition filters the paint)");
+  assert.deepEqual(w.HOOKS.posts, [], "listed: nothing to say");
+  // the real fold still works: the session ends on its host, whose next push omits it and no longer affirms it live
+  w.api.frame([WEB, API, TESTS], T3, { freshHost: "TESTHOST" }, [WEB, API, TESTS]);
+  assert.deepEqual(w.HOOKS.posts, [{ romp: "colEmpty", gone: [R], crossed: [] }], "its host reported it gone: the emptiness is said, once, and no member went by this page's cross");
+  // the mirror image (the earlier probe): a page whose FIRST strip is a remote host's fresh push holds a local member unknown
+  const m = stripWorld({ col: "2", sets: { "2": [API] } });
+  m.api.frame([R], RT, { freshHost: "TESTHOST" }, [R]);
+  assert.deepEqual(m.api.state().hostsSeen, ["TESTHOST"]);
+  assert.deepEqual(m.HOOKS.posts, [], "the flag is not even armed; and were it, the local host has not reported");
+  m.api.frame([WEB, R], [T3[0], ...RT], { freshHost: "" }, [WEB, R]);
+  assert.deepEqual(m.HOOKS.posts, [{ romp: "colEmpty", gone: [API], crossed: [] }], "the local kernel's own strip without the member: gone");
 });
 
 test("a first strip that omits a live member (T258's shape on a fresh column) keeps the column: the kernel's live set affirms it", () => {

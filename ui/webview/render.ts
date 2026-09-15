@@ -66,7 +66,7 @@ import { rescindedComposerState } from "./queued-rescind";   // a queued message
 import { reloadHoldReason } from "./reload-hold";
 import { liveNotices, keepReloadNotices, takeReloadNotices } from "./reload-notices";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional, focusResolvesProvisional } from "./provisional";
-import { colFromSearch, columnHolds, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
+import { colFromSearch, columnHolds, columnEmptiness, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
 import { onlyTag, matchesOnly, onlyWindow } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { actionParts, toolRowLabel, toolInputText } from "./compact";
@@ -95,7 +95,7 @@ import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } 
 import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, reshowStick } from "./scroll-keep";
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
-import { localStrip, readCloseAckMs } from "./tab-order";
+import { localStrip, stripHost, readCloseAckMs } from "./tab-order";
 import { userTurnShows } from "./user-turn-content";
 import { ScrollDiagBudget, classifyScroll, scrollWriteRow, tailChangeRow, tailLabel, spacerRow, readScrollDiagCap, summarizeTailMutations, tailMutRow, unitChangeRow, unitChanges, boxChanges, boxLabel, BOX_FROM_TAIL } from "./scroll-write";
 import { reloadScrollRecord, takeReloadScroll, type ReloadScroll } from "./reload-restore";
@@ -1031,6 +1031,12 @@ let tabOrderSeen = false;   // the kernel's first strip has landed on this socke
 // The ids the last applied strip's `live` set affirms (the kernel's raw liveness, T258): a member of this column the strip
 // omits while live still names it is a transient read failure, never an emptiness (noteColumnEmptiness).
 let boardLive = new Set<string>();
+// The hosts whose OWN strip has landed on this socket (tab-order.ts stripHost: "" the local kernel, a name for a remote's
+// fresh push; a re-emission adds nothing). The emptiness post judges a member absent only once its host is here: the local
+// kernel's strip lands first and says nothing about a remote host's sessions, so a column opened on a host-prefixed tab
+// read the member as gone ~250 ms before its own host's strip arrived and folded under it (the user 2026-09-14). Add-only
+// for the page's life, like kernelListed: a host that reported stays reported; its later strips speak through `order`.
+const hostsSeen = new Set<string>();
 function readColSets(): ColSets | null {
   try {
     if (!window.parent || window.parent === window) return null;
@@ -5784,6 +5790,8 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   // armed this flag, and the render below reported the column's one member gone (colEmpty) while the kernel listed it all
   // along; the shell closed the column and the tab was in no column until the close backstop toasted. Set after the
   // restore above, so its render is the first that may post or fall back.
+  const stripFrom = stripHost(report);   // …and per host: this frame is one host's fresh word, or nobody's (a re-emission)
+  if (stripFrom !== null) hostsSeen.add(stripFrom);
   if (localStrip(report)) tabOrderSeen = true;
   renderTabs();
   syncTabKeysWithStrip();
@@ -8315,7 +8323,9 @@ function claimSession(id: string): void {
 // a page that has not heard the board yet says nothing; `ids` keeps host-down remote tabs and live-omitted ids
 // (T258), and a member the strip omits while the kernel's `live` set still affirms it counts as present (boardLive:
 // on a fresh column retainLiveOmitted has no order to keep it in), so neither a tunnel blip nor a transient read
-// failure closes a column. The message names the gone members this page's own ✕ removed (`crossed`): the shell holds
+// failure closes a column — and a member whose HOST has not reported on this socket yet (hostsSeen) is not judged at all:
+// the local strip lands first and says nothing about a remote host's sessions (the user 2026-09-14, a host-prefixed tab
+// dragged into a new column that folded ~250 ms later). The message names the gone members this page's own ✕ removed (`crossed`): the shell holds
 // ONLY those back in the first column, whose "Couldn't close" backstop is for a cross the kernel refused; a member
 // gone for any other reason is simply the first column's again, shown the moment its strip repaints (the vanishing
 // tab, the user 2026-09-12: a hold over a session the kernel still listed hid it for the backstop and toasted a close
@@ -8328,10 +8338,12 @@ function noteColumnEmptiness(ids: readonly string[]): void {
   // text and the draft died with the document (review find 2026-09-11)
   if (provisionalId || failedProvisionals.size) return;
   const mine = colSets[COL] || [];
-  const present = (id: string) => ids.includes(id) || (boardLive.has(id) && !closingTabs.has(id));
-  const empty = mine.length > 0 && !mine.some(present);
-  if (!empty) { colEmptyPosted = false; return; }
-  if (colEmptyPosted) return;
+  // held: a member is listed, or live and not crossed → the latch resets. unknown: none is present but a member's host has
+  // not reported on this socket (chat-columns.ts columnEmptiness) → nothing is said and the latch stands as it was, the
+  // host's strip is the event that decides. empty: every host reported, none lists a member → said once.
+  const verdict = columnEmptiness(mine, ids, boardLive, closingTabs, hostsSeen);
+  if (verdict === "held") { colEmptyPosted = false; return; }
+  if (verdict === "unknown" || colEmptyPosted) return;
   colEmptyPosted = true;
   const crossed = mine.filter((id) => closingTabs.has(id));
   try { window.parent.postMessage({ romp: "colEmpty", gone: mine.slice(), crossed }, "*"); } catch (e) { /* no shell */ }
