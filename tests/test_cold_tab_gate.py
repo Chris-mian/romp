@@ -24,6 +24,9 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
+os.makedirs(os.path.join(os.environ["XDG_STATE_HOME"], "romp"), exist_ok=True)
+with open(os.path.join(os.environ["XDG_STATE_HOME"], "romp", "session-hosts"), "w") as _f:
+    _f.write("off")                       # a minted state root pins the hosts off (the 2026-09-11 rule; the fold's low f)
 load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
@@ -481,3 +484,81 @@ class ProvisionalLegsMatchBuilt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _stamped(i, t, boundary=False, pad=0):
+    """One synthetic transcript line stamped at epoch `t`: a system compact_boundary record or a user record padded to
+    `pad` bytes of text so a file can be sized to the tail read's windows."""
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
+    if boundary:
+        return json.dumps({"type": "system", "subtype": "compact_boundary", "uuid": "b%d" % i, "timestamp": ts}) + "\n"
+    return json.dumps({"type": "user", "uuid": "u%d" % i, "timestamp": ts,
+                       "message": {"role": "user", "content": [{"type": "text", "text": "x" * pad}]}}) + "\n"
+
+
+class CompactBoundaryTailRead(unittest.TestCase):
+    """The tail read behind the provisional chip's compacting leg (the fold of the gate's queued lows): a row with no since
+    asks for any boundary, a record whose timestamp is not a string is skipped rather than raised, the answer is memoized
+    per path against the file's size, and the slices read every byte once with the seam handled."""
+    T0 = 1_780_000_000
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "t.jsonl")
+        km._COMPACT_BOUNDARY_MEMO.clear()
+
+    def _write(self, lines):
+        with open(self.path, "w") as f:
+            f.writelines(lines)
+
+    def test_a_row_without_a_since_asks_for_any_boundary(self):
+        self._write([_stamped(1, self.T0), _stamped(2, self.T0 + 5, boundary=True), _stamped(3, self.T0 + 9)])
+        self.assertTrue(km._compact_boundary_since(self.path, None), "no since: a boundary anywhere disproves, as the built read does")
+        self.assertTrue(km._compact_boundary_since(self.path, 0))
+        self.assertFalse(km._compact_boundary_since(self.path, self.T0 + 6), "a since after the boundary: nothing since")
+
+    def test_a_timestamp_that_is_not_a_string_is_skipped_never_raised(self):
+        with open(self.path, "w") as f:
+            f.write(json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": 12345}) + "\n")
+            f.write(json.dumps({"type": "user", "timestamp": 12345}) + "\n")
+            f.write("[1, 2, 3]\n")
+            f.write(_stamped(9, self.T0 + 9))
+        self.assertFalse(km._compact_boundary_since(self.path, self.T0), "a bool, on a file whose records are not what the read expects")
+        self.assertIsInstance(km._light_status(S3, self.path, {"state": "compacting", "since": self.T0}, time.time()), dict,
+                              "the provisional status stands on such a file too")
+
+    def test_the_answer_is_memoized_per_path_against_the_files_size(self):
+        self._write([_stamped(1, self.T0), _stamped(2, self.T0 + 9)])
+        self.assertFalse(km._compact_boundary_since(self.path, self.T0))
+        size = os.path.getsize(self.path)
+        boundary = _stamped(2, self.T0 + 9, boundary=True)
+        self._write([_stamped(1, self.T0, pad=size - len(_stamped(1, self.T0)) - len(boundary)), boundary])
+        self.assertEqual(os.path.getsize(self.path), size, "the rewrite keeps the size")
+        self.assertFalse(km._compact_boundary_since(self.path, self.T0), "same path, same size, same question: the memoized answer, no read")
+        with open(self.path, "a") as f:
+            f.write(_stamped(3, self.T0 + 10))
+        self.assertTrue(km._compact_boundary_since(self.path, self.T0), "a changed size reads again")
+        self.assertFalse(km._compact_boundary_since(self.path, self.T0 + 20), "a different question reads again")
+
+    def test_slices_read_every_byte_once_and_a_record_torn_at_a_seam_is_still_read(self):
+        # the boundary record straddles the seam between the first window and the second slice: its head is carried
+        win = km.COMPACT_TAIL_WINDOW
+        boundary = _stamped(2, self.T0 + 5, boundary=True)
+        head = _stamped(1, self.T0 + 1, pad=win // 2)
+        tail_pad = win - len(boundary) // 2 - len(_stamped(3, self.T0 + 9))   # the tail is half a boundary short of one window,
+        tail = _stamped(3, self.T0 + 9, pad=tail_pad)                          # so the seam (size - win) falls inside the boundary line
+        self._write([head, boundary, tail])
+        size = os.path.getsize(self.path)
+        seam = size - win
+        self.assertTrue(len(head) < seam < len(head) + len(boundary), "the seam falls inside the boundary record")
+        reads = []
+        real_open = open
+        class _F:
+            def __init__(self, f): self.f = f
+            def seek(self, n): return self.f.seek(n)
+            def read(self, n): reads.append(n); return self.f.read(n)
+            def __enter__(self): return self
+            def __exit__(self, *a): return self.f.__exit__(*a)
+        with mock.patch.object(km, "open", lambda *a, **k: _F(real_open(*a, **k)), create=True):
+            self.assertTrue(km._compact_boundary_since(self.path, self.T0), "the torn boundary is read whole across the seam")
+        self.assertEqual(reads, [win, size - win], "two slices, the first window and the remainder: every byte read once, no re-read of the tail")
