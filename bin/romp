@@ -889,7 +889,7 @@ if [[ "${1:-}" == "fork" ]]; then
     exit 1
 fi
 
-# Rename a session (the user 2026-08-23, via the SynthProbe fleet restructuring): the kernel's
+# Rename a session (the user 2026-08-23, restructuring another project's sessions): the kernel's
 # POST /rename, the exact sibling of `romp fork` — sessions are uuid-keyed with the name as a
 # label, so a rename never breaks mailboxes, goals, or history; every surface resyncs.
 if [[ "${1:-}" == "rename" ]]; then
