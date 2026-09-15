@@ -639,6 +639,7 @@ class ColdBootDiet(unittest.TestCase):
         self.assertIsNotNone(memo, "the memo reports under /perf memos.outlineProvisional")
         self.assertGreaterEqual(memo["miss"], 2, "the two provisional stores walked once each: %r" % memo)
         self.assertGreaterEqual(memo["bypass_empty"], N_SESSIONS - 3, "the storeless tabs bypass the walk: %r" % memo)
+        self.assertEqual(memo["entries"], 2, "one entry per cold store-backed tab (the muted one included: the mute applies at the read): %r" % memo)
 
     def test_the_outline_marks_a_provisional_session_lightly_and_withholds_its_jumps(self):
         # road 11: the DOM of the first frame
@@ -670,7 +671,10 @@ class ColdBootDiet(unittest.TestCase):
         sec = {x["sid"]: x for x in a["dom"]["sections"]}[g]
         self.assertFalse(sec["prov"], "the section lost the light mark: %r" % sec)
         self.assertGreaterEqual(sec["acts"], 2, "and its jumps are back: %r" % sec)
-        self.assertGreaterEqual(a["perf"]["memo"]["hit"], 1, "the memo hit across the cycles: %r" % a["perf"]["memo"])
+        # the memo's entries, not its hits: a hit needs a cycle whose store and cleared keys equal the entry's, and a key can move
+        # once after a boot (CI at 61bf4bda read miss 3, hit 0 here and hit 1 later); hit and miss are pinned by the unit test
+        # (tests/test_outline_provisional_rows.py test_06), the lab pins the eviction rule: the built tab's entry went, the cold one stays
+        self.assertEqual(a["perf"]["memo"]["entries"], 1, "the clicked tab, built now, lost its entry; the muted cold tab keeps its own: %r" % a["perf"]["memo"])
 
     def test_an_unflagged_outline_socket_makes_the_kernel_build_every_tab(self):
         r = self._result_outline()
@@ -679,6 +683,7 @@ class ColdBootDiet(unittest.TestCase):
         self.assertGreaterEqual(u["perf"]["built"] - r["afterClick"]["perf"]["built"], N_SESSIONS - 2, "the kernel built the remaining tabs for the older pane: %r then %r" % (r["afterClick"]["perf"], u["perf"]))
         self.assertGreaterEqual(u["heldStill"], 1, "with the chat's prefetch still held: the builds were the kernel's: %r" % u["heldStill"])
         self.assertEqual(u["feed"]["prov"], [], "and no row is provisional any more: %r" % u["feed"]["prov"])
+        self.assertEqual(u["perf"]["memo"]["entries"], 0, "every tab built: every entry went at the attach: %r" % u["perf"]["memo"])
         self.assertEqual(u["fullsDistinct"], 2, "the chat page, holding its skeletons, was handed no full frame it had not asked for: %r" % u["fullsDistinct"])
 
     def test_the_measurement_is_reported(self):
