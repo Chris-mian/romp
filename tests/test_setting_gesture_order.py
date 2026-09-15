@@ -777,6 +777,9 @@ class StaleGestureAnswersTheDeliveringSocket(_Base):
                  # gt-gates and answers like the rest (2026-09-01)
                  ({"type": "setThinkingSummaries", "enabled": True}, {"type": "setThinkingSummaries", "enabled": False},
                   "thinking-summaries", True),
+                 # the Whole chat frames switch (2026-09-15): per-install like Thinking summaries, gt-gated like the rest
+                 ({"type": "setWholeChatFrames", "enabled": True}, {"type": "setWholeChatFrames", "enabled": False},
+                  "whole-chat-frames", True),
                  ({"type": "setIndexEffort", "effort": "high"}, {"type": "setIndexEffort", "effort": "low"},
                   "index-effort", "high"),
                  ({"type": "setDistillModel", "model": "haiku"}, {"type": "setDistillModel", "model": "triage"},
@@ -818,7 +821,7 @@ class VersionReportsEveryStoredStamp(_Base):
     def test_a_fresh_install_reports_every_store_at_zero(self):
         gts = km._version_info()["settingsGt"]
         self.assertEqual(set(gts), set(km._GT_STORES), "one key per gt-gated store, no more, no less")
-        self.assertEqual(len(km._GT_STORES), 19, "six toggles/modes (the task-tracking switch since T404) + thirteen kernel-side stores (judge-concurrency since T277, judge-fast with the judges' fast mode, distill-fast and index-fast with T300's box per tier; the terminal-backend store went with that backend, T332)")
+        self.assertEqual(len(km._GT_STORES), 20, "seven toggles/modes (the task-tracking switch since T404, the Whole chat frames switch since 2026-09-15) + thirteen kernel-side stores (judge-concurrency since T277, judge-fast with the judges' fast mode, distill-fast and index-fast with T300's box per tier; the terminal-backend store went with that backend, T332)")
         self.assertEqual(set(gts.values()), {0}, "nothing applied yet reads 0 — nothing to outrank")
         self.assertEqual(json.loads(json.dumps(gts)), gts, "plain JSON — ints, no paths, nothing to redact")
 
@@ -858,7 +861,7 @@ class VersionReportsEveryStoredStamp(_Base):
         newer = [{"type": "setAutoNudge", "enabled": False}, {"type": "setCompactSuggest", "enabled": True},
                  {"type": "setFileEditing", "enabled": True}, {"type": "setUpdateMode", "mode": "auto"},
                  {"type": "setThinkingSummaries", "enabled": True}, {"type": "setJudgeModel", "model": "fable"},
-                 {"type": "setTaskTracking", "enabled": False},
+                 {"type": "setTaskTracking", "enabled": False}, {"type": "setWholeChatFrames", "enabled": True},
                  {"type": "setIndexModel", "model": "fable"}, {"type": "setJudgeEffort", "effort": "high"},
                  {"type": "setIndexEffort", "effort": "high"}, {"type": "setJudgeConcurrency", "value": "4"},
                  {"type": "setDistillModel", "model": "haiku"},
@@ -869,7 +872,7 @@ class VersionReportsEveryStoredStamp(_Base):
         older = [{"type": "setAutoNudge", "enabled": True}, {"type": "setCompactSuggest", "enabled": False},
                  {"type": "setFileEditing", "enabled": False}, {"type": "setUpdateMode", "mode": "off"},
                  {"type": "setThinkingSummaries", "enabled": False}, {"type": "setJudgeModel", "model": "opus"},
-                 {"type": "setTaskTracking", "enabled": True},
+                 {"type": "setTaskTracking", "enabled": True}, {"type": "setWholeChatFrames", "enabled": False},
                  {"type": "setIndexModel", "model": "opus"}, {"type": "setJudgeEffort", "effort": "low"},
                  {"type": "setIndexEffort", "effort": "low"}, {"type": "setJudgeConcurrency", "value": "2"},
                  {"type": "setDistillModel", "model": "triage"},
@@ -883,7 +886,7 @@ class VersionReportsEveryStoredStamp(_Base):
                 km.Handler._dispatch_ws(types.SimpleNamespace(), dict(o, gt=T_OLD), client)
         named = {m["setting"] for m in sent if m.get("type") == "settingStale"}
         self.assertEqual(named, set(km._version_info()["settingsGt"]), "frames and the report share one vocabulary")
-        self.assertEqual(len(named), 19)   # thirteen kernel-side stores (T300's box per judge tier, minus the terminal-backend store, T332) + six toggles/modes (the task-tracking switch since T404)
+        self.assertEqual(len(named), 20)   # thirteen kernel-side stores (T300's box per judge tier, minus the terminal-backend store, T332) + seven toggles/modes (the task-tracking switch since T404, the Whole chat frames switch since 2026-09-15)
 
 
 class ASkewedClockCannotLockTheStore(_Base):
