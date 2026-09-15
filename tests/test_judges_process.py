@@ -161,8 +161,8 @@ class ChildRoad(_Child):
         if child is not None:
             child.pass_ = lambda now, tracking=True: (order.append("pass"), real_pass(now, tracking))[1]
         called = []
-        self.jd.run_index = lambda: called.append("index")
-        self.jd.run_triage = lambda: called.append("triage")
+        self.jd.run_index = lambda now=None: called.append("index")
+        self.jd.run_triage = lambda now=None: called.append("triage")
         gen0 = km._judge_gen[0]
         cpu0 = km._PERF_STATS.judge["cpu_ms_sum"]
         try:
@@ -201,8 +201,8 @@ class ChildRoad(_Child):
     def test_the_default_runs_the_tiers_in_process_and_starts_no_child(self):
         km = self.km
         called = []
-        self.jd.run_index = lambda: called.append("index")
-        self.jd.run_triage = lambda: called.append("triage")
+        self.jd.run_index = lambda now=None: called.append("index")
+        self.jd.run_triage = lambda now=None: called.append("triage")
         self._pass()
         self.assertEqual(sorted(called), ["index", "triage"], "the in-process tiers ran")
         self.assertIsNone(getattr(km, "_JUDGE_CHILD", None) and km._JUDGE_CHILD.proc, "no child started")
@@ -349,8 +349,8 @@ class FailureRoads(_Child):
         self._on()
         os.environ["FAKE_PROTO"] = "2"                             # refused at every spawn
         called = []
-        self.jd.run_index = lambda: called.append("index")
-        self.jd.run_triage = lambda: called.append("triage")
+        self.jd.run_index = lambda now=None: called.append("index")
+        self.jd.run_triage = lambda now=None: called.append("triage")
         with km._SYNC_LOCK:
             del km._SYNC_NOTICES[:]
         self._pass(); self._pass(); self._pass()
@@ -374,8 +374,8 @@ class FailureRoads(_Child):
         self.assertIsNotNone(km._JUDGE_CHILD.proc)
         self.switch.unlink()
         called = []
-        self.jd.run_index = lambda: called.append("index")
-        self.jd.run_triage = lambda: called.append("triage")
+        self.jd.run_index = lambda now=None: called.append("index")
+        self.jd.run_triage = lambda now=None: called.append("triage")
         self._pass()
         self.assertIsNone(km._JUDGE_CHILD.proc, "the child is ended on the off pass")
         self.assertEqual(sorted(called), ["index", "triage"])

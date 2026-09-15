@@ -130,7 +130,7 @@ class Collector(unittest.TestCase):
                                               "outlineProvisional"})   # the Outline's provisional-row ledger memo, parse-free (plans/outline-pane-provisional-row.md, 2026-09-15)
         self.assertEqual(set(snap["memos"]["outlineProvisional"]), {"hit", "miss", "bypass_hold", "bypass_empty", "entries"},
                          "the provisional ledger memo: hits and misses on the store object's identity, the two bypasses (a rewind hold, an empty store), and the occupancy")
-        self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound", "dirStats", "fileStats", "entryStats", "listings", "loaded", "loadFailed", "written", "swept", "dropped", "dumpSkipped", "evicted", "writeFailed"}, "the spend guard's tree memos against their bound")
+        self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound", "served", "dirStats", "fileStats", "entryStats", "listings", "loaded", "loadFailed", "written", "swept", "dropped", "dumpSkipped", "evicted", "writeFailed"}, "the spend guard's tree memos against their bound")
         self.assertEqual(snap["memos"]["spendTree"]["bound"], km.SPEND_GUARD_TREE_MEMO_BYTES)
         self.assertEqual(set(snap["memos"]["summaryAnchor"]), {"entries", "bytes", "bound", "hit", "miss", "evict", "fault"},
                          "the brief line's text-atom landings (T388): occupancy and counters against their bound")
@@ -562,16 +562,24 @@ class JudgeCpu(unittest.TestCase):
         self.assertEqual(km._PERF_STATS.snapshot()["judge"]["cpu_ms_workers"], jd.judge_worker_cpu_ms())
 
     def test_run_tier_accounts_the_tier_threads_cpu(self):
-        def tier_cpu():
-            j = km._PERF_STATS.snapshot()["judge"]
-            return j["cpu_ms_sum"] - j["cpu_ms_workers"]
-        before = tier_cpu()
-        km._run_tier(lambda: _burn_cpu(0.005))
-        self.assertGreaterEqual(tier_cpu() - before, 4.0)
-        before = tier_cpu()
+        """The shared tier runner (judge.py _run_tier, stage three round two) lands the thread's own CPU in the pass's
+        accounting record under its lock, a raising tier included (the finally); the producer feeds the record's total to
+        /perf's judge.cpu_ms_sum (a source pin on the call)."""
+        jd = km.jd
+        acc = jd._pass_acc()
+        jd._run_tier(lambda: _burn_cpu(0.005), "index", acc)
+        self.assertGreaterEqual(acc["cpuS"] * 1000.0, 4.0); self.assertEqual(acc["failures"], [])
+        before = acc["cpuS"]
         with redirect_stderr(io.StringIO()):
-            km._run_tier(lambda: (_burn_cpu(0.005), (_ for _ in ()).throw(RuntimeError("tier died"))))
-        self.assertGreaterEqual(tier_cpu() - before, 4.0, "a raising tier still accounts (the finally)")
+            jd._run_tier(lambda: (_burn_cpu(0.005), (_ for _ in ()).throw(RuntimeError("tier died"))), "triage", acc)
+        self.assertGreaterEqual((acc["cpuS"] - before) * 1000.0, 4.0, "a raising tier still accounts (the finally)")
+        self.assertEqual(len(acc["failures"]), 1); self.assertIn("RuntimeError: tier died", acc["failures"][0])
+        import inspect
+        self.assertIn('_PERF_STATS.judge_cpu(res["tierCpuS"])', inspect.getsource(km._producer), "the producer feeds the total")
+        self.assertIn('with acc["lock"]:', inspect.getsource(jd._run_tier), "the accumulation takes the lock")
+        before = km._PERF_STATS.snapshot()["judge"]["cpu_ms_sum"]
+        km._PERF_STATS.judge_cpu(0.005)
+        self.assertAlmostEqual(km._PERF_STATS.snapshot()["judge"]["cpu_ms_sum"] - before, 5.0, places=3)
 
 
 class PusherRecords(unittest.TestCase):
