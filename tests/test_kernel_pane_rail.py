@@ -183,7 +183,7 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("function driftWord(t){", self.html)
         self.assertIn("down=bb>0?('behind '+bb):''", self.html)   # said in words since 2026-07-30
         self.assertIn("up=ab>0?('ahead '+ab):''", self.html)
-        self.assertIn("var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):''", self.html)
+        self.assertIn("var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):(t.restartPending?' \\u00b7 running older code':'')", self.html)
         self.assertIn("+dw+", self.html, "the per-host tooltip line carries it")
         # the panel row reads the same functions rather than re-deriving the words. Since 2026-07-30 it
         # leads with the BUILD (release + commit) and puts the distance in parentheses after it — a bare

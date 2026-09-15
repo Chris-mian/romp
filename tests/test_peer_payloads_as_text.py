@@ -114,6 +114,7 @@ class TunnelsOfIsAWhitelist(_Stubbed):
                 "kernelVer": "v0.1.3", "localVer": "v0.2.0+", "outOfDate": True, "behindBy": 2, "aheadBy": 0,
                 "kernelDate": "2026-08-11", "autoNudge": False, "settings": {"autoNudge": False, "theme": "dark"},
                 "fastForward": True, "fastPull": False, "askPull": True,
+                "checkoutSha": "def5678", "restartPending": False,   # drift on the checkout, restart pending on the code (2026-09-14)
                 "autoPush": {"phase": "pushing", "detail": "sending", "at": 1785272930},
                 "fails": 3, "nextTry": 1785272990, "stale": False, "lastOk": 1785272930}
         self._answer({"tunnels": [good]})

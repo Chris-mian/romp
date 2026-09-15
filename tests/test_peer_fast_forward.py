@@ -121,6 +121,48 @@ class AskingThePeer(unittest.TestCase):
         self.assertIn("pulled 8 commits", detail)
         self.assertIn("restarting it", detail)
 
+    def test_a_pull_that_changed_no_kernel_code_asks_no_restart(self):
+        """plans/drift-by-running-code.md: the peer's pull answer carries its own verdict on whether what it now holds
+        changes what its process runs; a docs, tests or UI pull converges in place there, and a restart would only cut
+        its turns and drop every pane's socket (the laptop kernel restarted once per merge on 2026-09-14)."""
+        (ok, detail), calls = self._ask([(200, {"ok": True, "detail": "pulled 2 commits from hubname", "kernel_code_changed": False})])
+        self.assertTrue(ok)
+        self.assertEqual([c[1] for c in calls], ["/tunnels/pull"], "no restart asked")
+        self.assertIn("no kernel code changed", detail)
+        self.assertIn("keeps running", detail)
+
+    def test_a_pull_that_changed_kernel_code_asks_the_restart(self):
+        (ok, detail), calls = self._ask([(200, {"ok": True, "detail": "pulled 2 commits from hubname", "kernel_code_changed": True}),
+                                         (200, {"ok": True, "restarting": True})])
+        self.assertTrue(ok)
+        self.assertEqual([c[1] for c in calls], ["/tunnels/pull", "/restart"])
+        self.assertEqual(calls[1][2], {"fleet": False})
+        self.assertIn("restarting it", detail)
+
+    def test_a_peer_older_than_the_field_gets_the_hubs_own_reading_over_the_two_commits(self):
+        saved = (km._kernel_code_changed, km._fresh_local_head)
+        seen = []
+        km._fresh_local_head = lambda: LOCAL
+        try:
+            km._kernel_code_changed = lambda a, b: seen.append((a, b)) or False
+            (ok, detail), calls = self._ask([(200, {"ok": True, "detail": "pulled 2 commits from hubname"})])
+            self.assertEqual([c[1] for c in calls], ["/tunnels/pull"], "the hub read the diff itself: no kernel code, no restart")
+            self.assertEqual(seen, [(REMOTE, LOCAL)], "the peer's booted commit against this HEAD, both in this repository")
+            km._kernel_code_changed = lambda a, b: True
+            (ok, detail), calls = self._ask([(200, {"ok": True, "detail": "pulled 2 commits from hubname"}),
+                                             (200, {"ok": True, "restarting": True})])
+            self.assertEqual([c[1] for c in calls], ["/tunnels/pull", "/restart"], "kernel code changed by the hub's reading: the restart")
+        finally:
+            km._kernel_code_changed, km._fresh_local_head = saved
+
+    def test_the_restart_sweep_asks_the_restart_whatever_the_pull_changed(self):
+        # the rail's Restart is a restart the user asked for: the verdict decides nothing there
+        km._peer_call = calls = _Calls([(200, {"ok": True, "detail": "already up to date", "kernel_code_changed": False}),
+                                        (200, {"ok": True, "restarting": True})])
+        ok, detail = km._ask_peer_to_pull(PEER, restart="always")
+        self.assertTrue(ok)
+        self.assertEqual([c[1] for c in calls], ["/tunnels/pull", "/restart"])
+
     def test_the_peer_s_own_refusal_is_passed_through(self):
         (ok, detail), calls = self._ask([(502, {"ok": False, "detail": "this machine's tree has "
                                                 "uncommitted changes — commit or stash them first"})])
@@ -286,3 +328,61 @@ class SurfacesOnlyOfferWhatCanWork(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DriftOnTheCheckout(unittest.TestCase):
+    """plans/drift-by-running-code.md: a remote is behind by its CHECKOUT, not by the commit its kernel booted from; whether
+    it runs older kernel code is a separate fact with its own offer. A peer that pulled a docs commit and, rightly, did
+    not restart used to read "behind 1 commit" forever and be asked again on every pass."""
+
+    def setUp(self):
+        self._saved = (km._local_head, km._behind_info)
+        km._local_head = lambda short=False: (LOCAL[:8] if short else LOCAL)
+        km._behind_info = lambda sha, head=None: {"behind": 1, "ahead": 0, "date": ""}
+
+    def tearDown(self):
+        km._local_head, km._behind_info = self._saved
+
+    def test_a_peer_whose_checkout_matches_is_not_behind_whatever_it_booted_from(self):
+        row = {"host": PEER, "kernel_sha": REMOTE[:8], "checkout_sha": LOCAL[:8]}
+        self.assertFalse(km._remote_out_of_date(row))
+        self.assertFalse(km._is_fast_forward(row))
+        self.assertEqual(km._drift_sha(row), LOCAL[:8])
+
+    def test_a_row_without_a_checkout_sha_reads_the_booted_commit_as_before(self):
+        row = {"host": PEER, "kernel_sha": REMOTE[:8]}
+        self.assertTrue(km._remote_out_of_date(row))
+        self.assertEqual(km._drift_sha(row), REMOTE[:8])
+
+    def test_the_row_says_which_and_offers_the_ask_for_a_peer_running_older_code(self):
+        pub = km._remote_public(_row(kernel_sha=REMOTE[:8], checkout_sha=LOCAL[:8], restart_pending=True))
+        self.assertFalse(pub["outOfDate"], "its checkout matches: not behind")
+        self.assertTrue(pub["restartPending"], "but its process runs older kernel code")
+        self.assertEqual(pub["checkoutSha"], LOCAL[:8])
+        self.assertTrue(pub["askPull"], "the ask is offered: the peer's answer calls for the restart it needs")
+        quiet = km._remote_public(_row(kernel_sha=LOCAL[:8], checkout_sha=LOCAL[:8], restart_pending=False))
+        self.assertFalse(quiet["restartPending"]); self.assertFalse(quiet["askPull"])
+
+    def test_version_carries_the_checkout_and_the_pending_verdict(self):
+        saved = (km._kernel_sha, km._kernel_code_changed)
+        km._RESTART_PENDING_MEMO.clear()
+        try:
+            km._kernel_sha = lambda reask=False: REMOTE[:8]
+            km._kernel_code_changed = lambda a, b: True
+            v = km._version_info()
+            self.assertEqual(v["checkout_sha"], LOCAL[:8])
+            self.assertTrue(v["restart_pending"], "the checkout holds kernel code this process does not run")
+            km._kernel_code_changed = lambda a, b: (_ for _ in ()).throw(AssertionError("memoized: not asked again"))
+            self.assertTrue(km._restart_pending())
+            km._kernel_sha = lambda reask=False: LOCAL[:8]
+            self.assertFalse(km._restart_pending(), "one commit booted and checked out: nothing pending")
+            km._kernel_sha = lambda reask=False: None
+            self.assertIsNone(km._restart_pending(), "no claim when the booted commit cannot be read")
+        finally:
+            km._kernel_sha, km._kernel_code_changed = saved
+            km._RESTART_PENDING_MEMO.clear()
+
+    def test_the_pull_route_answers_with_the_verdict(self):
+        src = open(os.path.join(os.path.dirname(BIN), "kernel", "kernel.py"), encoding="utf-8").read()
+        self.assertIn('kcc = _restart_pending() if ok else None', src)
+        self.assertIn('json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc})', src, "the peer's own word rides its pull answer")

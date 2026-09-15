@@ -293,6 +293,26 @@ class RemotesPanelRender(_PanelHarness, unittest.TestCase):
             tn["peerTiers"] = tiers
         return tn
 
+    def test_a_peer_running_older_code_than_its_checkout_says_so_and_offers_the_restart(self):
+        """plans/drift-by-running-code.md: a peer whose checkout matches this machine is not behind, whatever its kernel
+        booted from; when its kernel runs older kernel code the row says so and the ask slot offers the restart, not an
+        update. Before, such a peer read "behind N" forever and was asked to pull and restart on every pass."""
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["tunnels"][0].update({"status": "up", "checkinPeer": True, "outOfDate": False, "behindBy": 0, "aheadBy": 0,
+                                 "kernelSha": "abc1234", "checkoutSha": "def5678", "localSha": "def5678",
+                                 "kernelVer": "v0.1.3", "localVer": "v0.2.0", "restartPending": True, "askPull": True})
+        out = self._run(tunnels=tn)
+        html = out.get("html", "")
+        self.assertIn("(running older code)", html)
+        self.assertNotIn("behind", html, "its checkout matches: no drift count")
+        self.assertIn("a restart brings it onto the code it holds", html)
+        self.assertRegex(html, r'data-a="[^"]*"[^>]*>Restart</button>', "the ask slot offers the restart, not an update")
+        quiet = json.loads(json.dumps(TUNNELS))
+        quiet["tunnels"][0].update({"status": "up", "checkinPeer": True, "restartPending": False, "askPull": False})
+        html2 = self._run(tunnels=quiet).get("html", "")
+        self.assertNotIn("running older code", html2)
+        self.assertNotIn("Restart</button>", html2)
+
     def test_a_live_row_states_its_drift_plainly(self):
         # The control: an `up` row DID just poll, so its drift is fact and wears no hedge.
         out = self._run(tunnels=self._drifted(status="up", stale=False))

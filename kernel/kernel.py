@@ -1812,6 +1812,9 @@ def _version_info():
     _mv, _mgt = _mesh_settings_snapshot()   # value AND stamp of each mesh-adopted store from ONE read (T248b)
     return {"kernel_sha": _kernel_sha(), "kernel_ver": _kernel_ver(), "pid": os.getpid(), "started": int(_STARTED),
             "code_ident": _code_ident(),   # the reload core's same-code test after a restart (invisible restarts, 2026-09-14)
+            # the checkout's HEAD beside the booted commit, and whether the checkout holds kernel code this process does not
+            # run: a hub measures drift on the checkout and offers a restart on the code (plans/drift-by-running-code.md)
+            "checkout_sha": _local_head(short=True) or "", "restart_pending": _restart_pending(),
             "boot": _BOOT_ID,   # lets a page retire update offers from a previous kernel life (2026-08-15)
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             # how often a backend's liveness read RAISED since boot and its previous rows were served instead
@@ -9104,6 +9107,27 @@ def _kernel_code_changed(a, b):
     Any error reads as True: when unsure, the restart is the safe converge."""
     cc = _converge_classes(a, b)
     return cc is None or bool(cc["kernel"])
+
+
+_RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
+
+
+def _restart_pending():
+    """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
+    checkout's HEAD through _kernel_code_changed (plans/drift-by-running-code.md). False when the two are one commit;
+    None when either cannot be read (no claim, so a hub falls back to its own reading). Memoized per pair: /version
+    is polled every few seconds and the pair changes only at a pull or a restart."""
+    booted, checkout = _sha_base(_kernel_sha() or ""), _local_head(short=True) or ""
+    if not booted or not checkout:
+        return None
+    if _shas_agree(booted, checkout):
+        return False
+    key = (booted, checkout)
+    if key not in _RESTART_PENDING_MEMO:
+        if len(_RESTART_PENDING_MEMO) > 64:
+            _RESTART_PENDING_MEMO.clear()
+        _RESTART_PENDING_MEMO[key] = bool(_kernel_code_changed(booted, checkout))
+    return _RESTART_PENDING_MEMO[key]
 
 
 def _rebuild_dist():
@@ -20355,6 +20379,7 @@ def _remote_payload_public_row(raw):
             "settings": st,
             "fastForward": raw.get("fastForward") is True, "fastPull": raw.get("fastPull") is True,
             "askPull": raw.get("askPull") is True,
+            "checkoutSha": _peer_sha(raw.get("checkoutSha")), "restartPending": raw.get("restartPending") is True,
             "autoPush": ap,
             "fails": _peer_int(raw.get("fails")), "nextTry": _peer_int(raw.get("nextTry")),
             "stale": raw.get("stale") is True, "lastOk": _peer_int(raw.get("lastOk"))}
@@ -21649,7 +21674,7 @@ def _remote_public(r):
     but SAY they are remembered and when they were last confirmed, so the UI can mark them instead of
     passing memory off as fact."""
     ood = _remote_out_of_date(r)
-    drift = _behind_info(r.get("kernel_sha") or "") if ood else {"behind": 0, "ahead": 0, "date": ""}
+    drift = _behind_info(_drift_sha(r)) if ood else {"behind": 0, "ahead": 0, "date": ""}
     stale = (r.get("status") or "down") != "up"
     # ONE commit, ONE version (the user 2026-08-02, reading "v0.3.0 4a0beaa" here and "v0.2.0+ 4a0beaa"
     # for a host on that same commit). The release is a property of the CODE, so two machines at one
@@ -21697,7 +21722,11 @@ def _remote_public(r):
             # askPull: a CHECKED-IN peer that is strictly behind. No ssh runs from here, so a push can
             # only be refused — the row offers "tell it to update itself" instead (_ask_peer_to_pull),
             # which is the one route that exists between the two machines (the user 2026-07-28).
-            "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r), "askPull": _is_ask_pull(r),
+            "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r),
+            # askPull is also offered to a checked-in peer whose checkout matches but whose process runs older kernel
+            # code (restartPending): the same route pulls nothing and asks the restart its own answer calls for
+            "askPull": _is_ask_pull(r) or (bool(r.get("checkin_peer")) and r.get("restart_pending") is True),
+            "checkoutSha": r.get("checkout_sha") or "", "restartPending": r.get("restart_pending") is True,
             "autoPush": _auto_push_state(r["host"]),
             # reconnect state (the user 2026-07-22, kept when the give-up went away 2026-07-29): a
             # forever-retry must never look identical to a healthy idle row, so the popover can say how
@@ -22328,7 +22357,13 @@ def _poll_remote_version(r):
         an = j.get("autoNudge")
         st = j.get("settings")
         gts = j.get("settingsGt")
+        csha = j.get("checkout_sha") or None
+        if csha and not _peer_sha(csha):
+            _peer_shape_complain(host, "checkout_sha", csha)
+            csha = None
+        rp = j.get("restart_pending")
         return {"sha": sha, "ver": ver, "shaConfirmed": sha_ok,
+                "checkoutSha": csha, "restartPending": rp if isinstance(rp, bool) else None,
                 "autoNudge": an if isinstance(an, bool) else None,
                 "settings": st if isinstance(st, dict) else None,
                 "settingsGt": gts if isinstance(gts, dict) else None} if sha else None
@@ -23483,6 +23518,14 @@ def _shas_agree(a, b):
     return bool(a and b and (a.startswith(b) or b.startswith(a)))
 
 
+def _drift_sha(r):
+    """The commit a remote's drift is measured on: its CHECKOUT's HEAD when its kernel reports one (a push or a pull
+    would change what is on its disk), else the commit it booted from, as before (plans/drift-by-running-code.md). A
+    peer whose checkout matches ours is not behind whatever it booted from; whether it runs older code is a separate
+    fact (restart_pending) with its own offer."""
+    return r.get("checkout_sha") or r.get("kernel_sha") or ""
+
+
 def _remote_out_of_date(r, head=None):
     """True iff this remote is running a DIFFERENT commit than the local kernel's HEAD — i.e. a push would
     change it. Compared against the LIVE HEAD (what `_update_remote` actually pushes), NOT the kernel's cached
@@ -23491,7 +23534,8 @@ def _remote_out_of_date(r, head=None):
     the sha to compare against when the caller holds one (the restart-all run judges every row against the
     single head it read); None reads the polls' cache, as the dashboard does."""
     lh = head if head is not None else _local_head(short=True)
-    return bool(r.get("kernel_sha") and lh and not _shas_agree(r.get("kernel_sha"), lh))
+    sha = _drift_sha(r)
+    return bool(sha and lh and not _shas_agree(sha, lh))
 
 
 _BEHIND_CACHE = {}   # (remote sha base, local full HEAD) → drift dict; both key parts name immutable commits
@@ -23549,7 +23593,7 @@ def _is_fast_forward(r, head=None):
     the situation and lets the user decide. `head` pins the comparison, as in _remote_out_of_date."""
     if not _remote_out_of_date(r, head=head):
         return False
-    d = _behind_info(r.get("kernel_sha") or "", head=head)
+    d = _behind_info(_drift_sha(r), head=head)
     b, a = d.get("behind"), d.get("ahead")
     return isinstance(b, int) and isinstance(a, int) and b > 0 and a == 0
 
@@ -23712,9 +23756,9 @@ def _auto_ask_peer(host):
     except Exception as e:
         ok, detail = False, str(e)
     _set_auto_push(host, "waiting" if ok else "failed",
-                   detail or ("asked; waiting for it to restart" if ok else "the ask failed"))
+                   detail or ("asked; waiting for it to pull" if ok else "the ask failed"))
     if ok:
-        _sync_notice("asked %s to fast-forward itself onto this machine's build; it is restarting" % host)
+        _sync_notice("asked %s to fast-forward itself onto this machine's build; %s" % (host, detail or "it pulled"))
     else:
         _sync_notice("could not get %s to update itself: %s" % (host, detail or "the ask failed"), ok=False)
     return ok
@@ -23749,7 +23793,7 @@ def _maybe_auto_push(r):
             and _local_branch() == "main")
     if not (push or pull or ask):
         return                     # includes a checked-in peer we cannot prove is behind: nothing safe to drive
-    key = (_sha_base(r.get("kernel_sha") or ""), _local_head() or "")
+    key = (_sha_base(_drift_sha(r)), _local_head() or "")
     with _auto_push_lock:
         if _auto_push.get(host, {}).get("phase") in ("pushing", "pulling", "asking"):
             return                                  # one sync per host at a time
@@ -24080,7 +24124,7 @@ def _is_fast_pull(r, head=None):
     pins the comparison, as in _remote_out_of_date."""
     if not _remote_out_of_date(r, head=head):
         return False
-    d = _behind_info(r.get("kernel_sha") or "", head=head)
+    d = _behind_info(_drift_sha(r), head=head)
     b, a = d.get("behind"), d.get("ahead")
     return isinstance(b, int) and isinstance(a, int) and a > 0 and b == 0
 
@@ -24223,7 +24267,7 @@ def _peer_hub_name(r):
 _ASK_PULL_TIMEOUT = 180   # the PEER's git fetch + fast-forward over its own ssh, not a local operation
 
 
-def _ask_peer_to_pull(host):
+def _ask_peer_to_pull(host, restart="if-code-changed"):
     """Get a CHECKED-IN peer to FAST-FORWARD ITSELF onto this machine's build (the user 2026-07-28, whose
     laptop kept being offered a push that could never run).
 
@@ -24267,6 +24311,16 @@ def _ask_peer_to_pull(host):
     # made the peer we had just updated fan out: it restarted the hub back (mid-sweep, before the
     # report was written) and cut in-flight turns on machines nobody asked to restart. This step
     # exists so THAT peer runs what it just pulled; the hub walks its own rows (_fleet_restart_run).
+    # The restart is asked only when what the peer now holds changes what its process runs (plans/drift-by-running-code.md):
+    # a docs, tests or UI pull converges in place on the peer (its own _in_place_converge) and a restart would only cut
+    # its turns and drop every pane's socket. The peer's answer is the authority (its tree, its classification); a peer
+    # older than the field gets the hub's reading over the two commits it holds, and a reading that fails restarts, the
+    # safe converge. `restart="always"` is the rail's Restart sweep, where a restart is what the user asked for.
+    kcc = j.get("kernel_code_changed")
+    if restart != "always" and kcc is None:
+        kcc = _kernel_code_changed(_sha_base(r.get("kernel_sha") or ""), _fresh_local_head() or "")
+    if restart != "always" and kcc is False:
+        return True, detail + "; no kernel code changed, so it keeps running and converges in place"
     rst, rj = _peer_call(r, "POST", "/restart", {"fleet": False}, timeout=10)
     if rst != 200:
         # The peer's own words ride along (review find, 2026-09-08): its /restart refuses a body it
@@ -24380,7 +24434,7 @@ def _fleet_restart_plan(r, head=None):
         if _local_branch() != "main":
             return "skip", "%s is ahead, but this checkout isn't on main — pull it yourself" % host
         return "sync-pull", "ahead of this build; fast-forwarding this machine onto it"
-    d = _behind_info(r.get("kernel_sha") or "", head=head)
+    d = _behind_info(_drift_sha(r), head=head)
     b, a = d.get("behind"), d.get("ahead")
     if isinstance(b, int) and isinstance(a, int) and b > 0 and a > 0:
         return "skip", "diverged (it has %d commit(s) this machine lacks) — not clobbering either side" % a
@@ -24420,7 +24474,7 @@ def _fleet_restart_run(manager_port=_PORT_FROM_ENV):
                     detail += "; this machine restarts below"
                     head = _fresh_local_head()          # HEAD moved by design: later rows are judged against it
             elif action == "ask":
-                ok, detail = _ask_peer_to_pull(host)
+                ok, detail = _ask_peer_to_pull(host, restart="always")   # the user asked for a restart
             else:
                 ok, detail = _restart_remote_kernel(host)
             rows.append({"host": host, "ok": bool(ok), "action": action, "detail": detail})
@@ -25582,6 +25636,8 @@ def _tunnel_supervisor():
                         r["hub_pid"] = rver["pid"]   # the peer kernel's incarnation — a restart changes it (auto-reconnect 2026-08-24)
                     if rsha is not None:
                         r["kernel_sha"] = rsha
+                        r["checkout_sha"] = (rver or {}).get("checkoutSha") or ""      # None from an older kernel: "" (the booted sha stands in)
+                        r["restart_pending"] = (rver or {}).get("restartPending")       # None = that kernel did not say
                         r["kernel_ver"] = (rver or {}).get("ver") or ""
                         r["auto_nudge"] = (rver or {}).get("autoNudge")   # None = that kernel didn't say
                         r["settings"] = (rver or {}).get("settings")      # its whole kernel-side dict (None = older kernel)
@@ -56139,7 +56195,7 @@ var _head=!ts.length?'':(_bad?(_bad+' host'+(_bad===1?'':'s')+' need'+(_bad===1?
 :(_wt?(_wt+' host'+(_wt===1?'':'s')+' disconnected (romp is retrying)'):'all hosts connected and in sync'));
 icon.title=ts.length?('Remote kernels \\u00b7 '+_head+'\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
-var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):'';
+var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):(t.restartPending?' \\u00b7 running older code':'');
 return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+dw+(t.hasToken?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
 _lastArgs=[ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{}];
 _lastUp=ts.filter(function(t){return t.status==='up';}).length;
@@ -56266,6 +56322,9 @@ if(t.outOfDate){var w=driftWord(t),ar=driftCounts(t);
 var tt='running '+(buildWord(t.kernelVer,t.kernelSha)||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(buildWord(t.localVer,t.localSha)||'?')+((t.aheadBy>0&&t.behindBy>0)?' (each has commits the other lacks)':'')
 +(t.checkinPeer?(t.askPull?' No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds.':' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.'):'');
 ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+esc(tt)+sq+'\">'+(stl?'last known: ':'')+(bw?bw+' ':'')+(ar?'('+ar+')':w)+'</span>';}
+// its checkout matches this machine but its kernel booted from older kernel code: not behind, a restart pending
+// (plans/drift-by-running-code.md); the Update slot offers that restart
+else if(t.restartPending){ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+esc('its checkout is at '+(t.checkoutSha||t.localSha||'?')+', the same as this machine, but its kernel still runs '+(buildWord(t.kernelVer,t.kernelSha)||'?')+': a restart brings it onto the code it holds.')+sq+'\">'+(stl?'last known: ':'')+(bw?bw+' ':'')+'(running older code)</span>';}
 else if(bw){ver=' \\u00b7 <span class=\"rnet-sha'+(stl?' rnet-stale':'')+'\" title=\"'+(stl?'same build as this machine when last reached.'+sq:'same build as this machine')+'\">'+(stl?'last known: ':'')+bw+'</span>';}
 // A connected host that reports NO build at all is running a plain file copy — no git checkout, so its
 // kernel cannot name a release or commit, and drift against this machine cannot be measured (it may be
@@ -56284,7 +56343,7 @@ var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'|
 // strictly ahead, Update when a checked-in peer is behind, and otherwise the drift word plus its tooltip,
 // which say what happened without dead-ending on a button.
 var upd=(t.status==='up'&&t.fastForward&&!apx&&!t.checkinPeer)?'<button class=rnet-upd data-u=\"'+th+'\" title=\"Push this machine\\u2019s committed romp to '+th+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first.\">Push</button>':'';
-var ask=(t.status==='up'&&t.askPull&&!apx)?'<button class=rnet-upd data-a=\"'+th+'\" title=\"'+th+' checked in over its own tunnel, so this machine cannot push to it. This asks its romp to pull these commits from here and restart, over the link it already holds.\">Update</button>':'';
+var ask=(t.status==='up'&&t.askPull&&!apx)?(t.outOfDate?'<button class=rnet-upd data-a=\"'+th+'\" title=\"'+th+' checked in over its own tunnel, so this machine cannot push to it. This asks its romp to pull these commits from here over the link it already holds, and to restart only if what it pulled changes what its kernel runs.\">Update</button>':'<button class=rnet-upd data-a=\"'+th+'\" title=\"'+th+' holds this machine\\u2019s build but its kernel still runs older kernel code. This asks it to restart onto the code it holds.\">Restart</button>'):'';
 var pull=(t.status==='up'&&t.fastPull&&!apx&&!t.checkinPeer)?'<button class=rnet-upd data-p=\"'+th+'\" title=\"Pull '+th+'\\u2019s newer commits into this machine\\u2019s romp (fast-forward only; refuses if this tree has uncommitted changes). This kernel keeps running the old build until you restart romp.\">Pull</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
@@ -61681,7 +61740,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 ok, detail = _pull_remote(host)
-                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
+                # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
+                # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
+                kcc = _restart_pending() if ok else None
+                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
+                                  "application/json")
             if u.path == "/tunnels/askpull":
                 # ASK a checked-in peer to fast-forward ITSELF to this machine's build — the third
                 # direction, for the host no ssh of ours can reach (it holds the only link). The work
