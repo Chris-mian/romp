@@ -258,6 +258,9 @@ class OnePass(Harness):
         c.send({"op": "pass", "seq": 2, "now": NOW, "mayStart": False})              # nothing runs: every delta is zero
         second = c.line()
         self.assertEqual((second["op"], second["seq"], second["tierStarts"]), ("done", 2, 0))
+        c.send({"op": "pass", "seq": 3, "now": NOW, "mayStart": True})               # a WORKING third pass (round four): the
+        third = c.line()                                                                 #  parse store is warm, so it restores nothing
+        self.assertEqual((third["op"], third["seq"], third["tierStarts"]), ("done", 3, 2))
 
         def numbers(block, path=""):
             for k, v in block.items():
@@ -265,7 +268,7 @@ class OnePass(Harness):
                     yield from numbers(v, path + k + ".")
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     yield path + k, v
-        gauges = {"recordCache": ("entries", "bytes", "budgetBytes", "countCap"), "asmCheckpoint": ("restoreMs", "asmDocMemo")}
+        gauges = {"recordCache": ("entries", "bytes", "budgetBytes", "countCap"), "asmCheckpoint": ("asmDocMemo",)}
         for name in ("recordCache", "asmCheckpoint", "parses", "goalIo"):                 # the two blocks the base carried first,
             nonzero = [(k, v) for k, v in numbers(second.get(name) or {}) if v and k.split(".")[0] not in gauges.get(name, ())]
             self.assertEqual(nonzero, [], "%s: an idle pass reports a zero delta for every counter (the base reported the process totals)" % name)
@@ -273,8 +276,16 @@ class OnePass(Harness):
             for key in keys:
                 self.assertEqual(second[name][key], first[name][key], "%s.%s is a gauge: the same current value on both passes, never a difference" % (name, key))
         self.assertGreater(second["recordCache"]["budgetBytes"], 0); self.assertGreater(second["recordCache"]["countCap"], 0)
-        self.assertGreaterEqual(second["recordCache"]["entries"], 0); self.assertGreaterEqual(second["asmCheckpoint"]["restoreMs"].get("total", 0), 0)
+        self.assertGreaterEqual(second["recordCache"]["entries"], 0)
         self.assertGreater(second["asmCheckpoint"]["asmDocMemo"]["capBytes"], 0, "a cap never reads zero on the second pass")
+        for key in ("budgetBytes", "countCap"):                                          # the caps hold across a working pass too
+            self.assertEqual(third["recordCache"][key], first["recordCache"][key])
+        self.assertEqual(third["asmCheckpoint"]["asmDocMemo"]["capBytes"], first["asmCheckpoint"]["asmDocMemo"]["capBytes"])
+        first_restore = first["asmCheckpoint"]["restoreMs"].get("total", 0.0)
+        self.assertGreater(first_restore, 0.0, "the first pass restored the fixture's document")
+        self.assertLess(third["asmCheckpoint"]["restoreMs"].get("total", 0.0), first_restore,
+                        "restoreMs is a cumulative counter, differenced: a warm third pass reads its own (near zero) restore time, not the "
+                        "boot-to-now sum (round four; listed as a gauge it read the sum, %r against %r)" % (third["asmCheckpoint"]["restoreMs"], first["asmCheckpoint"]["restoreMs"]))
         self.assertEqual(second.get("parses"), {"misses": 0, "hits": 0}, "the parse store's misses and hits ride the line")
         self.assertGreaterEqual((first.get("parses") or {}).get("misses", 0), 1, "the working pass parsed through the store")
         self.assertEqual(sorted(second.get("goalIo") or {}), sorted(jd.goal_io_stats()))
@@ -286,12 +297,30 @@ class OnePass(Harness):
         was writing is either the old bytes or the new (the stores' atomic replace), never a temp file left behind. Round
         three: the kill lands in a pass that is WORKING (the fake CLI answers after half a second, so the tiers are between
         their model calls and their store writes), at three offsets, and every store left behind parses."""
-        for offset in (0.05, 0.25, 0.6):
-            with self.subTest(offset=offset):
-                root = self.state_root("term-%d" % int(offset * 100)); c = self.child(root, SERVE_TEST_CLAUDE_SLEEP="0.5")
+        def first_store(root, deadline=15.0):
+            """Block until the first store file appears under the judge stores (the EVENT the kill keys on: the pass is writing),
+            or the deadline passes; returns the path seen or None."""
+            end = time.monotonic() + deadline
+            while time.monotonic() < end:                                                # loop-ok: bounded by the deadline
+                for sub in ("captions", "archive", "goals"):
+                    base = Path(root) / "romp" / sub
+                    if base.exists():
+                        files = [p for p in base.rglob("*") if p.is_file()]
+                        if files:
+                            return str(files[0])
+                time.sleep(0.005)
+            return None
+
+        for trigger in ("first-store", "late-0.6s"):
+            with self.subTest(trigger=trigger):
+                root = self.state_root("term-" + trigger); c = self.child(root, SERVE_TEST_CLAUDE_SLEEP="0.5")
                 self.assertEqual(c.line()["op"], "ready")
                 c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
-                time.sleep(offset)                                                         # inside a working pass
+                if trigger == "first-store":
+                    seen = first_store(root)                                               # the kill lands as the stores are being written
+                    self.assertIsNotNone(seen, "a store file appeared while the pass ran")
+                else:
+                    time.sleep(0.6)                                                        # one late offset kept: inside the writing window
                 t0 = time.monotonic(); c.proc.terminate()
                 try:
                     c.proc.wait(timeout=5)
@@ -313,7 +342,7 @@ class OnePass(Harness):
                                 json.loads(line)
                         parsed += 1
                 self.assertEqual(strays, [], "no half-written store")
-                self.assertGreaterEqual(parsed, 1, "the stores left behind parse (the kill landed after the first write or before any)")
+                self.assertGreaterEqual(parsed, 1 if trigger == "first-store" else 0, "every store left behind parses (the kill landed after the first write)")
                 self.assertTrue(c.lines.empty(), "no done line for a killed pass")
 
     def test_stray_writes_to_file_descriptor_one_never_reach_the_channel(self):
@@ -412,10 +441,13 @@ class Deltas(unittest.TestCase):
         self.assertEqual(got, {"entries": 2, "bytes": 1800, "budgetBytes": 100, "countCap": 8, "inserts": 1,
                                "wholeReads": {"a": {"count": 1, "bytes": 5}, "b": {"count": 1, "bytes": 7}}},
                          "a shrunk cache reads its size, the caps their value, the counters their difference (the base read entries -3, bytes -3200, budgetBytes 0)")
-        asm_prev = {"restoreMs": {"total": 10.5}, "asmDocMemo": {"entries": 3, "bytes": 30, "capBytes": 99, "multiple": 10}, "parse": {"restore": 4}}
-        asm_cur = {"restoreMs": {"total": 10.404}, "asmDocMemo": {"entries": 2, "bytes": 20, "capBytes": 99, "multiple": 10}, "parse": {"restore": 6}}
+        asm_prev = {"restoreMs": {"total": 10.088}, "asmDocMemo": {"entries": 3, "bytes": 30, "capBytes": 99, "multiple": 10}, "parse": {"restore": 4}}
+        asm_cur = {"restoreMs": {"total": 20.183}, "asmDocMemo": {"entries": 2, "bytes": 20, "capBytes": 99, "multiple": 10}, "parse": {"restore": 6}}
         got = jd._serve_delta(asm_prev, asm_cur, *([gauges["asmCheckpoint"]] if gauges else []))
-        self.assertEqual(got, {"restoreMs": {"total": 10.404}, "asmDocMemo": {"entries": 2, "bytes": 20, "capBytes": 99, "multiple": 10}, "parse": {"restore": 2}})
+        self.assertEqual(got, {"restoreMs": {"total": 10.095}, "asmDocMemo": {"entries": 2, "bytes": 20, "capBytes": 99, "multiple": 10}, "parse": {"restore": 2}},
+                         "restoreMs accumulates since boot (the read saw 10.088, 20.183, 30.277 over three restores): a counter, differenced; "
+                         "asmDocMemo a gauge, current (round four: listed as a gauge, restoreMs read the boot-to-now sum)")
+        self.assertNotIn("restoreMs", (gauges or {}).get("asmCheckpoint", ()), "no cumulative counter in the gauge list")
         self.assertEqual(set(jd._SERVE_GAUGES), {"recordCache", "asmCheckpoint", "parses", "goalIo"}, "one gauge list per block")
 
     def test_the_fault_knob_names_the_shape_before_the_tier(self):
