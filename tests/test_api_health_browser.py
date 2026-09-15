@@ -327,22 +327,34 @@ await step2('pressFocus', async () => {
   // 16. a keyboard press on the pause button: the button is disabled at once, and a disabled element cannot hold
   //     focus, so focus would fall to BODY, where the card's Tab trap no longer sees the keys and a Shift+Tab walks
   //     out of the aria-modal dialog. Focus moves to the card before the disable; the trap holds.
+  //     #ah-tip is ONE stable node whose content every render replaces (kernel.py creates it once; hide() and close()
+  //     keep HIST), and the reopen's open() runs render() BEFORE load(false): the open paints the PREVIOUS read's error
+  //     line synchronously (or the pending row, when the previous open's read had not landed yet), and only the read's
+  //     render replaces it. A wait keyed on the error line's presence was met by that stale paint at once, and the read's
+  //     render then landed INSIDE the press: the Space's keydown went to the old pause button, render() replaced the
+  //     card's content and moved focus to the new pause button by its data-act key, and the keyup found a button that
+  //     had taken no keydown, so the button's native click never fired: nothing was sent, the disabled wait ran out
+  //     (CI 2026-09-15, three failures from one cause; reproduced deterministically by releasing the read between the
+  //     keydown and the keyup at the old step). The wait keys on the read's render REPLACING the open's paint: the node
+  //     the open painted is marked right after the Enter, and the wait ends when the query returns a node without the
+  //     mark; the Tab and the Space then land after the read. The read is slowed by 1.5 s on purpose: pressReadBeforeTab
+  //     below can only be true at the Tab because the wait outlasted the delay, so a wait keyed on the stale paint again
+  //     fails this step every time. A lab road that reads a stable node's content right after a trigger is a timing
+  //     claim (the repo rule); this one reads the replacement.
+  const slowReads = new Set();   // every read this step slows, until it has landed
+  await page.route("**/api-health", (route) => { const p = (async () => { await new Promise((r) => setTimeout(r, 1500)); await route.continue(); })(); slowReads.add(p); return p.finally(() => slowReads.delete(p)); });
   await page.evaluate(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    // #ah-tip is ONE stable node whose content every render replaces (kernel.py creates it once and toggles its
-    // display), so the previous open's content would satisfy the wait below at once: the Tab landed on the OLD pause
-    // button, the open's read re-rendered and replaced it, and the Space hit a detached node (no setGlobalRetryPaused
-    // sent, the disabled wait timed out: CI 2026-09-15, three failures from one cause). Emptied here, the wait is met
-    // by the NEW render alone: the open paints a pending row first (no error line, no bars) and the read's render
-    // brings the content the wait keys on. A lab road that reads a stable node's content right after a trigger is a
-    // timing claim (the repo rule); this one keys on the render the trigger causes.
-    document.getElementById("ah-tip").innerHTML = "";
     window.__sent3 = []; window.__rompShellSend = (o) => { window.__sent3.push(o); return true; };
     window.__rompApiHealth(window.__frame({ state: "paused", reason: "limit", text: "paused · usage limit · 1 waiting", since: 1700000010, seq: 12 }));
     document.getElementById("rail-api").focus(); });
   await page.keyboard.press("Enter");
-  // the open's read lands (this lab has no /api-health: the failure line) and re-renders the card; the focus reads
-  // below wait for that render, which is the first content the emptied node can carry, rather than racing it
-  await page.waitForFunction(() => !!document.querySelector("#ah-tip .ah-err") || !!document.querySelector("#ah-tip .ah-bars"), null, { timeout: 8000 });
+  // the open's synchronous paint: the retained read's error line, or the pending row when the previous open's read had
+  // not landed by this Enter (the reopen then drops it and reads again). Marked, so the wait below cannot be met by it.
+  R.pressOpenPaint = await page.evaluate(() => { const n = document.querySelector("#ah-tip .ah-err, #ah-tip .ah-bars, #ah-tip .ah-wait"); if (n) n.setAttribute("data-lab-open-paint", "1"); return n ? ["ah-err", "ah-bars", "ah-wait"].find((c) => n.classList.contains(c)) : null; });
+  await page.waitForFunction(() => { const n = document.querySelector("#ah-tip .ah-err, #ah-tip .ah-bars, #ah-tip .ah-wait"); return !!n && !n.hasAttribute("data-lab-open-paint"); }, null, { timeout: 8000 });
+  // the marked paint is gone at the Tab only because the wait saw the read's render: with the read 1.5 s slow, no wait
+  // keyed on the open's own content could have let the Tab go this late
+  R.pressReadBeforeTab = await page.evaluate(() => !document.querySelector("#ah-tip [data-lab-open-paint]"));
   await page.keyboard.press("Tab");
   R.pressFocusBefore = await active();
   await page.keyboard.press("Space");
@@ -360,6 +372,13 @@ await step2('pressFocus', async () => {
   await page.keyboard.press("Tab");
   R.pressAnswerTab = await active();
   await page.keyboard.press("Escape");
+  // the step ends only once every read it slowed has landed: no delayed render leaks into the next step, and no
+  // handler is pending when the route comes off. Playwright empties the page's route list at the unroute call; a
+  // handler that completes while the list is empty switches interception off, which makes the server continue any
+  // other in-flight route itself, and that route's own continue then throws "Route is already handled" out of the
+  // process (seen on the first launch of this fix, and again as a race between two slowed reads).
+  await Promise.all([...slowReads]);
+  await page.unrouteAll({ behavior: "wait" });
 });
 // phase 3: the shell socket itself. The shim stands in for the kernel's end: the driver opens the socket shellWS
 // dialed at load, feeds it frames, presses through the REAL __rompShellSend, drops the socket and waits for the
@@ -598,8 +617,10 @@ class ServedCell(unittest.TestCase):
         self.assertTrue(self.R["usageClosedTip"])
 
     def test_a_keyboard_press_on_the_pause_button_keeps_focus_inside_the_dialog(self):
+        self.assertIn(self.R["pressOpenPaint"], ("ah-err", "ah-wait"), "the reopen paints synchronously, the retained read's line or the pending row: the wait keys on its replacement")
+        self.assertTrue(self.R["pressReadBeforeTab"], "the read's render replaced the open's paint before the Tab (the read is slowed 1.5 s: only the wait gets the Tab this late)")
         self.assertEqual(self.R["pressFocusBefore"], "BUTTON.pause", "errors: %r" % self.R.get("err2"))
-        self.assertEqual(self.R["pressSent"], ["setGlobalRetryPaused:false"], "Space ran the button once")
+        self.assertEqual(self.R["pressSent"], ["setGlobalRetryPaused:false"], "Space ran the button once, on the read's render, with the read slowed by 1.5 s")
         self.assertEqual(self.R["pressButton"], {"disabled": True, "label": "Stop all auto-retries"}, "acknowledged")
         self.assertEqual(self.R["pressFocusAfter"], "DIV", "focus is on the card, inside the dialog, not on BODY")
         self.assertEqual(self.R["pressShiftTab"], "SPAN.log", "the trap still applies: Shift+Tab wraps to the last control")
