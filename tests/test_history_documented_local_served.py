@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The billing-thread window bug, page side, LOCAL leg: a DOCUMENTED long session (stage 1b wrote its first
-assembly document, so the floor sits near the tail: turns above it are lazy pre-cut atoms owed to the proto-2
-history wire) served to a proto-2 page. romp_metrics confirmed the kernel side is clean for this shape (the
-floored build carries the floor and the last few events plus a head card; every loadTurns/loadOlder returns
-events). So this reads the PAGE: does it hold s.regions from that frame, does the head gap ask loadTurns, does
-the reply render and the gap scroll. If the page shows the tail alone with no gap and no ask, that is the bug.
+"""A documented long session's windowed history, page side (the LOCAL leg): stage 1b wrote the leaf its first
+assembly document, so the floor sits near the tail and the turns above it are lazy pre-cut atoms owed to the
+proto-2 history wire. Served to a proto-2 page, the kernel side is correct for this shape (the floored build
+carries the floor and the last few events plus a head card; every loadTurns/loadOlder returns events), so this
+reads the PAGE: does it hold s.regions from that frame, does the head gap ask loadTurns, does the reply render
+and the gap scroll. If the page shows the tail alone with no gap and no ask, that is the bug.
 
 The document is seeded the way romp_metrics did it (tests/test_chat_pages.py Harness): whole-parse the leaf,
 em.asm_checkpoint_write into the kernel's own STATE/checkpoints, then boot the kernel over that state root so
