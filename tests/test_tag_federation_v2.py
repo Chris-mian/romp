@@ -11,12 +11,15 @@ creation ms), and the same tag EDITED there after the ruling makes the queued ed
 per-tag mtime, stamped at the store's one write door). ADD never queues. Synthetic hosts/sids only.
 """
 import contextlib
+import errno
+import inspect
 import io
 import json
 import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -61,6 +64,30 @@ def _remote_tag(tid, name, members=(), mtime=0):
     if mtime:
         t["mtime"] = mtime
     return t
+
+
+@contextlib.contextmanager
+def _reads_fault(target):
+    """Fail every byte read of ONE path with an EIO (the strict reader's read_bytes and the pre-fix
+    reader's read_text alike) for the duration of the block; everything else reads normally. The shape
+    tests/test_tag_route.py uses on the views store."""
+    real_rb, real_rt = Path.read_bytes, Path.read_text
+    tgt = str(target)
+
+    def rb(self, *a, **k):
+        if str(self) == tgt:
+            raise OSError(errno.EIO, "injected EIO")
+        return real_rb(self, *a, **k)
+
+    def rt(self, *a, **k):
+        if str(self) == tgt:
+            raise OSError(errno.EIO, "injected EIO")
+        return real_rt(self, *a, **k)
+    Path.read_bytes, Path.read_text = rb, rt
+    try:
+        yield
+    finally:
+        Path.read_bytes, Path.read_text = real_rb, real_rt
 
 
 class Queueing(unittest.TestCase):
@@ -114,6 +141,130 @@ class Queueing(unittest.TestCase):
             km._PENDING_TAG_CACHE["rows"] = None      # a fresh process knows nothing — the file is the truth
         rows = km._pending_tag_rows()
         self.assertEqual([(r["host"], r["name"]) for r in rows], [(HOST, "web")])
+
+
+class JournalReadFault(unittest.TestCase):
+    """The journal's one disk read when the file EXISTS but cannot be read, or holds bytes no writer of
+    ours produced. On main every failure of that read was folded to a cached [] for the rest of the
+    process: the pending badge vanished, the reattach apply never fired, and the next queued edit read
+    that [] and published its one row over every earlier journaled intent under a "queued" ack -- the
+    fold-then-overwrite the kernel's strict reader (_read_state_json / _StateUnreadable) was written
+    against for the views store, which never reached this journal's private reader."""
+
+    def setUp(self):
+        _fresh_journal()
+        _attach(views={"tags": [_remote_tag("g100", "web")]})
+        self.p = km._pending_tag_path()
+        self._dirty = km._views_dirty[0]               # the SupervisorViewsCache shape: the mark is module state
+        km._views_dirty[0] = 0.0
+        km._pusher_wake.clear()
+
+    def tearDown(self):
+        km._views_dirty[0] = self._dirty
+        km._pusher_wake.clear()
+        km._state_fault_seen.pop(str(self.p), None)
+        for q in self.p.parent.glob(self.p.name + ".corrupt-*"):
+            q.unlink()
+        _fresh_journal()
+        km._remotes.clear()
+
+    def _restart(self):
+        with km._PENDING_TAG_LOCK:
+            km._PENDING_TAG_CACHE["rows"] = None      # a fresh process knows nothing: the file is the truth
+
+    def _file_rows(self):
+        return [r["name"] for r in json.loads(self.p.read_text())]
+
+    def _fault_lines(self, err):
+        return [ln for ln in err.getvalue().splitlines() if "pending-tag-edits.json" in ln]
+
+    def test_a_read_fault_refuses_the_queue_and_the_journal_keeps_every_earlier_row(self):
+        self.assertTrue(km._queue_pending_tag_edit(HOST, {"name": "web", "delete": True}))
+        self.assertEqual(self._file_rows(), ["web"])
+        self._restart()
+        notices = len(km._SYNC_NOTICES)
+        err = io.StringIO()
+        with _reads_fault(self.p), contextlib.redirect_stderr(err):
+            self.assertFalse(km._queue_pending_tag_edit(HOST, {"name": "api", "delete": True}),
+                             "not queued: nothing is promised over a journal that could not be read")
+            self.assertFalse(km._queue_pending_tag_edit(HOST, {"name": "api", "rename": "svc"}))
+            v = km._views_client()                                # the build survives the fault...
+            self.assertNotIn("pendingTagEdits", v)                # ...and claims no badge it cannot prove
+            self.assertIsNone(next(t for t in v["remoteTags"] if t["name"] == "web").get("pending"))
+        self.assertEqual(self._file_rows(), ["web"], "the file is untouched: no row was published over the journal")
+        lines = self._fault_lines(err)
+        self.assertEqual(len(lines), 1, "said once per episode, not once per read: %s" % err.getvalue())
+        self.assertIn("could not be read", lines[0])
+        self.assertIn("[Errno 5] injected EIO", lines[0], "the fault text names errno and strerror")
+        self.assertIn("refused until the file can be read again", lines[0])
+        new = km._SYNC_NOTICES[notices:]
+        self.assertEqual(len(new), 1, "the dashboard hears it too, once")
+        self.assertEqual(new[0]["kind"], "refused")
+        self.assertIn("pending-tag-edits.json", new[0]["text"])
+        # the disk heals: the fault was never cached, so the next read is the file's truth -- and the heal is
+        # an EVENT: the frames the pusher cached with no badge under the fault (the fault's start moved
+        # their signature through the notice; its end moves nothing) rebuild past the dirty mark now, not
+        # at the 5 s clock bucket
+        km._views_dirty[0] = 0.0
+        km._pusher_wake.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual([r["name"] for r in km._pending_tag_rows()], ["web"])
+            self.assertGreater(km._views_dirty[0], 0.0,
+                               "the clean read that ends the episode marks the views dirty: the cached feed and "
+                               "timeline frames built with no badge rebuild on the heal, not on the clock bucket")
+            self.assertTrue(km._pusher_wake.is_set(), "...and wakes the pusher, so the rebuilt frames ship now")
+            self.assertEqual(km._views_client().get("pendingTagEdits"), [{"host": HOST, "name": "web", "op": "delete"}])
+            self.assertTrue(km._queue_pending_tag_edit(HOST, {"name": "api", "delete": True}))
+        self.assertEqual(self._file_rows(), ["web", "api"])
+        self.assertEqual(err.getvalue(), "", "a clean read is not a fault")
+        # ...and ends the episode: a fresh process that faults again is said afresh
+        self._restart()
+        err = io.StringIO()
+        with _reads_fault(self.p), contextlib.redirect_stderr(err):
+            self.assertFalse(km._queue_pending_tag_edit(HOST, {"name": "web", "remove": ["s1"]}))
+        self.assertEqual(len(self._fault_lines(err)), 1, err.getvalue())
+        self.assertEqual(self._file_rows(), ["web", "api"])
+
+    def test_torn_or_wrong_shaped_bytes_are_moved_aside_and_the_journal_starts_over_empty(self):
+        for label, raw in (("torn", b'[{"host": "TESTHOST", "na'), ("wrong shape", b'{"host": "TESTHOST"}')):
+            with self.subTest(label):
+                self.p.write_bytes(raw)
+                self._restart()
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(km._pending_tag_rows(), [])
+                aside = sorted(self.p.parent.glob(self.p.name + ".corrupt-*"))
+                self.assertEqual(len(aside), 1, "the bytes are moved aside (a move, never a delete), not read as empty in place")
+                self.assertEqual(aside[0].read_bytes(), raw, "the evidence survives for forensics")
+                self.assertFalse(self.p.exists())
+                self.assertIn("moved aside", err.getvalue())
+                self.assertTrue(km._queue_pending_tag_edit(HOST, {"name": "web", "delete": True}),
+                                "the journal starts over after the stated event, and takes rows")
+                self.assertEqual(self._file_rows(), ["web"])
+                aside[0].unlink()
+                self.p.unlink()
+
+    def test_a_missing_journal_is_legitimately_empty_and_quiet(self):
+        self.assertFalse(self.p.exists())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(km._pending_tag_rows(), [])
+            self.assertEqual(km._views_dirty[0], 0.0, "a cold clean read with no episode open is not news: no mark")
+            self.assertFalse(km._pusher_wake.is_set())
+            self.assertNotIn("pendingTagEdits", km._views_client())
+            self.assertTrue(km._queue_pending_tag_edit(HOST, {"name": "web", "delete": True}))
+        self.assertEqual(err.getvalue(), "", "a fresh install has no journal: nothing to say")
+
+    def test_the_supervisor_pass_stands_down_on_the_fault_without_a_dial_record(self):
+        """The reattach half runs inside the supervisor's pass, under a catch-all that files a dial record
+        for a raise; a journal read fault is caught before it, so a disk that stays bad does not write one
+        record per host per 15 s pass (the once-per-episode rule the per-row fault lines already follow)."""
+        src = inspect.getsource(km._tunnel_supervisor)
+        i = src.index("_apply_pending_tag_edits(r)")
+        arm = src[i:src.index("except Exception", i)]
+        self.assertIn("except _StateUnreadable", arm, "the fault is caught before the catch-all's dial record")
+        self.assertNotIn("_tunnel_log", arm)
 
 
 class LateApply(unittest.TestCase):

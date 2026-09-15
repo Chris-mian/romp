@@ -1118,7 +1118,7 @@ fi
 # `romp login add <label> --cmd '<shell line>' | list | remove <label|id>` (T346; docs/reference.md
 # "Several Claude logins"): the stored Claude logins a session can be billed to beside the machine's own. The
 # credential lives wherever the user keeps it and nowhere in romp: `add` records a COMMAND that prints the login's
-# setup-token on demand (romp only ever runs it, from bin/romp-login-helper as that session's apiKeyHelper);
+# setup-token on demand (romp only ever runs it, at a session's or a judge's launch, into that one process's environment);
 # how the user keeps the token (a secret manager, a private file) is theirs, romp assumes nothing about it (the user
 # 2026-09-13: no store's shorthand inside romp). No token is ever read, printed or logged here; the kernel answers from its registry (GET /logins,
 # POST /logins {"add"} | {"remove"}).

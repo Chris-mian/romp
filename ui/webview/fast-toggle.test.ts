@@ -15,22 +15,23 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const SDK = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk_backend.py"), "utf8");
 
 test("the fast badge appears only when the session reports a state AND the model can run it", () => {
   assert.match(RENDER, /fast\?: string;/);                                   // status carries it
-  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast";/);   // billing moved to the tab menu (2026-08-09)
-  assert.match(RENDER, /st\.fast && fastAvailable\(st\) \? st\.fast : ""/);  // no state / unsupported model → no badge
-  assert.match(RENDER, /meta\.appendChild\(metaButton\("fast", prettyFast\(fast\), forSid\)\)/);   // sid-scoped: the popover statusline shares this builder (2026-08-25)
+  assert.match(MODULE, /export type MetaKind = "mode" \| "model" \| "effort" \| "fast";/);   // billing moved to the tab menu (2026-08-09); the kinds live with the controls (T415 part two)
+  assert.match(MODULE, /st\.fast && fastAvailable\(st\) \? st\.fast : ""/);  // no state / unsupported model → no badge
+  assert.match(MODULE, /meta\.appendChild\(metaButton\("fast", prettyFast\(fast\), forSid, hooks\)\)/);   // sid-scoped: the popover statusline shares this builder (2026-08-25)
   // the availability gate: opus-family (or unknown/default — the account default may be Opus)
-  const gate = RENDER.match(/function fastAvailable\(st: Status\): boolean \{[\s\S]*?\n\}/)?.[0] || "";
+  const gate = MODULE.match(/function fastAvailable\(st: MetaStatus\): boolean \{[\s\S]*?\n\}/)?.[0] || "";
   assert.match(gate, /!m \|\| m === "default" \|\| m\.includes\("opus"\)/);
 });
 
 test("the badge label is one word, and the word carries the state: Fast on, Slow off", () => {
-  const pf = RENDER.match(/function prettyFast[\s\S]*?\n\}/)?.[0] || "";
+  const pf = MODULE.match(/function prettyFast[\s\S]*?\n\}/)?.[0] || "";
   assert.match(pf, /"Cooldown"/);
   assert.match(pf, /s === "on" \? "Fast" : "Slow"/);   // off is not a second "Fast" (the user 2026-08-11)
   assert.doesNotMatch(pf, /Fast on|Fast off/);
@@ -44,7 +45,7 @@ test("the picker speaks the badge's words — Fast/Slow, never On/Off — and po
   assert.doesNotMatch(RENDER, /\{ label: "On", value: "on" \}/);
   assert.match(RENDER, /fast: FAST_CHOICES/);
   assert.match(RENDER, /kind === "fast" \? "setFast"/);                      // the pick posts the op
-  assert.match(RENDER, /"on" \? "var\(--fast\)" : ""/);                      // ON tint, off/cooldown default
+  assert.match(MODULE, /"on" \? "var\(--fast\)" : ""/);                      // ON tint, off/cooldown default
   assert.match(CSS, /--fast: #ff6a00;/);                                     // the CLI's own fastMode orange
 });
 

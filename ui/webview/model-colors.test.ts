@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
 test("Status carries the server-computed modelColor / effortColor", () => {
@@ -15,10 +16,10 @@ test("Status carries the server-computed modelColor / effortColor", () => {
 
 test("the statusline meta buttons tint model/effort labels from those colors", () => {
   // metaColor picks modelColor for the model button, effortColor for the effort, "" (default) otherwise
-  assert.match(RENDER, /function metaColor\(kind: MetaKind, st: Status\): string \{[\s\S]*?kind === "model" \? pickTone\(st\.modelColor, st\.modelTone\)/);   // dual palette (PR #763): classic color vs yatharth tone, picked by theme
+  assert.match(MODULE, /export function metaColor\(kind: MetaKind, st: MetaStatus\): string \{[\s\S]*?kind === "model" \? pickTone\(st\.modelColor, st\.modelTone\)/);   // dual palette (PR #763): classic color vs yatharth tone, picked by theme
   // applied to the label in the refresh loop (runs on create AND the 1s ticker); a switching model shows
   // dots instead, so the tint is skipped only then (the user 2026-07-03)
-  assert.match(RENDER, /label\.style\.color = showDots \? "" : metaColor\(kind, st\);/);
+  assert.match(MODULE, /label\.style\.color = showDots \? "" : metaColor\(kind, st\);/);
 });
 
 test("the timeline lane tints the model/effort pieces by rank, keeping hover + restoring the tint", () => {

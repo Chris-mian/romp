@@ -35,9 +35,12 @@ Covers the four layers separately, so a failure names its layer:
 The cryptography package is required here (CI installs it; the kernel treats it as a soft
 dependency and fails loudly without it — test_subscribe_without_crypto_is_a_loud_500).
 """
+import contextlib
 import io
 import json
 import os
+import shutil
+import sys
 import time
 import threading
 import unittest
@@ -81,6 +84,23 @@ km = load_source("romp_kernel_webpush", os.path.join(BIN, "romp-kernel"))
 def _b64u(b):
     import base64
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+@contextlib.contextmanager
+def _no_crypto():
+    """The kernel with `cryptography` unimportable, the way a fresh install without the package fails:
+    every loaded cryptography module and the top-level name read None in sys.modules, which the
+    import system raises ModuleNotFoundError for, and the kernel's cache is reset so the import is
+    really attempted (patching _PUSH_CRYPTO to a sentinel would only prove the sentinel). Reset again
+    on the way out: the next call is the retry a re-installed package is found by."""
+    hidden = {k: None for k in list(sys.modules) if k == "cryptography" or k.startswith("cryptography.")}
+    hidden["cryptography"] = None
+    km._PUSH_CRYPTO[0] = None
+    try:
+        with mock.patch.dict(sys.modules, hidden):
+            yield
+    finally:
+        km._PUSH_CRYPTO[0] = None
 
 
 def _mint_browser_keys():
@@ -591,6 +611,15 @@ class SubscribeRoutes(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
 
+    def _get_text(self, path):
+        import urllib.request, urllib.error
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), headers={"X-Romp-Token": km.TOKEN})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
     def _sub_body(self):
         if HAVE_CRYPTO:
             _, p256dh, auth = _mint_browser_keys()
@@ -627,12 +656,53 @@ class SubscribeRoutes(unittest.TestCase):
 
     def test_subscribe_without_crypto_is_a_loud_500(self):
         # the fail-loudly rule: a subscription the kernel can never deliver to must be REFUSED
-        # with the missing package named, not stored and silently starved
-        with mock.patch.object(km, "_PUSH_CRYPTO", [False]):
+        # with the missing package named, not stored and silently starved. Since 2026-09-14 the body
+        # is ONE deliberate sentence (_push_crypto_missing) that also names the exact command for this
+        # install layout, bin/romp-sdk-setup in this checkout, which installs the package into the SDK
+        # venv the kernel reads; the bell's This-device sub-line shows the body verbatim
+        with _no_crypto():
             code, body = self._post("/push/subscribe", self._sub_body())
+            kcode, kbody = self._get_text("/push/vapid-key")
         self.assertEqual(code, 500)
-        self.assertIn("cryptography", body)
+        self.assertIn("'cryptography'", body)
+        self.assertIn(str(km.ROOT / "bin" / "romp-sdk-setup"), body, "the command, for this checkout")
+        self.assertIn("then turn this on again", body, "the tap is the retry, not a kernel restart")
+        self.assertNotIn("Traceback", body)
+        self.assertEqual(body, km._push_crypto_missing(), "the route answers the one message every surface shows")
+        self.assertEqual((kcode, kbody), (500, body), "the key fetch the bell makes first answers the same")
         self.assertEqual(km._push_subs(), {})
+
+    @unittest.skipUnless(HAVE_CRYPTO, "python 'cryptography' not installed")
+    def test_a_package_installed_since_is_found_on_the_next_tap_without_a_restart(self):
+        # the message sends the user to bin/romp-sdk-setup and says to turn the switch on again: that
+        # only holds if a miss is not cached for the kernel's life (it was, as _PUSH_CRYPTO[0] = False)
+        with _no_crypto():
+            code, _ = self._post("/push/subscribe", self._sub_body())
+            self.assertEqual(code, 500)
+            self.assertIsNone(km._push_crypto())
+        code, _ = self._post("/push/subscribe", self._sub_body())
+        self.assertEqual(code, 200, "the same kernel, the package importable now: the subscribe lands")
+        self.assertEqual(len(km._push_subs()), 1)
+
+    def test_the_sdk_venvs_site_packages_are_put_on_the_path_for_the_import(self):
+        # bin/romp-sdk-setup installs the package into the SDK venv; _ensure_sdk_on_path adds that venv
+        # only when the SDK itself is not importable elsewhere, and a venv built after the kernel started
+        # is on nobody's path, so the crypto import adds the venv built for THIS python (and no other tag)
+        lib = jd.STATE / "sdkvenv" / "lib"
+        mine = lib / ("python" + km._running_python_tag()) / "site-packages"
+        other = lib / "python3.1" / "site-packages"
+        mine.mkdir(parents=True, exist_ok=True)
+        other.mkdir(parents=True, exist_ok=True)
+        try:
+            with _no_crypto():
+                self.assertIsNone(km._push_crypto())
+            self.assertIn(str(mine), sys.path)
+            self.assertNotIn(str(other), sys.path, "another interpreter's venv is never added")
+        finally:
+            for d in (str(mine), str(other)):
+                while d in sys.path:
+                    sys.path.remove(d)
+            shutil.rmtree(jd.STATE / "sdkvenv", ignore_errors=True)
 
     @unittest.skipUnless(HAVE_CRYPTO, "python 'cryptography' not installed")
     def test_subscribe_records_the_pages_origin_for_the_declarative_navigate(self):
@@ -790,12 +860,13 @@ class PushPayloadShape(unittest.TestCase):
         km._save_push_subs({"https://push.example.net/send/x": {
             "endpoint": "https://push.example.net/send/x",
             "keys": {"p256dh": "k", "auth": "a"}}})
-        with mock.patch.object(km, "_PUSH_CRYPTO", [False]), \
+        with _no_crypto(), \
              mock.patch.object(km.sys, "stderr", new=io.StringIO()) as err, \
              mock.patch.object(km, "_push_send_one") as send:
             km._push_notify("romp: web", "Needs you")
         send.assert_not_called()
         self.assertIn("cryptography", err.getvalue(), "a starving phone is never silent")
+        self.assertIn(str(km.ROOT / "bin" / "romp-sdk-setup"), err.getvalue(), "and the line names the command, as the routes do")
 
 
 class DeclarativeWire(unittest.TestCase):
@@ -2236,7 +2307,7 @@ class LandingRevealExecutes(unittest.TestCase):
         b = self.out["boot"]
         self.assertEqual(b["postedBeforeReady"], 0, "no listener yet, nothing to scroll to")
         self.assertEqual(b["postedAfterTimelineReady"], 0, "another pane's ready is not the feed's")
-        self.assertEqual(b["postedAfterFeedReady"], [{"romp": "revealCard", "itemId": "S1:g1", "sid": "S1"}])
+        self.assertEqual(b["postedAfterFeedReady"], [{"romp": "revealCard", "itemId": "S1:g1", "sid": "S1", "gesture": True}])
 
     def test_the_message_for_a_tap_the_link_landed_is_a_dup_by_pid(self):
         # the cold start's two roads (the link, and the message handed to the opened window) carry one pid: ONE /reveal
@@ -2247,7 +2318,7 @@ class LandingRevealExecutes(unittest.TestCase):
     def test_a_live_tap_routes_the_same_way_and_settles_its_row(self):
         live = self.out["live"]
         self.assertEqual(live["fetches"], [["/reveal", {"sid": "S2", "wid": "W-test", "via": "sw"}], ["/push/landed", {"pid": "PID-live-0000000001"}]])
-        self.assertEqual(live["posted"], [{"romp": "revealCard", "itemId": "S2:g4", "sid": "S2"}])
+        self.assertEqual(live["posted"], [{"romp": "revealCard", "itemId": "S2:g4", "sid": "S2", "gesture": True}])
         self.assertEqual(live["diag"], [["sw-message", {"shape": "notificationClick", "hasSid": True, "kind": "card", "dup": False, "sw": {"clients": 3, "tops": 1, "road": "focus", "vis": "hidden"}}],
                                         ["reveal-post", {"status": 200, "via": "sw", "boot": False}]])
         d = self.out["dup"]
@@ -2310,7 +2381,7 @@ class LandingRevealWithTheFeedPaneOffHere(unittest.TestCase):
     def test_the_pane_back_on_the_card_scroll_returns(self):
         # the feed reported ready earlier in this page's life (the driver's ready), so the scroll posts at once
         back = self.out["backOn"]
-        self.assertEqual(back["posted"], [{"romp": "revealCard", "itemId": "S3:g1", "sid": "S3"}])
+        self.assertEqual(back["posted"], [{"romp": "revealCard", "itemId": "S3:g1", "sid": "S3", "gesture": True}])
         self.assertIn("function revealCard(itemId,sid){if(window.__rompPaneEnabled&&!window.__rompPaneEnabled('feed'))return;", km._LANDING_REVEAL_JS)
 
 
@@ -2334,7 +2405,7 @@ class LandingRevealReadsTheLinkLater(unittest.TestCase):
         s = self.out["pageshow"]
         self.assertEqual(s["fetches"], [["/reveal", {"sid": "S40", "wid": "W-test", "via": "link"}], ["/push/landed", {"pid": "PID-show-0000000040"}]],
                          "landed by the link road on a LIVE page: no boot flag; the row is settled")
-        self.assertEqual(s["posted"], [{"romp": "revealCard", "itemId": "S40:g2", "sid": "S40"}], "a card kind scrolls the feed too")
+        self.assertEqual(s["posted"], [{"romp": "revealCard", "itemId": "S40:g2", "sid": "S40", "gesture": True}], "a card kind scrolls the feed too")
         self.assertEqual(_rows(s, "deeplink"), [{"via": "pageshow", "hasSid": True, "hasCard": True, "hasPid": True, "dup": False, "controlled": True}])
         self.assertEqual(s["replaced"], ["/?t=1"], "our params stripped, the rest kept")
         a = self.out["pageshowAgain"]
@@ -2400,7 +2471,7 @@ class LandingRevealAsksTheLedger(unittest.TestCase):
         c = self.out["clicked"]
         self.assertEqual(c["fetches"], [["/reveal", {"sid": "S50", "wid": "W-test", "via": "ack"}], ["/push/landed", {"pid": "PID-clicked-000001"}]],
                          "the user tapped: a jump by the same land() path, the road named; then the kernel's row is landed")
-        self.assertEqual(c["posted"], [{"romp": "revealCard", "itemId": "S50:g1", "sid": "S50"}], "a card kind scrolls the feed too")
+        self.assertEqual(c["posted"], [{"romp": "revealCard", "itemId": "S50:g1", "sid": "S50", "gesture": True}], "a card kind scrolls the feed too")
         self.assertEqual(_rows(c, "tap-pending"), [{"via": "visible", "sub": True, "rows": 1, "getNotifications": True, "displayed": 0, "vanished": 0}])
         self.assertEqual(_rows(c, "tap-pending-land"), [{"sid8": "S50", "ageS": 4, "dup": False}])
         self.assertIn(["reveal-post", {"status": 200, "via": "ack", "boot": False}], c["diag"])
@@ -2418,7 +2489,7 @@ class LandingRevealAsksTheLedger(unittest.TestCase):
         self.assertEqual(v["getn"], 1, "the screen is read once per check")
         self.assertEqual(v["fetches"], [["/reveal", {"sid": "S41", "wid": "W-test", "via": "vanish"}], ["/push/landed", {"pid": "PID-shown-00000001"}]],
                          "the one gone lands by the same land() path, the road named; the displayed one is untouched")
-        self.assertEqual(v["posted"], [{"romp": "revealCard", "itemId": "S41:g3", "sid": "S41"}], "a card kind scrolls the feed too")
+        self.assertEqual(v["posted"], [{"romp": "revealCard", "itemId": "S41:g3", "sid": "S41", "gesture": True}], "a card kind scrolls the feed too")
         self.assertEqual(_rows(v, "tap-pending"), [{"via": "visible", "sub": True, "rows": 2, "getNotifications": True, "displayed": 1, "vanished": 1}])
         self.assertEqual(_rows(v, "tap-vanish-land"), [{"sid8": "S41", "ageS": 45}])
         self.assertIn(["reveal-post", {"status": 200, "via": "vanish", "boot": False}], v["diag"])

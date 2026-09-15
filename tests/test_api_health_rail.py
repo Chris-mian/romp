@@ -8,7 +8,10 @@ the click detail from it, with no fetch and no timer.
 The rule these tests pin: every field moves on one named event and never on a clock, so two computes over
 the same world are byte-identical and send nothing. Synthetic fixtures only (a private synthetic sid family,
 the notes-api demo's web / api / tests names, no paths or error text in any frame)."""
+import contextlib
+import errno
 import inspect
+import io
 import json
 import os
 import tempfile
@@ -365,6 +368,50 @@ class NoFlap(_Fixture):
         got = []
         km._apih_resend({"app": "shell", "send": got.append})
         self.assertEqual(got, [], "nothing sent since boot")
+
+
+class PauseDoorRefusal(_Fixture):
+    """The detail's pause button sends setGlobalRetryPaused on the shell socket and disables itself until a frame
+    whose seq moved answers it (_LANDING_APIH_JS pendSeq). The writer behind the door is a read-modify-write over
+    the pause file; when that file exists but cannot be read it refuses, and the press must hear it: a warn frame
+    on its own socket (the shell routes it to the notification center, tests/test_kernel_pane_rail.py), the file
+    untouched, and a seq the DOOR moves (the writer publishes nothing on a refusal: the cycle's engage and lift meet
+    the same refusal every pass, with no button to release) so the button repaints the truth (still paused) instead
+    of staying acknowledged. Before, the fault folded to an empty file and a Resume during a spend pause wrote
+    {"paused": false} with no liftedAt: the next cycle re-engaged on the standing record and the press read as
+    ignored."""
+
+    def test_a_press_over_an_unreadable_pause_file_is_refused_on_its_socket_and_the_seq_moves(self):
+        km._set_retry_paused(True, reason="spend", bills="key")
+        path = Path(self.td.name, "retry-paused.json")
+        before = path.read_bytes()
+        seq0 = self.frame()["seq"]
+        got = []
+        client = {"app": "shell", "wid": "w1", "alive": True, "send": lambda raw: got.append(json.loads(raw))}
+        real = Path.read_text
+
+        def faulting(p, *a, **k):                        # the pause file alone; every other read delegates
+            if p.name == "retry-paused.json":
+                raise OSError(errno.EMFILE, "too many open files")
+            return real(p, *a, **k)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch.object(Path, "read_text", faulting):
+            km.Handler._dispatch_ws(None, {"type": "setGlobalRetryPaused", "value": False}, client)
+        self.assertEqual([m["type"] for m in got], ["warn"], got)
+        self.assertEqual(got[0]["text"], "Couldn't change the pause: its file could not be read; nothing was changed \u2014 retry")
+        self.assertEqual(path.read_bytes(), before, "nothing was written")
+        self.assertTrue(km._retry_paused_on(), "still paused: the truth the button repaints")
+        self.assertEqual(self.frame()["seq"], seq0 + 1, "the door moved the seq for the press: the shell's pendSeq acknowledgment clears")
+        self.assertIn("retry-pause: the pause file could not be read ([Errno %d] too many open files); nothing changed"
+                      % errno.EMFILE, err.getvalue())
+        got.clear()
+        with contextlib.redirect_stderr(err):
+            km.Handler._dispatch_ws(None, {"type": "setGlobalRetryPaused", "value": False}, client)
+        self.assertEqual(got, [], "the read works: the press lands, and a landed press sends no frame")
+        self.assertFalse(km._retry_paused_on())
+        self.assertIn("liftedAt", json.loads(path.read_text()), "the Resume over a spend pause records its ruling")
+        self.assertIn("retry-pause: the pause file reads again; this write lands", err.getvalue(), "the episode's end, said once")
+        self.assertEqual(self.frame()["seq"], seq0 + 2, "the landed write is the next event")
 
 
 class FrameShape(_Fixture):

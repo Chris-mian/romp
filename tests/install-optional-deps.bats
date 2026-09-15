@@ -723,3 +723,78 @@ EOF
     [[ "$output" != *"need 3.10 or newer"* ]]
     [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
 }
+
+# ── the notifications dependency rides the SDK's install ──────────────────────────────────────
+# Phone and browser notifications (Web Push) need the python `cryptography` package on the kernel
+# host, read from the SDK venv (_push_crypto in kernel/kernel.py). Until 2026-09-14 nothing installed
+# it: install.sh and this script provisioned the SDK alone, and a fresh install's bell could only ever
+# answer that the package was missing. It goes in beside the SDK (same pip, same venv) and the verify
+# step imports it; a wheel that will not install is named with the command that would, and never
+# fails the SDK's provisioning, because the kernel runs without it.
+
+# A stub interpreter whose venv carries a pip that LOGS every call (and fails the one $PIP_FAIL_ON
+# names, when set) and a python that logs its arguments and drains the verify heredoc.
+_logging_venv_python() {   # $1 path
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
+  mkdir -p "$3/bin" "$3/lib/python3.12/site-packages"
+  cat > "$3/bin/pip" <<'PIP'
+#!/usr/bin/env bash
+echo "pip $*" >> "$CALL_LOG"
+if [ -n "${PIP_FAIL_ON:-}" ] && [[ "$*" == *"$PIP_FAIL_ON"* ]]; then exit 1; fi
+exit 0
+PIP
+  cat > "$3/bin/python" <<'PYS'
+#!/usr/bin/env bash
+echo "venv-python $* venv=${ROMP_SDK_VENV:-}" >> "$CALL_LOG"
+cat >/dev/null
+exit 0
+PYS
+  chmod +x "$3/bin/pip" "$3/bin/python"
+  printf 'version = 3.12.0\nexecutable = %s\n' "$0" > "$3/pyvenv.cfg"
+  exit 0
+fi
+case "$*" in
+  *"version_info >= (3, 10)"*) exit 0 ;;
+  *'print("%d.%d%s"'*)         echo "3.12"; exit 0 ;;
+  *'print("%d.%d"'*)           echo "3.12"; exit 0 ;;
+  *"import ensurepip"*)        exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "$1"
+}
+
+@test "romp-sdk-setup: installs cryptography beside the SDK (same pip, same venv) and verifies it too" {
+    _logging_venv_python "$STUB/python3.12"
+
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/python3.12" run "$ROMP_DIR/bin/romp-sdk-setup"
+
+    [ "$status" -eq 0 ]
+    grep -q "^pip install -q --upgrade claude-agent-sdk$" "$CALL_LOG"
+    grep -q "^pip install -q --upgrade cryptography$" "$CALL_LOG"
+    # the SDK first: the backend every session runs on is never held behind the notifications' package
+    sdk_line="$(grep -n 'upgrade claude-agent-sdk' "$CALL_LOG" | head -1 | cut -d: -f1)"
+    cr_line="$(grep -n 'upgrade cryptography' "$CALL_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$sdk_line" ] && [ -n "$cr_line" ] && [ "$sdk_line" -lt "$cr_line" ]
+    # the verify step runs in the venv's python (argv unchanged: `-`, the heredoc) and is handed the venv in its
+    # environment, so its message can name that venv's pip
+    grep -q "^venv-python - venv=$TEST_DIR/state/sdkvenv$" "$CALL_LOG"
+    grep -q "import cryptography" "$ROMP_DIR/bin/romp-sdk-setup"      # and it imports the package, not just the SDK
+    [[ "$output" != *"stay off"* ]]                                   # nothing to warn about on the happy path
+}
+
+@test "romp-sdk-setup: a cryptography that will not install is named with the command, and the SDK still provisions" {
+    _logging_venv_python "$STUB/python3.12"
+
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/python3.12" PIP_FAIL_ON=cryptography run "$ROMP_DIR/bin/romp-sdk-setup"
+
+    [ "$status" -eq 0 ]                                                  # the SDK is in; romp runs without the other
+    grep -q "^pip install -q --upgrade claude-agent-sdk$" "$CALL_LOG"
+    [[ "$output" == *"could not install 'cryptography'"* ]]
+    [[ "$output" == *"phone and browser notifications stay off"* ]]      # the consequence, in the user's terms
+    [[ "$output" == *"$TEST_DIR/state/sdkvenv/bin/pip install cryptography"* ]]   # the exact command, for this venv
+    [[ "$output" == *"romp-sdk-setup: done"* ]]                           # and the run finished as an SDK install
+}

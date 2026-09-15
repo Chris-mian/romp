@@ -37,6 +37,7 @@ import { canPreview } from "./preview";
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
+import { inInputEvent } from "./input-event";
 import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
 import { wireTip, setTip, pruneTip } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
@@ -502,8 +503,11 @@ function setCardChannels(card: HTMLElement, rgb: [number, number, number]) {
   card.style.setProperty("--card-b", String(rgb[2]));
   card.style.borderColor = "";   // CSS owns border-color now (rgba(var(--card-*), …)); clear any stale inline
 }
-const vscodeApi =
+const hostApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
+// every post this pane makes passes here, so a jump into a session (openSession, showOnTimeline, whichever click
+// made it) is noted in ONE place and the focused-session section follows at once (T416, noteOwnJump)
+const vscodeApi = hostApi ? { postMessage: (m: any) => { noteOwnJump(m); hostApi.postMessage(m); } } : undefined;
 // PR links inside cards open the PR and nothing else: capture-phase on the document, so the card's own
 // click (modal / pin) under the link never fires. Web → the viewer's browser; VS Code → the host's
 // openExternal via `openLink` (view-routing.ts; extension.ts opens it for the feed panel). Once, on the
@@ -1574,6 +1578,71 @@ let colOrder: string[] = [];                         // [] = each layout's own C
 // OFF by default); the sid is not persisted — a reloaded feed registers and is told again.
 let focusedSid: string | null = null;
 let showFocused = false;
+// THE SWITCH ON THE LOCAL SIGNAL (T416, the user 2026-09-14, whose chat tab moved at once on a feed click while this
+// section took long to follow). Measured on the served dashboard page: the kernel relays activeChat within 4 to 22 ms
+// of the chat's activeTab post and the rebuild here takes 2 to 6 ms, one to two frames end to end; the lag was this
+// pane's hover-freeze parking the frame as focusStale while the pointer rested on the header or card the reader had
+// just clicked, for as long as it rested there. The section now moves on the LOCAL signal, at once and through the
+// freeze when the signal is the reader's own gesture (never a push): this pane's own jump into a session (every
+// openSession and showOnTimeline post, noted in the ONE place they all pass, the host api's postMessage above, and
+// only when the post runs inside the reader's input event and outside a render) and the chat's active-tab change
+// handed across the page by the shell ({romp: "activeChat", id, nonce, gesture}: the chat posts its tab to the parent
+// on every switch, the shell hands it to the feed pane; a kernel-driven switch, a focus frame or a re-activation,
+// arrives with gesture false and defers under a held card exactly as a push does). The kernel's frame then
+// reconciles: focusPending holds the locally applied session against a frame built before the kernel took the
+// switch (the strip's pending rule, tab-meta.ts): only the ECHO clears it, the frame carrying the pending session
+// and, when both sides know it, the chat's announcement number (a burst of switches faster than the round trip
+// returns the same session under different numbers), or the kernel's marked reaffirm (its answer when a jump
+// reached a closed session and the chat got its confirmRevive instead of a tab change); a disagreeing frame yields
+// and never wins by count (an event, never a count: the round-two review). A standalone /feed page has no shell: its
+// own clicks still switch at once, and a strip click reaches it on the kernel's frame as before. An open card menu
+// (tabScopeKey) still defers the paint to its release: its anchor must stand.
+// THE JUMP SCROLL (T414, folded in here): with the section on, this pane's own Summary or card jump into a session (a
+// showOnTimeline post) scrolls the feed's box to the top with the same switch, so the section, now showing that
+// session's cards, is in view; a session name or a peer chip (an openSession post) only switches. The click is the
+// event and nothing waits on a frame, so a jump that changes no tab leaves nothing standing. A jump into a session
+// this pane knows to be closed switches and scrolls nothing (the kernel answers the chat's confirmRevive; no tab
+// changes). A plain scroll, no animated chase: the reader's own gesture's consequence.
+let focusPending: { sid: string | null; nonce: number | null } | null = null;
+// render time (T416 round two): render() and renderModal() hold these while they run, so a post a render makes (a
+// handler assignment once missing its braces posted a jump on every push) can never read as the reader's jump
+let inRender = false;
+let inModalRender = false;
+// a reader's gesture arriving THROUGH a frame (the shell's revealCard for a bell click or a notification tap, marked
+// gesture on the frame): honoured for the post that frame makes (round three)
+let frameGesture = false;
+function scrollFeedTop(): void {
+  const list = document.getElementById("feed-list");
+  if (list) list.scrollTop = 0;
+}
+/** This pane's own jump into a session, read off the post every jump makes: the section follows at once. Only a post
+ *  made inside the reader's input event (a click, a key) and outside a render counts; a showOnTimeline (a Summary or
+ *  card jump) also scrolls the feed's box to the top (T414), an openSession (a session name, a peer chip) only switches. */
+function noteOwnJump(m: any): void {
+  if (!m || (m.type !== "openSession" && m.type !== "showOnTimeline")) return;
+  if (inRender || inModalRender || !(inInputEvent() || frameGesture)) return;   // a render-time or unprompted post is no gesture of the reader's
+  const sid = typeof m.id === "string" && m.id ? m.id : typeof m.sid === "string" && m.sid ? m.sid : "";
+  if (!sid || !focusedIdentity(sid).live) return;   // a closed session's jump changes no tab, so it moves nothing here
+  applyLocalFocus(sid, m.type === "showOnTimeline", true, null);
+}
+/** The section follows a local signal: `jump` scrolls the box to the top (this pane's own Summary or card jump, T414);
+ *  `gesture` says the switch is the reader's own, which passes the hover-freeze (a kernel-driven switch relayed by the
+ *  shell defers under a held card like a push); `nonce` is the chat's announcement number the kernel echoes. */
+function applyLocalFocus(sid: string | null, jump: boolean, gesture: boolean, nonce: number | null): void {
+  const changed = sid !== focusedSid;
+  focusedSid = sid;
+  if (changed) focusPending = { sid, nonce };   // held until the kernel's echo of this very switch, or its marked answer
+  else if (focusPending && focusPending.sid === sid && nonce != null) focusPending.nonce = nonce;   // the chat announcing the switch this pane made: its echo is the one to wait for
+  if (!showFocused) return;
+  // the reader's gesture paints whether or not it changed the record: when the kernel's frame beat the shell's relay for
+  // the same switch under a held card, the frame parked the paint (focusStale) and the relay finds nothing changed; the
+  // gesture releases that park and paints now (the round-three review: the original lag, restored by a coin-flip order)
+  if (changed || (gesture && focusStale)) {
+    if (tabScopeKey || (!gesture && freezeKey)) focusStale = true;   // an open card menu, or a held card under a switch the reader did not make: the paint waits for the release (T347)
+    else { render(); focusStale = false; }
+  }
+  if (jump) scrollFeedTop();   // the reader asked to look at this session's cards, the one already focused included (T414)
+}
 // The section's OWN block layout (T410, the user 2026-09-13, who wanted the section's blocks movable, resizable
 // and collapsible on their own, none leaving the section): its dragged block order ([] = follow the board's
 // arrangement, as the section did from T347), the blocks' flex weights by column key (a missing key = 1, the
@@ -3419,6 +3488,10 @@ function growFollowUp(ta: HTMLTextAreaElement) {
 // Header credits the ask (title · agent · age · Clear); body = the state tree with
 // progressive per-node history. Driven by fullscreenAskId; re-rendered each push.
 function renderModal() {
+  inModalRender = true;   // the modal's paint is render time: a post it makes is no jump of the reader's (T416 round two)
+  try { renderModalNow(); } finally { inModalRender = false; }
+}
+function renderModalNow() {
   let m = document.getElementById("feed-modal");
   // The open target is EITHER a single ask (itemId) OR a group ("g:<turnId>" key).
   const isGroup = !!fullscreenAskId && fullscreenAskId.startsWith("g:");
@@ -3594,7 +3667,7 @@ function renderModal() {
     titleHoverId = grp.turnId;
     const gm0 = grp.members[0];   // prompt-intent title → the first member's MINTING message (resolves by id, kernel 92e23ff)
     const gm0Prompt = gm0.tree?.find((n) => n.id === gm0.itemId)?.promptAnchorUuid ?? null;
-    ttlEl.onclick = () => focusEcho(grp.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
+    ttlEl.onclick = () => { focusEcho(grp.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt }); };   // braced (T416 round two): without them the post ran on every paint of the modal, a jump nobody made
     agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, dotFor(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
@@ -5425,6 +5498,10 @@ function render() {
   if (paintHeld(document.hidden, feedIntersecting, list.childElementCount > 0)) { paintDirty = true; return; }
   pruneTip();   // drop the styled tip only if the render tore its hovered anchor out (tip.ts pruneTip)
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
+  inRender = true;   // the body is render time: a post it makes is never the reader's jump (noteOwnJump, T416 round two)
+  try { renderBody(list); } finally { inRender = false; }   // a throw inside the body must not leave the mark set (round three)
+}
+function renderBody(list: HTMLElement) {
   paintJudgeLimit();   // the usage-limit banner above the columns (build-once; hidden when unlatched)
   auditShownColumns(asks); // tripwire: what this render SHOWS is the record a bounce report needs
   const prevScroll = list.scrollTop;
@@ -6224,6 +6301,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
   if (!m) return;
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   if (m.romp === "paneFocus") { kbEnterCards(); return; }   // the shell handed us keyboard focus → arm card nav
+  if (m.romp === "activeChat") { applyLocalFocus(typeof m.id === "string" && m.id ? m.id : null, false, !!m.gesture, typeof m.nonce === "number" ? m.nonce : null); return; }   // the chat pane's tab change, handed across the page by the shell (T416): the reader's own passes the hover-freeze, a kernel-driven one defers under a held card; no jump scroll
   if (m.romp === "revealCard") {
     // a bell-entry click (the user 2026-07-28) or a notification tap (2026-09-06) jumps to the card it was
     // minted from: scroll it into view and pulse it accent so the eye lands on the right card. A card in a
@@ -6248,7 +6326,8 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       target.classList.add("reveal-pulse");
       target.addEventListener("animationend", () => target.classList.remove("reveal-pulse"), { once: true });
     } else if (m.sid) {
-      vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) });
+      frameGesture = !!m.gesture;   // the bell click or the notification tap behind this frame is the reader's gesture (round three)
+      try { vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) }); } finally { frameGesture = false; }
     }
     return;
   }
@@ -6280,7 +6359,27 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // without waiting for one. The frame IS the event: the section repaints here, never on a clock. While a
     // card is held under the pointer (hover-freeze) the repaint waits for the release, like a payload does:
     // the held card's rect standing still is that gate's whole contract, and the section's height sits above it.
-    focusedSid = typeof m.id === "string" && m.id ? m.id : null;
+    // Since T416 the local signal has usually moved the section already (applyLocalFocus): the frame carrying the
+    // pending session settles the record and changes nothing; one that disagrees is a push built before the kernel
+    // took the switch and yields; only the ECHO (the pending session, and the chat's announcement number when both
+    // sides know it) or the kernel's marked reaffirm answer clears the record, never a count of disagreeing frames
+    // (a burst of switches faster than the round trip would otherwise land a stale one for a whole round trip: the
+    // round-two review). An unchanged session is no event.
+    const id = typeof m.id === "string" && m.id ? m.id : null;
+    const nonce = typeof m.nonce === "number" ? m.nonce : null;
+    if (focusPending) {
+      // the echo is an agreeing frame whose number is at or above the record's (a watermark): the record's own echo, or
+      // a later announcement of the same session (the chat re-announcing after a socket flap, with a new number) that
+      // would otherwise leave the record standing for the page's life; a burst back to the same session is still
+      // protected, since its earlier announcement's frame carries a lower number. One caveat for a SECOND delivery path:
+      // the frames ride one ordered socket, so an echo can never overtake an earlier frame; a path that could reorder
+      // them would let the stale frame land after the echo cleared the record (the round-three review).
+      const echo = id === focusPending.sid && (focusPending.nonce == null || nonce == null || nonce >= focusPending.nonce);
+      if (!m.reaffirm && !echo) return;
+      focusPending = null;
+    }
+    if (id === focusedSid) return;
+    focusedSid = id;
     if (!showFocused) return;
     if (freezeKey || tabScopeKey) { focusStale = true; return; }
     render();

@@ -1639,6 +1639,38 @@ _SHA_REASK_S = 30           # and how long that failure stands before git is ask
 _CONVERGE_CRASH_T = [0.0]   # when the automatic converge's leg last crashed: one cool-down is held before the retry
 
 
+_CODE_IDENT = [None]        # the identity of the kernel code this process runs, resolved once
+
+
+def _code_ident():
+    """A content identity of the kernel's own code: a short sha1 over the bytes of kernel/*.py in path order,
+    resolved once per process. The reload core bakes it into every served page and compares it with /version's
+    after a restart: equal means the code this page runs restarted (no reload), different means new code (a
+    reload). The git sha cannot carry this (the round-two review's low d): a dirty tree reads sha-dirty before
+    and after an edit, so an edit-and-restart from a checkout with uncommitted changes would keep the old page
+    code against the new kernel. Bytes change with every edit, committed or not. ROMP_CODE_IDENT stands in for
+    the computed value (a served lab's relaunch as a changed build, tests/test_dashboard_reload_served.py).
+    Empty when the tree cannot be read or holds no kernel code (a hash of nothing would compare equal across
+    different builds): the core treats an empty or absent identity as changed, so the fail-safe is today's
+    reload, never a silent stale page."""
+    if _CODE_IDENT[0] is None:
+        forced = os.environ.get("ROMP_CODE_IDENT")
+        if forced:
+            _CODE_IDENT[0] = forced
+        else:
+            h = hashlib.sha1()
+            seen = 0
+            try:
+                for f in sorted(Path(ROOT, "kernel").glob("*.py")):
+                    h.update(f.name.encode())
+                    h.update(f.read_bytes())
+                    seen += 1
+                _CODE_IDENT[0] = h.hexdigest()[:12] if seen else ""
+            except OSError:
+                _CODE_IDENT[0] = ""
+    return _CODE_IDENT[0]
+
+
 def _kernel_sha(reask=False):
     """git short-sha of HEAD, plus '-dirty' if the working tree has uncommitted edits — the kernel
     loads bin/*.py straight from the worktree, so a dirty tree means it's running code that isn't at
@@ -1736,6 +1768,7 @@ def _version_info():
         pass
     _mv, _mgt = _mesh_settings_snapshot()   # value AND stamp of each mesh-adopted store from ONE read (T248b)
     return {"kernel_sha": _kernel_sha(), "kernel_ver": _kernel_ver(), "pid": os.getpid(), "started": int(_STARTED),
+            "code_ident": _code_ident(),   # the reload core's same-code test after a restart (invisible restarts, 2026-09-14)
             "boot": _BOOT_ID,   # lets a page retire update offers from a previous kernel life (2026-08-15)
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             # how often a backend's liveness read RAISED since boot and its previous rows were served instead
@@ -2146,6 +2179,7 @@ _clients_lock = threading.Lock()
 # (T347: the feed's focused-session section is a view of the chat pane's active tab; one window's panes share
 # a wid, so the chat's report is filed under it and read by that window's feed — _relay_active_chat below)
 _ACTIVE_CHAT_BY_WID = {}   # type: dict[str, str | None]
+_ACTIVE_CHAT_NONCE_BY_WID = {}   # type: dict[str, int | None]   # the chat's announcement number behind the record, echoed on the relayed frame (T416 round two)
 _client_seen = [0.0]
 # SIDs seen ALIVE at any point during THIS kernel run. (Retained for diagnostics; it no longer drives
 # tabs — the user 2026-06-17 reversed the earlier keep-a-tab-when-it-dies rule: a dead session is now TIMELINE-ONLY,
@@ -6262,14 +6296,33 @@ def _pending_tag_path():
 
 
 def _pending_tag_rows():
-    """The journal, cached after one disk read (writes keep the cache in sync under the lock)."""
+    """The journal, cached after one disk read (writes keep the cache in sync under the lock). That one
+    read is the strict one (_read_state_json, expect=list): a MISSING file is the empty journal; torn or
+    non-JSON bytes, or JSON of the wrong shape, are quarantined aside (a move, never a delete) and the
+    journal starts over empty after that stated event; a file that EXISTS but cannot be read (EIO,
+    EACCES) RAISES _StateUnreadable, loud once per episode (_note_state_fault), and caches NOTHING, so
+    the next call reads the disk again. Callers stand down for the one call: the queue refuses (nothing
+    is promised over a journal it could not read), the reattach apply waits for the next pass, the
+    display claims no pending badge this build. Until this change every failure of the read was folded
+    to a cached [] for the rest of the process (review find, 2026-09-10): the badge vanished, the
+    reattach apply never fired for any host, and the next queued edit read that [] and published its one
+    row over every earlier journaled intent under a "queued" ack -- the fold-then-overwrite the strict
+    reader was written against for the views store, which never reached this journal's private reader."""
     with _PENDING_TAG_LOCK:
         if _PENDING_TAG_CACHE["rows"] is None:
+            p = _pending_tag_path()
             try:
-                d = json.loads(_pending_tag_path().read_text())
-                _PENDING_TAG_CACHE["rows"] = [r for r in d if isinstance(r, dict)] if isinstance(d, list) else []
-            except Exception:
-                _PENDING_TAG_CACHE["rows"] = []
+                d = _read_state_json(p, expect=list)
+            except _StateUnreadable as e:
+                _note_state_fault(e)                 # said once per episode; the cache stays None
+                raise
+            # a clean read ends the episode (a re-fault speaks again) and, when one WAS open, marks the views
+            # dirty: the rows ride the views payload (_views_client) on the cached feed and timeline frames,
+            # and the fault's START moved their signature by itself (the once-per-episode notice) while its
+            # end moved nothing, so the frames built with no badge stood until the clock bucket. The heal is
+            # the event that rebuilds them (the views store's reader ends its episodes the same way).
+            _views_read_clean(p)
+            _PENDING_TAG_CACHE["rows"] = [r for r in d if isinstance(r, dict)] if d else []
         return list(_PENDING_TAG_CACHE["rows"])
 
 
@@ -6305,7 +6358,13 @@ def _queue_pending_tag_edit(host, body):
         return False
     tid = next((str(t.get("id") or "") for t in (cached.get("tags") or [])
                 if isinstance(t, dict) and _tag_name_basis(t.get("name")) == name), "")
-    rows = _pending_tag_rows()
+    try:
+        rows = _pending_tag_rows()
+    except _StateUnreadable:
+        # the journal exists but could not be read (said once, by the reader): NOT queued, so the
+        # caller's refusal carries no "queued" promise. A read-modify-write over a fold to [] would
+        # publish this one row over every earlier journaled intent.
+        return False
     same = lambda x: x.get("host") == host and _tag_name_basis(x.get("name")) == name   # a journal from before the basis may hold a padded name
     mine = [x for x in rows if same(x)]
     if any(x.get("delete") for x in mine):
@@ -6545,8 +6604,13 @@ def _views_client(v=None):
     # tag federation v2: a queued edit is VISIBLE, never gone-but-not-gone — the matching cached
     # remote entry wears `pending` ("delete"/"rename"/"remove") for the dialog's compact idiom,
     # and the raw rows ride as pendingTagEdits so an intent for a host with no cached tag entry
-    # still surfaces.
-    pend = _pending_tag_rows()
+    # still surfaces. A journal that exists but could not be read (said once, by the reader) is
+    # rendered as no badge this build, unproved and uncached: a raise here would abort every client's
+    # push, and the rows are not gone.
+    try:
+        pend = _pending_tag_rows()
+    except _StateUnreadable:
+        pend = []
     if pend:
         v["pendingTagEdits"] = [{"host": x.get("host") or "", "name": _tag_name_basis(x.get("name")),
                                  "op": _row_op(x)} for x in pend]
@@ -7347,6 +7411,18 @@ NOTIFY_ALL_KEY = "*"
 NOTIFY_TURNS_KEY = "*turns"
 _NOTIFY_RESERVED = frozenset((NOTIFY_ALL_KEY, NOTIFY_TURNS_KEY))
 _notify_cards_cache = {}   # str(path) -> ((mtime_ns,size), dict)
+# One writer of notify-cards.json at a time: _set_notify_all, _set_notify_turns, _set_notify_card and
+# _prune_notify_cards each read-modify-write the whole file, and the kernel runs them from many threads
+# (the POST /notify-all and /notify-turns handler threads, every dashboard's WS receive loop, the
+# pusher's feed diff and the producer's compaction sweep). Two unlocked writers that read the same
+# store both publish, and the second publish drops the first one's change while it was acked ok: a
+# bell click landing while a prune held its snapshot was erased by the prune's publish and flipped
+# back on the next push (the rule the sibling stores got 2026-09-08: _flags_lock, _order_lock). Taken
+# around the proved read and the publish as one step. Lock order: _notify_prev_lock -> _ncards_lock
+# (both prune callers already hold the snapshot's lock); nothing under it takes _flags_lock or
+# _notify_prev_lock, and _set_notify_session's read of this store under _flags_lock is lock-free, so
+# there is no cycle. The display reader (_notify_cards) never takes it.
+_ncards_lock = threading.Lock()
 
 
 def _notify_cards_proved():
@@ -7393,12 +7469,13 @@ def _notify_all_on():
 
 
 def _set_notify_all(value):
-    cur = dict(_notify_cards_proved())               # PROVED: a read fault refuses rather than erasing bells
-    if value:
-        cur[NOTIFY_ALL_KEY] = True
-    else:
-        cur.pop(NOTIFY_ALL_KEY, None)
-    _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+    with _ncards_lock:                               # read and publish as ONE step (the store's rule, above)
+        cur = dict(_notify_cards_proved())           # PROVED: a read fault refuses rather than erasing bells
+        if value:
+            cur[NOTIFY_ALL_KEY] = True
+        else:
+            cur.pop(NOTIFY_ALL_KEY, None)
+        _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
 
 
 def _notify_turns_on():
@@ -7409,12 +7486,13 @@ def _notify_turns_on():
 
 
 def _set_notify_turns(value):
-    cur = dict(_notify_cards_proved())               # PROVED: a read fault refuses rather than erasing bells
-    if value:
-        cur[NOTIFY_TURNS_KEY] = True
-    else:
-        cur.pop(NOTIFY_TURNS_KEY, None)
-    _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+    with _ncards_lock:                               # read and publish as ONE step (the store's rule, above)
+        cur = dict(_notify_cards_proved())           # PROVED: a read fault refuses rather than erasing bells
+        if value:
+            cur[NOTIFY_TURNS_KEY] = True
+        else:
+            cur.pop(NOTIFY_TURNS_KEY, None)
+        _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
 
 
 def _notify_session_effective(sid):
@@ -7438,21 +7516,23 @@ def _set_notify_card(item_id, value, sid=""):
     matches what the card would inherit anyway (session override, else master), in which case the
     override is deleted: clicking a bell back to its default returns it to FOLLOWING the default,
     rather than pinning today's default against tomorrow's master flip."""
-    cur = dict(_notify_cards_proved())               # PROVED: a read fault refuses rather than erasing bells
-    # the default this click is judged against comes from the OTHER store, and it must be PROVED too:
-    # read through the display reader, a fault on session-flags.json folded the session's bell to
-    # "unset" and the click was judged against the master instead -- a mute that matched the
-    # fabricated default was DELETED under the success path (the user's override, erased). A fault
-    # there refuses this write exactly like a fault on the bells file.
-    f = _session_flags_proved().get(sid)
-    default = None if not isinstance(f, dict) or f.get("notify") is None else bool(f.get("notify"))
-    if default is None:
-        default = bool(cur.get(NOTIFY_ALL_KEY))
-    if bool(value) == default:
-        cur.pop(item_id, None)
-    else:
-        cur[item_id] = bool(value)
-    _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+    with _ncards_lock:                               # read and publish as ONE step (the store's rule, above)
+        cur = dict(_notify_cards_proved())           # PROVED: a read fault refuses rather than erasing bells
+        # the default this click is judged against comes from the OTHER store, and it must be PROVED too:
+        # read through the display reader, a fault on session-flags.json folded the session's bell to
+        # "unset" and the click was judged against the master instead -- a mute that matched the
+        # fabricated default was DELETED under the success path (the user's override, erased). A fault
+        # there refuses this write exactly like a fault on the bells file. A lock-free read of the other
+        # store: _flags_lock is never taken here (see _ncards_lock's order).
+        f = _session_flags_proved().get(sid)
+        default = None if not isinstance(f, dict) or f.get("notify") is None else bool(f.get("notify"))
+        if default is None:
+            default = bool(cur.get(NOTIFY_ALL_KEY))
+        if bool(value) == default:
+            cur.pop(item_id, None)
+        else:
+            cur[item_id] = bool(value)
+        _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
 
 
 def _set_notify_session(sid, value):
@@ -7488,20 +7568,22 @@ def _prune_notify_cards(live_ids, gone_ids=()):
     the cards it just forgot from the notified snapshot: a session gone for good takes its cards' mutes
     with it. The reserved keys (the master, the turn-finished switch) are not cards and never prune;
     values are kept as stored (False = a mute)."""
-    try:
-        cur = _notify_cards_proved()   # PROVED: a fault must not prune against a fabricated {} and then
-        #                                write the truncation over the user's real bell overrides
-    except _StateUnreadable as e:
-        _note_state_fault(e)                         # loud once per episode, not per pass
-        return
-    gone = {i for i in cur if i not in _NOTIFY_RESERVED
-            and (i in gone_ids or (live_ids is not None and i not in live_ids))}
-    if gone:
-        kept = {i: cur[i] for i in cur if i not in gone}
+    with _ncards_lock:                               # read to publish as ONE step: a bell click landing in
+        #                                              between must not be erased by a publish of the older snapshot
         try:
-            _write_state_json(jd.STATE / "notify-cards.json", json.dumps(kept, sort_keys=True))
-        except _StateUnwritable:
-            pass                                     # filed once per episode by the write door; the next leaving card retries
+            cur = _notify_cards_proved()   # PROVED: a fault must not prune against a fabricated {} and then
+            #                                write the truncation over the user's real bell overrides
+        except _StateUnreadable as e:
+            _note_state_fault(e)                     # loud once per episode, not per pass
+            return
+        gone = {i for i in cur if i not in _NOTIFY_RESERVED
+                and (i in gone_ids or (live_ids is not None and i not in live_ids))}
+        if gone:
+            kept = {i: cur[i] for i in cur if i not in gone}
+            try:
+                _write_state_json(jd.STATE / "notify-cards.json", json.dumps(kept, sort_keys=True))
+            except _StateUnwritable:
+                pass                                 # filed once per episode by the write door; the next leaving card retries
 
 
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
@@ -9605,12 +9687,18 @@ def _retry_paused_on():
         return False
 
 
-# How many times this kernel wrote the pause file since boot: the apiHealth frame's `seq`. A press on the
-# bottom bar's detail pause button writes the file, and the frame that follows carries a moved seq even when
-# the cycle's auto-pause re-engaged the same state within the same second, so the shell can tell the frame
-# that answers its press from one that predates it (_LANDING_APIH_JS pendSeq). An event counter, never a
-# clock: two cycles over an unwritten file read the same seq.
+# How many times this kernel wrote the pause file since boot, plus each PRESS the setGlobalRetryPaused door
+# refused because the file could not be read: the apiHealth frame's `seq`. A press on the bottom bar's detail
+# pause button writes the file, and the frame that follows carries a moved seq even when the cycle's
+# auto-pause re-engaged the same state within the same second, so the shell can tell the frame that
+# answers its press from one that predates it (_LANDING_APIH_JS pendSeq); the door moves it for a refused
+# press too, so the button repaints the truth instead of staying acknowledged. A refusal the cycle's engage
+# or lift met moves nothing: no button waits on it, and a frame per pass for the span of a fault would be a
+# clock. An event counter, never a clock: two cycles over an unwritten file read the same seq.
 _RETRY_PAUSE_SEQ = [0]
+
+_retry_pause_read_fault_said = [""]   # the writer's read fault said this episode (its errno text); a clean read or the
+#                                       file's absence ends it, with one line, so a fault that spans cycles is not a line a pass
 
 
 def _set_retry_paused(paused, reason="", bills="", lifted_at=None):
@@ -9642,12 +9730,37 @@ def _set_retry_paused(paused, reason="", bills="", lifted_at=None):
     # stamps whole seconds) and waits for that session's next attempt, since re-engaging over the gesture
     # would be the worse error. `supersedes` is informational (the Log and a hand read of the file): nothing
     # reads it.
+    # Returns whether the file was written. A read-modify-write: the file that EXISTS but could not be read
+    # (EMFILE on a kernel holding many sockets and subprocesses, EIO or EACCES on a state root over a flaky
+    # mount) still holds the memory, so the write is refused and the caller hears False. Folding that fault
+    # to an empty `prev` rewrote the file without it: a lift wrote no liftedAt, the next cycle's spend engage
+    # read the capped session's standing record as unruled and put the pause back (the flap the memory exists
+    # to stop), and the user's Resume during a spend pause read as ignored. Only a MISSING file is "nothing to
+    # carry" (a first write); unparseable bytes carry nothing either, and the write is their repair. The
+    # refusal itself changes nothing a client sees: no seq, no dirty mark, no wake. The engage and lift try
+    # again every pass for as long as their evidence stands, and the readers fold the same fault to unpaused,
+    # so a refusal that published would be a full view rebuild and a frame to every shell per pass for the
+    # span of the fault (a clock); the one caller with a pressed button to release, the setGlobalRetryPaused
+    # door, moves the seq itself. The stderr line is once per fault episode (keyed by its errno text), and
+    # the clean read that ends the episode says so once.
+    p = jd.STATE / "retry-paused.json"
     try:
-        prev = json.loads((jd.STATE / "retry-paused.json").read_text())
+        prev = json.loads(p.read_text())
         if not isinstance(prev, dict):
             prev = {}
+    except FileNotFoundError:
+        prev = {}
+    except OSError as e:
+        why = _errno_text(e)
+        if _retry_pause_read_fault_said[0] != why:
+            _retry_pause_read_fault_said[0] = why
+            sys.stderr.write("retry-pause: the pause file could not be read (%s); nothing changed\n" % why)
+        return False
     except Exception:
         prev = {}
+    if _retry_pause_read_fault_said[0]:
+        _retry_pause_read_fault_said[0] = ""
+        sys.stderr.write("retry-pause: the pause file reads again; this write lands\n")
     d = {"paused": bool(paused)}
     if paused:
         d["t"] = time.time()
@@ -9662,8 +9775,9 @@ def _set_retry_paused(paused, reason="", bills="", lifted_at=None):
         d["liftedAt"] = prev["liftedAt"]
         d["supersedes"] = prev.get("supersedes", 0)
     _RETRY_PAUSE_SEQ[0] += 1
-    _atomic_write(jd.STATE / "retry-paused.json", json.dumps(d))
+    _atomic_write(p, json.dumps(d))
     _mark_views_dirty()   # the queued bubble renders this hold; every writer publishes the flip (review 2026-09-05)
+    return True
 
 
 def _retry_pause_reason():
@@ -9789,8 +9903,10 @@ def _auto_pause_on_limit():
     except Exception:
         return
     if account and not _retry_paused_on():
-        _set_retry_paused(True, reason="limit")     # latched at the event: the API cell's 'paused, usage limit'
-        #                                               (not re-derived from _retry_resume_at's clock compare)
+        # latched at the event: the API cell's 'paused, usage limit' (not re-derived from _retry_resume_at's clock
+        # compare); a refused write (the pause file could not be read) is the writer's own stderr line, no engage
+        if not _set_retry_paused(True, reason="limit"):
+            return
         sys.stderr.write("retry-pause: auto-engaged — usage limit reached (%s) → auto-retry + judges paused until reset\n"
                          % ",".join(account))
         # no inline push: _set_retry_paused marked the views dirty and woke the pusher, whose next cycle
@@ -9852,7 +9968,8 @@ def _auto_pause_on_spend_limit(now, live_map):
         # while one session streamed past the other's cap)
         live = live_map if isinstance(live_map, dict) else {}
         bills = "login" if _bills_login(live.get(str(capped.get("sid") or ""))) else "key"
-        _set_retry_paused(True, reason="spend", bills=bills)
+        if not _set_retry_paused(True, reason="spend", bills=bills):
+            return                                       # refused (the pause file could not be read): the writer said so
         sys.stderr.write("retry-pause: auto-engaged: monthly spend limit reached (%s billing); auto-retry + judges "
                          "paused until the cap is raised (claude.ai/settings/usage)\n" % bills)
         # no inline push: _set_retry_paused marked the views dirty and woke the pusher, whose next cycle
@@ -9962,8 +10079,11 @@ def _lift_retry_pause(now, why, lifted_at=None):
     flip and the re-arm of the cards the judges gave up on while degraded. No inline push and no wake of its
     own: _set_retry_paused ends in _mark_views_dirty, which wakes the pusher, and its next cycle carries
     globalRetryPaused=false (the caller's docstring). `lifted_at` is the spend rule's evidence time, recorded
-    as the file's liftedAt (_set_retry_paused); the other rules pass none."""
-    _set_retry_paused(False, lifted_at=lifted_at)
+    as the file's liftedAt (_set_retry_paused); the other rules pass none. A refused write (the pause file
+    could not be read: the writer's own stderr line) is no lift: nothing is announced and nothing re-armed,
+    and the next cycle's resume check reads the same evidence again."""
+    if not _set_retry_paused(False, lifted_at=lifted_at):
+        return
     sys.stderr.write("retry-pause: auto-cleared (%s): judges + auto-retry resume\n" % why)
     try:                                                 # recovery edge → re-arm cards the judges gave up on
         rearmed = jd.rearm_failed_summaries(now)         # while degraded, so their summaries/briefs retry now
@@ -17451,6 +17571,17 @@ def _running_python_tag():
                         "t" if "t" in getattr(sys, "abiflags", "") else "")
 
 
+def _sdk_venv_site_packages():
+    """(match, found): the SDK venv's site-packages directories built for the python THIS process runs
+    (_running_python_tag), and every one on disk whatever its tag. bin/romp-sdk-setup builds the venv
+    under ~/.local/state/romp/sdkvenv; the kernel never touches system python. Shared by
+    _ensure_sdk_on_path (the SDK) and _push_crypto (the cryptography package the same venv carries)."""
+    import glob
+    running = _running_python_tag()
+    found = sorted(glob.glob(str(jd.STATE / "sdkvenv" / "lib" / "python3.*" / "site-packages")))
+    return [sp for sp in found if Path(sp).parent.name == "python" + running], found
+
+
 def _ensure_sdk_on_path():
     """Make claude_agent_sdk importable by the kernel's interpreter. Prefer an already-installed
     copy; otherwise add the dedicated venv's site-packages (built by bin/romp-sdk-setup under
@@ -17462,13 +17593,11 @@ def _ensure_sdk_on_path():
     stderr, once, with both remedies (a log line; the user-facing surfaces name the one remedy the disk
     supports, see SdkBackend.unavailable_verdict). Returns True when importable."""
     import importlib.util
-    import glob
     global _SDK_VENV_BUILT_FOR
     if importlib.util.find_spec("claude_agent_sdk"):
         return True
     running = _running_python_tag()
-    found = sorted(glob.glob(str(jd.STATE / "sdkvenv" / "lib" / "python3.*" / "site-packages")))
-    match = [sp for sp in found if Path(sp).parent.name == "python" + running]
+    match, found = _sdk_venv_site_packages()
     for sp in match:
         if sp not in sys.path:
             sys.path.insert(0, sp)
@@ -17612,6 +17741,7 @@ def _sdk_locked():
             # the status resolve for it, the machine's explicit default when this box can bill it, else the helper rule
             # (default_auth over the reg applies auth_unavailable_why); the judge guards None and falls to its file rule
             jd._DEFAULT_AUTH_FN = getattr(_sdk_backend, "default_auth", None)
+            jd._DEFAULT_LOGIN_FN = getattr(_sdk_backend, "default_login", None)   # WHICH stored login an unpicked session bills (2026-09-14)
             # the Billing pick's login gate (T124): set_auth refuses 'login' when the credential
             # store names no signed-in account — the same authority the usage bars trust, so the
             # pick can never sit in the UI as applied fact on a box that demonstrably cannot apply it
@@ -18796,13 +18926,15 @@ def _drive(msg, client):
                     "The permission mode could not be changed: no running backend owns this session.")
             client["send"](json.dumps({"type": "warn", "text": text}))
         _push_soon()
-    elif t == "setAuth" and msg.get("scope") == "machine" and msg.get("value") in ("login", "key", "auto"):
+    elif t == "setAuth" and msg.get("scope") == "machine" and (msg.get("value") == "auto" or lg.parse_pick(msg.get("value"))[0]):
         # the machine's DEFAULT billing (T380, the user 2026-09-12): the seed every new session and every
         # session with no pick of its own launches on ("auto" = the helper rule again). Written on THIS kernel
         # (the op routes to the session's owning host, so a remote session's flyout sets that host's default);
         # no session's own pick is touched, so nothing reconnects. LOUD on refusal, the same reason vocabulary as
         # a per-session pick; a backend that keeps no machine default (Codex) is refused by name, never a raise
-        # swallowed inside the drive (review).
+        # swallowed inside the drive (review). A STORED login ("login:<id>") is a machine default too since
+        # 2026-09-14 (the user: the Set default billing submenu offers every billing the picks do); the backend's
+        # set_auth_default judges the record as a per-session pick would.
         _set_def = getattr(be, "set_auth_default", None)
         if _set_def is None:
             client["send"](json.dumps({"type": "warn",
@@ -18820,11 +18952,10 @@ def _drive(msg, client):
         client["send"](json.dumps({"type": "warn",
                                    "text": "Automatic is a choice for the machine's default billing, not for one session: pick Login or API key here."}))
     elif t == "setAuth" and msg.get("scope") == "machine":
-        # a STORED login as the machine's default (T346 beside T380): not taken yet, said. This arm sits before the
-        # per-session arm so a scoped value is never read as a session's own pick; the flyout's Default group lists
-        # the machine's own login and the key only until set_auth_default takes a stored one (the T346 follow-up).
+        # a scoped value that is no billing choice at all: said, never dropped. This arm sits before the per-session
+        # arm so a scoped value is never read as a session's own pick.
         client["send"](json.dumps({"type": "warn",
-                                   "text": "Couldn't set this machine's default billing: a stored login can't be the machine's default yet; pick it for a session instead."}))
+                                   "text": "Couldn't set this machine's default billing: '%s' is not a billing choice." % str(msg.get("value") or "")[:40]}))
     elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:   # "login" | "key" | "login:<id>" (T346)
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
         # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): Codex
@@ -19021,6 +19152,8 @@ def _reveal_or_confirm(sid, focus_msg, client=None):
     dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
     if sid and sid not in _live_map():
         _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
+        if client:
+            _reaffirm_active_chat(client)   # the asking window's feeds learn that no tab changed (T416)
     else:
         # a LIVE session's anchored focus also carries the anchor turn's own moment for the chat's reveal progress line
         # (T336), resolved here and only here: a dead session's card never pays for it (the confirm goes out without it)
@@ -25454,6 +25587,11 @@ def _tunnel_supervisor():
                     try:
                         if any(x.get("host") == r.get("host") for x in _pending_tag_rows()):
                             _apply_pending_tag_edits(r)
+                    except _StateUnreadable:
+                        # the journal could not be read (said once, by the reader): every row waits for
+                        # the next pass, which reads the disk again. Not a dial record: a disk that stays
+                        # bad would write one per host per pass and rotate the dial history away.
+                        pass
                     except Exception:
                         _tunnel_log(r.get("host") or "?", "pending-tag-edits",
                                     note="apply pass raised: %s" % traceback.format_exc(limit=3))
@@ -45157,48 +45295,70 @@ COMPACT_TAIL_WINDOW = 256 * 1024                   # the tail read's first windo
 #                                                    the window's oldest stamped record is still after the moment asked about
 
 
+_COMPACT_BOUNDARY_MEMO = {}    # path -> (since, size, answer): the tail read's answer stands while the file's size and the question stand
+
+
 def _compact_boundary_since(path, since):
     """Whether the transcript carries a compact_boundary record stamped at or after `since` (epoch seconds): the built
-    chip's compaction disproof (_compacting), as a tail-first read that needs no parse (round four, low c). Records are
-    appended in order, so the read widens back from the end only while the window's oldest stamped record is still at
-    or after `since`; the whole file is the bound. False on any read fault (the caller then trusts the row's word)."""
-    if not since:
-        return False
+    chip's compaction disproof (_compacting), as a tail-first read that needs no parse (round four, low c). A row with
+    no since asks for any boundary, as the built read does (the fold's low a). The answer is memoized per path against
+    the file's size and the question, so the pusher pays one read per transcript change, not one per push (low d: with
+    a Sessions pane connected the gate skips every cold tab, hundreds of these per push). False on any read fault (the
+    caller then trusts the row's word)."""
+    since = since or 0
     try:
         size = os.path.getsize(path)
     except OSError:
         return False
+    hit = _COMPACT_BOUNDARY_MEMO.get(path)
+    if hit is not None and hit[0] == since and hit[1] == size:
+        return hit[2]
+    answer = _compact_boundary_scan(path, since, size)
+    _COMPACT_BOUNDARY_MEMO[path] = (since, size, answer)
+    return answer
+
+
+def _compact_boundary_scan(path, since, size):
+    """The read behind _compact_boundary_since: slices from the end, each 4x the last, every byte read once (the torn head
+    of a slice is carried to the earlier slice that completes it), so the largest buffer is one slice and the whole file
+    is read at most once, and only while the slice's oldest stamped record is still at or after `since`. A record whose
+    timestamp is not a string, or a line that is not a JSON object, is skipped: this read promises a bool (low b)."""
     win = COMPACT_TAIL_WINDOW
+    end = size
+    carry = b""
     try:
         with open(path, "rb") as f:
-            while True:
-                start = max(0, size - win)
+            while end > 0:
+                start = max(0, end - win)
                 f.seek(start)
-                chunk = f.read(size - start)
+                chunk = f.read(end - start) + carry
                 lines = chunk.split(b"\n")
                 if start > 0:
-                    lines = lines[1:]                     # the first piece is a torn line
+                    carry = lines[0]                       # torn: the earlier slice's last piece completes it
+                    lines = lines[1:]
                 oldest = None
                 for ln in lines:
                     if b'"compact_boundary"' in ln:
                         try:
                             rec = json.loads(ln)
-                        except ValueError:
+                            if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+                                t = em.parse_z(rec.get("timestamp"))
+                                if t is not None and t >= since:
+                                    return True
+                        except (ValueError, TypeError, AttributeError):
                             continue
-                        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-                            t = em.parse_z(rec.get("timestamp"))
-                            if t is not None and t >= since:
-                                return True
                     if oldest is None and b'"timestamp"' in ln:
                         try:
                             oldest = em.parse_z(json.loads(ln).get("timestamp"))
-                        except ValueError:
+                        except (ValueError, TypeError, AttributeError):
                             oldest = None
                 if start == 0 or (oldest is not None and oldest < since):
                     return False
+                end = start
                 win *= 4
     except OSError:
         return False
+    return False
 
 
 def _light_status(sid, path, tm, now):
@@ -45223,8 +45383,10 @@ def _light_status(sid, path, tm, now):
     # Compacting in the built chip's order (round four, low c): the backend's bracket when it states one; else the row's
     # word or the kernel's own /compact click, disproved by the cheap reads this status has: a compact_boundary at or
     # after the row's since is a tail read (_compact_boundary_since), and the open turn's disproof stands in by the
-    # row's working. The residual: a row that says compacting while the transcript's last turn is open with no
-    # boundary since reads compacting here and working built, until the tab's first build.
+    # row's working. The residual runs both ways (low c of the fold): a row that says compacting while the transcript's
+    # last turn is open with no boundary since reads compacting here and working built; a row that says working over a
+    # closed last turn with the kernel's own /compact click live reads working here and compacting built; either
+    # stands until the tab's first build.
     since_s = tm.get("since")
     if bc is not None:
         compacting = bool(bc)
@@ -50890,7 +51052,7 @@ def _active_chat_wid(client):
     return str(client.get("wid") or "")
 
 
-def _send_active_chat(client):
+def _send_active_chat(client, reaffirm=False):
     """Tell ONE feed client which session the chat pane of its window shows — {type: "activeChat", id: sid|null},
     the value recorded for its wid — on the ("activeChat",) dedup slot, so an unchanged value is not re-sent
     (_send_client, within _DEDUP_REPOST_S). Nothing when no chat of that window has reported yet: the feed keeps
@@ -50905,11 +51067,32 @@ def _send_active_chat(client):
     wid = _active_chat_wid(client)
     if wid not in _ACTIVE_CHAT_BY_WID:
         return False
+    frame = {"type": "activeChat", "id": _ACTIVE_CHAT_BY_WID[wid]}
+    if _ACTIVE_CHAT_NONCE_BY_WID.get(wid) is not None:
+        frame["nonce"] = _ACTIVE_CHAT_NONCE_BY_WID[wid]   # the echo (T416 round two): every announcement goes, the slot's dedup keys on it
+    if reaffirm:
+        # the kernel's ANSWER to a jump that reached a closed session (T416): the feed moved its section on the click it
+        # made and holds that against the relay's stale frames; this frame, marked, is the one it yields to. A nonce, so
+        # the slot's dedup never swallows a second answer within its window (the same record answered twice is two answers)
+        frame["reaffirm"] = True
+        frame["nonce"] = _next_nonce()
     try:
-        _send_client(client, ("activeChat",), {"type": "activeChat", "id": _ACTIVE_CHAT_BY_WID[wid]})
+        _send_client(client, ("activeChat",), frame)
     except Exception:
         return False
     return True
+
+
+def _reaffirm_active_chat(client):
+    """A jump from `client`'s window reached a closed session (the chat got confirmRevive, no tab changed): tell the
+    window's feeds which session the chat still shows, marked as the answer (T416: the feed's focused-session section
+    moved on the click it made and holds that against the relay's stale frames; the marked frame is the one it yields
+    to). Nothing when no chat of the window has reported yet, as _send_active_chat."""
+    wid = _active_chat_wid(client)
+    with _clients_lock:
+        feeds = [c for c in _clients if c.get("alive") and c.get("app") == "feed" and _active_chat_wid(c) == wid]
+    for c in feeds:
+        _send_active_chat(c, reaffirm=True)
 
 
 def _forget_active_chat_if_last(client):
@@ -50920,9 +51103,10 @@ def _forget_active_chat_if_last(client):
     wid = _active_chat_wid(client)
     if wid in _ACTIVE_CHAT_BY_WID and not any(_active_chat_wid(c) == wid for c in _clients):
         _ACTIVE_CHAT_BY_WID.pop(wid, None)
+        _ACTIVE_CHAT_NONCE_BY_WID.pop(wid, None)
 
 
-def _relay_active_chat(client, sid):
+def _relay_active_chat(client, sid, nonce=None):
     """A chat client's activeTab: record the session under its window's wid (None for no tab) and send the window's
     live feed clients the frame (T347: the feed's focused-session section is a view of the chat pane's active tab,
     never a move of a card; one window's panes share a wid, and a pane outside a dashboard files under ""). The
@@ -50930,6 +51114,9 @@ def _relay_active_chat(client, sid):
     under _clients_lock; the sends run outside it, as every other fan-out does."""
     wid = _active_chat_wid(client)
     _ACTIVE_CHAT_BY_WID[wid] = str(sid) if sid else None
+    # the chat's announcement number (T416 round two), echoed on the frame: the feed clears its pending record on the
+    # echo of its own switch and never on a stranger's; a chat that sends none keeps the plain frame and its dedup
+    _ACTIVE_CHAT_NONCE_BY_WID[wid] = nonce if isinstance(nonce, int) and not isinstance(nonce, bool) else None
     with _clients_lock:
         feeds = [c for c in _clients if c.get("alive") and c.get("app") == "feed" and _active_chat_wid(c) == wid]
     for c in feeds:
@@ -50945,17 +51132,37 @@ def _relay_active_chat(client, sid):
 #
 # Crypto is RFC 8291 (aes128gcm content encryption — Apple's/Google's push relays carry ciphertext
 # they cannot read) + RFC 8292 (VAPID, an ES256 JWT proving the sender). Both need P-256/HKDF/
-# AES-GCM, i.e. the `cryptography` package — the kernel's only soft dependency beyond the SDK. It
-# is NOT silently optional (fail loudly, CLAUDE.md): /push/subscribe answers 500 with the missing
-# package named, and a send attempted with subscriptions on file but no crypto says so on stderr.
-_PUSH_CRYPTO = [None]   # None = untried; False = unavailable; else the namespace below
+# AES-GCM, i.e. the `cryptography` package — the kernel's only soft dependency beyond the SDK.
+# bin/romp-sdk-setup installs it into the SDK venv beside the SDK (since 2026-09-14; before that
+# nothing installed it, and a fresh install's bell could only ever name it as missing). It is NOT
+# silently optional (fail loudly, CLAUDE.md): /push/vapid-key, /push/subscribe and /push/test answer
+# 500 with ONE plain-text message (_push_crypto_missing) that names the package and the command that
+# installs it on this layout, the bell's This-device sub-line shows that message, and a send attempted
+# with subscriptions on file but no crypto says the same on stderr.
+_PUSH_CRYPTO = [None]   # None = untried or missing at the last try (retried on the next call); else the namespace below
+_PUSH_CRYPTO_TRIED = [False]   # a second miss drops importlib's finder caches before it looks again
 
 
 def _push_crypto():
-    """The cryptography primitives Web Push needs, imported once, or None. Lazy, not top-of-module:
-    the package may live only in the SDK venv, whose site-packages _ensure_sdk_on_path injects
-    after import."""
+    """The cryptography primitives Web Push needs, imported on first use, or None. Lazy, not
+    top-of-module: the package may live only in the SDK venv, whose site-packages this APPENDS to
+    sys.path when they are not there yet (_sdk_venv_site_packages: _ensure_sdk_on_path adds them only
+    when the SDK itself is not importable elsewhere, and a venv built AFTER the kernel started is on
+    nobody's path). Appended, not put first: a copy of the SDK the interpreter already resolves must
+    keep winning over the venv's, exactly as _ensure_sdk_on_path left it. A miss is not cached: the
+    user the 500 sends to bin/romp-sdk-setup comes back and turns the switch on again, and that tap
+    is the retry — no kernel restart between the two (a failed import costs a few stats; importlib's
+    finder caches are dropped first so a package installed since is seen)."""
     if _PUSH_CRYPTO[0] is None:
+        import importlib
+        added = False
+        for sp in _sdk_venv_site_packages()[0]:
+            if sp not in sys.path:
+                sys.path.append(sp)
+                added = True
+        if added or _PUSH_CRYPTO_TRIED[0]:
+            importlib.invalidate_caches()
+        _PUSH_CRYPTO_TRIED[0] = True
         try:
             from cryptography.hazmat.primitives import hashes, serialization
             from cryptography.hazmat.primitives.asymmetric import ec
@@ -50965,8 +51172,18 @@ def _push_crypto():
             _PUSH_CRYPTO[0] = {"hashes": hashes, "ser": serialization, "ec": ec,
                                "decode_dss": decode_dss_signature, "AESGCM": AESGCM, "HKDF": HKDF}
         except ImportError:
-            _PUSH_CRYPTO[0] = False
-    return _PUSH_CRYPTO[0] or None
+            return None
+    return _PUSH_CRYPTO[0]
+
+
+def _push_crypto_missing():
+    """The one sentence every surface shows when the package is missing: the 500 body the push routes
+    answer (the bell's This-device sub-line shows it verbatim), the fan-out's stderr line. Names the
+    package and the exact command for this install layout: bin/romp-sdk-setup in THIS checkout (ROOT),
+    which installs it into the SDK venv the kernel reads, and builds that venv first when there is
+    none. Then the tap again, not a restart (_push_crypto retries)."""
+    return ("Notifications to this device need the python 'cryptography' package, which is missing on "
+            "the machine running romp. Run %s there, then turn this on again." % (ROOT / "bin" / "romp-sdk-setup"))
 
 
 def _b64u(b):
@@ -51092,10 +51309,10 @@ def _vapid_keys():
     """This kernel's VAPID P-256 keypair (RFC 8292), minted on first use and persisted at 0600 —
     stable thereafter, because a subscription is bound to the key it was created with. Returns
     (private_key, public_key_b64url); raises RuntimeError when cryptography is missing (the
-    subscribe route turns that into a plain-text 500 the shell surfaces)."""
+    subscribe route turns that into a plain-text 500 the shell surfaces: _push_crypto_missing)."""
     cg = _push_crypto()
     if not cg:
-        raise RuntimeError("Web Push needs the python 'cryptography' package on the kernel host")
+        raise RuntimeError(_push_crypto_missing())
     f = jd.STATE / "push-vapid.json"
     priv = None
     try:
@@ -51606,7 +51823,7 @@ def _push_notify(title, body, sid="", badge=None, kind="card", card_id="", host=
         # subscriptions exist, so a phone is expecting these — say so where the kernel's operator
         # looks, rather than dropping them silently (fail loudly, CLAUDE.md)
         print("romp: web push: %d subscription(s) on file but the python 'cryptography' package "
-              "is missing — notification not delivered" % len(subs), file=sys.stderr)
+              "is missing — notification not delivered. %s" % (len(subs), _push_crypto_missing()), file=sys.stderr)
         return
     base = _push_payload(title, body, sid, badge, kind, card_id, host, quiet=quiet, name=name)
 
@@ -52617,12 +52834,13 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
 # this code in node with fakes and pins the wiring.
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,freshTimer=null,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
 if(!textual)return false;var val=(a.value!=null?a.value:(a.textContent||''));return !!String(val).trim();}catch(e){return false;}}
 function busyHere(){if(ptr>0)return 'pointer';if(pan)return 'pan';if(drag)return 'drag';
+try{if(window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}   /* the chat pane's redial awaiting its first frame; a hold older than the bound no longer holds (the frame never came: the reload fires as before) */
 try{var s=document.getSelection&&document.getSelection();var focused=!document.hasFocus||document.hasFocus();
 if(focused&&s&&s.rangeCount&&!s.isCollapsed&&String(s).length)return 'selection';}catch(e){}
 if(editing())return 'typing';
@@ -52637,16 +52855,18 @@ function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
-try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}));}catch(e){}   /* kept for the panes' first dial (the chat diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces */
+try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}));}catch(e){}   /* kept for the chat pane's first dial (the diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces; the path says which document reloaded, so a standalone feed page's reload never steers the next chat document's dial */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
-if(b){R.waiting=b;var hk=key(owed)+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}return;}R.waiting='';fire();}
+if(b){R.waiting=b;var hk=owed.reason+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}   /* keyed on the reason: a second restart inside one hold moves the detail and must not announce the same wait again */
+if(b==='fresh'&&!freshTimer)freshTimer=setTimeout(function(){freshTimer=null;tryFire();},FRESH_HOLD_MS);   /* the bound's backstop: no event ends a hold whose frame never comes, so the walk runs once more when the bound has passed */
+return;}R.waiting='';fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
 var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;}
-if(!owed)owed=next;tryFire();}
+if(!owed)owed=next;else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
 function noteDv(dv){if(LOADED&&dv&&dv>LOADED)request('build',String(dv));}
-function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT)request('restart',String(v.boot));if(v.dist_ver)noteDv(v.dist_ver);
+function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT){restarted++;BOOT=v.boot;if(!(CODE&&v.code_ident&&v.code_ident===CODE))request('restart',String(v.boot));}   /* BOOT re-latches: restarted() counts restarts, not the polls that follow one */if(v.dist_ver)noteDv(v.dist_ver);
 if(typeof v.taskTracking==='boolean'){window.__rompTaskTracking=v.taskTracking;if(window.__rompApplyPanes)window.__rompApplyPanes();}}   // the Task tracking switch (T404): the shell's rail follows the kernel
 function checkBoot(){try{fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(noteVersion)['catch'](function(){});}catch(e){}}   // a non-ok answer is not a version: noteVersion's latches (BOOT, LOADED) never see it
 function announce(notify){var raw=null;try{raw=sessionStorage.getItem('romp:reloaded');}catch(e){}
@@ -52668,7 +52888,7 @@ var END=['pointerup','touchend','touchcancel','scrollend','dragend','drop','sele
 function ended(){setTimeout(function(){var s=shell();if(s)s.tryFire();else tryFire();},0);}
 for(var k=0;k<END.length;k++)document.addEventListener(END[k],ended,true);
 window.addEventListener('blur',function(){ptr=0;pan=false;drag=false;ended();});
-var R={request:request,tryFire:tryFire,ended:ended,busyHere:busyHere,busy:busy,noteDv:noteDv,noteVersion:noteVersion,checkBoot:checkBoot,announce:announce,
+var R={request:request,tryFire:tryFire,ended:ended,busyHere:busyHere,busy:busy,noteDv:noteDv,noteVersion:noteVersion,checkBoot:checkBoot,announce:announce,restarted:function(){return restarted;},
 inShell:function(){return !!shell();},owed:function(){return owed;},fired:function(){return fired;},refusedFor:function(){return refusedFor;},refused:null,held:null,waiting:'',loaded:LOADED,boot:BOOT};
 window.__rompReload=R;})();/*end-reload-core*/"""
 
@@ -52676,15 +52896,17 @@ window.__rompReload=R;})();/*end-reload-core*/"""
 def _reload_core(v=0):
     """The reload core with this page's build token and this kernel's boot id baked in (see _RELOAD_CORE_JS).
     Embedded by _shim (every pane page) and _stale_block (the dashboard landing)."""
-    return _RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace("__ROMP_BOOT__", json.dumps(_BOOT_ID))
+    return (_RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace("__ROMP_BOOT__", json.dumps(_BOOT_ID))
+            .replace("__ROMP_CODE__", json.dumps(_code_ident() or "")))
 
 
-def _reload_core_js(v=0, boot=None):
+def _reload_core_js(v=0, boot=None, code=None):
     """The reload core's IIFE alone — the code between its /*reload-core*/ anchors, baked for `v` and `boot` — so a
     node test runs the REAL decision code with fakes for document, window, location, sessionStorage and fetch
     (test_dashboard_auto_reload.py). Fails loudly if the anchors ever go missing."""
     js = _RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace(
-        "__ROMP_BOOT__", json.dumps(_BOOT_ID if boot is None else boot))
+        "__ROMP_BOOT__", json.dumps(_BOOT_ID if boot is None else boot)).replace(
+        "__ROMP_CODE__", json.dumps((_code_ident() or "") if code is None else code))
     a, b = "/*reload-core*/", "/*end-reload-core*/"
     i, j = js.find(a), js.find(b)
     if i < 0 or j < i:
@@ -52730,19 +52952,28 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // (Handler._ws → _resolve_reconnect: the redial diet, for a fresh page that has a hint). false everywhere else: the
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
-// The RESTART DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
-// until shown): a main chat pane whose page was just reloaded by a kernel RESTART dials its first socket as a skeleton client, the later
-// column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab, and the
-// page's idle prefetch fills the rest. The reason is the reload core's durable record (romp:reloadReason; the announce record is consumed
-// before this shim dials), CONSUMED here on the read that acts on it, as the announce record is by announce() (round two, medium 1: a
-// plain reload two seconds after a restart reload dialed the diet on the same record); a build reload, a column, a fresh open and every
-// redial dial as before. Emitted for the chat app alone (round two, medium 2): every other pane's shim carries the false alone.
+// The RELOAD DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
+// until shown; and restarts are invisible, so the one reload the reload core still fires is a changed build, a fresh page on a kernel that
+// just restarted): a main chat pane whose page the reload core just reloaded, for ANY reason, dials its first socket as a skeleton client,
+// the later column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab,
+// and the page's idle prefetch fills the rest. The signal is the reload core's durable record (romp:reloadReason, written in fire() with the
+// reason and the path of the document that reloaded; the announce record is consumed before this shim dials). The chat shim alone reads
+// it (the slot below is emitted for the chat app; every other pane's shim carries the false), REMOVES it before parsing it (a malformed or
+// scalar record is consumed and diets nothing, as announce() consumes its record), and acts on it only when it is an object with the fields
+// and its path names the shell or a chat document, so a standalone feed or timeline page's own reload steers no later chat dial. A column
+// and a skeleton view leave the record alone (their dials are the shell's statement); a redial carries the diet through reconnect=1; a
+// fresh open with no record dials as before.
 %s
 // This PAGE's instance id — minted once per load, never stored: every connect of this page carries it, so the
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
 var IID="";try{IID=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():"";}catch(e){}if(!IID)IID=String(Math.random()).slice(2)+"-"+Date.now();
 var APP="%s";var LOADEDV=%d;var NOSTALE=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
+// the reload core's 'fresh' hold (invisible restarts, 2026-09-14): the chat pane alone, the pane the ruling names, armed at the drop and
+// kept through the redial; a Files or Settings page gets no resync frame, so a hold armed there would never end (the round-two review).
+// Stamped once per hold: a flapping socket or a kernel in a crash loop re-arms without moving the stamp, so the core's bound is
+// a minute per hold, as the held wording says (round three, low 1)
+function armFresh(){if(APP==="chat"){if(!window.__rompFreshPending)window.__rompFreshPendingSince=Date.now();window.__rompFreshPending=true;}}
 var PROVISIONAL_MS=15000,resumeProvisional=0;   // a resumed keep is PROVISIONAL (review find, 2026-09-08): the `resume` stamp below re-bases the watchdog on a socket the browser still holds OPEN, but the far end can have died without a FIN reaching the browser, and only the kernel's next frame can tell. Until one lands the watchdog runs at 1.5 keepalive periods (KEEPALIVE_S is 10 s, so 15 s: one beat may be in flight, two missing is silence) instead of STALE_MS. resumeProvisional holds the stamp a kept socket rests on; 0 once a frame confirmed it (or the socket is a fresh one)
 var connT=0;   // when the current socket's connect() attempt started — the progress watchdog's reference point
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
@@ -52883,7 +53114,7 @@ var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: 
 window.__rompPaneBusy=function(){return (everConnected&&queue.length>queuedDiag)?"sends":"";};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
-try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
+try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the reconnected chat pane has its first frame, a minute at most.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
 else selfBar("A newer romp build is available.","build");}
@@ -52891,7 +53122,7 @@ function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // on
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
-ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":"")+(APP==="fleet"?"&provrows=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after a kernel restart's reload (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
+ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":"")+(APP==="fleet"?"&provrows=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after any reload the reload core fired (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
@@ -52909,7 +53140,7 @@ if(failedConnects){send({type:"clientDiag",surface:"pane-shim",what:"wsconnfail"
 if(wasReconn){var ann=restartAnnounced&&Date.now()-restartAnnounced<30000;restartAnnounced=0;   // one-shot: spent here
 if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.checkBoot();   // T265: a REOPEN is the restart signal — a standalone page asks /version whose kernel answered; inside the shell, the shell asks on its own socket
 if(!ann)armStale(pendingWhy||"reconnect");   // T217: an ANNOUNCED restart's reconnect skips the arm — the resync lands in a beat and the flash was pure noise; a restart that never comes back stays loud through the disconnected state itself, and a SECOND reconnect arms as always
-pendingWhy="";freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}
+pendingWhy="";freshPending=true;armFresh();try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}
 enqueue({type:"wsup"});}};   // the flip as a FRAME too: frames of the dead socket may still be draining from the FIFO, and a bundle that scopes "loaded on this socket" must see the flip between them and the new socket's frames, not at onopen (review find 2026-09-07)
 ws.onmessage=function(ev){lastRecv=Date.now();resumeProvisional=0;if(returnAt)returnBytes+=(ev.data&&ev.data.length)||0;var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="caps")readyAcked=true;   // the kernel's answer to a ready it processed: _send_caps, which the ready arm alone sends, after its own pushes. From here a redial may declare itself (the dial term in connect); the frame goes on to the bundle below like any other
@@ -52925,7 +53156,7 @@ return;}   // keepalive: stamped lastRecv above and confirmed a resumed keep (re
 if(msg&&msg.type==="restarting"){restartAnnounced=Date.now();staleDiag("restart-announced","");return;}
 // the first REAL frame after a reconnect is the kernel's connect-time push — the resync itself, so the
 // "what you see may be stale" prompt is answered and retires (see clearStale). Keepalives return above.
-if(freshPending){freshPending=false;clearStale();}
+if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}   // the resync frame is the ending event for the 'fresh' hold: a build reload owed since the restart goes now, onto a warm kernel
 if(returnAt){returnDiag("return-fresh",{ms:Date.now()-returnAt,bytesSince:returnBytes,redialed:returnRedialed});returnAt=0;}   // the first real frame after a return: how long the user waited for current content
 // VIEW DELTAS (2026-09-03): the bars/feed slots arrive as {type:"delta"} frames carrying only the changed
 // entries; reassemble the full message from what this pane holds and hand the bundle exactly what it
@@ -52946,7 +53177,7 @@ enqueue(msg);};   // the handoff to the bundle is the ONE deferred step (see the
 // of an outage — an 8 h outage is ~19k of them, and their timings would be the PREVIOUS socket's): those
 // are counted and reported as one wsconnfail row on the next open, never queued one by one.
 ws.onclose=function(ev){netState("down");
-if(openSock===this){try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected}});}catch(e){}}
+if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected}});}catch(e){}}
 else{if(!failedConnects)firstFailT=Date.now();failedConnects++;}
 if(stalePending&&openSock===this){var cw=stalePending;stalePending="";raiseStale(cw+"-closed");}   // the reconnected socket died before its resync: nothing is coming on it, and the view IS stale
 try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}
@@ -53076,7 +53307,7 @@ var row={decision:stale?((!ws||ws.readyState!==1)?"redial-closed":"redial-stale"
 frozenMs:(res&&frozeAt>=hiddenAt&&resumedAt>frozeAt)?resumedAt-frozeAt:0,quietMs:lastRecv?Date.now()-lastRecv:-1,quietAtResumeMs:res?resumeQuiet:-1,ready:ws?ws.readyState:-1};
 returnAt=Date.now();returnBytes=0;returnRedialed=false;returnRow=null;   // every return starts with no held row (review find, 2026-09-08): a keep row left over from an earlier return must not ride this one's close or abandon
 if(!stale){returnRow=row;returnDiag("return",row);return;}   // the socket stands: the row rides it now — and is HELD, because a FIN queued in the same thaw burst would swallow it (review find 2026-09-07; onclose re-files)
-pendingWhy="foreground";freshPending=true;   // the reconnect's arm reads "foreground" (upstream's two-event prompt)
+pendingWhy="foreground";freshPending=true;armFresh();   // the reconnect's arm reads "foreground" (upstream's two-event prompt)
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
@@ -53084,10 +53315,17 @@ returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial s
 
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
-# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet only when it named a kernel restart. A
+# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet for any reload the core fired when the
+# record is an object with the fields whose path names the shell or a chat document (the user's ruling: restarts are invisible, so the
+# one reload left is a changed build, a fresh page on a kernel that just restarted; a scalar or fieldless record diets nothing). A
 # column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
-_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||\"null\");"
-                    "if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}")
+_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');"
+                    "rr=raw?JSON.parse(raw):null;}catch(e){}"
+                    "RESTART_DIET=!!(rr&&typeof rr==='object'&&typeof rr.reason==='string'&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}")
+# The record is REMOVED before it is parsed (a malformed one is consumed too, as announce() does), and any reload the reload core fired
+# dials the diet (the user's ruling of 2026-09-14: restarts invisible, so the one reload left is a changed build, a fresh page on a kernel
+# that just restarted): the record's presence decides, not its reason. A record written by a standalone feed or timeline page's own
+# reload names that path and steers nothing (path === undefined only for a record an older core wrote).
 
 
 def _shim_core_js(app="test", v=0):
@@ -53814,6 +54052,11 @@ function visCols(){return allCols().filter(paneVisible);}
 function focusPane(id,dir){var f=document.getElementById(id);if(!f)return;
 try{f.contentWindow.focus();}catch(e){}setFocus(id);
 try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');}catch(e){}}
+// The chat pane's active tab, handed to the feed pane on this page (T416): the chat posts {romp:'activeTab',id} to its
+// parent on every switch, and the feed's current-session section moves on it at once, ahead of the kernel's relay of
+// the same post over the sockets, which then reconciles. From a child frame of this page only (a chat column).
+window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
+var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*');}catch(x){}});
 function moveFocus(dir){
   if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
     if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
@@ -53996,7 +54239,7 @@ row.addEventListener('click',function(){close();
 if(!feedHere()){jumpChat(n.tgt.sid||'');return;}
 try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',true);}catch(e){}
 var f=document.getElementById('f-feed');
-try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''},'*');}catch(e){}});}
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||'',gesture:true},'*');}catch(e){}});}
 row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
 if(!shown){var e=document.createElement('div');e.className='rerr-empty';
 e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'Nothing logged';list.appendChild(e);}}
@@ -55569,7 +55812,10 @@ boot.classList.remove('gone');
 try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
 var n=0;(function again(){setTimeout(function(){n++;
 fetch('/healthz',{cache:'no-store'}).then(function(r){var b=(r&&r.ok)?r.headers.get('X-Romp-Boot'):null;
-if(b&&b!==__ROMP_BOOT__)location.reload();else if(n<240)again();else location.reload();})
+// the NEW kernel answers: the reload core decides (invisible restarts, 2026-09-14). The same code restarted: no reload, the panes
+// redial and the board updates in place. A changed build: the reload lands once the chat pane has its first frame. A page
+// without the core reloads as before; so does the poll's own backstop.
+if(b&&b!==__ROMP_BOOT__){boot.classList.add('gone');if(window.__rompReload)window.__rompReload.checkBoot();else location.reload();}else if(n<240)again();else location.reload();})
 .catch(function(){if(n<240)again();else location.reload();});},500);})();};
 var rf=document.getElementById('rail-refresh');
 if(rf)rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();};
@@ -56390,6 +56636,9 @@ else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotify
 else if(m&&m.type==='notifyTurns'&&window.__rompNotifyTurnsPaint)window.__rompNotifyTurnsPaint(!!m.on);
 // the bottom bar's API health cell: one frame, painted by _LANDING_APIH_JS (sent on change + on ready)
 else if(m&&m.type==='apiHealth'&&window.__rompApiHealth)window.__rompApiHealth(m);
+// a refusal answering a press this socket carried (the detail's pause button over a pause file the kernel could not
+// read): the notification center, the way the chat page toasts its own; the answering frame's moved seq repaints the button
+else if(m&&m.type==='warn'&&typeof m.text==='string'&&m.text&&window.__rompNotify)window.__rompNotify('warn',m.text);
 // the boot check found a newer romp release — raise the update banner on every open dashboard
 else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'',m.drift||'',m.boot||'',m.state||'');};
 // the API health detail's pause acknowledgment rides this socket: a press it carried cannot be answered now (the
@@ -56433,7 +56682,7 @@ var canPush=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notific
 var back=document.getElementById('rbell-back'),pop=document.getElementById('rbell-pop');if(!back||!pop)return;
 var rows={};['all','dev','turns'].forEach(function(k){rows[k]=pop.querySelector('[data-act='+k+']');});
 var devSubEl=document.getElementById('rbp-dev-sub'),testBtn=document.getElementById('rbp-test'),testOut=document.getElementById('rbp-test-out');
-var isOn=false,turnsOn=false,devOn=false,busy={};
+var isOn=false,turnsOn=false,devOn=false,busy={},devErr='';   // devErr: why the last This-device tap failed, in the kernel's or the browser's words, until the next tap
 function perm(){return canPush?Notification.permission:'';}
 function sw(k,on,ok){var r=rows[k];if(!r)return;r.classList.toggle('off',!ok);r.setAttribute('aria-checked',on?'true':'false');
 r.setAttribute('aria-disabled',ok?'false':'true');var s=r.querySelector('.rbp-sw');if(s)s.classList.toggle('on',!!on);}
@@ -56451,10 +56700,11 @@ pop.classList.toggle('master-off',!isOn);   // the rows under the master dim whi
 var sub;
 if(!canPush)sub="Push isn't available in this browser. On iPhone, add romp to the Home Screen first and open it from there.";
 else if(perm()==='denied')sub="Notifications are blocked for this site. On iPhone: Settings, then Notifications, then Romp. In a desktop browser: the site permission beside the address.";
+else if(devErr)sub=devErr;   // the last tap's refusal, verbatim: the kernel's 500 body (the missing 'cryptography' package and the command that installs it — _push_crypto_missing) or the browser's own reason; never the generic line over a failure that was named
 else if(devOn&&!isOn)sub="This device is set up, but nothing arrives until the main switch is on.";
 else if(devOn)sub="This browser gets a notification when a session needs you or finishes.";
 else sub="Turn on to get them on this device.";
-if(devSubEl)devSubEl.textContent=sub;}
+if(devSubEl){devSubEl.textContent=sub;devSubEl.classList.toggle('bad',!!devErr&&perm()!=='denied');}}
 window.__rompNotifyAllPaint=function(on){isOn=!!on;paint();};     // the shell WS repaints every open dashboard on a toggle
 window.__rompNotifyTurnsPaint=function(on){turnsOn=!!on;paint();};
 // The two switches are read once per page: an answer that is not the switch (a non-ok status, an unreadable body) used
@@ -56519,9 +56769,9 @@ while(el&&el!==pop&&!(el.getAttribute&&el.getAttribute('data-act')))el=el.parent
 if(!el||el===pop)return;var act=el.getAttribute('data-act');
 if(act==='all'){if(busy.all)return;setBusy('all',true);var want=!isOn;
 post('/notify-all',{on:want}).then(function(){isOn=want;paint();},fail).then(function(){setBusy('all',false);});}
-else if(act==='dev'){if(busy.dev||el.classList.contains('off'))return;setBusy('dev',true);var wantD=!devOn;
+else if(act==='dev'){if(busy.dev||el.classList.contains('off'))return;setBusy('dev',true);var wantD=!devOn;devErr='';
 var perm0=(wantD&&canPush)?Notification.requestPermission():null;   // in the tap's own stack, before any await
-(wantD?devSubscribe(perm0):devUnsubscribe()).then(function(){devOn=wantD;},function(e){fail(e);return sub().then(function(s){devOn=!!s;});})
+(wantD?devSubscribe(perm0):devUnsubscribe()).then(function(){devOn=wantD;},function(e){devErr=String((e&&e.message)||e||'');fail(e);return sub().then(function(s){devOn=!!s;});})   // the reason stays on the row (paint), not only in the toast
 .then(function(){setBusy('dev',false);paint();});}
 else if(act==='turns'){if(busy.turns)return;setBusy('turns',true);var wantT=!turnsOn;
 post('/notify-turns',{on:wantT}).then(function(){turnsOn=wantT;paint();},fail).then(function(){setBusy('turns',false);});}
@@ -56610,7 +56860,7 @@ var feedReady=false,pendingCard=null,chatUp=false;   // chatUp: this page's own 
 function revealCard(itemId,sid){if(window.__rompPaneEnabled&&!window.__rompPaneEnabled('feed'))return;
 if(!feedReady){pendingCard={itemId:itemId,sid:sid};return;}
 var f=document.getElementById('f-feed');
-try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid},'*');}catch(e){}}
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid,gesture:true},'*');}catch(e){}}
 window.addEventListener('message',function(e){var m=e&&e.data;
 if(m&&m.romp==='wsState'&&m.app==='chat'&&m.state==='up')chatUp=true;   // the chat pane's shim, on its socket's open: from here a tap is delivered live
 if(!(m&&m.romp==='ready'&&m.app==='feed'))return;
@@ -56764,7 +57014,7 @@ _STALE_JS = (
     "if(RL){RL.refused=function(){buildStale=true;show(BUILDMSG);};"
     # a reload HELD by a pane (an upload in flight, a held send, queued sends) says so, once per hold: the notification
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
-    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
+    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the reconnected chat pane has its first frame, a minute at most.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
     "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
     # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
@@ -57696,6 +57946,7 @@ def _landing():
             "#rbp-test[disabled]{opacity:.55;cursor:default}"
             "#rbp-test-out{padding-top:4px}#rbp-test-out:empty{display:none}"
             "#rbp-test-out.bad{color:#e5484d;opacity:1}"    # a refusal is a STATUS, so it wears the status red, not the accent
+            "#rbp-dev-sub.bad{color:#e5484d;opacity:1}"     # the This-device row's refusal (the kernel's missing-package answer) is a status too: the same red. Its own line: the string above is the END marker of ui/webview/menu-theme-tokens.test.ts's popover slice
             # Per-node fleet colour on the network glyph (the user 2026-07-29). The nodes carry their own
             # fill, so they override the icon's currentColor: accent = connected and on this build,
             # grey = attached but not answering (romp is dialing), red = needs you (drift, no kernel, or
@@ -61424,7 +61675,7 @@ class Handler(BaseHTTPRequestHandler):
             _pusher_wake.set()                 # …and that push starts when the in-flight cycle ends, not
             #                                     after the 0.5 s backstop (the tab switch IS the event)
             if client.get("app") == "chat":
-                _relay_active_chat(client, msg.get("id"))   # …and the window's feed learns which session is focused (T347)
+                _relay_active_chat(client, msg.get("id"), msg.get("nonce"))   # …and the window's feed learns which session is focused (T347), the announcement number echoed (T416)
             return
         if msg and msg.get("type") == "needSlot" and msg.get("slot") in _DELTA_SLOTS:
             # The shim could not apply a view delta (its base revision did not match what it holds — a
@@ -61557,8 +61808,12 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:                                   # a string here paused retries across EVERY session
                 _refuse_ws_flag(client, msg["type"], ferr, "value", msg.get("value"))
                 return
-            _set_retry_paused(paused)
-            _mark_views_dirty()
+            if not _set_retry_paused(paused):          # the pause file could not be read: nothing was written. The press
+                _RETRY_PAUSE_SEQ[0] += 1               # hears it: the seq moves here, for the press alone (the shell clears
+                _reply(client, {"type": "warn",        # the pressed button's acknowledgment on a moved seq and repaints the
+                                "text": "Couldn't change the pause: its file could not be read; nothing was changed "
+                                        "\u2014 retry"})   # truth), and a warn frame on its socket (the shell routes it to the
+            _mark_views_dirty()                        # notification center, the chat page to its toast)
             return
         if msg and msg.get("type") == "ready":
             client["proto"] = 2 if msg.get("proto") == 2 else 1   # the chat wire it speaks (T323 stage 4b): 2 = uuid frames; absent = index frames

@@ -8,6 +8,7 @@ surfaces as launch_error text instead of a silent non-start. All data synthetic 
 Run:    python3 tests/test_codex_backend.py
 """
 import contextlib
+import errno
 import json
 import os
 import queue
@@ -470,6 +471,90 @@ class ApprovalModes(unittest.TestCase):
         self.assertTrue(notices)
         self.assertTrue(all(msg["type"] == "warn" for msg in notices))
 
+    def test_a_dead_stderr_never_raises_out_of_the_approval_handler(self):
+        # the handler's FIRST line is a log write, before any answer is returned, and it runs inline on the
+        # SDK's single reader thread (the case above). With a stderr that raises on write (a log disk at
+        # ENOSPC, the pipe a supervisor's end closed) that write raised out of the handler: the reader ended
+        # with no reply written and every in-flight request of every Codex session failed at once. The log
+        # callback is wrapped ONCE at construction, so the raising logger goes in through the constructor: a
+        # post-construction `be.log = ...` replaces the wrap and would prove nothing
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=FakeClient, log=dead_stderr)
+        notices = []
+        be.notify = lambda app, msg: notices.append(msg)
+        answers = (("item/commandExecution/requestApproval", {"decision": "decline"}),
+                   ("item/fileChange/requestApproval", {"decision": "decline"}),
+                   ("item/permissions/requestApproval", {"permissions": {}, "scope": "turn"}),
+                   ("item/tool/requestUserInput", {"answers": {}}),
+                   ("unknown/requestApproval", {}))
+        for method, want in answers:
+            self.assertEqual(be._handle_approval(method, {}), want, method)
+        self.assertEqual(len(notices), len(answers), "the session still hears every denial")
+        self.assertTrue(all(msg["type"] == "warn" for msg in notices))
+        # the DEFAULT logger (no log= handed in: the bare `codex-backend:` stderr line) is wrapped the same way
+        be2 = cb.CodexBackend(tempfile.mkdtemp(), client_factory=FakeClient)
+        with mock.patch.object(sys, "stderr", SimpleNamespace(write=dead_stderr, flush=lambda: None)):
+            self.assertEqual(be2._handle_approval("item/commandExecution/requestApproval", {}),
+                             {"decision": "decline"})
+
+    def test_a_dead_stderr_does_not_end_the_pump_before_it_records_the_failure(self):
+        # the same shape on the pump thread: its except branch logs FIRST, then uninstalls the client
+        # (_record_client_failure_locked) and wakes queued workers. Under a raising stderr the pump died at
+        # that log line, so the dead client stayed installed: the next send's _get_client handed it back
+        # and turn_start parked forever in the SDK's untimed wait, every Codex session wedged until a
+        # restart, with nothing on the log to say so
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+        fake = FakeClient()
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=lambda: fake, log=dead_stderr)
+        self.assertIs(be._get_client(), fake)
+        fake.close()                                  # next_notification raises: the pump's except branch runs
+        self.assertTrue(until(lambda: be._client is None), "the dead client is uninstalled")
+        self.assertIn("client closed", be._client_err or "", "the failure is recorded, not lost with the line")
+
+    def test_a_dead_stderr_does_not_end_the_worker_before_it_files_the_failure(self):
+        # the third site with this shape, on each session's worker thread: _work's except branch logs the
+        # traceback FIRST, then files launch_error and sets the session "waiting". Under a raising stderr the
+        # worker died at that log line, and _work's finally only clears s.worker: nothing was filed, the
+        # queued batch parked with no visible reason, and the session read busy forever. A plain RuntimeError
+        # from turn_start (not a permanent rejection) reaches that branch; the second attempt holds at its
+        # entry, so the filed error is read before the ack that clears it
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+
+        class FailOnceClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+                self.retry_entered = threading.Event()
+                self.allow_retry = threading.Event()
+
+            def turn_start(self, tid, input_items, params=None):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("synthetic pre-ack failure")
+                self.retry_entered.set()
+                self.allow_retry.wait(5)
+                return super().turn_start(tid, input_items, params)
+
+        fake = FailOnceClient()
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=lambda: fake, log=dead_stderr)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "first"))
+        self.assertTrue(fake.retry_entered.wait(5), "the worker never came back for the retry: it died at the log line")
+        err = be.launch_error(sid)
+        self.assertIsNotNone(err, "the failure is filed, not lost with the line")
+        self.assertEqual(err["text"], "codex turn failed: synthetic pre-ack failure")
+        self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
+        fake.allow_retry.set()
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        self.assertEqual(fake.attempts, 2)
+        # the contract itself, in one line: the wrap is at construction, so the callback the backend holds never
+        # raises, whichever site on whichever thread calls it. A guard at each of the three sites above would
+        # pass the three cases and fail here
+        be.log("probe")
+
     def test_real_client_is_constructed_with_fail_closed_handler(self):
         be, _, _ = build()
         be._client_factory = None
@@ -482,6 +567,95 @@ class ApprovalModes(unittest.TestCase):
              mock.patch.dict(sys.modules, {"openai_codex.client": module}):
             self.assertIs(be._get_client(), fake)
         self.assertEqual(module.CodexClient.call_args.kwargs["approval_handler"], be._handle_approval)
+
+
+class ExplicitBinFailures(unittest.TestCase):
+    """A codex that cannot be started from an EXPLICIT ROMP_CODEX_BIN is reported in the operator's words.
+    The kernel hands ROMP_CODEX_BIN through unchecked, and _get_client kept whatever the SDK's start() raised
+    as _client_err verbatim: for a missing file the pinned SDK's "Codex binary not found at X. Set
+    CodexConfig.codex_bin to a valid binary path." (a Python field the operator has never seen); for a file
+    that exists but cannot run (no exec bit, a directory) Popen's bare "[Errno 13] Permission denied: X", with
+    no remedy at all. Every surface that shows the record (the chat's red card, the creation refusals, the
+    resume detail, the /models note) repeated it, and nothing named the knob to fix (2026-09-11). The record
+    now names ROMP_CODEX_BIN and the managed-runtime alternative (_explicit_bin_failure). Same harness as
+    test_real_client_is_constructed_with_fail_closed_handler: the SDK module is the seam, its client's start()
+    raising exactly what the real one raises; the managed runtime's location is stubbed only so the
+    codex_bin=None case reaches start() on a state root with no runtime installed."""
+
+    def _probe(self, codex_bin, exc):
+        be, _, _ = build()
+        be._client_factory = None
+        be.codex_bin = codex_bin
+        fake = FakeClient()
+
+        def start():
+            raise exc
+        fake.start = start
+        module = SimpleNamespace(CodexClient=mock.Mock(return_value=fake),
+                                 CodexConfig=lambda **kwargs: kwargs)
+        with mock.patch.object(cb, "ensure_codex_sdk", return_value=True), \
+             mock.patch.dict(sys.modules, {"openai_codex.client": module}), \
+             mock.patch.object(cb._runtime, "runtime_path", return_value=Path("/TESTBIN/managed/bin/codex")):
+            self.assertIsNone(be._get_client())
+        return be._client_err or ""
+
+    def test_a_missing_file_names_the_knob_not_the_sdk_field(self):
+        text = self._probe("/TESTBIN/codex", FileNotFoundError(
+            "Codex binary not found at /TESTBIN/codex. Set CodexConfig.codex_bin to a valid binary path."))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("unset ROMP_CODEX_BIN", text)
+        self.assertIn("restart the ROMP kernel", text,
+                      "the knob was read once, at construction: unset alone changes nothing: %r" % text)
+        self.assertIn("No such file or directory", text)
+        self.assertNotIn("CodexConfig", text, "the SDK's dataclass field means nothing to an operator: %r" % text)
+
+    def test_a_file_that_cannot_run_names_the_knob_and_a_remedy(self):
+        # exists() passes a non-executable file or a directory; Popen then raises the errno with no remedy
+        text = self._probe("/TESTBIN/codex", PermissionError(13, "Permission denied", "/TESTBIN/codex"))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("unset ROMP_CODEX_BIN", text)
+        self.assertIn("restart the ROMP kernel", text)
+        self.assertIn("Permission denied", text, "the OS's reason is kept: %r" % text)
+
+    def test_a_file_that_is_not_a_binary_names_the_knob(self):
+        # exists() passes a text file or a wrong-arch binary; execve then answers ENOEXEC, the third path error
+        # the gate names
+        text = self._probe("/TESTBIN/codex", OSError(errno.ENOEXEC, "Exec format error", "/TESTBIN/codex"))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("Exec format error", text, "the OS's reason is kept: %r" % text)
+
+    def test_a_host_fault_with_an_explicit_bin_stays_raw(self):
+        # the knob is set, but running out of descriptors is the host's fault, not the path's: the gate is the
+        # three path errors, not every OSError, so a fault Popen raised is recorded as it came, and a non-OSError
+        # from start() passes through untouched
+        err = OSError(errno.EMFILE, "Too many open files")
+        self.assertEqual(self._probe("/TESTBIN/codex", err), str(err))
+        err = RuntimeError("synthetic start failure")
+        self.assertEqual(self._probe("/TESTBIN/codex", err), str(err))
+
+    def test_a_directory_the_kernel_cannot_read_names_the_knob_not_a_sibling_path(self):
+        # ROMP_CODEX_BIN under a directory the kernel's user cannot traverse: _codex_config's look at the helpers
+        # beside the executable raises before start() is reached (pathlib passes EACCES through from is_dir()),
+        # and the record named <package>/codex-path, a path the operator never typed. The filesystem's answer
+        # for that one path is the seam; _codex_config itself runs for real, and start() is never reached.
+        real_is_dir = Path.is_dir
+
+        def is_dir(path, *a, **k):
+            if str(path) == "/TESTBIN/codex-path":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_is_dir(path, *a, **k)
+        with mock.patch.object(Path, "is_dir", is_dir):
+            text = self._probe("/TESTBIN/codex", AssertionError("start() must not be reached: the config step raised"))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("unset ROMP_CODEX_BIN", text)
+        self.assertIn("Permission denied", text, "the OS's reason is kept: %r" % text)
+        self.assertNotIn("codex-path", text, "the path the operator set is named, not one beside it: %r" % text)
+
+    def test_the_managed_runtime_keeps_its_raw_errno_line(self):
+        # codex_bin None: there is no knob to name, and tests/test_codex_launch_error_card.py pins the raw
+        # errno line as the shape _client_failure_text frames — the managed path is left exactly alone
+        err = OSError(2, "No such file or directory", "codex")
+        self.assertEqual(self._probe(None, err), str(err))
 
 
 class Lifecycle(unittest.TestCase):
@@ -1945,7 +2119,12 @@ class EchoAtoms(unittest.TestCase):
 
 class LaunchErrorNames(unittest.TestCase):
     """A LIVE launch-error row without a shared name let a retry mint a duplicate live session
-    under the same name (the v1.3.12 audit's P2) — both failure branches now write names/."""
+    under the same name (the v1.3.12 audit's P2) — both failure branches now write names/. Both
+    also keep the identity colour the caller picked: a placeholder that dropped it wrote an empty
+    colour into names/ and the registry row, and every later writer (the thread create once the
+    app-server was back, the load-time republish) copied that empty colour forward, so the
+    session ran colourless on every identity surface for its whole life while the kernel's
+    picker, which counts held colours from names/, handed its colour to the next session."""
 
     def test_a_clientless_spawn_writes_its_shared_name(self):
         import tempfile
@@ -1970,6 +2149,50 @@ class LaunchErrorNames(unittest.TestCase):
             name_file = os.path.join(td, "names", sid)
             self.assertTrue(os.path.exists(name_file))
             self.assertIn("webby", open(name_file).read())
+
+    def _assert_wears_the_picked_colour(self, td, be, sid):
+        parts = (Path(td) / "names" / sid).read_text().rstrip("\n").split("\t")
+        self.assertEqual(parts, ["web", "/TESTDIR", "#336699", "#ffffff"],
+                         "the shared identity file carries the picked colour, both fields")
+        self.assertEqual(be.live_sessions()[sid]["color"], "#336699",
+                         "so does the row: it is what the later thread create republishes from")
+        be2 = cb.CodexBackend(td, client_factory=lambda: None)
+        self.assertEqual(be2.live_sessions()[sid]["color"], "#336699",
+                         "and durably: the row rebuilt at the next load still carries it")
+
+    def test_a_clientless_spawn_keeps_the_picked_identity_colour(self):
+        with tempfile.TemporaryDirectory() as td:
+            be = cb.CodexBackend(td, client_factory=lambda: None)
+            sid = be.spawn("web", "/TESTDIR", "#336699", "#ffffff")
+            self.assertTrue(be._session(sid).tid.startswith("pending-"), "the client-missing branch")
+            self._assert_wears_the_picked_colour(td, be, sid)
+
+    def test_a_thread_start_failure_keeps_the_picked_identity_colour(self):
+        class BoomClient(FakeClient):
+            def thread_start(self, params):
+                raise RuntimeError("no threads today")
+        with tempfile.TemporaryDirectory() as td:
+            fake = BoomClient()
+            be = cb.CodexBackend(td, client_factory=lambda: fake)
+            sid = be.spawn("web", "/TESTDIR", "#336699", "#ffffff")
+            self.assertTrue(be._session(sid).tid.startswith("failed-"), "the thread/start-failure branch")
+            self._assert_wears_the_picked_colour(td, be, sid)
+
+    def test_the_placeholder_colour_outlives_the_thread_it_later_gets(self):
+        # the loss was for LIFE, not just while the row was red: once the app-server was back, the
+        # create path turned the placeholder into a real thread and republished names/ from the
+        # row, whose colour was the same empty string. With the colour on the row, that republish
+        # carries it forward.
+        with tempfile.TemporaryDirectory() as td:
+            be = cb.CodexBackend(td, client_factory=lambda: None)
+            sid = be.spawn("web", "/TESTDIR", "#336699", "#ffffff")
+            s = be._session(sid)
+            self.assertTrue(be._prepare_thread(s, FakeClient()), "the placeholder became a real thread")
+            self.assertFalse(s.tid.startswith("pending-"))
+            parts = (Path(td) / "names" / sid).read_text().rstrip("\n").split("\t")
+            self.assertEqual(parts[2:], ["#336699", "#ffffff"],
+                             "the republish after thread start keeps the colour")
+            self.assertEqual(be.live_sessions()[sid]["color"], "#336699")
 
 
 class RegistryNamesHeal(unittest.TestCase):

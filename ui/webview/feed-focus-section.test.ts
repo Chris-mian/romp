@@ -37,7 +37,7 @@ test("the activeChat frame sets the focused sid and re-renders; nothing in the s
   const at = FEED.indexOf('} else if (m.type === "activeChat") {');
   assert.ok(at > 0, "the feed handles the kernel's relay of the chat pane's active tab");
   const branch = FEED.slice(at, FEED.indexOf('} else if (m.type === "hoverCards") {', at));
-  assert.match(branch, /focusedSid = typeof m\.id === "string" && m\.id \? m\.id : null;/, "the frame's id, or null when no tab has focus");
+  assert.match(branch, /const id = typeof m\.id === "string" && m\.id \? m\.id : null;[\s\S]*?\n\s*focusedSid = id;/, "the frame's id, or null when no tab has focus (read once: the T416 pending record checks it first)");
   assert.match(branch, /if \(!showFocused\) return;\s*\n\s*if \(freezeKey \|\| tabScopeKey\) \{ focusStale = true; return; \}\s*\n\s*render\(\);/,
     "off: nothing to paint; held under the pointer: paint on the release; else the frame IS the render");
   assert.doesNotMatch(branch, /setTimeout|setInterval|requestAnimationFrame/);

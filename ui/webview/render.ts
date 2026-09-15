@@ -29,6 +29,7 @@ import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, a
 import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
+import { inInputEvent } from "./input-event";
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
@@ -48,7 +49,7 @@ import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, 
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
 import { writeViewOrder } from "./view-order";
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
-         followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
+         followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
@@ -107,6 +108,8 @@ import { durLabel } from "./duration";
 import { apiErrorReason } from "./api-error-reason";
 import { chatMdExtensions, userMdHtml } from "./chat-md";
 import { setTip, pruneTip } from "./tip";
+import { MetaKind, MetaHooks, metaButton as buildMetaButton, syncMetaControls as syncMetaControlsWith, ctxBar as buildCtxBar, setCtxBar as setCtxBarWith,
+  metaColor, modeIconSvg, riskyMode, prettyMode, prettyFast, fastAvailable, metaCurrent, metaDots, rampOn } from "./status-controls";   // the status line's controls, one renderer for the chat's line, the popovers and the settings card's preview (T415 part two)
 import { agentCount, replyOwed, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, newCommentCreate, commentCreateFrame,
          pickMarkToOpen, type CommentThread, type CommentCreate, markSkipsParent } from "./comments";
 import { isReplyReady, placeMark, placeWindowed, readyChips, replyLine, chipLabel, chipTip, chipAria, type Dir, type ReadyMark, type ReadyChip } from "./reply-ready";
@@ -1048,6 +1051,9 @@ let collapsedTabIds = new Set<string>();
 // read between renders (which header holds a folded-away id, which tab is next to it, which section a
 // pick of one opens: unfoldSectionOf's per-holder rule)
 let lastStripItems: StripItem[] = [];
+// the ids the last paint SHOWED (visibleIds less the plan's folded ones): renderTabs's reveal detector compares the next paint's
+// shown set against it and re-arms the idle prefetch when any tab went hidden to shown (null until the first paint)
+let lastShownTabIds: Set<string> | null = null;
 /** Every tab the strip knows — the kernel's order plus any pushed tab not yet in it (a placeholder):
  *  the "does this session still exist" of the pin prune (tab-groups.ts prunePinned). */
 function knownTabIds(): Set<string> { return new Set<string>([...order, ...tabMeta.keys()]); }
@@ -1068,6 +1074,10 @@ let draggedGroup: string | null = null;   // a section header mid-drag (reorders
 // named from the first paint (planStrip's `pending`), instead of landing loose and jumping on the frame
 let provisionalTags: string[] = [];
 function visibleOrder(): string[] { return order.filter((id) => tabInView(id) && !collapsedTabIds.has(id)); }
+/** The strip SHOWS this tab right now: in view (the views, another column's holds), not hidden by the #only= filter, and not folded under
+ *  a collapsed section header. The idle prefetch's gate (the user 2026-09-14: hidden tabs are not built until shown; the follow-up after
+ *  PR 1661, low 3, for the folded ones). */
+function stripShowsTab(id: string): boolean { return stripShows(id) && !collapsedTabIds.has(id); }
 // THE PHONE LAYOUT: the kernel's chat page swaps the tab strip for its own session list (#mhdr/#mlist,
 // built by scraping every rendered tab) under EXACTLY this media rule (_CHAT_MOBILE_CSS in kernel.py)
 // — the same string here, so what the CSS hides and what the plan flattens cannot disagree. Sections
@@ -6060,15 +6070,11 @@ let renderPendingWhilePressed = false;
 // before the rebuild. Reset ("") wherever the strip's DOM is changed outside renderTabs — a tab drag's live
 // reorder — so the next render rebuilds whatever the inputs say.
 let tabStripSig = "";
-// THE TAB LOCK (T395, the user 2026-09-12): one press freezes every way a tab moves (the drag reorder, a drag into another
-// column or the split's edge, the tab menu's Move to rows) until the next press. A per-browser setting like the gear's,
-// written through the same store and fanned out the same way: the same-document signal every consumer listens to (the
-// strip repaints through its signature), and the host relay VS Code's separate panes need.
-function setTabsLocked(on: boolean): void {
-  settings = saveSettings({ tabsLocked: on });
-  try { window.dispatchEvent(new Event("romp:settings")); } catch { /* no window event: nothing listens */ }
-  vscodeApi?.postMessage({ type: "settingsSync", settings });
-}
+// THE TAB LOCK (T395, the user 2026-09-12): one setting freezes every way a tab moves (the drag reorder, a drag into another
+// column or the split's edge, the tab menu's Move to rows) until it is cleared. Since T415 the switch is the settings card's
+// (gear.js rs-tablock, the Chat tab's Tab strip section), written through the gear's store and fanned out the gear's way: the
+// same-document signal every consumer listens to (the strip repaints through its signature) and the host relay VS Code's
+// separate panes need. Nothing in this file writes it any more; the strip only reads settings.tabsLocked.
 // Release the press-hold and flush any deferred rebuild. Hoisted so the DRAG handlers can call it
 // too: a native drag swallows the pointerup, so without this a finished drag would leave the strip
 // frozen against pushes until the next unrelated press (see the dragend handler).
@@ -6635,6 +6641,17 @@ function renderTabs() {
                          provisionalId ? { id: provisionalId, tags: provisionalTags } : null);
   collapsedTabIds = plan.folded;
   lastStripItems = plan.items;   // before the skip below: the section view (stripAftermath, renderSnapshot) and the folded stand-in read the plan from here on either path
+  // A REVEAL RE-ARMS THE IDLE PREFETCH, whatever caused the repaint (the user 2026-09-14: hidden tabs are not built until shown, and
+  // shown ones are). The reveal is a STATE change, so it is detected HERE, where the shown set is computed (visibleIds less the plan's
+  // folded ids), never at the callers: a views or lens change of this page's or a peer's (the kernel's tabOrder frame: captureViews,
+  // then applyTabOrder's repaint), another column's holds, the #only= filter lifted or a rename crossing it, a section opened from this
+  // window or a sibling document, the phone/desktop flip emptying the folded set. PR 1671's rounds two and three re-armed call sites one
+  // by one and missed the frame, the flip and the rename; now every renderTabs() is safe by construction. A repaint that reveals nothing
+  // schedules nothing; the first paint arms once (the skeleton frame's own arm coalesces with it: schedulePrebuild is idempotent).
+  // Before the signature skip, whose inputs it does not depend on; the fire-time gate stays stripShowsTab (runPrebuild).
+  const shownNow = visibleIds.filter((id) => !plan.folded.has(id));
+  if (revealedTabs(lastShownTabIds, shownNow).length) schedulePrebuild();
+  lastShownTabIds = new Set(shownNow);
   // AN UNCHANGED STRIP IS NOT REBUILT. The signature is every input the loop below and the controls after
   // it paint: the active and peek tabs, the ids and the visible ids in order, whether the active tab is in
   // view (the all-hidden blank reads it), the strip plan — each section's tag, color and members, whether
@@ -7103,6 +7120,10 @@ function billingChoices(st: Status, avail: AuthAvail): Array<{ label: string; va
 // row). .ctx-menu is position: fixed, so the coordinates are viewport-space. The flyout is in the document already.
 function placeFlyBeside(anchor: HTMLElement, fly: HTMLElement): void {
   const ir = anchor.getBoundingClientRect();
+  // measure at the window's left edge, where the whole width is available: a flyout whose labels may wrap (the Billing
+  // flyout's, bounded by the window since 2026-09-14) is otherwise measured at its static position and re-flows once
+  // placed, ending flush with the window's right edge instead of 8 px inside it (the served lab at 560 px)
+  fly.style.left = "0px";
   const sr = fly.getBoundingClientRect();
   let left: number, top: number = ir.top;
   if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
@@ -7590,18 +7611,23 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       if (already) return already as HTMLElement;
       menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
       const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
-      const choices = billingChoices(st, avail);                  // the ONE list both menus below draw from (T387)
+      // the ONE list both menus below draw from (T387): the billings this machine can apply, and those ONLY (the user
+      // 2026-09-14: list what is set up, grey nothing; the 2026-09-08 greyed-with-a-reason row is gone). A machine with
+      // nothing to bill shows one inert line naming why, in the reasons' own words.
+      const all = billingChoices(st, avail);
+      const choices = all.filter((c) => !c.why);
+      if (!choices.length) {
+        const none = el("div", "ctx-item ctx-item-none");
+        none.textContent = all.map((c) => c.why).filter(Boolean).join("; ");
+        none.addEventListener("click", (ev2) => { ev2.stopPropagation(); });
+        sub.appendChild(none);
+      }
       for (const c of choices) {
         const cur = authChoiceCurrent(st, c.value);   // the key, or a login by WHICH login (st.authLogin)
-        const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+        const opt = el("div", "ctx-item" + (cur ? " current" : ""));
         opt.textContent = c.label;
-        if (c.why) {   // unavailable here: greyed, the reason on hover, inert (the user 2026-09-08)
-          opt.title = c.why;
-          opt.setAttribute("aria-disabled", "true");
-        }
         opt.addEventListener("click", (ev2) => {
           ev2.stopPropagation();
-          if (c.why) return;                                       // a disabled option posts nothing, and the menu stays
           dismissTabMenu();
           if (!cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value });
         });
@@ -7613,8 +7639,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       // kernel that says whether the default is explicit (an older one takes no scoped "auto" and marks no default). No
       // sub-line anywhere. The submenu rides the same hover-intent road, wired on the Billing flyout itself and appended
       // inside it, so leaving both closes both and the menu's dismissal covers it; the same placement rule places it.
-      const pickable = choices.filter((c) => !c.why);
-      if (pickable.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
+      if (choices.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
         sub.appendChild(el("div", "ctx-sep"));
         const setDef = el("div", "ctx-item ctx-item-toggle ctx-item-setdefault");
         const sl = el("span", "ctx-item-label"); sl.textContent = "Set default billing"; setDef.appendChild(sl);
@@ -7625,17 +7650,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           const explicit = !!avail.defaultExplicit;
           const d = el("div", "ctx-menu ctx-sub ctx-sub-default");
           const post = (value: string) => { dismissTabMenu(); if (vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value, scope: "machine" }); };
-          // the machine's own login and the key only (T346 beside T380 and T387): a stored login as the machine's default is
-          // not taken by the kernel yet (its scoped arm refuses the value by name), so the flyout does not offer it
-          const defaultChoices = choices.filter((c) => c.value === "login" || c.value === "key");
-          for (const c of defaultChoices) {
-            const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
-            const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+          // exactly the entries of the picks above, a stored login among them (the user 2026-09-14; the kernel's scoped arm
+          // takes "login:<id>" as the machine's default since then, where it offered the machine's own login and the key
+          // only). The check sits on the EXPLICIT default only; automatic marks nothing.
+          for (const c of choices) {
+            const cur = explicit && avail.default === c.value;
+            const opt = el("div", "ctx-item" + (cur ? " current" : ""));
             opt.textContent = c.label;
             opt.dataset.scope = "machine";   // a MARKER for the labs and the sheet, never read for the wire: post() carries the scope
-            if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
             // the picks list one level up dismisses on its current entry too (review): the same gesture, the same answer, nothing posted
-            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why) return; if (cur) { dismissTabMenu(); return; } post(c.value); });
+            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (cur) { dismissTabMenu(); return; } post(c.value); });
             d.appendChild(opt);
           }
           if (explicit) {
@@ -7709,7 +7733,7 @@ window.addEventListener("romp:hostDial", () => { syncHostOfflineFoot(); repaintE
 // this pane is a same-origin iframe of the shell and the filter lives on the SHELL's URL (only-filter.ts reads
 // window.top), so the listener binds to the window onlyTag reads: the shell's there, this pane's own on a top-level
 // page or under a cross-origin top (the review: the pane's own hash never changes on the dashboard)
-const onOnlyHashChange = (): void => { renderTabs(); schedulePrebuild(); };   // a reveal is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows (round two of PR 1661, medium 3: the repaint alone left them skeletons until an unrelated push)
+const onOnlyHashChange = (): void => renderTabs();   // the reveal it causes re-arms the idle prefetch inside renderTabs (its detector), like every other repaint
 const onlyHashWindow = onlyWindow();
 onlyHashWindow.addEventListener("hashchange", onOnlyHashChange);
 // a closed split column: the shell removes this pane's iframe, and a listener left on the shell's window would hold the
@@ -12607,8 +12631,14 @@ function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): numbe
 // the cached DOM is just revealed.
 // Tell the extension which tab is active, so it can publish it to the romp
 // timeline (which outlines the open lane). activeId may be null (no session).
+let activeTabNonce = 0;   // one per announcement (T416 round two): the kernel echoes it on the relayed activeChat frame, so the feed's pending record clears on the echo of its own switch and never on a stranger's
 function notifyActive() {
-  if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId });
+  const nonce = ++activeTabNonce;
+  const gesture = inInputEvent();   // the reader's own switch (a strip click, a hot key) passes the feed's hover-freeze; a kernel-driven one (a focus frame, a re-activation) defers there like a push
+  if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId, nonce });
+  // the same fact to the shell, which hands it to this page's feed pane (T416): the feed's current-session section
+  // moves on it without waiting for the kernel's relay of the post above, which then reconciles
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "activeTab", id: activeId, nonce, gesture }, "*"); } catch (e) { /* standalone page — no shell */ }
 }
 
 // Move id to the front of the recency stack (most-recently-active).
@@ -12684,10 +12714,10 @@ function runPrebuild(deadline: IdleDeadline): void {
   // is already in flight (a 1 MB full ahead of the active tab's 2 KB tail on a slow link delays that tail;
   // one at a time bounds it). The upsert that lands it calls schedulePrebuild, so the chain re-arms itself
   // one tab per idle until the set is empty. A click always wins: same message, awaitingFull dedups.
-  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): stripShows is the one predicate
-  // the strip itself lists by (it begins with tabInView, the views and another column's holds, and adds the #only= filter on top); a tab
-  // the filter reveals later is prefetched when the reveal re-arms this chain (onOnlyHashChange), or loads on the switch that shows it
-  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), (id) => stripShows(id));
+  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): stripShowsTab is the strip's own
+  // visibility (tabInView for the views and another column's holds, the #only= filter, and a collapsed section's fold); a tab the filter
+  // reveals later is prefetched when the reveal re-arms this chain (onOnlyHashChange), or loads on the switch that shows it
+  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), stripShowsTab);
   if (next) requestFullSession(next, "prefetch");
   const viewState = (id: string): ViewState | null => {
     if (skeletonTabs.ids.has(id)) return null;   // a skeleton's stale session must never get its DOM pre-built
@@ -14209,14 +14239,7 @@ const COLORMAPS: Record<string, Array<[number, number, number]>> = {
 function selectedStops(): Array<[number, number, number]> {
   return COLORMAPS[(settings.colormap || "").toLowerCase()] || COLORMAPS.aurora;   // settings updated + rerenderAll on change
 }
-function ramp(v: number): [number, number, number] {
-  const STOPS = selectedStops();
-  v = Math.max(0, Math.min(1, v));
-  const x = v * (STOPS.length - 1), i = Math.floor(x), fr = x - i;
-  if (i >= STOPS.length - 1) return STOPS[STOPS.length - 1];
-  const a = STOPS[i], b = STOPS[i + 1];
-  return [Math.round(a[0] + (b[0] - a[0]) * fr), Math.round(a[1] + (b[1] - a[1]) * fr), Math.round(a[2] + (b[2] - a[2]) * fr)];
-}
+function ramp(v: number): [number, number, number] { return rampOn(v, selectedStops()); }   // the arithmetic is status-controls.ts rampOn (the kernel's cm.ramp), over the selected map
 // Arm a compaction "sweep" fill (the tab bar bar + the statusline battery scan) so it (a) does NOT restart
 // every render and (b) mirrors the context colormap as it compresses.
 //   (a) renderTabs()/updateStatusline() recreate the element on every kernel push (0.5–3s backstop + one per
@@ -15351,7 +15374,6 @@ function elapsedMs(sinceMs: number | null): string {
 // Each value is a little dropdown: picking an entry has the kernel apply the matching
 // /model or /effort setting to the session; the label then updates
 // when the session republishes the value (meta-pending bridges the gap).
-type MetaKind = "mode" | "model" | "effort" | "fast";
 // One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
 // label; `sdkOnly` drops the entry on a backend that cannot apply it (Codex).
 interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null;
@@ -15442,38 +15464,7 @@ function modelChoiceLabel(value: string): { label: string; color?: number[] | nu
   }
   return { label: value };
 }
-// Permission mode. A Claude Code session sets it outright over the control channel (set_permission_mode),
-// which is what makes Bypass offerable there and only there (a Codex session has its own vocabulary and
-// cannot express it). `sdkOnly` is the filter, applied in toggleMetaMenu.
-// Permission-mode GLYPHS (the user 2026-08-28): each mode gets a small line icon beside its text —
-// the statusline badge and the picker rows carry it, always WITH the label (an icon alone is a
-// riddle). House icon style (the tag-glyph convention): 16-unit viewBox, stroke currentColor 1.4,
-// round caps/joins. The vocabulary: the GATE is a shield — Normal is the shield as-is, Bypass is
-// the shield slashed (the gate removed); Accept edits is the pencil (edits pre-approved); Auto is
-// the bolt (it decides at speed); Plan is the route pin-to-pin (look before touching); Don't ask
-// (renderable, not offerable) is the crossed speech bubble (it will never raise a question).
-const MODE_ICONS: Record<string, string> = {
-  default: '<path d="M8 2 L13 4 V8 C13 11.4 10.8 13.2 8 14 C5.2 13.2 3 11.4 3 8 V4 Z"/>',
-  acceptedits: '<path d="M3.5 12.5 L4.1 10.1 L10.9 3.3 A1.35 1.35 0 0 1 12.8 5.2 L6 12 L3.5 12.5 Z"/><path d="M9.9 4.3 L11.8 6.2"/>',
-  auto: '<path d="M8.8 2 L4.2 9 H7.4 L6.9 14 L11.8 6.8 H8.3 Z"/>',
-  plan: '<circle cx="4" cy="12" r="1.5"/><circle cx="12" cy="4" r="1.5"/><path d="M5.2 10.8 C7.5 9.5 8.5 6.5 10.8 5.2" stroke-dasharray="2 1.6"/>',
-  bypasspermissions: '<path d="M8 2 L13 4 V8 C13 11.4 10.8 13.2 8 14 C5.2 13.2 3 11.4 3 8 V4 Z"/><path d="M3.2 13 L12.8 3"/>',
-  dontask: '<path d="M3 3.5 H13 V10 H8.5 L5.5 12.8 V10 H3 Z"/><path d="M3.2 12.6 L12.8 2.6"/>',
-};
-// the modes that REMOVE the gate rather than move it read in a red hue on the yatharth themes
-// (the user 2026-08-31) — CSS-scoped to .chat-theme-yatharth so classic renders untouched
-function riskyMode(mode: string | undefined): boolean {
-  const k = (mode || "").toLowerCase().replace(/[\u2019' -]/g, "");
-  return k === "bypasspermissions" || k === "bypass" || k === "dontask";
-}
 
-function modeIconSvg(mode: string | undefined): string {
-  // accepts wire values AND display labels (metaButton receives prettyMode's text)
-  const raw = (mode || "default").toLowerCase().replace(/[\u2019' -]/g, "");
-  const k = raw === "normal" || raw === "" ? "default" : raw;
-  const body = MODE_ICONS[k] ?? MODE_ICONS.default;
-  return '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + "</svg>";
-}
 
 // Every mode wears a one-phrase sub-line (T140, the user 2026-08-28: where taglines exist under
 // some entries, add analogous ones saying what the other modes are — and 'Accept edits' reads
@@ -15501,44 +15492,6 @@ const FAST_CHOICES: { label: string; value: string }[] = [
   { label: "Fast", value: "on" },
   { label: "Slow", value: "off" },
 ];
-// Per-session billing (the user 2026-08-08) — the Claude login vs the API key behind Claude Code's
-// apiKeyHelper — is no longer a statusline badge: the SWITCHING control lives in the tab's
-// right-click menu (showTabMenu's Billing flyout, the user 2026-08-09), on every SDK session since
-// 2026-09-08 (both choices listed, the one this box cannot bill greyed with the reason; it was gated
-// on st.authBoth before), and still labelled plainly 'API key' — no fragment of the key, not even a
-// last-4 tail, is shipped or shown (2026-08-08, evening). The tab hover's Billing row keeps carrying
-// the fact everywhere.
-// the fast-mode state ("on"/"off"/"cooldown") → the badge label. ONE WORD (the user 2026-08-10, on a
-// phone-width statusline), but the WORD carries the state: off reads "Slow", not a second "Fast" —
-// tint alone (orange on, dim off) didn't say which side the toggle was on (the user 2026-08-11).
-// ON keeps the CLI's fast orange (metaColor); the picker's ✓ names the state on click.
-function prettyFast(f: string | undefined): string {
-  const s = (f || "").toLowerCase();
-  return s === "cooldown" ? "Cooldown"   // rate-limited: the CLI resumes fast mode when the limit resets
-    : s === "on" ? "Fast" : "Slow";
-}
-// Whether the session's MODEL can run fast mode at all (the CLI's /fast is an Opus-only research
-// preview). Gated HERE, on the model, because the CLI is no help: fast_mode_state arrives "off" with
-// an EMPTY fast_mode_disabled_reason on a non-Opus session (verified 2026-08-10 against 2.1.226 on a
-// fable session), so state alone would leave a dead toggle on every model /fast refuses (the user
-// 2026-08-10). Unknown/default stays visible: the account default may be Opus, and hiding a live
-// control is worse than a rare dead one.
-function fastAvailable(st: Status): boolean {
-  const m = (st.model || "").toLowerCase();
-  return !m || m === "default" || m.includes("opus");
-}
-// the @claude-permission-mode var → a short readable badge label
-function prettyMode(m: string | undefined): string {
-  switch ((m || "").toLowerCase()) {
-    case "plan": return "Plan";
-    case "acceptedits": return "Accept";   // one word everywhere the mode renders (T140)
-    case "auto": return "Auto";
-    case "dontask": return "Don’t ask";
-    case "bypasspermissions": return "Bypass";
-    case "sandboxed": return "Sandboxed";
-    default: return "Normal";   // default / normal / unknown
-  }
-}
 const CODEX_MODE_CHOICES: MetaChoice[] = [
   { label: "Sandboxed", value: "sandboxed", sub: "commands stay sandboxed; escalation is denied" },
   { label: "Auto", value: "auto", sub: "approved commands run unsandboxed as you; the rest denied" },
@@ -15556,11 +15509,6 @@ function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {
     if (kind === "effort") return CODEX_EFFORT_CHOICES;
   }
   return META_CHOICES[kind];
-}
-// the live value of a meta kind for the active session
-function metaCurrent(kind: MetaKind, st: Status): string {
-  return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast
-    : st.mode) || "";
 }
 
 // Is this menu entry the session's current value? Effort matches exactly; the
@@ -15589,41 +15537,30 @@ function isMetaPending(kind: MetaKind, st: Status): boolean {
   return true;
 }
 
-// Three pulsing accent-blue dots shown IN the model badge while a /model switch resolves (the user
-// 2026-07-03) — the romp loader's dot motif, so a wait always reads as "something's happening, it's
-// romp". Cleared the instant syncMetaControls sees modelPending drop and the real name lands.
-function metaDots(): HTMLElement {
-  const d = el("span", "meta-dots");
-  d.appendChild(el("i"));
-  d.appendChild(el("i"));
-  d.appendChild(el("i"));
-  return d;
+// THE CHAT'S LIVE HALF OF THE STATUS CONTROLS (T415 part two): status-controls.ts builds the badges and the battery for the chat's
+// line, the popovers and the settings card's preview alike; the chat hands it what only the chat has, as hooks: the picker a badge
+// click opens (toggleMetaMenu), the sub-second pending heuristic (isMetaPending), the battery's /compact click and the compaction
+// sweep's colormap animation (applyCompactSweep reads the chat's colormap setting). The wrappers keep every call site as it was.
+const META_HOOKS: MetaHooks = { onPress: (kind, btn, forSid) => toggleMetaMenu(kind, btn, forSid), pending: (kind, st) => isMetaPending(kind, st as Status) };
+function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement { return buildMetaButton(kind, text, forSid, META_HOOKS); }
+function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null): void { syncMetaControlsWith(meta, st, forSid, META_HOOKS); }
+// Context "battery": a small bar that FILLS with the context-used %, recolors as it fills, with the % written inside (the shared
+// renderer draws it); CLICK → /compact the session, same as the timeline's battery click. The chat's bar keeps its id: the lighter
+// in-place refresh finds it by id.
+function ctxBar(): HTMLElement { const bar = buildCtxBar(compactActiveSession); bar.id = "ctx-bar"; return bar; }
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false): void {
+  setCtxBarWith(bar, ctxStr, compacting, ctxColor, ctxOver, (scan, fresh) => applyCompactSweep(scan, 3200, fresh));
+}
+function compactActiveSession(bar: HTMLElement): void {
+  const s = activeId ? liveSession(activeId) : null;
+  if (!s || !vscodeApi) return;
+  // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
+  if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+  vscodeApi.postMessage({ type: "compactSession", id: activeId });
+  bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
 }
 
-function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement {
-  const btn = el("span", "meta-btn");
-  btn.dataset.kind = kind;
-  if (forSid) btn.dataset.sid = forSid;   // a popover's badges name their thread; the chat's carry no session (metaAnchor)
-  if (kind === "mode") {   // the permission glyph, always beside its text (never instead of it)
-    const ico = el("span", "meta-ico mode-ico");
-    ico.innerHTML = modeIconSvg(text);   // refreshed by the sync loop below from st.mode
-    btn.appendChild(ico);
-    btn.classList.toggle("mode-risky", riskyMode(text));   // kept live by the sync loop
-  }
-  const label = el("span", "meta-label");
-  label.textContent = text;
-  btn.appendChild(label);
-  const caret = el("span", "meta-caret");
-  caret.textContent = "▾";
-  btn.appendChild(caret);
-  // the styled tip (tip.ts), not a native title — every tooltip wears the one .romp-tip dress
-  setTip(btn, kind === "model" ? "change model (sends /model)"
-    : kind === "effort" ? "change thinking effort (sends /effort)"
-    : kind === "fast" ? "toggle fast mode (sends /fast)"
-    : "change permission mode (shift+tab cycle)");
-  btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn, forSid ?? null); });
-  return btn;
-}
+
 
 // The model/effort label tint, from the server-computed colormap RGB (by capability/effort rank, the user
 // 2026-07-02) — "" for mode (untinted) or an unknown model/effort, which resets to the default gray.
@@ -15634,63 +15571,7 @@ function nonClassicChoiceTone(choice: { color?: number[] | null; tone?: number[]
   return picked && picked.length === 3 ? readableRgb(picked) : (picked as number[] | undefined);
 }
 
-function metaColor(kind: MetaKind, st: Status): string {
-  // fast ON wears the CLI's own fast-mode orange (--fast, a status color) so the badge reads the same
-  // here as in the Claude Code TUI; off/cooldown stay the default gray.
-  if (kind === "fast") return (st.fast || "").toLowerCase() === "on" ? "var(--fast)" : "";
-  const c0 = kind === "model" ? pickTone(st.modelColor, st.modelTone)
-    : kind === "effort" ? pickTone(st.effortColor, st.effortTone) : undefined;
-  const c = c0 && c0.length === 3 ? readableRgb(c0) : c0;
-  return (c && c.length === 3) ? `rgb(${c[0]},${c[1]},${c[2]})` : "";
-}
 
-// Build or refresh the model/effort buttons inside #spinner-meta. Called from
-// updateStatusline (fresh container) and the 1s ticker (label refresh in place).
-function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null) {
-  // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name
-  // (the user 2026-06-16); fast exists only when the session reports it (SDK init) AND the model can
-  // run it (fastAvailable). Billing moved to the tab's right-click menu (the user 2026-08-09) — no
-  // badge here.
-  const fast = st.fast && fastAvailable(st) ? st.fast : "";   // reported AND the model can run it — else no dead control
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", fast ? "fast" : ""].filter(Boolean).join();
-  const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
-  if (btns.map((b) => b.dataset.kind).join() !== want) {
-    meta.replaceChildren();
-    if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode), forSid));
-    if (st.model) meta.appendChild(metaButton("model", st.model, forSid));
-    if (st.effort) meta.appendChild(metaButton("effort", st.effort, forSid));
-    if (fast) meta.appendChild(metaButton("fast", prettyFast(fast), forSid));
-  }
-  for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
-    const kind = b.dataset.kind as MetaKind;
-    const disp = kind === "mode" ? prettyMode(st.mode) : kind === "fast" ? prettyFast(st.fast)
-      : metaCurrent(kind, st);
-    const label = b.querySelector(".meta-label") as HTMLElement | null;
-    if (kind === "mode") {
-      const ico = b.querySelector(".mode-ico") as HTMLElement | null;
-      if (ico) ico.innerHTML = modeIconSvg(st.mode);
-      b.classList.toggle("mode-risky", riskyMode(st.mode));
-    }
-    // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
-    // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
-    // and the local click heuristic (isMetaPending) covers the sub-second before the first server push.
-    // model resolves live; effort reconnects to apply (--effort is connect-time) — both drive the switching-
-    // dots from the server (st.modelPending / st.effortPending), with isMetaPending covering the sub-second
-    // before the first server push (the user 2026-07-06).
-    const pending = (kind === "model" && !!st.modelPending) || (kind === "effort" && !!st.effortPending)
-      || isMetaPending(kind, st);
-    const showDots = pending && (kind === "model" || kind === "effort");   // both apply via a resolve/reconnect the server tracks
-    if (label) {
-      if (showDots) {
-        if (!label.querySelector(".meta-dots")) label.replaceChildren(metaDots());
-      } else if (label.textContent !== disp || label.firstElementChild) {
-        label.textContent = disp;
-      }
-      label.style.color = showDots ? "" : metaColor(kind, st);   // tint the model name / effort by the colormap rank
-    }
-    b.classList.toggle("meta-pending", pending);
-  }
-}
 
 let metaMenuEl: HTMLElement | null = null;
 function closeMetaMenu() {
@@ -15907,66 +15788,6 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
 document.addEventListener("click", () => closeMetaMenu());
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMetaMenu(); });
 
-// Context "battery": a small bar that FILLS with the context-used %, recolors as it
-// fills (green → amber → red), with the % written inside. Replaces the plain "40%".
-// CLICK → /compact the session, same as the timeline's battery click.
-function ctxBar(): HTMLElement {
-  const bar = el("span", "ctx-bar"); bar.id = "ctx-bar";
-  bar.appendChild(el("span", "ctx-fill"));
-  bar.appendChild(el("span", "ctx-text"));
-  bar.appendChild(el("span", "ctx-scan"));   // compacting: teal rectangle whose right edge compresses leftward (as on the timeline)
-  bar.addEventListener("click", () => {
-    const s = activeId ? liveSession(activeId) : null;
-    if (!s || !vscodeApi) return;
-    // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
-    if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
-    vscodeApi.postMessage({ type: "compactSession", id: activeId });
-    bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
-  });
-  return bar;
-}
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false) {
-  // Compacting: hide the fill/% (the number is about to be wrong anyway) and run
-  // the scanning bar instead, mirroring the timeline's battery. No ctx% needed.
-  bar.classList.toggle("ctx-compacting", compacting);
-  if (compacting) {
-    bar.classList.remove("ctx-clicked");   // the click's pulse cue did its job
-    bar.style.display = "";
-    bar.title = "compacting context…";
-    const scan = bar.querySelector(".ctx-scan") as HTMLElement | null;
-    if (scan) {
-      // setCtxBar runs on BOTH the fresh bar updateStatusline builds AND the reused #ctx-bar the lighter
-      // in-place refresh keeps — so phase-sync ONLY a fresh scan (no `swept` flag yet); re-seeding a reused
-      // one every refresh restarted its animation, the jump the user saw (2026-07-02). The gradient still
-      // (re)applies either way (recolors without restarting).
-      const fresh = !scan.dataset.swept;
-      if (fresh) scan.dataset.swept = "1";
-      applyCompactSweep(scan, 3200, fresh);   // ctx-compress runs 3.2s
-    }
-    return;
-  }
-  // left compacting → clear the arm flag so the NEXT episode re-seeds the phase on this (possibly reused) bar
-  const scanOff = bar.querySelector(".ctx-scan") as HTMLElement | null;
-  if (scanOff) delete scanOff.dataset.swept;
-  if (!ctxStr) { bar.style.display = "none"; return; }
-  bar.style.display = "";
-  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
-  const fill = bar.querySelector(".ctx-fill") as HTMLElement | null;
-  const txt = bar.querySelector(".ctx-text") as HTMLElement | null;
-  // The GLOBAL colormap (the user 2026-06-26): the kernel computes the fill color server-side (ctxColor =
-  // ramp(context%) on the selected map, bright = full) so the chat battery matches the timeline + usage bars.
-  // Fall back to the old traffic-light if an older kernel didn't ship a color.
-  const fillBg = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
-    : ctxFallbackColor(pct);   // theme-aware pair; fills stay un-re-encoded (see tabCtxGauge's note)
-  if (fill) { fill.style.width = pct + "%"; fill.style.background = fillBg; }
-  // ctxOver: the kernel clamps the CLI's "0-100+" percentage at 100 — past it the tokens exceed the
-  // CURRENT model's window (a 1M→200k model switch does this instantly). Say so: a silent 100% right
-  // after picking a smaller model reads as a broken gauge (the user 2026-09-02).
-  if (txt) txt.textContent = ctxOver ? "100%+" : pct + "%";
-  bar.title = ctxOver
-    ? "context exceeds this model's window — the next turn compacts or trims; click to /compact now"
-    : `context ${pct}% used — click to /compact`;
-}
 
 // CHIP_LABEL, the state words, lives in status-chip.ts since T322b (the user 2026-09-10): the tag overview's rows wear
 // the same chip as this bar, so the words and the classes have one home the two import (imported above).
@@ -18551,6 +18372,11 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // showActive scrolls there; and cover the ALREADY-ACTIVE case, where setActive early-returns (activeId ===
     // id, no anchor) and would otherwise leave a scrolled-up chat parked in history, not at the prompt.
     if (m.live) { const v = views.get(m.id); if (v) v.stick = true; }
+    // the jump landed on the tab already shown: announce it again, anchored or not (an anchored jump onto the shown tab
+    // takes setActive's path but a column that does not hold the session forwards it and announces nothing here), so a
+    // feed that moved its section on the click gets the kernel's echo and settles its pending record (T416 rounds two
+    // and three)
+    if (activeId === m.id) notifyActive();
     if (m.live && activeId === m.id) {
       // one frame LATER, not now: when this focus is what un-hid the pane (the shell's reveal lands a
       // task after revealSelfPane's postMessage), the pane is still display:none here and scrollHeight
@@ -18772,6 +18598,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   }
   else if (m.type === "confirmRevive" && m.id) {
     revealSelfPane();   // the dead-session prompt is drawn in THIS pane — useless if the pane isn't showing
+    notifyActive();   // the jump reached a closed session and no tab changed: the tab standing is re-announced, so a pane that moved on the jump (the feed's section, T416) comes back
     const nm = String(m.name || "");
     showConfirm(`“${nm}” is closed — revive it?`,
       "Revive restarts the session and resumes its conversation. Read-only just shows the transcript.",

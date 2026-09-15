@@ -25,6 +25,7 @@ set_fast/set_auth/stop_task/rewind_files → False, on_ask → False, current_as
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -339,7 +340,21 @@ class CodexBackend:
         self.push = push or (lambda: None)
         self.push_session = push_session or (lambda sid: None)
         self.codex_bin = codex_bin
-        self.log = log or (lambda m: sys.stderr.write("codex-backend: %s\n" % m))
+        raw_log = log or (lambda m: sys.stderr.write("codex-backend: %s\n" % m))
+
+        def _log(m):
+            # Best-effort, like the kernel's _exit_log: no log line may raise on the thread that wrote it. The
+            # kernel hands a bare sys.stderr.write, and a stderr that raises on write (a log disk at ENOSPC, the
+            # pipe a supervisor's end closed) used to raise out of every site that logs first and acts second:
+            # _handle_approval, inline on the pinned SDK's single reader thread (the reader ended with no reply
+            # written and every in-flight request of every Codex session failed at once); the pump's except
+            # branch, before _record_client_failure_locked (the dead client stayed installed and the next turn
+            # parked forever on it); each worker's, before launch_error is filed (the session stayed "working").
+            try:
+                raw_log(m)
+            except Exception:
+                pass
+        self.log = _log
         self._client_factory = client_factory   # tests inject a fake; None → real CodexClient
         self._client = None
         self._client_err = None       # why the client can't be built/authed (str), or None
@@ -627,11 +642,11 @@ class CodexBackend:
                     if not ensure_codex_sdk(self.state):
                         raise RuntimeError(SETUP_HINT)
                     from openai_codex.client import CodexClient, CodexConfig
-                    cfg = _codex_config(CodexConfig, self.codex_bin, self.state)
+                    cfg = self._naming_explicit_bin(lambda: _codex_config(CodexConfig, self.codex_bin, self.state))
                     candidate = CodexClient(config=cfg, approval_handler=self._handle_approval)
 
                     def bring_up():
-                        candidate.start()
+                        self._naming_explicit_bin(candidate.start)
                         candidate.initialize()
                     self._handshake(candidate, bring_up)
                     self.log("app-server runtime: %s" % (self.codex_bin or "ROMP-managed %s" % getattr(_runtime, "VERSION", "")))
@@ -650,6 +665,48 @@ class CodexBackend:
             except Exception as e:
                 self._record_client_failure_locked(e, candidate)
                 return None
+
+    def _naming_explicit_bin(self, step):
+        """Run one step that reaches for the explicit ROMP_CODEX_BIN, re-raising an OSError about the path as
+        _explicit_bin_failure's sentence, cause attached. Two steps reach for it and both need this: the child's
+        start (Popen's errno line, the SDK's FileNotFoundError), and before it the config's look at the helpers
+        and assets beside the executable (_codex_config), which under a directory the kernel's user cannot
+        traverse raises first (pathlib passes EACCES through from is_dir() and exists(), verified on 3.10 to
+        3.12), naming <package>/codex-path, a path the operator never typed; a pathlib that answers False there
+        instead reaches start(), whose PermissionError this same wrap names (review find, 2026-09-14)."""
+        try:
+            return step()
+        except OSError as e:
+            named = self._explicit_bin_failure(e)
+            if named is None:
+                raise
+            raise named from e
+
+    def _explicit_bin_failure(self, error):
+        """The failure to record when a codex could not be started from an EXPLICIT ROMP_CODEX_BIN, or None
+        when the error is not that. The kernel hands the operator's ROMP_CODEX_BIN through unchecked and the
+        pinned SDK's start() raises, for a missing file, FileNotFoundError("Codex binary not found at X. Set
+        CodexConfig.codex_bin to a valid binary path.") — a Python field the operator has never seen — and,
+        for a file that exists but cannot run (no exec bit, a directory, a wrong-arch binary), Popen's bare
+        errno line, which names no remedy at all; both reached every surface that shows the record verbatim
+        (2026-09-11). The knob to fix is ROMP_CODEX_BIN, so the recorded text names it and the alternative,
+        keeping the OS's reason without the SDK's advice. Only the errors that are about the path qualify: a
+        host fault Popen can raise (out of descriptors, out of memory) is not the knob's, and stays raw. The
+        managed runtime (codex_bin None) has no knob to name, so its errno line stays raw too
+        (tests/test_codex_launch_error_card.py pins that shape). The two remedies apply at different events,
+        and the sentence says which: a file repaired at the same path is picked up by the next probe after
+        backoff, but the knob was read once, when kernel.py built this backend from its environment, so
+        unsetting it changes nothing until the kernel starts again (the wording codex_runtime.py uses for the
+        same event)."""
+        if not self.codex_bin or not isinstance(error, OSError):
+            return None
+        if not (isinstance(error, (FileNotFoundError, PermissionError)) or error.errno == errno.ENOEXEC):
+            return None
+        reason = error.strerror or (os.strerror(errno.ENOENT) if isinstance(error, FileNotFoundError)
+                                    else str(error) or error.__class__.__name__)
+        return RuntimeError("ROMP_CODEX_BIN=%s is not a runnable Codex executable (%s). Fix the file at that path, "
+                            "or unset ROMP_CODEX_BIN and restart the ROMP kernel to use the managed runtime "
+                            "(romp-codex-setup)." % (self.codex_bin, reason))
 
     def _handshake(self, candidate, bring_up):
         """Run a new client's start-up requests (`bring_up`: start + initialize on a real client; nothing for
@@ -1250,8 +1307,12 @@ class CodexBackend:
         c = self._get_client()
         if c is None:
             # the entry still exists so the failure is VISIBLE on the lane (launch_error),
-            # never a silently-missing session
-            s = _Session(sid, "pending-%s" % sid[:8], name, cwd)
+            # never a silently-missing session. The identity colour the caller picked rides on
+            # the row and into names/ exactly as on the success path: a placeholder that dropped
+            # it ran colourless for its whole life (the later thread create and the load-time
+            # republish both copy the row's empty colour forward) and the kernel's picker, which
+            # counts held colours from names/, handed the same colour to the next session
+            s = _Session(sid, "pending-%s" % sid[:8], name, cwd, color=bg)
             s.launch_error = {"text": self._client_failure_text(), "at": time.time(),
                               "limit": False}
             with s.lock:
@@ -1265,8 +1326,9 @@ class CodexBackend:
                     with self._sessions_lock:
                         self._sessions.pop(sid, None)
                     raise
-            self._publish_spawn_name(s)    # a LIVE launch-error row without a shared name let a
-            #                                retry mint a duplicate live "web" (the v1.3.12 audit)
+            self._publish_spawn_name(s, bg, fg)    # a LIVE launch-error row without a shared name
+            #                                        let a retry mint a duplicate live "web" (the
+            #                                        v1.3.12 audit)
             return sid
         try:
             resp = c.thread_start({"cwd": cwd, **_approval_params(),
@@ -1274,7 +1336,7 @@ class CodexBackend:
             tid = resp.thread.id
             model = getattr(resp, "model", "") or ""
         except Exception as e:
-            s = _Session(sid, "failed-%s" % sid[:8], name, cwd)
+            s = _Session(sid, "failed-%s" % sid[:8], name, cwd, color=bg)
             s.launch_error = {"text": "codex thread/start failed: %s" % e, "at": time.time(),
                               "limit": False}
             with s.lock:
@@ -1285,7 +1347,7 @@ class CodexBackend:
                     with self._sessions_lock:
                         self._sessions.pop(sid, None)
                     raise
-            self._publish_spawn_name(s)    # same rule as the client-missing branch above
+            self._publish_spawn_name(s, bg, fg)    # same rules as the client-missing branch above
             return sid
         s = _Session(sid, tid, name, cwd, model=model, color=bg)
         s.loaded = True

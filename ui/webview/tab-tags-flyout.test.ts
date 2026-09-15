@@ -52,14 +52,14 @@ test("the flyouts' placement (T380 review, one helper since T387): prefer right,
   const BILL = RENDER.slice(RENDER.indexOf("const openBillingFly = (): HTMLElement | null => {"), RENDER.indexOf('wireFlyout(menu, item, ".ctx-sub-billing"'));
   assert.match(BILL, /placeFlyBeside\(item, sub\);/, "the Billing flyout rides the helper…");
   assert.match(BILL, /placeFlyBeside\(setDef, d\);/, "…and so does its nested default submenu (T387)");
-  assert.match(BILL, /if \(pickable\.length > 1 && avail\.default && avail\.defaultExplicit !== undefined\) \{/, "an older kernel that takes no auto and marks no default gets no Set default billing entry");
+  assert.match(BILL, /if \(choices\.length > 1 && avail\.default && avail\.defaultExplicit !== undefined\) \{/, "an older kernel that takes no auto and marks no default gets no Set default billing entry");
   assert.match(BILL, /if \(explicit\) \{[\s\S]*?auto\.textContent = "Automatic";/, "the way back to the helper rule, only while an explicit default stands");
-  // the Default flyout offers the machine's own login and the key only (T346 beside T380 and T387): the kernel takes no stored
-  // login as the machine default yet, and its scoped arm refuses that value by name
-  assert.match(BILL, /const defaultChoices = choices\.filter\(\(c\) => c\.value === "login" \|\| c\.value === "key"\);/, "a stored login is not a machine-default choice yet");
-  assert.match(BILL, /for \(const c of defaultChoices\) \{/, "the flyout lists the filtered choices");
+  // the Default flyout offers every pick the list above does, a stored login among them (the user 2026-09-14; the kernel's
+  // scoped arm takes "login:<id>" as the machine default since then)
+  assert.doesNotMatch(BILL, /defaultChoices/, "no filtered default list");
+  assert.match(BILL, /for \(const c of choices\) \{\s*\n\s*const cur = explicit && avail\.default === c\.value;/, "the flyout lists the same choices");
   const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
-  assert.match(CSS, /\.ctx-sub-billing, \.ctx-sub-default \{ max-width: 22em; \}/, "a menu's width for both levels");
+  assert.match(CSS, /\.ctx-sub-billing, \.ctx-sub-default \{ max-width: calc\(100vw - 16px\); \}/, "both levels take their longest label's width, the window the one bound (the user 2026-09-14)");
   assert.doesNotMatch(CSS, /\.ctx-sub-head/, "the group head and its note are gone (T387)");
 });
 

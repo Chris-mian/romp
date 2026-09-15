@@ -670,6 +670,14 @@ export function planStrip(visibleIds: readonly string[], unions: readonly TagUni
   return { items, folded, sectioned };
 }
 
+/** The tabs a repaint REVEALS: the ids the strip shows now (its visible ids less the plan's folded ones) that the
+ *  last paint did not show (`prev`; null on the first paint, when every shown tab counts). render.ts re-arms the
+ *  idle prefetch on a non-empty answer, so a reveal is detected where the shown set is computed, whatever caused
+ *  the repaint (PR 1671 round four; the user 2026-09-14: hidden tabs are not built until shown, and shown ones are). */
+export function revealedTabs(prev: ReadonlySet<string> | null, shown: readonly string[]): string[] {
+  return prev ? shown.filter((id) => !prev.has(id)) : shown.slice();
+}
+
 /** The section a tab is homed in, from a rendered plan's items: the first header whose ids include it,
  *  or null (a flat strip, or an id the plan does not know). */
 export function homeSectionOf(items: readonly StripItem[], id: string): TabSection | null {

@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""THE TAB LOCK (T395, the user 2026-09-12; T405, the user 2026-09-13: the lock moved off the strip into the strip's gear) on
-the served chat page and, for the Sessions pane, the landing: a hermetic kernel serves six synthetic notes-api sessions
-(TESTHOST, one flat row of tabs, the chat lens narrowed to no tags). The strip's chrome (T405): a gear at the strip's
-FARTHEST right in a box of the tags box's height, wearing the shell's own settings glyph (the rail's character, one
-source); its menu holds "Lock the tabs in place", the toggle row with the button's two titles, and "Tab widgets…"; no lock
-button anywhere in the strip; the tag control displays no chips (narrowed to no tags, it still wears the accent). A REAL
-mouse drag (page.mouse down, a run of moves across the strip, up over the target) with the lock OFF moves the tab; the
-lock row pressed, the same drag moves nothing, the tabs are not draggable, the row wears the ✓, the setting persists across
-a reload; pressed again, the drag moves the tab once more. Round one: a keyboard press (Enter on the gear, Enter on the
-row) keeps the focus on the row across the strip's rebuild, Escape hands it back to the gear; and the Sessions pane (the
-landing's timeline, which shares the order) refuses a lane drag while locked, its lanes without the grab cursor and saying
-why, and moves the lane once unlocked. The phone layout (a coarse pointer under 1024 px) hides the strip and its gear with it.
+"""THE TAB LOCK (T395, the user 2026-09-12; T405: the lock left the strip; T415, the user 2026-09-14: the strip's gear jumps
+straight to the settings, where the lock is a switch) on the served dashboard, its chat frame and, for the Sessions pane, the
+landing: a hermetic kernel serves six synthetic notes-api sessions (TESTHOST, one flat row of tabs, the chat lens narrowed to
+no tags). The strip's right end: the tags button, then a bare gear dressed as the rail's settings gear (T412, one glyph from one
+source), whose click opens the settings card on the Chat tab scrolled to its Tab strip section, above Tab widgets, with no menu
+in between; that section's row, "Lock the tabs in place", is the lock's switch. Enter and Space on the gear open the card too,
+and Escape hands the focus back to the gear. A REAL mouse drag (page.mouse down, a run of moves across the strip, up over the
+target) with the lock OFF moves the tab; the switch pressed, the same drag moves nothing, the tabs are not draggable, the
+setting persists across a reload; pressed again, the drag moves the tab once more. The Sessions pane (the landing's timeline,
+which shares the order) refuses a lane drag while locked, its lanes without the grab cursor and saying why (the way back names
+the settings), and moves the lane once unlocked. The tag control displays no chip for the none pick (it still wears the accent).
+The phone layout (a coarse pointer under 1024 px) hides the strip and its gear with it.
 
-TAB_LOCK_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_LOCK_SHOTS=<prefix> writes
-<prefix>-strip-<theme>.png (the strip with the gear's menu open); TAB_LOCK_DUMP=<path> writes the whole measurement. Skips LOUDLY without the extension deps or
-a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip there is a failure). Synthetic
-throughout: placeholder sids, TESTHOST, invented text.
+TAB_LOCK_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_LOCK_SHOTS=<prefix> writes three shots per theme:
+<prefix>-strip-<theme>.png, <prefix>-dense-strip-<theme>.png (the strip, at rest and compact) and <prefix>-settings-<theme>.png
+(the card open at the Tab strip section, in that theme); TAB_LOCK_DUMP=<path> writes the whole measurement. Skips LOUDLY without
+the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip there is a failure).
+Synthetic throughout: placeholder sids, TESTHOST, invented text.
 """
 import json
 import os
@@ -239,6 +240,7 @@ for (const theme of ["dark", "light"]) {
   const j = await openViaGear();
   if (j.open) {
     out.themes[theme].jump = j.land;
+    await j.setF.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme); await page.waitForTimeout(250);   // the card in the theme too (round one's light shot was a dark card)
     if (cfg.shots) { const c = await j.setF.evaluate(() => { const r = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: Math.min(r.height, 520) }; });
       await page.screenshot({ path: cfg.shots + "-settings-" + theme + ".png", clip: c }); }
     await closeSettings();

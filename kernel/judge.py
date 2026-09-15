@@ -928,17 +928,14 @@ def _judge_cmd(model, sys_prompt, effort=None, auth=None, tier="triage"):
         # engaged is the CLI's answer, per account: the envelope's fast_mode_state, kept on the usage row and
         # read back by _note_fast_readback.
         overlay["fastMode"] = True
-    if auth == "login":
+    if _is_login_auth(auth):
         # A login-billed call must not bill the key (2026-09-08): in the CLI's precedence apiKeyHelper outranks
         # every login form, so the per-call settings layer disables the helper. The empty string is the value
         # the CLI takes as unset (null falls through to the settings files; verified on 2.1.257), the same
-        # lever a login-picked session's launch uses (sdk_backend.flag_settings_path).
+        # lever a login-picked session's launch uses (sdk_backend.flag_settings_path). The machine's own login
+        # and a STORED login alike: a stored login's token rides the child's environment (_judge_env, the
+        # environment road since 2026-09-14), where a helper would outrank it.
         overlay["apiKeyHelper"] = ""
-    elif str(auth or "").startswith("login:"):
-        # a call for a session billed to a STORED login (T346) carries that login's own helper instead: the
-        # judges bill the same account as the session they judge, and the machine's tokens stay out of the
-        # child (_judge_env restores them for the machine's login only)
-        overlay["apiKeyHelper"] = _login_helper_cmd(str(auth)[6:])
     if overlay:
         cmd += ["--settings", json.dumps(overlay)]
     return cmd
@@ -1690,6 +1687,8 @@ def _fast_org_env():
 
 
 _DEFAULT_AUTH_FN = None        # kernel wiring: fn(reg) -> 'login' | 'key', SdkBackend.default_auth: the ONE billing resolver
+_DEFAULT_LOGIN_FN = None       # kernel wiring beside it: fn(reg) -> a stored login's id or "", SdkBackend.default_login: WHICH login
+#                                an unpicked session bills when the machine's explicit default names a stored one (2026-09-14)
 #                                (the reg's own pick, else the machine's explicit default when billable, else the helper rule)
 _LOGIN_AUTH_ENV_FN = None      # login tokens claimed out of the manager's ambient environment: the kernel
                                # wires sdk_backend.startup_auth_env; standalone reads the environment
@@ -1734,7 +1733,8 @@ def _judge_auth(fsid):
     file all move the launch, the status and the flyout to the other side, and the judges with them — the
     round-3 review found a seed re-read here that kept billing the login alone), else the helper rule. A
     call with no session (rows with no session) takes the same default a fresh session would. A session billed to a STORED login (T346) is decided here first, from the reg's
-    own pick: the resolver names sides, and a stored login is a pick, never a default. Standalone
+    own pick: the resolver names sides. A stored login set as the machine's DEFAULT (the user 2026-09-14) reaches an
+    unpicked session's judges through the second wired function, default_login, which judges the record. Standalone
     (tests, no kernel wiring) the registry file and the helper rule stand in: an explicit 'login' or 'key'
     pick → that side; else the key when Claude Code's settings carry an apiKeyHelper, else login."""
     reg = {}
@@ -1764,6 +1764,12 @@ def _judge_auth(fsid):
     if _DEFAULT_AUTH_FN is not None:
         try:
             side = str(_DEFAULT_AUTH_FN(reg) or "")
+            if side == "login" and _DEFAULT_LOGIN_FN is not None:
+                # an unpicked session following a STORED login set as the machine's default (the user 2026-09-14): its
+                # judges bill that login, as its launch does; default_login judges the record ("" = the machine's own)
+                lid = str(_DEFAULT_LOGIN_FN(reg) or "")
+                if re.fullmatch(r"[0-9a-f]{12}", lid):
+                    return "login:" + lid
             if side in ("login", "key"):
                 return side
         except Exception:
@@ -1776,14 +1782,6 @@ def _judge_auth(fsid):
 def _is_login_auth(auth) -> bool:
     """A login-side pick, the machine's own ('login') or a stored one ('login:<id>')."""
     return auth == "login" or str(auth or "").startswith("login:")
-
-
-def _login_helper_cmd(login_id):
-    """The apiKeyHelper for a judge call billed to a STORED login (T346): bin/romp-login-helper with the record
-    id and this state directory, the same command the session's own launch carries (sdk_backend
-    flag_settings_path's helper_cmd), so the judge runs the login's own token command per request (a secret
-    manager's read command, typically) and nothing rides this process's files or environment."""
-    return "%s %s %s" % (shlex.quote(str(HERE.parent / "bin" / "romp-login-helper")), login_id, shlex.quote(str(STATE)))
 
 
 _LOGIN_FALL_SAID = set()       # (fsid, login id) pairs whose judge fall off a refused stored login was said (once each)
@@ -2030,8 +2028,11 @@ def _judge_env(tier, auth="login", model=None):
     unconditionally, and a KEY-billed call injects nothing back (2026-09-08: romp holds no key; the child
     resolves Claude Code's apiKeyHelper itself, and the first pass after boot runs exactly like every later
     one). A LOGIN-billed call gets the claimed login tokens back and, in _judge_cmd, the helper suppression.
-    A call billed to a STORED login ('login:<id>', T346) gets NEITHER: its credential is that login's own
-    helper in _judge_cmd's overlay, and a machine token beside it would outrank the helper.
+    A call billed to a STORED login ('login:<id>', T346) gets that login's setup-token instead, read by running
+    the record's token command now, the way the session's own launch runs it (the environment road, 2026-09-14:
+    a setup-token through an apiKeyHelper hangs the CLI's request; through CLAUDE_CODE_OAUTH_TOKEN it is
+    accepted); the machine's tokens stay out, and a failing command is a CredentialError the caller notes in
+    its own words, never a fall onto ambient auth.
     Removal, not blanking: the CLI treats even an empty var as key-mode-without-a-key and refuses with
     "Not logged in"."""
     env = dict(os.environ)
@@ -2046,6 +2047,12 @@ def _judge_env(tier, auth="login", model=None):
             env.pop(k, None)
     if auth == "login":
         env.update(_login_auth_env())
+    elif str(auth or "").startswith("login:"):
+        try:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = _logins.token_value(STATE, str(auth)[6:],
+                                                                 lambda c: _cred.run_helper(c, label="the token command"))
+        except ValueError as e:                     # no such record, or one naming no command: the same loud road
+            raise _cred.CredentialError(str(e)) from None
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
     env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard
@@ -15183,9 +15190,11 @@ DEATH_DRAIN_PER_PASS = CONCURRENCY   # a QUEUE-DRAIN bound on death-pending fina
 #   NOT a fairness cap on live sessions (those were removed 2026-06-30 and stay removed): the pending
 #   set is a finite backlog that strictly shrinks (every drained marker gains endedAt, superseded ones
 #   retire), so the bound only spreads the one-time upgrade backfill over successive passes instead of
-#   letting the first post-upgrade pass submit hundreds of dead stores at once. ONE exception (2026-09-03):
-#   a marker whose walk was sweep-CUT stays pending (its turns are reachable only through this drain),
-#   and _death_rotate moves it to the BACK of the oldest-first queue, so it costs one call per pass
+#   letting the first post-upgrade pass submit hundreds of dead stores at once. TWO exceptions, both
+#   handled the same way: a marker whose walk was sweep-CUT stays pending (its turns are reachable only
+#   through this drain; 2026-09-03), and a marker whose states file EXISTS but could not be read stays
+#   pending too (_death_finalize defers rather than decide revived-vs-dead on a failed read; 2026-09-15).
+#   Either way _death_rotate moves it to the BACK of the oldest-first queue, so it costs one call per pass
 #   behind every newer marker instead of pinning a slot at the head.
 DEATH_BACKFILL_WINDOW = 365 * 86400  # how far back the drain resolves a dead sid's transcript (cached
 #   per (window, forks) like the picker's wide walk — one filesystem walk, not one per marker)
@@ -15207,18 +15216,29 @@ def _write_death_marker(fsid, m):
 
 
 def _newest_states_t(fsid):
-    """The newest states-row t for a sid, any row shape — the finalize's supersession read."""
+    """The newest states-row t for a sid, any row shape — the finalize's supersession read. 0 when the file
+    is absent or carries no t (a real state: nothing newer than the marker). None when the file EXISTS and
+    cannot be read: that is not "no newer evidence", and answering 0 there let a revived session's marker
+    take the real-end branch (an `ended` record naming its open cards, irreversible). The failed read marks
+    the running stage incomplete and logs one `states-unreadable` row per failure episode (_read_failed), so
+    no closer stamp lands and the marker stays in the drain until the file reads."""
+    path_s = str(STATESDIR / (fsid + ".jsonl"))
     try:
         rows = (STATESDIR / (fsid + ".jsonl")).read_text().splitlines()
-        for ln in reversed(rows):
-            try:
-                r = json.loads(ln)
-                if isinstance(r, dict) and r.get("t") is not None:
-                    return int(r["t"])
-            except (ValueError, TypeError):
-                continue
-    except OSError:
-        pass
+    except (FileNotFoundError, NotADirectoryError):
+        _read_ok(path_s)                               # absent is the common case and a real state
+        return 0
+    except OSError as e:
+        _read_failed(path_s, "states-unreadable", fsid, e)
+        return None
+    _read_ok(path_s)
+    for ln in reversed(rows):
+        try:
+            r = json.loads(ln)
+            if isinstance(r, dict) and r.get("t") is not None:
+                return int(r["t"])
+        except (ValueError, TypeError):
+            continue
     return 0
 
 
@@ -15255,14 +15275,16 @@ def _death_pending(exclude):
 
 
 def _death_rotate(fsid):
-    """A sweep-CUT walk left this dead session's marker pending (see _close_session). _death_pending drains
-    the OLDEST marker first, so a marker whose walk is cut every pass — a turn whose call dies the same way
-    each time — would hold the head of the queue for good, and DEATH_DRAIN_PER_PASS such sessions would
-    starve every newer dead session of its sweep and its 'ended' settle (review find, 2026-09-03). Touch the
-    marker so it takes its place at the BACK: one doomed call per pass, behind everyone else, and the
+    """A sweep-CUT walk (see _close_session) or a states file that exists and cannot be read (see
+    _death_finalize) left this dead session's marker pending. _death_pending drains the OLDEST marker first,
+    so a marker whose walk is cut every pass — a turn whose call dies the same way each time — or whose
+    states file never reads would hold the head of the queue for good, and DEATH_DRAIN_PER_PASS such sessions
+    would starve every newer dead session of its sweep and its 'ended' settle (review find, 2026-09-03). Touch
+    the marker so it takes its place at the BACK: one doomed call per pass, behind everyone else, and the
     drain's bound stays honest. Bounded for kills: DISTILL_FAIL_CAP killed calls on one turn give it up
     and the walk goes on (_close_session), so a marker waits back here at most that many passes per
-    doomed turn; a transient storm rotates it for as long as the storm lasts — the storm's bound, not ours."""
+    doomed turn; a transient storm, or an unreadable file, rotates it for as long as that lasts — the
+    storm's bound, not ours."""
     m = _death_marker(fsid)
     if not isinstance(m, dict) or "endedAt" in m:
         return
@@ -15282,12 +15304,20 @@ def _death_finalize(fsid, store, settled):
     (nothing-open sessions included — the dedup must fire for the common case, the gate's second
     finding), and only when open (non-complete, non-cleared) tops remain, ONE 'ended' settle record
     (keyed on the marker's t, so it can never re-fire) lists the still-open cards on the same
-    episodes channel the /clear bell reads — cards end loudly instead of vanishing."""
+    episodes channel the /clear bell reads — cards end loudly instead of vanishing. A states file that
+    exists and cannot be read DEFERS the finalize (None from _newest_states_t, which marked the stage
+    incomplete): unreadable never decides revived-vs-dead, and the marker rotates to the BACK of the drain
+    (_death_rotate, the cut walk's move) to wait for a pass that can read it — a permission bit never
+    clears on its own, and a marker left at the head would cost the oldest-first drain a slot every pass."""
     m = _death_marker(fsid)
     if not isinstance(m, dict) or "endedAt" in m:
         return
     mt = int(m.get("t") or 0)
-    if _newest_states_t(fsid) > mt:
+    newest = _newest_states_t(fsid)
+    if newest is None:
+        _death_rotate(fsid)                            # …and waits at the BACK of the drain, not its head
+        return
+    if newest > mt:
         m["endedAt"] = mt
         m["superseded"] = True
         _write_death_marker(fsid, m)
