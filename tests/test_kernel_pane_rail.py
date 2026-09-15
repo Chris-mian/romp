@@ -326,6 +326,15 @@ class ApiHealthCell(unittest.TestCase):
         self.assertLess(esc.index("__rompApiClose"), esc.index("__rompUsageClose"), "both ride #ru-back; the detail's hook is checked first")
         self.assertIn("if(ru&&ru.classList.contains('on')&&window.__rompApiClose){window.__rompApiClose();closed=true;}", esc)
 
+    def test_the_shell_socket_routes_a_refused_press_to_the_notification_center(self):
+        # the detail's pause button sends setGlobalRetryPaused on this socket, and a press the kernel refused (the
+        # pause file could not be read; nothing was changed) is answered with a warn frame on the same socket. A
+        # dispatcher without this branch discarded it: the answering frame's moved seq un-acknowledged the button
+        # with no reason anywhere, and the press read as ignored. The chat page toasts its own warn frames already.
+        self.assertIn("else if(m&&m.type==='warn'&&typeof m.text==='string'&&m.text&&window.__rompNotify)"
+                      "window.__rompNotify('warn',m.text);", self.html)
+        self.assertIn("window.__rompNotify=function(kind,text,tgt)", self.html, "the center the branch feeds is on this page")
+
     def test_the_cell_s_script_loads_after_the_usage_script_it_borrows_the_backdrop_from(self):
         self.assertLess(self.html.index("getElementById('rail-usage')"), self.html.index("getElementById('rail-api')"))
 
