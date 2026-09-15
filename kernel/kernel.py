@@ -44801,7 +44801,13 @@ def _dial_kind(headers, q):
              bounded, since hubs update, and a bare dial that states nothing reads as a relay by design.
     Every non-browser producer states its kind; absence alone tells nothing apart. `headers` is any mapping with .get (the
     handler's, or a dict); `q` the parsed query (parse_qs: name -> [values]). Planned reader beside the wsopen row: the
-    connect push's per-app split (romp_perf's), reading client["kind"]."""
+    connect push's per-app split (romp_perf's), reading client["kind"].
+    Order note (2026-09-15): relay=1 is read BEFORE the header test, so a hand-built socket forging relay=1 WITH browser
+    headers reads relay (and a chat pane would then take the relay-only no-active diet, _resolve_reconnect). This is
+    unreachable from any served page or extension URL, none of which dials relay=1; only a holder of this kernel's serve
+    token could forge it, and the only cost is a diet the page lifts on its first needFull. Left as-is deliberately: the
+    term IS the producer's own statement of its kind (the splice writes it), and tightening it to require the term AND the
+    absence of browser headers would buy nothing a serve-token holder could not already do to their own kernel."""
     if (q.get("relay") or [""])[0] == "1":
         return "relay"
     if (q.get("client") or [""])[0] == "ext":
@@ -63398,8 +63404,12 @@ class Handler(BaseHTTPRequestHandler):
             # flag, so armed here it would leave the client unstamped for the page's life (_resolve_reconnect's fresh
             # guard never lifting: no reveal aimed at it, a parked one never consumed; review find 2026-09-11). A redial
             # is served like any redial: `reconnect` alone, the first strip's pop stamps it and lands a parked reveal.
+            # dietSkeleton is durable (never popped): this client dialed the diet, so _resolve_reconnect skeletons ALL
+            # its tabs even with no active hint (an unwatched federated relay pane), where a plain reconnect keeps the
+            # fail-safe whole push. Set on its own line right after `reconnect`, so the arm's four statements stay one
+            # contiguous block (test_chat_split pins the adjacency; a trailing comment here would break that pin).
             client["reconnect"] = True
-            client["dietSkeleton"] = True   # durable (never popped): this client dialed the diet, so _resolve_reconnect skeletons ALL its tabs even with no active hint (an unwatched federated remote), where a plain reconnect keeps the fail-safe whole push
+            client["dietSkeleton"] = True
             if not reconnect:
                 client["skeletonOnReady"] = True
         if col:

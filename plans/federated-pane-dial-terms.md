@@ -188,3 +188,25 @@ proto by the relayed ready) and can fill its own regions.
   redial rebuilds the URL from current state (or the pane re-sends `active` over the socket on open,
   as the local page does). Either way a redial of a federated pane must carry the same terms as the
   first dial, evaluated fresh.
+
+## 7. Follow-ups
+
+- **Widening the no-active diet to LOCAL pages (deferred, a daytime call for the user).** Section 3's
+  no-active diet is scoped to the relay client (`kind == "relay"`): a hub pane dialing a remote none of
+  whose tabs it watches. A LOCAL served page also dials `skeleton=1` with no `active` in a few rare edge
+  states (a persisted blob missing `activeId`, a fresh profile with no blob, blocked `localStorage`, a
+  later column whose seed lost its active). Today those keep the fail-safe whole push: a one-time
+  whole-board cost, recovered on the next interaction. Widening the diet to a local page is not free,
+  because its page-side recovery splits by page kind: `staleActiveFallback` (render.ts) activates the
+  first visible tab only for a SHELL column (`colSets` set, a same-origin shell parent posting
+  `__rompChatSets`); a STANDALONE `/chat` page has `colSets === null` and the fallback early-returns, so
+  its only recovery is the idle prefetch (one skeleton per idle), which does not fill the first tab within
+  the fallback's delay. The kernel cannot tell a shell column from a standalone page by dial terms. The
+  fork: (A) relax `staleActiveFallback`'s `colSets === null` guard so it activates the first visible tab
+  standalone too, then widen the diet to `kind == "page"` (one change covers every local page); (B) gate
+  the widening on a new dial term the page sets when it holds the recovery, and prove the shell case with
+  a shell-driven lab; (C) leave it relay-only (today). Lean: A, but it changes what a standalone page does
+  when nothing is active (today it adopts the first arriving frame), so it is the user's call in daylight,
+  not a night change for a rare state. A served lab driving a reloaded standalone `/chat` with no stored
+  active, asserting the first tab arrives full within the fallback's delay, is the proof to run when A is
+  taken.
