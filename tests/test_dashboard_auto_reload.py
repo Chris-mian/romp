@@ -44,6 +44,7 @@ var document = {
   querySelectorAll: function () { return IFRAMES; }
 };
 var TIMERS = [], _setTimeout = globalThis.setTimeout;
+var CLOCK = 0, _realNow = Date.now.bind(Date); Date.now = function () { return _realNow() + CLOCK; };   // a scenario advances the clock the core reads
 function setTimeout(f, ms) { if (ms > 0) { TIMERS.push({ f: f, ms: ms }); return TIMERS.length; } return _setTimeout(f, ms); }   // a bound's backstop is recorded, never waited for; the zero-delay ticks run
 function pane(busy, since) { return { contentWindow: { __rompReload: { busyHere: function () { return busy(); } }, __rompFreshPendingSince: since || 0 } }; }   // an iframe the shell's walk visits
 var DIAG = [];                                                  // what a pane's socket would carry up: the shell's held breadcrumb
@@ -226,6 +227,24 @@ out({ held: held, stillHeld: stillHeld, timers: TIMERS.length });""", code="abc1
         self.assertEqual(t["stillHeld"]["waiting"], "fresh", "the second column still awaits its frame inside the page's bound")
         self.assertEqual(t["stillHeld"]["reloads"], 0)
         self.assertEqual(t["timers"], 1, "one backstop per hold")
+        # round four, low 1: the stamp resets whenever no pane holds fresh, even while another hold stands, so a later, genuinely
+        # new drop is judged by its own stamp (executed: a drop, its frame while the user types, the backstop, a second drop,
+        # the draft cleared five seconds into the redial: the pane must still hold)
+        w = run_core("""
+var R = window.__rompReload;
+var chat = { hold: 'fresh' };
+IFRAMES = [pane(function () { return chat.hold; }, Date.now())];
+R.noteDv(8); var first = state();                                              // held on the drop
+CLOCK += 5000; chat.hold = ''; document.activeElement = COMPOSER; COMPOSER.value = "a draft";
+R.ended(); await tick(); await tick(); var typingHeld = state();               // the frame landed; the draft holds
+CLOCK += 65000; TIMERS.shift().f(); await tick(); await tick();                // the backstop: still typing
+CLOCK += 10000; chat.hold = 'fresh'; IFRAMES[0].contentWindow.__rompFreshPendingSince = Date.now();   // a second drop
+CLOCK += 5000; document.activeElement = null; R.ended(); await tick(); await tick();
+out({ first: first, typingHeld: typingHeld, after: state() });""")
+        self.assertEqual(w["first"]["waiting"], "fresh")
+        self.assertEqual(w["typingHeld"]["waiting"], "typing")
+        self.assertEqual(w["after"]["reloads"], 0, "five seconds into a new redial the pane still holds; the old stamp is gone")
+        self.assertEqual(w["after"]["waiting"], "fresh")
 
     def test_a_hold_standing_for_the_bound_files_one_breadcrumb_through_a_panes_socket(self):
         """A page that never reloads after a deploy was unreadable from the kernel (the 8:04 PM PT boot of 2026-09-14): the
@@ -255,6 +274,7 @@ out({ held: held, armed: armed, afterOne: afterOne, afterTwo: afterTwo, after: s
         self.assertEqual(s["afterOne"]["timers"], 1, "the backstop re-arms while the hold stands")
         self.assertEqual(len(s["afterTwo"]["diag"]), 1, "filed once per owed request, not once per minute")
         self.assertEqual(s["after"]["reloads"], 1, "the draft's focus leaving ends the hold")
+
         t = run_core("""
 var R = window.__rompReload;
 IFRAMES = [pane(function () { return 'sends'; }, 0)];
@@ -265,6 +285,34 @@ TIMERS.shift().f(); await tick(); await tick();
 out({ diag: DIAG.length, after: state() });""")
         self.assertEqual(t["after"]["reloads"], 1)
         self.assertEqual(t["diag"], 0, "a hold that ended before the bound files nothing")
+
+    def test_a_second_reason_for_the_same_wait_files_no_second_breadcrumb(self):
+        # round four, low 2: a restart arriving while the build reload is held is the same wait, not a new one; the latch clears
+        # only when the owed request itself changes
+        u = run_core("""
+var R = window.__rompReload;
+IFRAMES = [pane(function () { return 'typing'; }, 0)];
+IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+R.noteDv(8); TIMERS.shift().f(); await tick(); await tick();
+R.request("restart", "2.2"); TIMERS.shift().f(); await tick(); await tick();
+out({ diag: DIAG.length, owed: state().owed });""")
+        self.assertEqual(u["owed"]["reason"], "build", "the first request stands")
+        self.assertEqual(u["diag"], 1, "a second reason for the same wait files no second row")
+
+    def test_a_bound_reached_with_no_door_files_the_row_at_the_next_bound(self):
+        # round four, low 3: the latch is set only once a door took the row; no pane yet, or a door that throws, retries
+        v = run_core("""
+var R = window.__rompReload;
+IFRAMES = [pane(function () { return 'typing'; }, 0)];
+R.noteDv(8); TIMERS.shift().f(); await tick(); await tick(); var none = DIAG.length;
+IFRAMES[0].contentWindow.__rompDiag = function () { throw new Error("a door that throws"); };
+TIMERS.shift().f(); await tick(); await tick(); var thrown = DIAG.length;
+IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+TIMERS.shift().f(); await tick(); await tick();
+out({ none: none, thrown: thrown, later: DIAG.length });""")
+        self.assertEqual(v["none"], 0, "no door yet: nothing filed")
+        self.assertEqual(v["thrown"], 0, "a door that throws files nothing and does not latch")
+        self.assertEqual(v["later"], 1, "the row is not lost: the next bound files it through the door that appeared")
 
     def test_build_drift_after_a_reconnect_reloads_once_the_chat_pane_has_its_frame(self):
         # the pre-existing build-drift reload after any reconnect (the round-two review found it held forever behind a Files pane
@@ -326,7 +374,7 @@ var window = { __rompNotify: function (k, t) { OUT.push(["shell", k, t]); } };
 function selfBar(t, k) { OUT.push(["pane", k, t]); }
 var pane = %s;
 var shell = %s;
-["fresh", "pointer", "typing", "selection", "upload"].forEach(function (b) { pane(b, { reason: "restart" }); shell(b, { reason: "restart" }); });
+["fresh", "pointer", "typing", "selection", "upload", "sends"].forEach(function (b) { pane(b, { reason: "restart" }); shell(b, { reason: "restart" }); });
 process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
 """ % (pane_fn, shell_fn)
         d = tempfile.mkdtemp(prefix="held-maps-")
@@ -342,13 +390,14 @@ process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
         typing = "The dashboard will reload onto the new build once the draft is sent or cleared."
         selection = "The dashboard will reload onto the new build once the selected text is released."
         upload = "The dashboard will reload once the upload in progress finishes."
+        sends = "The dashboard will reload once the queued messages have left, a minute at most."   # the sends hold carries its bound too (round four, low 4)
         # typing and selection stay unbounded by design, so they say what the page waits on (the manager 2026-09-14: a user with a
         # draft saw stale UI after a deploy with no clue); pointer, pan and drag are momentary and stay silent
         self.assertEqual([o for o in out if o[0] == "pane"],
-                         [["pane", "held", wording], ["pane", "held", typing], ["pane", "held", selection], ["pane", "held", upload]],
+                         [["pane", "held", wording], ["pane", "held", typing], ["pane", "held", selection], ["pane", "held", upload], ["pane", "held", sends]],
                          "the pane's bar: the fresh, typing, selection and upload wordings; nothing for the pointer")
         self.assertEqual([o for o in out if o[0] == "shell"],
-                         [["shell", "reload", wording], ["shell", "reload", typing], ["shell", "reload", selection], ["shell", "reload", upload]],
+                         [["shell", "reload", wording], ["shell", "reload", typing], ["shell", "reload", selection], ["shell", "reload", upload], ["shell", "reload", sends]],
                          "the shell's notification center: the same")
 
     def test_the_settings_restart_button_hands_the_new_kernels_answer_to_the_reload_core(self):

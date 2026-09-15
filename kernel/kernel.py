@@ -52760,12 +52760,14 @@ for(var i=0;i<fs.length;i++){try{var w=fs[i].contentWindow;if(w&&w.__rompReload)
 /* the fresh bound is per PAGE: the earliest stamp the walk has seen bounds every pane's hold, so two chat columns whose drops stagger
    cannot chain two bounds (round three, low 1); the record resets when a walk sees no fresh hold at all */
 function freshExpired(w){var st=0;try{st=w.__rompFreshPendingSince||0;}catch(e){}if(st&&(!freshSince||st<freshSince))freshSince=st;return freshSince>0&&Date.now()-freshSince>=FRESH_HOLD_MS;}
-function busy(){var saw=false,b=busyHere();if(b==='fresh'){saw=true;if(freshExpired(window))b='';}if(b)return b;var ps=panes();
-for(var i=0;i<ps.length;i++){b=ps[i].__rompReload.busyHere();if(b==='fresh'){saw=true;if(freshExpired(ps[i]))continue;}if(b)return b;}if(!saw)freshSince=0;return '';}
+/* the walk visits EVERY pane before it answers, so the stamp resets whenever no pane holds fresh, whatever other hold stands (the
+   round-four low 1: an early return on typing kept a stale stamp, and a later, genuinely new drop read as already expired) */
+function busy(){var saw=false,hold=busyHere();if(hold==='fresh'){saw=true;if(freshExpired(window))hold='';}var ps=panes();
+for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){saw=true;if(freshExpired(ps[i]))b='';}if(b&&!hold)hold=b;}if(!saw)freshSince=0;return hold;}
 /* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age) through a
    pane's socket, so a page that never reloads after a deploy is readable from the kernel's client-diag.jsonl; once per owed request */
-function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;holdDiag=true;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdSince};
-try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f)f('held',row);}catch(e){}}
+function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdSince};
+try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
 function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}
 var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}}}
 function key(o){return o?o.reason+':'+(o.detail||''):'';}
@@ -52780,8 +52782,8 @@ if(b){R.waiting=b;var hk=owed.reason+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held
 if(!holdTimer){holdSince=Date.now();holdTimer=setTimeout(function(){holdTimer=null;heldLong();tryFire();},FRESH_HOLD_MS);}   /* the bound's backstop, one per hold: no event ends a hold whose frame or drain never comes, so the walk runs once more when the bound has passed, and a hold still standing is filed */
 return;}R.waiting='';holdDiag=false;fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
-var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;}
-if(!owed)owed=next;else if(owed.reason===next.reason)owed.detail=next.detail;else holdDiag=false;tryFire();}   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
+var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;holdDiag=false;}
+if(!owed){owed=next;holdDiag=false;}else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* the breadcrumb latch clears only when owed itself changes: a restart arriving while a build reload is held is the same wait */   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
 function noteDv(dv){if(LOADED&&dv&&dv>LOADED)request('build',String(dv));}
 function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT){restarted++;BOOT=v.boot;if(!(CODE&&v.code_ident&&v.code_ident===CODE))request('restart',String(v.boot));}   /* BOOT re-latches: restarted() counts restarts, not the polls that follow one */if(v.dist_ver)noteDv(v.dist_ver);
 if(typeof v.taskTracking==='boolean'){window.__rompTaskTracking=v.taskTracking;if(window.__rompApplyPanes)window.__rompApplyPanes();}}   // the Task tracking switch (T404): the shell's rail follows the kernel
@@ -53034,7 +53036,7 @@ var sendsSince=0,SENDS_HOLD_MS=60000;
 window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;return "";}if(!sendsSince)sendsSince=Date.now();return Date.now()-sendsSince<SENDS_HOLD_MS?"sends":"";};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
-try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
+try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
 else selfBar("A newer romp build is available.","build");}
@@ -56935,7 +56937,7 @@ _STALE_JS = (
     "if(RL){RL.refused=function(){buildStale=true;show(BUILDMSG);};"
     # a reload HELD by a pane (an upload in flight, a held send, queued sends) says so, once per hold: the notification
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
-    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
+    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
     "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
     # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
