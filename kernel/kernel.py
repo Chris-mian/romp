@@ -7230,6 +7230,18 @@ NOTIFY_ALL_KEY = "*"
 NOTIFY_TURNS_KEY = "*turns"
 _NOTIFY_RESERVED = frozenset((NOTIFY_ALL_KEY, NOTIFY_TURNS_KEY))
 _notify_cards_cache = {}   # str(path) -> ((mtime_ns,size), dict)
+# One writer of notify-cards.json at a time: _set_notify_all, _set_notify_turns, _set_notify_card and
+# _prune_notify_cards each read-modify-write the whole file, and the kernel runs them from many threads
+# (the POST /notify-all and /notify-turns handler threads, every dashboard's WS receive loop, the
+# pusher's feed diff and the producer's compaction sweep). Two unlocked writers that read the same
+# store both publish, and the second publish drops the first one's change while it was acked ok: a
+# bell click landing while a prune held its snapshot was erased by the prune's publish and flipped
+# back on the next push (the rule the sibling stores got 2026-09-08: _flags_lock, _order_lock). Taken
+# around the proved read and the publish as one step. Lock order: _notify_prev_lock -> _ncards_lock
+# (both prune callers already hold the snapshot's lock); nothing under it takes _flags_lock or
+# _notify_prev_lock, and _set_notify_session's read of this store under _flags_lock is lock-free, so
+# there is no cycle. The display reader (_notify_cards) never takes it.
+_ncards_lock = threading.Lock()
 
 
 def _notify_cards_proved():
@@ -7276,12 +7288,13 @@ def _notify_all_on():
 
 
 def _set_notify_all(value):
-    cur = dict(_notify_cards_proved())               # PROVED: a read fault refuses rather than erasing bells
-    if value:
-        cur[NOTIFY_ALL_KEY] = True
-    else:
-        cur.pop(NOTIFY_ALL_KEY, None)
-    _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+    with _ncards_lock:                               # read and publish as ONE step (the store's rule, above)
+        cur = dict(_notify_cards_proved())           # PROVED: a read fault refuses rather than erasing bells
+        if value:
+            cur[NOTIFY_ALL_KEY] = True
+        else:
+            cur.pop(NOTIFY_ALL_KEY, None)
+        _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
 
 
 def _notify_turns_on():
@@ -7292,12 +7305,13 @@ def _notify_turns_on():
 
 
 def _set_notify_turns(value):
-    cur = dict(_notify_cards_proved())               # PROVED: a read fault refuses rather than erasing bells
-    if value:
-        cur[NOTIFY_TURNS_KEY] = True
-    else:
-        cur.pop(NOTIFY_TURNS_KEY, None)
-    _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+    with _ncards_lock:                               # read and publish as ONE step (the store's rule, above)
+        cur = dict(_notify_cards_proved())           # PROVED: a read fault refuses rather than erasing bells
+        if value:
+            cur[NOTIFY_TURNS_KEY] = True
+        else:
+            cur.pop(NOTIFY_TURNS_KEY, None)
+        _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
 
 
 def _notify_session_effective(sid):
@@ -7321,21 +7335,23 @@ def _set_notify_card(item_id, value, sid=""):
     matches what the card would inherit anyway (session override, else master), in which case the
     override is deleted: clicking a bell back to its default returns it to FOLLOWING the default,
     rather than pinning today's default against tomorrow's master flip."""
-    cur = dict(_notify_cards_proved())               # PROVED: a read fault refuses rather than erasing bells
-    # the default this click is judged against comes from the OTHER store, and it must be PROVED too:
-    # read through the display reader, a fault on session-flags.json folded the session's bell to
-    # "unset" and the click was judged against the master instead -- a mute that matched the
-    # fabricated default was DELETED under the success path (the user's override, erased). A fault
-    # there refuses this write exactly like a fault on the bells file.
-    f = _session_flags_proved().get(sid)
-    default = None if not isinstance(f, dict) or f.get("notify") is None else bool(f.get("notify"))
-    if default is None:
-        default = bool(cur.get(NOTIFY_ALL_KEY))
-    if bool(value) == default:
-        cur.pop(item_id, None)
-    else:
-        cur[item_id] = bool(value)
-    _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+    with _ncards_lock:                               # read and publish as ONE step (the store's rule, above)
+        cur = dict(_notify_cards_proved())           # PROVED: a read fault refuses rather than erasing bells
+        # the default this click is judged against comes from the OTHER store, and it must be PROVED too:
+        # read through the display reader, a fault on session-flags.json folded the session's bell to
+        # "unset" and the click was judged against the master instead -- a mute that matched the
+        # fabricated default was DELETED under the success path (the user's override, erased). A fault
+        # there refuses this write exactly like a fault on the bells file. A lock-free read of the other
+        # store: _flags_lock is never taken here (see _ncards_lock's order).
+        f = _session_flags_proved().get(sid)
+        default = None if not isinstance(f, dict) or f.get("notify") is None else bool(f.get("notify"))
+        if default is None:
+            default = bool(cur.get(NOTIFY_ALL_KEY))
+        if bool(value) == default:
+            cur.pop(item_id, None)
+        else:
+            cur[item_id] = bool(value)
+        _write_state_json(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
 
 
 def _set_notify_session(sid, value):
@@ -7370,20 +7386,22 @@ def _prune_notify_cards(live_ids, gone_ids=()):
     the cards it just forgot from the notified snapshot: a session gone for good takes its cards' mutes
     with it. The reserved keys (the master, the turn-finished switch) are not cards and never prune;
     values are kept as stored (False = a mute)."""
-    try:
-        cur = _notify_cards_proved()   # PROVED: a fault must not prune against a fabricated {} and then
-        #                                write the truncation over the user's real bell overrides
-    except _StateUnreadable as e:
-        _note_state_fault(e)                         # loud once per episode, not per pass
-        return
-    gone = {i for i in cur if i not in _NOTIFY_RESERVED
-            and (i in gone_ids or (live_ids is not None and i not in live_ids))}
-    if gone:
-        kept = {i: cur[i] for i in cur if i not in gone}
+    with _ncards_lock:                               # read to publish as ONE step: a bell click landing in
+        #                                              between must not be erased by a publish of the older snapshot
         try:
-            _write_state_json(jd.STATE / "notify-cards.json", json.dumps(kept, sort_keys=True))
-        except _StateUnwritable:
-            pass                                     # filed once per episode by the write door; the next leaving card retries
+            cur = _notify_cards_proved()   # PROVED: a fault must not prune against a fabricated {} and then
+            #                                write the truncation over the user's real bell overrides
+        except _StateUnreadable as e:
+            _note_state_fault(e)                     # loud once per episode, not per pass
+            return
+        gone = {i for i in cur if i not in _NOTIFY_RESERVED
+                and (i in gone_ids or (live_ids is not None and i not in live_ids))}
+        if gone:
+            kept = {i: cur[i] for i in cur if i not in gone}
+            try:
+                _write_state_json(jd.STATE / "notify-cards.json", json.dumps(kept, sort_keys=True))
+            except _StateUnwritable:
+                pass                                 # filed once per episode by the write door; the next leaving card retries
 
 
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
