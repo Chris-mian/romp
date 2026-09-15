@@ -23629,7 +23629,9 @@ def _notice_attachment(fp, sid):
 
 def _notice_actions_check(actions):
     """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, route, body} entries, the route in the allowlist,
-    the body an object; a /send body names the text to deliver. (list, "") or (None, why)."""
+    the body an object; a /send body names the text to deliver. Two refusals guard the user's click (the review of PR 1757):
+    a /send body may not name a target (no id, no name: the notice's own session receives it), and its text may not begin
+    with a slash (a stored action is a message, never a typed command). (list, "") or (None, why)."""
     if actions is None:
         return [], ""
     if not isinstance(actions, list):
@@ -23772,8 +23774,11 @@ def _notice_append(sid, row):
         return "the notice could not be saved (%s)" % e
 
 
-def _notice_projection(sid, now):
-    """The newest revision per key that still stands: not retired by an expire row, not past its expiresAt. In post order."""
+def _notice_projection(sid, now, cleared=()):
+    """The newest revision per key that still stands: not retired by an expire row, not past its expiresAt, not in the cleared
+    ledger, in post order, and at most NOTICE_LIVE_KEYS_MAX of them (the newest by post time). The ledger is applied BEFORE
+    the cap (round three, low a): a dismissed row held a cap slot until the sweep and hid the oldest undismissed card. A key
+    past the cap is superseded into the archive by the sweep with no further signal (the reference and the help line say so)."""
     newest, retired = {}, set()
     for r in _notice_rows(sid):
         k = r.get("key")
@@ -23789,6 +23794,8 @@ def _notice_projection(sid, now):
             continue
         exp = r.get("expiresAt")
         if exp and now >= int(exp):
+            continue
+        if _notice_item_id(sid, k, r.get("rev") or 0) in cleared:
             continue
         out.append(r)
     out.sort(key=lambda r: (int(r.get("t") or 0), r.get("key") or ""))
@@ -23811,10 +23818,8 @@ def _notice_cards(now, cleared):
     except OSError:
         return out
     for sid in sids:
-        for r in _notice_projection(sid, now):
+        for r in _notice_projection(sid, now, cleared):
             item_id = _notice_item_id(sid, r.get("key"), r.get("rev") or 0)
-            if item_id in cleared:
-                continue
             t = int(r.get("t") or 0)
             out.append({
                 "itemId": item_id, "sid": sid, "name": _name_of(sid) or sid[:8], "color": _name_color(sid),
@@ -23834,13 +23839,32 @@ def _notice_cards(now, cleared):
     return out
 
 
+_notice_inflight = set()                   # (item id, route, body json) of the actions running right now: one delivery per click
+
+
 def _notice_action(item_id, route, body):
     """Execute one STORED action of a notice card on the user's gesture: (ok, error). The action must match one the card's
     revision carries exactly (route and body), its route in the allowlist; a card is never a way to issue an arbitrary
-    request. /send delivers through the same door POST /send takes. With dismissOnAction a success clears the card."""
+    request. /send delivers through the same door POST /send takes. With dismissOnAction a success clears the card. One
+    delivery per click (round three, low c): the pane re-arms its button on every push, and a push the delivery itself
+    causes can land before the answer, so a second click while the first is in flight is refused here rather than delivered
+    twice."""
     m = re.match(r"^notice:([^:]+):([^:]+):(\d+)$", str(item_id or ""))
     if not m:
         return False, "not a notice card"
+    _fk = (str(item_id), str(route), json.dumps(body, sort_keys=True, default=str))
+    with _notice_lock:
+        if _fk in _notice_inflight:
+            return False, "that action is already in flight"
+        _notice_inflight.add(_fk)
+    try:
+        return _notice_action_run(m, item_id, route, body)
+    finally:
+        with _notice_lock:
+            _notice_inflight.discard(_fk)
+
+
+def _notice_action_run(m, item_id, route, body):
     sid, key, rev = m.group(1), m.group(2), int(m.group(3))
     row = next((r for r in _notice_rows(sid) if r.get("op") == "post" and r.get("key") == key and int(r.get("rev") or 0) == rev), None)
     if row is None:

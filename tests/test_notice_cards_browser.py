@@ -77,7 +77,7 @@ const first = { post: r1, card: await cardFacts(id1) };
 // REFUSES with its reason, the button re-arms and the reason rides the toast, and the card stays (dismissOnAction needs a
 // success; the success road is tests/test_notice_cards.py Actions, with the delivery door stubbed)
 const r2 = await post({ id: cfg.sid, key: "dropped-sends", title: "1 message you typed before the restart was not re-sent", producer: "dropped-sends", needsYou: true,
-  dismissOnAction: true, actions: [{ label: "Send again", route: "/send", body: { id: cfg.sid, text: "please regenerate the figure" } }] });
+  dismissOnAction: true, actions: [{ label: "Send again", route: "/send", body: { text: "please regenerate the figure" } }] });   // no target in a body: the card's own session receives it
 const id2 = "notice:" + cfg.sid + ":dropped-sends:" + (r2.notice || {}).rev;
 await page.waitForSelector(sel(id2), { timeout: 60000 }).catch(() => {});
 const second = { card: await cardFacts(id2) };

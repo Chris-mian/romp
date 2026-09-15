@@ -173,6 +173,15 @@ class TheCardFamily(unittest.TestCase):
         self.assertEqual(fig["color"], {"bg": "#1EA1EB", "fg": "#ffffff"})
         self.assertNotIn("_ageT", fig, "no private fold field rides the wire (round two, low b)")
 
+    def test_the_cleared_ledger_applies_before_the_cap_so_a_dismissed_row_holds_no_slot(self):
+        # round three, low a: fifty-one keys, the newest dismissed: all fifty undismissed show, the oldest among them
+        for i in range(51):
+            km.post_notice(SID, "k%03d" % i, "card %d" % i, producer="cli", now=1000 + i, t=1000 + i)
+        newest = "notice:%s:k050:1" % SID
+        cards = self._cards(5000, {newest: 4000})
+        self.assertEqual(len(cards), 50); self.assertEqual(cards[0]["notice"]["key"], "k000", "the oldest undismissed card stands: the dismissed one held no slot")
+        self.assertNotIn(newest, [c["itemId"] for c in cards])
+
     def test_a_session_shows_at_most_the_newest_fifty_keys_and_the_sweep_archives_the_rest(self):
         for i in range(60):
             km.post_notice(SID, "k%03d" % i, "card %d" % i, producer="cli", now=1000 + i, t=1000 + i)
@@ -247,6 +256,23 @@ class Actions(unittest.TestCase):
             self.assertEqual(_REAL_DELIVER(SID, "/model opus"), (True, "", True)); self.assertEqual(routed, ["/model opus"], "POST /send's own arm consults the router")
         finally:
             (km._route_meta_command, km.Sessions.backend_for, km._send_or_park, km._host_for_sid, km._postal_shaped) = saved
+
+    def test_a_second_click_while_the_first_delivery_is_in_flight_is_refused_not_delivered_twice(self):
+        # round three, low c: the pane re-arms on every push and a push the delivery causes can land before the answer
+        import threading
+        km.post_notice(SID, "k", "t", producer="cli", actions=[{"label": "Send", "route": "/send", "body": {"text": "hello"}}], now=100)
+        iid = "notice:%s:k:1" % SID
+        hold, started = threading.Event(), threading.Event()
+        def slow(sid, text, plain=False):
+            started.set(); hold.wait(5); self.w.delivered.append((sid, text)); return True, "", False
+        km._deliver_text = slow
+        out = {}
+        th = threading.Thread(target=lambda: out.setdefault("first", km._notice_action(iid, "/send", {"text": "hello"})), daemon=True); th.start()
+        self.assertTrue(started.wait(5), "the first delivery is in flight")
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "hello"}), (False, "that action is already in flight"))
+        hold.set(); th.join(5)
+        self.assertEqual(out.get("first"), (True, "")); self.assertEqual(self.w.delivered, [(SID, "hello")], "one delivery")
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "hello"}), (True, ""), "after the answer the action runs again")
 
     def test_without_dismiss_on_action_the_card_stays(self):
         acts = [{"label": "Send", "route": "/send", "body": {"text": "hello"}}]
