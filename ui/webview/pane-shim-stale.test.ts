@@ -33,11 +33,19 @@ function shimJs(app: string, noStale = false): string {
   // fourth slot is the stale opt-out the Files page renders with (no_stale=True): a JS boolean literal.
   // The second slot is the chat pane's restart-diet read (PR 1661 round two: emitted for the chat app alone); the harness's apps are not
   // chat, so it substitutes the false the other panes carry, and the dial line compiles against it.
-  const end = KERNEL.indexOf('""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, int(v), "true" if no_stale else "false", app, app)', start);
+  // the tuple's head is pinned; its tail may or may not carry the label slot (a copy-aside run at an older base lacks it), so the
+  // arguments follow the slots the slice actually has
+  const end = KERNEL.indexOf('""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app,', start);
   assert.ok(end > start, "the template's format tuple is the one the test substitutes");
-  const args = ["", "var RESTART_DIET=false;", app, "5", noStale ? "true" : "false", app, app];
+  const slice = KERNEL.slice(start, end);
+  // the label slot: _pane_label's word for the key (kernel.py _PANE_ORDER), the capitalised key outside that list
+  const LABELS: Record<string, string> = { chat: "Chat", timeline: "Sessions", fleet: "Outline", feed: "Feed", files: "Files" };
+  const label = LABELS[app] || app.charAt(0).toUpperCase() + app.slice(1);
+  const args = slice.includes('var LABEL="%s"')
+    ? ["", "var RESTART_DIET=false;", app, label, "5", noStale ? "true" : "false", app, app]
+    : ["", "var RESTART_DIET=false;", app, "5", noStale ? "true" : "false", app, app];
   let i = 0;
-  return KERNEL.slice(start, end).replace(/%[sd]/g, () => args[i++]).replace(/%%/g, "%");
+  return slice.replace(/%[sd]/g, () => args[i++]).replace(/%%/g, "%");
 }
 
 class Harness {
@@ -50,8 +58,12 @@ class Harness {
   visibility: Array<() => void> = [];
   now = 1_000_000;
   win: any;                    // the sandbox window (the shim hangs __rompLocalSend on it)
-  constructor(js: string) {
+  bars: any[] = [];            // the bars a standalone page raised (selfBar): {text, kind, buttons}
+  liveBar: any = null;         // the one bar standing (the #romp-stale-self slot)
+  notified: any[] = [];        // what the shell's own write path (__rompNotify on the parent) received, synchronously
+  constructor(js: string, opts: { standalone?: boolean; session?: Map<string, string>; pathname?: string; parentNotify?: boolean } = {}) {
     const h = this;
+    const session = opts.session || new Map<string, string>();
     class FakeWS {
       url: string; readyState = 0; onopen: any; onmessage: any; onclose: any; onerror: any;
       constructor(url: string) { this.url = url; h.sockets.push(this); }
@@ -63,17 +75,23 @@ class Harness {
     class FakeDate extends Date { static now() { return h.now; } }
     const sandbox: any = {
       window: {
-        parent: { postMessage: (m: any) => h.posted.push(m) },   // embedded: the shell owns the banner
-        sessionStorage: { getItem: () => "" },
+        parent: opts.standalone ? undefined : Object.assign({ postMessage: (m: any) => h.posted.push(m) },   // embedded: the shell owns the banner
+          opts.parentNotify ? { __rompNotify: (kind: string, text: string) => h.notified.push({ kind, text }) } : {}),
+        sessionStorage: { getItem: (k: string) => (session.has(k) ? session.get(k) : ""), setItem: (k: string, v: string) => { session.set(k, String(v)); },
+                          removeItem: (k: string) => { session.delete(k); } },
         dispatchEvent: (e: any) => { if (e && e.data !== undefined) h.toBundle.push(e.data); return true; },
         addEventListener: () => {}, innerWidth: 800, innerHeight: 600,
       },
       document: {
         addEventListener: (t: string, f: () => void) => { if (t === "visibilitychange") h.visibility.push(f); },
-        visibilityState: "visible", getElementById: () => null,
+        visibilityState: "visible", getElementById: (id: string) => (id === "romp-stale-self" ? h.liveBar : null),
+        // enough of a DOM for a standalone page's bar (selfBar): elements that take children and text, a body that holds ONE
+        // bar at a time (the id slot), and removal
+        createElement: () => { const el: any = { style: {}, dataset: {}, children: [] as any[], textContent: "", appendChild(c: any) { el.children.push(c); }, remove() { if (h.liveBar === el) h.liveBar = null; } }; return el; },
+        body: { appendChild: (b: any) => { h.liveBar = b; h.bars.push({ text: (b.children[0] || {}).textContent, kind: b.dataset.kind, buttons: b.children.slice(1).map((c: any) => c.textContent) }); } },
       },
       localStorage: { getItem: () => null, setItem: () => {} },
-      location: { protocol: "http:", host: "TESTHOST:29855", search: "" },
+      location: { protocol: "http:", host: "TESTHOST:29855", search: "", pathname: opts.pathname || "/chat" },
       URLSearchParams: class { get() { return ""; } },
       WebSocket: FakeWS, Date: FakeDate, JSON, console,
       encodeURIComponent,
@@ -88,6 +106,8 @@ class Harness {
       performance: { getEntriesByType: () => [] },
     };
     sandbox.window.window = sandbox.window;
+    if (opts.standalone) sandbox.window.parent = sandbox.window;   // no shell: the page is its own parent
+    sandbox.sessionStorage = sandbox.window.sessionStorage;
     this.win = sandbox.window;
     vm.runInNewContext(js, sandbox);
   }
@@ -438,6 +458,7 @@ test("queued messages hold the reload for a minute, then the hold ends; a draine
   assert.equal(h.win.__rompPaneBusy(), "sends", "inside the bound it still holds");
   h.now += 2_000;
   assert.equal(h.win.__rompPaneBusy(), "", "past the bound the hold ends, the reload may go");
+  assert.equal(h.posted.filter((m) => m.romp === "notify").length, 0, "the bound says nothing: whether the messages are lost is known only at the reload");
   h.runTimers(); h.ws.open();                                       // the redial drains the queue
   assert.equal(h.win.__rompPaneBusy(), "", "drained: no hold, and the stamp is cleared");
   h.ws.close(); h.win.__rompLocalSend({ type: "activeTab", id: "t2" });
@@ -453,4 +474,77 @@ test("the diagnostics door sends a reload-core breadcrumb up this pane's socket"
   const rows = h.sent.filter((m) => m.type === "clientDiag" && m.surface === "reload-core");
   assert.equal(rows.length, 1);
   assert.deepEqual(rows[0], { type: "clientDiag", surface: "reload-core", what: "held", data: { reason: "build", hold: "typing", ageMs: 60000 } });
+});
+
+// The loss is decided at the RELOAD, from the queue's state then (the round-three review: a socket that returned and flushed
+// after the bound had delivered the messages, and the bound-time line said otherwise). The reload core calls the shim's
+// __rompShimPersist right before location.reload(): messages still queued go with the page and the pane says so, on the
+// notify bridge the shell's bell listens for, naming itself by its LABEL, never its key.
+test("the loss line is said at the reload from the queue's state then, names the pane by its label, and is silent after a flush", () => {
+  const h = new Harness(shimJs("chat"));
+  h.ws.open(); h.bundleReady(); h.ws.close();
+  h.win.__rompLocalSend({ type: "activeTab", id: "t1" });
+  assert.equal(h.win.__rompPaneBusy(), "sends", "the first walk stamps the hold");
+  h.now += 61_000;
+  assert.equal(h.win.__rompPaneBusy(), "", "the bound ended the hold");
+  h.runTimers(); h.ws.open();                                       // the socket returned and the redial flushed the queue
+  (h.win.__rompShimPersist || (() => {}))();
+  assert.equal(h.posted.filter((m) => m.romp === "notify").length, 0, "delivered before the reload: no line");
+  h.ws.close(); h.win.__rompLocalSend({ type: "activeTab", id: "t2" }); h.win.__rompLocalSend({ type: "activeTab", id: "t3" });
+  (h.win.__rompShimPersist || (() => {}))();
+  const said = h.posted.filter((m) => m.romp === "notify");   // this harness's parent has no write path: the message is the fallback
+  assert.equal(said.length, 1, "still queued at the reload: the line");
+  assert.equal(said[0].kind, "warn");   // field by field: the posted object lives in the sandbox's realm, so a strict deep compare reads two prototypes
+  assert.equal(said[0].text, "2 messages queued for the Chat pane could not be sent before the dashboard reloaded; they were not delivered.");
+  // the shell's own write path, when the parent exposes it: written synchronously, before location.reload() can take the page
+  // (a message would be delivered after the reload began); nothing posted then
+  const sync = new Harness(shimJs("chat"), { parentNotify: true });
+  sync.ws.open(); sync.bundleReady(); sync.ws.close(); sync.win.__rompLocalSend({ type: "activeTab", id: "t1" });
+  (sync.win.__rompShimPersist || (() => {}))();
+  assert.deepEqual(sync.notified.map((n) => [n.kind, n.text]), [["warn", "1 message queued for the Chat pane could not be sent before the dashboard reloaded; it was not delivered."]]);
+  assert.equal(sync.posted.filter((m) => m.romp === "notify").length, 0, "written, not posted");
+  // every pane names itself by the label the rail shows, never by its internal key (a runtime pin: the key is interpolated)
+  const LABELS: Record<string, string> = { chat: "Chat", timeline: "Sessions", fleet: "Outline", feed: "Feed", files: "Files", settings: "Settings" };
+  for (const app of Object.keys(LABELS)) {
+    const g = new Harness(shimJs(app, app === "files" || app === "settings"));
+    g.ws.open(); g.bundleReady(); g.ws.close(); g.win.__rompLocalSend({ type: "activeTab", id: "x" });
+    (g.win.__rompShimPersist || (() => {}))();
+    const line = g.posted.filter((m) => m.romp === "notify")[0];
+    assert.ok(line, app + ": a line");
+    assert.match(line.text, new RegExp("^1 message queued for the " + LABELS[app] + " pane could not be sent before the dashboard reloaded; it was not delivered\\.$"), app);
+    assert.doesNotMatch(line.text.toLowerCase(), /fleet|timeline/, app + ": no internal key in what the user reads");
+  }
+});
+
+// A standalone page (no shell) reloads in the same task that ends the hold, so a bar raised then goes with the page (and
+// selfBar declines while the connection bar already stands, the normal state after 30 s of a dead socket). The line is kept
+// in the page's session store and shown by its next life, once.
+test("a standalone page keeps the loss line at the reload for its next life on the same path, shows it once, dismissable, yielding to the connection bar", () => {
+  const session = new Map<string, string>();
+  const h = new Harness(shimJs("chat"), { standalone: true, session, pathname: "/chat" });
+  h.ws.open(); h.bundleReady(); h.ws.close();
+  h.win.__rompLocalSend({ type: "activeTab", id: "t1" }); h.win.__rompLocalSend({ type: "activeTab", id: "t2" });
+  assert.equal(h.win.__rompPaneBusy(), "sends", "the first walk stamps the hold");
+  h.now += 61_000;
+  assert.equal(h.win.__rompPaneBusy(), "", "the bound ends the hold");
+  assert.equal(session.has("romp:sendsDropped"), false, "the bound keeps nothing: the loss is decided at the reload");
+  (h.win.__rompShimPersist || (() => {}))();                                        // the reload core, right before location.reload()
+  assert.equal(h.posted.length, 0, "nothing posted: there is no shell");
+  const text = "2 messages queued for the Chat pane could not be sent before the dashboard reloaded; they were not delivered.";
+  assert.ok(session.has("romp:sendsDropped"), "kept for the page that follows the reload");
+  assert.deepEqual(JSON.parse(session.get("romp:sendsDropped")!), { text, path: "/chat" }, "kept with the page's path");
+  const elsewhere = new Harness(shimJs("feed"), { standalone: true, session, pathname: "/feed" });
+  assert.equal(elsewhere.bars.length, 0, "another path shows nothing and leaves the record");
+  assert.equal(session.has("romp:sendsDropped"), true);
+  const next = new Harness(shimJs("chat"), { standalone: true, session, pathname: "/chat" });   // the re-entry after the reload
+  assert.deepEqual(next.bars.map((b) => [b.text, b.kind, b.buttons]), [[text, "warn", ["Reload", "Dismiss"]]], "the next life shows the line, with a dismiss");
+  assert.equal(session.has("romp:sendsDropped"), false, "and consumes it: once");
+  // the warning does not hold the page's one bar slot for good: a connection bar replaces it
+  next.ws.open(); next.bundleReady(); next.ws.close(); next.runTimers(); next.ws.open();
+  next.ws.msg({ type: "ka", dv: 0 }); next.ws.msg({ type: "ka", dv: 0 });
+  assert.equal(next.bars.length, 2, "the connection prompt was raised over it");
+  assert.equal(next.bars[1].kind, "conn");
+  assert.equal(next.liveBar && next.liveBar.dataset.kind, "conn", "the warning yielded the slot");
+  const third = new Harness(shimJs("chat"), { standalone: true, session, pathname: "/chat" });
+  assert.equal(third.bars.length, 0, "a later load says nothing");
 });

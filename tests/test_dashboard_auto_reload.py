@@ -43,10 +43,14 @@ var document = {
   body: { classList: { remove: function () { REMOVED.push(Array.prototype.slice.call(arguments)); } }, appendChild: function () {} },
   querySelectorAll: function () { return IFRAMES; }
 };
-var TIMERS = [], _setTimeout = globalThis.setTimeout;
+var TIMERS = [], _setTimeout = globalThis.setTimeout, _clearTimeout = globalThis.clearTimeout;
+function clearTimeout(id) { var t = TIMERS[id - 1]; if (t) t.cleared = true; else _clearTimeout(id); }   // a re-armed backstop retires its earlier entry
+function liveTimers() { return TIMERS.filter(function (t) { return !t.cleared; }); }
 var CLOCK = 0, _realNow = Date.now.bind(Date); Date.now = function () { return _realNow() + CLOCK; };   // a scenario advances the clock the core reads
-function setTimeout(f, ms) { if (ms > 0) { TIMERS.push({ f: f, ms: ms }); return TIMERS.length; } return _setTimeout(f, ms); }   // a bound's backstop is recorded, never waited for; the zero-delay ticks run
-function pane(busy, since) { return { contentWindow: { __rompReload: { busyHere: function () { return busy(); } }, __rompFreshPendingSince: since || 0 } }; }   // an iframe the shell's walk visits
+function setTimeout(f, ms) { if (ms > 0) { TIMERS.push({ f: f, ms: ms, at: Date.now() }); return TIMERS.length; } return _setTimeout(f, ms); }   // `at`: when it was armed, so a scenario can advance the clock to its due instant   // a bound's backstop is recorded, never waited for; the zero-delay ticks run
+var SHIM_PERSISTS = [];                                        // the panes' __rompShimPersist calls the core made before a reload
+function pane(busy, since, other) { return { contentWindow: { __rompReload: { busyHere: function (skipFresh) { return skipFresh ? (other ? other() : '') : busy(); } }, __rompFreshPendingSince: since || 0,
+                                                              __rompShimPersist: function () { SHIM_PERSISTS.push(1); } } }; }   // an iframe the shell's walk visits; `other` answers past the fresh answer
 var DIAG = [];                                                  // what a pane's socket would carry up: the shell's held breadcrumb
 var window = { addEventListener: function (t, f) { (WLISTENERS[t] = WLISTENERS[t] || []).push(f); } };
 window.parent = window;
@@ -188,7 +192,8 @@ TIMERS[0].f(); await tick(); await tick();
 var expiredAtOnce = null;
 out({ held: held, armed: armed, armedAgain: armedAgain, after: state() });""", code="abc1234")
         self.assertEqual(s["held"]["waiting"], "fresh")
-        self.assertEqual(s["armed"], [60000], "one backstop for the bound, armed when the hold was first seen")
+        self.assertEqual(len(s["armed"]), 1, "one backstop for the bound, armed when the hold was first seen")
+        self.assertTrue(59000 <= s["armed"][0] <= 60000, "armed for the window's edge, a minute from the stamp: %r" % s["armed"])
         self.assertEqual(s["armedAgain"], 1)
         self.assertEqual(s["after"]["reloads"], 1, "the backstop's walk fired the reload once the hold was older than the bound")
         self.assertEqual(s["after"]["stored"]["reason"], "restart")
@@ -257,8 +262,8 @@ IFRAMES = [pane(function () { return 'typing'; }, 0)];
 IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
 R.noteDv(8); var held = state();
 var armed = TIMERS.map(function (t) { return t.ms; });
-TIMERS.shift().f(); await tick(); await tick(); var afterOne = { diag: DIAG.slice(), timers: TIMERS.length, state: state() };
-TIMERS.shift().f(); await tick(); await tick(); var afterTwo = { diag: DIAG.slice(), state: state() };
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick(); var afterOne = { diag: DIAG.slice(), timers: TIMERS.length, state: state() };
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick(); var afterTwo = { diag: DIAG.slice(), state: state() };
 IFRAMES[0].contentWindow.__rompReload.busyHere = function () { return ''; }; R.ended(); await tick(); await tick();
 out({ held: held, armed: armed, afterOne: afterOne, afterTwo: afterTwo, after: state() });""")
         self.assertEqual(s["held"]["waiting"], "typing")
@@ -281,7 +286,7 @@ IFRAMES = [pane(function () { return 'sends'; }, 0)];
 IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
 R.noteDv(8);
 IFRAMES[0].contentWindow.__rompReload.busyHere = function () { return ''; }; R.ended(); await tick(); await tick();
-TIMERS.shift().f(); await tick(); await tick();
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
 out({ diag: DIAG.length, after: state() });""")
         self.assertEqual(t["after"]["reloads"], 1)
         self.assertEqual(t["diag"], 0, "a hold that ended before the bound files nothing")
@@ -293,8 +298,8 @@ out({ diag: DIAG.length, after: state() });""")
 var R = window.__rompReload;
 IFRAMES = [pane(function () { return 'typing'; }, 0)];
 IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
-R.noteDv(8); TIMERS.shift().f(); await tick(); await tick();
-R.request("restart", "2.2"); TIMERS.shift().f(); await tick(); await tick();
+R.noteDv(8); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
+R.request("restart", "2.2"); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
 out({ diag: DIAG.length, owed: state().owed });""")
         self.assertEqual(u["owed"]["reason"], "build", "the first request stands")
         self.assertEqual(u["diag"], 1, "a second reason for the same wait files no second row")
@@ -304,15 +309,116 @@ out({ diag: DIAG.length, owed: state().owed });""")
         v = run_core("""
 var R = window.__rompReload;
 IFRAMES = [pane(function () { return 'typing'; }, 0)];
-R.noteDv(8); TIMERS.shift().f(); await tick(); await tick(); var none = DIAG.length;
+R.noteDv(8); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick(); var none = DIAG.length;
 IFRAMES[0].contentWindow.__rompDiag = function () { throw new Error("a door that throws"); };
-TIMERS.shift().f(); await tick(); await tick(); var thrown = DIAG.length;
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick(); var thrown = DIAG.length;
 IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
-TIMERS.shift().f(); await tick(); await tick();
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
 out({ none: none, thrown: thrown, later: DIAG.length });""")
         self.assertEqual(v["none"], 0, "no door yet: nothing filed")
         self.assertEqual(v["thrown"], 0, "a door that throws files nothing and does not latch")
         self.assertEqual(v["later"], 1, "the row is not lost: the next bound files it through the door that appeared")
+
+    def test_a_pane_that_drops_after_the_fresh_window_ended_opens_its_own_while_an_older_pane_still_answers_fresh(self):
+        """The 1698 lows, low 4: the page's fresh bound is a window. A column that dropped at the first minute's start and never
+        got its frame keeps answering fresh with its old stamp; a column that drops AFTER that minute ended must not be judged
+        by the old stamp (a ten-second-old redial read as expired, and the reload fired over it). Panes that drop inside a
+        running window still join it (the round-three requirement: two staggered columns, one minute)."""
+        s = run_core("""
+var R = window.__rompReload;
+var t0 = Date.now();
+var a = pane(function () { return 'fresh'; }, t0);                              // its frame never comes
+IFRAMES = [a];
+R.noteDv(8); var first = state();
+document.activeElement = COMPOSER; COMPOSER.value = "a draft that spans the bound";        // the draft begins inside the minute
+CLOCK += 65000; TIMERS.shift().f(); await tick(); await tick(); var afterBound = state();   // the window ended; typing holds
+CLOCK += 5000; var tB = Date.now(); var b = pane(function () { return 'fresh'; }, tB); IFRAMES = [a, b];   // a second column drops now
+CLOCK += 10000; document.activeElement = null; R.ended(); await tick(); await tick();          // the draft clears ten seconds later
+var held = state();
+// the backstop stands for the next event ahead (an earlier hold's cadence, then the new window's EDGE): the walks run there
+var fired = 0; for (var k = 0; k < 3 && state().reloads === 0; k++) { var t = liveTimers().pop(); if (!t) break; CLOCK += Math.max(0, t.at + t.ms - Date.now()); t.f(); await tick(); await tick(); fired++; }   // the clock moves to the timer's due instant
+out({ first: first, afterBound: afterBound, held: held, fired: fired, sinceB: Date.now() - tB, atEdge: state(), shimPersists: SHIM_PERSISTS.length });""")
+        self.assertEqual(s["first"]["waiting"], "fresh", "the first column's minute")
+        self.assertEqual(s["afterBound"]["waiting"], "typing", "past the minute only the draft holds")
+        self.assertEqual(s["held"]["reloads"], 0, "the new column's redial keeps its own minute")
+        self.assertEqual(s["held"]["waiting"], "fresh")
+        # the round-three review's item 4: the backstop is armed for the window's edge, so the reload lands within the minute of
+        # the reconnect, not at the next tick of a fixed cadence (measured before: a reload 55 s late)
+        self.assertEqual(s["atEdge"]["reloads"], 1, "the walk at the edge fires the reload")
+        self.assertLessEqual(s["sinceB"], 61000, "within a minute of the second column's reconnect (a second of real clock inside the run): %r ms, %r backstops" % (s["sinceB"], s["fired"]))
+        self.assertEqual(s["shimPersists"], 2, "the core asked every pane's shim to say what its queue still held")
+        t = run_core("""
+var R = window.__rompReload;
+var t0 = Date.now();
+IFRAMES = [pane(function () { return 'fresh'; }, t0)];
+R.noteDv(8);
+CLOCK += 40000; IFRAMES.push(pane(function () { return 'fresh'; }, Date.now()));   // a second column drops inside the window
+CLOCK += 20000; TIMERS.shift().f(); await tick(); await tick();
+out({ after: state() });""")
+        self.assertEqual(t["after"]["reloads"], 1, "a drop inside the running window joins it and ends with it: one minute for the page")
+
+    def test_a_panes_fresh_answer_does_not_mask_its_upload_at_the_windows_edge(self):
+        """The round-four review's high, pre-existing: a pane answering fresh was read as fresh alone, so at the page window's edge
+        the reload fired over that pane's upload or queued sends. The walk asks a fresh pane again for its other holds."""
+        s = run_core("""
+var R = window.__rompReload;
+var t0 = Date.now();
+IFRAMES = [pane(function () { return 'fresh'; }, t0),                                            // column A
+           pane(function () { return 'fresh'; }, t0 + 20000, function () { return 'upload'; })];   // column B, an upload in flight
+R.noteDv(8); var held = state();
+CLOCK += 65000; liveTimers().pop().f(); await tick(); await tick(); var atEdge = state();          // the window's edge
+IFRAMES[1].contentWindow.__rompReload.busyHere = function () { return ''; }; R.ended(); await tick(); await tick();
+out({ held: held, atEdge: atEdge, after: state() });""")
+        self.assertEqual(s["held"]["waiting"], "upload", "the upload outranks the fresh answer from the first walk")
+        self.assertEqual(s["atEdge"]["reloads"], 0, "at the edge the upload still holds")
+        self.assertEqual(s["atEdge"]["waiting"], "upload")
+        self.assertEqual(s["after"]["reloads"], 1, "the upload's end lets the reload go")
+
+    def test_the_backstop_never_re_arms_itself_at_zero_delay(self):
+        """The round-four review's medium: with the window's edge in the past and a draft standing, the backstop was armed for
+        a past instant and the walk repeated at the browser's clamp, hundreds of times a second. An edge already past is
+        not an event: the timer stands for the next stamp's expiry or the ordinary cadence, always ahead."""
+        s = run_core("""
+var R = window.__rompReload;
+IFRAMES = [pane(function () { return 'fresh'; }, Date.now())];
+document.activeElement = COMPOSER; COMPOSER.value = "a draft";
+R.noteDv(8);
+var delays = [];
+for (var i = 0; i < 5; i++) { CLOCK += 65000; var t = liveTimers().pop(); delays.push(t ? t.ms : null); if (t) t.f(); await tick(); await tick(); }
+out({ delays: delays, timers: TIMERS.length, after: state() });""")
+        self.assertTrue(all(d and d > 1000 for d in s["delays"]), "every backstop stands for a future instant: %r" % s["delays"])
+        self.assertLessEqual(s["timers"], 8, "one timer per walk, never a storm: %r" % s["timers"])
+        self.assertEqual(s["after"]["reloads"], 0, "the draft still holds")
+
+    def test_the_breadcrumbs_age_counts_from_the_holds_start_not_the_last_backstop(self):
+        # the 1698 lows, low 3: a row filed at a later bound (no door at the earlier ones) read 60000 for a three-minute hold
+        s = run_core("""
+var R = window.__rompReload;
+IFRAMES = [pane(function () { return 'typing'; }, 0)];
+R.noteDv(8);
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();                 // no door yet
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();                 // still none
+IFRAMES[0].contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
+out({ diag: DIAG });""")
+        self.assertEqual(len(s["diag"]), 1)
+        self.assertGreaterEqual(s["diag"][0]["data"]["ageMs"], 180000, "three minutes held, three minutes said")
+
+    def test_every_pane_names_itself_by_its_label_never_its_key(self):
+        """The round-three review's medium A: a line a pane says about itself read the Outline pane's internal key and would
+        read the Sessions pane's for that pane. The shim bakes LABEL from _pane_label, the one map every surface renders
+        (_PANE_ORDER), rendered here for every key; a source grep of added lines cannot catch an interpolated key."""
+        labels = dict(km._PANE_ORDER)
+        self.assertEqual(labels["fleet"], "Outline"); self.assertEqual(labels["timeline"], "Sessions")
+        for app in list(labels) + ["settings"]:
+            label = getattr(km, "_pane_label", lambda a: "")(app)   # the map is this change's: at the base the red is the assertion
+            self.assertEqual(label, labels.get(app, "Settings"), app)
+            self.assertNotIn("fleet", label.lower(), app); self.assertNotIn("timeline", label.lower(), app)
+            js = km._shim(app, 5, no_stale=(app in ("files", "settings")))
+            self.assertIn('var APP="%s";var LABEL="%s";' % (app, label), js, "the shim bakes the label beside the key")
+            self.assertIn('" queued for the "+LABEL+" pane could not be sent before the dashboard reloaded; "', js, "the loss line reads the label")
+        self.assertIn("try{if(ps[i].__rompShimPersist)ps[i].__rompShimPersist();}catch(e){}", km._reload_core_js(5, "1.1", "abc"),
+                      "the core asks every pane's shim what its queue still holds, right before the reload")
 
     def test_build_drift_after_a_reconnect_reloads_once_the_chat_pane_has_its_frame(self):
         # the pre-existing build-drift reload after any reconnect (the round-two review found it held forever behind a Files pane
@@ -386,7 +492,7 @@ process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
         self.assertEqual(r.returncode, 0, "node failed:\n" + r.stderr)
         line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULT:")), None)
         out = json.loads(line[len("RESULT:"):])
-        wording = "The dashboard will reload onto the new build once the chat pane has caught up, a minute at most."
+        wording = "The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect."
         typing = "The dashboard will reload onto the new build once the draft is sent or cleared."
         selection = "The dashboard will reload onto the new build once the selected text is released."
         upload = "The dashboard will reload once the upload in progress finishes."
@@ -482,9 +588,10 @@ out({ after: state() });""", code="abc1234")
         self.assertIn('if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}', js,
                       "the first real frame clears it and is the ending event")
         core = km._reload_core_js(5, "1.1", "abc")
-        self.assertIn("try{if(window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}", core)
+        self.assertIn("try{if(!skipFresh&&window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}", core,
+                      "the pane's own fresh check, skipped when the shell's walk asks again for the pane's other holds")
         self.assertIn('var LOADED=5,BOOT="1.1",CODE="abc",FRESH_HOLD_MS=60000,', core, "the page's own code identity is baked beside its build and boot")
-        wording = "The dashboard will reload onto the new build once the chat pane has caught up, a minute at most."
+        wording = "The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect."
         self.assertIn(wording, js, "the held wording, the pane's bar")
         self.assertIn(wording, km._STALE_JS, "and the shell's")
         self.assertIn("CODE=%s," % json.dumps(km._code_ident() or ""), km._reload_core(), "the served core bakes this kernel's code identity")
@@ -672,7 +779,7 @@ var during = state();
 emit("pointerup"); await tick();
 out({ held: held, during: during, reloads: RELOADS });""")
         self.assertEqual(s2["during"]["waiting"], "pointer")
-        self.assertEqual(s2["held"], ["pointer"], "the hook is told every hold; the shell's line filters gestures out (heldReloadText)")
+        self.assertEqual(s2["held"], ["pointer"], "the hook is told every hold; the shell's line filters gestures out (the two held maps)")
         self.assertEqual(s2["reloads"], 1)
 
     def test_a_touch_pan_holds_from_pointercancel_until_the_finger_lifts(self):
