@@ -751,7 +751,10 @@ out.bootBefore = bootBefore;
 fs.rmSync(cfg.drops, { recursive: true, force: true });
 fs.writeFileSync(cfg.drops, "not a directory");
 process.kill(cfg.kernelPid, "SIGKILL");
-const k2 = spawn(cfg.relaunch.cmd, [], { env: cfg.relaunch.env, detached: true,
+// Invisible restarts (2026-09-14): a restart of the SAME code owes the page no reload (the board stays, the panes redial),
+// so the reload this lab is about, the one the restart owes and holds behind the pending ship, exists only when the
+// relaunched kernel is a changed build. ROMP_CODE_IDENT stands in for the computed code identity (kernel.py _code_ident).
+const k2 = spawn(cfg.relaunch.cmd, [], { env: { ...cfg.relaunch.env, ROMP_CODE_IDENT: "changed-build" }, detached: true,
   stdio: ["ignore", fs.openSync(cfg.relaunch.log, "a"), fs.openSync(cfg.relaunch.log, "a")] });
 k2.unref();
 fs.writeSync(1, "KPID:" + k2.pid + "\n");
@@ -787,7 +790,8 @@ process.exit(0);
 
 
 class NackNoticeSurvivesReload(_ShipLab):
-    """The reload core's restart reload follows the LAST pending ship's retirement: retirePendingShip ends the hold
+    """The reload core's restart reload (the relaunch is a changed build, since a restart of the same code owes no reload
+    since 2026-09-14) follows the LAST pending ship's retirement: retirePendingShip ends the hold
     (endReloadHoldIfIdle, __rompReload.ended()) and the core fires on the next task. The nack that retired the ship
     raises its toast in the same handler, after the hold ended, so the notice (the file was not saved, the held
     message NOT sent) was appended one task before the page went: never read, and the fresh page's loss toast had
