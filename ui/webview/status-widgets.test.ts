@@ -113,7 +113,7 @@ test("the settings row's demo renders the widget over its demo record through th
   assert.deepEqual(classes(d), ["status-dir"], "the demo is inert: no link dress (round two)");
   assert.equal(d.textContent, " notes-api");
   assert.equal((W.renderStatusWidgetDemo(W.statusWidget("host")!, P()) as unknown as El).textContent, "@ TESTHOST", "the demo record is a remote session, so the row shows the host");
-  assert.equal((W.renderStatusWidgetDemo(W.statusWidget("name")!, P()) as unknown as El).textContent, "web");
+  assert.equal((W.renderStatusWidgetDemo(W.statusWidget("name")!, P()) as unknown as El).textContent, "session_name");   // the demo record's placeholder name (T415 part two)
 });
 
 test("statusWidgetPrefs: a stored object normalizes; with none the widget defaults rule, whatever the store's legacy keys say (the one-shot migration: those keys were the gear's injected default, not a choice)", () => {

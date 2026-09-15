@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const TIMELINE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
 test("the /models payload's codex section populates its own choice arrays (both surfaces)", () => {
@@ -36,7 +37,7 @@ test("Codex offers only its supported modes and opens the mode picker", () => {
   assert.deepEqual([...choices.matchAll(/value: "([^"]+)"/g)].map(m => m[1]), ["sandboxed", "auto"]);
   assert.match(RENDER, /if \(kind === "mode"\) return CODEX_MODE_CHOICES;/);
   assert.doesNotMatch(RENDER, /if \(kind === "mode" && s\.status\.backend === "codex"\) return;/);
-  assert.match(RENDER, /case "sandboxed": return "Sandboxed";/);
+  assert.match(MODULE, /case "sandboxed": return "Sandboxed";/);   // prettyMode lives with the badges (T415 part two)
 });
 
 // A Codex session's model or effort menu opened BLANK when the kernel's codex section had `models: []`
@@ -64,7 +65,7 @@ test("a Codex menu with no list says why and re-reads /models instead of opening
   assert.match(block, /closeMetaMenu\(\);\n\s+const anchor = metaAnchor\(kind, forSid, btn\);\n\s+if \(anchor\) toggleMetaMenu\(kind, anchor, forSid\);/);
   assert.doesNotMatch(block, /toggleMetaMenu\(kind, btn, forSid\)/, "the captured button is never the rebuild's anchor");
   assert.match(RENDER, /function metaAnchor\(kind: MetaKind, forSid: string \| null \| undefined, btn: HTMLElement\): HTMLElement \| null \{\n\s+if \(btn\.isConnected\) return btn;/);
-  assert.match(RENDER, /if \(forSid\) btn\.dataset\.sid = forSid;/, "the popover's badges name their thread so the anchor resolves per session");
+  assert.match(MODULE, /if \(forSid\) btn\.dataset\.sid = forSid;/, "the popover's badges name their thread so the anchor resolves per session");
   // the wait wears the loader's dots beside its text, which the reason replaces
   assert.match(block, /if \(!CODEX_MODELS_ERROR\) sub\.appendChild\(metaDots\(\)\);/);
   assert.match(block, /if \(!now\.length\) \{ sub\.textContent = CODEX_MODELS_ERROR \|\| \(kind === "model" \? "no model list yet" : "no effort list yet"\); return; \}/);
@@ -84,6 +85,13 @@ test("a Codex menu with no list says why and re-reads /models instead of opening
 
 // A slice of render.ts, by its anchors: `start` is the first line, `stop` the "\n}\n" that closes the
 // function beginning at `fnAt` (or at `start`).
+/** a slice of status-controls.ts (the badges moved there, T415 part two), its export keyword dropped for the function body */
+function sliceMod(start: string): string {
+  const a = MODULE.indexOf(start);
+  const stop = MODULE.indexOf("\n}\n", a) + 3;
+  assert.ok(a >= 0 && stop > a, "anchors not found; status-controls.ts moved " + start.slice(0, 40) + "; re-anchor");
+  return MODULE.slice(a, stop).replace(/^export /, "");
+}
 function slice(start: string, fnAt?: string): string {
   const a = RENDER.indexOf(start);
   const f = fnAt ? RENDER.indexOf(fnAt, a) : a;
@@ -272,9 +280,12 @@ function liftMenu(opts: { thread?: { th: unknown; status: any } } = {}) {
     "const metaChoices = (kind, st) => st.backend === 'codex' ? (kind === 'model' ? CODEX_MODEL_CHOICES : kind === 'effort' ? CODEX_EFFORT_CHOICES : []) : (kind === 'model' ? MODEL_CHOICES : kind === 'effort' ? EFFORT_CHOICES : []);",
     slice("function el(tag: string, cls?: string): HTMLElement {"),
     slice("function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {"),   // the real ✓ rule (by value): a row order the tests move must never lose it
-    slice("function metaDots(): HTMLElement {"),
+    sliceMod("export function metaDots(): HTMLElement {"),   // the dots live in status-controls.ts (T415 part two)
     slice("const MODEL_CHOICES: {", "function loadModelChoices(): void {"),
-    slice("function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement {"),
+    sliceMod("export function metaButton(kind: MetaKind, text: string, forSid: string | null | undefined, hooks: MetaHooks): HTMLElement {").replace("function metaButton(", "function buildMetaButton("),
+    // the chat's wrapper (render.ts META_HOOKS / metaButton, pinned by settings-previews.test.ts): the picker as the press hook
+    "const META_HOOKS = { onPress: (kind, btn, forSid) => toggleMetaMenu(kind, btn, forSid), pending: () => false };",
+    "function metaButton(kind, text, forSid) { return buildMetaButton(kind, text, forSid, META_HOOKS); }",
     slice("let metaMenuEl: HTMLElement | null = null;", "function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null) {"),
     "return { metaButton, toggleMetaMenu, closeMetaMenu, loadModelChoices, CODEX_MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES,",
     "  get menu() { return metaMenuEl; }, set active(id) { activeId = id; }, get error() { return CODEX_MODELS_ERROR; } };",
