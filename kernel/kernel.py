@@ -45875,9 +45875,20 @@ def _resolve_reconnect(c, chat_list):
             # this socket; without the stamp a tap for this window parked for the rest of the page's life.
             c["ready"] = True
         act = c.get("active")
-        if not act:
-            return not fresh
         held = c.get("echat") or {}
+        if not act:
+            # No active hint. A client that DIETED (skeleton=1 at the handshake: `dietSkeleton`) still gets the diet,
+            # with no session watched: EVERY transcript-bearing tab is a skeleton and none is the one full (2026-09-15,
+            # the federated dial: a remote none of whose tabs the hub watches is dialed skeleton=1 with no active, and
+            # without this it was served the whole board, so the diet reached only the one remote whose tab was watched).
+            # `_skeleton_for` with an active that names no session is exactly this set (its own remote/closed-id case).
+            # A NON-diet reconnect (a plain page whose blob named no tab) keeps the fail-safe whole push: the kernel
+            # cannot know what it shows.
+            if c.get("dietSkeleton"):
+                skel = [sid for sid in _skeleton_for(c, "", chat_list) if sid not in held]
+                c["skeleton"] = set(skel)
+                c["skeletonOrder"] = skel
+            return not fresh
         skel = [sid for sid in _skeleton_for(c, str(act), chat_list) if sid not in held]
         c["skeleton"] = set(skel)
         c["skeletonOrder"] = skel
@@ -63310,6 +63321,7 @@ class Handler(BaseHTTPRequestHandler):
             # guard never lifting: no reveal aimed at it, a parked one never consumed; review find 2026-09-11). A redial
             # is served like any redial: `reconnect` alone, the first strip's pop stamps it and lands a parked reveal.
             client["reconnect"] = True
+            client["dietSkeleton"] = True   # durable (never popped): this client dialed the diet, so _resolve_reconnect skeletons ALL its tabs even with no active hint (an unwatched federated remote), where a plain reconnect keeps the fail-safe whole push
             if not reconnect:
                 client["skeletonOnReady"] = True
         if col:

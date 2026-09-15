@@ -103,7 +103,8 @@ class SplitSourcePins(unittest.TestCase):
         # address on every dial) and its page said ready on an earlier socket, so no arm would ever pop the flag, and
         # armed it left the client unstamped for the page's life (review find 2026-09-11; test_chat_skeleton_reconnect
         # test_09's fourth dial and test_11_c run it)
-        self.assertIn('client["reconnect"] = True\n            if not reconnect:\n                client["skeletonOnReady"] = True', src)
+        self.assertIn('client["reconnect"] = True\n            client["dietSkeleton"] = True', src)   # the durable diet marker rides the skeleton arm (2026-09-15): _resolve_reconnect skeletons ALL tabs with no active for it
+        self.assertIn('if not reconnect:\n                client["skeletonOnReady"] = True', src)
         # a pre-ready skeleton client is sent no session frame: the ready arm's connect push is the one full (the strip and
         # the statuses still go; review find 2026-09-11: the full crossed the wire twice per open)
         # …and none while `reconnect` is ARMED either (2026-09-12): a client with the flag has no set yet, and a pusher
