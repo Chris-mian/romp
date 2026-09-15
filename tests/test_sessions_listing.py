@@ -30,6 +30,7 @@ sb = load_source("romp_sdk_backend", os.path.join(BIN, "romp_sdk_backend.py"))  
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
 SID2 = "11111111-2222-3333-4444-565656565656"
+FSID = "11111111-2222-3333-4444-888888888888"       # a transcript id a /clear minted under SID
 BUS_FIELDS = {"id", "name", "state", "dir", "bg", "fg", "lastSid", "compacting", "working", "backend"}   # what the postal bus's
 #                                                                                                          roster and the picker read
 
@@ -244,6 +245,40 @@ class OneListingPerChange(_Listing):
             self.assertEqual({r["id"] for r in rows}, {SID, SID2}, "no thread sessions: the same rows")
         finally:
             srv.shutdown(); srv.server_close()
+
+    def test_a_registry_write_of_a_field_no_row_reads_keeps_the_listing_across_five_cycles_and_a_read_field_rebuilds_once(self):
+        """The design's rule 1 (one listing per change) on the registry input: on the deploy boot of 2026-09-15 the listing was
+        rebuilt every cycle (built 778 in 776 s, missBy registry 767) because the key carried REG_REV, which counts every
+        write, and the backend writes fields no row reads each cycle. The key's registry component is the rows revision,
+        moved only by a change to lastSid, threadOf or alive."""
+        builds = []
+        name, real = self._count_builds(builds)
+        sdkdir_saved = jd.SDKDIR
+        jd.SDKDIR = Path(str(jd.STATE)) / "sdk"                  # the row's lastSid read (jd._sdk_last_sid) over this test's registry
+        try:
+            sb.write_reg(str(jd.STATE), SID, {"sid": SID, "alive": True, "lastSid": SID})
+            self._cycle()
+            n0 = len(builds)
+            miss0 = self._stats()[1].get("registry", 0)
+            for i in range(5):
+                sb.write_reg(str(jd.STATE), SID, {"sid": SID, "alive": True, "lastSid": SID, "lastActivity": NOW + i, "ctxTokens": 100 + i})
+                self._cycle()
+            self.assertEqual(len(builds), n0, "five writes of fields no row reads: the listing is kept (the base rebuilt on each)")
+            self.assertEqual(self._stats()[1].get("registry", 0), miss0, "and none counted as a registry miss")
+            sb.write_reg(str(jd.STATE), SID, {"sid": SID, "alive": True, "lastSid": FSID, "lastActivity": NOW + 9})
+            self._cycle()
+            self.assertEqual(len(builds), n0 + 1, "a change to a field a row reads rebuilds once")
+            self.assertEqual(self._stats()[1].get("registry", 0), miss0 + 1, "counted as the registry miss it is")
+            row = [r for r in self._body() if r["id"] == SID][0]
+            self.assertEqual(row["lastSid"], FSID, "and the served row carries the new transcript id")
+            self._cycle()
+            self.assertEqual(len(builds), n0 + 1, "the next cycle keeps it")
+            sb.write_reg(str(jd.STATE), SID2, {"sid": SID2, "alive": True, "threadOf": SID})
+            self._cycle()
+            self.assertEqual(len(builds), n0 + 2, "a registration becoming a comment thread rebuilds once (threadOf is read)")
+        finally:
+            setattr(km, name, real)
+            jd.SDKDIR = sdkdir_saved
 
     def test_the_registry_revision_moves_on_the_one_write_path_and_every_writer_goes_through_it(self):
         """Every write, replace or removal of a file under the SDK registry directory (STATE/sdk/<sid>.json), across kernel/,
