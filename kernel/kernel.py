@@ -9153,27 +9153,43 @@ def _kernel_code_changed(a, b):
 _RESTART_PENDING_MEMO = {}   # (booted sha, checkout sha) -> verdict; both name commits, so the answer never changes
 
 
+RESTART_PENDING_RETRY_S = 30      # how long a failed classification's safe answer stands before git is asked again
+_RESTART_PENDING_FAILED = {}      # key -> when the classification last failed: /version is polled by every reader, and an
+#                                   unreadable pair must not run a git diff (a 20 s subprocess bound) on each poll
+
+
 def _restart_pending(checkout=None):
     """Whether this checkout holds kernel code the running process does not execute: the booted commit against the
     checkout's HEAD through the converge's own classification (plans/drift-by-running-code.md). False when the two are
-    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` names
-    the head to judge when the caller holds a fresh one (the pull route, right after its fast-forward); otherwise the
-    polls' cached head. Memoized per pair, and only a verdict that was READ is kept: a classification that failed (a git
-    flake, an index lock right after a merge) answers True for that read, the safe converge, without latching, so the
-    next read judges again (the round-two review: a latched failure made a docs-only checkout report a restart pending
-    on every poll)."""
+    one commit; None when either cannot be read (no claim, so a hub falls back to its own reading). `checkout` is the
+    head to judge when the caller read one itself (the pull route, right after its fast-forward): None means the
+    polls' cached head, and an EMPTY string means the caller's fresh read failed, which is answered None, never the
+    cache (the round-three review's low 1: the cache still named the head before the fast-forward). Keyed on the two
+    commits' seven-character prefixes, so the route's full sha and the poll's short one share one entry. Only a verdict
+    that was READ is kept: a classification that failed (a git flake, an index lock right after a merge) answers True,
+    the safe converge, and holds that answer for RESTART_PENDING_RETRY_S before git is asked again, so a poll storm
+    over an unreadable pair costs one diff per bound rather than one per poll."""
+    if checkout is not None and not checkout:
+        return None
     booted = _sha_base(_kernel_sha() or "")
     checkout = _sha_base(checkout or "") or (_local_head(short=True) or "")
     if not booted or not checkout:
         return None
     if _shas_agree(booted, checkout):
         return False
-    key = (booted, checkout)
+    key = (booted[:7], checkout[:7])
     if key in _RESTART_PENDING_MEMO:
         return _RESTART_PENDING_MEMO[key]
+    failed_at = _RESTART_PENDING_FAILED.get(key)
+    if failed_at is not None and time.time() - failed_at < RESTART_PENDING_RETRY_S:
+        return True                                   # the safe answer stands until the bound; no diff this poll
     cc = _converge_classes(booted, checkout)
     if cc is None:
-        return True                                   # unreadable this time: the safe answer, remembered by nobody
+        if len(_RESTART_PENDING_FAILED) > 64:
+            _RESTART_PENDING_FAILED.clear()
+        _RESTART_PENDING_FAILED[key] = time.time()
+        return True                                   # unreadable this time: the safe answer, remembered only for the bound
+    _RESTART_PENDING_FAILED.pop(key, None)
     if len(_RESTART_PENDING_MEMO) > 64:
         _RESTART_PENDING_MEMO.clear()
     _RESTART_PENDING_MEMO[key] = bool(cc["kernel"])
@@ -61871,7 +61887,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, detail = _pull_remote(host)
                 # the peer's own word on whether what it now holds changes what its process runs: the hub asks a
                 # restart only when it does (plans/drift-by-running-code.md); None when this checkout cannot say
-                kcc = _restart_pending(checkout=_fresh_local_head()) if ok else None   # the head the pull just moved, read fresh, not the polls' cache
+                kcc = _restart_pending(checkout=_fresh_local_head() or "") if ok else None   # the head the pull just moved, read fresh; a failed read answers None, never the cache
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail, "kernel_code_changed": kcc}),
                                   "application/json")
             if u.path == "/tunnels/askpull":
