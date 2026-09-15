@@ -740,7 +740,7 @@ class _PerfStats:
             j["ms_last"] = ms
 
     def judge_cpu(self, cpu_dt):
-        """A judge tier thread's own CPU seconds for one tier run (_run_tier)."""
+        """A judge tier thread's own CPU seconds for one tier run (judge.py's _run_tier, the shared runner)."""
         with self.lock:
             self.judge["cpu_ms_sum"] += cpu_dt * 1000.0
 
@@ -861,6 +861,7 @@ class _PerfStats:
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
         memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
         #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
+        memos["convergeDeclined"] = _CONVERGE_DECLINED[0]   # converges that asked no restart because this kernel was leaving
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -9365,10 +9366,14 @@ def _in_place_converge(target):
     return False
 
 
+_CONVERGE_DECLINED = [0]   # converges that found this kernel leaving and asked no restart (memos.convergeDeclined on /perf): the
+#                            2026-09-15 deploy read showed a dying kernel's converge killing its two-second-old successor
 _DEPLOY_RESTART_REASONS = ("main-converge", "p2p-update", "self-update",   # ledger reasons that ARE a
                            "kernel-asks-manager-restart-all: self-update")   # deploy restart of this kernel
 _NO_RESTART_ACTIONS = {"main-converge-skip", "bus-converge", "end-on-idle",   # audit rows that restart no
-                       "quiet-window"}   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
+                       "quiet-window", "main-converge-declined",   # (a converge that found this kernel already leaving asked no restart)
+                       "restart-folded", "restart-trailing", "restart-trailing-current"}   # (the manager's notes of a request that rode a
+#                                                                                        restart in flight, or a trail found current)   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
                                          #  the restart it releases writes its own manager-sigterm note)
 #                                                                              kernel (in-place converges; a
 #                                                                              session's own self-close ask)
@@ -9681,6 +9686,23 @@ def _main_drift_check():
 _PORT_FROM_ENV = object()
 
 
+def _converge_declined_shutting_down(kind, phase, sha):
+    """The converge found this kernel already leaving (_TERMINATING: the exit path holds the lock): it asks no restart,
+    since the successor boots on the disk as it stands and a request now would kill THAT kernel (the 2026-09-15 deploy
+    read: the running kernel decided a converge, a peer's push restarted it a second later, and the dying kernel's
+    request killed its two-second-old successor). One audit row (`main-converge-declined`, why shutting-down, `phase`
+    before-pull with the target it did not pull, or after-pull with the checkout it moved) and one count on /perf
+    (memos.convergeDeclined), so a deploy read sees the decline where it used to see a second sigterm."""
+    _CONVERGE_DECLINED[0] += 1
+    _audit_restart_request("main-converge-declined", tag=kind, why="shutting-down", phase=phase, sha=sha)
+    if phase == "before-pull":
+        _converge_say("main is at %s but this kernel is leaving: no pull, no restart asked; the next kernel converges on its own"
+                      % (sha or "?")[:8])
+    else:
+        _converge_say("main converged on disk while this kernel was leaving: no restart asked; the successor's own answer is checked against the disk")
+    return True
+
+
 def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target=""):
     """Converge on newest main: advance the checkout (fast-forward only; a DIRTY shared tree refuses
     LOUDLY — peer sessions' uncommitted work is never discarded) and bounce every kernel through the
@@ -9700,6 +9722,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
     Returns True when a converge ran and succeeded (the in-place rebuild, or the restart requested of the
     manager) and False on every refusal, so the caller's crash-hold clear keys on the outcome and not on the
     return (the follow-up review's second round)."""
+    if _TERMINATING[0]:                               # this kernel is already leaving (the manager's SIGTERM landed): its
+        return _converge_declined_shutting_down(kind, "before-pull", target)   #  successor converges on its own; no pull, no request
     if kind == "pull":
         remote = _release_remote()
         target = _sha8(target)
@@ -9791,6 +9815,9 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
         if not ok:
             _sync_notice("pre-restart bundle rebuild failed (%s) — restarting anyway; the new "
                          "kernel rebuilds at boot" % err, ok=False)
+    if _TERMINATING[0]:                               # the SIGTERM landed while the pull ran (the 2026-09-15 deploy: a peer's push
+        return _converge_declined_shutting_down(kind, "after-pull", _checkout_sha())   #  and this converge raced; the request killed
+    #                                                                                     the two-second-old successor)
     if manager_port is _PORT_FROM_ENV:
         manager_port = os.environ.get("ROMP_MANAGER_PORT")
     try:
@@ -45724,6 +45751,28 @@ def _note_ws_open(client, reconnect=False, now=None):
         return False
 
 
+def _note_history_reply(client, sid, mtype, reply, nbytes, now=None, sent=True):
+    """One client-diag row per history reply (loadTurns/loadOlder/loadAround/loadNewer, proto-2 or the legacy loadOlder
+    arm) the kernel serves to ANY client (2026-09-15). The kernel kept no per-client record of a history round trip, so a
+    scroll-back that stalls could not be read from the SERVING kernel: whether the ask arrived, over what span, and what
+    was answered (events, bytes) or refused. The row names the client's cid and kind (page or relay, the only two
+    _dial_kind assigns) so a relay client's asks are told from a local page's, the reply's turn span, its event count and
+    wire bytes, whether it was the head, empty (missing) or a fault (refused, with the reason), and whether the reply
+    actually left over the wire (sent: a send that raised files sent=False, so an ask that arrived and failed to leave is
+    told from one that never arrived). Diagnostic only, no behaviour change; the file's own failure is never the reply's
+    and is swallowed (the wsopen row carries the once-per-kernel sink notice)."""
+    try:
+        now = time.time() if now is None else now
+        data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "type": mtype,
+                "span": reply.get("span"), "events": len(reply.get("events") or []), "bytes": int(nbytes),
+                "head": bool(reply.get("head")), "missing": bool(reply.get("missing")),
+                "refused": bool(reply.get("fault")), "reason": reply.get("error"), "sent": bool(sent)}
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "historyReply",
+                                                                        "data": data}) + "\n")
+    except Exception:
+        pass
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -53661,21 +53710,10 @@ def _tiers_may_start(tracking=None):
     return bool(tracking) and bool(_live_map()) and not _retry_paused_on()
 
 
-def _run_tier(fn):
-    """Run one judge tier (run_index / run_triage) in its own thread, logging a crash instead of letting
-    the thread die silently (the per-session futures inside already swallow + log their own errors).
-    The thread's own CPU over the run goes to /perf's judge.cpu_ms_sum; the per-session workers the
-    tier runs in judge.py's pools account for theirs there (judge_worker_cpu_ms)."""
-    _c0 = time.thread_time()
-    _prev = getattr(_STAGE_TL, "name", None)
-    _set_stage("judge." + threading.current_thread().name)   # the tier's reads, builds and hydrations count under judge.<tier> (T401 (5a))
-    try:
-        fn()
-    except Exception:
-        sys.stderr.write("producer tier: %s\n" % traceback.format_exc())
-    finally:
-        _set_stage(_prev)
-        _PERF_STATS.judge_cpu(time.thread_time() - _c0)
+def _tier_started(name):
+    """run_pass's before_tier in the kernel: one tier thread started, counted under /perf judge.tierStarts at its START (the
+    lab's proof that the switch off starts nothing reads the counter mid-pass too; round three of the judge child)."""
+    _PERF_STATS.judge_tiers(1)
 
 
 @_stage_marked("producer")                                # the tiers' driver: its own parses count under it (T401 (5a))
@@ -53693,7 +53731,6 @@ def _producer():
             _record_suspend(_iv)                        # → the timeline closes turns left open across it
         _prev_wall, _prev_mono = _nw, _nm
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
-        _own_frame = False       # set once the pass frame opens; the finally below can then never leak it
         _t_pass = time.monotonic()
         try:
             # Two tiers, run in PARALLEL (the user 2026-06-17) — they share no store and triage never
@@ -53706,12 +53743,7 @@ def _producer():
             # hits (jd PCACHE) and each judge only makes an LLM call when it has real new work (an unplaced
             # segment, an uncaptioned unit, a fresh completion) — so an idle pass costs filesystem stats, not
             # model calls. (_producer_sig stays available but no longer gates triage.)
-            tiers = []
             tracking = _task_tracking_on()             # the master switch (T404): off, no tier starts, so no kernel-initiated model call
-            if _tiers_may_start(tracking):
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
-                _PERF_STATS.judge_tiers(len(tiers))    # /perf judge.tierStarts: the lab's proof that off starts nothing
             try:                                       # /clear boundaries FIRST (before the snapshot + tiers), so
                 _episode_boundary_tick(time.time())    # this same pass's planner/closer/nudge see a settled store
             except Exception:                          # instead of carrying dead cards into the fresh conversation
@@ -53720,14 +53752,13 @@ def _producer():
                                                        # pre-pass look; later passes anchor on the previous look
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
-            _own_frame = jd.begin_pass_frame()         # ONE evidence frame for BOTH tiers and their worker pools:
-                                                       # every judge stage this cycle sees the same frozen world
-                                                       # (the user 2026-07-21); the join below ends it
-            for t in tiers:
-                t.start()
-            for t in tiers:                            # barrier: both tiers finish before the next wake
-                t.join()
-            jd.end_pass_frame(_own_frame)              # evidence unfreezes; the next cycle pins a fresh frame
+            res = jd.run_pass(_tiers_may_start(tracking), before_tier=_tier_started)   # THE pass body, shared with the serve
+                                                       # child (judge.py run_pass, stage three round two): both tiers in parallel
+                                                       # under ONE evidence frame (the user 2026-07-21), the barrier, the CPU
+                                                       # accounting, the frame ended in its finally; the gate's three inputs are
+                                                       # read HERE; each tier counts under /perf judge.tierStarts as it STARTS
+                                                       # (_tier_started), so a read mid-pass sees the running tiers (round three)
+            _PERF_STATS.judge_cpu(res["tierCpuS"])       # the tier threads' own CPU; the pool workers account theirs in judge.py
             try:                                       # AFTER the join → single writer: archive newly-cleared
                 moved = _compact_goal_stores() if tracking else 0   # cards out of the live goal stores (keeps build_feed flat); off, the stores rest (T404)
                 if moved:                              # the first pass migrates the whole backlog of cleared nodes.
@@ -53762,7 +53793,6 @@ def _producer():
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
             _end_goals_pass()      # safety net: never leave a pass's snapshot stuck if the pass raised mid-flight
-            jd.end_pass_frame(_own_frame)   # …nor the evidence frame (idempotent with the normal-path end above)
             _PERF_STATS.judge_pass(time.monotonic() - _t_pass)
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
         # instead of waiting out the backstop. The 3s is only a BACKSTOP — for changes we don't get poked
@@ -62339,8 +62369,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True, "id": fsid, "name": nm}),
                                   "application/json")
             if u.path == "/rename":
-                # Headless rename (`romp rename`, the user 2026-08-23 via the SynthProbe fleet
-                # restructuring): the renameSession WS op as a one-shot POST, the exact sibling of
+                # Headless rename (`romp rename`, the user 2026-08-23, restructuring another project's
+                # sessions): the renameSession WS op as a one-shot POST, the exact sibling of
                 # /fork — which exists precisely because hand-driving a WS op with the dashboard
                 # token is surgery nobody should repeat. Body: {"target": <live name or sid>,
                 # "name": <new-name>}. Sessions are uuid-keyed with the name as a label, so a rename
@@ -63155,13 +63185,19 @@ class Handler(BaseHTTPRequestHandler):
                 if reply is None:                         # no session or no build to answer from (T402): say so, never silence
                     reply = _fault("no session to answer from")
                 if reply is not None:
+                    _sent = False
                     with _client_lock(client):
                         base = reply.pop("_base", None)
                         if isinstance(base, dict) and base.get("first"):   # the tail run's first edge advances (T386 stage 2); the last stands
                             old = client.get("echat", {}).get(sid)
                             if isinstance(old, dict):
                                 client.setdefault("echat", {})[sid] = {"first": base["first"], "last": old.get("last")}
-                        client["send"](json.dumps(reply))
+                        _wire = json.dumps(reply)
+                        try:
+                            client["send"](_wire); _sent = True
+                        except Exception:
+                            sys.stderr.write("%s: %s\n" % (msg["type"], traceback.format_exc()))   # the send failed; logged as before, and the diag row below records sent=False
+                    _note_history_reply(client, sid, msg["type"], reply, len(_wire), sent=_sent)   # one diag row per history reply, sent=False when the send raised (2026-09-15)
             except Exception:
                 sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))
             return
@@ -63189,13 +63225,18 @@ class Handler(BaseHTTPRequestHandler):
                         reply = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "no build to answer from"}
                 else:
                     reply = {"type": "chatHead", "id": sid, "from": 0, "before": before, "events": []}   # nothing older: the head
-                client["send"](json.dumps(reply))
+                _wire = json.dumps(reply)
+                client["send"](_wire)
+                _note_history_reply(client, sid, "loadOlder", reply, len(_wire), sent=True)   # the legacy scroll-back arm files a diag row too (2026-09-15)
             except Exception as e:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+                _fault = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}
+                _fw = json.dumps(_fault); _fsent = False
                 try:
-                    client["send"](json.dumps({"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}))
+                    client["send"](_fw); _fsent = True
                 except Exception:
                     pass
+                _note_history_reply(client, sid, "loadOlder", _fault, len(_fw), sent=_fsent)   # the fault this arm sends is a row too, sent=False if even it failed (2026-09-15)
             return
         if msg and msg.get("type") == "loadEpisode" and msg.get("id"):
             # The "Conversation cleared" card was expanded → ship the pre-clear episode's events (a one-shot
