@@ -132,12 +132,12 @@ class _Root(unittest.TestCase):
 
 
 class ChatBuildRowsFollowTheTick(_Root):
-    """The per-session chat build rows (/perf, builds.chat.bySession) leave with their sessions, decided at the END
-    of the death sweep's tick: a stand-down (the registry unreadable) keeps every row, a departure whose registry
-    row stands (a dead session the user keeps open as a tab) keeps its row, and a session gone from the registry
-    loses its row the tick that stamps it (round two of the timer, 2026-09-15: the keep ran before the stand-down
-    loop and dropped the rows of every live session on an unreadable registry, minting `first` again on the next
-    warm build)."""
+    """The per-session chat build rows (/perf, builds.chat.bySession) leave with the CERTIFIED death of their session and
+    with nothing else: _record_death drops the row after the marker lands (every road: the sweep's tick, the kill gesture,
+    the boot pass, the self-close), and the sweep's tick bounds the leftovers whose marker some other road stamped. Rounds
+    one to three (2026-09-15) computed a keep at the tick from a moving window (the live map plus the departures the tick
+    left unstamped) and forgot what they kept a tick later: a live session's cold build row was dropped at the second tick
+    after a blink and a warm rebuild minted its `first` again. So every unstamped arm is driven over THREE ticks."""
     def _seed(self):
         _reg(SID); _reg(SID2); _name(SID); _name(SID2)
         rows = self.live()
@@ -154,70 +154,124 @@ class ChatBuildRowsFollowTheTick(_Root):
     def _restore_rows(self):
         km._PERF_STATS.chat_by_session.clear(); km._PERF_STATS.chat_by_session.update(self._saved_rows)
 
-    def test_a_stand_down_keeps_every_row_and_a_session_gone_from_the_registry_loses_its_row(self):
-        rows = self._seed()
-        self._rows(SID, SID2)
-        km._death_sweep_tick(NOW, rows)                                   # arms the set-diff trigger
-        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "the first tick drops nothing")
-        os.rename(jd.SDKDIR, jd.SDKDIR.with_name("sdk.aside"))
+    def _tick(self, t, live):
         with contextlib.redirect_stderr(self.err):
-            km._death_sweep_tick(NOW + 1, {SID: rows[SID]})               # SID2 "departed" behind an unreadable registry: stood down
-        self.assertIn(SID2, km._prev_live_sids[0], "the stood-down departure is re-asked next tick")
-        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2},
-                         "a stand-down keeps the departure's row (before round two the keep ran on the live map alone and dropped it)")
-        os.rename(jd.SDKDIR.with_name("sdk.aside"), jd.SDKDIR)
-        os.unlink(jd.SDKDIR / (SID2 + ".json"))                           # the reg goes, no life rows: dead history
-        with contextlib.redirect_stderr(self.err):
-            km._death_sweep_tick(NOW + 2, {SID: rows[SID]})
-        self.assertIsNotNone(_marker(SID2), "stamped by the sweep")
-        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "the row goes with the session gone from the registry")
+            km._death_sweep_tick(t, live)
 
-    def test_a_departure_certified_alive_by_another_arm_keeps_its_chat_build_row(self):
-        """Round three: the keep is the complement of the STAMPED set, so an arm that certifies a departure alive and stamps
-        nothing keeps its row, whichever arm: the Codex registry says alive after a live-map blink; an SDK reg vanished under
-        a driver thread still running; a stamp not due. Round two enumerated the surviving arms and missed these, so a live
-        session's 4200 ms cold build was dropped by the tick and a 12 ms warm rebuild minted its `first` again."""
+    def test_every_unstamped_arm_keeps_the_row_over_three_ticks(self):
+        """SID2 leaves the live map and an arm of the tick certifies it alive or stands down without stamping; at the
+        departure tick, the next (0.5 s later, SID2 in neither the live map nor the departures) and the one after, the row
+        stays and no death is stamped. The seven arms: the SDK registry row standing (a dead session the user keeps open as
+        a tab); the SDK registry directory unreadable; the Codex registry unreadable; the Codex registry alive after a
+        live-map blink; an SDK reg gone under a running driver thread; recent life with no reg; a stamp not due."""
         class _Codex:
             def _session(self, sid):
                 return {"sid": sid} if sid == SID2 else None
             def owns(self, sid):
                 return sid == SID2
+        def _life():
+            d = jd.STATE / "states"; d.mkdir(parents=True, exist_ok=True)
+            (d / (SID2 + ".jsonl")).write_text(json.dumps({"t": NOW - 120, "state": "waiting"}) + "\n")
         arms = {
-            "the Codex registry says alive after a live-map blink": lambda: setattr(km, "_codex", lambda: _Codex()),
-            "an SDK reg gone under a running driver thread": lambda: setattr(km, "_sdk_thread_alive", lambda sid: sid == SID2),
-            "a stamp not due": lambda: setattr(km, "_death_stamp_due", lambda sid: sid != SID2),
+            "an SDK registry row standing": (False, lambda: None),
+            "the SDK registry directory unreadable": (True, lambda: os.rename(jd.SDKDIR, jd.SDKDIR.with_name("sdk.aside"))),
+            "the Codex registry unreadable": (True, lambda: setattr(km, "_codex_records_blind", lambda cx: True)),
+            "the Codex registry alive after a live-map blink": (True, lambda: setattr(km, "_codex", lambda: _Codex())),
+            "an SDK reg gone under a running driver thread": (True, lambda: setattr(km, "_sdk_thread_alive", lambda sid: sid == SID2)),
+            "recent life with no reg": (True, _life),
+            "a stamp not due": (True, lambda: setattr(km, "_death_stamp_due", lambda sid: sid != SID2)),
         }
-        saved = {nm: getattr(km, nm) for nm in ("_codex", "_sdk_thread_alive", "_death_stamp_due")}
+        names = ("_codex", "_codex_records_blind", "_sdk_thread_alive", "_death_stamp_due")
+        saved = {nm: getattr(km, nm) for nm in names}
         kept = []                                                     # every arm's verdict, asserted OUTSIDE the subtests too
-        for label, arm in arms.items():
+        for label, (unlink, arm) in arms.items():
             with self.subTest(arm=label):
                 try:
                     rows = self._seed()
                     self._rows(SID, SID2)
-                    km._death_sweep_tick(NOW, rows)
-                    os.unlink(jd.SDKDIR / (SID2 + ".json"))               # no SDK reg: the arms below decide
+                    self._tick(NOW, rows)                             # arms the set-diff trigger
+                    if unlink:
+                        os.unlink(jd.SDKDIR / (SID2 + ".json"))
                     arm()
-                    with contextlib.redirect_stderr(self.err):
-                        km._death_sweep_tick(NOW + 1, {SID: rows[SID]})   # SID2 departed the live map
-                    self.assertIsNone(_marker(SID2), "%s: nothing stamped" % label)
-                    self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "%s: the row stays with an unstamped departure" % label)
+                    self._tick(NOW + 1, {SID: rows[SID]})             # SID2 departed
+                    self.assertIsNone(_marker(SID2), "%s: nothing stamped at the departure tick" % label)
+                    self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "%s: kept at the departure tick" % label)
+                    self._tick(NOW + 2, {SID: rows[SID]})             # the next jobs pass: SID2 in neither the live map nor the departures
+                    self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "%s: kept at the second tick" % label)
+                    self._tick(NOW + 3, {SID: rows[SID]})
+                    self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "%s: kept at the third tick" % label)
+                    self.assertIsNone(_marker(SID2), "%s: nothing stamped over three ticks" % label)
                     kept.append(label)
                 finally:
                     for nm, v in saved.items():
                         setattr(km, nm, v)
+                    if jd.SDKDIR.with_name("sdk.aside").exists():
+                        os.rename(jd.SDKDIR.with_name("sdk.aside"), jd.SDKDIR)
                     for f in jd.SDKDIR.glob("*.json"):
                         f.unlink()
+                    for f in (jd.STATE / "states").glob("*.jsonl") if (jd.STATE / "states").exists() else []:
+                        f.unlink()
+                    km._prev_live_sids[0] = None
                     self._restore_rows()
-        self.assertEqual(len(kept), len(arms), "every unstamped arm kept the row: %s" % kept)
+        self.assertEqual(len(kept), len(arms), "every unstamped arm kept the row over three ticks: %s" % kept)
 
-    def test_a_departure_whose_registry_row_stands_keeps_its_chat_build_row(self):
+    def test_a_death_the_tick_certifies_drops_the_row_and_an_empty_live_map_drops_nothing(self):
         rows = self._seed()
         self._rows(SID, SID2)
-        km._death_sweep_tick(NOW, rows)
-        with contextlib.redirect_stderr(self.err):
-            km._death_sweep_tick(NOW + 1, {SID: rows[SID]})               # SID2 left the live map; its reg stands (kept open)
-        self.assertIsNone(_marker(SID2), "an SDK death is the kill gesture's to stamp")
-        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "a kept-open dead tab keeps its row")
+        self._tick(NOW, rows)
+        self._tick(NOW + 1, {})                                       # every sid "departed" at once, every reg standing
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "an empty live map with the regs standing drops nothing")
+        self.assertIsNone(_marker(SID)); self.assertIsNone(_marker(SID2))
+        self._tick(NOW + 2, rows)                                     # back
+        os.unlink(jd.SDKDIR / (SID2 + ".json"))                       # the reg goes, no life rows: dead history
+        self._tick(NOW + 3, {SID: rows[SID]})
+        self.assertIsNotNone(_marker(SID2), "stamped by the sweep")
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "the row goes with the certified death")
+        self._tick(NOW + 4, {SID: rows[SID]})
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "and stays gone; the live session's row stays")
+
+    def test_the_self_close_road_drops_the_row_through_the_real_record_death(self):
+        """One other _record_death road: the end-on-idle sweep (a session asked to close itself once its turn settles) kills
+        the session and records the death; the row leaves with it."""
+        rows = self._seed()
+        self._rows(SID, SID2)
+        class _Be:
+            def kill(self, sid):
+                pass
+        stubs = {"_parse": lambda path, sid, now: {"turns": []}, "_session_working": lambda turns: False, "_path_of": lambda sid: "",
+                 "_comment_kill_all": lambda sid, be: None, "_send_to_app": lambda app, msg: None, "_push_soon": lambda: None}
+        saved = {nm: getattr(km, nm) for nm in stubs}
+        saved_be = km.Sessions.backend_for
+        km.Sessions.backend_for = staticmethod(lambda sid: _Be())
+        for nm, v in stubs.items():
+            setattr(km, nm, v)
+        try:
+            km._end_on_idle_save({SID2})
+            with contextlib.redirect_stderr(self.err):
+                km._end_on_idle_sweep(NOW + 5, rows)
+        finally:
+            for nm, v in saved.items():
+                setattr(km, nm, v)
+            km.Sessions.backend_for = saved_be
+        self.assertIsNotNone(_marker(SID2), "the self-close recorded the death")
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "the row left with it")
+
+    def test_the_sweep_drops_a_row_whose_marker_another_road_stamped_and_keeps_a_kept_open_dead_tab(self):
+        """The bound on the leftovers: a row whose session left the live map with a death marker standing and no registry
+        row goes at the tick (a death stamped before the row existed, or by another process); a dead session the user keeps
+        open as a tab (reg alive:False standing) keeps its row."""
+        rows = self._seed()
+        self._rows(SID, SID2)
+        self._tick(NOW, rows)
+        os.unlink(jd.SDKDIR / (SID2 + ".json"))
+        gd = jd.STATE / "gone"; gd.mkdir(parents=True, exist_ok=True)
+        (gd / (SID2 + ".json")).write_text(json.dumps({"t": NOW - 50, "by": "boot"}))   # a marker this kernel did not write
+        self._tick(NOW + 1, {SID: rows[SID]})
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "the standing marker with no reg: the row goes")
+        self._rows(SID, SID2)                                         # a kept-open dead tab: marker standing AND a reg standing
+        _reg(SID2, alive=False)
+        self._tick(NOW + 2, {SID: rows[SID]})
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "a registry row standing keeps the row")
 
 
 class GenuineEmptiness(_Root):

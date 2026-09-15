@@ -263,13 +263,13 @@ class Collector(unittest.TestCase):
         self.st.build_chat(False, 0.400, sid=A)
         rows = {r["sid"]: r for r in self.st.snapshot()["builds"]["chat"]["bySession"]}
         self.assertEqual((rows[A]["first"], rows[A]["last"], rows[A]["max"]), (100.0, 400.0, 400.0), "first is set once; last and max move")
-        self.st.chat_rows_keep({A, C})                                        # B's session left the registry
+        self.st.chat_row_drop(B)                                              # B's death was certified (_record_death calls this)
         self.assertEqual(sorted(r["sid"] for r in self.st.snapshot()["builds"]["chat"]["bySession"]), sorted([A, C]))
-        self.st.chat_rows_keep(set())                                         # an empty set (a hiccup) drops nothing
+        self.st.chat_row_drop("no-such-sid")                                  # a death of a session never built: nothing to drop
         self.assertEqual(len(self.st.snapshot()["builds"]["chat"]["bySession"]), 2)
-        # the death sweep's tick drives the keep at its END over the complement of the stamped set (tests/test_sdk_registry_blind.py,
-        # ChatBuildRowsFollowTheTick); the call sites are executed, not read: PushStages below drives the real _push and the real
-        # _push_session_now and reads the rows from the snapshot (round three: the regex over the kernel source went)
+        # the certified death drives the drop through the real _record_death and the real death sweep's tick over three ticks
+        # (tests/test_sdk_registry_blind.py, ChatBuildRowsFollowTheTick); the call sites are executed, not read: PushStages below
+        # drives the real _push and the real _push_session_now and reads the rows from the snapshot
 
     def test_stages_builds_judge(self):
         self.st.stage("push.chat", 0.5); self.st.stage("push.chat", 0.25); self.st.stage("jobs", 0.1)
@@ -940,6 +940,21 @@ class PushStages(unittest.TestCase):
         self.assertEqual(snap["bg_miss"].get("targeted", 0) - saved[1]["bg_miss"].get("targeted", 0), 1, "attributed to the push, not a signature component")
         self.assertNotIn(SID, km._built_chat, "still not cached: the build ran with no dependency record")
         self.assertIn("session", [f["type"] for f in self.chat_frames])
+        # round four, low b: the watched tab's handshake build lands under active_built, read from the target client's active sid
+        self.chat["active"] = SID
+        km._PERF_STATS.chat_by_session.pop(SID, None)
+        before = km._PERF_STATS.snapshot()["builds"]["chat"]
+        with km._clients_lock:
+            km._clients[:] = [self.chat]
+        try:
+            km._push_session_now(SID)
+        finally:
+            with km._clients_lock:
+                km._clients[:] = saved[0]
+        after = km._PERF_STATS.snapshot()["builds"]["chat"]
+        self.assertEqual((after["active_built"] - before["active_built"], after["bg_built"] - before["bg_built"]), (1, 0),
+                         "the watched tab's build counts as active, not background")
+        self.assertEqual(after["bg_miss"].get("targeted", 0), before["bg_miss"].get("targeted", 0), "no background attribution for the watched tab")
 
     def test_the_seams_stay_where_the_stages_are_defined(self):
         # the order of the four stage records in _push is the definition of the split; pinned beside the
