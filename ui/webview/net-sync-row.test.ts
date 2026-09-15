@@ -58,3 +58,19 @@ test("VS Code strip: same row treatment", () => {
   assert.match(STRIP, /t\.autoPush\.phase === "pulling"/);
   assert.match(STRIP, /t\.autoPush\.phase === "asking"/);
 });
+
+// plans/drift-by-running-code.md: a peer whose checkout matches this machine is not behind, whatever its kernel booted
+// from; when its kernel runs older kernel code the row says so, hedged like the drift words when the flag is remembered
+// rather than polled, its tooltip names the two commits, and the ask slot offers a Restart, not an Update.
+test("web popover: a peer running older code than its checkout says so, hedged when stale, and is offered a Restart", () => {
+  assert.match(STRIP, /\} else if \(t\.restartPending\) \{[\s\S]{0,600}?ver = stale \? " \u00b7 last known: running older code" : " \u00b7 running older code";/,
+    "the row word, with the stale hedge the drift words carry");
+  assert.match(STRIP, /!t\.outOfDate && t\.restartPending \? `\\n\\nIts checkout is at \$\{t\.checkoutSha \|\| t\.localSha \|\| "\?"\}, the same as this machine, but its kernel still runs \$\{t\.kernelSha \|\| "\?"\}: a restart brings it onto the code it holds\.`/,
+    "the tooltip names the checkout and the booted commit");
+  assert.match(STRIP, /a\.textContent = t\.outOfDate \? "Update" : "Restart";/, "the ask slot's label follows the state");
+  assert.match(STRIP, /\} else if \(s\.restartPending\) \{\s*ver = " \u00b7 running older code";/, "the via'd sub-row carries the word too");
+  // the kernel's own panel copy keeps the same word and the same hedge (rnet parity)
+  assert.match(KERNEL, /else if\(t\.restartPending\)\{ver=' \\\\u00b7 <span class=\\"rnet-old'\+\(stl\?' rnet-stale':''\)/, "the landing panel's row");
+  assert.match(KERNEL, /\(running older code\)<\/span>';\}/);
+  assert.match(KERNEL, /This asks it to restart onto the code it holds\.\\">Restart<\/button>'/, "and its Restart offer");
+});

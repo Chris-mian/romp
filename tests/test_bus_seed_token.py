@@ -287,6 +287,23 @@ class AMalformedShaKeepsTheRowUndated(_Harness):
         km._poll_remote_version = self._saved["_poll_remote_version"]    # the real poll, against the fake /version
         _FakeVersion.PAYLOAD = {"kernel_sha": "abc1234", "kernel_ver": "v0.5.0"}
 
+    def test_a_malformed_checkout_sha_keeps_the_rows_last_good_value(self):
+        """plans/drift-by-running-code.md: the poll stores the peer's checkout commit beside its booted one, and a malformed
+        one keeps the last good value the row held, as the booted sha does (the round-two review's low 2: an empty string
+        flipped the row back to behind N commits and re-armed the ask)."""
+        r = self._row()
+        _FakeVersion.PAYLOAD = {"kernel_sha": "abc1234", "kernel_ver": "v0.5.0", "checkout_sha": "def5678", "restart_pending": False}
+        self._pass()
+        self.assertEqual((r["checkout_sha"], r["restart_pending"]), ("def5678", False), "both facts land on the row")
+        _FakeVersion.PAYLOAD = {"kernel_sha": "abc1234", "kernel_ver": "v0.5.0", "checkout_sha": IMG, "restart_pending": True}
+        self._pass()
+        self.assertEqual(r["checkout_sha"], "def5678", "a checkout sha that fits no shape leaves the last good one in place")
+        self.assertIs(r["restart_pending"], True, "the other fields of the same answer still land")
+        _FakeVersion.PAYLOAD = {"kernel_sha": "abc1234", "kernel_ver": "v0.5.0"}
+        self._pass()
+        self.assertEqual(r["checkout_sha"], "", "an older kernel that says nothing: the booted sha stands in for the drift")
+        self.assertIsNone(r["restart_pending"])
+
     def test_last_ok_dates_only_a_sha_this_pass_confirmed(self):
         r = self._row()
         self._pass()

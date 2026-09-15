@@ -649,6 +649,11 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
             : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
         }
         if (stale) ver = ver.replace(" · ", " · last known: ");
+      } else if (t.restartPending) {
+        // its checkout matches this machine, but its kernel booted from older kernel code: not behind, a restart pending
+        // (plans/drift-by-running-code.md); the Update offer below asks that restart. A remembered flag (the row not
+        // polled while disconnected) wears the same hedge the drift words do.
+        ver = stale ? " · last known: running older code" : " · running older code";
       }
       // A connected host reporting NO build at all runs a plain file copy (no git checkout): it cannot
       // name a release or commit, and drift can't be measured — it may be months behind and never say
@@ -658,6 +663,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       nm.textContent = `${t.host} — ${LBL[t.status] || t.status}` + ver;
       nm.title = (TIP[t.status] || "")
         + (t.outOfDate ? `\n\nRunning ${t.kernelSha || "?"}${t.kernelDate ? " from " + t.kernelDate : ""}; this machine is at ${t.localSha || "?"}.` : "")
+        + (!t.outOfDate && t.restartPending ? `\n\nIts checkout is at ${t.checkoutSha || t.localSha || "?"}, the same as this machine, but its kernel still runs ${t.kernelSha || "?"}: a restart brings it onto the code it holds.` : "")
         + (unversioned ? `\n\n${t.host} is running romp from a plain file copy — not a git checkout — so it cannot name its release or commit, and how far it is from this machine cannot be measured: it may be far behind and never say so. Reinstall it as a git clone to restore the build name and updates.` : "")
         + (stale && t.outOfDate ? `\nLast confirmed ${seen || "not since this kernel started"}; not re-checked while ${LBL[t.status] || t.status}.` : "")
         + (t.outOfDate && t.checkinPeer
@@ -722,9 +728,11 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       }
       if (t.status === "up" && t.askPull && !apx) {
         const a = document.createElement("button");
-        a.textContent = "Update";
-        a.title = `${t.host} checked in over its own tunnel, so this machine cannot push to it. This asks its romp `
-          + `to pull these commits from here and restart, over the link it already holds.`;
+        a.textContent = t.outOfDate ? "Update" : "Restart";
+        a.title = t.outOfDate
+          ? `${t.host} checked in over its own tunnel, so this machine cannot push to it. This asks its romp `
+            + `to pull these commits from here over the link it already holds, and to restart only if what it pulled changes what its kernel runs.`
+          : `${t.host} holds this machine's build but its kernel still runs older kernel code. This asks it to restart onto the code it holds.`;
         a.addEventListener("click", () => act("/tunnels/askpull", t.host, a, "Asking…"));
         r.appendChild(a);
       }
@@ -982,6 +990,8 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
           : ab > 0 ? ` · ahead ${ab} commit${ab === 1 ? "" : "s"}`
           : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
       }
+    } else if (s.restartPending) {
+      ver = " · running older code";
     }
     nm.textContent = `${s.host} — ${LBL[s.status] || s.status}${ver}`;
     nm.title = `${via}'s tunnel to ${s.host}. ` + (TIP[s.status] || "")
