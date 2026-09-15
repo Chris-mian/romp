@@ -514,8 +514,10 @@ class KernelPipe {
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
     // the Outline panel declares the provisional-row capability on its dial (plans/outline-pane-provisional-row.md): without the
-    // term it would be a permanently unflagged Outline that disables the cold-tab gate for the whole kernel while open
-    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}${this.app === "fleet" ? "&provrows=1" : ""}`);
+    // term it would be a permanently unflagged Outline that disables the cold-tab gate for the whole kernel while open.
+    // client=ext states what dials: Node's ws client sends no Origin and no User-Agent, so without the term the kernel
+    // could not tell this host's panes from another kernel's relay dials (kernel.py _dial_kind, the wsopen row, 2026-09-15).
+    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}${this.app === "fleet" ? "&provrows=1" : ""}&client=ext`);
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }

@@ -2866,6 +2866,24 @@ frames it received is measured in the panes themselves, by
   more also posts a `slowframe` row at once, carrying the long-frame
   attribution when the browser reports one for that frame; at most five such
   rows a minute per pane, the rest counted in the minute row.
+- The kernel files one `wsopen` row (surface `kernel`) per socket it accepts: the
+  app, the dashboard id, whether the dial was a reconnect, and the `kind`, decided
+  by the terms the producers state: `relay` when the dial states `relay=1`, the
+  term the federation splice writes into the query it forwards to the remote
+  kernel; `page` when it states `client=ext`, the VS Code extension host's connect
+  URL (Node's `ws` client sends no Origin and no User-Agent, so nothing else would
+  name it); `page` when it carries an Origin or a User-Agent header (a browser
+  carries both, a CLI such as curl a User-Agent); `relay` otherwise, the one
+  producer of that shape being a hub kernel older than the relay term relaying a
+  browser's federated dial (app and wid alone), a fallback bounded by hubs
+  updating. The hub side of a spliced `/remote/HOST/ws` upgrade is accepted and
+  spliced, never registered as a client; once the remote has answered 101 it files
+  its own row, `kind` `hub`, naming the host, and a refusal files nothing. So an
+  empty file means no browser was on a page this kernel serves, not a broken sink,
+  and a browser's panes are told from another kernel's relay dials; a row that
+  cannot be written is said on stderr once, since the reading rule holds only while
+  writes succeed. A planned per-app split of the connect push (perf work) will read
+  the same `kind`.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about
