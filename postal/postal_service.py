@@ -81,6 +81,7 @@ NAMES_DIR = Path(os.environ.get("ROMP_STATE_DIR")
                  or Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "romp") / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalServiceOff (legacy: postalOff)
+CODEX_REGISTRY = STATE.parent / "codex" / "registry.json"   # the kernel's Codex backend's store: rows keyed by the stable sid, each carrying the native thread id ("tid"); read by _codex_self_id only
 
 
 # ── serve-token gate (Jupyter's model; the same 0600 file the kernel mints) ─────
@@ -263,24 +264,121 @@ REPLY_HINT = ('To reply (only if you have something substantive to add, not just
 
 # Every backend operation goes through the kernel (the SessionBackend API): session enumeration (GET
 # /sessions), the working-note (POST /working) and mail delivery/wake (POST /deliver). The bus never touches a
-# session directly. Identity is the CLAUDE_CODE_SESSION_ID env. (the user 2026-06-26: every backend behind one API.)
+# session directly. Identity is the CLAUDE_CODE_SESSION_ID env (the user 2026-06-26: every backend behind one API); a
+# Codex session's tool shell carries CODEX_THREAD_ID instead, resolved to the stable sid through the Codex registry
+# (_codex_self_id, 2026-09-15).
 
 
 def _self_id():
-    """THIS session's fsid, from CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY session, so it is the
-    reliable identity (the user 2026-06-24: an identity read from the process's surroundings once resolved an
-    SDK session to a DIFFERENT one; the env var IS the designed identity). None when not in a romp session."""
-    return (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip() or None
+    """THIS session's fsid, from CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY Claude Code session, so it
+    is the reliable identity (the user 2026-06-24: an identity read from the process's surroundings once resolved
+    an SDK session to a DIFFERENT one; the env var IS the designed identity). A CODEX session's tool shell carries
+    neither it nor any romp id, only CODEX_THREAD_ID (Codex's own id for the thread), so every `romp mail` from
+    one was refused as anonymous (2026-09-15); when the Claude variable is absent and that one is set, the thread
+    id resolves to the stable romp sid through _codex_self_id. The Claude variable wins when both are set: a
+    Claude Code session with a stray Codex variable in its shell keeps its own identity. None when neither names
+    a session (not a romp session), or when the Codex lookup failed; _self_id_why tells those two apart, and the
+    command that refuses on the missing identity says the reason there (_identity_refusal), so a command that
+    never needed one (`agents`, the heartbeat) says nothing."""
+    return _self_id_why()[0]
 
-def _self_row():
+def _self_id_why():
+    """(fsid, why): the id, and when it is None, WHETHER that is a refusal. `why` is None when the shell is not a
+    session's at all (neither identity variable set: a script or a bare shell, the caller `send --from <label>`
+    exists for), and a sentence naming CODEX_THREAD_ID when the shell IS a Codex session's and its identity did
+    not resolve. That distinction is the hinge of the door: a Codex session with a broken identity is refused
+    outright, --from included (a label would sign a session's mail as a script's and bury the bug), while the
+    shell with neither variable keeps the label. A CODEX_THREAD_ID set but blank is a failed lookup with its own
+    line, never a silent None: a refusal that points at "the reason above" must always have one."""
+    fsid = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if fsid:
+        return fsid, None
+    raw = os.environ.get("CODEX_THREAD_ID")
+    if raw is None:
+        return None, None
+    tid = raw.strip()
+    if not tid:
+        return None, "CODEX_THREAD_ID is set but empty, so this shell cannot be matched to a session"
+    return _codex_self_id(tid)
+
+def _codex_self_id(tid):
+    """(sid, None): the stable romp sid of the Codex session whose native thread id is `tid`, read from the kernel's
+    Codex registry (CODEX_REGISTRY: an object keyed by the stable sid, each row carrying "tid" = the thread id and
+    "dead" once the session ended). Reading the store directly is the authoritative-sources rule's second choice,
+    taken because there is no first: no kernel route publishes native thread ids (a Codex row on GET /sessions
+    carries the stable sid as both id and lastSid), and the kernel's Codex backend runs ONE app-server for every
+    thread, so no per-session environment can carry the sid either — one CLAUDE_CODE_SESSION_ID exported into that
+    process would sign every Codex session's mail as one sender. So the resolution is per command, here.
+
+    (None, why) in every case but exactly one live, well-formed row for the thread, each with its own sentence and
+    the path so the fix is named: the file missing; the file unreadable (a permission, a directory in its place, an
+    I/O error: "could not be read"); bytes that are not JSON, a decode error included ("is not valid JSON"); JSON
+    that is not an object of sessions; no row for the thread; only ended rows; two live rows (the registry disagrees
+    with itself; guessing would mail as the wrong session); a matching row whose KEY is not a session id (the key
+    becomes the sender's id, a path component under the mail and names roots, so "../other" or "" is refused with
+    its own words and never returned to reach a store; a clean row beside it does not rescue the thread, because a
+    registry carrying a malformed claim on it is not one to trust about it). A torn read is not a case: the backend
+    publishes the file through an O_EXCL temp file, fsync and os.replace (CodexBackend._write_registry_locked), so a
+    reader sees a whole file or none. Nothing is memoized, like the rest of the identity: a miss (the kernel
+    mid-spawn, a repair in progress) is retried in full by the next command. Says nothing itself: the command that
+    refuses on the missing identity prints `why` (_identity_refusal)."""
+    path = CODEX_REGISTRY
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "CODEX_THREAD_ID is set but %s does not exist, so this thread cannot be matched to a session" % path
+    except OSError as e:
+        return None, ("CODEX_THREAD_ID is set but %s could not be read (%s), so this thread cannot be matched to a "
+                      "session" % (path, e))
+    except ValueError as e:               # json.JSONDecodeError and UnicodeDecodeError are both ValueErrors
+        return None, ("CODEX_THREAD_ID is set but %s is not valid JSON (%s), so this thread cannot be matched to a "
+                      "session" % (path, e))
+    if not isinstance(rows, dict):
+        return None, "CODEX_THREAD_ID is set but %s is not an object of sessions, so this thread cannot be matched" % path
+    matches = [(sid, r) for sid, r in rows.items() if isinstance(r, dict) and r.get("tid") == tid]
+    if any(not _safe_id(sid) for sid, _ in matches):
+        return None, ("CODEX_THREAD_ID names a thread that a malformed row in %s claims (its key is not a session "
+                      "id); refusing to use it" % path)
+    live = [sid for sid, r in matches if not r.get("dead")]
+    if len(live) == 1:
+        return live[0], None
+    if not matches:
+        return None, "CODEX_THREAD_ID names a thread that %s has no session for" % path
+    if not live:
+        return None, "CODEX_THREAD_ID names a thread whose session has ended (only ended rows in %s)" % path
+    return None, ("CODEX_THREAD_ID names a thread that %d live sessions in %s claim; refusing to guess which"
+                  % (len(live), path))
+
+def _identity_refusal():
+    """The sentence a command that resolved NO identity says before it refuses, or None when the shell is simply not
+    a session's (neither identity variable set: the caller `send --from` serves, and the case every short "not in
+    a romp session" refusal was written for). Derived from the environment again HERE, on the refusal path only,
+    rather than carried out of _self_identity: that pair is the one resolver every command and tool call reads
+    (and every test stubs), and its shape is shared. The DECISION is the environment's alone (CODEX_THREAD_ID set
+    and CLAUDE_CODE_SESSION_ID not: a Codex session's shell whose identity did not resolve), so it cannot differ
+    from the resolution the command just made; only the wording is re-derived, and a registry that answers on this
+    second read (the kernel finished a spawn between the two) says so, still a refusal, instead of turning the
+    command into a --from send or a "not in a romp session"."""
+    fsid, why = _self_id_why()
+    if why:
+        return why
+    if fsid and not (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip():
+        return ("CODEX_THREAD_ID matched a session in %s on a second read but not on the first (the registry changed "
+                "under this command); retry" % CODEX_REGISTRY)
+    return None
+
+def _self_row(sid=None):
     """THIS session's live agent row. CLAUDE_CODE_SESSION_ID is the CURRENT transcript fsid, and a
     /clear or resume fork moves that off the stable romp sid every store is keyed by (names registry,
     mailboxes, working notes, session flags) — so a forked session that trusted the env var mailed as
     "unknown", published its working note under an id no peer could see, and read an EMPTY mailbox
     (the user 2026-07-27). Resolve through the kernel's sessions seam instead: an exact id match
     first, else the row whose lastSid is our fsid (the SDK registry's authoritative stable→current
-    join, published on every /sessions row). None when not a romp session or the kernel is down."""
-    sid = _self_id()
+    join, published on every /sessions row). A Codex session's id (_codex_self_id) IS the stable sid,
+    so it takes the exact match. `sid`: an id already resolved by the caller (_self_identity resolves
+    once per command); None resolves here. None when not a romp session or the kernel is down."""
+    if sid is None:
+        sid = _self_id()
     if not sid:
         return None
     agents = local_agents(threads=True)   # a comment thread resolves to its OWN row/name (2026-08-22)
@@ -296,11 +394,11 @@ def _self_identity():
     comment-thread session withholds its names entry, which is why the row comes first). (None,
     None) when not in a romp session. Nothing is
     memoized: a resolution that missed (kernel mid-restart) is retried in full by the next call."""
-    row = _self_row()
-    sid = row["id"] if row else _self_id()
+    fsid = _self_id()                     # once per command; a failed Codex lookup's reason is the refusing command's to say
+    row = _self_row(fsid) if fsid else None
+    sid = row["id"] if row else fsid
     if row and row.get("name"):
         return sid, row["name"]
-    fsid = _self_id()
     if not fsid:
         return sid, None
     try:
@@ -5239,6 +5337,16 @@ MCP_TOOLS = [
                                     "id": {"type": "string", "description": "optional specific message id (from check_sent) to recall just that one"}}}},
 ]
 
+def _mcp_no_identity():
+    """The tool result for a call that needs THIS session's identity and has none: the Codex lookup's reason and
+    the bug it is when one failed (a Codex session's shell whose thread did not match a live registry row), else
+    the plain sentence for a process that is not a session's. Never a silent refusal for a failed lookup."""
+    why = _identity_refusal()
+    if why:
+        return ("This session's own identity did not resolve (%s). This is a session-identity bug worth "
+                "surfacing to the user." % why)
+    return "Not inside a romp session."
+
 def _mcp_call(name, args):
     mid, me = _self_identity()               # one GET /sessions for both halves, not one each
     if not _LOCAL_CONFIRMED[0]:              # a confirmed-local session's beat is a no-op the bus pays a fetch for
@@ -5253,10 +5361,12 @@ def _mcp_call(name, args):
                     "coordinate (aligning/heads-up), or question (you need an answer).", True)
         if not mid:
             # the bus would refuse this anyway (anonymous mail arrives "from unknown"); say it
-            # HERE with the actionable half — the sender's own identity is what's broken
-            return ("Cannot send: this session's own identity did not resolve (no session id), so "
+            # HERE with the actionable half — the sender's own identity is what's broken, and when a
+            # Codex lookup is what broke, its reason (_identity_refusal) is the half that names the fix
+            return ("Cannot send: this session's own identity did not resolve (%s), so "
                     "the mail would arrive anonymously and the recipient could not place or answer "
-                    "it. This is a session-identity bug worth surfacing to the user.", True)
+                    "it. This is a session-identity bug worth surfacing to the user."
+                    % (_identity_refusal() or "no session id"), True)
         tracked, terr = _as_bool(args.get("tracked"), "tracked")
         if terr:
             return ("Cannot send: %s. Pass a JSON boolean (tracked: true), not a string." % terr, True)
@@ -5297,7 +5407,7 @@ def _mcp_call(name, args):
             return str(e), True
     if name == "check_inbox":
         if not mid:
-            return "Not inside a romp session.", True
+            return _mcp_no_identity(), True
         try:
             msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
         except BusError as e:
@@ -5316,7 +5426,7 @@ def _mcp_call(name, args):
         return format_agents(res.get("agents", []), me, mid), False
     if name == "set_working":
         if not mid:
-            return "Not inside a romp session.", True
+            return _mcp_no_identity(), True
         if "text" not in args or args.get("text") is None:
             # a MISSING param is never a clear command (fold-in 2026-08-31: a malformed call
             # silently wiped the published note); the documented clear stays text=''
@@ -5328,7 +5438,7 @@ def _mcp_call(name, args):
                 else "Published — others see: working on '%s'." % text), False
     if name == "check_sent":
         if not mid:
-            return "Not inside a romp session.", True
+            return _mcp_no_identity(), True
         recs = _http("GET", "/sent?id=%s" % urllib.parse.quote(mid)).get("sent", [])
         return format_receipts(recs), False
     if name == "recall_message":
@@ -5336,7 +5446,7 @@ def _mcp_call(name, args):
         if not to and not rid:
             return "Give 'to' (the recipient) and/or 'id' to recall.", True
         if not mid:
-            return "Not inside a romp session.", True
+            return _mcp_no_identity(), True
         res = _http("POST", "/recall", {"from_id": mid, "to": to, "id": rid})
         removed, kept = res.get("removed", []), res.get("kept", [])
         if not removed and not kept:
@@ -5411,6 +5521,18 @@ def mcp():
 
 # ───────────────────────── CLI client modes ─────────────────────────
 
+def _refuse_no_identity(short):
+    """stderr for a command that needs THIS session's identity and has none: the Codex lookup's reason and the bug
+    it is when one failed, else `short`, the command's own words for a shell that is not a session's. The reason is
+    printed here, where the missing identity is refused, and nowhere else: a command that never needed one
+    (`agents`) and the resolver itself say nothing about it."""
+    why = _identity_refusal()
+    if why:
+        sys.stderr.write("[romp mail] %s\n[romp mail] this shell belongs to a Codex session whose identity did not "
+                         "resolve (the reason above); surface this to the user as a session-identity bug\n" % why)
+    else:
+        sys.stderr.write("[romp mail] %s\n" % short)
+
 def cli_send(argv):
     kind = frm_label = ""
     tracked = False
@@ -5449,6 +5571,18 @@ def cli_send(argv):
         # a mailbox the user toggled off too)
         sys.stderr.write("[romp mail] %s\n" % {"thread": THREAD_MAIL_OFF_SENDER, "unreadable": UNREADABLE_REG_SENDER}.get(own, ISOLATION_SENDER))
         return 1
+    if not mid:
+        why = _identity_refusal()
+        if why:
+            # a Codex session's shell whose identity did not resolve is refused OUTRIGHT, --from included: the label
+            # is a door for a caller that has no session (a script, a bare shell), and a session with a broken
+            # identity walking through it would mail as a script and bury the bug (the 2026-09-15 review: before
+            # this, a shell with an unknown, ambiguous or unreadable CODEX_THREAD_ID could still send under ext:<label>)
+            sys.stderr.write("[romp mail] %s\n[romp mail] cannot send: no session identity resolved (the reason "
+                             "above). This shell belongs to a Codex session, so the mail is refused, --from included: "
+                             "a label would sign a session's mail as a script's and hide the bug. Surface this to the "
+                             "user as a session-identity bug.\n" % why)
+            return 1
     if frm_label:
         me, mid = frm_label, "ext:" + frm_label
     if not mid:
@@ -5456,7 +5590,9 @@ def cli_send(argv):
         # session identity is a bug to surface, and a deliberate non-session caller has a door
         sys.stderr.write("[romp mail] cannot send: no session identity resolved, and anonymous "
                          "mail is refused (it arrives as an unplaceable ghost). Inside a romp "
-                         "session, surface this to the user as a session-identity bug. From a "
+                         "session, surface this to the user as a session-identity bug (a Claude "
+                         "Code session is known by CLAUDE_CODE_SESSION_ID, a Codex session by "
+                         "CODEX_THREAD_ID; neither is set here). From a "
                          "script or bare shell, pass --from <label> to send under an explicit "
                          "name.\n")
         return 1
@@ -5479,7 +5615,7 @@ def cli_inbox(peek=False):
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     mid = my_id()
     if not mid:
-        sys.stderr.write("[romp mail] can't tell which session this is (are you in a romp session?)\n"); return 1
+        _refuse_no_identity("can't tell which session this is (are you in a romp session?)"); return 1
     try:
         res = _http("GET", "/inbox?id=%s&peek=%d" % (urllib.parse.quote(mid), 1 if peek else 0))
     except BusError as e:
@@ -5503,7 +5639,7 @@ def cli_agents():
 def cli_working(argv):
     sid = my_id()
     if not sid:
-        sys.stderr.write("[romp mail] not in a romp session\n"); return 1
+        _refuse_no_identity("not in a romp session"); return 1
     text = " ".join(argv)
     _publish_working(sid, text)        # the kernel's working-note store (POST /working)
     print("[romp mail] working: %s" % (text or "(cleared)"))
@@ -5514,7 +5650,7 @@ def cli_sent():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     mid = my_id()
     if not mid:
-        sys.stderr.write("[romp mail] not in a romp session\n"); return 1
+        _refuse_no_identity("not in a romp session"); return 1
     try:
         recs = _http("GET", "/sent?id=%s" % urllib.parse.quote(mid)).get("sent", [])
     except BusError as e:
@@ -5528,8 +5664,13 @@ def cli_recall(argv):
     to, rid = argv[0], (argv[1] if len(argv) > 1 else "")
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
+    mid = my_id()
+    if not mid:                     # a recall is of the caller's OWN mail, so it needs the sender's identity: the bus
+        #                             answers an empty from_id 400 "missing from_id", which is what a Codex shell whose
+        #                             lookup failed heard, bare, while the recall_message tool already said the reason
+        _refuse_no_identity("not in a romp session"); return 1
     try:
-        res = _http("POST", "/recall", {"from_id": my_id() or "", "to": to, "id": rid})
+        res = _http("POST", "/recall", {"from_id": mid, "to": to, "id": rid})
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
     removed, kept = res.get("removed", []), res.get("kept", [])

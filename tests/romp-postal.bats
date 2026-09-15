@@ -35,6 +35,8 @@ setup() {
     printf 'alpha\t%s\t#111111\t#ffffff\n' "$HOME" > "$XDG_STATE_HOME/romp/names/uuid-a"
     printf 'beta\t%s\t#222222\t#ffffff\n' "$HOME" > "$XDG_STATE_HOME/romp/names/uuid-b"
     export CLAUDE_CODE_SESSION_ID=uuid-a             # "this session" = alpha by default (tests acting as beta override it)
+    unset CODEX_THREAD_ID                            # the second identity source (a Codex session's shell variable, 2026-09-15): the
+                                                     # anonymous-send tests blank the Claude variable and must find this one absent too
 
     # Readiness is load-bearing: every test assumes the bus is up, and proceeding without it surfaces as a
     # confusing DOWNSTREAM failure (a 2026-08-14 CI runner lost this race: "remote --force" probed a port
