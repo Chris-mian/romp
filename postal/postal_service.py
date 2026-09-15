@@ -2273,6 +2273,11 @@ def _bounce_oversize(sid, m):
             _say_refused_once("oversize bounce", "the note for %s" % mid, e)
             return
         _refusal_over("oversize bounce")
+        # The drain's claim stamped an exec row ("the recipient read it"); the message was returned, not
+        # read. Retract it the way restore() does, so the sender's receipt (check_sent, `romp mail sent`)
+        # reads bounced and not read: every ledger reader drops an exec a later unexec retracts. Here,
+        # after the note has landed, so the refused arm above (restore writes its own unexec) never doubles it.
+        _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
         _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": mid, "to": to,
                                       "host": "", "why": why})
         _log("push to %s: message %s is %d bytes, over the %d-byte /deliver limit; bounced to its sender %s"
