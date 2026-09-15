@@ -31152,6 +31152,15 @@ def _chat_ident(path):
     return (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
 
 
+def _chat_reg_sig(sid):
+    """Registry content that can change a chat, plus its readable/missing/unreadable state. Host journal
+    acknowledgements and log offsets move during ordinary output without changing the payload; keying on
+    the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
+    ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
+    state, reg = _thread_reg_read(sid)
+    return state, {k: v for k, v in reg.items() if k not in ("hostAck", "hostLogPos")}
+
+
 def _names_digest(snap):
     """The names registry's content as one value for the chat-build signature: a digest of every entry's
     fields (the snapshot _names_snapshot returns, {sid: tab fields}). build_session reads names in many
@@ -31468,7 +31477,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         sig.append((_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None)
         sig.append(_chat_ident(jd.ARCHDIR / (sid + ".json")))         # archive: the ledger headline
         sig.append(_chat_ident(jd.EPIDIR / (sid + ".jsonl")))         # episodes: the note floor, the boundary card
-        sig.append(_chat_ident(jd.STATE / "sdk" / (sid + ".json")))   # reg: forkedFrom, alive, bgLedger, spawnedAt, cwd
+        sig.append(_chat_reg_sig(sid))                             # reg: content and read state, excluding host offsets
         sig.append(_chat_ident(jd.GONEDIR / (sid + ".json")))         # gone: the death marker behind the spawn epoch
         sig.append(_task_store_fp(fsid))   # a store update (incl. a subagent completing a task) refreshes the to-do card
         # a pending DELETE rollback changes the payload with NO transcript write (the parse-cache lesson,
