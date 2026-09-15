@@ -108,6 +108,7 @@ class Harness(unittest.TestCase):
         if memo is not None:                               #  this file at an older base reds on behaviour, not on the name
             with em._ASM_CKPT_LOCK:
                 memo.clear()
+                getattr(em, "_ASM_DOC_MEMO_BYTES", [0])[0] = 0
         with em._READ_BYTES_LOCK:
             em._READ_BYTES.clear()
 
@@ -2248,11 +2249,11 @@ class SeededDocumentMemo(Harness):
     misses. Driven on the LIVE shape: the other leaf restored first, two naming sessions and the owner walking in one process.
     The attribution low of the same round rides along: a standing refusal mark on a leaf the reader does not own counts under
     `foreign:refusedStanding`, the owner's under `seeded:refusedStanding` as before."""
-    def _world(self, tag):
+    def _world(self, tag, idx=0):
         jd = kernel_module().jd
         d = self.td / ("memo-" + tag); d.mkdir()
-        b_sid = "88888888-2222-4333-8444-0000000009%02d" % (hash(tag) % 100)
-        namers = ["77777777-2222-4333-8444-0000000009%02d" % ((hash(tag) + i) % 100) for i in (1, 2)]
+        b_sid = "88888888-2222-4333-8444-0000000009%02d" % idx                       # distinct per world, never by a hash
+        namers = ["77777777-2222-4333-8444-0000000009%02d" % (2 * idx + i) for i in (1, 2)]
         b_leaf = d / (b_sid + ".jsonl")
         recs = compacting_variant(G.SINGLE_FILE["rewind_off_path"][0](), "dm" + tag[:1]); recs = recs + _turns_after(recs, "dm" + tag[:1], 2)
         b_leaf.write_text("".join(json.dumps(r) + "\n" for r in recs))
@@ -2287,10 +2288,10 @@ class SeededDocumentMemo(Harness):
             em._READ_BYTES.clear()
 
     def test_a_leaf_named_by_two_sessions_episode_rows_decodes_its_document_once_per_process(self):
-        jd, b_sid, b_leaf, namers, leaves, answer = self._world("two")
+        jd, b_sid, b_leaf, namers, leaves, answer = self._world("two", idx=1)
         doc_path = str(em._asm_ckpt_file(str(b_leaf))); size = os.path.getsize(doc_path)
         self._restored_first(b_leaf, b_sid)
-        hits0 = em.asm_checkpoint_stats()["parse"].get("seeded:docMemo", 0)
+        hits0 = em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0)
         sets = []
         for sid, files in ((namers[0], [str(leaves[namers[0]])]), (namers[1], [str(leaves[namers[1]])]), (b_sid, [str(b_leaf)])):
             rewound, fails = jd._per_file_rewound(sid, files)
@@ -2298,10 +2299,10 @@ class SeededDocumentMemo(Harness):
         self.assertEqual(sets, [answer, answer, answer], "the three walks agree with the memo road's answer")
         read = em.read_bytes_report().get(doc_path, 0)
         self.assertEqual(read, size, "the document decoded ONCE for three walks: %d bytes read of a %d byte document (the base read it three times)" % (read, size))
-        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:docMemo", 0) - hits0, 2, "two walks served from the memo")
+        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0) - hits0, 2, "two walks served from the memo")
 
     def test_a_memo_hit_still_reads_the_leafs_guard_bytes(self):
-        jd, b_sid, b_leaf, namers, leaves, answer = self._world("gd")
+        jd, b_sid, b_leaf, namers, leaves, answer = self._world("gd", idx=2)
         doc_path = str(em._asm_ckpt_file(str(b_leaf)))
         self._restored_first(b_leaf, b_sid)
         jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # the miss primes the memo
@@ -2310,10 +2311,10 @@ class SeededDocumentMemo(Harness):
         self.assertTrue(guard)
         with em._READ_BYTES_LOCK:
             em._READ_BYTES.clear()
-        hits0 = em.asm_checkpoint_stats()["parse"].get("seeded:docMemo", 0)
+        hits0 = em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0)
         rewound, fails = jd._per_file_rewound(namers[1], [str(leaves[namers[1]])])   # the hit
         self.assertEqual((fails, rewound), (0, answer))
-        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:docMemo", 0) - hits0, 1)
+        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0) - hits0, 1)
         report = em.read_bytes_report()
         self.assertEqual(report.get(doc_path, 0), 0, "the document is not read on a hit")
         leaf_read = report.get(str(b_leaf), 0)
@@ -2321,7 +2322,7 @@ class SeededDocumentMemo(Harness):
                          " the record cache the restore filled): %d" % (len(guard), leaf_read))
 
     def test_a_document_rewritten_in_place_at_the_same_size_misses_the_memo(self):
-        jd, b_sid, b_leaf, namers, leaves, answer = self._world("ip")
+        jd, b_sid, b_leaf, namers, leaves, answer = self._world("ip", idx=3)
         doc_path = str(em._asm_ckpt_file(str(b_leaf))); size = os.path.getsize(doc_path)
         self._restored_first(b_leaf, b_sid)
         jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # the miss primes the memo
@@ -2335,17 +2336,17 @@ class SeededDocumentMemo(Harness):
         rewound, fails = jd._per_file_rewound(namers[1], [str(leaves[namers[1]])])
         self.assertEqual((fails, rewound), (0, answer), "the walk still answers (the memo road over the whole file)")
         p1 = dict(em.asm_checkpoint_stats()["parse"])
-        self.assertEqual(p1.get("seeded:docMemo", 0) - p0.get("seeded:docMemo", 0), 0, "a moved mtime at the same size misses (the memo never serves stale bytes)")
+        self.assertEqual(p1.get("seeded:asmDocMemo", 0) - p0.get("seeded:asmDocMemo", 0), 0, "a moved mtime at the same size misses (the memo never serves stale bytes)")
         self.assertEqual(em.read_bytes_report().get(doc_path, 0), size, "the rewritten bytes are read again")
         self.assertEqual(p1.get("foreign:corrupt", 0) - p0.get("foreign:corrupt", 0), 1, "the flipped byte is refused quietly by the foreign reader")
         self.assertEqual(dict(em.asm_checkpoint_stats()["fallbacks"]), f0, "no note, nothing removed"); self.assertTrue(os.path.exists(doc_path))
 
     def test_a_rewritten_document_misses_the_memo_and_decodes_again(self):
-        jd, b_sid, b_leaf, namers, leaves, answer = self._world("rw")
+        jd, b_sid, b_leaf, namers, leaves, answer = self._world("rw", idx=4)
         doc_path = str(em._asm_ckpt_file(str(b_leaf)))
         self._restored_first(b_leaf, b_sid)
         jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])                    # the memo holds the document
-        hits0 = em.asm_checkpoint_stats()["parse"].get("seeded:docMemo", 0)
+        hits0 = em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0)
         recs = [json.loads(l) for l in b_leaf.read_text().splitlines()]                # the owner settles again: a new document
         b_leaf.write_text("".join(json.dumps(r) + "\n" for r in recs + _turns_after(recs, "rw2", 3)))
         em.parse_session(str(b_leaf), rompuuid=b_sid, candidate_files=[str(b_leaf)], states=None, postal_log=[], now=NOW + 50, sdk_human=True)
@@ -2359,10 +2360,10 @@ class SeededDocumentMemo(Harness):
         rewound, fails = jd._per_file_rewound(namers[1], [str(leaves[namers[1]])])
         self.assertEqual((fails, rewound), (0, answer2), "the walk reads the NEW document's verdicts")
         self.assertEqual(em.read_bytes_report().get(doc_path, 0), size2, "the rewritten document is decoded again (a new size or mtime misses)")
-        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:docMemo", 0) - hits0, 0, "no hit on a rewritten document")
+        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:asmDocMemo", 0) - hits0, 0, "no hit on a rewritten document")
 
     def test_a_standing_mark_on_a_leaf_the_reader_does_not_own_counts_under_the_foreign_key(self):
-        jd, b_sid, b_leaf, namers, leaves, answer = self._world("mk")
+        jd, b_sid, b_leaf, namers, leaves, answer = self._world("mk", idx=5)
         self.assertTrue(em._asm_mark_refused(str(b_leaf), "reuse", rompuuid=b_sid, sdk_human=True), "the mark is written")
         self.assertTrue(em._asm_refusal_stands(Path(str(b_leaf))))
         self.fresh(); p0 = dict(em.asm_checkpoint_stats()["parse"])
@@ -2377,6 +2378,66 @@ class SeededDocumentMemo(Harness):
         p2 = dict(em.asm_checkpoint_stats()["parse"])
         self.assertEqual(p2.get("seeded:refusedStanding", 0) - p1.get("seeded:refusedStanding", 0), 1)
         self.assertEqual(p2.get("foreign:refusedStanding", 0) - p1.get("foreign:refusedStanding", 0), 0)
+
+    def test_the_memo_is_bounded_by_resident_bytes_and_reported(self):
+        """Round two (medium): a count cap said nothing about memory. The cap is a resident byte ceiling (compressed size times
+        the measured multiple, MemTotal / 512 floored at 64 MiB); the oldest documents leave when a new one does not fit, the
+        report under asmCheckpoint.asmDocMemo says entries, bytes, capBytes and the multiple."""
+        worlds = [self._world("b%d" % i, idx=6 + i) for i in range(3)]
+        docs = [str(em._asm_ckpt_file(str(w[2]))) for w in worlds]
+        self.fresh()
+        for jd, b_sid, b_leaf, namers, leaves, answer in worlds:                          # the live shape: every leaf restored
+            modes = []                                                                   #  first (a restore may settle a document
+            em.parse_session(str(b_leaf), rompuuid=b_sid, candidate_files=[str(b_leaf)], states=None, postal_log=[], now=NOW,
+                             sdk_human=True, asm_mode_out=modes)                         #  anew, so the sizes are read after it)
+            self.assertEqual(modes, ["restore"])
+        weights = [em._asm_doc_memo_weight(os.path.getsize(dp)) for dp in docs]
+        saved = em._ASM_DOC_MEMO_CAP
+        em._ASM_DOC_MEMO_CAP = weights[1] + weights[2] + 1                              # room for the last two, never three
+        self.addCleanup(setattr, em, "_ASM_DOC_MEMO_CAP", saved)
+        with em._READ_BYTES_LOCK:
+            em._READ_BYTES.clear()
+        for jd, b_sid, b_leaf, namers, leaves, answer in worlds:
+            rewound, fails = jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])
+            self.assertEqual((fails, rewound), (0, answer))
+        self.assertEqual([os.path.getsize(dp) for dp in docs], [w // em._ASM_DOC_MEMO_MULTIPLE for w in weights], "the documents did not move under the walks")
+        with em._ASM_CKPT_LOCK:
+            held = list(em._ASM_DOC_MEMO); total = em._ASM_DOC_MEMO_BYTES[0]
+        self.assertEqual(held, docs[1:], "the oldest document left when the third did not fit under the ceiling (a count cap held all three)")
+        self.assertEqual(total, weights[1] + weights[2]); self.assertLessEqual(total, em._ASM_DOC_MEMO_CAP)
+        report = em.asm_checkpoint_stats()["asmDocMemo"]
+        self.assertEqual(report, {"entries": 2, "bytes": total, "capBytes": em._ASM_DOC_MEMO_CAP, "multiple": em._ASM_DOC_MEMO_MULTIPLE})
+        self.assertGreaterEqual(saved, 64 * 1024 ** 2, "the default ceiling is never under 64 MiB")
+
+    def test_a_refused_document_is_never_memoized_and_an_owners_note_drops_the_entry(self):
+        """Round two (low 1): the memo was written at the decode, before the version, rows, session, inputs and guard checks, so
+        a refused document occupied a slot and its later refusals counted as hits. The write sits after the checks now, and
+        an owner's note (which removes the document) drops the entry."""
+        jd, b_sid, b_leaf, namers, leaves, answer = self._world("rf", idx=9)
+        doc_path = str(em._asm_ckpt_file(str(b_leaf)))
+        _write_doc(str(b_leaf), dict(_doc(str(b_leaf)), av=99))                          # a document the load refuses (version)
+        self.fresh(); p0 = dict(em.asm_checkpoint_stats()["parse"])
+        for _ in range(2):
+            rewound, fails = jd._per_file_rewound(namers[0], [str(leaves[namers[0]])])
+            self.assertEqual((fails, rewound), (0, answer), "the memo road still answers")
+        p1 = dict(em.asm_checkpoint_stats()["parse"])
+        self.assertEqual(p1.get("foreign:version", 0) - p0.get("foreign:version", 0), 2, "refused twice, decoded twice")
+        self.assertEqual(p1.get("seeded:asmDocMemo", 0) - p0.get("seeded:asmDocMemo", 0), 0, "a refused document is no hit (the base counted the second refusal as one)")
+        with em._ASM_CKPT_LOCK:
+            self.assertNotIn(doc_path, em._ASM_DOC_MEMO, "a refused document takes no slot"); self.assertEqual(em._ASM_DOC_MEMO_BYTES[0], 0)
+        em.parse_session(str(b_leaf), rompuuid=b_sid, candidate_files=[str(b_leaf)], states=None, postal_log=[], now=NOW + 5, sdk_human=True)
+        self.assertTrue(em.asm_checkpoint_write(str(b_leaf), b_sid, sdk_human=True), em.asm_checkpoint_stats())   # a good one again
+        self._restored_first(b_leaf, b_sid)
+        jd._per_file_rewound(namers[1], [str(leaves[namers[1]])])
+        with em._ASM_CKPT_LOCK:
+            self.assertIn(doc_path, em._ASM_DOC_MEMO, "a verified document is memoized")
+        f0 = dict(em.asm_checkpoint_stats()["fallbacks"])
+        em.file_rewound(str(b_leaf), rompuuid="99999999-2222-4333-8444-000000000999", sdk_human=True)   # the OWNER road under the
+        f1 = dict(em.asm_checkpoint_stats()["fallbacks"])                                                 #  wrong session: a note
+        self.assertEqual(f1.get("session", 0) - f0.get("session", 0), 1)
+        self.assertFalse(os.path.exists(doc_path), "the note removed the document")
+        with em._ASM_CKPT_LOCK:
+            self.assertNotIn(doc_path, em._ASM_DOC_MEMO, "and dropped its memo entry"); self.assertEqual(em._ASM_DOC_MEMO_BYTES[0], 0)
 
 class LazyBodies(Harness):
     def test_a_body_read_before_hydration_is_loud_and_hydration_counts(self):

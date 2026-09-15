@@ -960,6 +960,7 @@ def set_checkpoint_dir(fn):
     with _ASM_CKPT_LOCK:
         _ASM_CHAIN_REFUSED_PATHS.clear()                  # a rebind forgets a refusal recorded against another directory's document
         _ASM_LAST_WRITE_CUT.clear()
+        _ASM_DOC_MEMO.clear(); _ASM_DOC_MEMO_BYTES[0] = 0   # nor does the seeded walk's memoized document (round two)
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
         _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
@@ -5293,8 +5294,40 @@ _ASM_CKPT_LOCK = threading.Lock()
 _ASM_CKPT_SAID = set()             # (path, reason) said once per process
 _ASM_DOC_MEMO = {}                 # document path -> ((size, mtime_ns), decoded document): the seeded walk's decode served once per
 #                                   process for a document whose bytes stand (2026-09-15); only the read, gunzip and JSON decode are
-#                                   memoized, every stat check and the guard read in the load stay per call (they are the freshness proof)
-_ASM_DOC_MEMO_CAP = 64             # one entry per documented leaf; the live set is the sessions count, the oldest entry leaves first
+#                                   memoized, every stat check and the guard read in the load stay per call (they are the freshness
+#                                   proof), and a document is memoized only once those checks PASSED (a refused one takes no slot)
+_ASM_DOC_MEMO_MULTIPLE = 10        # what a decoded assembly document weighs resident against its COMPRESSED bytes on disk: measured
+#                                    2.4 times its JSON text (45 MiB resident for 18.5 MiB of text) and up to ten times the gzipped
+#                                    file (round two of the memo head, 2026-09-15); the memo's weights and its cap are resident bytes
+_ASM_DOC_MEMO_BYTES = [0]          # the memoized documents' resident weight: compressed size times the multiple, summed
+_ASM_DOC_MEMO_CAP = _env_or("ROMP_ASM_DOC_MEMO_CAP_MB", max(64 * 1024 ** 2, _machine_memory_bytes() // 512), 1024 * 1024)
+#                                    the memo's resident cap: MemTotal / 512, never under 64 MiB, the sibling _DOC_MEMO's convention (a
+#                                    count cap said nothing about bytes); reported under asmCheckpoint.asmDocMemo, unrelated to
+#                                    checkpoints.docMemo (the fold documents' read memo)
+
+
+def _asm_doc_memo_weight(size):
+    """A memoized assembly document's resident weight from its compressed size on disk."""
+    return int(size * _ASM_DOC_MEMO_MULTIPLE)
+
+
+def _asm_doc_memo_drop(key):
+    """Forget `key`'s memoized document (under _ASM_CKPT_LOCK), its bytes let go with it."""
+    old = _ASM_DOC_MEMO.pop(key, None)
+    if old is not None:
+        _ASM_DOC_MEMO_BYTES[0] -= _asm_doc_memo_weight(old[0][0])
+
+
+def _asm_doc_memo_put(key, mkey, doc):
+    """Memoize a VERIFIED document under its file's (size, mtime_ns); the oldest entries leave until the resident total fits the
+    cap (the newest stays, it is the one the caller is using)."""
+    with _ASM_CKPT_LOCK:
+        _asm_doc_memo_drop(key)
+        _ASM_DOC_MEMO[key] = (mkey, doc); _ASM_DOC_MEMO_BYTES[0] += _asm_doc_memo_weight(mkey[0])
+        for k_ in list(_ASM_DOC_MEMO):
+            if _ASM_DOC_MEMO_BYTES[0] <= _ASM_DOC_MEMO_CAP or len(_ASM_DOC_MEMO) <= 1:
+                break
+            _asm_doc_memo_drop(k_)
 _LAZY_FILES = {}                   # rompuuid -> {fsid: path}: where hydrate finds a lazy atom's record
 _HYDRATED = {}                     # uuid -> the body fields read; dict order = LRU
 _HYDRATED_BYTES = [0]
@@ -5612,6 +5645,8 @@ def asm_checkpoint_stats():
         out["hydratedByStage"] = dict(out.get("hydratedByStage") or {})   # T401: bytes per (stage, calling function)
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
     with _ASM_CKPT_LOCK:
+        out["asmDocMemo"] = {"entries": len(_ASM_DOC_MEMO), "bytes": _ASM_DOC_MEMO_BYTES[0], "capBytes": _ASM_DOC_MEMO_CAP,
+                             "multiple": _ASM_DOC_MEMO_MULTIPLE}   # the seeded walk's document memo (unrelated to checkpoints.docMemo)
         out["parse"] = dict(_ASM_STATS)               # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
     return out                                        #  fallback, and every g:<reason> demotion, so a whole parse names its road
 
@@ -6437,8 +6472,8 @@ def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids):
 def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet_inputs=False, own=True, memo=False):
     """The verified document for `leaf_path`, or None after a counted fallback (a document that exists and does not
     verify) or quietly when there is none. `memo` True serves the decode (the read, the gunzip, the JSON parse) from
-    `_ASM_DOC_MEMO` when the document file's size and mtime stand, counted `seeded:docMemo`; the verification below runs on
-    the memoized document exactly as on a fresh one (2026-09-15: the judges' seeded walk over a leaf named by several sessions'
+    `_ASM_DOC_MEMO` when the document file's size and mtime stand, counted `seeded:asmDocMemo`; the verification below runs on
+    the memoized document exactly as on a fresh one, a decode is memoized only once it passed, and an owner's note drops it (2026-09-15: the judges' seeded walk over a leaf named by several sessions'
     episode rows decoded the same document once per naming session per pass). `own` False is a reader over ANOTHER session's document (the judges' cross-session
     walk, 2026-09-15): a document that does not verify for it is refused quietly, counted under the parse's `foreign:<reason>`,
     never noted and never unlinked; the note, which removes the document so the owner's next settle rewrites it, belongs to
@@ -6446,12 +6481,15 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
     def fail(reason, detail=""):
         if own:
             _asm_ckpt_note(leaf_path, reason, detail)
+            with _ASM_CKPT_LOCK:                          # the note removed the document: nothing of it stays memoized
+                _asm_doc_memo_drop(str(cp))
         else:
             _asm_stat("foreign:" + str(reason))
         return None
     cp = _asm_ckpt_file(leaf_path)
     if cp is None or not cp.exists():
         return None
+    memo_key = None                                       # set when this call decoded the file: memoized once the checks pass
     try:
         doc = None
         if memo:
@@ -6459,16 +6497,13 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
             with _ASM_CKPT_LOCK:
                 ent = _ASM_DOC_MEMO.get(str(cp))
             if ent is not None and ent[0] == mkey:
-                doc = ent[1]; _asm_stat("seeded:docMemo")
+                doc = ent[1]; _asm_stat("seeded:asmDocMemo")
+            else:
+                memo_key = mkey
         if doc is None:
             data = cp.read_bytes()
             _count_read(str(cp), len(data))
             doc = json.loads(gzip.decompress(data).decode("utf-8"))
-            if memo:
-                with _ASM_CKPT_LOCK:
-                    _ASM_DOC_MEMO.pop(str(cp), None); _ASM_DOC_MEMO[str(cp)] = (mkey, doc)
-                    for k_ in list(_ASM_DOC_MEMO)[:max(0, len(_ASM_DOC_MEMO) - _ASM_DOC_MEMO_CAP)]:
-                        _ASM_DOC_MEMO.pop(k_, None)
     except (OSError, ValueError, EOFError) as e:
         return fail("corrupt", str(e)[:80])
     if not isinstance(doc, dict) or doc.get("av") != _ASM_CKPT_V:
@@ -6512,6 +6547,8 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
                 return fail("guard", fsid)
     except (OSError, KeyError, TypeError, ValueError) as e:
         return fail("corrupt", "files: %s" % e)
+    if memo_key is not None:                              # every check above passed: this decode is worth keeping (round two)
+        _asm_doc_memo_put(str(cp), memo_key, doc)
     return doc
 
 

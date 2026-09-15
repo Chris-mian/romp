@@ -1868,11 +1868,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   session's leaf refused that session's document quietly for the reason named,
   the document standing for its owner: a reader that does not own a document
   never notes it and never unlinks it, 2026-09-15; `foreign:refusedStanding` is
-  that reader's cold walk under a standing refusal mark), `seeded:docMemo` (a
+  that reader's cold walk under a standing refusal mark), `seeded:asmDocMemo` (a
   seeded walk whose document decode was served from the per-process memo, keyed
   on the document file's size and mtime: a leaf named by several sessions'
   episode rows decodes its document once per boot, not once per naming session;
-  every stat check and the guard read still run per walk), `full` with
+  every stat check and the guard read still run per walk, a document is
+  memoized only once those checks passed, and an owner's fallback drops it;
+  the memo is reported under `asmCheckpoint.asmDocMemo` with `entries`, `bytes`
+  as the documents' RESIDENT weight, each file's compressed size times
+  `multiple`, the measured 10 a decoded document weighs against its gzipped
+  bytes, and `capBytes`, a ceiling on that weight of MemTotal / 512 floored at
+  64 MiB, `ROMP_ASM_DOC_MEMO_CAP_MB`; unrelated to `checkpoints.docMemo`, the
+  fold documents' read memo), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
