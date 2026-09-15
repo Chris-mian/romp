@@ -6561,7 +6561,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
         hoverAskId = null; applyFocus();
         const pin = focusAnchorId(pinnedAskId);
         if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, sid: sidOfItem(pin), locate: false });
-        else vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: twins[0] ? ((twins[0] as any)._it?.sid || "") : "", off: true });
+        else vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: sidOfItem(m.itemId), off: true });
       }
       for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
       dropDismissed([m.itemId]);
