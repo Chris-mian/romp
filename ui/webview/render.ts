@@ -5950,6 +5950,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
   rows.push(["Mail", !s.postalServiceOff ? "on"
     : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
+    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
     : s.mailOffWhy === "thread" ? "off until the thread is broken out"
     : "off: this session neither sends nor receives peer mail"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
@@ -10837,6 +10838,7 @@ function renderCommentPopover(): void {
     mailOn.textContent = !th.mailOff
       ? "Its mail is on now: peers can reach it and it can send." + (held ? " " + held + (held === 1 ? " held message lands" : " held messages land") + " in a moment." : "")
       : th.mailOffWhy === "unreadable" ? "Its mail is held: this session's record cannot be read, and mail flows again once the record is repaired."
+      : th.mailOffWhy === "flags" ? "Its mail is held: the session settings file cannot be read, and mail flows again once it is written."
       : "Its mailbox is off: the lane's mailbox toggle turns peer mail back on.";   // the reason rides the frame: a remedy that fits (T356)
     pop.appendChild(mailOn);
     const row = el("div", "cmt-actions");
@@ -15379,6 +15381,14 @@ const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[
 // run: an empty model menu beats offering another vendor's models (docs/codex.md).
 const CODEX_MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 const CODEX_EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+// The effort menus list the ladder TOP-DOWN (the user 2026-09-14): the highest effort first, the lowest
+// last, the way the model menu already leads with the most capable family. The kernel serves `efforts`
+// low→high because its rank ramp (position → colour) and the gear's settings selects read that order, and
+// neither moves; the display order is derived HERE, once, for every menu these arrays feed (the statusline,
+// a thread's popover, the comment-create chips). Each row carries its own color/tone, so nothing recolours,
+// and the ✓ matches by value (isCurrentMeta), so it follows its row.
+const effortDisplayOrder = (efforts: { label: string; value: string; color?: number[] | null }[]): { label: string; value: string; color?: number[] | null }[] =>
+  [...efforts].reverse();
 // Why the Codex list is empty, when it is: the payload's `codex.error` (the app-server client not up yet,
 // a failed model list, no live Codex session). A Codex menu with no list shows it in place of a
 // blank menu. "" while a list is held or the field is absent.
@@ -15403,9 +15413,9 @@ function loadModelChoices(): void {
   fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then((d) => {
     if (typeof d.rev === "number") { if (d.rev < modelChoicesRev) return; modelChoicesRev = d.rev; }
     if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
-    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
+    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...effortDisplayOrder(d.efforts)); }
     if (d.codex && Array.isArray(d.codex.models)) { CODEX_MODEL_CHOICES.length = 0; CODEX_MODEL_CHOICES.push(...d.codex.models); }
-    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...d.codex.efforts); }
+    if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; CODEX_EFFORT_CHOICES.push(...effortDisplayOrder(d.codex.efforts)); }
     if (d.codex) CODEX_MODELS_ERROR = typeof d.codex.error === "string" ? d.codex.error : "";
     if (d.commentDefaults) adoptCommentDefaults(d.commentDefaults);
     if (onModelChoicesLoaded) onModelChoicesLoaded();   // once per APPLIED read: a response the rev check dropped never fires it
@@ -17342,7 +17352,7 @@ function upsert(msg: any) {
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
     hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
-    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record
+    mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record, the settings file unreadable (flags)
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
   };
   sessions.set(msg.id, s);

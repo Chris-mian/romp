@@ -645,12 +645,13 @@ permission/API-error floors: one interrupt at a time, the present event first.
   unroll-heal: a top left rolled up with settle rows and no done in its
   diary, given one reopen row so it can be judged again, gate-stamp: the
   evidence gate could not write a tier's stamp after a complete run, so the
-  session stays due, and the seven `*-unreadable` kinds of the gate's side
+  session stays due, and the eight `*-unreadable` kinds of the gate's side
   files, states-unreadable, cleared-unreadable, stall-unreadable,
-  captions-unreadable, episodes-unreadable, marker-unreadable and
-  archive-unreadable: a file the gate stat'd into a tier's signature exists
-  and could not be read or parsed by the stage, so the run is marked
-  incomplete and stamps nothing, one row per failure episode).
+  captions-unreadable, episodes-unreadable, marker-unreadable,
+  archive-unreadable and reg-unreadable: a file the gate stat'd or read by
+  value into a tier's signature exists and could not be read or parsed, so
+  the gate runs the stage without a stamp (or the stage's own read marks the
+  run incomplete), one row per failure episode).
   A file that does not parse is never deleted: it is moved beside its path as
   `<file>.corrupt-<utc stamp>` (a `-n` suffix when two land in the same second)
   before a fresh one is written, so the bytes survive for inspection, and the

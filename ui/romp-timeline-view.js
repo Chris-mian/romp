@@ -1090,6 +1090,11 @@ const EFFORT_CHOICES = [];
 // whose aliases the codex backend refuses. Empty until the codex backend has run (docs/codex.md).
 const CODEX_MODEL_CHOICES = [];
 const CODEX_EFFORT_CHOICES = [];
+// The lane's effort menu lists the ladder TOP-DOWN (the user 2026-09-14): highest first, lowest last, as the
+// chat's statusline menu does (render.ts effortDisplayOrder, its twin). The kernel serves `efforts` low→high
+// because its rank ramp and the gear's settings selects read that order, and neither moves; each row carries
+// its own colour and isCurrentMeta matches by value, so only the order changes.
+function effortDisplayOrder(efforts) { return efforts.slice().reverse(); }
 // Loaded once at page load and RE-LOADED on the kernel's {type:"models"} frame (TimelinePanel.refreshModels,
 // the frame's arm in both boots): the pick memory moved — a version pinned, a family un-pinned by Latest, a
 // refused pin dropped, from any surface or dashboard — or the catalog grew, and a family's `default` is
@@ -1106,9 +1111,9 @@ function loadModelChoices() {
     if (typeof fetch !== 'undefined') return fetch('/models', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
       if (typeof d.rev === 'number') { if (d.rev < modelChoicesRev) return; modelChoicesRev = d.rev; }
       if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; for (const m of d.models) MODEL_CHOICES.push(m); MODEL_CHOICES.push({ label: 'Default', value: 'default' }); }
-      if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; for (const e of d.efforts) EFFORT_CHOICES.push(e); }
+      if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; for (const e of effortDisplayOrder(d.efforts)) EFFORT_CHOICES.push(e); }
       if (d.codex && Array.isArray(d.codex.models)) { CODEX_MODEL_CHOICES.length = 0; for (const m of d.codex.models) CODEX_MODEL_CHOICES.push(m); }
-      if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; for (const e of d.codex.efforts) CODEX_EFFORT_CHOICES.push(e); }
+      if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; for (const e of effortDisplayOrder(d.codex.efforts)) CODEX_EFFORT_CHOICES.push(e); }
     }).catch(() => {});
   } catch (e) {}
   return Promise.resolve();
@@ -7113,4 +7118,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES };
+module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES };

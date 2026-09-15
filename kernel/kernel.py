@@ -380,7 +380,7 @@ class _PerfStats:
             self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
             self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
-            self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
+            self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
@@ -659,6 +659,13 @@ class _PerfStats:
             for lab in miss:
                 bm[lab] = bm.get(lab, 0) + 1
 
+    def build_chat_cold_skip(self):
+        """A cold tab (no build since the boot) that every connected chat page holds as a skeleton was not built (the
+        cold-tab gate in _push and _push_session_now, 2026-09-14): the user's ruling that tabs nobody is looking at are
+        built last, on the page's click or its idle prefetch, never in the boot's first refresh."""
+        with self.lock:
+            self.builds["chat"]["coldSkipped"] += 1
+
     def build_chat_moved(self):
         """A chat build whose signature moved while it ran (the post-build signature differs from the
         pre-build one on a static component): the payload is not cached, the next cycle builds it again,
@@ -807,7 +814,8 @@ class _PerfStats:
             except Exception:
                 memos[key] = {}
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
-        memos["ghostDropped"] = dict(_GHOST_DROPPED)   # the spawned-at ghost floor's drops: bgTasks and agents (2026-09-14)
+        memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
+        #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -3626,9 +3634,11 @@ def _bus_restore_mail(sid, mids):
     """POST /restore to the local bus for a postal banner the SDK backend fed and a connection rebuild stranded
     (SdkSession._return_stranded_mail, 2026-09-12): the bus puts each named message back into the session's new/
     under its ORIGINAL id (its `restore`) and wakes the session, so the mail re-delivers as itself. Returns the set
-    of ids the bus put back — authoritative about the bus's files (an id missing from it is gone from cur/) — and
-    RAISES when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a
-    quiet False here would be the loss this exists to end."""
+    of ids the bus HOLDS: the ones it put back, and (2026-09-14) the ones it answered `unknown` for (its cur/ could
+    not be read, the claim stands and its own retry puts them back), which are neither gone nor to be re-fed on
+    this side's say-so. Authoritative about the bus's files (an id missing from the set is gone from cur/); RAISES
+    when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a quiet False
+    here would be the loss this exists to end."""
     conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=5)
     try:
         conn.request("POST", "/restore", json.dumps({"id": sid, "mids": list(mids)}),
@@ -3640,7 +3650,19 @@ def _bus_restore_mail(sid, mids):
     body = json.loads(data.decode("utf-8", "replace") or "{}") if resp.status == 200 else None
     if not isinstance(body, dict) or not body.get("ok"):
         raise RuntimeError("bus /restore answered %d: %s" % (resp.status, data[:200].decode("utf-8", "replace")))
-    return set(m for m in (body.get("restored") or []) if isinstance(m, str))
+    held = set(m for m in (body.get("unknown") or []) if isinstance(m, str))
+    if held:
+        sys.stderr.write("romp-kernel: the bus holds %d stranded message(s) it could not put back yet (its cur/ cannot be read); "
+                         "neither re-fed nor dropped, the bus's retry puts them back: %s\n" % (len(held), ", ".join(sorted(held))))
+    out = _BusHeld(set(m for m in (body.get("restored") or []) if isinstance(m, str)) | held)
+    out.held = held                                   # the caller's log names the pending fault beside the ids handed back
+    return out
+
+
+class _BusHeld(set):
+    """The set _bus_restore_mail answers: the ids the bus holds (put back, or held under an unreadable cur/ for its retry), with
+    the held ones named in `.held` so SdkSession._return_stranded_mail can say the pending fault in its own line."""
+    held = frozenset()
 
 
 ROMP_VOICE_WORDS = ("romp", "card", "board", "goal", "cleared", "dismissal", "status check", "nudge")
@@ -4316,11 +4338,51 @@ def _path_of(sid, now=None):
     if memo is not None and sid in memo:
         return memo[sid]
     now = int(time.time()) if now is None else now
-    s = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    s = _session_row(sid, now)
     p = s["path"] if s else None
     if memo is not None:
         memo[sid] = p
     return p
+
+
+def _session_row(sid, now=None):
+    """The _sessions()-shaped row for ONE sid — {sid, name, anchor, path, mtime} — or None. For the doors
+    that ACT on a named session (fork, comment, promote, rewind/rollback, _path_of) rather than list every
+    session. _sessions(now) reaches back only discover's 48h caption horizon (jd.WINDOW), so a session idle
+    longer than that — still on the tab strip through _alive_sessions' wide walk, its chat still rendering
+    — was refused by every one of those doors as "no transcript for this session yet" (the user
+    2026-09-14: a 4-day-idle session took no comment and no fork while its tab sat right there). Same
+    fallbacks _alive_sessions and build_session already use, in the same order: an SDK session resolves
+    through its registry (cwd + lastSid name the CURRENT transcript, a /clear'd one included; no walk) and
+    is accepted only when that file EXISTS, so a never-run session still reads as transcriptless; anything
+    else (a session no SDK registry names, a Codex one) through discover's cached wide walk, as
+    _alive_sessions resolves a live sid idle past the window. Age owns caption/walk cost, never whether a
+    session can be acted on."""
+    now = int(time.time()) if now is None else now
+    s = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if s is not None:
+        return s
+    be = _sdk()
+    if be and be.owns(sid):
+        reg = _thread_reg(sid)           # any SDK reg, thread or board session: cwd + lastSid are authoritative
+        if reg.get("cwd"):               # an unreadable reg is no authority: fall through, never probe a ~-derived guess
+            path = _thread_transcript_path(reg, sid)
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                mtime = None             # a registry without a transcript file IS "no transcript yet"
+            if mtime is not None:
+                return {"sid": sid, "name": _name_of(sid) or reg.get("name") or sid[:8], "anchor": sid,
+                        "path": path, "mtime": mtime}
+    ent = _discover_wide(now, jd.DEATH_BACKFILL_WINDOW).get(sid)
+    if ent is not None:
+        fsid, path, anchor, name = ent
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            mtime = 0
+        return {"sid": fsid, "name": name or fsid[:8], "anchor": anchor, "path": str(path), "mtime": mtime}
+    return None
 
 
 # ── a LIVE session survives a transient transcript-read failure on the tab list (T258) ─────────────────────
@@ -4546,8 +4608,11 @@ def _state_quarantine(p, st, reason):
         return None
     except OSError as e:
         return "could not be moved aside: %s" % _errno_text(e)
-    sys.stderr.write("romp-kernel: %s could not be parsed (%s); moved aside to %s, the store reads as empty\n"
-                     % (p.name, reason, aside.name))
+    sys.stderr.write("romp-kernel: %s could not be parsed (%s); moved aside to %s, %s\n"
+                     % (p.name, reason, aside.name,
+                        "the flags it held are unknown (the last cleanly read ones stand; with none known mail is held and flag "
+                        "changes are refused until the file is written again)" if p.name == "session-flags.json"
+                        else "the store reads as empty"))
     # The dashboard hears it too (review find, 2026-09-08): a quarantine resets the store to EMPTY, so
     # every bell override, lane flag (postal isolation included) or saved lane order it held reads as
     # a default from here on, and the stderr line alone left that looking like settings resetting
@@ -4556,9 +4621,14 @@ def _state_quarantine(p, st, reason):
     # speaks exactly once. Guarded like _note_state_fault: a notice never turns a successful move
     # into a raise.
     try:
-        _sync_notice("%s could not be parsed and was moved aside to %s; %s it held start over "
-                     "empty until you set them again"
-                     % (p.name, aside.name, _STATE_FILE_HOLDS.get(p.name, "the settings")), ok=False, kind="refused")
+        if p.name == "session-flags.json":
+            # the flags carry DENY boundaries (postal isolation): a quarantine does not reset them to empty (2026-09-14,
+            # the lows PR's round two); the readers keep the last cleanly read flags, or hold mail when none are known
+            tail = ("the flags it held (mail isolation included) are unknown: the last cleanly read ones stand, and with "
+                    "none known mail is held for every session and flag changes are refused until the file is written again")
+        else:
+            tail = "%s it held start over empty until you set them again" % _STATE_FILE_HOLDS.get(p.name, "the settings")
+        _sync_notice("%s could not be parsed and was moved aside to %s; %s" % (p.name, aside.name, tail), ok=False, kind="refused")
     except Exception:
         pass
     return None
@@ -7066,17 +7136,101 @@ def _session_flags_proved():
     """The MUTATION snapshot of the per-session flags: a read fault RAISES (_StateUnreadable) so
     _set_session_flag / _set_notify_session refuse rather than writing a fabricated {} back over
     every session's flags -- including the postalServiceOff isolation boundaries -- under a success
-    ack (the state-readers audit). Only a missing (or freshly-quarantined) file reads as empty."""
-    raw = _read_state_json(jd.STATE / "session-flags.json", expect=dict)
-    return raw if isinstance(raw, dict) else {}
+    ack (the state-readers audit). Only a missing file with no quarantine sidecar beside it reads as
+    empty. A QUARANTINE (torn or wrong-shaped bytes moved aside by _read_state_json, now or on an
+    earlier read: a sidecar beside a missing file) is not an empty store (2026-09-14): the snapshot is
+    the LAST cleanly read flags this process holds (_flags_cache, the same value the mail door reads),
+    so a toggle after a quarantine keeps every other boundary and its write makes the sidecar history;
+    with nothing known the write is REFUSED, loudly, and the store is never rebuilt from empty."""
+    p = jd.STATE / "session-flags.json"
+    hit = _flags_cache.get(str(p))
+    raw = _read_state_json(p, expect=dict)
+    if isinstance(raw, dict):
+        return raw
+    if raw is None and not _flags_quarantined(p):
+        return {}                                    # missing, never quarantined: a fresh install, legitimately empty
+    if hit is not None:
+        return dict(hit[1])                          # the last cleanly read flags: the toggle applies on top of them
+    raise _StateUnreadable(p, _flags_exit_text(p))   # the refusal names the exit: the file to write, and what that does
+
+
+_FLAGS_UNKNOWN_TEXT = ("torn or wrong-shaped bytes were moved aside, so the flags are unknown: %s until the file is "
+                       "written again")   # ...the last cleanly read flags stand / mail is held for every session
+
+
+def _flags_quarantined(p):
+    """A quarantine sidecar stands beside the (missing) flags file: _read_state_json moved torn or wrong-shaped bytes
+    aside, so a missing file here is not a user who set no flags but a store whose contents are UNKNOWN (the isolation
+    boundaries included); an unlistable parent reads as quarantined too (closed, never a quiet empty). A sidecar the
+    store has been written or cleanly read since is history (_retire_flags_quarantine renamed it `.retired-*`, bytes
+    kept), so deleting the flags file later beside an old sidecar is a fresh install, not a re-entered hold."""
+    try:
+        return any(True for _ in p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        return True
+
+
+def _retire_flags_quarantine(p):
+    """The flags store was written, or read cleanly, with quarantine sidecars beside it: the hold they keyed is over.
+    Each `session-flags.json.corrupt-<stamp>` is renamed `.retired-<stamp>` (the bytes stay for forensics; only the
+    mark the readers key on goes), said once on stderr. Best-effort: a rename that fails leaves the mark, and the
+    readers keep holding, which is the safe side."""
+    try:
+        sides = list(p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        return
+    for side in sides:
+        try:
+            os.replace(side, side.with_name(side.name.replace(".corrupt-", ".retired-", 1)))
+            sys.stderr.write("romp-kernel: %s is written again; the quarantine mark %s retired (bytes kept as %s)\n"
+                             % (p.name, side.name, side.name.replace(".corrupt-", ".retired-", 1)))
+        except OSError as e:
+            sys.stderr.write("romp-kernel: the quarantine mark %s could not be retired (%s); the hold stands\n" % (side.name, _errno_text(e)))
+
+
+def _flags_exit_text(p):
+    """The refusal's remedy, the one in-product exit of the fail-closed hold: what to write and what it does."""
+    sides = []
+    try:
+        sides = sorted(s.name for s in p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        pass
+    return ("the session settings file %s was moved aside%s (torn bytes) and no flags are known, so mail is held for every "
+            "session and flag changes are refused. The one exit: write {} to %s to start the settings from empty (every "
+            "session's mail isolation and feed mute is then off until set again). The sidecar keeps the unreadable bytes "
+            "for forensics; they cannot be read back."
+            % (p, (" to " + ", ".join(sides)) if sides else "", p))
+
+
+def _flags_written(p, cur):
+    """A clean write of the flags store landed (`cur`, the object written): the display cache is primed from the file's
+    identity (so a process that only wrote, never displayed, holds a warm last-known copy for the next fault), the read
+    fault episode ends, and any quarantine mark is retired."""
+    try:
+        st = p.stat()
+        _flags_cache[str(p)] = ((st.st_mtime_ns, st.st_size), dict(cur))
+    except OSError:
+        pass
+    _clear_state_fault(p)
+    _retire_flags_quarantine(p)
 
 
 def _session_flags():
+    """The per-session flags for DISPLAY readers, never raising. A missing file with no quarantine sidecar is a genuine
+    state ({}); a stat fault, a read fault, or bytes _read_state_json quarantined (and a missing file with a sidecar
+    beside it) are UNKNOWN: the last cleanly read flags stand, uncached and unproved, with one notice per episode,
+    and with none known the readers that depend on them close their doors (_flags_unknown_cold: mail held). Until
+    2026-09-14 the quarantine read as a clean EMPTY store, which lifted every isolation boundary at once and let a
+    peer's mail land in a session the user had isolated."""
     p = jd.STATE / "session-flags.json"
     hit = _flags_cache.get(str(p))
     try:
         st = p.stat(); key = (st.st_mtime_ns, st.st_size)   # ns + size → no stale hit on rapid toggles
     except FileNotFoundError:
+        if _flags_quarantined(p):
+            _note_state_fault(_StateUnreadable(p, _FLAGS_UNKNOWN_TEXT % ("the last cleanly read flags stand" if hit is not None
+                                                                          else "mail is held for every session")))
+            return hit[1] if hit is not None else {}
         _clear_state_fault(p)
         return {}
     except OSError as e:
@@ -7093,9 +7247,17 @@ def _session_flags():
     except _StateUnreadable as e:
         _note_state_fault(e)
         return hit[1] if hit is not None else {}
+    if raw is None:
+        # the file existed at the stat and its bytes were torn or of the wrong shape: _read_state_json moved them aside
+        # (or a peer's publish replaced the file under every read). UNKNOWN, not empty: the last cleanly read flags
+        # stand, the fault stays noted so _flags_unknown_cold closes the mail door when nothing is known
+        _note_state_fault(_StateUnreadable(p, _FLAGS_UNKNOWN_TEXT % ("the last cleanly read flags stand" if hit is not None
+                                                                      else "mail is held for every session")))
+        return hit[1] if hit is not None else {}
     _clear_state_fault(p)
     d = raw if isinstance(raw, dict) else {}
     _flags_cache[str(p)] = (key, d)
+    _retire_flags_quarantine(p)                      # read cleanly: a quarantine mark beside it is history
     return d
 
 
@@ -7127,6 +7289,7 @@ def _set_session_flag(sid, flag, value):
         else:
             cur.pop(sid, None)
         _write_state_json(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+        _flags_written(jd.STATE / "session-flags.json", cur)   # the cache primed, the fault episode ended, the mark retired
     if flag == "hideFromFeed" and value:
         # Muting takes the session OUT of task tracking → VIEW-CLEAR its current goals: seal them exactly like
         # crossing each card off the feed (cleared.jsonl + the durable node flag), NOT delete — they stay on
@@ -7313,6 +7476,7 @@ def _set_notify_session(sid, value):
         else:
             cur.pop(sid, None)
         _write_state_json(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+        _flags_written(jd.STATE / "session-flags.json", cur)   # the cache primed, the fault episode ended, the mark retired
 
 
 def _prune_notify_cards(live_ids, gone_ids=()):
@@ -15616,7 +15780,7 @@ def _fork_session_inner(parent_sid, cut_msg_uuid, new_name, now=None, client=Non
     if not (hasattr(be, "fork") and _sdk_ready()):
         return "fork needs a Claude Code session — this one runs on another backend, so there is nothing to fork from."
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # idle > 48h is still forkable (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet — nothing to fork."
     cut_uuid = ""
@@ -16785,7 +16949,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     if not str(exact or "").strip() or not str(text or "").strip():
         return "nothing to send: highlight a passage and write a comment.", None
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # idle > 48h still takes a comment (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet, so nothing to comment on.", None
     if str(anchor_uuid or ""):
@@ -17113,7 +17277,7 @@ def _comment_promote_inner(parent_sid, tid, new_name, now=None, client=None):
     tpath = _thread_transcript_path(reg, tsid)
     if not os.path.exists(tpath):
         return _revert("this thread hasn't written its conversation yet; try again in a moment.")
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # the parent may be idle > 48h by promote time
     parent_path = sess["path"] if sess else str(jd._proj_dir(reg.get("cwd") or "~") / (parent_sid + ".jsonl"))
     err = _seed_fork_stores(parent_sid, tsid, parent_path, str(th.get("cutUuid") or ""))
     if err:
@@ -26074,7 +26238,22 @@ def _mail_off_why_k(sid):
         return "unreadable"
     if _thread_mail_off(sid):
         return "thread"
-    return "isolation" if (_session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")) else ""
+    iso = _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")   # reads the flags (noting a fault)
+    if _flags_unknown_cold():
+        return "flags"                     # the flags cannot be read and none are known: closed under the door's own word
+    return "isolation" if iso else ""
+
+
+def _flags_unknown_cold():
+    """The session-flags file cannot be read (a stat or read fault, or bytes quarantined) and this process has no
+    last-known copy: the flags' state is UNKNOWN (_session_flags said so once per episode and answered {}), so a mail
+    door that depends on them is closed under "flags" (the UI: mail held, the settings file cannot be read) until a
+    clean read; with a last-known copy the door keeps that answer. The bus's _mail_off_why applies the same rule over
+    the same file (its _session_flags_read), so the two sides agree on every shape WITHIN a process's knowledge; across
+    processes a warm kernel holding a cached clean read paints mail on while a cold bus holds everything under "flags"
+    until the bus reads the file once cleanly (2026-09-14)."""
+    p = str(jd.STATE / "session-flags.json")
+    return p in _state_fault_seen and _flags_cache.get(p) is None
 
 
 def _mail_off_fields(sid):
@@ -27988,7 +28167,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     return out
 
 
-def _bg_tasks(path, spawned_at=None, live=None):
+def _bg_tasks(path, spawned_at=None, live=None, sid=None):
     """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
     'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
     (read fresh). The cached transcript scan (mtime+size, like _background_why) holds the meta; the output is
@@ -28002,6 +28181,8 @@ def _bg_tasks(path, spawned_at=None, live=None):
     background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Both filters run after
     the cache, since they change without the transcript changing."""
     scan = _bg_scan_cached(path)
+    if sid:
+        _count_restamped(sid, path, scan)               # the epoch moved since this process last saw it: what the move dropped
     if live is not None:
         live_ids = {t.get("toolUseId") for t in live if t.get("toolUseId")}
         scan = [tk for tk in scan if tk["id"] in live_ids]
@@ -28371,7 +28552,44 @@ def _agent_alive(row, agent_id, tm, spawned_at):
     return True
 
 
-_GHOST_DROPPED = {"bgTasks": 0, "agents": 0}      # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+_GHOST_DROPPED = {"bgTasks": 0, "agents": 0,     # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+                  "restamped": {"bgTasks": 0, "agents": 0}}   # ...and, a different question, what a RE-STAMP dropped (below)
+_RESTAMPS_OVERRIDE = None    # tests: a restamps table in place of the SDK backend module's
+
+
+def _restamps_table():
+    """The SDK backend's per-process table of epochs it moved, {sid: (previous, new)}, written where the reg's
+    spawnedAt moves (the hello decision, the kernel-child stamp) and consumed here once per entry."""
+    if _RESTAMPS_OVERRIDE is not None:
+        return _RESTAMPS_OVERRIDE
+    return getattr(sys.modules.get("romp_sdk_backend"), "_RESTAMPS", None)
+
+
+def _count_restamped(sid, path, scan):
+    """memos.ghostDropped.restamped: the spawnedAt fix's own question, distinct from the cumulative counters above.
+    `bgTasks`/`agents` count every drop at every build, so a stale row of a task that died with an EARLIER CLI is
+    counted once per build for as long as it stands (the memo's health, never zero on a box with history). This one
+    counts, once per re-stamp, the still-running rows and the unsettled foreground launches whose time lies at or after
+    the reg's PREVIOUS spawnedAt and before the new one: a survivor's work the re-stamp dropped. Seeded from the STAMP
+    site (the backend records (sid, previous, new) where it moves the reg), not from the build's first sight: at a boot
+    the reg moves before the first build, and a table seeded by the build would record the new value and count nothing.
+    Must read zero at every boot from now on (the manager's read of the follow-up, 2026-09-14). Never a clock: two
+    stored epochs against row times."""
+    table = _restamps_table()
+    if not table or sid not in table:
+        return
+    prev, new = table.pop(sid)
+    try:
+        n_tasks = sum(1 for r in scan if r.get("status") == "running" and isinstance(r.get("t"), (int, float))
+                      and prev <= r["t"] < new)
+        st = _agent_launch_state(path)
+        n_agents = sum(1 for tid, t in (st.get("launched") or {}).items()
+                       if tid not in st.get("settled", ()) and isinstance(t, (int, float)) and prev <= t < new)
+    except Exception as e:
+        sys.stderr.write("romp-kernel: restamp count for %s failed: %s: %s\n" % (str(sid)[:8], type(e).__name__, e))
+        return
+    _GHOST_DROPPED["restamped"]["bgTasks"] += n_tasks
+    _GHOST_DROPPED["restamped"]["agents"] += n_agents
 #                                                    (T401: a surviving CLI's launches read as ghosts at every restart until the
 #                                                    spawnedAt fix; zero for survivors on the boot after it is the read)
 
@@ -31011,7 +31229,7 @@ def _rewind_send(sid, user_uuid, text, now=None):
     if _ops_gate(sid):
         return "the session is busy — wait for the current turn to finish, then edit"
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    sess = _session_row(sid, now)            # idle > 48h can still be rewound (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet"
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
@@ -31057,7 +31275,7 @@ def _rewind_rollback(sid, user_uuid, now=None):
     # delete on an in-flight turn interrupts it and arms the rewind at the turn's actual end;
     # compacting and queued-strangers keep their honest refusals inside _arm_rewind.
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    sess = _session_row(sid, now)            # idle > 48h can still be rolled back (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet"
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
@@ -36179,7 +36397,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             # Reads the CALLER's snapshot — a fresh _live_map() here cost a reg sweep
             # per session build, on the pusher's hottest path (the 2026-08-10 CPU fix).
             "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid),
-                                 live=(live_map.get(str(sid)) or {}).get("bgTasks")),
+                                 live=(live_map.get(str(sid)) or {}).get("bgTasks"), sid=sid),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
@@ -44852,6 +45070,165 @@ def _release_skeleton(c, sid):
         return _release_skeleton_locked(c, sid)
 
 
+COMPACT_TAIL_WINDOW = 256 * 1024                   # the tail read's first window for _compact_boundary_since; widened 4x while
+#                                                    the window's oldest stamped record is still after the moment asked about
+
+
+def _compact_boundary_since(path, since):
+    """Whether the transcript carries a compact_boundary record stamped at or after `since` (epoch seconds): the built
+    chip's compaction disproof (_compacting), as a tail-first read that needs no parse (round four, low c). Records are
+    appended in order, so the read widens back from the end only while the window's oldest stamped record is still at
+    or after `since`; the whole file is the bound. False on any read fault (the caller then trusts the row's word)."""
+    if not since:
+        return False
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    win = COMPACT_TAIL_WINDOW
+    try:
+        with open(path, "rb") as f:
+            while True:
+                start = max(0, size - win)
+                f.seek(start)
+                chunk = f.read(size - start)
+                lines = chunk.split(b"\n")
+                if start > 0:
+                    lines = lines[1:]                     # the first piece is a torn line
+                oldest = None
+                for ln in lines:
+                    if b'"compact_boundary"' in ln:
+                        try:
+                            rec = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+                            t = em.parse_z(rec.get("timestamp"))
+                            if t is not None and t >= since:
+                                return True
+                    if oldest is None and b'"timestamp"' in ln:
+                        try:
+                            oldest = em.parse_z(json.loads(ln).get("timestamp"))
+                        except ValueError:
+                            oldest = None
+                if start == 0 or (oldest is not None and oldest < since):
+                    return False
+                win *= 4
+    except OSError:
+        return False
+
+
+def _light_status(sid, path, tm, now):
+    """A skeleton tab's status without a build, from the sources the built chip reads that need no parse: the backend's live
+    row (its live-prompt, retrying, working and compacting words, its since, backend, model, effort, mode), the api-error
+    tail read (_api_error: cached, tail-first, the same call build_session makes, so blocked and its on-you legs paint as
+    they would built), the awaiting stamps and rows (_session_awaiting with the judge's stamp, the built chip's own call),
+    the backend's compaction bracket, and the retry ladder. What it cannot state is the transcript-derived open turn: the
+    row's `working` stands in for it. Round two of the gate (2026-09-14): the first cut collapsed blocked, awaiting and
+    compacting to ready for the whole spread; the diet's contract is a chip that stays honest, so the legs ride here from
+    their cheap sources. `provisional` says so to a reader; the built status replaces it on the tab's first build. None
+    with no live row: the gate then builds, as before, rather than send a status the kernel cannot state."""
+    if not tm or not isinstance(tm, dict):
+        return None
+    st = tm.get("state", "") or ""
+    working = st == "working"
+    try:
+        be = Sessions.backend_for(sid)
+        bc = be.compacting(sid) if be is not None else None
+    except Exception:
+        bc = None
+    # Compacting in the built chip's order (round four, low c): the backend's bracket when it states one; else the row's
+    # word or the kernel's own /compact click, disproved by the cheap reads this status has: a compact_boundary at or
+    # after the row's since is a tail read (_compact_boundary_since), and the open turn's disproof stands in by the
+    # row's working. The residual: a row that says compacting while the transcript's last turn is open with no
+    # boundary since reads compacting here and working built, until the tab's first build.
+    since_s = tm.get("since")
+    if bc is not None:
+        compacting = bool(bc)
+    else:
+        compacting = bool((st == "compacting" or _compact_clicked.get(sid) is not None) and not working
+                          and not _compact_boundary_since(path, since_s))
+    aw = None
+    if not working:
+        try:
+            aw = _session_awaiting(sid, path, True, stamp=True)
+        except Exception:
+            aw = None
+    aerr = None
+    if not (working or aw):
+        try:
+            aerr = _api_error(path)
+        except Exception:
+            aerr = None
+    chip = ("compacting" if compacting else
+            "blocked" if aerr else
+            "needsInput" if st in _NEEDS_INPUT_STATES else
+            "retrying" if st == "retrying" else
+            "working" if working else
+            "awaitingBg" if aw else "ready")
+    since = tm.get("since")
+    tries, next_at = _retry_gate_state(sid)
+    ctx = tm.get("context")
+    stops = cm.stops_for(_colormap())
+    return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
+            "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
+            "needsYou": _feed_needs_input_of(sid),       # the yellow ask ring's one input (round four): the feed's verdict, a membership read
+            # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
+            # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
+            # its model and effort tints paint as built for as long as the tab stays unbuilt
+            "ctx": str(ctx) if ctx is not None else "", "ctxOver": bool(tm.get("ctxOver")),
+            "ctxColor": (list(cm.ramp(ctx / 100.0, stops)) if ctx is not None else None),
+            "ctxTone": (list(cm.context_rgb(ctx)) if ctx is not None else None),
+            "modelColor": _model_color(tm.get("model", ""), stops), "effortColor": _effort_color(tm.get("effort", ""), stops),
+            "modelTone": _model_tone(tm.get("model", "")), "effortTone": _effort_tone(tm.get("effort", "")),
+            "awaitingWhy": (aw or {}).get("why") or None, "awaitingKind": (aw or {}).get("kind"),
+            "awaitingPeers": (aw or {}).get("peers") or None,
+            "awaitingCount": (aw or {}).get("count") if isinstance((aw or {}).get("count"), int) else None,
+            "awaitingItems": (aw or {}).get("items") or [], "awaitingTasks": [], "awaitingTaskIds": [], "bgServiceIds": [],
+            "apiTooLong": bool(aerr and aerr.get("tooLong")), "apiSpendLimit": bool(aerr and aerr.get("spendLimit")),
+            "apiModelLimit": bool(aerr and aerr.get("modelLimit")), "apiAuthErr": bool(aerr and aerr.get("authErr")),
+            "apiRefusal": bool(aerr and aerr.get("refusal")),
+            "retrySuppressed": _session_retry_suppressed(sid), "retryNextAt": int(next_at) or None, "retryTries": tries or None,
+            "backend": _session_backend(sid, tm), "model": tm.get("model", ""), "effort": tm.get("effort", ""),
+            "mode": tm.get("mode", "")}
+
+
+def _send_light_status(c, sid, light):
+    """The gate's status frame to one client, membership re-checked UNDER the client's lock right before the send (round
+    three, low b): a click between the gate's decision and this send drops the tab from the set and the full goes out on
+    the same slot; a provisional status landing after it would replace the just-built status of the now-active tab. Only a
+    tab the client still holds as a skeleton gets the provisional word; the built full is the answer for the rest. Returns
+    whether it was sent."""
+    with _client_lock(c):
+        if sid not in (c.get("skeleton") or ()):
+            return False
+        _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": light})
+        return True
+
+
+def _held_as_skeleton_by_all(sid, clients):
+    """Whether EVERY chat client in `clients` holds `sid` as a skeleton tab (each set read under its own slot lock), and
+    there is at least one. The cold-tab gate's question (2026-09-14): a tab no connected page is looking at, on a kernel
+    that has not built it since the boot, is not built by the pusher's loop or the per-session push; the page's click
+    (activeTab) or idle prefetch (needFull) releases the skeleton first, and the very next push builds it. The user's
+    ruling: the selected tab first, tabs present in the strip next over later refreshes, hidden tabs never until shown."""
+    if not clients:
+        return False
+    for c in clients:
+        with _client_lock(c):
+            if sid in (c.get("skeleton") or ()):
+                continue
+            # A client that declared the diet but whose set is not resolved yet (its redial or skeleton dial armed
+            # `reconnect`, and no strip sender has reached it: round two, low 2, a connect push targeting another column)
+            # will hold every tab but its watched one as a skeleton once it is (_resolve_reconnect's rule), so it is read
+            # that way here; a client with no diet, or no watched tab, holds nothing as a skeleton.
+            if (c.get("reconnect") or c.get("skeletonOnReady")) and c.get("active") and sid != str(c.get("active")) \
+                    and sid not in (c.get("echat") or {}):
+                continue
+            return False
+    return True
+
+
 def _skeleton_for(c, act, chat_list):
     """The sids a reconnecting client is NOT looking at, ascending by transcript size — a free stat, the byte
     proxy the kernel has before building anything (the tail length ties at WIRE_TAIL for every busy session,
@@ -48690,10 +49067,33 @@ def _push(targets, connect=False, live_map=None):
             # tab's floor and the next cycle flipped it back, review find E); which clients count is _chat_floor0_of's
             with _clients_lock:
                 _all_chat = [c for c in _clients if c.get("app") == "chat"]
+                _any_sessions_pane = any(c.get("app") == "fleet" for c in _clients)   # the pane's existing wire id
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
+            _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
+            #                                                                          not this push's targets alone (round two, low 2)
             for s in build_order:
                 is_active = s["sid"] in active           # the watched tab(s): served like any tab while the key holds
+                # THE COLD-TAB GATE (2026-09-14; the user, after the boot review): on the 3:58 PM PT restart the first
+                # refresh with a browser built the chat of all 27 tabs (54.6 s of a 72.4 s refresh) before the cards
+                # and the timeline left, for one tab on screen. A tab with a transcript that this kernel has not built
+                # since the boot, that no watching client names active, and that EVERY connected chat page holds as a
+                # skeleton (the restart reload dials the skeleton diet since the client half of this change) is not
+                # built here: the page's click or its idle prefetch releases the skeleton, and that push builds it.
+                # A warm tab (a cached build) is served and status-framed as before; a Sessions pane needs every
+                # session's ledger slice, so with one connected nothing is skipped; a page that declared no diet holds
+                # no set and is served whole, as today.
                 _tm = live_map.get(s["sid"])
+                _light = None
+                if (not is_active and s["sid"] not in _all_active and not want_fleet and not _any_sessions_pane
+                        and s["sid"] not in _built_chat and os.path.exists(s["path"])
+                        and _held_as_skeleton_by_all(s["sid"], _all_chat)):   # every CONNECTED chat client, as the floor reads
+                    _light = _light_status(s["sid"], s["path"], _tm, now)   # no live row: no status to state, so build as before
+                if _light is not None:
+                    for c in chat_clients:               # a status per skeleton tab still goes (the diet's contract),
+                        _send_light_status(c, s["sid"], _light)   # the live row's word until the tab's first build
+                    _VIEW_STATS["chatSkipCold"] += 1
+                    _PERF_STATS.build_chat_cold_skip()
+                    continue
                 try:
                     sig = _chat_build_sig(s, _tm, now, live_map=live_map)
                     _chat_sig_ok(s["sid"])               # a signature that was taken ends its fault episode
@@ -49226,6 +49626,24 @@ def _push_session_now(sid):
             return                                   # hidden / raced a teardown — the periodic pusher owns the rest
         tab_order = [s["sid"] for s in chat_list]
         tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
+        # The cold-tab gate (2026-09-14; see _held_as_skeleton_by_all): at a boot with a browser connected, each of the
+        # 27 attach handshakes ran this push, a cold build per session, for tabs the page holds as skeletons; a full
+        # here would also release the skeleton and hand the page a tab it did not ask for. Not built: the click or the
+        # prefetch releases first and asks again. A tab some page holds whole, or a transcript-less one, builds as before.
+        for c in targets:                                # the set FIRST (round two, low 1): a skeleton client whose redial the
+            redialed = _resolve_reconnect(c, chat_list)   # pusher has not reached yet has no set at the handshake push, and the
+            _send_tab_order(c, tab_order, tab_meta, live_map)   # gate below would read it as holding nothing and hand it a full
+            if redialed:                                 # it never asked for; the strip goes before any full anyway
+                _consume_pending_reveal(c, why="the pane's redial")
+        _path = next((s.get("path") or "" for s in chat_list if s["sid"] == sid), "")
+        _light = (_light_status(sid, _path, live_map.get(sid), now) if sid not in _built_chat and _path and os.path.exists(_path)
+                  and _held_as_skeleton_by_all(sid, targets) else None)
+        if _light is not None:
+            for c in targets:                            # the live row's status, so the chip this push exists for still flips
+                _send_light_status(c, sid, _light)
+            _VIEW_STATS["chatSkipCold"] += 1
+            _PERF_STATS.build_chat_cold_skip()
+            return
         try:
             m = build_session(sid, now, live_map)
         finally:
@@ -49237,11 +49655,7 @@ def _push_session_now(sid):
                               len(_prev_chat_events.get(sid) or ()))
             return                                   # the periodic pusher owns the sid until content returns
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
-        for c in targets:
-            redialed = _resolve_reconnect(c, chat_list)   # a redialing page must never see a strip before its set exists
-            _send_tab_order(c, tab_order, tab_meta, live_map)
-            if redialed:                             # this strip is the redial's first: a reveal parked for its window lands behind it
-                _consume_pending_reveal(c, why="the pane's redial")
+        for c in targets:                            # the strip went above, before the gate; here the session frame
             ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form (…and releases a skeleton)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
@@ -49431,7 +49845,7 @@ def _chat_inflight_release_all():
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
 # rebuild is justified only by a changed input; a rising build count on a quiet board is a bug signature.
 _VIEW_STATS = {"feedBuild": 0, "feedServe": 0, "tlBuild": 0, "tlServe": 0,
-               "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0,
+               "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0, "chatSkipCold": 0,
                "feedWaited": 0, "tlWaited": 0, "chatWaited": 0,   # served a build another thread had in flight (single-flight)
                # GET /feed.json's reads (_pure_feed), apart: a poller's builds under the pusher's numbers
                # would forge the bug signature above, or bury a pusher regression (review find, 2026-09-08)
