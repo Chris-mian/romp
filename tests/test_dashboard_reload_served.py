@@ -38,7 +38,7 @@ SID = "11111111-2222-4333-8444-000000000201"
 
 import sys
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment and the cfg.relaunch stanza (the module,
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment and the cfg.relaunch stanza (the module,
 #                                   not its classes: an imported TestCase would be collected here a second time)
 
 
@@ -204,6 +204,27 @@ fr = await waitChat();
 out.heldOnChangedBuild = await page.evaluate(() => { try { return JSON.parse(sessionStorage.getItem("lab:held") || "null"); } catch (e) { return null; } });
 out.chatAtFire = await page.evaluate(() => { try { return JSON.parse(sessionStorage.getItem("lab:fire") || "null"); } catch (e) { return null; } });
 out.noticesAfterChangedBuild = await notices();
+
+// ---- 6. a deploy that changes the dashboard's bundle but no kernel code: the kernel restarts with the same code identity and a
+// newer bundle on disk (the deploy rebuilt dist while the kernel was down). The page must reload exactly once, onto the new
+// bundle, after the chat pane's frame; a same-code restart alone reloads nothing, and the newer bundle is the reason here ----
+await probeSet();
+process.kill(k3.pid, "SIGKILL");
+await page.waitForTimeout(500);
+bump(3);                                                   // the deploy's rebuild, while no kernel is up
+const k4 = spawn(cfg.relaunch.cmd, [], { env: { ...cfg.relaunch.env, ROMP_CODE_IDENT: "changed-build" }, detached: true,
+  stdio: ["ignore", fs.openSync(cfg.relaunch.log, "a"), fs.openSync(cfg.relaunch.log, "a")] });
+k4.unref();
+fs.writeSync(1, "KPID:" + k4.pid + "\n");
+const t1 = Date.now();
+out.reloadedOnUiDeploy = await page.waitForFunction(() => window.__probe !== 1, null, { timeout: 90000 }).then(() => true).catch(() => false);
+out.uiDeployReloadMs = Date.now() - t1;
+if (!out.reloadedOnUiDeploy) { out.shellOnUiDeploy = await shellWaiting(); await die("no reload after a deploy that changed the bundle but not the kernel code"); }
+fr = await waitChat();
+await probeSet();
+await page.waitForTimeout(7000);                           // three keepalives: the fresh page must settle on the new bundle
+out.settledAfterUiDeploy = await probeAlive();
+out.noticesAfterUiDeploy = await notices();
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
@@ -229,7 +250,7 @@ class ServedAutoReload(unittest.TestCase):
         os.makedirs(os.path.join(state, "names"), exist_ok=True)
         os.makedirs(os.path.join(state, "sdk"), exist_ok=True)
         os.makedirs(cwd, exist_ok=True)
-        # one synthetic SDK session so the chat page has a tab (the test_ship_reship lab shape); its transcript
+        # one synthetic SDK session so the chat page has a tab (the test_ship_reship_served lab shape); its transcript
         # holds only CLOSED turns, so the boot reconcile never tries to resume it and no CLI is ever spawned
         Path(state, "names", SID).write_text("web\t%s\t\t\n" % cwd)
         Path(state, "sdk", SID + ".json").write_text(json.dumps(
@@ -309,13 +330,16 @@ class ServedAutoReload(unittest.TestCase):
         # 1. armed, not fired, while the pointer was held
         self.assertTrue(r["probeWhileHeld"], "the page must not reload mid-gesture: %r" % r)
         self.assertEqual((r["shellWhileHeld"] or {}).get("waiting"), "pointer", "the reload is armed on the held pointer: %r" % r["shellWhileHeld"])
-        self.assertEqual(((r["shellWhileHeld"] or {}).get("owed") or {}).get("reason"), "build")
+        self.assertEqual(((r["shellWhileHeld"] or {}).get("owed") or {}).get("reason"), "build", "the owed reason: %r" % r["shellWhileHeld"])
         # 2. the release fires it, and the chat tab lands where the reader was
         self.assertTrue(r["reloadedOnRelease"])
-        # keyed on the anchor row, the repo's rule for scroll labs: the restore lands on the anchor turn (ui/webview/reload-restore.ts),
-        # so scrollTop differs whenever the rows above it measure differently after the reload (main CI read 96 px once on 2026-09-14)
-        self.assertEqual(a["anchor"]["uuid"], b["anchor"]["uuid"], "the reader's row survives the reload: %r → %r" % (b, a))
-        self.assertLessEqual(abs(a["anchor"]["top"] - b["anchor"]["top"]), 60, "at the same place in the viewport: %r → %r" % (b, a))
+        # keyed on the anchor row, the repo's rule for scroll labs: the restore lands on the anchor turn when the rebuilt DOM has it
+        # (ui/webview/reload-restore.ts), so scrollTop differs whenever the rows above it measure differently after the reload (main
+        # CI read 96 px once on 2026-09-14); when the rebuilt DOM does not have the anchor yet, the restore's other road is the raw
+        # scrollTop, and the first row in view can differ (a CI red of 2026-09-15 compared two row ids). Either road keeps the place.
+        same_row = a["anchor"]["uuid"] == b["anchor"]["uuid"] and abs(a["anchor"]["top"] - b["anchor"]["top"]) <= 60
+        same_pixel = abs(a["scrollTop"] - b["scrollTop"]) <= 60
+        self.assertTrue(same_row or same_pixel, "the reader's place survives the reload, by the anchor row or by the scroll pixel: %r → %r" % (b, a))
         self.assertGreater(a["scrollHeight"] - a["scrollTop"] - a["clientHeight"], 200, "…and is not the bottom: %r" % a)
         self.assertFalse(a["chipHidden"], "off the bottom, the go-to-bottom chip shows")
         self.assertEqual(len(r["noticesBefore"]), 0)
@@ -344,6 +368,13 @@ class ServedAutoReload(unittest.TestCase):
         self.assertEqual(len(held_lines), 1 if r["heldOnChangedBuild"] else 0, "the held wording once per hold: %r" % r["noticesAfterChangedBuild"])
         self.assertEqual(len(r["noticesAfterChangedBuild"]) - len(held_lines), 3, "one line for the changed-build reload: %r" % r["noticesAfterChangedBuild"])
         self.assertRegex(r["noticesAfterChangedBuild"][-1], r"the kernel restarted\.$")
+        # 6. a deploy that changed the bundle but not the kernel code reloads once, onto the new bundle
+        self.assertTrue(r["reloadedOnUiDeploy"], "a newer bundle across a same-code restart must reload once: %r" % r)
+        self.assertLess(r["uiDeployReloadMs"], 90000)
+        self.assertTrue(r["settledAfterUiDeploy"], "one reload per deploy: %r" % r)
+        self.assertEqual(len([n for n in r["noticesAfterUiDeploy"] if n.startswith("Reloaded onto build")]), 4,
+                         "one more reload line: %r" % r["noticesAfterUiDeploy"])
+        self.assertRegex(r["noticesAfterUiDeploy"][-1], r"a newer romp build was served\.$", "the reload names the bundle, not a restart: %r" % r["noticesAfterUiDeploy"])
         br, ar = r["beforeRestart"], r["afterRestart"]
         self.assertIsNotNone(ar, "the chat frame is the same document: %r" % r)
         self.assertLessEqual(abs(ar["scrollTop"] - br["scrollTop"]), 60, "the reader's place held through the restart: %r → %r" % (br, ar))

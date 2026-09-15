@@ -33,7 +33,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (the port is chosen below, never read from the env)
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment (the port is chosen below, never read from the env)
 
 WEB, API, TESTS = "11111111-2222-3333-4444-000000000001", "11111111-2222-3333-4444-000000000002", "11111111-2222-3333-4444-000000000003"
 DOCS, INFRA, OLD = "11111111-2222-3333-4444-000000000004", "11111111-2222-3333-4444-000000000005", "11111111-2222-3333-4444-000000000006"

@@ -108,8 +108,8 @@ class SourcePins(unittest.TestCase):
         page = src[src.index("def _chat_page():"):src.index("\ndef ", src.index("def _chat_page():") + 10)]
         self.assertLess(page.index("<script>%s</script>"), page.index("/dist/render.js"), "the shim's script precedes the bundle in the chat page")
         self.assertIn('_shim("chat", v)', page)
-        self.assertIn('window.__rompPaneBusy=function(){return (everConnected&&queue.length>queuedDiag)?"sends":"";};', src,
-                      "the shim defines the hook the pane wraps")
+        shim = src[src.index("def _shim(app, v=0, no_stale=False):"):src.index("\ndef ", src.index("def _shim(app, v=0, no_stale=False):") + 10)]
+        self.assertIn("window.__rompPaneBusy=function(){", shim, "the shim defines the hook the pane wraps (its body, the sends hold and its bound, is run by ui/webview/pane-shim-stale.test.ts)")
 
     def test_a_reload_loss_is_loud_never_a_silent_vanish(self):
         self.assertIn("shipsInFlight: [...pendingShips.values()].flat().map((p) => p.name)", RENDER)
@@ -249,7 +249,12 @@ fs.writeSync(1, "KPID:" + k2.pid + "\n");
 // HERE, while the ship is pending and the send held, so the hold is exercised on every run: on a pane without the
 // busy report the page reloads at once and the wait below dies (reloadedEarly), which is the failure this pins. The
 // probe marks THIS page: its disappearance is the reload firing on its own once the pane is idle again.
-await page.evaluate(() => { window.__probe = 1; const R = window.__rompReload; if (R) R.request("restart", "forced-by-the-test"); }).catch(() => {});
+// the hold is recorded by the core's own event (the held hook fires when the request finds the pane busy), not by a poll
+// that must catch the busy window: on a fast heal the first poll of the wait below found the pane idle and read no hold
+// (a CI red of 2026-09-15). The FIRST hold is kept: the chat pane's redial holds on fresh too once invisible restarts landed.
+await page.evaluate(() => { window.__probe = 1; const R = window.__rompReload; if (R) {
+  const prev = R.held; R.held = (b, o) => { if (!window.__t272HeldWhileBusy) window.__t272HeldWhileBusy = String(b); if (prev) prev(b, o); };
+  R.request("restart", "forced-by-the-test"); } }).catch(() => {});
 // today (pre-fix) this wait dies: the chip pulses forever and the held send never fires.
 // with the fix: romp:wsup re-ships, the ack retires the chip, and fireHeldSend sends the message.
 // T272: the dashboard reloads itself on the restart (a new boot id, T265) — but only once this pane is no longer
@@ -261,14 +266,13 @@ let reloadedEarly = false;
 // the heal is measured INSIDE the wait, on the page that healed: the reload the restart owes is let through the
 // instant the pane is idle again (the last ack and the held send's release tell the core, endReloadHoldIfIdle), so a
 // measurement taken a poll later may find a fresh page. The predicate also records that the reload was owed and
-// WAITING while the pane was busy (window.__rompReload.owed() && !fired() with the chip still pending) — the held
+// WAITING while the pane was busy (the held hook installed above recorded the hold the request met): the held
 // reload this fix is for.
 const heal = await page.waitForFunction((msg) => {
   const R = window.__rompReload;
   const input = document.getElementById("composer-input");
   const pending = document.querySelectorAll(".composer-file-pending").length;
   const content = document.getElementById("content");
-  if (R && R.owed() && !R.fired() && pending > 0) window.__t272HeldWhileBusy = String(R.waiting || "busy");
   const ok = pending === 0 && !!input && input.value === "" && !!content && content.textContent.includes(msg);
   return ok ? JSON.stringify({ pending, input: input.value, hasMsg: true, held: window.__t272HeldWhileBusy || null,
                                owedNow: !!(R && R.owed()), firedNow: !!(R && R.fired()) }) : false;

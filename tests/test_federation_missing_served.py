@@ -31,7 +31,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
 # Hermetic state for a bare unittest or script run, which has no conftest floor: the runner's own process must never
 # resolve REAL state (the lab kernel's roots come from kernel_env below).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
@@ -433,7 +433,7 @@ class ServedFederationMissing(unittest.TestCase):
 
 
 class FedMissingLabKernelEnv(unittest.TestCase):
-    """The lab kernel's environment is built from a list of names (kernel_env in test_ship_reship.py, the function
+    """The lab kernel's environment is built from a list of names (kernel_env in test_ship_reship_served.py, the function
     every lab that boots a kernel uses), never from a copy of the runner's. A run from a shell on a machine running
     romp carries the live kernel's exports, and a lab kernel that inherited them exited when the live manager
     restarted (ROMP_MANAGER_PID, the kernel's parent-death watchdog), bound where the live kernel serves

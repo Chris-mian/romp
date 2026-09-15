@@ -32,9 +32,10 @@ EXT = os.path.join(ROOT, "vscode-extension")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-# the kernel refuses to boot with a retired key variable or a 1Password name in its environment (kernel/credentials.py
-# check_boot_environment): the lab's kernel env is scrubbed by the kernel's own rule, read from the module itself
-_cred = load_source("romp_credentials_sessionname", os.path.join(ROOT, "kernel", "credentials.py"))
+import sys
+sys.path.insert(0, HERE)
+import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the shell's
+#                                   (the module, not its classes: an imported TestCase would be collected here a second time)
 SID_A = "11111111-2222-4333-8444-000000000801"
 SID_B = "11111111-2222-4333-8444-000000000802"
 
@@ -224,6 +225,7 @@ class ServedSessionName(unittest.TestCase):
         # two synthetic SDK sessions with closed-turn transcripts (nothing is ever resumed or spawned), each with an identity
         # colour in the registry (the third field): the name in the placeholder and on the badge wears it
         os.makedirs(os.path.join(state, "states"), exist_ok=True)
+        Path(state, "session-hosts").write_text("off\n")   # a minted root pins the per-session host off (T348)
         for sid, name, color in ((SID_A, "web", "#e57373"), (SID_B, "api", "#64b5f6")):
             Path(state, "names", sid).write_text("%s\t%s\t%s\t\n" % (name, cwd, color))
             # idle for two hours (the last states row's time is a dormant session's idle-since): past the faded threshold, so
@@ -235,18 +237,11 @@ class ServedSessionName(unittest.TestCase):
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 100}, "seven_day": {"pct": 10}}))   # park sends
         cls.port = _free_port()
         cls.token = "testtok-sessionname"
-        cls.env = dict(os.environ,
-                       XDG_STATE_HOME=os.path.join(cls.lab, "xdg"),
-                       CLAUDE_CONFIG_DIR=claude,
-                       ROMP_MANAGER_PORT="1", ROMP_KERNEL_NO_OPEN="1",
-                       ROMP_SERVE_TOKEN=cls.token, ROMP_KERNEL_PORT=str(cls.port),
-                       ROMP_DIST_DIR=dist, ROMP_MODEL_CATALOG="off",
-                       # a postal bus of its own that is never started (the trio kernel_env gives every lab kernel):
-                       # the kernel's boot-time ensure must never take the machine's fixed bus port (tests/test_hermetic_kernel_postal.py)
-                       ROMP_POSTAL_PORT=str(_free_port()), ROMP_POSTAL_PEERS="0", ROMP_POSTAL_CLIENT_ONLY="1")
-        cls.env.pop("ROMP_STATE_DIR", None)
-        for k in [k for k in cls.env if k in _cred.RETIRED_VARS or _cred.is_op_env_name(k)]:   # the kernel's own boot rule (module top)
-            cls.env.pop(k, None)
+        # The kernel's environment is the shared builder's: the runner's named variables and the lab's roots, never a copy
+        # of the shell's. A copy carried a romp session's stale ROMP_MANAGER_PID (the manager that spawned the session, since
+        # restarted) into the lab kernel, whose parent watch read a dead manager and drained at boot, so /healthz never
+        # answered on the devbox while CI, with no such variable, was green (2026-09-15).
+        cls.env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token)
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")],
                                       stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=cls.env)

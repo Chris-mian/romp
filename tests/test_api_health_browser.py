@@ -11,7 +11,7 @@ shim installed before load: it never opens on its own, so the first two phases s
 socket a refused connection gives, without the real socket's close-and-redial every two seconds; the third
 phase opens it, feeds it frames, drops it and watches the redial, the way a kernel behind a dropped tunnel
 would. Skips LOUDLY without the extension's node deps or a browser (CI installs none), the way
-tests/test_awaiting_box_sync.py does.
+tests/test_awaiting_box_sync_served.py does.
 
 Synthetic only: an invented sid family, the notes-api demo's session names, no real data."""
 import functools

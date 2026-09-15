@@ -22,7 +22,7 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
-import test_ship_reship as _lab  # noqa: E402
+import test_ship_reship_served as _lab  # noqa: E402
 from test_live_paused_window_browser import _free_port  # noqa: E402
 
 SID = "aaaaaaaa-1111-2222-3333-444444444418"

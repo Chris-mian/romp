@@ -72,9 +72,15 @@ class DoneComputationHonorsAuthority(unittest.TestCase):
         self.assertIn("and nid not in agent_open", src, "flatten's done must exclude the authoritative-open subtree")
 
     def test_build_session_ledger_excludes_agent_open_from_done(self):
-        src = inspect.getsource(km.build_session)
+        # the ledger's walk lives in the shared _goal_tree_walk since the Outline's provisional row
+        # (plans/outline-pane-provisional-row.md, 2026-09-15): the done-derivation's gate is pinned there, and BOTH
+        # callers, build_session and the provisional assembly, are pinned to the walk, so neither can re-derive it
+        src = inspect.getsource(km._goal_tree_walk)
         self.assertIn("g_agent_open = _agent_open_set(gnodes, gkids)", src)
         self.assertIn("aopen = (nid in g_agent_open) and not clr", src)
+        self.assertIn("_goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True)", inspect.getsource(km.build_session), "the ledger takes the shared walk")
+        self.assertIn("_goal_tree_walk(sid, gstore, anchors=False)", inspect.getsource(km._provisional_ledger), "the Outline's provisional row takes the same walk")
+        self.assertNotIn("_agent_open_set(", inspect.getsource(km.build_session), "no private done-derivation beside the walk")
 
 
 if __name__ == "__main__":

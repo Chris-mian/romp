@@ -382,6 +382,10 @@ class _PerfStats:
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
+            self.chat_by_session = {}                 # sid -> {first, last, max, n, cached, bytes}: the per-session chat build
+            #                                           timer (2026-09-14); a row leaves with its session's certified death
+            #                                           (chat_row_drop), reset with the process, sids only, time.monotonic
+            #                                           deltas as the call sites take them
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
             # cold event-model parses this kernel ran (T323 stage 1): the kernel's own _parse misses, per session
@@ -635,22 +639,43 @@ class _PerfStats:
                 b["built"] += 1
                 b["ms"] += dt * 1000.0
 
-    def build_chat(self, cached, dt=0.0, active=False, miss=()):
+    def build_chat(self, cached, dt=0.0, active=False, miss=(), sid=None, nbytes=None):
         """The chat builder's record: build("chat", ...) plus who paid and why. A rebuild counts under
         active_built (the watched tab) or bg_built (a background tab whose signature moved), and a
         background rebuild adds one to bg_miss[label] for EVERY labelled _chat_build_sig component that
         differed from the cached signature (`miss`, from _chat_sig_miss), so the sum over bg_miss can
         exceed bg_built when several inputs moved together. `cold` is a tab with no cached build, `nosig`
         one whose signature could not be taken (no transcript path). Before this the counter said how
-        many chat builds ran and not which tab or which input drove them."""
+        many chat builds ran and not which tab or which input drove them.
+        `sid` (2026-09-14, the process split's measure): beside the aggregate, a per-session row keeps the
+        FIRST build's ms after the boot (set once per process life per sid: the cold build the split keeps
+        asking for), the last, the max (a later rebuild under contention), the build and cached counts, and
+        the leaf's bytes at the last build (`nbytes`), so the largest live transcript's first chat build is a
+        read from /perf, not a claim. `dt` is a time.monotonic delta, as the call sites take it (the aggregate's
+        clock too). The aggregate is untouched."""
         ms = dt * 1000.0
         with self.lock:
             b = self.builds["chat"]
+            row = None
+            if sid:
+                row = self.chat_by_session.get(sid)
+                if row is None:
+                    row = self.chat_by_session[sid] = {"first": None, "last": None, "max": 0.0, "n": 0, "cached": 0, "bytes": None}
+                if nbytes is not None:
+                    row["bytes"] = int(nbytes)
             if cached:
                 b["cached"] += 1
+                if row is not None:
+                    row["cached"] += 1
                 return
             b["built"] += 1
             b["ms"] += ms
+            if row is not None:
+                row["n"] += 1
+                row["last"] = ms
+                row["max"] = max(row["max"], ms)
+                if row["first"] is None:
+                    row["first"] = ms
             if active:
                 b["active_built"] += 1
                 return
@@ -658,6 +683,21 @@ class _PerfStats:
             bm = b["bg_miss"]
             for lab in miss:
                 bm[lab] = bm.get(lab, 0) + 1
+
+    def chat_row_drop(self, sid):
+        """A per-session chat row leaves with the CERTIFIED death of its session: _record_death, the one producer of a
+        death marker (five call sites: the sweep's tick, the kill gesture twice, the boot pass, the self-close), calls this
+        after the marker lands. Nothing else removes a row: a live session, a departure the sweep stood down on or
+        certified alive, a dead session the user keeps open as a tab all keep theirs, so `first` is never minted again by
+        a warm rebuild (rounds one to three of the timer computed a keep from a moving window each tick and forgot what it
+        kept). What else can leave a row, and its bound: a session forgotten or renamed away without a death keeps a row
+        until the process ends; every row was minted by a build of a session on the chat tab list, so the table holds at
+        most the sessions this kernel life ever showed (the names registry's size), reset with the process; and the death
+        sweep's tick drops the row of a departure whose marker another road or process stamped, inside its own walk, only
+        when the tick's own verdict is dead (reg present False, never None; no registry blind; no alive arm), the way the
+        boot pass sweeps the registry: one classifier, never a simpler predicate beside it (round five)."""
+        with self.lock:
+            self.chat_by_session.pop(str(sid), None)
 
     def build_chat_cold_skip(self):
         """A cold tab (no build since the boot) that every connected chat page holds as a skeleton was not built (the
@@ -751,6 +791,9 @@ class _PerfStats:
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
+            builds["chat"]["bySession"] = sorted(              # the per-session timer, sids only, the largest max first
+                ({"sid": sid, **row} for sid, row in self.chat_by_session.items()),
+                key=lambda r: -(r["max"] or 0.0))
             parses = {"kernel": self.parses["kernel"], "hits": self.parses["hits"], "bytes": self.parses["bytes"],
                       "bySid": dict(self.parses["bySid"])}
             sends = {k: {sl: {"count": e[0], "bytes": e[1]} for sl, e in d.items()}
@@ -808,7 +851,8 @@ class _PerfStats:
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
                           ("chatMergeSets", _merge_sets_report), ("chatPostal", _chat_postal_report),
-                          ("chatLedger", _ledger_memo_report), ("chatFoldTasks", _task_fold_report)):
+                          ("chatLedger", _ledger_memo_report), ("chatFoldTasks", _task_fold_report),
+                          ("outlineProvisional", _prov_ledger_memo_report)):
             try:
                 memos[key] = read()
             except Exception:
@@ -1806,6 +1850,7 @@ def _version_info():
             # per-install: SDK sessions ask for reasoning summaries (gear checkbox). Top-level only — not
             # in the "settings" sub-dict below, whose mixed marks promise a cross-machine write this never makes
             "thinkingSummaries": _thinking_summaries_on(),
+            "wholeChatFrames": _whole_chat_frames_on(),   # the Whole chat frames switch (2026-09-15): per-install, the gear's row reads it
             "taskTracking": _mv["taskTracking"],   # the master switch (T404): the gear's row and the shell's rail read it; one snapshot with its stamp
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
@@ -8249,6 +8294,46 @@ def _set_file_editing(enabled, gt=None):
 # thinking OFF this toggle also turns adaptive thinking on (the SDK has no display-only field); the
 # sub-copy says that too, and sdk_backend logs it when a cap is present.
 THINKING_SUMMARIES_FILE = "thinking-summaries.json"   # same name sdk_backend.THINKING_SUMMARIES_FILE reads
+WHOLE_CHAT_FRAMES_FILE = "whole-chat-frames.json"     # the Whole chat frames switch (2026-09-15): every chat tab built from turn 0
+
+
+def _whole_chat_frames_on():
+    """The Whole chat frames switch (2026-09-15, the night stage one b landed): while ON, every chat tab is built from turn 0
+    for every client, protocol 2 included, as if an index client were connected (_chat_floor0_of), instead of from the
+    assembly document's cut with the region above the cut left to the page's history wire. OFF unless this install's file
+    says yes (absent, unreadable or malformed all read False); ROMP_CHAT_FLOOR0=1 seeds the file at boot when none exists.
+    Read live at every pusher cycle (a few bytes), so a flip from the gear or a WS op takes effect on the next push with no
+    restart; the flip dirties the view caches (the chat signature carries the floor, so every tab rebuilds). The reversible
+    lever for a page that cannot fill the regions above a documented tab's cut: on until the page fix lands, then off."""
+    try:
+        return bool(json.loads((jd.STATE / WHOLE_CHAT_FRAMES_FILE).read_text()).get("enabled"))
+    except Exception:
+        return False
+
+
+def _set_whole_chat_frames(enabled, gt=None):
+    """Returns the applied gesture stamp (epoch ms), or None when the gesture was its own echo, a stale `gt` stood down, or
+    the store write failed (OSError: loud on stderr, nothing applied; caught here like _set_thinking_summaries'). Read-check-
+    write under _SETTINGS_LOCK, like its siblings; an applied flip dirties the view caches and wakes the pusher, the rule
+    every kernel setting flip keeps (the feed cache and the chat tabs must not serve the old floor)."""
+    with _SETTINGS_LOCK:
+        try:
+            prev = json.loads((jd.STATE / WHOLE_CHAT_FRAMES_FILE).read_text())
+        except Exception:
+            prev = None
+        prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
+        if _gesture_echo(gt, prev_gt, isinstance(prev, dict) and bool(prev.get("enabled")) == bool(enabled)):
+            return None
+        if _setting_stale("whole-chat-frames", gt, prev_gt):
+            return None
+        stamp = gt if gt is not None else int(time.time() * 1000)
+        try:
+            _atomic_write(jd.STATE / WHOLE_CHAT_FRAMES_FILE, json.dumps({"enabled": bool(enabled), "gt": stamp}))
+        except OSError as e:
+            sys.stderr.write("setting whole-chat-frames: write failed (%s): nothing applied\n" % e)
+            return None
+    _mark_views_dirty()                                   # the floor moved for every tab: rebuild and push now
+    return stamp
 
 
 def _thinking_summaries_on():
@@ -8731,7 +8816,7 @@ def _consume_update_report(running_only=False, _tries=3):
 
 
 def _update_checks_off():
-    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship.py kernel_env) runs none of the
+    """ROMP_UPDATE_CHECK=off: a HERMETIC kernel (a served lab's, tests/test_ship_reship_served.py kernel_env) runs none of the
     update loop's three checks. The release check reads the release remote's tags, the main-drift check the remote's
     main (git ls-remote, both), and either raises the shell's update banner over the page under test; the converge
     check reads the checkout. CI 2026-09-13: the banner sat on the settings pills and took a lab's clicks, first from the
@@ -11084,6 +11169,8 @@ _load_tick_seen()               # the previous kernel's last evaluations, if it 
 _load_intr_marks()              # and its interrupt-marks memo (T401 (3) target 3)
 try:
     em.checkpoint_sweep()       # checkpoints of files that are gone (cleared, removed sessions) leave with the boot (T323 stage 3)
+    if os.environ.get("ROMP_CHAT_FLOOR0") == "1" and not (jd.STATE / WHOLE_CHAT_FRAMES_FILE).exists():
+        _set_whole_chat_frames(True)   # the boot-time fallback SEEDS the Whole chat frames switch once; the gear owns it after
 except Exception:
     pass
 
@@ -25842,6 +25929,16 @@ def _death_sweep_tick(now, live_map):
         if present:
             continue                                 # an SDK death is the kill gesture's to stamp
         if not _death_stamp_due(sid):
+            # already stamped (a marker standing that this kernel did not write: another road or process), or a supersession.
+            # The per-session chat build row (/perf) leaves with a CERTIFIED death only, and ONE classifier decides: the row goes
+            # here only when this tick's own verdict is dead, that is reg present is False (never None: an unreadable sdk/ is a
+            # stand-down, as the two other death writers read it), neither registry is blind, and no alive arm fires (not
+            # Codex-owned, no driver thread, no recent life); every other case keeps the row (round five, 2026-09-15: a sweep
+            # with a simpler predicate at the tick's top dropped a live session's row four ways)
+            if (present is False and not sdk_blind and not blind
+                    and not (cx is not None and cx._session(sid) is not None and cx.owns(sid))
+                    and not _sdk_thread_alive(sid) and not _recent_life(sid, now)):
+                _PERF_STATS.chat_row_drop(sid)
             continue
         if sdk_blind or present is None:
             stood_sdk += 1                           # its reg may sit behind the unreadable directory: stand down
@@ -26039,6 +26136,7 @@ def _record_death(sid, now, by):
         sys.stderr.write("record-death %s: %s\n" % (sid, traceback.format_exc()))
         return False
     _record_idle(sid, now)
+    _PERF_STATS.chat_row_drop(sid)                     # the per-session chat build row leaves with the certified death (2026-09-15)
     sys.stderr.write("death: %s recorded (by %s)\n" % (sid, by))   # kill-attribution convention
     return True
 
@@ -34915,6 +35013,210 @@ def _stamp_interrupt_causes(events):
     return events
 
 
+# ── THE GOAL TREE WALK, SHARED (plans/outline-pane-provisional-row.md, 2026-09-15) ──────────────────────────────────────
+# build_session's walk over one goal store, factored so the Outline's provisional row (a tab the cold-tab gate skipped) draws the
+# same rows from the store alone: every node with its child ids and the done / derived / cleared / blocked / current / onpath flags,
+# the two deep-link anchors from the parsed transcript's segments when `anchors` (the build), None when not (the store holds the
+# position; a cold tab has no landing). Pure over the store, the segment maps and the cleared set; the callers memoize.
+def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
+    """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals."""
+    gnodes = gstore.get("nodes", {}) if gstore is not None else {}
+    gstatus = gstore.get("status", {}) if gstore is not None else {}
+    gcleared = _cleared_ids()
+    gkids = {}
+    for _gid, _gn in gnodes.items():
+        gkids.setdefault(_gn.get("parentId"), []).append(_gid)
+    g_agent_open = _agent_open_set(gnodes, gkids)   # authoritative-open subtree → never 'done' (mirrors build_feed / the judge)
+    focus = gstore.get("lastNode") if gstore is not None else None
+    tree = []
+
+    def _cleared(cid):
+        cn = gnodes.get(cid)
+        return bool(cn) and (cn.get("cleared") or cid in gcleared or gstatus.get(cid) == "cleared")
+
+    # VERDICTS ONLY (the user 2026-07-15; was roll-UP since 2026-06-16): a node shows done if it's
+    # explicitly nodeComplete (a judge/agent/user verdict, or the roll-down cache under a verdicted
+    # ancestor). CLEARED is a SEPARATE axis, not a flavor of done (the user 2026-07-26: the box means
+    # done, and only done — a cleared-but-unfinished node keeps its open ring; the strike + chip say
+    # dismissed). The old derived arm — all children done ⇒ dimmed ✓ on the parent — painted an
+    # authored-looking check on a goal nobody ruled done (children are filed prerequisites/retries,
+    # not a promised breakdown: the load-testing card's unrun experiment wore a ✓ because its "retry
+    # the connection" child closed). The judge-side twin (rollup_status is_complete's bottom-up arm)
+    # is gone the same way; the closer now RULES such nodes via _subtree_done_candidates, so an
+    # honest check appears when the verdict lands.
+    _dmemo = {}
+    def _subtree_done(nid):
+        if nid in _dmemo:
+            return _dmemo[nid]
+        nd = gnodes.get(nid)
+        if not nd:
+            _dmemo[nid] = False
+            return False
+        res = bool(nd.get("nodeComplete"))
+        if not res and nd.get("umbrella"):             # ARCHIVED pre-T101 container (mints retired; live
+            # ones dissolve every rollup) — history still renders structurally-complete: the
+            # mint asserted "this node IS its children"; cleared kids are out of the closure either
+            # way (neither done nor holding it open), mirroring build_feed's _closure_done
+            kids = [c for c in gkids.get(nid, []) if not _cleared(c)]
+            res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
+        _dmemo[nid] = res
+        return res
+
+    # mt = node last-modified (the judge writes it on create / amend / done / block); fall back to t for
+    # pre-rename nodes. Recency orders the tree (top goals + children freshest-first) and picks the single
+    # most-recently-CHANGED node; the render marks it → and auto-expands the path (onpath) down to it.
+    def _mt(cid):
+        cn = gnodes.get(cid) or {}
+        return cn.get("mt", cn.get("t", 0))
+    _smemo = {}
+    def _submax(cid):
+        if cid in _smemo:
+            return _smemo[cid]
+        m = _mt(cid)
+        for c in gkids.get(cid, []):
+            m = max(m, _submax(c))
+        _smemo[cid] = m
+        return m
+    # ONE "here" marker (the user 2026-06-17): the highlight (current) and the → arrow (recent) mark the SAME
+    # node now — the working cursor, lastNode/focus. They used to be computed DIFFERENTLY — the highlight from
+    # the stored lastNode pointer, the arrow from the node with the freshest mt — so nothing forced them onto
+    # the same node, and they read as two competing "current" claims when a re-touched older node out-stamped
+    # the cursor. Keying the arrow + the auto-expand path to focus collapses them to one. (_submax above is the
+    # tree-ORDERING key — still mt-based, unchanged.)
+    recent = focus
+    onpath = set()                                         # the marked node + its ancestors → the render auto-expands
+    _p = recent
+    while _p:
+        onpath.add(_p)
+        _p = gnodes.get(_p, {}).get("parentId")
+
+    # Emit the FULL goal tree — every node, with its child ids — so the RENDER can fold / expand at ANY
+    # level (the user 2026-06-16): completed / cleared nodes fold by default, the recent path + open work
+    # expand. Pruning moved to the render; the kernel just supplies the structure + done / derived /
+    # cleared / recent / onpath flags. Cleared nodes are INCLUDED now (shown faded), not skipped.
+    def _twalk(nid, depth, ancestor_done=False, ancestor_cleared=False):
+        nd = gnodes.get(nid)
+        if not nd:
+            return
+        # cleared rolls DOWN (replacing the old cleared→done roll-down): dismissing a parent dismisses
+        # its subtree, so the children fade + strike with it instead of sitting as live-looking open
+        # rings under a struck parent — while every box keeps meaning done (the user 2026-07-26).
+        clr = _cleared(nid) or ancestor_cleared
+        # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella holding
+        # one — is never 'done' here either, so the ledger matches the feed + the judge (see _agent_open_set).
+        # A CLEARED node is still dismissed (the strike + chip carry that), so the override only applies live.
+        aopen = (nid in g_agent_open) and not clr
+        explicit = bool(nd.get("nodeComplete")) and not aopen
+        # done rolls BOTH ways, like the ask-tree flatten() (the user 2026-06-16): a node under a done
+        # parent is derived-done too (roll-DOWN via ancestor_done), not just when its own subtree is done
+        # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓, instead of a child
+        # showing ○ under a done top. CLEARED no longer counts as done for any of this (the user
+        # 2026-07-26: the box means done) — a dismissed-unfinished node keeps its ring under the strike.
+        derived = (not explicit) and (not aopen) and (_subtree_done(nid) or ancestor_done)
+        kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
+        # EXACT deep-link anchors (the user 2026-06-19): a ledger TOC click lands on the precise chat turn
+        # BY UUID — the SAME anchors build_feed gives its cards — so the ledger and the feed for one node
+        # land identically, replacing the ledger's old nearest-time landing. promptAnchorUuid → the minting
+        # user message (text zone); anchorUuid → the newest trail segment (mark + time zones).
+        _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_work, sid=sid) if anchors else (None, None)   # no anchors without the parse: a provisional row's nodes carry none
+        tree.append({"id": nid, "text": nd["text"], "depth": depth,
+                     "done": explicit or derived, "derived": derived, "cleared": clr,
+                     "blocked": bool(nd.get("blocked")), "t": nd["t"],
+                     # mt = the segment where this node was last touched (resolved/blocked) — the click-
+                     # to-jump nav lands done/blocked goals on their mt (the assistant turn that finished
+                     # them), open goals on t (where they began). Matches build_feed (the user 2026-06-16).
+                     "mt": nd.get("mt", nd["t"]), "current": nid == focus,
+                     "onpath": nid in onpath,
+                     "promptAnchorUuid": _pa, "anchorUuid": _wa,
+                     # the distiller's takeaway (done) / the block-distiller's decision brief (blocked),
+                     # null until produced — the ledger row's ⊕ expander reveals it inline (the user 2026-06-21)
+                     "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
+                     "children": [c for c in kids if c in gnodes]})
+        for c in kids:
+            _twalk(c, depth + 1, ancestor_done=explicit or derived, ancestor_cleared=clr)
+    for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
+        _twalk(_rid, 0)
+    # "Recent" for the tab-hover (the user 2026-06-30): the up-to-5 most-recently-touched TOP-level tasks across
+    # the LIVE store AND the archive, REGARDLESS of status (done / blocked / cleared) — so a session whose tops
+    # were all crossed off still lists the last 5 things it did, not just its summary. Roots only (tasks, not
+    # steps). The live tree usually holds ≤1 open top; the rest are cleared+archived, hence the archive merge.
+    _live_roots = [{"text": nd["text"], "t": nd.get("mt", nd.get("t", 0))}
+                   for nid, nd in gnodes.items()
+                   if nd.get("parentId") is None and (nd.get("text") or "").strip()]
+    return tree, _live_roots
+
+
+def _ledger_tree(sid, tree):
+    """The ledger's tree from a walk, for the built row and the provisional one alike: a muted session (hideFromFeed) shows no
+    goals, and the tree is capped at 80 nodes; applied in ONE place so a provisional row never shows more than its built twin."""
+    if _session_flag(sid, "hideFromFeed"):
+        return []
+    return tree[:80]
+
+
+# the Outline's provisional ledger memo: parse-free (the build's _ledger_memo keys on the parse object's identity, which a skipped
+# tab never has), per session, held by the shared store object's identity (load_goals_shared hands back one frozen object until the
+# store, its override journal or its archive changes) beside cleared.jsonl's key. With the Outline connected the skipped set is
+# every cold tab (349 at the last boot): without this the pusher would walk 349 stores a cycle. Entries of tabs no longer listed
+# go at the attach. Counters ride /perf under memos.outlineProvisional.
+_prov_ledger_memo = {}
+_prov_ledger_memo_stats = {"hit": 0, "miss": 0, "bypass_hold": 0, "bypass_empty": 0}
+
+
+def _prov_ledger_memo_report():
+    return dict(_prov_ledger_memo_stats, entries=len(_prov_ledger_memo))
+
+
+def _prov_ledger_memo_evict(listed, reader):
+    """Drop the provisional ledger memo's dead entries, at every ledgers attach (the review of PR 1694, 2026-09-15): with no
+    flagged Outline connected there is no reader, so every entry goes (a frozen store reference per cold tab would otherwise
+    linger until a strip change); with one, the entries of tabs no longer listed and of tabs built since (warm: the gate never
+    skips them again). Iterates a snapshot and pops with a default, as the _built_chat prune does: _push runs on the pusher
+    thread and on the connect handlers' threads at once, so another push may insert while this one evicts, and a comprehension
+    over the live dict raises RuntimeError (dictionary changed size during iteration), which _push's broad except would turn
+    into a push that sends no frame."""
+    for _k in list(_prov_ledger_memo):
+        if not reader or _k not in listed or _k in _built_chat:
+            _prov_ledger_memo.pop(_k, None)
+
+
+def _provisional_ledger(sid):
+    """The ledger the Outline reads (tree, current, archivedTops) for a tab the cold-tab gate skipped, from the goal store alone:
+    the shared walk without anchors under the parse-free memo, the mute and the cap through _ledger_tree, `current` None (the live
+    row's since is stamped at the queue pop, not the transcript's turn start, so a value would flip on the first build), and the
+    archived tops from their cached store read. The four ledger fields the pane never reads are not assembled."""
+    gstore, gfault = jd.load_goals_shared_or_fault(sid)
+    if gfault is None:
+        gstore = _apply_rewind_hold(sid, gstore)
+    tree = []
+    if _rewind_hold_get(sid):
+        _chat_memo_bump(_prov_ledger_memo_stats, "bypass_hold")   # a held sid's store is a filtered copy per read: never memoized
+        tree, _ = _goal_tree_walk(sid, gstore, anchors=False)
+    elif not (gstore and gstore.get("nodes")):
+        _chat_memo_bump(_prov_ledger_memo_stats, "bypass_empty")
+    else:
+        ck = _stat_key(jd.STATE / "cleared.jsonl")
+        ent = _prov_ledger_memo.get(sid)
+        if ent is not None and ent[0] is gstore and ent[1] == ck:
+            _chat_memo_bump(_prov_ledger_memo_stats, "hit")
+            tree = ent[2]
+        else:
+            _chat_memo_bump(_prov_ledger_memo_stats, "miss")
+            tree, _ = _goal_tree_walk(sid, gstore, anchors=False)
+            tree = tree[:80]                          # the memo holds the CAPPED tree (the review's low 1): the walk's whole list
+            _prov_ledger_memo[sid] = (gstore, ck, tree)   # per cold tab would hold every node of a 349-tab set; the mute is
+    return {"tree": _ledger_tree(sid, tree), "current": None,   # applied at the read, not stored: a flag flip shows at once
+            "archivedTops": _fleet_archived_tops(sid)}
+
+
+def _provisional_row(sid, name, light):
+    """A ledgers row for a tab the cold-tab gate skipped this push: what the Outline reads and nothing more (the name and colour
+    from the session's record, the light status the skeleton tabs get, the mail-off fields, the store-only ledger), `provisional`
+    so the pane marks it lightly and withholds the jumps; the built row replaces it in place once the tab is built."""
+    return {"sid": sid, "name": name, "color": _name_color(sid), "status": light, **_mail_off_fields(sid),
+            "ledger": _provisional_ledger(sid), "provisional": True}
+
+
 def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, sidechain=False, meta_path=None, floor=None, page=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip.
@@ -36122,129 +36424,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         _chat_memo_bump(_ledger_memo_stats, "hit")
         tree, _live_roots = _lhit[3], _lhit[4]       # the memo's own lists: the ledger slices them, nothing writes a row
     else:
-        gnodes = gstore.get("nodes", {}) if gstore is not None else {}
-        gstatus = gstore.get("status", {}) if gstore is not None else {}
-        gcleared = _cleared_ids()
-        gkids = {}
-        for _gid, _gn in gnodes.items():
-            gkids.setdefault(_gn.get("parentId"), []).append(_gid)
-        g_agent_open = _agent_open_set(gnodes, gkids)   # authoritative-open subtree → never 'done' (mirrors build_feed / the judge)
-        focus = gstore.get("lastNode") if gstore is not None else None
-        tree = []
-
-        def _cleared(cid):
-            cn = gnodes.get(cid)
-            return bool(cn) and (cn.get("cleared") or cid in gcleared or gstatus.get(cid) == "cleared")
-
-        # VERDICTS ONLY (the user 2026-07-15; was roll-UP since 2026-06-16): a node shows done if it's
-        # explicitly nodeComplete (a judge/agent/user verdict, or the roll-down cache under a verdicted
-        # ancestor). CLEARED is a SEPARATE axis, not a flavor of done (the user 2026-07-26: the box means
-        # done, and only done — a cleared-but-unfinished node keeps its open ring; the strike + chip say
-        # dismissed). The old derived arm — all children done ⇒ dimmed ✓ on the parent — painted an
-        # authored-looking check on a goal nobody ruled done (children are filed prerequisites/retries,
-        # not a promised breakdown: the load-testing card's unrun experiment wore a ✓ because its "retry
-        # the connection" child closed). The judge-side twin (rollup_status is_complete's bottom-up arm)
-        # is gone the same way; the closer now RULES such nodes via _subtree_done_candidates, so an
-        # honest check appears when the verdict lands.
-        _dmemo = {}
-        def _subtree_done(nid):
-            if nid in _dmemo:
-                return _dmemo[nid]
-            nd = gnodes.get(nid)
-            if not nd:
-                _dmemo[nid] = False
-                return False
-            res = bool(nd.get("nodeComplete"))
-            if not res and nd.get("umbrella"):             # ARCHIVED pre-T101 container (mints retired; live
-                # ones dissolve every rollup) — history still renders structurally-complete: the
-                # mint asserted "this node IS its children"; cleared kids are out of the closure either
-                # way (neither done nor holding it open), mirroring build_feed's _closure_done
-                kids = [c for c in gkids.get(nid, []) if not _cleared(c)]
-                res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
-            _dmemo[nid] = res
-            return res
-
-        # mt = node last-modified (the judge writes it on create / amend / done / block); fall back to t for
-        # pre-rename nodes. Recency orders the tree (top goals + children freshest-first) and picks the single
-        # most-recently-CHANGED node; the render marks it → and auto-expands the path (onpath) down to it.
-        def _mt(cid):
-            cn = gnodes.get(cid) or {}
-            return cn.get("mt", cn.get("t", 0))
-        _smemo = {}
-        def _submax(cid):
-            if cid in _smemo:
-                return _smemo[cid]
-            m = _mt(cid)
-            for c in gkids.get(cid, []):
-                m = max(m, _submax(c))
-            _smemo[cid] = m
-            return m
-        # ONE "here" marker (the user 2026-06-17): the highlight (current) and the → arrow (recent) mark the SAME
-        # node now — the working cursor, lastNode/focus. They used to be computed DIFFERENTLY — the highlight from
-        # the stored lastNode pointer, the arrow from the node with the freshest mt — so nothing forced them onto
-        # the same node, and they read as two competing "current" claims when a re-touched older node out-stamped
-        # the cursor. Keying the arrow + the auto-expand path to focus collapses them to one. (_submax above is the
-        # tree-ORDERING key — still mt-based, unchanged.)
-        recent = focus
-        onpath = set()                                         # the marked node + its ancestors → the render auto-expands
-        _p = recent
-        while _p:
-            onpath.add(_p)
-            _p = gnodes.get(_p, {}).get("parentId")
-
-        # Emit the FULL goal tree — every node, with its child ids — so the RENDER can fold / expand at ANY
-        # level (the user 2026-06-16): completed / cleared nodes fold by default, the recent path + open work
-        # expand. Pruning moved to the render; the kernel just supplies the structure + done / derived /
-        # cleared / recent / onpath flags. Cleared nodes are INCLUDED now (shown faded), not skipped.
-        def _twalk(nid, depth, ancestor_done=False, ancestor_cleared=False):
-            nd = gnodes.get(nid)
-            if not nd:
-                return
-            # cleared rolls DOWN (replacing the old cleared→done roll-down): dismissing a parent dismisses
-            # its subtree, so the children fade + strike with it instead of sitting as live-looking open
-            # rings under a struck parent — while every box keeps meaning done (the user 2026-07-26).
-            clr = _cleared(nid) or ancestor_cleared
-            # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella holding
-            # one — is never 'done' here either, so the ledger matches the feed + the judge (see _agent_open_set).
-            # A CLEARED node is still dismissed (the strike + chip carry that), so the override only applies live.
-            aopen = (nid in g_agent_open) and not clr
-            explicit = bool(nd.get("nodeComplete")) and not aopen
-            # done rolls BOTH ways, like the ask-tree flatten() (the user 2026-06-16): a node under a done
-            # parent is derived-done too (roll-DOWN via ancestor_done), not just when its own subtree is done
-            # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓, instead of a child
-            # showing ○ under a done top. CLEARED no longer counts as done for any of this (the user
-            # 2026-07-26: the box means done) — a dismissed-unfinished node keeps its ring under the strike.
-            derived = (not explicit) and (not aopen) and (_subtree_done(nid) or ancestor_done)
-            kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
-            # EXACT deep-link anchors (the user 2026-06-19): a ledger TOC click lands on the precise chat turn
-            # BY UUID — the SAME anchors build_feed gives its cards — so the ledger and the feed for one node
-            # land identically, replacing the ledger's old nearest-time landing. promptAnchorUuid → the minting
-            # user message (text zone); anchorUuid → the newest trail segment (mark + time zones).
-            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_work, sid=sid)
-            tree.append({"id": nid, "text": nd["text"], "depth": depth,
-                         "done": explicit or derived, "derived": derived, "cleared": clr,
-                         "blocked": bool(nd.get("blocked")), "t": nd["t"],
-                         # mt = the segment where this node was last touched (resolved/blocked) — the click-
-                         # to-jump nav lands done/blocked goals on their mt (the assistant turn that finished
-                         # them), open goals on t (where they began). Matches build_feed (the user 2026-06-16).
-                         "mt": nd.get("mt", nd["t"]), "current": nid == focus,
-                         "onpath": nid in onpath,
-                         "promptAnchorUuid": _pa, "anchorUuid": _wa,
-                         # the distiller's takeaway (done) / the block-distiller's decision brief (blocked),
-                         # null until produced — the ledger row's ⊕ expander reveals it inline (the user 2026-06-21)
-                         "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
-                         "children": [c for c in kids if c in gnodes]})
-            for c in kids:
-                _twalk(c, depth + 1, ancestor_done=explicit or derived, ancestor_cleared=clr)
-        for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
-            _twalk(_rid, 0)
-        # "Recent" for the tab-hover (the user 2026-06-30): the up-to-5 most-recently-touched TOP-level tasks across
-        # the LIVE store AND the archive, REGARDLESS of status (done / blocked / cleared) — so a session whose tops
-        # were all crossed off still lists the last 5 things it did, not just its summary. Roots only (tasks, not
-        # steps). The live tree usually holds ≤1 open top; the rest are cleared+archived, hence the archive merge.
-        _live_roots = [{"text": nd["text"], "t": nd.get("mt", nd.get("t", 0))}
-                       for nid, nd in gnodes.items()
-                       if nd.get("parentId") is None and (nd.get("text") or "").strip()]
+        tree, _live_roots = _goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True)   # the shared walk (plans/outline-pane-provisional-row.md): the Outline's provisional row takes the same over the store alone
         if _lkey is not None:
             _chat_memo_bump(_ledger_memo_stats, "miss")
             _ledger_memo[sid] = (_lkey, parsed, gstore, tree, _live_roots)
@@ -36256,7 +36436,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # concurrent pusher's swap of the set (a connect-thread build races the cycle) — a row saying "needs you"
     # beside a tab with no ring, in the same frame (review find, 2026-09-13)
     needs_you = _feed_needs_input_of(sid)
-    ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
+    ledger = {"summary": arch.get("headline", ""), "tree": _ledger_tree(sid, tree),   # the mute and the cap, shared with the provisional row
               "current": current, "recent": recent_tops,
               # the postal working note (set_working: the session's claim to a branch and files, written for
               # peer sessions), "" when none. The chat's section-at-a-glance view shows it as a row's second
@@ -44419,6 +44599,58 @@ def _note_ws_inbound(client, now=None):
     _reveal_proven(client)     # a push tap handed to this socket while it was unproven has landed (2026-09-06)
 
 
+def _dial_kind(headers, q):
+    """The one tell for what dialled a socket (2026-09-15), decided by the terms the producers state, in this order:
+      relay  when the dial states relay=1: the term the federation splice (_remote_ws) writes into the query it forwards, the
+             way the shim states proto, reconnect and skeleton; another kernel relaying a browser's pane to this one.
+      page   when the dial states client=ext: the VS Code extension host (vscode-extension/src/extension.ts, its connect
+             URL), which dials from Node's ws client with no Origin and no User-Agent and no shim, so nothing else names it.
+      page   when the dial carries an Origin or a User-Agent header: a browser's upgrade carries both, a CLI (curl, wget,
+             urllib) a User-Agent; the splice forwards only the six WebSocket upgrade headers, so its dial carries neither.
+      relay  otherwise: no term, no header. The one producer of that shape is a hub kernel older than the relay term,
+             relaying a browser's federated dial (federation.ts states app and wid alone, no instance id); the fallback is
+             bounded, since hubs update, and a bare dial that states nothing reads as a relay by design.
+    Every non-browser producer states its kind; absence alone tells nothing apart. `headers` is any mapping with .get (the
+    handler's, or a dict); `q` the parsed query (parse_qs: name -> [values]). Planned reader beside the wsopen row: the
+    connect push's per-app split (romp_perf's), reading client["kind"]."""
+    if (q.get("relay") or [""])[0] == "1":
+        return "relay"
+    if (q.get("client") or [""])[0] == "ext":
+        return "page"
+    if headers.get("Origin") or headers.get("User-Agent"):
+        return "page"
+    return "relay"
+
+
+_ws_open_row_failed = False   # set once a wsopen row could not be written, so the stderr line below is said once per process
+
+
+def _note_ws_open(client, reconnect=False, now=None):
+    """One client-diag row per socket the kernel ACCEPTS (2026-09-15). The kernel kept no durable record of page connections, so
+    an empty client-diag.jsonl read as a broken sink when no browser had been on a page this kernel serves, and a count of
+    GET /ws per app read as the attached dashboard's panes when they may have been another kernel's relay dials. The row
+    names the app, the dashboard id, the shim's reconnect term and the client's `kind` (_dial_kind at the handshake: page or
+    relay; hub for the hub side of a spliced upgrade, with the host it was relayed to). Returns whether a row was filed; the
+    file's own failure is never the socket's, and is said on stderr ONCE (the reading rule, an empty file means no page and
+    not a broken sink, holds only while writes succeed, so a failed one must be on the record)."""
+    global _ws_open_row_failed
+    try:
+        now = time.time() if now is None else now
+        data = {"app": client.get("app"), "kind": client.get("kind"), "reconnect": bool(reconnect),
+                "iid": bool(client.get("iid")), "cid": client.get("cid")}
+        if client.get("host"):
+            data["host"] = str(client.get("host"))
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "wsopen",
+                                                                         "data": data}) + "\n")
+        return True
+    except Exception as e:
+        if not _ws_open_row_failed:
+            _ws_open_row_failed = True
+            print("[client-diag] could not file a wsopen row (%s): from here on an empty client-diag.jsonl is not a record of no page" % e,
+                  file=sys.stderr)
+        return False
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -46368,7 +46600,10 @@ def _chat_history_reply(sid, msg, now, base=None):
         """The turn a wire key sits in: by its position in the floor'd list, else by the parse (a key in the pages)."""
         p = pos.get(k)
         if p is not None:
-            return max(0, tix[p])
+            if p < len(tix) and tix[p] >= 0:
+                return tix[p]
+            fm = _first_mapped_turn(tix, p)         # a note key: the turn it rides with, never max(0, -1)=0
+            return fm if fm is not None else _turn_of_uuid(turns, k)
         return _turn_of_uuid(turns, k)
 
     def pages(lo, hi):
@@ -46392,8 +46627,11 @@ def _chat_history_reply(sid, msg, now, base=None):
         if p is not None and p > 0:
             frm = _snap_turn_start(tix, max(0, p - WIRE_CHUNK))
             more = frm > 0 or floor > 0
+            _span_lo = _first_mapped_turn(tix, frm)
+            _span_lo = _span_lo if _span_lo is not None else 0          # the head edge: the first placed turn, never max(0, -1)=0 for a leading note
+            _span_hi = tix[p - 1] if tix[p - 1] >= 0 else _span_lo
             return {"type": "chatHead", "id": sid, "beforeUuid": before, "events": (head_cards if not more else []) + evs[frm:p],
-                    "more": more, "span": [max(0, tix[frm]), max(0, tix[p - 1]) + 1],
+                    "more": more, "span": [_span_lo, _span_hi + 1],
                     "_base": ({"first": _event_key(evs[frm])} if (p > frm and into_tail) else None)}
         j = floor if p == 0 else _turn_of_uuid(turns, before)
         if j is None:
@@ -46410,7 +46648,7 @@ def _chat_history_reply(sid, msg, now, base=None):
             out = evs[a:b]
             body_first = _event_key(out[0]) if out else None
             more_before, more_after = a > 0 or floor > 0, b < len(evs)
-            w_span = (tix[a], tix[b - 1]) if b > a else (None, None)
+            w_span = (_first_mapped_turn(tix, a), tix[b - 1]) if b > a else (None, None)   # the head edge: the first placed turn, never -1 for a leading note
         else:
             j = _turn_of_uuid(turns, anchor)
             if j is None or j >= floor:
@@ -46430,7 +46668,7 @@ def _chat_history_reply(sid, msg, now, base=None):
                     w_span = (lo, tix[b - 1])
             else:
                 more_after = True
-        span = [max(0, w_span[0]), w_span[1] + 1] if None not in w_span else None   # the head cards ride turn -1: the span starts at 0
+        span = [w_span[0], w_span[1] + 1] if None not in w_span else None   # w_span[0] is the first placed turn (else None: missing); a leading note never reads as turn 0, and the head cards ride turn -1 below it
         # the window prepends to the tail run when its span reaches the tail's first turn: the base's first edge moves to the
         # window's first event; any other window leaves the base alone (T386 stage 2)
         nb = None
@@ -46490,6 +46728,8 @@ def _chat_floor0_of(chat_clients, now=None):
     either, however it is stamped: _resolve_reconnect's pop stamps a reconnect=1 dial `ready` with no proto term, and the
     wait above runs out on it, and each used to drag every client to floor 0 for a socket that saw nothing (the follow-up
     after PR 1584, low 3)."""
+    if _whole_chat_frames_on():                          # the Whole chat frames switch (2026-09-15): every tab from turn 0, live
+        return True
     now = _ws_clock() if now is None else now
     return any(c.get("proto") == 1 or (c.get("proto") is None and (c.get("ready") or now - c.get("t0", now) > READY_WAIT_S))
                for c in chat_clients if c.get("handshake") is not False)
@@ -46538,6 +46778,19 @@ def _turn_index_of_events(evs, turns):
             cur = ti
         out.append(cur)
     return out
+
+
+def _first_mapped_turn(tix, start):
+    """The turn of the first event at or after `start` that the parse places in a turn (tix >= 0), or None when
+    none from `start` on is placed. A durable note flushed into the idle gap before the cut (a retry recovery, a
+    gaveup, an orphan reply, an effort change, a command gesture) has a synthesized uuid no turn carries, so
+    _turn_index_of_events gives it -1 (its own index carries the PREVIOUS turn, and a LEADING note has none): a head
+    or tail edge derived from that index must read the next placed event's turn, never max(0, -1) = turn 0 (which
+    made the page render one run, no head gap, headKnown, and never ask: the reported no-history/no-scroll)."""
+    for i in range(max(0, start), len(tix)):
+        if tix[i] >= 0:
+            return tix[i]
+    return None
 
 
 def _snap_turn_start(tix, p):
@@ -46627,7 +46880,7 @@ def _tail_lo(sid, evs, head_from, now):
         if sess is None or head_from >= len(evs):
             return None
         tix = _turn_index_of_events(evs, _parse(sess["path"], sid, now)["turns"])
-        return max(0, tix[head_from]) if head_from < len(tix) else None
+        return _first_mapped_turn(tix, head_from) if head_from < len(tix) else None   # never max(0, -1)=0 for a leading note (the tail run begins at the first placed turn)
     except Exception:
         return None
 
@@ -47028,6 +47281,8 @@ def _setting_kept_value(name):
         return _update_mode()
     if name == "thinking-summaries":
         return _thinking_summaries_on()
+    if name == "whole-chat-frames":
+        return _whole_chat_frames_on()
     if name == "task-tracking":
         return _task_tracking_on()
     return jd._state_str(name, "")   # the judge-tier stores are bare value files
@@ -47206,7 +47461,7 @@ def _adopt_peer_settings(host, rver):
 
 # Every gt-gated store, by the name _setting_stale is called with — the vocabulary the settingStale
 # frame and the gear's STALE_LABELS already share, so /version's settingsGt speaks the same one.
-_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "task-tracking",
+_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "task-tracking",
               "judge-model", "index-model", "judge-effort", "index-effort", "judge-concurrency",
               "distill-model", "distill-effort", "comment-model", "comment-effort", "comment-fast",
               "judge-fast", "distill-fast", "index-fast")
@@ -47222,9 +47477,10 @@ def _setting_stored_gt(name):
         return _gt_int(_auto_nudge_data().get("compactSuggestGt"))
     if name == "update-mode":
         return _update_mode_gt()
-    if name in ("file-editing", "thinking-summaries"):
+    if name in ("file-editing", "thinking-summaries", "whole-chat-frames"):
         try:
             d = json.loads((jd.STATE / (THINKING_SUMMARIES_FILE if name == "thinking-summaries"
+                                        else WHOLE_CHAT_FRAMES_FILE if name == "whole-chat-frames"
                                         else "file-editing.json")).read_text())
             return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
         except Exception:
@@ -49192,6 +49448,7 @@ def _push(targets, connect=False, live_map=None):
         # The FEED's per-session Fleet ledger slice still rides along, attached AFTER the builds (want_chat —
         # we do NOT build all sessions just for a feed/fleet push: the user 2026-06-24 slow-load regression).
         chat_sessions = []
+        _prov_rows = []                                  # the Outline's provisional rows for the tabs the gate skips this push (plans/outline-pane-provisional-row.md)
         _t_stage = time.monotonic()                      # /perf stage clock: chat, then feed, then timeline
         if want_chat or want_fleet:   # the fleet needs every session's ledger slice (built below, attached to feed)
             # TABS-FIRST (the user 2026-06-26): ship name+color per tab so the client can paint the WHOLE strip
@@ -49230,7 +49487,8 @@ def _push(targets, connect=False, live_map=None):
             # tab's floor and the next cycle flipped it back, review find E); which clients count is _chat_floor0_of's
             with _clients_lock:
                 _all_chat = [c for c in _clients if c.get("app") == "chat"]
-                _any_sessions_pane = any(c.get("app") == "fleet" for c in _clients)   # the pane's existing wire id
+                _plain_outline = any(c.get("app") == "fleet" and not c.get("provRows") for c in _clients)   # an Outline pane (app fleet) WITHOUT the provisional-row capability: the gate stands down for it, as for every pane before the flag (plans/outline-pane-provisional-row.md)
+                _flagged_outline = any(c.get("app") == "fleet" and c.get("provRows") for c in _clients)     # a reader of the provisional rows is connected: the memo's entries are worth keeping
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
             _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
             #                                                                          not this push's targets alone (round two, low 2)
@@ -49242,12 +49500,13 @@ def _push(targets, connect=False, live_map=None):
                 # since the boot, that no watching client names active, and that EVERY connected chat page holds as a
                 # skeleton (the restart reload dials the skeleton diet since the client half of this change) is not
                 # built here: the page's click or its idle prefetch releases the skeleton, and that push builds it.
-                # A warm tab (a cached build) is served and status-framed as before; a Sessions pane needs every
-                # session's ledger slice, so with one connected nothing is skipped; a page that declared no diet holds
-                # no set and is served whole, as today.
+                # A warm tab (a cached build) is served and status-framed as before; an Outline pane WITHOUT the
+                # provisional-row capability needs every session's ledger slice, so with one connected nothing is skipped,
+                # while a flagged Outline takes a provisional row per skipped tab (the attach below,
+                # plans/outline-pane-provisional-row.md); a page that declared no diet holds no set and is served whole, as today.
                 _tm = live_map.get(s["sid"])
                 _light = None
-                if (not is_active and s["sid"] not in _all_active and not want_fleet and not _any_sessions_pane
+                if (not is_active and s["sid"] not in _all_active and not _plain_outline
                         and s["sid"] not in _built_chat and os.path.exists(s["path"])
                         and _held_as_skeleton_by_all(s["sid"], _all_chat)):   # every CONNECTED chat client, as the floor reads
                     _light = _light_status(s["sid"], s["path"], _tm, now)   # no live row: no status to state, so build as before
@@ -49256,6 +49515,8 @@ def _push(targets, connect=False, live_map=None):
                         _send_light_status(c, s["sid"], _light)   # the live row's word until the tab's first build
                     _VIEW_STATS["chatSkipCold"] += 1
                     _PERF_STATS.build_chat_cold_skip()
+                    if want_fleet:                       # the Outline's row for the skipped tab, from the store alone (the attach merges it in build order)
+                        _prov_rows.append(_provisional_row(s["sid"], s.get("name", ""), _light))
                     continue
                 try:
                     sig = _chat_build_sig(s, _tm, now, live_map=live_map)
@@ -49287,7 +49548,7 @@ def _push(targets, connect=False, live_map=None):
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
-                    _PERF_STATS.build_chat(True)
+                    _PERF_STATS.build_chat(True, sid=str(s["sid"]))
                 else:
                     _VIEW_STATS["chatBuildActive" if is_active else "chatBuildBg"] += 1
                     _t0 = time.monotonic()
@@ -49329,7 +49590,11 @@ def _push(targets, connect=False, live_map=None):
                     # against the cached signature, so /perf can say which input drives the rebuilds; the
                     # watched tab's rebuilds are counted under active_built and not attributed
                     _miss = _chat_sig_miss(hit[0] if hit is not None else None, sig)
-                    _PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss)
+                    try:
+                        _nbytes = os.path.getsize(s["path"]) if s.get("path") else None   # the leaf's size beside its build time
+                    except OSError:
+                        _nbytes = None
+                    _PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss, sid=str(s["sid"]), nbytes=_nbytes)
                     if _PERF:                            # the keyword values below cost lookups; skip them when off
                         _perf("chatbuild", sid=str(s["sid"])[:8], cached=0, active=int(is_active),
                               ms=round(_dt * 1000, 1), miss=",".join(_miss),
@@ -49488,6 +49753,10 @@ def _push(targets, connect=False, live_map=None):
                                     "ledger": ({**m["ledger"], "archivedTops": _fleet_archived_tops(m["id"])}
                                                if isinstance(m.get("ledger"), dict)
                                                else m.get("ledger"))} for m in chat_sessions]
+                _bo = {s["sid"]: i for i, s in enumerate(build_order)}
+                if _prov_rows:   # the skipped tabs' provisional rows join in build order (plans/outline-pane-provisional-row.md)
+                    feed["ledgers"] = sorted(feed["ledgers"] + _prov_rows, key=lambda r: _bo.get(r["sid"], len(_bo)))
+                _prov_ledger_memo_evict(_bo, _flagged_outline)   # at EVERY attach, not only with rows: no reader, an unlisted tab or a built one drops its entry (thread-safe: another push may be inserting)
             if feed.get("off"):                          # the chat's dots carry on while the feed is not built (T404 round two,
                 _dots_w, _dots_a = _chat_dots_off(now, live_map)   # low 9): the same two signals, derived outside the feed build
             else:
@@ -49807,11 +50076,28 @@ def _push_session_now(sid):
             _VIEW_STATS["chatSkipCold"] += 1
             _PERF_STATS.build_chat_cold_skip()
             return
+        _t0 = time.monotonic()
         try:
             m = build_session(sid, now, live_map)
         finally:
             _chat_dep_scope.deps = None              # a targeted push caches nothing: its record is nobody's, and a
-        if not m:                                    # later reader on this thread must not append to it
+        _dt = time.monotonic() - _t0                 # later reader on this thread must not append to it
+        try:
+            _nbytes = os.path.getsize(_path) if _path else None
+        except OSError:
+            _nbytes = None
+        _active = sid in {c.get("active") for c in targets if c.get("active")}   # the watched tab, as _push reads it from its clients
+        _PERF_STATS.build_chat(False, _dt, active=_active, miss=("targeted",), sid=sid, nbytes=_nbytes)
+        #   the per-session timer (round three, 2026-09-15): this push builds too (27 attach handshakes at a boot run it), and an
+        #   unrecorded build here warmed the cache the pusher's first recorded build then read, so the row's `first` and `max` and
+        #   the aggregate's `built` missed the worst builds; the label `targeted` says the push, not a signature component, drove it.
+        #   Still not cached: the build ran with no dependency record (deps None above, by design), so a _built_chat entry stored
+        #   from it would carry no signature to invalidate on and the pusher would serve it stale. The row's `first` is the first
+        #   build by the two PUSH roads (_push and this one); three other roads build the same sid from the same leaf and record
+        #   nothing: _page (the chat page's own render), the uuid-anchored history reply and the proto-1 loadOlder wire. In the
+        #   normal flow none precedes the recorded first (a needFull routes to _push_one; a history ask needs an echat base), so
+        #   the first is the cold build; a boot where a history ask came first would read a warm first (round four, 2026-09-15)
+        if not m:
             return
         if _empty_build_regresses(m, _prev_chat_events.get(sid)):
             _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None),
@@ -52743,7 +53029,7 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
 # this code in node with fakes and pins the wiring.
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,freshTimer=null,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdSince=0,holdDiag=false,freshSince=0,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
@@ -52757,7 +53043,17 @@ try{if(window.__rompPaneBusy){var b=window.__rompPaneBusy();if(b)return String(b
 return '';}
 function panes(){var out=[],fs=document.querySelectorAll?document.querySelectorAll('iframe'):[];
 for(var i=0;i<fs.length;i++){try{var w=fs[i].contentWindow;if(w&&w.__rompReload)out.push(w);}catch(e){}}return out;}
-function busy(){var b=busyHere();if(b)return b;var ps=panes();for(var i=0;i<ps.length;i++){b=ps[i].__rompReload.busyHere();if(b)return b;}return '';}
+/* the fresh bound is per PAGE: the earliest stamp the walk has seen bounds every pane's hold, so two chat columns whose drops stagger
+   cannot chain two bounds (round three, low 1); the record resets when a walk sees no fresh hold at all */
+function freshExpired(w){var st=0;try{st=w.__rompFreshPendingSince||0;}catch(e){}if(st&&(!freshSince||st<freshSince))freshSince=st;return freshSince>0&&Date.now()-freshSince>=FRESH_HOLD_MS;}
+/* the walk visits EVERY pane before it answers, so the stamp resets whenever no pane holds fresh, whatever other hold stands (the
+   round-four low 1: an early return on typing kept a stale stamp, and a later, genuinely new drop read as already expired) */
+function busy(){var saw=false,hold=busyHere();if(hold==='fresh'){saw=true;if(freshExpired(window))hold='';}var ps=panes();
+for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){saw=true;if(freshExpired(ps[i]))b='';}if(b&&!hold)hold=b;}if(!saw)freshSince=0;return hold;}
+/* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age) through a
+   pane's socket, so a page that never reloads after a deploy is readable from the kernel's client-diag.jsonl; once per owed request */
+function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdSince};
+try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
 function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}
 var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}}}
 function key(o){return o?o.reason+':'+(o.detail||''):'';}
@@ -52769,11 +53065,11 @@ try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
 if(b){R.waiting=b;var hk=owed.reason+'|'+b;if(hk!==heldFor){heldFor=hk;if(R.held)R.held(b,owed);}   /* keyed on the reason: a second restart inside one hold moves the detail and must not announce the same wait again */
-if(b==='fresh'&&!freshTimer)freshTimer=setTimeout(function(){freshTimer=null;tryFire();},FRESH_HOLD_MS);   /* the bound's backstop: no event ends a hold whose frame never comes, so the walk runs once more when the bound has passed */
-return;}R.waiting='';fire();}
+if(!holdTimer){holdSince=Date.now();holdTimer=setTimeout(function(){holdTimer=null;heldLong();tryFire();},FRESH_HOLD_MS);}   /* the bound's backstop, one per hold: no event ends a hold whose frame or drain never comes, so the walk runs once more when the bound has passed, and a hold still standing is filed */
+return;}R.waiting='';holdDiag=false;fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
-var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;}
-if(!owed)owed=next;else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
+var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;holdDiag=false;}
+if(!owed){owed=next;holdDiag=false;}else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* the breadcrumb latch clears only when owed itself changes: a restart arriving while a build reload is held is the same wait */   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
 function noteDv(dv){if(LOADED&&dv&&dv>LOADED)request('build',String(dv));}
 function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT){restarted++;BOOT=v.boot;if(!(CODE&&v.code_ident&&v.code_ident===CODE))request('restart',String(v.boot));}   /* BOOT re-latches: restarted() counts restarts, not the polls that follow one */if(v.dist_ver)noteDv(v.dist_ver);
 if(typeof v.taskTracking==='boolean'){window.__rompTaskTracking=v.taskTracking;if(window.__rompApplyPanes)window.__rompApplyPanes();}}   // the Task tracking switch (T404): the shell's rail follows the kernel
@@ -53020,10 +53316,13 @@ var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: 
 // T265: the reload core asks every pane before firing; a pane whose socket is down with sends queued for its
 // reopen (a prompt typed during a kernel restart) holds the reload — the shell's socket may reopen first, and a
 // reload then would take the queue with it. Diag rows never hold. The flush in ws.onopen is the ending event.
-window.__rompPaneBusy=function(){return (everConnected&&queue.length>queuedDiag)?"sends":"";};
+// messages queued for a socket that has not come back hold the reload (their loss is the reload's cost), bounded like the fresh hold:
+// after a minute the reload goes anyway, so a dead socket cannot keep a page on an old build (the manager 2026-09-14)
+var sendsSince=0,SENDS_HOLD_MS=60000;
+window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;return "";}if(!sendsSince)sendsSince=Date.now();return Date.now()-sendsSince<SENDS_HOLD_MS?"sends":"";};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
-try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the reconnected chat pane has its first frame, a minute at most.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
+try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
 else selfBar("A newer romp build is available.","build");}
@@ -53031,7 +53330,7 @@ function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // on
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
-ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after any reload the reload core fired (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
+ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":"")+(APP==="fleet"?"&provrows=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after any reload the reload core fired (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
@@ -53175,7 +53474,8 @@ if(c.order){order=c.order.slice();}else{order=order.filter(function(kk){return i
 var touched=kind.indexOf("dictlist:")===0?touchedLanes(c,map.order,order):null;
 last.maps[name]={order:order,items:items};m[name]=assemble(kind,last.maps[name],last.msg[name],touched);}
 last.rev=d.rev;last.msg=m;return m;}
-window.__rompLocalSend=send;window.__rompApp=APP;   // federation.ts (the multi-kernel manager) routes local sends + knows the app through these
+window.__rompLocalSend=send;window.__rompApp=APP;
+window.__rompDiag=function(what,data){try{send({type:"clientDiag",surface:"reload-core",what:what,data:data});}catch(e){}};   // the reload core's breadcrumb door: this pane's socket, the serving kernel (the core itself names no send route)   // federation.ts (the multi-kernel manager) routes local sends + knows the app through these
 var SK="romp-vscode-state-%s"+(COL?":"+COL:"");   // persist webview state to localStorage so UI prefs survive a refresh — per chat column (split screen 2026-09-08)
 window.acquireVsCodeApi=function(){return{postMessage:function(m){if(window.__rompFed){window.__rompFed.outbound(m);}else{send(m);}},
 getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
@@ -56923,7 +57223,7 @@ _STALE_JS = (
     "if(RL){RL.refused=function(){buildStale=true;show(BUILDMSG);};"
     # a reload HELD by a pane (an upload in flight, a held send, queued sends) says so, once per hold: the notification
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
-    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the reconnected chat pane has its first frame, a minute at most.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
+    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
     "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
     # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
@@ -62041,6 +62341,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if _set_thinking_summaries(enabled, gt=_gesture_ms(msg)) is None:
                 _tell_stale_gesture(client, msg)
+        elif msg and msg.get("type") == "setWholeChatFrames" and msg.get("enabled") is not None:
+            # The gear's Whole chat frames switch (2026-09-15): kernel-side, PER-INSTALL like setThinkingSummaries (the
+            # floor is this kernel's build decision), gt-gated all the same; the setter dirties the views itself
+            enabled, ferr = _as_bool(msg.get("enabled"), "enabled")
+            if ferr:
+                _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
+                return
+            if _set_whole_chat_frames(enabled, gt=_gesture_ms(msg)) is None:
+                _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") == "setTaskTracking" and msg.get("enabled") is not None:
             # The gear's Task tracking master switch (T404): kernel-side, gt-gated like its siblings, a
             # KERNEL_SETTING in federation. Applied, the producer is woken so the tiers stop or start at the
@@ -62744,6 +63053,7 @@ class Handler(BaseHTTPRequestHandler):
         active = (q.get("active") or [""])[0]   # the tab this client is looking at → _push builds it FIRST
         reconnect = (q.get("reconnect") or [""])[0] == "1"   # the shim's own statement: this page opened a socket before and its bundle has said ready, with no ready waiting in its queue
         skeleton = (q.get("skeleton") or [""])[0] == "1" and app == "chat"   # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names; a chat socket's alone (round two of PR 1661: the term is meaningless for a feed or a timeline client)
+        provrows = (q.get("provrows") or [""])[0] == "1" and app == "fleet"   # the Outline's statement (plans/outline-pane-provisional-row.md): it renders a provisional row for a cold tab, so the cold-tab gate need not stand down for it
         col = (q.get("col") or [""])[0]         # which chat COLUMN of that dashboard (split screen, 2026-09-08) — for the logs;
         #                                         the columns arbitrate a dashboard-aimed focus among themselves (render.ts focusIsOurs)
         self.send_response(101)
@@ -62760,6 +63070,7 @@ class Handler(BaseHTTPRequestHandler):
         # `q` above is the connect QUERY; the client's send queue gets its own name — a Queue.get("delta")
         # would block this handler forever (caught by tests/test_kernel.py's socket-error loop test)
         client, sendq, lock = _new_ws_client(app, wid, self.connection, lock=lock)
+        client["kind"] = _dial_kind(self.headers, q)   # page or relay: the one tell the wsopen row reads (and a planned connect-push split)
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         if (q.get("delta") or [""])[0] == "1":
@@ -62807,7 +63118,10 @@ class Handler(BaseHTTPRequestHandler):
                 client["skeletonOnReady"] = True
         if col:
             client["col"] = col
+        if provrows:
+            client["provRows"] = True
         _register_ws_client(client)
+        _note_ws_open(client, reconnect=reconnect)   # the durable record of this open: app, wid, kind (page or relay), reconnect
         if client.get("reconnect"):
             _pusher_wake.set()   # the reconnect is the event; without this it waited out the 0.5-3 s backstop
         try:
@@ -62870,6 +63184,9 @@ class Handler(BaseHTTPRequestHandler):
         q.pop("token", None)         # whatever the browser sent never travels — with or without a row token
         if rtok:
             q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
+        q["relay"] = ["1"]           # the dial's kind, stated the way the shim states proto, reconnect and skeleton (2026-09-15): the remote
+        #                               kernel's wsopen row and connect-push split read it first; without it the remote had only header absence
+        #                               to go by, and the VS Code extension host's dial (Node's ws client: no Origin, no User-Agent) read as a relay
         try:
             up = socket.create_connection(("127.0.0.1", int(port)), timeout=6)
         except OSError as e:
@@ -62890,6 +63207,32 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(502, "tunnel to %s dropped" % host, "text/plain")
         self.close_connection = True             # hijacked socket — no keep-alive after the splice
         down = self.connection
+        # The remote's answer decides whether this hub side is an accepted socket at all: its head (the status line and the
+        # headers, up to the blank line) is read here, forwarded byte for byte, and only a 101 files the hub's own wsopen row,
+        # kind hub, naming the host, so the auditor sees the browser's pane here AND its relay dial on the remote; a refusal
+        # (401, 404, a dead tunnel) files nothing, the splice going on as before (2026-09-15). Bytes past the blank line are
+        # the remote's first frames and ride along in the same send. The read is bounded; a remote that answers nothing in
+        # time gets the pumps below as before, and no row.
+        head = b""
+        try:
+            up.settimeout(15)
+            while b"\r\n\r\n" not in head and len(head) < 65536:
+                b = up.recv(65536)
+                if not b:
+                    break
+                head += b
+        except OSError:
+            pass
+        finally:
+            up.settimeout(None)
+        if head:
+            try:
+                down.sendall(head)
+            except OSError:
+                pass
+        if head.split(b"\r\n", 1)[0].startswith(b"HTTP/1.1 101"):
+            _note_ws_open({"app": (q.get("app") or ["chat"])[0], "wid": (q.get("wid") or [""])[0], "iid": (q.get("iid") or [""])[0],
+                           "cid": uuid.uuid4().hex[:12], "kind": "hub", "host": host}, reconnect=(q.get("reconnect") or [""])[0] == "1")
 
         def _quiet_shutdown(s):
             # shutdown only, never close: `down` still belongs to the base handler (its finish()

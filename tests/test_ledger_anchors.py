@@ -105,7 +105,10 @@ class ColdBeatWorkAnchorFallback(unittest.TestCase):
 
 class SharedHelperAntiDrift(unittest.TestCase):
     """The whole point of the helper: the feed and the ledger can't drift. Guard that BOTH build_feed and
-    build_session resolve node anchors through km._node_anchor_uuids (not a private re-implementation)."""
+    build_session resolve node anchors through km._node_anchor_uuids (not a private re-implementation). Since the
+    Outline's provisional row (plans/outline-pane-provisional-row.md, 2026-09-15) the ledger's walk lives in the shared
+    _goal_tree_walk, which build_session AND the provisional assembly call: the anchors are resolved there, through the
+    one helper, so the pin follows the walk and holds both callers to it."""
 
     def test_both_builders_call_the_one_helper(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
@@ -116,7 +119,11 @@ class SharedHelperAntiDrift(unittest.TestCase):
             m = re.search(r"\ndef %s\(.*?(?=\ndef )" % fn, src, re.S)
             self.assertIsNotNone(m, "found %s" % fn)
             return m.group(0)
-        self.assertIn("_node_anchor_uuids(", body("build_session"), "the ledger resolves anchors via the helper")
+        self.assertIn("_node_anchor_uuids(", body("_goal_tree_walk"), "the ledger's shared walk resolves anchors via the helper")
+        self.assertNotIn("_node_anchor_uuids(", body("build_session"), "build_session holds no private anchor resolution beside the walk")
+        self.assertIn("_goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True)", body("build_session"), "the ledger takes the shared walk, anchors on")
+        self.assertIn("_goal_tree_walk(sid, gstore, anchors=False)", body("_provisional_ledger"), "the Outline's provisional row takes the same walk, anchors off (a cold tab has no landing)")
+        self.assertEqual(len(re.findall(r"def _goal_tree_walk\(", src)), 1, "the walk defined exactly once")
         self.assertIn("_node_anchor_uuids(", body("_feed_session_entry"),   # T368: build_feed's per-session loop body
                       "the feed resolves anchors via the helper")
 

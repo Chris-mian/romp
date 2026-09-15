@@ -834,6 +834,42 @@ class Proto2Wire(Harness):
         d = sent[-1]
         self.assertEqual((d["type"], d["afterUuid"], [e["uuid"] for e in d["events"]]), ("chatTail", m["events"][-1]["uuid"], ["u_next"]))
 
+    def test_the_whole_chat_frames_switch_builds_a_documented_session_from_turn_0_for_a_protocol_2_client_and_flips_live(self):
+        """The Whole chat frames switch (2026-09-15, the night stage one b landed): a protocol-2 client over a documented
+        session gets the FLOORED frame (the turns past the document's cut) with the switch off, the WHOLE frame (every turn
+        from 0) with it on, and a flip mid-life changes the very next push: the pusher's floor decision reads the store live."""
+        recs = transcript(NOW - 86400, turns=600, compact_every=150)
+        self.write(_head_past_the_last_compaction(recs)); self.document()
+        self.write(recs)
+        whole = self.whole()
+        c, _sent = _client(proto=2)
+        saved = km._live_scope.chat_floor0
+        self.addCleanup(lambda: setattr(km._live_scope, "chat_floor0", saved))
+        self.addCleanup(lambda: (km.jd.STATE / km.WHOLE_CHAT_FRAMES_FILE).unlink(missing_ok=True))
+        def push_build():
+            self.fresh()
+            km._live_scope.chat_floor0 = km._chat_floor0_of([c])          # the pusher's decision for this cycle, over this client
+            try:
+                return km.build_session(SID, NOW, {})
+            finally:
+                km._live_scope.chat_floor0 = None
+        self.assertFalse(km._whole_chat_frames_on(), "off by default: absent file")
+        m0 = push_build()
+        self.assertGreater(m0.get("floor", 0), 0, "a protocol-2 client over a documented session: the frame is floored at the cut")
+        self.assertLess(len(m0["events"]), len(whole), "…and carries the turns past the cut only")
+        self.assertIsNotNone(km._set_whole_chat_frames(True), "the flip applies")
+        self.assertTrue(km._whole_chat_frames_on())
+        m1 = push_build()
+        self.assertEqual(m1.get("floor", 0), 0, "the switch on: the next push builds from turn 0 for the same client")
+        self.assertGreaterEqual(len(m1["events"]), len(whole), "…the whole frame: at least every event of the proto-1 whole build")
+        stamp = km._set_whole_chat_frames(False)
+        self.assertIsNotNone(stamp)
+        m2 = push_build()
+        self.assertEqual((m2.get("floor", 0) > 0, len(m2["events"])), (True, len(m0["events"])), "off again: floored on the next push")
+        self.assertIsNone(km._set_whole_chat_frames(False, gt=stamp), "the same value under the same stamp is the gesture's own echo: nothing applied")
+        self.assertIsNone(km._set_whole_chat_frames(True, gt=stamp - 1), "an older gesture stands down")
+        self.assertFalse(km._whole_chat_frames_on())
+
     def test_the_base_rule_over_a_list_longer_than_the_wire_tail_and_a_floor_move(self):
         """Review find N: the earlier fixture's floor'd list fit the wire tail whole (pf 0). Here the tail is longer: a change
         just before the held first is a full frame, just after it a delta from the change; a floor move (an index client
