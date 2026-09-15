@@ -2042,6 +2042,16 @@ function noticeBodyNodes(md: string): Node[] {
   }
 }
 
+// A notice card's action buttons let go on EVERY push, gated or not (the review of PR 1757, medium 2): a click on a down
+// socket is dropped and never answered (a kernel restart), and the card gate skips an unchanged card's update, so a latch
+// that waited for the card's own update or the kernel's answer read "Send again…" for good. The kernel's noticeActionDone
+// and the next push both re-arm; a success with dismissOnAction takes the card off with that push.
+function rearmNoticeButtons(card: any): void {
+  const acts = card._nActions as HTMLElement | undefined;
+  if (!acts || !card._it?.notice) return;
+  for (const b of Array.from(acts.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+}
+
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
   a._it = it;   // the freshest payload copy — the right-click bell menu reads this, never a stale closure; and the gate's identity
@@ -2691,6 +2701,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       }
       nActions.style.display = (nt.actions || []).length ? "" : "none";
     }
+    // re-armed from the payload on EVERY update (the review of PR 1757, medium 2): a click on a down socket is dropped and
+    // never answered, so a latch that waited for noticeActionDone alone read "Send again…" for good; the quarantine card's
+    // shape, disabled = false on every update, and the kernel's answer or the next push both let go
   } else {
     a._nKey = undefined;
   }
@@ -4956,6 +4969,7 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       // try, not recorded as painted.
       const ik = cardInputsKey(e.ask, gate);
       if (cardNeedsUpdate(card as any, e.ask, ik)) { updateAskCard(card, e.ask); (card as any)._ik = ik; }
+      rearmNoticeButtons(card as any);   // outside the gate: an identical push (the same card object) still lets a latched action go (T370)
     } else if (e.kind === "sess") {
       // grouped-mode session header — keyed per (column, sid): one session can head a run in EVERY column
       key = "s:" + listEl.id + ":" + e.sid;
@@ -5148,6 +5162,7 @@ function reconcileFocusCol(listEl: HTMLElement, entries: Entry[], gate: GateEnv,
       // re-sent the card or a board-level input it reads changed
       const ik = cardInputsKey(e.ask, gate);
       if (cardNeedsUpdate(card as any, e.ask, ik)) { updateAskCard(card, e.ask); (card as any)._ik = ik; }
+      rearmNoticeButtons(card as any);   // outside the gate: an identical push (the same card object) still lets a latched action go (T370)
     } else if (e.kind === "group") {
       key = "f:g:" + e.group.turnId;
       card = fsGroupEls.get(e.group.turnId) || makeGroupCard(e.group);

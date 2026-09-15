@@ -2472,18 +2472,23 @@ PY
     grep '/notice' "$MOCK_LOG" | grep -q '"id": *"11111111-2222-3333-4444-555555555555"'
     # the token never rides the command line: curl reads it from the piped config
     [ "$(grep '/notice' "$MOCK_LOG" | grep -c 'testtok')" -eq 0 ]
-    # --session sends a NAME; the key defaults to a slug of the title
-    run env ROMP_SID= "$ROMP_SCRIPT" card --title "Sweep done: see the plot" --session web
+    # --session sends a NAME
+    run env ROMP_SID= "$ROMP_SCRIPT" card --key sweep --title "Sweep done: see the plot" --session web
     [ "$status" -eq 0 ]
     grep '/notice' "$MOCK_LOG" | grep -q '"name": *"web"'
-    grep '/notice' "$MOCK_LOG" | grep -q '"key": *"Sweep-done--see-the-plot"'
+    grep '/notice' "$MOCK_LOG" | grep -q '"key": *"sweep"'
+    # the key is REQUIRED (a slug of the title made an edited title a second card): usage, exit 2, nothing posted
+    run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card --title "Sweep done: see the plot"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--key is the card's stable name"* ]]
+    [ "$(grep -c '/notice' "$MOCK_LOG")" -eq 2 ]
     # outside a session with no --session: a loud usage refusal, never a silent guess
-    run env ROMP_SID= "$ROMP_SCRIPT" card --title "x"
+    run env ROMP_SID= "$ROMP_SCRIPT" card --key x --title "x"
     [ "$status" -eq 2 ]
     [[ "$output" == *"--session <name> required"* ]]
     run run_romp card
     [ "$status" -eq 2 ]
-    run run_romp card --title "x" --expires soon
+    run run_romp card --key x --title "x" --expires soon
     [ "$status" -eq 2 ]
 }
 
@@ -2491,7 +2496,7 @@ PY
     _stub_curl
     touch "$MOCK_LOG"
     export ROMP_SERVE_TOKEN=testtok
-    run env ROMP_SID=11111111-2222-3333-4444-555555555555 MOCK_CURL_NOTICE_REFUSE=1 "$ROMP_SCRIPT" card --title "x" --attach /nowhere.png
+    run env ROMP_SID=11111111-2222-3333-4444-555555555555 MOCK_CURL_NOTICE_REFUSE=1 "$ROMP_SCRIPT" card --key x --title "x" --attach /nowhere.png
     [ "$status" -eq 1 ]
     [[ "$output" == *"romp card: refused — attachment refused: not a file"* ]]
     [[ "$output" != *"romp card: posted"* ]]

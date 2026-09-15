@@ -1,334 +1,152 @@
-"""Notice cards (T370, plans/notice-cards.md, issue #1750): kernel-made feed cards a producer posts without the judges. The
-store STATE/notices/<sid>.jsonl; post_notice(...) -> (row, error) behind its doors (in-process, the backend's hook, POST
-/notice; `romp card` is tests/romp.bats'); the feed's card family under notice:<sid>:<key>:<rev>; the three moves (a
-dismissal, a revision, an expiry); the actions allowlist executed by the kernel on the gesture; the attachment verdict by
-the preview's confinement; retention to the archive; the memo bound. Hermetic: a temp state root, a synthetic session in
-the notes-api demo world; nothing touches the live state root."""
+#!/usr/bin/env python3
+"""Notice cards (the user 2026-07-06): informational transcript notices — a backgrounded agent's report, a
+romp SYSTEM notice (kernel restart/resume, Retry), folded system-reminders — each get their own boxed card
+with a type chip + collapse, distinct from the postal/teammate cards. The kernel side of that is the
+`rompSystem` flag: a romp SYSTEM notice carries a `<!-- romp-system -->` marker so build_session can tell it
+apart from a feed NUDGE (both author 'romp'), letting the chat render the two differently. Synthetic only."""
 import json
 import os
-import re
 import tempfile
-import threading
-import time
 import unittest
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
+from datetime import datetime, timezone
+from romp_load import load_source
 from pathlib import Path
 
-from romp_load import load_source
-
-HERE = os.path.dirname(os.path.realpath(__file__))
-BIN = os.path.join(os.path.dirname(HERE), "bin")
+BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
+em = load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-_XDG = tempfile.mkdtemp()
-os.environ["XDG_STATE_HOME"] = _XDG
-os.environ.pop("ROMP_STATE_DIR", None)
-os.makedirs(os.path.join(_XDG, "romp"), exist_ok=True)
-open(os.path.join(_XDG, "romp", "session-hosts"), "w").write("off\n")
-km = load_source("romp_kernel_notices", os.path.join(BIN, "romp-kernel"))
-sb = load_source("romp_sdk_backend_notices", os.path.join(BIN, "romp_sdk_backend.py"))
-KSRC = open(os.path.join(BIN, "romp-kernel")).read()
+km = load_source("romp_kernel_notice", os.path.join(BIN, "romp-kernel"))
+jd = km.jd
 
-SID = "11111111-2222-3333-4444-555555555555"     # web, the notes-api demo world
-SID2 = "11111111-2222-3333-4444-666666666666"    # api
+NOW = 1781100000
+SID = "11111111-2222-3333-4444-555555555555"
+T0 = NOW - 3600
 
 
-class World:
-    """A hermetic state root with two named sessions (web, api) whose folder is the temp cwd; the kernel rebound to it."""
-    def __init__(self):
+class MarkersCarryRompSystem(unittest.TestCase):
+    """A romp SYSTEM notice carries the <!-- romp-system --> marker so it cards up instead of bubbling. The
+    kernel-restart/resume notice is the concrete case; the auto-Retry stays a plain bubble (frequent + minimal,
+    a card per retry would be noise), so it deliberately does NOT carry the marker."""
+
+    def test_boot_resume_carries_the_marker(self):
+        sdk = load_source("romp_sdk_backend_nc", os.path.join(BIN, "romp_sdk_backend.py"))
+        self.assertIn("romp-system", sdk.BOOT_RESUME_NUDGE, "the restart/resume notice is a romp SYSTEM notice")
+        self.assertIn("romp-injected", sdk.BOOT_RESUME_NUDGE, "still romp-injected → author 'romp'")
+        with open(os.path.join(BIN, "romp-kernel")) as f:
+            src = f.read()
+        self.assertIn('if "<!-- romp-system -->" in text:', src,
+                      "build_session flags a romp-system message — COMMENT FORM only (the user "
+                      "2026-07-08: content merely mentioning romp-system must not flip the card kind)")
+        self.assertIn('"retry\\n\\n<!-- romp-injected -->"', src, "Retry stays a plain nudge bubble (no marker)")
+
+    def test_every_system_notice_template_carries_a_gist(self):
+        # 2026-09-08: each [romp] mechanics notice names its one-line head in a <!-- romp-gist --> marker, APPENDED
+        # (the rename ping is detected by its leading head, the interrupt causes by their leading sentences)
+        sdk = load_source("romp_sdk_backend_nc2", os.path.join(BIN, "romp_sdk_backend.py"))
+        for name in ("BOOT_RESUME_NUDGE", "ASK_DIED_NOTICE", "CRASH_RESUME_NUDGE"):
+            text = getattr(sdk, name)
+            self.assertRegex(text, r"<!-- romp-gist: [^>]+ -->$", name + " ends with its gist marker")
+            self.assertTrue(text.startswith("<!-- romp-injected --><!-- romp-system -->[romp]"), name + " keeps its leading head")
+        lost = sdk.task_death_notice([{"desc": "watch the suite"}])
+        self.assertIn("<!-- romp-gist: 1 background task cut off when the process ended -->", lost)
+        self.assertEqual(km._romp_system_gist(lost), "1 background task cut off when the process ended")
+        for verdict, frag in (("merged", "merged"), ("closed", "closed without merging"), ("failed", "failed check"), ("ghfail", "dropped")):
+            self.assertIn("<!-- romp-gist: ", km._pr_watch_notice(verdict, "notes-api", 12))
+            self.assertIn(frag, km._romp_system_gist(km._pr_watch_notice(verdict, "notes-api", 12)))
+        for kind in ("met", "timeout", "soft", "execfail"):
+            self.assertIsNotNone(km._romp_system_gist(km._watch_notice(kind, {"note": "the suite is green", "id": "w1"})), kind)
+        # the same lift the user-event build uses serves a QUEUED copy of the notice (T243)
+        self.assertEqual(km._queued_romp_flags(sdk.BOOT_RESUME_NUDGE).get("gist"), "resumed after a romp restart cut its turn")
+
+
+class BuildSessionRompSystemFlag(unittest.TestCase):
+    """build_session sets ev['rompSystem'] on a romp message carrying the marker, and NOT on a plain nudge —
+    so render.ts can draw a romp NOTICE CARD for the former and keep the gray nudge bubble for the latter."""
+
+    def setUp(self):
         self.td = tempfile.TemporaryDirectory()
-        root = Path(self.td.name)
-        self.cwd = root / "notes-api"; self.cwd.mkdir()
-        self.orig_state, self.orig_names = km.jd.STATE, km.NAMES   # the conftest guard: shared state goes back at close
-        km.jd._rebind_state(root / "state")
-        (km.jd.STATE / "session-hosts").parent.mkdir(parents=True, exist_ok=True)
-        (km.jd.STATE / "session-hosts").write_text("off\n")
-        km.jd.NAMES.mkdir(parents=True, exist_ok=True)
-        (km.jd.NAMES / SID).write_text("web\t%s\t#1EA1EB\t#ffffff\n" % self.cwd)
-        (km.jd.NAMES / SID2).write_text("api\t%s\t#B69513\tblack\n" % self.cwd)
-        km.NAMES = km.jd.NAMES
-        self.saved = (km._live_map, km._cwd_of, km._mark_views_dirty, km._push_soon, km._deliver_text, km.Sessions.live)
-        km._live_map = lambda: {}
-        km.Sessions.live = staticmethod(lambda: {})
-        km._cwd_of = lambda sid: str(self.cwd) if sid in (SID, SID2) else None
-        self.dirty, self.pushes, self.delivered = [], [], []
-        km._mark_views_dirty = lambda: self.dirty.append(1)
-        km._push_soon = lambda: self.pushes.append(1)
-        km._deliver_text = lambda sid, text: (self.delivered.append((sid, text)) or (True, "", False))
-        km._NOTICE_MEMO.clear(); km._NOTICE_SWEPT.clear()
-        for k in km._NOTICE_MEMO_STATS: km._NOTICE_MEMO_STATS[k] = 0
-        km._CLEARED_MEMO["slot"] = None
+        td = Path(self.td.name)
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        self.tpath = pdir / (SID + ".jsonl")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self.saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES,
+                      km._live_map, km._read_task_store, km._GLOBAL_CLAUDE_MD)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE = names, proj, td / "goals", td
+        km.NAMES = names
+        km._GLOBAL_CLAUDE_MD = td / "no-global.md"
+        km._read_task_store = lambda fsid, fold=None: []
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        jd.GOALDIR.mkdir(parents=True)
+        km._parse_cache.clear()
 
-    def close(self):
-        (km._live_map, km._cwd_of, km._mark_views_dirty, km._push_soon, km._deliver_text, km.Sessions.live) = self.saved
-        km.jd._rebind_state(self.orig_state); km.NAMES = self.orig_names
-        km._NOTICE_MEMO.clear(); km._NOTICE_SWEPT.clear(); km._CLEARED_MEMO["slot"] = None
+    def tearDown(self):
+        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES,
+         km._live_map, km._read_task_store, km._GLOBAL_CLAUDE_MD) = self.saved
+        km._parse_cache.clear()
         self.td.cleanup()
 
-    def png(self, name="figure.png"):
-        p = self.cwd / name
-        p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
-        return str(p)
+    def _iso(self, t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
+    def _write(self, msgs):
+        # msgs: list of (uuid, parent, promptSource, content)
+        recs = []
+        for u, p, ps, c in msgs:
+            recs.append({"type": "user", "timestamp": self._iso(T0 + len(recs) * 10), "uuid": u,
+                         "parentUuid": p, "promptSource": ps, "message": {"role": "user", "content": c}})
+            recs.append({"type": "assistant", "timestamp": self._iso(T0 + len(recs) * 10), "uuid": u + "a",
+                         "parentUuid": u, "message": {"role": "assistant",
+                         "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}})
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
 
-def _rows(sid):
-    p = km._notice_path(sid)
-    return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+    def _user_events(self):
+        return [e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "user"]
 
+    def test_system_notice_gets_rompsystem_flag(self):
+        self._write([("u1", None, "typed", "start"),
+                     ("u2", "u1a", "sdk",
+                      "<!-- romp-injected --><!-- romp-system -->[romp] The romp kernel restarted; resumed.")])
+        sysev = next(e for e in self._user_events() if e.get("rompSystem"))
+        self.assertTrue(sysev.get("romp"), "a romp SYSTEM notice is still authored romp")
+        self.assertTrue(sysev.get("rompSystem"), "and flagged as a system notice → its own card")
 
-class PostNotice(unittest.TestCase):
-    def setUp(self): self.w = World()
-    def tearDown(self): self.w.close()
+    def test_a_system_notice_carries_its_user_facing_gist(self):
+        # 2026-09-08 (the notice-vocabulary pass): the chat's head for a romp SYSTEM notice is the kernel's GIST,
+        # never the agent-facing body's first sentence ("Re-read the tail… pick the work back up") — the emitter
+        # writes <!-- romp-gist --> beside its other markers and build_session lifts it beside rompSystem
+        self._write([("u1", None, "typed", "start"),
+                     ("u2", "u1a", "sdk",
+                      "<!-- romp-injected --><!-- romp-system -->[romp] The romp kernel restarted; resumed. "
+                      "Re-read the tail and carry on.<!-- romp-gist: resumed after a romp restart cut its turn -->")])
+        sysev = next(e for e in self._user_events() if e.get("rompSystem"))
+        self.assertEqual(sysev.get("gist"), "resumed after a romp restart cut its turn")
 
-    def test_a_post_appends_one_row_with_the_kernels_rev_and_stamp_and_wakes_the_pusher(self):
-        row, err = km.post_notice(SID, "figure", "A new version of the accuracy figure is ready", "Regenerated after the sweep.",
-                                  producer="figure", now=1757000000, t=1756999990)
-        self.assertIsNone(err); self.assertEqual((row["rev"], row["at"], row["t"], row["op"]), (1, 1757000000, 1756999990, "post"))
-        self.assertEqual(_rows(SID), [row], "the file holds exactly the returned row")
-        self.assertEqual(row["needsYou"], False); self.assertEqual(row["actions"], []); self.assertIsNone(row["attachment"])
-        self.assertEqual((len(self.w.dirty), len(self.w.pushes)), (1, 1), "the views are dirtied and the pusher woken once")
+    def test_a_system_notice_without_a_gist_marker_has_no_gist_field(self):
+        # a notice recorded before gists shipped: the field is absent (the chat falls back to the first line);
+        # prose merely MENTIONING romp-gist is not a marker (comment form only, like every romp marker)
+        self._write([("u1", None, "typed", "start"),
+                     ("u2", "u1a", "sdk",
+                      "<!-- romp-injected --><!-- romp-system -->[romp] The romp kernel restarted; resumed. "
+                      "(nothing here says romp-gist: in a comment)")])
+        sysev = next(e for e in self._user_events() if e.get("rompSystem"))
+        self.assertNotIn("gist", sysev)
 
-    def test_every_refusal_is_said_and_nothing_is_written(self):
-        cases = [
-            (dict(sid="", key="k", title="t"), "needs a session"),
-            (dict(sid=SID, key="bad key!", title="t"), "the key must match"),
-            (dict(sid=SID, key="a" * 65, title="t"), "the key must match"),
-            (dict(sid=SID, key="k", title=""), "needs a title"),
-            (dict(sid=SID, key="k", title="x" * 201), "title is too long"),
-            (dict(sid=SID, key="k", title="t", body="b" * (64 * 1024 + 1)), "body is too long"),
-            (dict(sid=SID, key="k", title="t", producer="not ok"), "producer label"),
-            (dict(sid="99999999-2222-3333-4444-555555555555", key="k", title="t"), "no session answers"),
-            (dict(sid=SID, key="k", title="t", expires_at="soon"), "expiresAt must be"),
-            (dict(sid=SID, key="k", title="t", expires_at=1757000000 - 1), "already past"),
-            (dict(sid=SID, key="k", title="t", actions="x"), "actions must be a list"),
-            (dict(sid=SID, key="k", title="t", actions=[{"label": "a", "route": "/send", "body": {"text": "x"}}] * 5), "at most 4"),
-            (dict(sid=SID, key="k", title="t", actions=[{"label": "a", "route": "/watch", "body": {}}]), "not allowed"),
-            (dict(sid=SID, key="k", title="t", actions=[{"label": "", "route": "/send", "body": {"text": "x"}}]), "needs a label"),
-            (dict(sid=SID, key="k", title="t", actions=[{"label": "a", "route": "/send", "body": {}}]), "needs text"),
-            (dict(sid=SID, key="k", title="t", attachment="/nowhere/figure.png"), "attachment refused: not a file"),
-        ]
-        for kw, why in cases:
-            kw.setdefault("producer", "figure"); kw.setdefault("now", 1757000000)
-            row, err = km.post_notice(kw.pop("sid"), kw.pop("key"), kw.pop("title"), kw.pop("body", ""), **kw)
-            self.assertIsNone(row, why); self.assertIn(why, err or "", "refusal names the rule: %r" % err)
-        self.assertEqual(_rows(SID), [], "a refused post writes nothing"); self.assertEqual(self.w.dirty, [])
-
-    def test_the_rev_counts_per_key_per_session_and_the_item_id_carries_it(self):
-        r1, _ = km.post_notice(SID, "figure", "first", producer="figure", now=100)
-        r2, _ = km.post_notice(SID, "figure", "second", producer="figure", now=200)
-        o1, _ = km.post_notice(SID, "other", "other", producer="figure", now=300)
-        a1, _ = km.post_notice(SID2, "figure", "api's own", producer="figure", now=400)
-        self.assertEqual([r1["rev"], r2["rev"], o1["rev"], a1["rev"]], [1, 2, 1, 1])
-        self.assertEqual(km._notice_item_id(SID, "figure", 2), "notice:%s:figure:2" % SID)
-
-    def test_the_attachment_verdict_rides_the_row_an_image_pinned_and_a_refusal_carries_its_why(self):
-        fp = self.w.png()
-        row, err = km.post_notice(SID, "figure", "the figure", producer="figure", attachment=fp, now=100)
-        self.assertIsNone(err)
-        att = row["attachment"]
-        self.assertEqual((att["path"], att["kind"], att["allowed"], att["why"]), (fp, "image", True, ""))
-        self.assertTrue(att["pin"] and att["pin"].endswith(".png"), "an image is pinned at post time: %r" % att["pin"])
-        (self.w.cwd / ".env").write_text("SECRET=1\n")
-        row, err = km.post_notice(SID, "leak", "a secret", producer="figure", attachment=str(self.w.cwd / ".env"), now=100)
-        self.assertIsNone(row); self.assertIn("attachment refused: a secrets-shaped name", err)
-        outside = tempfile.mkdtemp(); fo = os.path.join(outside, "far.png"); open(fo, "wb").write(b"\x89PNG\r\n\x1a\n")
-        # the temp dir sits under the home only when the home holds /tmp; a path outside the session's folder and the
-        # home is refused by the confinement, one inside is allowed
-        row, err = km.post_notice(SID, "far", "far away", producer="figure", attachment=fo, now=100)
-        if os.path.realpath(outside).startswith(os.path.realpath(os.path.expanduser("~")) + os.sep):
-            self.assertIsNone(err, "under the home: allowed")
-        else:
-            self.assertIsNone(row); self.assertIn("outside the session's folder and your home", err)
-
-
-class TheCardFamily(unittest.TestCase):
-    def setUp(self): self.w = World()
-    def tearDown(self): self.w.close()
-
-    def _cards(self, now, cleared=None):
-        return km._notice_cards(now, cleared or {})
-
-    def test_the_newest_revision_per_key_is_the_card_and_every_field_but_the_age_colour_is_fixed(self):
-        km.post_notice(SID, "figure", "first", "one", producer="figure", now=100, t=100)
-        km.post_notice(SID, "figure", "second", "two", producer="figure", now=200, t=200)
-        km.post_notice(SID, "note", "a note", producer="cli", now=150, t=150, needs_you=True)
-        a = self._cards(1000); b = self._cards(2000)
-        self.assertEqual([c["itemId"] for c in a], ["notice:%s:note:1" % SID, "notice:%s:figure:2" % SID], "post order, the superseded rev hidden")
-        strip = lambda c: {k: v for k, v in c.items() if k != "trgb"}
-        self.assertEqual([strip(c) for c in a], [strip(c) for c in b], "no field but trgb derives from the clock")
-        fig = a[1]
-        self.assertEqual((fig["text"], fig["column"], fig["name"], fig["sid"], fig["t"], fig["tree"], fig["live"], fig["blocked"]),
-                         ("second", "completed", "web", SID, 200, [], False, None))
-        self.assertEqual(fig["notice"], {"producer": "figure", "key": "figure", "rev": 2, "body": "two", "attachment": None,
-                                         "actions": [], "expiresAt": None, "dismissOnAction": False})
-        self.assertEqual(a[0]["column"], "needs_input", "needsYou files under Blocked")
-        self.assertEqual(fig["color"], {"bg": "#1EA1EB", "fg": "#ffffff"})
-
-    def test_a_dismissal_hides_the_revision_and_a_new_revision_re_shows_after_it(self):
-        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
-        i1 = "notice:%s:figure:1" % SID
-        self.assertEqual([c["itemId"] for c in self._cards(500, {i1: 400})], [], "cleared: hidden")
-        km.post_notice(SID, "figure", "second", producer="figure", now=600, t=600)
-        self.assertEqual([c["itemId"] for c in self._cards(700, {i1: 400})], ["notice:%s:figure:2" % SID], "new information re-shows under a new id")
-
-    def test_an_expiry_leaves_at_the_next_build_and_an_expire_row_retires_early(self):
-        km.post_notice(SID, "soon", "expires", producer="figure", now=100, t=100, expires_at=1000)
-        self.assertEqual(len(self._cards(999)), 1); self.assertEqual(len(self._cards(1000)), 0, "expiresAt applies as a skip at build time")
-        km.post_notice(SID, "keep", "stays", producer="figure", now=100, t=100)
-        row, err = km.expire_notice(SID, "keep", now=200)
-        self.assertIsNone(err); self.assertEqual((row["op"], row["rev"]), ("expire", 1))
-        self.assertEqual([c["itemId"] for c in self._cards(300)], ["notice:%s:soon:1" % SID], "the retired key is gone; the one not yet expired stays")
-        self.assertIn("no notice with key", km.expire_notice(SID, "never", now=200)[1])
-
-    def test_the_family_keys_no_session_for_the_cleared_ledger(self):
-        self.assertIn("notice:", km._CLEARED_NO_SESSION)
-        self.assertEqual(km._cleared_foreign({"notice:%s:figure:1" % SID: 5, "%s:g1" % SID: 6}), ["%s:g1" % SID], "a notice id never rides as foreign")
-
-
-class Actions(unittest.TestCase):
-    def setUp(self): self.w = World()
-    def tearDown(self): self.w.close()
-
-    def test_a_stored_send_action_delivers_through_the_one_door_and_dismisses_when_asked(self):
-        acts = [{"label": "Send again", "route": "/send", "body": {"id": SID, "text": "please retry the sweep"}}]
-        row, err = km.post_notice(SID, "dropped-sends", "1 message you typed before the restart was not re-sent",
-                                  producer="dropped-sends", actions=acts, needs_you=True, dismiss_on_action=True, now=100)
-        self.assertIsNone(err)
-        iid = "notice:%s:dropped-sends:1" % SID
-        ok, e = km._notice_action(iid, "/send", {"id": SID, "text": "please retry the sweep"})
-        self.assertEqual((ok, e), (True, "")); self.assertEqual(self.w.delivered, [(SID, "please retry the sweep")])
-        self.assertIn(iid, km._cleared_ids(), "dismissOnAction: a success clears the card")
-        self.assertEqual(km._notice_action(iid, "/send", {"id": SID, "text": "something else"}), (False, "no such action on that card"))
-        self.assertEqual(km._notice_action(iid, "/watch", {}), (False, "no such action on that card"))
-        self.assertEqual(km._notice_action("notice:%s:gone:1" % SID, "/send", {}), (False, "that notice is gone"))
-        self.assertEqual(km._notice_action("%s:g1" % SID, "/send", {}), (False, "not a notice card"))
-
-    def test_without_dismiss_on_action_the_card_stays(self):
-        acts = [{"label": "Send", "route": "/send", "body": {"text": "hello"}}]
-        km.post_notice(SID, "k", "t", producer="cli", actions=acts, now=100)
-        iid = "notice:%s:k:1" % SID
-        self.assertEqual(km._notice_action(iid, "/send", {"text": "hello"}), (True, ""))
-        self.assertEqual(self.w.delivered, [(SID, "hello")], "a body without a target delivers to the card's own session")
-        self.assertNotIn(iid, km._cleared_ids())
-
-
-class Retention(unittest.TestCase):
-    def setUp(self): self.w = World()
-    def tearDown(self): self.w.close()
-
-    def test_the_sweep_archives_dismissed_expired_and_superseded_rows_and_deletes_none(self):
-        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
-        km.post_notice(SID, "figure", "second", producer="figure", now=200, t=200)
-        km.post_notice(SID, "soon", "expires", producer="figure", now=100, t=100, expires_at=500)
-        km.post_notice(SID, "gone", "dismissed", producer="figure", now=100, t=100)
-        km.post_notice(SID, "keep", "stays", producer="figure", now=100, t=100)
-        km.expire_notice(SID, "keep", now=150)
-        km.post_notice(SID, "keep", "stays again", producer="figure", now=160, t=160)
-        km._clear_ask("notice:%s:gone:1" % SID)
-        before = _rows(SID)
-        moved = km._compact_notices(now=600)
-        live, arch = _rows(SID), [json.loads(l) for l in (km._notice_archive_dir() / (SID + ".jsonl")).read_text().splitlines()]
-        self.assertEqual(moved, len(arch)); self.assertEqual(len(live) + len(arch), len(before), "nothing deleted")
-        self.assertEqual(sorted((r["key"], r["rev"], r["op"]) for r in live), [("figure", 2, "post"), ("keep", 2, "post")])
-        self.assertEqual(sorted((r["key"], r["rev"], r["op"]) for r in arch),
-                         [("figure", 1, "post"), ("gone", 1, "post"), ("keep", 1, "expire"), ("keep", 1, "post"), ("soon", 1, "post")])
-        self.assertEqual(km._compact_notices(now=700), 0, "an unmoved file is skipped")
-        self.assertEqual([c["itemId"] for c in km._notice_cards(700, km._cleared_ids())], ["notice:%s:keep:2" % SID, "notice:%s:figure:2" % SID], "post order by t")
-
-    def test_the_memo_is_bounded_by_bytes_as_a_fraction_of_memory_with_the_environment_override(self):
-        saved = km._mem_total_bytes
-        try:
-            km._mem_total_bytes = lambda: 8 * 1024 ** 3
-            os.environ.pop("ROMP_NOTICE_MEMO_BYTES", None)
-            self.assertEqual(km._notice_memo_bound(), 32 * 1024 * 1024)
-            os.environ["ROMP_NOTICE_MEMO_BYTES"] = "4096"; self.assertEqual(km._notice_memo_bound(), 4096)
-            os.environ["ROMP_NOTICE_MEMO_BYTES"] = "0"; self.assertEqual(km._notice_memo_bound(), 32 * 1024 * 1024, "zero is not a bound")
-            os.environ["ROMP_NOTICE_MEMO_BYTES"] = "lots"; self.assertEqual(km._notice_memo_bound(), 32 * 1024 * 1024)
-        finally:
-            km._mem_total_bytes = saved; os.environ.pop("ROMP_NOTICE_MEMO_BYTES", None)
-        km.post_notice(SID, "k", "t", producer="cli", now=100)
-        km._notice_rows(SID); km._notice_rows(SID)
-        rep = km._notice_memo_report()
-        self.assertEqual(set(rep), {"entries", "bytes", "bound", "hit", "miss", "evicted"})
-        self.assertEqual((rep["entries"], rep["bound"]), (1, km.NOTICE_MEMO_BYTES)); self.assertGreaterEqual(rep["hit"], 1)
-        saved_bound = km.NOTICE_MEMO_BYTES
-        try:
-            km.NOTICE_MEMO_BYTES = 1                    # a bound smaller than one file: the entry is shed after the read, not kept
-            km.post_notice(SID2, "k", "t", producer="cli", now=100)
-            km._notice_rows(SID2)
-            self.assertEqual(km._notice_memo_report()["entries"], 0, "over the bound the largest goes first")
-        finally:
-            km.NOTICE_MEMO_BYTES = saved_bound
-
-
-class TheDoors(unittest.TestCase):
-    """POST /notice in /watch's shape, the backend's hook, and the boot wiring pin."""
-    @classmethod
-    def setUpClass(cls):
-        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
-        cls.port = cls.srv.server_address[1]
-        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.srv.shutdown()
-
-    def setUp(self): self.w = World()
-    def tearDown(self): self.w.close()
-
-    def _post(self, body, token=True):
-        headers = {"Content-Type": "application/json"}
-        if token:
-            headers["X-Romp-Token"] = os.environ["ROMP_SERVE_TOKEN"]
-        req = urllib.request.Request("http://127.0.0.1:%d/notice" % self.port, data=body if isinstance(body, bytes) else json.dumps(body).encode(), headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status, json.loads(r.read().decode() or "{}")
-        except urllib.error.HTTPError as e:
-            raw = e.read().decode() or "{}"
-            try:
-                return e.code, json.loads(raw)
-            except ValueError:
-                return e.code, {"raw": raw}
-
-    def test_the_route_answers_in_the_watch_shape(self):
-        self.assertNotEqual(self._post({"id": SID, "key": "k", "title": "t"}, token=False)[0], 200, "no token: refused")
-        st, r = self._post(b"[]"); self.assertEqual(st, 400)
-        st, r = self._post({"id": SID, "title": "t"}); self.assertEqual(st, 400); self.assertIn("key, title and id|name", r["error"])
-        st, r = self._post({"id": SID, "key": "bad key", "title": "t"}); self.assertEqual((st, r["ok"]), (200, False)); self.assertIn("the key must match", r["error"])
-        st, r = self._post({"id": "99999999-2222-3333-4444-555555555555", "key": "k", "title": "t"}); self.assertEqual((st, r["ok"]), (200, False)); self.assertIn("no session answers", r["error"])
-        st, r = self._post({"id": SID, "key": "k", "title": "t", "actions": [{"label": "x", "route": "/watch", "body": {}}]}); self.assertEqual(r["ok"], False); self.assertIn("not allowed", r["error"])
-        st, r = self._post({"id": SID, "key": "k", "title": "t", "attachment": "/nowhere.png"}); self.assertEqual(r["ok"], False); self.assertIn("attachment refused", r["error"])
-        st, r = self._post({"id": SID, "key": "figure", "title": "posted over http", "body": "the body", "producer": "http-test", "needsYou": True})
-        self.assertEqual((st, r["ok"]), (200, True)); n = r["notice"]
-        self.assertEqual((n["sid"], n["key"], n["rev"], n["needsYou"], n["producer"], n["title"]), (SID, "figure", 1, True, "http-test", "posted over http"))
-        st, r = self._post({"id": SID, "key": "figure", "title": "again"}); self.assertEqual((r["ok"], r["notice"]["rev"], r["notice"]["producer"]), (True, 2, "http"))
-        saved = (km.Sessions.live, km._live_names)
-        try:                                            # a LIVE session's name resolves, as on every name-keyed route
-            km.Sessions.live = staticmethod(lambda: {SID: {"state": "waiting"}}); km._live_names = lambda live: {"web": SID}
-            st, r = self._post({"name": "web", "key": "byname", "title": "by name"}); self.assertEqual((r["ok"], r["notice"]["sid"]), (True, SID))
-        finally:
-            km.Sessions.live, km._live_names = saved
-        st, r = self._post({"id": SID, "expire": "figure"}); self.assertEqual((st, r["ok"], r["notice"]["op"], r["notice"]["rev"]), (200, True, "expire", 2))
-        st, r = self._post({"id": SID, "expire": "never"}); self.assertEqual(r["ok"], False)
-
-    def test_the_backend_helper_resolves_the_hook_defensively_and_the_kernel_wires_it_at_boot(self):
-        class Bare(sb.SdkBackend):                 # a stand-in class carrying no hook, as the backend's own tests bind
-            def __init__(self): pass
-        be = Bare()
-        self.assertEqual(be.post_notice(SID, "k", "t", producer="dropped-sends"), (None, "no notice door is wired on this backend (the kernel wires on_notice at boot)"))
-        calls = []
-        Bare.on_notice = staticmethod(lambda sid, key, title, body="", **kw: (calls.append((sid, key, title, body, kw)) or ({"rev": 1}, None)))
-        self.assertEqual(be.post_notice(SID, "k", "t", "b", producer="dropped-sends", needs_you=True), ({"rev": 1}, None))
-        self.assertEqual(calls, [(SID, "k", "t", "b", {"producer": "dropped-sends", "needs_you": True})])
-        Bare.on_notice = staticmethod(lambda *a, **k: 1 / 0)
-        self.assertIn("could not be posted", be.post_notice(SID, "k", "t", producer="x")[1])
-        self.assertIn("type(_sdk_backend).on_notice = staticmethod(post_notice)", KSRC, "the boot wiring, beside the model-fallback hook")
-        self.assertIn('asks.extend(_notice_cards(now, cleared))', KSRC, "the feed attaches the family after the quarantine cards")
-        self.assertIn('("notices", _notice_memo_report)', KSRC, "/perf reports the memo")
-        self.assertIn('_nmoved = _compact_notices()', KSRC, "the retention pass runs beside the goal-store sweep")
+    def test_a_plain_nudge_is_not_flagged(self):
+        self._write([("u1", None, "typed", "start"),
+                     ("u2", "u1a", "sdk",
+                      "<!-- romp-injected -->keep going on the plan\nromp-goal-id: %s:g1" % SID)])
+        nudge = next(e for e in self._user_events() if e.get("romp"))
+        self.assertFalse(nudge.get("rompSystem"), "a feed nudge is NOT a system notice → stays the nudge bubble")
 
 
 if __name__ == "__main__":

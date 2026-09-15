@@ -82,7 +82,7 @@ EOF
     _romp_cmd "romp watch-pr <n> [--repo o/r]" -        "One mail here when the PR lands or fails — the kernel owns the watch, so it survives restarts (replaces the mortal shell loop)"
     _romp_cmd "romp login add|list|remove <label>" -    "The stored Claude logins a session can be billed to beside the machine's own: add records a COMMAND that prints the login's setup-token on demand (--cmd '<shell line>'; how the token is kept is the user's); list and remove print labels only, never a token"
     _romp_cmd "romp watch --cmd '<pred>' [...]" -       "One mail when the command exits 0 (or the timeout passes) — kernel-owned like watch-pr, for ANY background wait (--every Ns --timeout Ns --note '...' | --list | --cancel <id>)"
-    _romp_cmd "romp card --title <text> [...]" -            "Post a NOTICE CARD to the feed for a session (no judge): --body/--body-file, --attach <path>, --key, --needs-you, --expires <s>, --producer; the kernel keeps its history and the card moves only on your dismissal, a new revision or its expiry"
+    _romp_cmd "romp card --key <key> --title <text> [...]" - "Post a NOTICE CARD to the feed for a session (no judge): the key is the card's stable name (a second post under it is a revision); --body/--body-file, --attach <path>, --needs-you, --expires <s>, --producer; the card moves only on your dismissal, a new revision or its expiry"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
     _romp_cmd "romp compact <session> [--wait]" -       "Compact a session's context in place (Claude's /compact) — queued safely if a turn is open; --wait blocks until it finishes (--timeout <s>, default 600)"
@@ -1116,7 +1116,7 @@ print(json.dumps(b))' "$_w_cmd" "$_w_key" "$_w_who" "$_w_every" "$_w_timeout" "$
     exit 1
 fi
 
-# `romp card --title <text> [--body <markdown> | --body-file <path>] [--session <name>] [--attach <path>] [--key <key>]
+# `romp card --key <key> --title <text> [--body <markdown> | --body-file <path>] [--session <name>] [--attach <path>]
 #             [--needs-you] [--expires <seconds>] [--producer <label>]` (T370, plans/notice-cards.md): door three of the
 # kernel's post_notice, following `romp watch`'s mechanics exactly: the session defaults to $ROMP_SID under body key id,
 # --session sends name, neither outside a session refuses with exit 2; the token and the body go through _romp_token_cfg and
@@ -1125,8 +1125,9 @@ fi
 # actions are for producers inside romp, against the kernel's allowlist).
 if [[ "${1:-}" == "card" ]]; then
     shift
-    _c_usage="usage: romp card --title <text> [--body <markdown> | --body-file <path>] [--session <name>]
-       [--attach <path>] [--key <key>] [--needs-you] [--expires <seconds>] [--producer <label>]"
+    _c_usage="usage: romp card --key <key> --title <text> [--body <markdown> | --body-file <path>] [--session <name>]
+       [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]
+  --key is the card's stable name: a second post under the same key is a REVISION of the card, a different key a new card"
     _c_title=""; _c_body=""; _c_bodyfile=""; _c_sess=""; _c_attach=""; _c_key=""; _c_needs=0; _c_expires=""; _c_prod="cli"
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1142,7 +1143,7 @@ if [[ "${1:-}" == "card" ]]; then
             *)           echo "$_c_usage" >&2; exit 2 ;;
         esac
     done
-    if [[ -z "$_c_title" ]]; then echo "$_c_usage" >&2; exit 2; fi
+    if [[ -z "$_c_title" || -z "$_c_key" ]]; then echo "$_c_usage" >&2; exit 2; fi   # the key is required: a slug of the title made an edited title a second card (round two, low d)
     if [[ -n "$_c_bodyfile" ]]; then _c_body="$(cat "$_c_bodyfile")"; fi
     _tok="$(_romp_token)"
     _kport="${ROMP_KERNEL_PORT:-29855}"
@@ -1159,11 +1160,6 @@ if [[ "${1:-}" == "card" ]]; then
         _c_who="$ROMP_SID"
     fi
     _c_key_name="id"; [[ -n "$_c_sess" ]] && _c_key_name="name"
-    # the key defaults to a slug of the title (the producer's dedupe key: a second post under it is a REVISION)
-    if [[ -z "$_c_key" ]]; then
-        _c_key="$(printf '%s' "$_c_title" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-64)"
-        _c_key="${_c_key##-}"; _c_key="${_c_key%%-}"; [[ -z "$_c_key" ]] && _c_key="card"
-    fi
     if [[ -n "$_c_attach" && "$_c_attach" != /* ]]; then _c_attach="$(cd "$(dirname "$_c_attach")" 2>/dev/null && pwd)/$(basename "$_c_attach")"; fi
     _payload="$(python3 -c 'import json,sys,time
 b = {sys.argv[1]: sys.argv[2], "key": sys.argv[3], "title": sys.argv[4], "producer": sys.argv[8]}

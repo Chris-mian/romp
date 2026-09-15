@@ -1073,7 +1073,7 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
     live: false, tree: [], blocked: null,
     notice: { producer: "figure", key: "figure", rev: 2, body: "Regenerated after the sweep on **tests** finished.\n\n<img src=\"https://evil.example/x.png\">",
               attachment: { path: "/srv/notes-api/figures/accuracy.png", kind: "image", allowed: true, why: "", pin: "abc123.png" },
-              actions: [{ label: "Send again", route: "/send", body: { id: WEB, text: "please regenerate" } }], expiresAt: null, dismissOnAction: true } });
+              actions: [{ label: "Send again", route: "/send", body: { text: "please regenerate" } }], expiresAt: null, dismissOnAction: true } });
   await dispatch(frame([g1, g2, g3, n1], { working: ["web"] }));
   const c = card("notice:" + WEB + ":figure:2");
   assert.ok(c, "the card is on the board"); assert.equal(colOf("notice:" + WEB + ":figure:2"), "col-completed-list", "an informational notice files under Completed");
@@ -1090,8 +1090,14 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   const sent = posted.length;
   btns[0].onclick(ev);
   assert.deepEqual(posted.slice(sent).filter((m) => m.type === "noticeAction"),
-    [{ type: "noticeAction", itemId: "notice:" + WEB + ":figure:2", sid: WEB, route: "/send", body: { id: WEB, text: "please regenerate" } }], "the gesture carries the sid: federation routes by it");
+    [{ type: "noticeAction", itemId: "notice:" + WEB + ":figure:2", sid: WEB, route: "/send", body: { text: "please regenerate" } }], "the gesture carries the sid: federation routes by it");
   assert.equal(btns[0].disabled, true); assert.equal(btns[0].textContent, "Send again…", "latched on the click");
+  // a click on a down socket is dropped and never answered (a kernel restart): the next push, identical or not, lets the latch
+  // go, so the button never reads "Send again…" for good (the review of PR 1757, medium 2)
+  await dispatch(frame([g1, g2, g3, n1], { working: ["web"] }));
+  assert.equal(btns[0].disabled, false); assert.equal(btns[0].textContent, "Send again", "re-armed from the payload on an identical push with no answer");
+  btns[0].onclick(ev);
+  assert.equal(btns[0].disabled, true, "latched again on the next click");
   await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":figure:2", ok: false, error: "no running backend owns web" });
   assert.equal(btns[0].disabled, false); assert.equal(btns[0].textContent, "Send again", "re-armed on the kernel's answer");
   assert.match(body.querySelector(".feed-toast")?.textContent ?? "", /refused: no running backend owns web/, "a refusal says why");

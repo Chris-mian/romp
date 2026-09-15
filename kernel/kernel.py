@@ -23490,6 +23490,7 @@ NOTICE_BODY_MAX = 64 * 1024
 NOTICE_ACTIONS_MAX = 4
 NOTICE_ACTION_LABEL_MAX = 60
 NOTICE_ACTION_ROUTES = ("/send",)          # each further route needs its own argument for why a button may call it
+NOTICE_LIVE_KEYS_MAX = 50                  # live keys per session: past it the oldest keys are superseded into the archive (round two, low a)
 _notice_lock = threading.Lock()            # one appender at a time per kernel; the file is append-only between sweeps
 
 
@@ -23621,8 +23622,16 @@ def _notice_actions_check(actions):
             return None, "action route %r is not allowed (allowed: %s)" % (route, ", ".join(NOTICE_ACTION_ROUTES))
         if not isinstance(body, dict):
             return None, "an action's body must be an object"
-        if route == "/send" and not str(body.get("text") or "").strip():
-            return None, "a /send action's body needs text"
+        if route == "/send":
+            # the notice's OWN session is the target, always (the review of PR 1757, high): a body that names one would let a
+            # producer route the user's click at another session under this card's name and colour
+            if "id" in body or "name" in body:
+                return None, "an action's body names no target: the notice's own session receives it"
+            text = str(body.get("text") or "")
+            if not text.strip():
+                return None, "a /send action's body needs text"
+            if text.lstrip().startswith("/"):
+                return None, "an action's text is a message, never a command (it may not begin with a slash)"
         out.append({"label": label, "route": route, "body": body})
     return out, ""
 
@@ -23756,6 +23765,8 @@ def _notice_projection(sid, now):
             continue
         out.append(r)
     out.sort(key=lambda r: (int(r.get("t") or 0), r.get("key") or ""))
+    if len(out) > NOTICE_LIVE_KEYS_MAX:                    # the cap (round two, low a): the newest keys stand, the oldest yield
+        out = out[len(out) - NOTICE_LIVE_KEYS_MAX:]
     return out
 
 
@@ -23781,7 +23792,7 @@ def _notice_cards(now, cleared):
             out.append({
                 "itemId": item_id, "sid": sid, "name": _name_of(sid) or sid[:8], "color": _name_color(sid),
                 "text": r.get("title") or "", "t": t, "live": False,
-                "trgb": list(cm.age_rgb(now - t, _colormap())), "_ageT": t,
+                "trgb": list(cm.age_rgb(now - t, _colormap())),   # the age colour stamped here: this attach is post-loop, no fold pops a private field
                 "turnId": item_id, "origin": None,
                 "followupPending": None, "waitingOn": None,
                 "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
@@ -23811,9 +23822,12 @@ def _notice_action(item_id, route, body):
     if act is None or route not in NOTICE_ACTION_ROUTES:
         return False, "no such action on that card"
     if route == "/send":
-        target = _sid_of(str(body.get("id") or body.get("name") or sid))
+        # the target is the notice's OWN session, read from the row, whatever the stored body says (the check refuses a body
+        # naming one; an older row's is ignored), and the text takes the plain-message door: no typed-command routing, so a
+        # stored action can never change a session's model, effort or mode (the review of PR 1757, high)
+        target = str(row.get("sid") or sid)
         try:
-            ok, err, _queued = _deliver_text(target, str(body.get("text") or ""))
+            ok, err, _queued = _deliver_text(target, str(body.get("text") or ""), plain=True)
         except Exception as e:                         # a delivery fault is the answer, never the socket's death
             return False, "the action could not be delivered (%s)" % e
     else:
@@ -23850,12 +23864,20 @@ def _compact_notices(now=None):
                     if rv >= newest.get(k, 0):
                         newest[k] = rv
             retired = {(r.get("key"), int(r.get("rev") or 0)) for r in rows if r.get("op") == "expire"}
+            # the live cap (round two, low a): the keys past NOTICE_LIVE_KEYS_MAX, oldest by their newest post's time, are
+            # superseded into the archive whole, so the live file holds what the projection shows
+            live_keys = [r for r in rows if r.get("op") == "post" and int(r.get("rev") or 0) == newest.get(r.get("key"), 0)
+                         and (r.get("key"), int(r.get("rev") or 0)) not in retired and _notice_item_id(sid, r.get("key"), int(r.get("rev") or 0)) not in cleared
+                         and not (r.get("expiresAt") and now >= int(r.get("expiresAt")))]
+            live_keys.sort(key=lambda r: (int(r.get("t") or 0), r.get("key") or ""))
+            capped = {r.get("key") for r in live_keys[:max(0, len(live_keys) - NOTICE_LIVE_KEYS_MAX)]}
             keep, arch = [], []
             for r in rows:
                 k, rv = r.get("key"), int(r.get("rev") or 0)
                 gone = (r.get("op") == "expire" or rv < newest.get(k, 0) or (k, rv) in retired
                         or _notice_item_id(sid, k, rv) in cleared
-                        or (r.get("expiresAt") and now >= int(r.get("expiresAt"))))
+                        or (r.get("expiresAt") and now >= int(r.get("expiresAt")))
+                        or k in capped)
                 (arch if gone else keep).append(r)
             if arch:
                 try:
@@ -23877,10 +23899,11 @@ def _compact_notices(now=None):
 _NOTICE_SWEPT = {}                         # sid -> the stat key the sweep last saw: an unmoved file is skipped
 
 
-def _deliver_text(sid, text):
+def _deliver_text(sid, text, plain=False):
     """Deliver `text` to session `sid` the way POST /send does, for every caller of that door (the route, a notice card's /send
     action): (ok, error, queued). The postal-isolation gate, the remote forward over the session's tunnel, a typed /model,
-    /effort or /fast through the setters, else the composer's own park-or-send."""
+    /effort or /fast through the setters, else the composer's own park-or-send. `plain` skips the typed-command routing: the
+    text is a MESSAGE whatever its first character (a notice card's stored action, which must never reach a setter)."""
     if _postal_shaped(text) and _postal_isolated(sid):
         return False, ("isolation: the target session's mailbox is OFF — agent mail is refused on every route; the refusal is "
                        "final (the user can toggle its mailbox back on)"), False
@@ -23894,7 +23917,7 @@ def _deliver_text(sid, text):
         return True, "", bool(isinstance(res, dict) and res.get("queued"))
     be = Sessions.backend_for(sid)
     meta = {}
-    if _route_meta_command(be, sid, text, state=meta):
+    if not plain and _route_meta_command(be, sid, text, state=meta):
         if meta.get("refused"):
             return False, "no running backend owns %s — the command was not delivered" % sid, False
         return True, "", bool(meta.get("queued"))
