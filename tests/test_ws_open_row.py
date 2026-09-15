@@ -4,24 +4,26 @@ The kernel kept no durable record of page connections: an empty client-diag.json
 no browser had been on a page this kernel serves, and a count of GET /ws per app read as the attached dashboard's panes
 when they may have been another kernel's federation relay dials. _note_ws_open files one `wsopen` row (surface kernel)
 right after _register_ws_client: the app, the dashboard id, the shim's reconnect term, and the client's kind, decided once
-at the handshake by _dial_kind(headers, query), the tell the connect-push split reads too, by the terms that decide it:
-relay when the dial states relay=1 (the term the federation splice writes into the query it forwards); page when it
-carries an Origin or a User-Agent header (a browser carries both, a CLI such as curl a User-Agent); page when it carries
-neither term nor header and no instance id (the VS Code extension host dials from Node's ws client, which sends no
-Origin and no User-Agent, without the shim); relay otherwise (a shim's instance id forwarded by a hub kernel older than
-the relay term). The hub side of a spliced /remote/HOST/ws upgrade files its own row, kind hub, naming the host. A row
-that cannot be written is said on stderr once.
+at the handshake by _dial_kind(headers, query), by the terms the producers state: relay when the dial states relay=1
+(the term the federation splice writes into the query it forwards); page when it states client=ext (the VS Code
+extension host's connect URL, since Node's ws client sends no Origin and no User-Agent); page when it carries an Origin
+or a User-Agent header (a browser carries both, a CLI such as curl a User-Agent); relay otherwise (no term, no header:
+a hub kernel older than the relay term relaying a browser's federated dial, which states app and wid alone; bounded,
+hubs update). The hub side of a spliced /remote/HOST/ws upgrade files its own row, kind hub, naming the host, only once
+the remote has answered 101; a refusal files nothing. A row that cannot be written is said on stderr once.
 
-Pins: the tell on header and term shapes, the ws npm client's shape among them; the helper's row, through the same
+Pins: the tell on the four shapes, and the extension's connect URL stating its term; the helper's row, through the same
 capture tests/test_chat_window_spans.py uses for the kernel's other row, and the once-said failure; the handler end to
-end, real upgrades with a browser's headers, with the extension host's bare headers and terms, and through a splice
-between two hermetic kernels (the hub's row and the remote's relay row), read back from the run's
+end, real upgrades with a browser's headers, with the extension host's bare headers and its term, with nothing stated
+(the old hub's shape), and through a splice between two hermetic kernels (the hub's row after the remote's 101 and the
+remote's relay row; a refused splice, no row), read back from the run's
 client-diag.jsonl by their dashboard ids. Synthetic: an ephemeral server on the loopback, the run's own state root.
 """
 import base64
 import io
 import json
 import os
+import pathlib
 import socket
 import sys
 import tempfile
@@ -89,18 +91,30 @@ def _rows_for(wids, deadline_s=5.0, expect=None):
 
 
 class WsOpenRow(unittest.TestCase):
-    def test_the_tell_by_its_terms_relay_term_then_headers_then_the_instance_id(self):
-        ext = {"app": ["chat"], "wid": ["vscode-session"], "token": ["t"]}   # the extension host's dial: app, wid, token, nothing else
-        shim = {"app": ["chat"], "wid": ["w"], "iid": ["page-instance"], "delta": ["1"], "token": ["t"]}   # a shim's dial
-        self.assertEqual(km._dial_kind({}, dict(shim, relay=["1"])), "relay", "the splice's term decides first")
-        self.assertEqual(km._dial_kind({"Origin": "http://127.0.0.1:1", "User-Agent": "Mozilla/5.0"}, dict(shim, relay=["1"])), "relay", "…over any header")
-        self.assertEqual(km._dial_kind({"Origin": "http://127.0.0.1:1", "User-Agent": "Mozilla/5.0"}, shim), "page", "a browser's upgrade")
-        self.assertEqual(km._dial_kind({"Origin": "vscode-webview://x"}, shim), "page", "an Origin alone")
-        self.assertEqual(km._dial_kind({"User-Agent": "curl/8.5.0"}, {"app": ["chat"]}), "page", "a CLI carries a User-Agent: page, not a relay")
-        self.assertEqual(km._dial_kind({}, ext), "page", "the ws npm client's dial: no Origin, no User-Agent, no instance id: the extension host")
-        self.assertEqual(km._dial_kind({"Upgrade": "websocket", "Sec-WebSocket-Key": "k", "Sec-WebSocket-Extensions": "permessage-deflate"}, ext), "page",
-                         "…whatever WebSocket headers the client adds")
-        self.assertEqual(km._dial_kind({}, shim), "relay", "no term, no header, the shim's instance id forwarded: a hub kernel older than the term")
+    def test_the_tell_by_the_terms_the_producers_state_relay_ext_headers_then_relay(self):
+        browser = {"Origin": "http://127.0.0.1:1", "User-Agent": "Mozilla/5.0"}
+        ws_npm = {"Upgrade": "websocket", "Sec-WebSocket-Key": "k", "Sec-WebSocket-Extensions": "permessage-deflate"}   # Node's ws client: no Origin, no User-Agent
+        fed = {"app": ["chat"], "wid": ["w"]}                                      # federation.ts: a browser's federated dial states app and wid alone
+        ext = {"app": ["chat"], "wid": ["vscode-session"], "client": ["ext"], "token": ["t"]}   # the extension host's connect URL
+        # 1. the splice's term decides first, whatever the headers
+        self.assertEqual(km._dial_kind({}, dict(fed, relay=["1"], token=["t"])), "relay")
+        self.assertEqual(km._dial_kind(browser, dict(fed, relay=["1"])), "relay")
+        # 2. the extension host states client=ext: page, with the bare headers it really sends
+        self.assertEqual(km._dial_kind(ws_npm, ext), "page")
+        self.assertEqual(km._dial_kind({}, ext), "page")
+        # 3. a browser carries the headers: page; a CLI carries a User-Agent: page, not a relay
+        self.assertEqual(km._dial_kind(browser, dict(fed, iid=["i"])), "page")
+        self.assertEqual(km._dial_kind({"Origin": "vscode-webview://x"}, fed), "page")
+        self.assertEqual(km._dial_kind({"User-Agent": "curl/8.5.0"}, {"app": ["chat"]}), "page")
+        # 4. nothing stated, no header: an old hub's splice of a federated dial (no instance id), a relay; a bare dial reads the same
+        self.assertEqual(km._dial_kind(ws_npm, fed), "relay")
+        self.assertEqual(km._dial_kind({}, {}), "relay")
+
+    def test_the_extensions_connect_url_states_its_term(self):
+        src = pathlib.Path(ROOT, "vscode-extension", "src", "extension.ts").read_text(encoding="utf-8")
+        dials = [ln for ln in src.splitlines() if "new WebSocket(" in ln and "/ws?" in ln]
+        self.assertEqual(len(dials), 1, "one connect URL in the extension host: %r" % dials)
+        self.assertIn("&client=ext&", dials[0], "the producer states its kind, since its client sends no header that would: %s" % dials[0].strip())
 
     def test_the_helper_files_one_row_with_app_wid_kind_and_reconnect(self):
         rows = []
@@ -126,7 +140,7 @@ class WsOpenRow(unittest.TestCase):
         self.assertEqual(len(lines), 1, "said once, however many rows fail: %r" % lines)
         self.assertIn("[client-diag] could not file a wsopen row (disk full)", lines[0])
 
-    def test_a_browser_dial_files_page_the_extension_hosts_bare_dial_files_page_and_a_splice_files_hub_here_and_relay_there(self):
+    def test_the_four_shapes_end_to_end_and_a_splice_files_hub_only_on_the_remotes_101(self):
         hub = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
         remote = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
         for srv in (hub, remote):
@@ -134,34 +148,48 @@ class WsOpenRow(unittest.TestCase):
         port, rport = hub.server_address[1], remote.server_address[1]
         tag = uuid.uuid4().hex[:8]
         w_page, w_ext, w_spliced = "wsopen-page-" + tag, "wsopen-ext-" + tag, "wsopen-spliced-" + tag
+        w_bare, w_refused = "wsopen-bare-" + tag, "wsopen-refused-" + tag
         socks = []
         with km._remotes_lock:
             km._remotes["TESTHOST"] = {"local_port": rport, "token": km.TOKEN}   # the hub's attached host: the second hermetic kernel
+            km._remotes["BADHOST"] = {"local_port": rport, "token": "not-the-remotes-token"}   # the same kernel, a credential it refuses
         try:
             # a browser's dial: an Origin header (same-origin, as a page this kernel serves sends it), the shim's instance id
             st, s1 = _upgrade(port, "/ws?app=chat&wid=%s&iid=i-%s&token=%s" % (w_page, w_page, km.TOKEN), origin="http://127.0.0.1:%d" % port)
             socks.append(s1)
             self.assertEqual(st, 101, "a same-origin browser dial with the token upgrades")
-            # the VS Code extension host's dial: Node's ws client sends no Origin and no User-Agent; the query is app, wid, token
-            st, s2 = _upgrade(port, "/ws?app=feed&wid=%s&token=%s" % (w_ext, km.TOKEN), extensions=True)
+            # the VS Code extension host's dial: Node's ws client sends no Origin and no User-Agent; the URL states client=ext
+            st, s2 = _upgrade(port, "/ws?app=feed&wid=%s&client=ext&token=%s" % (w_ext, km.TOKEN), extensions=True)
             socks.append(s2)
             self.assertEqual(st, 101, "the extension host's dial upgrades")
+            # nothing stated, no header: the shape of an old hub's splice of a federated dial (app and wid alone): a relay
+            st, s4 = _upgrade(port, "/ws?app=timeline&wid=%s&token=%s" % (w_bare, km.TOKEN), extensions=True)
+            socks.append(s4)
+            self.assertEqual(st, 101, "a bare token dial upgrades")
+            # a splice the remote REFUSES (the hub holds a wrong token for it): the hub forwards the refusal and files no row
+            st, s5 = _upgrade(port, "/remote/BADHOST/ws?app=chat&wid=%s&iid=i-%s&token=%s" % (w_refused, w_refused, km.TOKEN), origin="http://127.0.0.1:%d" % port)
+            socks.append(s5)
+            self.assertNotEqual(st, 101, "the remote's refusal is what the browser gets back: %r" % st)
             # a browser's pane relayed through the hub to the remote: the hub files hub, the remote files relay on the splice's term
             st, s3 = _upgrade(port, "/remote/TESTHOST/ws?app=chat&wid=%s&iid=i-%s&reconnect=1&proto=2&token=%s" % (w_spliced, w_spliced, km.TOKEN),
                               origin="http://127.0.0.1:%d" % port)
             socks.append(s3)
             self.assertEqual(st, 101, "the spliced upgrade answers with the remote's 101")
-            rows = _rows_for({w_page, w_ext, w_spliced}, expect=4)
+            rows = _rows_for({w_page, w_ext, w_bare, w_spliced, w_refused}, expect=5)
+            time.sleep(0.3)   # the refused splice's row, were it filed, would follow the refusal at once; give it the chance to be wrong
+            rows = _rows_for({w_page, w_ext, w_bare, w_spliced, w_refused}, expect=5, deadline_s=0.5)
             shape = sorted((r["wid"], r["data"]["app"], r["data"]["kind"], r["data"]["reconnect"], r["data"]["iid"], r["data"].get("host")) for r in rows)
             self.assertEqual(shape, sorted([(w_page, "chat", "page", False, True, None),
                                             (w_ext, "feed", "page", False, False, None),
+                                            (w_bare, "timeline", "relay", False, False, None),
                                             (w_spliced, "chat", "hub", True, True, "TESTHOST"),
                                             (w_spliced, "chat", "relay", True, True, None)]),
-                             "one wsopen row per accepted socket, the kind by its terms; the splice a hub row here and a relay row there: %r" % rows)
+                             "one wsopen row per ACCEPTED socket, the kind by the terms stated; the splice a hub row here after the remote's 101 and a relay row there; the refused splice no row: %r" % rows)
             self.assertTrue(all(r["surface"] == "kernel" and isinstance(r["t"], int) and r["data"].get("cid") for r in rows), "the kernel's clock and a connection id on every row: %r" % rows)
         finally:
             with km._remotes_lock:
                 km._remotes.pop("TESTHOST", None)
+                km._remotes.pop("BADHOST", None)
             for s in socks:
                 try:
                     s.close()

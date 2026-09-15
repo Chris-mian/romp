@@ -44474,22 +44474,26 @@ def _note_ws_inbound(client, now=None):
 
 
 def _dial_kind(headers, q):
-    """The one tell for what dialled a socket (2026-09-15, shared with the connect-push split), decided by the terms that
-    decide it, in this order:
+    """The one tell for what dialled a socket (2026-09-15), decided by the terms the producers state, in this order:
       relay  when the dial states relay=1: the term the federation splice (_remote_ws) writes into the query it forwards, the
              way the shim states proto, reconnect and skeleton; another kernel relaying a browser's pane to this one.
+      page   when the dial states client=ext: the VS Code extension host (vscode-extension/src/extension.ts, its connect
+             URL), which dials from Node's ws client with no Origin and no User-Agent and no shim, so nothing else names it.
       page   when the dial carries an Origin or a User-Agent header: a browser's upgrade carries both, a CLI (curl, wget,
              urllib) a User-Agent; the splice forwards only the six WebSocket upgrade headers, so its dial carries neither.
-      page   when it carries neither term nor header and no instance id: the VS Code extension host dials from Node's ws
-             client, which sends no Origin and no User-Agent, and dials without the shim (app, wid and token only).
-      relay  otherwise: no term, no header, the shim's instance id forwarded: a page relayed by a hub kernel older than the
-             relay term (the header rule is the fallback for that kernel alone, and goes with it).
-    `headers` is any mapping with .get (the handler's, or a dict); `q` the parsed query (parse_qs: name -> [values])."""
+      relay  otherwise: no term, no header. The one producer of that shape is a hub kernel older than the relay term,
+             relaying a browser's federated dial (federation.ts states app and wid alone, no instance id); the fallback is
+             bounded, since hubs update, and a bare dial that states nothing reads as a relay by design.
+    Every non-browser producer states its kind; absence alone tells nothing apart. `headers` is any mapping with .get (the
+    handler's, or a dict); `q` the parsed query (parse_qs: name -> [values]). Planned reader beside the wsopen row: the
+    connect push's per-app split (romp_perf's), reading client["kind"]."""
     if (q.get("relay") or [""])[0] == "1":
         return "relay"
+    if (q.get("client") or [""])[0] == "ext":
+        return "page"
     if headers.get("Origin") or headers.get("User-Agent"):
         return "page"
-    return "relay" if (q.get("iid") or [""])[0] else "page"
+    return "relay"
 
 
 _ws_open_row_failed = False   # set once a wsopen row could not be written, so the stderr line below is said once per process
@@ -62883,7 +62887,7 @@ class Handler(BaseHTTPRequestHandler):
         # `q` above is the connect QUERY; the client's send queue gets its own name — a Queue.get("delta")
         # would block this handler forever (caught by tests/test_kernel.py's socket-error loop test)
         client, sendq, lock = _new_ws_client(app, wid, self.connection, lock=lock)
-        client["kind"] = _dial_kind(self.headers, q)   # page or relay: the one tell the wsopen row and the connect-push split read
+        client["kind"] = _dial_kind(self.headers, q)   # page or relay: the one tell the wsopen row reads (and a planned connect-push split)
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         if (q.get("delta") or [""])[0] == "1":
@@ -63016,12 +63020,34 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             up.close()
             return self._send(502, "tunnel to %s dropped" % host, "text/plain")
-        # the hub side of this upgrade is accepted and spliced, never registered as a client: its own wsopen row, kind hub, names
-        # the host it was relayed to, so the auditor sees the browser's pane here AND its relay dial on the remote (2026-09-15)
-        _note_ws_open({"app": (q.get("app") or ["chat"])[0], "wid": (q.get("wid") or [""])[0], "iid": (q.get("iid") or [""])[0],
-                       "cid": uuid.uuid4().hex[:12], "kind": "hub", "host": host}, reconnect=(q.get("reconnect") or [""])[0] == "1")
         self.close_connection = True             # hijacked socket — no keep-alive after the splice
         down = self.connection
+        # The remote's answer decides whether this hub side is an accepted socket at all: its head (the status line and the
+        # headers, up to the blank line) is read here, forwarded byte for byte, and only a 101 files the hub's own wsopen row,
+        # kind hub, naming the host, so the auditor sees the browser's pane here AND its relay dial on the remote; a refusal
+        # (401, 404, a dead tunnel) files nothing, the splice going on as before (2026-09-15). Bytes past the blank line are
+        # the remote's first frames and ride along in the same send. The read is bounded; a remote that answers nothing in
+        # time gets the pumps below as before, and no row.
+        head = b""
+        try:
+            up.settimeout(15)
+            while b"\r\n\r\n" not in head and len(head) < 65536:
+                b = up.recv(65536)
+                if not b:
+                    break
+                head += b
+        except OSError:
+            pass
+        finally:
+            up.settimeout(None)
+        if head:
+            try:
+                down.sendall(head)
+            except OSError:
+                pass
+        if head.split(b"\r\n", 1)[0].startswith(b"HTTP/1.1 101"):
+            _note_ws_open({"app": (q.get("app") or ["chat"])[0], "wid": (q.get("wid") or [""])[0], "iid": (q.get("iid") or [""])[0],
+                           "cid": uuid.uuid4().hex[:12], "kind": "hub", "host": host}, reconnect=(q.get("reconnect") or [""])[0] == "1")
 
         def _quiet_shutdown(s):
             # shutdown only, never close: `down` still belongs to the base handler (its finish()

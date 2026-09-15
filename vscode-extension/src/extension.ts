@@ -513,7 +513,9 @@ class KernelPipe {
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
-    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}`);
+    // client=ext states what dials: Node's ws client sends no Origin and no User-Agent, so without the term the kernel
+    // could not tell this host's panes from another kernel's relay dials (kernel.py _dial_kind, the wsopen row, 2026-09-15).
+    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&client=ext&token=${encodeURIComponent(serveToken())}`);
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }
