@@ -409,7 +409,8 @@ out({ held: held, after: state() });""")
         holders = [n for n in dir(km) if isinstance(getattr(km, n, None), str) and "var PN=" in getattr(km, n)]
         self.assertEqual(len(holders), 1, holders)
         js = getattr(km, holders[0])
-        self.assertIn("'Kernel connection lost \\u2014 '+paneLabel(m.app)+' pane (reconnecting)'", js, "the line reads the helper")
+        self.assertIn("'Kernel connection lost: '+paneLabel(m.app)+' pane (reconnecting)'", js, "the line reads the helper")
+        line_expr = "'Kernel connection lost: '+paneLabel(m.app)+' pane (reconnecting)'"
         a = js.index("var PN=")
         fn_start = js.index("function paneLabel(k){", a)
         slice_js = js[a:js.index("}", js.index("return PN[k]", fn_start)) + 1]
@@ -417,8 +418,8 @@ out({ held: held, after: state() });""")
         if not node:
             raise unittest.SkipTest("node not installed")
         probe = slice_js + """
-var OUT = {}; ["chat", "timeline", "fleet", "feed", "files", "settings", "shell", ""].forEach(function (k) { OUT[k] = paneLabel(k); });
-process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
+var OUT = {}, LINES = {}; ["chat", "timeline", "fleet", "feed", "files", "settings", "shell", ""].forEach(function (k) { OUT[k] = paneLabel(k); var m = { app: k }; LINES[k] = """ + line_expr + """; });
+process.stdout.write("RESULT:" + JSON.stringify({ labels: OUT, lines: LINES }) + "\\n");
 """
         d = tempfile.mkdtemp(prefix="pane-label-")
         path = os.path.join(d, "label.js")
@@ -427,11 +428,40 @@ process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
         r = subprocess.run([node, path], capture_output=True, text=True, timeout=60)
         shutil.rmtree(d, ignore_errors=True)
         self.assertEqual(r.returncode, 0, "node failed:\n" + r.stderr)
-        out = json.loads(next(ln for ln in r.stdout.splitlines() if ln.startswith("RESULT:"))[len("RESULT:"):])
+        res = json.loads(next(ln for ln in r.stdout.splitlines() if ln.startswith("RESULT:"))[len("RESULT:"):])
+        out = res["labels"]
         self.assertEqual(out, {"chat": "Chat", "timeline": "Sessions", "fleet": "Outline", "feed": "Feed", "files": "Files",
                                "settings": "Settings", "shell": "Shell", "": ""})
         for k, v in out.items():
             self.assertEqual(v, km._pane_label(k) if k else "", k)
+        # the produced notice text, driven (the 1725 lows, low 2), in the reader's words: no em-dash (the user's writing rule)
+        self.assertEqual(res["lines"]["settings"], "Kernel connection lost: Settings pane (reconnecting)")
+        self.assertEqual(res["lines"]["fleet"], "Kernel connection lost: Outline pane (reconnecting)")
+        for k, line in res["lines"].items():
+            self.assertNotIn("\u2014", line, k); self.assertNotIn("fleet", line, k)
+
+    def test_a_pane_whose_door_throws_on_the_read_does_not_end_the_search_for_a_door(self):
+        # the 1725 lows, low 4 (pre-existing): the door walk wrapped the whole loop in one try, so one pane throwing on the read
+        # ended the search and no door took the row on that pass
+        s = run_core("""
+var R = window.__rompReload;
+var bad = pane(function () { return 'typing'; }, 0); Object.defineProperty(bad.contentWindow, "__rompDiag", { get: function () { throw new Error("detached"); } });
+var good = pane(function () { return ''; }, 0); good.contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+IFRAMES = [bad, good];
+R.noteDv(8); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
+out({ diag: DIAG.length });""")
+        self.assertEqual(s["diag"], 1, "the next pane's door took the row")
+
+    def test_a_door_that_throws_when_called_does_not_end_the_search_either(self):
+        # round two, low 4: a door that throws when CALLED (not read) ended the search on every pass and cost the breadcrumb
+        s = run_core("""
+var R = window.__rompReload;
+var bad = pane(function () { return 'typing'; }, 0); bad.contentWindow.__rompDiag = function () { throw new Error("a door that throws"); };
+var good = pane(function () { return ''; }, 0); good.contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+IFRAMES = [bad, good];
+R.noteDv(8); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
+out({ diag: DIAG.length });""")
+        self.assertEqual(s["diag"], 1, "the next pane's door took the row on the same pass")
 
     def test_the_breadcrumbs_age_counts_from_the_holds_start_not_the_last_backstop(self):
         # the 1698 lows, low 3: a row filed at a later bound (no door at the earlier ones) read 60000 for a three-minute hold
@@ -621,6 +651,21 @@ out({ after: state() });""", code="abc1234")
             km._CODE_IDENT[0] = None
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_the_reload_cores_and_the_bells_user_facing_lines_carry_no_em_dash(self):
+        # the user's writing rule bars them; the reload line and the bell's filter descriptions and connection lines carried one
+        import re as _re
+        core = km._reload_core_js(5, "1.1", "abc")
+        self.assertNotIn("\u2014", core); self.assertIn("'Reloaded onto build '+LOADED+': '+why+'.'", core)
+        holder = next(getattr(km, n) for n in dir(km) if isinstance(getattr(km, n, None), str) and "var PN=" in getattr(km, n))
+        # the code lines of every page script the reload road serves: the bell holder, the pane shim and the stale block; a
+        # trailing comment is cut at its first `//` after whitespace, whatever the spacing (round two, low 3)
+        for name, js in (("the bell holder", holder), ("the pane shim", km._shim("chat", 5)), ("the stale block", km._STALE_JS)):
+            for ln in js.splitlines():
+                if ln.lstrip().startswith("//") or ln.lstrip().startswith("#"):
+                    continue
+                body = _re.split(r"\s+//", ln, maxsplit=1)[0]
+                self.assertNotIn("\\u2014", body, "%s: %s" % (name, body[:100])); self.assertNotIn("\u2014", body, "%s: %s" % (name, body[:100]))
+
     def test_the_shim_arms_the_fresh_hold_on_a_reconnect_and_the_resync_frame_ends_it(self):
         js = km._shim("chat", 5)
         self.assertIn('if(openSock===this){armFresh();', js, "the drop arms the hold the core reads: the shell's socket may reopen and ask /version before this pane redials")
@@ -735,15 +780,15 @@ STORE["romp:reloaded"] = JSON.stringify({ reason: "restart", detail: "2.2", from
 var first = R.announce(function (k, t) { notes.push([k, t]); });
 var second = R.announce(function (k, t) { notes.push([k, t]); });
 out({ first: first, second: second, notes: notes, left: STORE["romp:reloaded"] || null });""")
-        self.assertEqual(s["first"], "Reloaded onto build 7 — the kernel restarted.")
-        self.assertEqual(s["notes"], [["reload", "Reloaded onto build 7 — the kernel restarted."]])
+        self.assertEqual(s["first"], "Reloaded onto build 7: the kernel restarted.")
+        self.assertEqual(s["notes"], [["reload", "Reloaded onto build 7: the kernel restarted."]])
         self.assertIsNone(s["second"], "one line per reload")
         self.assertIsNone(s["left"], "the marker is consumed")
         s2 = run_core("""
 var R = window.__rompReload;
 STORE["romp:reloaded"] = JSON.stringify({ reason: "build", detail: "9", from: 6, t: 1 });
 out({ first: R.announce(null) });""")
-        self.assertEqual(s2["first"], "Reloaded onto build 7 — a newer romp build was served.")
+        self.assertEqual(s2["first"], "Reloaded onto build 7: a newer romp build was served.")
         s3 = run_core("""
 var R = window.__rompReload;
 STORE["romp:reloaded"] = JSON.stringify({ reason: "build", detail: "9", from: 6, path: "/feed", t: 1 });
@@ -761,8 +806,8 @@ location.pathname = "/chat"; var pane = R.announce(null);
 location.pathname = "/"; var shell = R.announce(function (k, t) { notes.push([k, t]); }); var again = R.announce(null);
 out({ pane: pane, shell: shell, again: again, notes: notes, left: STORE["romp:reloaded"] || null });""")
         self.assertIsNone(s4["pane"], "the chat pane leaves the shell's marker alone")
-        self.assertEqual(s4["shell"], "Reloaded onto build 7 — the kernel restarted.", "the shell announces its own reload")
-        self.assertEqual(s4["notes"], [["reload", "Reloaded onto build 7 — the kernel restarted."]])
+        self.assertEqual(s4["shell"], "Reloaded onto build 7: the kernel restarted.", "the shell announces its own reload")
+        self.assertEqual(s4["notes"], [["reload", "Reloaded onto build 7: the kernel restarted."]])
         self.assertIsNone(s4["again"], "one line per reload"); self.assertIsNone(s4["left"], "consumed by its own page")
 
     def test_the_shell_composes_gesture_state_across_its_panes_and_a_pane_forwards_its_request(self):
