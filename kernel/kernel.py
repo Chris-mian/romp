@@ -6295,14 +6295,33 @@ def _pending_tag_path():
 
 
 def _pending_tag_rows():
-    """The journal, cached after one disk read (writes keep the cache in sync under the lock)."""
+    """The journal, cached after one disk read (writes keep the cache in sync under the lock). That one
+    read is the strict one (_read_state_json, expect=list): a MISSING file is the empty journal; torn or
+    non-JSON bytes, or JSON of the wrong shape, are quarantined aside (a move, never a delete) and the
+    journal starts over empty after that stated event; a file that EXISTS but cannot be read (EIO,
+    EACCES) RAISES _StateUnreadable, loud once per episode (_note_state_fault), and caches NOTHING, so
+    the next call reads the disk again. Callers stand down for the one call: the queue refuses (nothing
+    is promised over a journal it could not read), the reattach apply waits for the next pass, the
+    display claims no pending badge this build. Until this change every failure of the read was folded
+    to a cached [] for the rest of the process (review find, 2026-09-10): the badge vanished, the
+    reattach apply never fired for any host, and the next queued edit read that [] and published its one
+    row over every earlier journaled intent under a "queued" ack -- the fold-then-overwrite the strict
+    reader was written against for the views store, which never reached this journal's private reader."""
     with _PENDING_TAG_LOCK:
         if _PENDING_TAG_CACHE["rows"] is None:
+            p = _pending_tag_path()
             try:
-                d = json.loads(_pending_tag_path().read_text())
-                _PENDING_TAG_CACHE["rows"] = [r for r in d if isinstance(r, dict)] if isinstance(d, list) else []
-            except Exception:
-                _PENDING_TAG_CACHE["rows"] = []
+                d = _read_state_json(p, expect=list)
+            except _StateUnreadable as e:
+                _note_state_fault(e)                 # said once per episode; the cache stays None
+                raise
+            # a clean read ends the episode (a re-fault speaks again) and, when one WAS open, marks the views
+            # dirty: the rows ride the views payload (_views_client) on the cached feed and timeline frames,
+            # and the fault's START moved their signature by itself (the once-per-episode notice) while its
+            # end moved nothing, so the frames built with no badge stood until the clock bucket. The heal is
+            # the event that rebuilds them (the views store's reader ends its episodes the same way).
+            _views_read_clean(p)
+            _PENDING_TAG_CACHE["rows"] = [r for r in d if isinstance(r, dict)] if d else []
         return list(_PENDING_TAG_CACHE["rows"])
 
 
@@ -6338,7 +6357,13 @@ def _queue_pending_tag_edit(host, body):
         return False
     tid = next((str(t.get("id") or "") for t in (cached.get("tags") or [])
                 if isinstance(t, dict) and _tag_name_basis(t.get("name")) == name), "")
-    rows = _pending_tag_rows()
+    try:
+        rows = _pending_tag_rows()
+    except _StateUnreadable:
+        # the journal exists but could not be read (said once, by the reader): NOT queued, so the
+        # caller's refusal carries no "queued" promise. A read-modify-write over a fold to [] would
+        # publish this one row over every earlier journaled intent.
+        return False
     same = lambda x: x.get("host") == host and _tag_name_basis(x.get("name")) == name   # a journal from before the basis may hold a padded name
     mine = [x for x in rows if same(x)]
     if any(x.get("delete") for x in mine):
@@ -6578,8 +6603,13 @@ def _views_client(v=None):
     # tag federation v2: a queued edit is VISIBLE, never gone-but-not-gone — the matching cached
     # remote entry wears `pending` ("delete"/"rename"/"remove") for the dialog's compact idiom,
     # and the raw rows ride as pendingTagEdits so an intent for a host with no cached tag entry
-    # still surfaces.
-    pend = _pending_tag_rows()
+    # still surfaces. A journal that exists but could not be read (said once, by the reader) is
+    # rendered as no badge this build, unproved and uncached: a raise here would abort every client's
+    # push, and the rows are not gone.
+    try:
+        pend = _pending_tag_rows()
+    except _StateUnreadable:
+        pend = []
     if pend:
         v["pendingTagEdits"] = [{"host": x.get("host") or "", "name": _tag_name_basis(x.get("name")),
                                  "op": _row_op(x)} for x in pend]
@@ -25518,6 +25548,11 @@ def _tunnel_supervisor():
                     try:
                         if any(x.get("host") == r.get("host") for x in _pending_tag_rows()):
                             _apply_pending_tag_edits(r)
+                    except _StateUnreadable:
+                        # the journal could not be read (said once, by the reader): every row waits for
+                        # the next pass, which reads the disk again. Not a dial record: a disk that stays
+                        # bad would write one per host per pass and rotate the dial history away.
+                        pass
                     except Exception:
                         _tunnel_log(r.get("host") or "?", "pending-tag-edits",
                                     note="apply pass raised: %s" % traceback.format_exc(limit=3))
