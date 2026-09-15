@@ -33,7 +33,7 @@ km = load_source("romp_kernel_outline_provisional_rows", os.path.join(BIN, "romp
 S1 = "11111111-2222-3333-4444-777777777771"   # web: the tab the page is looking at
 S2 = "11111111-2222-3333-4444-777777777772"   # api: the biggest transcript; carries a goal store
 S3 = "11111111-2222-3333-4444-777777777773"   # tests: the smallest transcript
-S4 = "11111111-2222-3333-4444-777777777774"   # docs : just created: no transcript on disk
+S4 = "11111111-2222-3333-4444-777777777774"   # docs: just created: no transcript on disk
 NAMES = {S1: "web", S2: "api", S3: "tests", S4: "docs"}
 TAB_ORDER = [S2, S1, S3, S4]
 # the ledgers' order is the kernel's BUILD order, not the strip's: the watched tab and the transcript-less one first, the rest in

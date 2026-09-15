@@ -9,7 +9,12 @@ tab built, for the restart reload and for a fresh open with no record; (5) a pla
 record is consumed by the read that acted on it; (6) after a restart record every pane of the served dashboard dials, and only the chat
 pane's dial carries the term; (7) lifting the #only= filter re-arms the idle prefetch: the revealed skeletons are asked for with no kernel
 push in between. The fresh open after a boot (no record, no diet) is covered by NEITHER half today: this lab measures it and the design
-decision on it is the manager's. Synthetic only (placeholder ids, invented text)."""
+decision on it is the manager's. (8) The Outline pane's provisional row (plans/outline-pane-provisional-row.md, 2026-09-15), on a SECOND
+boot of the same kernel with goal stores seeded: a chat page dialing the diet with its idle prefetch held by the lab, then the Outline
+page; the Outline's dial carries provrows=1 and its first frame lists every session, all but the selected one provisional, while the
+chat has one full frame and /perf counts the cold skips; a click on a second tab builds it and its row loses the mark on the next frame;
+a muted session's provisional row shows no goals; a raw unflagged Outline socket makes the kernel build every tab. Synthetic only
+(placeholder ids, invented text)."""
 import json
 import os
 import re
@@ -179,6 +184,110 @@ await browser.close();
 """
 
 
+# ROAD 8: the Outline pane's provisional row. Its own browser run on a SECOND boot of the kernel (the cold set is real only right after
+# a boot: the first driver's fresh open warmed every tab). The chat page's requestIdleCallback is HELD so the prefetch that fills the
+# strip's skeletons waits for the lab: the cold set stands while the Outline connects and reads; the click and the raw socket then
+# release tabs by the kernel's own roads.
+OUTLINE_DRIVER = r"""
+import { createRequire } from "node:module";
+import fs from "node:fs";
+const require = createRequire(process.env.EXT_PKG);
+const { chromium } = require("playwright");
+const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
+let browser;
+try { browser = await chromium.launch(cfg.launch || {}); }
+catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
+const ctx = await browser.newContext({ viewport: { width: 1200, height: 700 } });
+const errors = [];
+const wrapDials = () => {
+  window.__dials = []; const W = window.WebSocket;
+  window.WebSocket = function (url, protos) { window.__dials.push(String(url)); return protos === undefined ? new W(url) : new W(url, protos); };
+  window.WebSocket.prototype = W.prototype; window.WebSocket.CONNECTING = 0; window.WebSocket.OPEN = 1; window.WebSocket.CLOSING = 2; window.WebSocket.CLOSED = 3;
+  window.__t0 = performance.now();
+};
+// the chat page: the full frames it receives, and its idle callbacks held until the lab releases them
+const chat = await ctx.newPage();
+chat.on("pageerror", (e) => errors.push("chat pageerror:" + String(e).slice(0, 300)));
+await chat.addInitScript(wrapDials);
+await chat.addInitScript(() => {
+  window.__fulls = [];
+  window.addEventListener("message", (e) => { const m = e.data; if (m && m.type === "session" && Array.isArray(m.events) && m.events.length) window.__fulls.push({ t: Math.round(performance.now() - window.__t0), id: m.id }); });
+  window.__held = []; const ric = window.requestIdleCallback;
+  window.requestIdleCallback = function (cb) { window.__held.push(cb); return 0; };
+  window.__releaseIdle = () => { const held = window.__held.splice(0); window.requestIdleCallback = ric; for (const cb of held) ric.call(window, cb); return held.length; };
+});
+// the restart record and the selected tab, written on a same-origin document before the chat page loads (a boot has no record)
+await chat.goto(cfg.chat.replace("/chat?", "/healthz?"));
+await chat.evaluate((sel) => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", t: Date.now() }));
+  localStorage.setItem("romp-vscode-state-chat", JSON.stringify({ activeId: sel })); }, cfg.selected);
+await chat.goto(cfg.chat);
+await chat.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await chat.waitForFunction(() => window.__fulls.length >= 1, null, { timeout: 30000 }).catch(() => {});
+const chatFulls = () => chat.evaluate(() => window.__fulls.map((f) => f.id));
+const chatStart = { dial: await chat.evaluate(() => window.__dials[0] || null), fulls: await chatFulls(),
+  skel: await chat.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length) };
+// the Outline page: every feed frame's ledgers, reduced to what the road reads
+const outline = await ctx.newPage();
+outline.on("pageerror", (e) => errors.push("outline pageerror:" + String(e).slice(0, 300)));
+await outline.addInitScript(wrapDials);
+await outline.addInitScript(() => {
+  window.__feeds = [];
+  // the pane's merged frames (feed among them) reach its handlers by direct call through the federation manager, never as a window
+  // message event; the shim hands every local frame, deltas already applied, to window.__rompFed.inbound, so the recorder wraps that
+  const record = (m) => { if (!m || m.type !== "feed" || !Array.isArray(m.ledgers)) return;
+    window.__feeds.push({ t: Math.round(performance.now() - window.__t0), n: m.ledgers.length, prov: m.ledgers.filter((r) => r.provisional).map((r) => r.sid),
+      rows: Object.fromEntries(m.ledgers.map((r) => [r.sid, { provisional: !!r.provisional, name: r.name, state: r.status ? r.status.state : null,
+        provState: !!(r.status && r.status.provisional), keys: r.ledger ? Object.keys(r.ledger).sort() : null, current: r.ledger ? r.ledger.current : "absent",
+        tree: r.ledger && Array.isArray(r.ledger.tree) ? r.ledger.tree.map((n) => n.text) : null,
+        anchors: r.ledger && Array.isArray(r.ledger.tree) ? r.ledger.tree.map((n) => [n.promptAnchor || null, n.workAnchor || null]) : null }])) }); };
+  let fed = null;
+  Object.defineProperty(window, "__rompFed", { configurable: true, get() { return fed; },
+    set(v) { fed = v; if (v && typeof v.inbound === "function" && !v.__labWrapped) { const inb = v.inbound; v.__labWrapped = true; v.inbound = (h, m) => { record(m); return inb(h, m); }; } } });
+  window.addEventListener("message", (e) => { if (!fed) record(e.data); });   // a page without the manager: the window event
+});
+await outline.goto(cfg.fleet);
+await outline.waitForFunction(() => window.__feeds.length >= 1, null, { timeout: 20000 }).catch(() => {});
+const fullsAtFirst = await chatFulls();   // read at once: the chat's fulls when the Outline's first frame landed (its prefetch is held)
+await outline.waitForFunction(() => document.querySelectorAll("#fleet-list .fl-session").length >= 1, null, { timeout: 15000 }).catch(() => {});
+await outline.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+const perf = async () => { const r = await outline.request.get(cfg.perf); const j = await r.json(); const c = j.builds && j.builds.chat ? j.builds.chat : {};
+  return { coldSkipped: c.coldSkipped === undefined ? null : c.coldSkipped, built: c.built === undefined ? null : c.built, memo: j.memos ? j.memos.outlineProvisional || null : null }; };
+const dom = () => outline.evaluate(() => {
+  const secs = Array.from(document.querySelectorAll("#fleet-list .fl-session")).map((sec) => { const head = sec.querySelector(".fl-head"); return {
+    sid: head ? head.dataset.sid : null, prov: sec.classList.contains("fl-prov-sess"), title: head ? head.title : null,
+    rows: sec.querySelectorAll(".ledger-tnode[data-nid]").length, nav: sec.querySelectorAll(".ledger-tnode[data-nid] .lz-nav").length,
+    acts: sec.querySelectorAll(".ledger-tmark[data-act], .ledger-ttext[data-act], .ledger-ttime[data-act]").length,
+    nameUnderline: (() => { const nm = sec.querySelector(".fl-name"); return nm ? getComputedStyle(nm).borderBottomStyle : null; })() }; });
+  return { sections: secs, provSections: secs.filter((x) => x.prov).length };
+});
+const first = { feed: await outline.evaluate(() => window.__feeds[0] || null), fullsAtFirst, dial: await outline.evaluate(() => window.__dials[0] || null), dom: await dom(), perf: await perf() };
+// the click: a second tab in the chat strip; the kernel builds it and the Outline's next frame carries its built row
+await chat.click('#tabs [data-id="' + cfg.click + '"]');
+await outline.waitForFunction((sid) => { const f = window.__feeds; const last = f.length ? f[f.length - 1] : null; return !!(last && last.rows[sid] && !last.rows[sid].provisional); }, cfg.click, { timeout: 30000 }).catch(() => {});
+await outline.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+const afterClick = { feed: await outline.evaluate(() => window.__feeds[window.__feeds.length - 1] || null), fulls: await chatFulls(), dom: await dom(), perf: await perf(),
+  heldStill: await chat.evaluate(() => window.__held.length) };
+// a raw Outline socket WITHOUT the flag: an older pane; the kernel builds every tab for it (the chat's prefetch still held: these are the
+// kernel's own builds, read from /perf and from the Outline's rows; the chat page holds its skeletons and is owed no full frame for them)
+await outline.evaluate((u) => { window.__raw = new WebSocket(u); }, cfg.rawWs);
+await outline.waitForFunction(() => { const f = window.__feeds; const last = f.length ? f[f.length - 1] : null; return !!(last && last.prov.length === 0); }, null, { timeout: 90000 }).catch(() => {});
+const unflagged = { fullsDistinct: new Set(await chatFulls()).size, feed: await outline.evaluate(() => window.__feeds[window.__feeds.length - 1] || null), perf: await perf(),
+  rawDial: await outline.evaluate(() => window.__dials[window.__dials.length - 1] || null), heldStill: await chat.evaluate(() => window.__held.length) };
+await outline.evaluate(() => { try { window.__raw.close(); } catch (e) { /* closed */ } });
+process.stdout.write("RESULT:" + JSON.stringify({ chatStart, first, afterClick, unflagged, errors }) + "\n");
+await browser.close();
+"""
+
+GOAL_I, MUTED_I, SELECTED_I = 2, 4, 3   # api-02: a goal store, the tab the road clicks; web-04: a store AND hideFromFeed; web-03: the selected tab, built, a store too
+
+
+def _goal_store(sid):
+    t = int(time.time()) - 600   # recent: the pane's recency slider hides a session whose tops are older than its cut
+    return {"rompUuid": sid, "seq": 1, "placementsV": 1, "status": {}, "lastNode": "g2",
+            "nodes": {"g1": {"text": "index the notes", "t": t, "mt": t, "parentId": None},
+                      "g2": {"text": "write the search route", "t": t + 100, "mt": t + 100, "parentId": "g1"}}}
+
+
 class ColdBootDiet(unittest.TestCase):
     maxDiff = None
 
@@ -231,9 +340,16 @@ class ColdBootDiet(unittest.TestCase):
             Path(proj, sid + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         cls.port = _free_port()
         cls.token = "testtok-coldboot"
-        env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token)
+        cls.env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token)
         cls.klog = os.path.join(cls.lab, "kernel.log")
-        cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")], stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=env)
+        cls._boot_kernel()
+        cls._r = None
+        cls._ro = None
+
+    @classmethod
+    def _boot_kernel(cls):
+        """Start the lab kernel (a second time for road 8: the cold set is real only right after a boot) and wait for /healthz."""
+        cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")], stdout=open(cls.klog, "a"), stderr=subprocess.STDOUT, env=cls.env)
         import urllib.request
         for _ in range(120):
             try:
@@ -244,7 +360,6 @@ class ColdBootDiet(unittest.TestCase):
         else:
             cls.kernel.kill()
             cls._skip("hermetic kernel never served /healthz here")
-        cls._r = None
 
     @classmethod
     def tearDownClass(cls):
@@ -274,6 +389,40 @@ class ColdBootDiet(unittest.TestCase):
             type(self)._r = json.loads(line[len("RESULT:"):])
         print("DIET:", json.dumps(self._r), file=sys.stderr)   # every test's call: pytest shows the failing test's captured stderr alone
         return self._r
+
+    def _result_outline(self):
+        """Road 8 on a SECOND boot: the diet driver first (its fresh open warms every tab, so it must have run), then the goal stores
+        and the mute seeded, the kernel restarted, the Outline driver run once; every test of the road reads this one result."""
+        if getattr(type(self), "_fail_o", None):
+            self.fail(type(self)._fail_o)
+        if self._ro is None:
+            self._result()
+            goals = os.path.join(self.state, "goals")
+            os.makedirs(goals, exist_ok=True)
+            for i in (GOAL_I, MUTED_I, SELECTED_I):
+                Path(goals, sid_of(i) + ".json").write_text(json.dumps(_goal_store(sid_of(i))))
+            Path(self.state, "session-flags.json").write_text(json.dumps({sid_of(MUTED_I): {"hideFromFeed": True}}))
+            self.kernel.kill(); self.kernel.wait()
+            type(self)._boot_kernel()
+            cfg = os.path.join(self.lab, "outline.json")
+            base = "http://127.0.0.1:%d" % self.port
+            with open(cfg, "w") as f:
+                json.dump({"chat": base + "/chat?token=" + self.token, "fleet": base + "/fleet?token=" + self.token, "perf": base + "/perf?token=" + self.token,
+                           "rawWs": "ws://127.0.0.1:%d/ws?app=fleet&delta=1&iid=lab-unflagged&token=%s" % (self.port, self.token),
+                           "sids": self.sids, "selected": sid_of(SELECTED_I), "click": sid_of(GOAL_I)}, f)
+            driver = os.path.join(self.lab, "outline.mjs")
+            Path(driver).write_text(OUTLINE_DRIVER)
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=400,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+            if "browser-launch-failed" in p.stderr:
+                self._skip("no playwright browser on this box")
+            line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
+            if line is None:
+                type(self)._fail_o = "the Outline driver produced no RESULT (stderr: %s)" % p.stderr[-2000:]
+                self.fail(type(self)._fail_o)
+            type(self)._ro = json.loads(line[len("RESULT:"):])
+        print("OUTLINE:", json.dumps(self._ro), file=sys.stderr)
+        return self._ro
 
     def test_the_first_dial_after_a_restart_reload_is_a_skeleton_dial_and_a_build_reload_dials_as_before(self):
         r = self._result()
@@ -333,6 +482,88 @@ class ColdBootDiet(unittest.TestCase):
         self.assertGreaterEqual(a["skelSids"], 1, "the revealed skeletons carry their sids in the strip: %r" % a)
         self.assertEqual(a["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed skeleton between the reveal and the prefetch's first ask: %r" % a)
         self.assertEqual(r["revealFilled"]["skel"], 0, "every revealed skeleton filled: %r" % r["revealFilled"])
+
+    def test_the_outline_panes_dial_carries_the_capability_and_the_chat_panes_does_not(self):
+        # road 8, the shell: the Outline's dial declares provrows=1 (the shim adds it for its app), the chat's dial carries the diet alone
+        r = self._result()
+        dials = r["paneDials"]
+        by_app = {}
+        for d in dials:
+            m = re.search(r"app=([a-z]+)", d)
+            if m:
+                by_app.setdefault(m.group(1), []).append(d)
+        self.assertIn("fleet", by_app, "the shell dialed the Outline pane: %r" % dials)
+        self.assertTrue(all("&provrows=1" in d for d in by_app["fleet"]), "the Outline's dials carry the capability: %r" % by_app["fleet"])
+        self.assertEqual(sorted(a for a, ds in by_app.items() if any("provrows=1" in d for d in ds)), ["fleet"], "no other pane's dial carries it: %r" % dials)
+        self.assertTrue(all("skeleton=1" not in d for d in by_app["fleet"]), "the Outline dials no skeleton diet: %r" % by_app["fleet"])
+
+    def test_with_the_outline_connected_the_gate_stays_on_and_the_pane_gets_a_provisional_row_per_skipped_tab(self):
+        # road 8: the first frame
+        r = self._result_outline()
+        self.assertEqual(r["errors"], [], "no page error on either page")
+        self.assertIn("&skeleton=1", r["chatStart"]["dial"] or "", "the chat dialed the diet: %r" % r["chatStart"])
+        self.assertNotIn("provrows", r["chatStart"]["dial"] or "", "the chat's dial carries no Outline term")
+        self.assertIn("&provrows=1", r["first"]["dial"] or "", "the Outline's dial declares the capability: %r" % r["first"]["dial"])
+        sel, f = sid_of(SELECTED_I), r["first"]["feed"]
+        self.assertIsNotNone(f, "the Outline received a feed frame with ledgers")
+        self.assertEqual(f["n"], N_SESSIONS, "every session has a row: %r" % f["n"])
+        self.assertEqual(sorted(f["prov"]), sorted(s for s in self.sids if s != sel), "all but the selected tab are provisional: %d rows" % len(f["prov"]))
+        self.assertEqual(r["first"]["fullsAtFirst"], [sel], "the chat built its selected tab alone while the Outline read: %r" % r["first"]["fullsAtFirst"])
+        self.assertGreaterEqual(r["first"]["perf"]["coldSkipped"], N_SESSIONS - 1, "/perf counts the cold skips: %r" % r["first"]["perf"])
+        self.assertEqual(r["chatStart"]["skel"], N_SESSIONS - 1, "the strip holds the other twenty-six as skeletons: %r" % r["chatStart"])
+        g = f["rows"][sid_of(GOAL_I)]
+        self.assertTrue(g["provisional"] and g["provState"], "the store-backed row is provisional, its status too: %r" % g)
+        self.assertEqual(g["tree"], ["index the notes", "write the search route"], "its goals come from the store alone: %r" % g)
+        self.assertEqual(g["anchors"], [[None, None], [None, None]], "no anchors without the transcript: %r" % g["anchors"])
+        self.assertEqual(g["keys"], ["archivedTops", "current", "tree"], "the pane's three ledger fields, nothing more: %r" % g["keys"])
+        self.assertIsNone(g["current"], "current is blank until the tab is built")
+        self.assertEqual(f["rows"][sid_of(MUTED_I)]["tree"], [], "a muted session's provisional row shows no goals: %r" % f["rows"][sid_of(MUTED_I)])
+        self.assertFalse(f["rows"][sel]["provisional"], "the selected tab's row is the built one")
+        memo = r["first"]["perf"]["memo"]
+        self.assertIsNotNone(memo, "the memo reports under /perf memos.outlineProvisional")
+        self.assertGreaterEqual(memo["miss"], 2, "the two provisional stores walked once each: %r" % memo)
+        self.assertGreaterEqual(memo["bypass_empty"], N_SESSIONS - 3, "the storeless tabs bypass the walk: %r" % memo)
+
+    def test_the_outline_marks_a_provisional_session_lightly_and_withholds_its_jumps(self):
+        # road 8: the DOM of the first frame
+        r = self._result_outline()
+        secs = {x["sid"]: x for x in r["first"]["dom"]["sections"]}
+        g, sel = secs.get(sid_of(GOAL_I)), secs.get(sid_of(SELECTED_I))
+        self.assertIsNotNone(g, "the store-backed session shows a section: %r" % r["first"]["dom"])
+        self.assertTrue(g["prov"], "marked provisional: %r" % g)
+        self.assertEqual(g["rows"], 2, "its two goals render: %r" % g)
+        self.assertEqual((g["nav"], g["acts"]), (0, 0), "no pointer class and no jump action on its mark, text or time: %r" % g)
+        self.assertEqual(g["nameUnderline"], "dashed", "the light mark under the name: %r" % g)
+        self.assertIn("its transcript has not been loaded since the restart", g["title"] or "", "the head says why: %r" % g["title"])
+        self.assertIsNotNone(sel, "the built session shows a section too")
+        self.assertFalse(sel["prov"]); self.assertEqual(sel["rows"], 2)
+        self.assertGreaterEqual(sel["acts"], 2, "the built row's mark and text jump: %r" % sel)
+        self.assertEqual(sel["title"], "Open this session")
+        m = secs.get(sid_of(MUTED_I))
+        self.assertTrue(m is None or m["rows"] == 0, "the muted session shows no goal row: %r" % m)
+
+    def test_a_click_on_a_second_tab_builds_it_and_its_row_loses_the_mark_on_the_next_frame(self):
+        r = self._result_outline()
+        a, g = r["afterClick"], sid_of(GOAL_I)
+        self.assertEqual(a["fulls"], [sid_of(SELECTED_I), g], "the click built the second tab and nothing else: %r" % a["fulls"])
+        self.assertGreaterEqual(a["heldStill"], 1, "the chat's idle prefetch stayed held: the build was the click's: %r" % a["heldStill"])
+        row = a["feed"]["rows"][g]
+        self.assertFalse(row["provisional"], "the built row replaced the provisional one: %r" % row)
+        self.assertEqual(row["tree"], ["index the notes", "write the search route"], "the same goals, now the build's: %r" % row)
+        self.assertEqual(sorted(a["feed"]["prov"]), sorted(s for s in self.sids if s not in (sid_of(SELECTED_I), g)), "the other twenty-five stay provisional")
+        sec = {x["sid"]: x for x in a["dom"]["sections"]}[g]
+        self.assertFalse(sec["prov"], "the section lost the light mark: %r" % sec)
+        self.assertGreaterEqual(sec["acts"], 2, "and its jumps are back: %r" % sec)
+        self.assertGreaterEqual(a["perf"]["memo"]["hit"], 1, "the memo hit across the cycles: %r" % a["perf"]["memo"])
+
+    def test_an_unflagged_outline_socket_makes_the_kernel_build_every_tab(self):
+        r = self._result_outline()
+        u = r["unflagged"]
+        self.assertNotIn("provrows", u["rawDial"] or "", "the raw socket dialed without the flag: %r" % u["rawDial"])
+        self.assertGreaterEqual(u["perf"]["built"] - r["afterClick"]["perf"]["built"], N_SESSIONS - 2, "the kernel built the remaining tabs for the older pane: %r then %r" % (r["afterClick"]["perf"], u["perf"]))
+        self.assertGreaterEqual(u["heldStill"], 1, "with the chat's prefetch still held: the builds were the kernel's: %r" % u["heldStill"])
+        self.assertEqual(u["feed"]["prov"], [], "and no row is provisional any more: %r" % u["feed"]["prov"])
+        self.assertEqual(u["fullsDistinct"], 2, "the chat page, holding its skeletons, was handed no full frame it had not asked for: %r" % u["fullsDistinct"])
 
     def test_the_measurement_is_reported(self):
         r = self._result()
