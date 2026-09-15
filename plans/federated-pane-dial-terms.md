@@ -35,7 +35,9 @@ So a remote socket carries `app` and (if present) `wid`, and nothing else.
 
 So the local dial states `app`, `delta=1`, `iid`, `wid`, `active`, `reconnect=1&proto=<n>` (on a
 redial), `col`, `skeleton=1` (a later column or the restart diet), and `provrows=1` (the Outline
-pane's app). Eight terms the remote dial omits.
+pane's app). The remote dial URL omits eight of these, but `proto` is already carried to the remote
+another way (the relayed `ready`, see section 3), so the real gap is seven terms: `delta`, `iid`,
+`active`, `reconnect` (on a redial), `col`, `skeleton`, `provrows`.
 
 **The splice**, `_remote_ws` at `kernel/kernel.py:63164` serves `/remote/<host>/ws`: it pops the
 browser `token`, sets the remote kernel's own token, adds `relay=1` (`:63187`, PR 1699), forwards the
@@ -80,26 +82,37 @@ diagnostics then apply to a remote session exactly as to a local one. Concretely
 - **`iid`**, the pane's own instance id, namespaced so it is globally unique on the remote kernel
   (see the risk in section 6). This is the single most load-bearing term: it makes the remote's
   reconnect-supersession and its per-pane diagnostic row work.
-- **`proto`** (and `reconnect` on a redial), the chat protocol, so the remote serves the proto-2
-  windowed wire a hub chat pane needs to fill history regions. Without it the remote falls to the
-  index wire and the pane cannot window.
 - **`skeleton=1`**, for a chat pane that is a later column or is on the restart diet, so the remote
   diets the cold tabs.
 - **`active`**, the pane's active session, so the remote builds that one full and skeletons the
   rest.
 - **`provrows=1`**, for the Outline pane, so the remote's cold-tab gate stays on and the pane owns
   its provisional row.
+- **`reconnect`** on a redial: a redial posts no `ready`, so its dial term `reconnect=1&proto=<n>`
+  IS the redial's handshake, and the handshake honours a URL `proto` only inside the reconnect arm
+  (kernel.py:63095). So a redial of a federated pane must carry `reconnect=1` with the proto the page
+  last declared, the way the local shim's redial does.
 - **`col`**, the column, carried for parity (log only today).
 - **`delta=1`, `wid`**, already applicable; `wid` is already carried, `delta` should be carried for
   the bars/feed panes.
 
-**How the hub page learns them.** Each is available to the page already: `wid` from
-`dashboardWid()`; the `iid` is the pane's own; the active session and column are the pane's own
-state; the proto is what the page's local `ready` declared. Nothing new needs to cross the relay from
-the remote for the hub to state these, they are the PAGE's terms, which is the whole point.
+**`proto` is already carried, and is not a missing term.** The hub page tells every remote socket the
+page's protocol by relaying the page's `ready`: `federation.ts:883` keeps `pageProto` from the page's
+own `ready`, `:1411` re-sends `{type: "ready", proto}` to every open remote socket when the page's
+`ready` fires, and `:1678` sends it on each remote socket's open. So the remote already serves the
+proto-2 windowed wire to a hub chat pane on a fresh dial, and the reported incident's frame was a
+proto-2 frame with a numeric tailLo. On a fresh dial proto rides that relayed `ready` (not the URL,
+which the handshake ignores outside the reconnect arm); on a redial it rides the URL's
+`reconnect=1&proto=<n>`, which is why `reconnect` is in the list above.
 
-**Stable vs mutable terms.** `app`, `wid`, `iid`, `proto`, `skeleton`, `provrows` are fixed for the
-life of a pane and ride the dial URL. `active` and `col` change at runtime; the local page re-stamps
+**How the hub page learns the rest.** Each is available to the page already: `wid` from
+`dashboardWid()`; the `iid` is the pane's own; the active session and column are the pane's own
+state. Nothing new needs to cross the relay from the remote for the hub to state these, they are the
+PAGE's terms, which is the whole point.
+
+**Stable vs mutable terms.** `app`, `wid`, `iid`, `skeleton`, `provrows` are fixed for the
+life of a pane and ride the dial URL (proto rides the relayed `ready`, above). `active` and `col`
+change at runtime; the local page re-stamps
 `active` on a tab switch over the live socket (kernel.py:61881), so the federated pane sends the same
 runtime updates over the relay socket rather than relying on the dial URL alone. The dial URL carries
 the active session at open as the initial value.
@@ -137,19 +150,22 @@ is 0 and the remote frame carries no skeleton set; with the page's terms carried
 
 ## 5. The interim lever
 
-The "Whole chat frames" switch is the reversible lever covering the symptom until this lands. It is a
-state file `whole-chat-frames.json` seeded by `ROMP_CHAT_FLOOR0=1` at boot or toggled in the gear;
+The "Whole chat frames" switch is the reversible lever, held while this lands. It is a state file
+`whole-chat-frames.json` seeded by `ROMP_CHAT_FLOOR0=1` at boot or toggled in the gear;
 `_whole_chat_frames_on()` (kernel.py:8300) makes `_chat_floor0_of` return True (`:46731`), so every
-chat tab builds from turn 0 for every client instead of from the assembly document's cut. It is ON
-for the devbox kernel now, which is why the user's remote thread, once the whole transcript ships,
-has its history at all.
+chat tab builds from the render FLOOR at turn 0 (build_session's `floor`) instead of the assembly
+document's cut. It is ON for the devbox kernel now.
 
-It covers only the history-completeness symptom, and bluntly: it forces the whole transcript for
-EVERY client of that kernel, local panes included, defeating the windowing the cut exists for. It
-does not carry the diet, the active-tab gate, the skeleton shape, the provisional row or the per-pane
-diagnostic, those need the terms. It turns OFF (uncheck the gear; the env only seeds when the file
-is absent) once this code lands and a remote pane carries `proto`/`skeleton`/`active` and can fill
-its own regions.
+Precisely what it does and does not do: it sets the build floor to turn 0, so the pre-cut region is
+built eagerly rather than left as lazy pre-cut atoms above a document's cut. It does NOT force the
+whole transcript onto the wire: the frame is still the tail slice of `WIRE_TAIL` (250) events with a
+head gap and `headKnown` false (the pre-stage-1b shape, `head_from = max(0, total - WIRE_TAIL)` at
+kernel.py:46856, independent of the floor), and the page fills the regions above it on demand. Its
+measured cost is about three times per cold long-tab build. So it is a build-floor lever, not a wire
+lever, and it does not carry the diet, the active-tab gate, the skeleton shape, the provisional row
+or the per-pane diagnostic, those need the terms. It turns OFF (uncheck the gear; the env only seeds
+when the file is absent) once this code lands and a remote pane carries `skeleton`/`active` (and
+proto by the relayed ready) and can fill its own regions.
 
 ## 6. Risks
 
