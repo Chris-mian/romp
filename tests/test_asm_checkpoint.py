@@ -524,7 +524,8 @@ class CyclesInThePreCutGraph(Harness):
         # no earlier cut the leaf has no document, as before stage one b (then: noBoundary)
         self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
         self.assertFalse(self.doc(path), "no document: %s" % em.asm_checkpoint_stats()["skipped"])
-        self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"unsplittable": 1}, "every cut before the ring's child cuts nothing")
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"reuse": 1},
+                         "the reused uuid u1 spans every candidate cut (its first copy is the file's first record): the named refusal")
         self.fresh(); modes = []
         self.assertEqual(_strip(self.parse(path, modes)), cold); self.assertNotEqual(modes, ["restore"])
 
@@ -1212,6 +1213,72 @@ class SettledCut(Harness):
         self.assertEqual(modes, ["restore"]); self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"restored": 1})
         d = _doc(path)
         self.assertNotIn("u_open", {row[0] for row in d["records"]}, "the open turn is the tail, never pre-cut")
+
+    def test_a_pre_cut_attachment_whose_uuid_a_tail_record_reuses_never_restores_without_its_atom(self):
+        """Round two of stage one b, the medium (the verifier's shape): an absorbed ATTACHMENT record parented pre-cut whose uuid a
+        later record reuses. At write time the reused copy is the one the parse indexes (last-wins), so the attachment was no row of
+        the document, and neither guard saw it: the writer's closure rule read the kept set, the restore's reuse check read the rows;
+        the document restored silently missing the attachment's atom, no counter, no refusal. Both guards read every pre-cut RECORD
+        now. Two timings, at a settled cut and at a compaction cut: the reuse already in the file when the writer runs (the cut steps
+        back before the attachment's first copy, so the pair is the tail and the restore equals the cold parse; when no cut is left
+        the writer refuses under `reuse`); the reuse appended after the write (the restore's check over the rows and `xu` refuses
+        the standing document, the offered rewrite meets the writer's guard). Every parse equals the cold parse."""
+        t = NOW - 3600
+        def opener(att_first):
+            recs = [G.uline(t, "hello", "u1", None), G.aline(t + 5, "hi", "a1", "u1", stop="end_turn"),
+                    G.attline(t + 6, "a queued prompt", "att_1", "a1"),           # an absorbed queued-command attachment, parented pre-cut,
+                    #                                                                  nothing parents on it; the cold parse emits its atom
+                    G.uline(t + 10, "second ask", "u2", "a1"), G.aline(t + 15, "second reply", "a2", "u2", stop="end_turn"),
+                    G.uline(t + 20, "third ask", "u3", "a2"), G.aline(t + 25, "third reply", "a3", "u3", stop="end_turn")]
+            if att_first:
+                recs = [G.attline(t - 1, "a queued prompt", "att_1", None)] + recs[:2] + recs[3:]   # the attachment is the file's first record
+            return recs
+        def reuse(recs):
+            return [G.uline(NOW + 900, "reusing the attachment's uuid in the tail", "att_1", _last_uuid(recs)),
+                    G.aline(NOW + 905, "answered", "a_late", "att_1", stop="end_turn")]
+        cuts = {"settled": lambda o: o + _turns_after(o, "att", 2), "compaction": lambda o: compacting_variant(o, "attc")}
+        verdicts = []                                              # asserted OUTSIDE the subtests too
+        for label, mk in cuts.items():
+            with self.subTest(cut=label, timing="the reuse in the file at write time"):
+                # nothing parents on the attachment, so the kept chain is whole and the old closure rule saw nothing; the reused copy
+                # is the one the parse indexes (last-wins), so the attachment was no row and the old reuse check saw nothing either:
+                # before the fix the document was written and restored WITHOUT the attachment's atom. Now every cut inside the
+                # reuse's span is blocked and the cut falls before the attachment (a turn's bytes begin at the attachments spliced
+                # before its prompt), so the attachment and its reuse are both the tail and the restore equals the cold parse
+                recs = mk(opener(False)); recs = recs + reuse(recs)
+                path = self.write("att-write-" + label, recs)
+                cold = self.cold(path)
+                self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+                self.assertTrue(self.doc(path), "the cut falls before the attachment: %s" % em.asm_checkpoint_stats()["skipped"])
+                rows = [r[0] for r in _doc(path)["records"]]
+                self.assertEqual(rows, ["u1", "a1"], "the attachment and its reuse are both the tail: %s" % rows)
+                got, modes, _n = self.restored(path)
+                self.assertEqual((modes, got), (["restore"], cold), "%s: restored equals the cold parse, the attachment's atom included" % label)
+                verdicts.append(label + " at write")
+            with self.subTest(cut=label, timing="the attachment the file's first record: the named refusal"):
+                recs = mk(opener(True)); recs = recs + reuse(recs)
+                path = self.write("att-first-" + label, recs)
+                cold = self.cold(path)
+                self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+                self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"reuse": 1})
+                self.fresh(); self.assertEqual(_strip(self.parse(path)), cold)
+            with self.subTest(cut=label, timing="the reuse appended after the write"):
+                recs = mk(opener(False))
+                path = self.write("att-after-" + label, recs)
+                self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+                self.assertTrue(self.doc(path), em.asm_checkpoint_stats()["skipped"])
+                self.assertIn("att_1", [r[0] for r in _doc(path)["records"]], "the attachment is a row of the clean document")
+                pp = Path(path); pp.write_text(pp.read_text() + "".join(json.dumps(r) + "\n" for r in reuse(recs)))
+                cold = self.cold(path)
+                self.fresh(); modes = []
+                tree = self.parse(path, modes); em.hydrate(tree, SID)
+                self.assertNotEqual(modes, ["restore"], "%s: the standing document is refused (the tail reuses a pre-cut uuid)" % label)
+                self.assertEqual(_strip(tree), cold)
+                self.fresh(); modes = []
+                tree = self.parse(path, modes); em.hydrate(tree, SID)
+                self.assertEqual(_strip(tree), cold, "%s: every later parse equals the cold parse too" % label)
+                verdicts.append(label + " after write")
+        self.assertEqual(len(verdicts), 4, "every timing at every cut kind ran to its verdict: %s" % verdicts)
 
     def test_a_refusal_mark_is_retired_with_the_rewrite_that_moves_the_cut(self):
         """Correction 3: a `refusedStanding` mark belongs to a cut; when a compaction lands and the rewrite moves the cut, the

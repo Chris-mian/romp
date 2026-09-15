@@ -1566,6 +1566,13 @@ def checkpoint_sweep():
     if d is None or not Path(d).is_dir():
         return 0
     gone = 0
+    for aside in Path(d).glob("*.asm.json.gz.meta.retired-*"):   # a retired refusal sidecar (the writer keeps the bytes of a mark it
+        cp = aside.with_name(aside.name.split(".meta.retired-")[0])   #  replaced): it leaves with its document, never on its own
+        if not cp.exists():
+            try:
+                aside.unlink(); gone += 1
+            except OSError:
+                pass
     for cp in list(Path(d).glob("*.json")) + list(Path(d).glob("*.asm.json.gz")):
         keep = False
         try:
@@ -1587,6 +1594,11 @@ def checkpoint_sweep():
                 if cp.name.endswith(".gz"):                # an assembly document: counted as removed, its sidecar with it
                     _asm_removed("sweep")
                     cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
+                    for aside in Path(d).glob(cp.name + ".meta.retired-*"):   # and every retired refusal sidecar it left
+                        try:
+                            aside.unlink()
+                        except OSError:
+                            pass
             except OSError:
                 pass
     with _CKPT_LOCK:
@@ -5670,7 +5682,7 @@ def _pre_tree_identity(atoms, rompuuid):
     return h.hexdigest()
 
 
-_ASM_SKIP_STRUCTURAL = ("unsplittable", "reconstruction", "unencodable", "oversize", "noCut")   # true of a cut until it moves
+_ASM_SKIP_STRUCTURAL = ("unsplittable", "reconstruction", "unencodable", "oversize", "noCut", "reuse", "closure")   # true of a cut until it moves
 _ASM_TAIL_SHARE = 8                   # the churn bound (stage one b): a standing document is rewritten when the tail past its cut has
 #                                       grown to ONE EIGHTH of the pre-cut bytes (each rewrite is a whole parse, so a share bounds the
 #                                       rewrites over a leaf's life to a logarithm of its growth while the tail every cold parse still
@@ -5762,11 +5774,57 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             return ad.seq_of.get(a.get("uuid"), 0)
         cut_seq = None
         uuid_at = {sq: u for u, sq in ad.seq_of.items()}   # seq -> uuid, for the cut record's raw-against-resolved parent check
-        for ti in range(ci, -1, -1):                      # the cut turn, then earlier ones while the chronological split fails
+        # EVERY record the pre-cut bytes carry, in seq order (the kept chain, the absorbed attachments, every copy of a repeated
+        # uuid): the reuse and closure guards below read these, never the document's rows (round two of stage one b, 2026-09-15: a
+        # pre-cut absorbed attachment whose uuid a tail record reused was no row, so neither guard saw it, and the document restored
+        # silently missing that atom). A uuid seen before the cut and again at or past it blocks the cut (`reuse`); a pre-cut
+        # record whose parent resolves (last-wins) past the cut blocks it (`closure`)
+        all_recs, _sq = [], 0
+        for _fp, _recs in ad._src.items():
+            _base = None                                  # the adapter's own numbering: a SEEDED adapter (a restore's) numbers its tail
+            for _k, _r in enumerate(_recs):               #  from the document's cut, so the file's base is read off any record the
+                _u = _r.get("uuid") if isinstance(_r, dict) else None   #  adapter indexed (its last-wins copy), never assumed to be one
+                if _u and ad.by_uuid.get(_u) is _r and _u in ad.seq_of:
+                    _base = ad.seq_of[_u] - _k - 1
+                    break
+            if _base is None:
+                _base = _sq                               # no indexed record in this file: the cumulative count (the whole parse's own)
+            for _k, _r in enumerate(_recs):
+                if isinstance(_r, dict) and _r.get("uuid"):
+                    all_recs.append((_base + _k + 1, _r))
+            _sq = _base + len(_recs)
+        first_at, last_at = {}, {}
+        for _sq, _r in all_recs:
+            first_at.setdefault(_r["uuid"], _sq); last_at[_r["uuid"]] = _sq
+        spans = sorted((a, b) for a, b in ((first_at[u], last_at[u]) for u in first_at) if a < b)   # a reused uuid: (first, last)
+        def _reused_across(cand):
+            return any(a < cand <= b for a, b in spans)
+        def _parent_past(cand):
+            for _sq, _r in all_recs:
+                if _sq >= cand:
+                    break
+                u = _r["uuid"]
+                p = ad.parent_of.get(u) if ad.by_uuid.get(u) is _r else (_r.get("parentUuid") or None)   # the last-wins copy: as the
+                if p and ad.seq_of.get(p, 0) >= cand:                                                     #  parse resolves it; a shadowed
+                    return True                                                                           #  copy: its raw parent, last-wins
+            return False
+        blocked = set()                                   # why candidates fell: the named skip when none survives
+        qseqs = {q["seq"] for q in ad.qatts}              # the absorbed attachments' seqs: a turn's bytes begin at the attachments the
+        #                                                   CLI spliced before its prompt, so a cut at the prompt's record leaves them
+        #                                                   pre-cut (absorbed through the carry) and a cut before them is the same turn
+        #                                                   boundary; both are tried, the attachment-first one when the prompt's fails
+        def _cands(ti):
             seqs = [_rec_seq(a) for t in turns[ti:] for a in t["atoms"] if a.get("uuid") in ad.seq_of]
             if not seqs:
-                continue
-            cand = min(seqs)
+                return []
+            out, c = [min(seqs)], min(seqs)
+            for _k in range(len(qseqs)):                  # bounded: at most every attachment
+                if (c - 1) not in qseqs:
+                    break
+                c -= 1
+                out.append(c)
+            return out
+        for ti, cand in ((ti, c) for ti in range(ci, -1, -1) for c in _cands(ti)):   # the cut turn, then earlier ones while a guard fails
             first = ad.by_uuid.get(uuid_at.get(cand))
             if (first is not None and not (first.get("type") == "system" and first.get("subtype") == "compact_boundary")
                     and ad.parent_of.get(first.get("uuid")) != (first.get("parentUuid") or None)):
@@ -5775,14 +5833,15 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 #                                           parent the parse re-points from the /compact stdout to the summary): the
                 #                                           restore's proof walks raw parents, so this cut could never be proven; the
                 #                                           turn before it is the cut (stage one b, correction 1)
-            if any(ad.seq_of.get(ad.parent_of.get(u), 0) >= cand for u in entry["kept"]
-                   if ad.seq_of.get(u, 0) < cand and ad.parent_of.get(u) is not None):
-                continue                                  # a pre-cut record whose RESOLVED parent lies past the cut: a ring across the
-                #                                           cut (a tail record reusing the uuid a pre-cut record parents on, last-wins),
-                #                                           which the restore cannot rebuild (the pre-cut rows are frozen, their parent
-                #                                           bound to a record the tail holds) and the tail proof cannot see (the shadowed
-                #                                           uuid is no row). The pre-cut part is closed under parents, or the cut steps
-                #                                           back (stage one b; found by the moving-cut oracle over the ring fixture)
+            if _reused_across(cand):
+                blocked.add("reuse"); continue            # a tail record reuses a uuid the pre-cut bytes carry (a row's, an absorbed
+                #                                           attachment's, a shadowed copy's): the restore cannot rebuild what the parse
+                #                                           makes of the pair, so the cut steps back before the first copy
+            if _parent_past(cand):
+                blocked.add("closure"); continue          # a pre-cut record whose RESOLVED parent lies past the cut: a ring across the
+                #                                           cut, which the restore cannot rebuild (the pre-cut rows are frozen, their parent
+                #                                           bound to a record the tail holds). The pre-cut part is closed under parents,
+                #                                           or the cut steps back (stage one b; found by the moving-cut oracle)
             pre_ts = [ad.ts_of.get(u, 0) for u in entry["kept"] if ad.seq_of.get(u, 0) < cand and u in ad.by_uuid
                       and (ad.by_uuid[u].get("type") in ("user", "assistant") or ad.by_uuid[u].get("subtype") == "compact_boundary")]
             tail_ts = [ad.ts_of.get(u, 0) for u in entry["kept"] if ad.seq_of.get(u, 0) >= cand and u in ad.by_uuid
@@ -5792,6 +5851,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             cut_seq = cand
             break
         if cut_seq is None or cut_seq <= 1 or not any(ad.seq_of.get(u, 0) < cut_seq for u in entry["kept"]):
+            if blocked:
+                return skip("reuse" if "reuse" in blocked else "closure")   # a guard blocked every cut that cuts anything: its name
             return skip("unsplittable")               # nothing pre-cut, or pre-cut bytes that hold no kept record (every record before
             #                                           the cut shadowed by a later copy of its uuid): no document says less than none
         # the files: each one's records before the cut, its witness, and where the tail read starts
@@ -6052,6 +6113,9 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                "cands": list(entry["cands"]), "links": dict(entry["links"]), "files": files, "fsids": fsids, "cutSeq": cut_seq,
                "records": rows, "atoms": None,             # v6: string rows, built inside the guard below (an unencodable row
                "spine": spine, "seqTs": seq_ts, "lastTs": last_ts,   #  is the counted `unencodable` skip, never a raise)
+               "xu": sorted({_r["uuid"] for _sq, _r in all_recs if _sq < cut_seq} - set(row_of)),   # the pre-cut uuids that are no row
+               #                                             (absorbed attachments, shadowed copies): the restore's reuse check reads
+               #                                             rows and these, so a tail record reusing any of them refuses (round two)
                "turns": turns_doc, "treeIdentity": _tree_identity_of_doc(turns_doc, identity) if turns_doc else None,
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
@@ -6447,7 +6511,8 @@ def _tail_chains_onto_the_document(leaf_path, doc, assume_childless=False):
     by_uuid = {r["uuid"]: r for r in nodes}                               #  uuid-less record bearing a parentUuid is no node to the
     rows, spine = doc.get("records") or [], doc.get("spine") or []       #  parse either (nothing is indexed for it), so it is not
     #                                                                       walked (T402 follow-up); a snapshot or index row is none
-    pre_uuids = {row[0] for row in rows}
+    pre_uuids = {row[0] for row in rows} | set(doc.get("xu") or [])   # every uuid the pre-cut bytes carry: the rows and the ones no
+    #                                                                   row holds (absorbed attachments, shadowed copies; `xu`, round two)
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
     tip_ok = tip if tip is not None and (doc.get("tipChildless") is True or assume_childless) else None
     known = pre_uuids | set(by_uuid)
