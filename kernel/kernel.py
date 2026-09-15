@@ -10847,8 +10847,16 @@ def _session_files_stat(s):
     check reads the _downtime list, which the downtime log refills). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
     no transcript change at all, and the interrupt tick must re-block on exactly that (its docstring's stale-marker
-    rule; tests/test_kernel_interrupt_machine_cut.py pins it)."""
+    rule; tests/test_kernel_interrupt_machine_cut.py pins it).
+    One snapshot per session per jobs pass (plans/nudge-walk-events.md, 2026-09-15): inside a pass the first asker's stat is kept on
+    the pass's scope and served to every later asker, so the lift, the walk and the interrupt tick read ONE view of the ten files
+    and the pass pays ten stats per alive session, not ten per job; `stats` under memos.nudgeWalk counts the stats paid. Outside
+    a pass (a handler's own tick, a test) there is no scope and every ask stats."""
     sid = str(s.get("sid") or "")
+    memo = getattr(_live_scope, "files_stat", None)
+    key = (sid, s.get("path") or "")
+    if memo is not None and key in memo:
+        return memo[key]
     out = []
     for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
@@ -10870,7 +10878,11 @@ def _session_files_stat(s):
             out += [st.st_mtime, st.st_size]
         except OSError:
             out += [0.0, 0]
-    return tuple(out)
+    out = tuple(out)
+    _NUDGE_WALK_STATS["stats"] += len(out) // 2   # the stats paid (a served key pays none)
+    if memo is not None:
+        memo[key] = out
+    return out
 
 
 def _session_moved_since_boot(s):
@@ -11086,7 +11098,7 @@ def _tick_job_skips(job, s):
 # so the walk's bookkeeping does not flap. The first boot with per-stage byte rows (dc8ad7fb, 2026-09-13) spent 58.9 s of a
 # 63 s first cycle in this walk, parsing every alive session cold before a single nudge could be due.
 _NUDGE_HORIZON = threading.local()    # the walking thread's collector: .notes (the flips a look's clock legs declined on)
-_NUDGE_WALK_STATS = {"looks": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
+_NUDGE_WALK_STATS = {"looks": 0, "stats": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
                      "clockDue": 0, "wakeOnly": 0, "unboundedBy": {}}   # unboundedBy: the None notes per leg (T401 follow-up)
 _NUDGE_LOOK_STATS = {}                # sid -> the stat the pass took before its snapshots, for the look (a side map: the session
 #                                       rows are shared, read-only and memoised per cycle, never written into)
@@ -53190,6 +53202,9 @@ def _jobs_pass(now, live_map):
     _t_pass = time.monotonic()
     if not _PERF_STATS._mine():
         _PERF_STATS.cycle_begin("jobs")   # a caller that did not open the pass (a test driving the jobs alone) opens it here
+    _own_stat = getattr(_live_scope, "files_stat", None) is None   # the pass's shared ten-file snapshot (_session_files_stat): opened
+    if _own_stat:                                                    # here when the caller did not, closed at the pass's end (the cycle's
+        _live_scope.files_stat = {}                                  # finally clears it too, so a raise never leaks a pass's view)
     try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
         _job_stage('liftSpentAwaiting', lambda: _lift_spent_awaiting(now, live_map))   # so the nudge tick below never wakes a wait that already ended
     except Exception:
@@ -53267,6 +53282,8 @@ def _jobs_pass(now, live_map):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+    if _own_stat:
+        _live_scope.files_stat = None
     _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
 
 
@@ -53304,6 +53321,7 @@ def _jobs_cycle():
         _live_scope.sessions = None
         _live_scope.auth = None
         _live_scope.msgsum = None
+        _live_scope.files_stat = None
         _PERF_STATS.jobs_pass(time.monotonic() - _t, time.thread_time() - _c)
         if first:
             _first_cycle_sampler_stop(_FIRST_PASS_SAMPLER)

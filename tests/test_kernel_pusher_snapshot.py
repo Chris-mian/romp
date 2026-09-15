@@ -9,6 +9,7 @@ by design, so the fix is purely structural: one snapshot at cycle start, handed 
 
 SYNTHETIC fixtures only: placeholder UUIDs, invented names.
 """
+import collections
 import json
 import os
 import tempfile
@@ -87,6 +88,7 @@ class _CycleFixture(unittest.TestCase):
         km._live_scope.sessions = None
         km._live_scope.paths = None
         km._live_scope.names = None
+        km._live_scope.files_stat = None
         km._compact_clicked.clear()
         self.td.cleanup()
 
@@ -496,6 +498,49 @@ class LazyChatSerialization(unittest.TestCase):
         km._send_client(c, ("t",), m1, pre=json.dumps(m1), sig="same")
         km._send_client(c, ("t",), m2, pre=json.dumps(m2), sig="same")
         self.assertEqual(len(sent), 1, "the passed sig, not a recomputation, drives the dedup")
+
+
+class OneTenFileSnapshotPerPass(_CycleFixture):
+    """plans/nudge-walk-events.md, the shared snapshot: the ten-file key every event-keyed tick job reads
+    (_session_files_stat) is taken once per session per jobs pass and served to every later asker in that
+    pass, so the lift, the walk and the interrupt tick read one view of a session's files and the pass pays
+    ten stats per alive session, not ten per asker. memos.nudgeWalk.stats counts the stats paid."""
+    def test_the_tick_jobs_share_one_ten_file_snapshot_per_pass(self):
+        real, real_stat, asked, inside, stats = km._session_files_stat, os.stat, collections.Counter(), [0], [0]
+        def counting(s):                     # the asks, and the stats the key itself pays while answering them
+            asked[s["sid"]] += 1
+            inside[0] += 1
+            try:
+                return real(s)
+            finally:
+                inside[0] -= 1
+        def stat(*a, **k):
+            if inside[0]:
+                stats[0] += 1
+            return real_stat(*a, **k)
+        km._session_files_stat, os.stat = counting, stat
+        try:
+            before = km._NUDGE_WALK_STATS.get("stats")
+            km.Sessions.live = lambda: dict(self.row)
+            with km._clients_lock:
+                km._clients[:] = []
+            km._jobs_cycle()
+            counted = (km._NUDGE_WALK_STATS.get("stats") or 0) - (before or 0)
+        finally:
+            km._session_files_stat, os.stat = real, real_stat
+        self.assertGreaterEqual(min(asked[SID], asked[SID2]), 2,
+                                "more than one tick job asks for each alive session's key in a pass: %r" % dict(asked))
+        self.assertEqual(stats[0], 10 * len(self.row),
+                         "ten stats per alive session per pass, whoever asks: %r asks, %d stats" % (dict(asked), stats[0]))
+        self.assertEqual(counted, stats[0], "memos.nudgeWalk.stats counts the stats the key paid")
+
+    def test_outside_a_pass_every_ask_stats(self):
+        """A handler's own tick runs with no pass scope open: nothing is served stale from an earlier pass."""
+        s = {"sid": SID, "path": self.paths[SID]}
+        km._live_scope.files_stat = None
+        before = km._NUDGE_WALK_STATS.get("stats")
+        km._session_files_stat(s); km._session_files_stat(s)
+        self.assertEqual((km._NUDGE_WALK_STATS.get("stats") or 0) - (before or 0), 20, "two asks, twenty stats, no memo")
 
 
 if __name__ == "__main__":
