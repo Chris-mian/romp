@@ -130,6 +130,58 @@ class _Root(unittest.TestCase):
             return km._live_map()
 
 
+
+class ChatBuildRowsFollowTheTick(_Root):
+    """The per-session chat build rows (/perf, builds.chat.bySession) leave with their sessions, decided at the END
+    of the death sweep's tick: a stand-down (the registry unreadable) keeps every row, a departure whose registry
+    row stands (a dead session the user keeps open as a tab) keeps its row, and a session gone from the registry
+    loses its row the tick that stamps it (round two of the timer, 2026-09-15: the keep ran before the stand-down
+    loop and dropped the rows of every live session on an unreadable registry, minting `first` again on the next
+    warm build)."""
+    def _seed(self):
+        _reg(SID); _reg(SID2); _name(SID); _name(SID2)
+        rows = self.live()
+        self.assertEqual(set(rows), {SID, SID2})
+        return rows
+
+    def _rows(self, *sids):
+        self._saved_rows = dict(km._PERF_STATS.chat_by_session)
+        self.addCleanup(self._restore_rows)
+        km._PERF_STATS.chat_by_session.clear()
+        for sid in sids:
+            km._PERF_STATS.chat_by_session[sid] = {"first": 10.0, "last": 10.0, "max": 10.0, "n": 1, "cached": 0, "bytes": 5}
+
+    def _restore_rows(self):
+        km._PERF_STATS.chat_by_session.clear(); km._PERF_STATS.chat_by_session.update(self._saved_rows)
+
+    def test_a_stand_down_keeps_every_row_and_a_session_gone_from_the_registry_loses_its_row(self):
+        rows = self._seed()
+        self._rows(SID, SID2)
+        km._death_sweep_tick(NOW, rows)                                   # arms the set-diff trigger
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "the first tick drops nothing")
+        os.rename(jd.SDKDIR, jd.SDKDIR.with_name("sdk.aside"))
+        with contextlib.redirect_stderr(self.err):
+            km._death_sweep_tick(NOW + 1, {SID: rows[SID]})               # SID2 "departed" behind an unreadable registry: stood down
+        self.assertIn(SID2, km._prev_live_sids[0], "the stood-down departure is re-asked next tick")
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2},
+                         "a stand-down keeps the departure's row (before round two the keep ran on the live map alone and dropped it)")
+        os.rename(jd.SDKDIR.with_name("sdk.aside"), jd.SDKDIR)
+        os.unlink(jd.SDKDIR / (SID2 + ".json"))                           # the reg goes, no life rows: dead history
+        with contextlib.redirect_stderr(self.err):
+            km._death_sweep_tick(NOW + 2, {SID: rows[SID]})
+        self.assertIsNotNone(_marker(SID2), "stamped by the sweep")
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID}, "the row goes with the session gone from the registry")
+
+    def test_a_departure_whose_registry_row_stands_keeps_its_chat_build_row(self):
+        rows = self._seed()
+        self._rows(SID, SID2)
+        km._death_sweep_tick(NOW, rows)
+        with contextlib.redirect_stderr(self.err):
+            km._death_sweep_tick(NOW + 1, {SID: rows[SID]})               # SID2 left the live map; its reg stands (kept open)
+        self.assertIsNone(_marker(SID2), "an SDK death is the kill gesture's to stamp")
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID, SID2}, "a kept-open dead tab keeps its row")
+
+
 class GenuineEmptiness(_Root):
     def test_a_fresh_root_with_no_registry_and_no_names_is_not_blind(self):
         self.assertFalse(jd.SDKDIR.exists())

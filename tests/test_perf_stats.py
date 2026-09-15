@@ -263,16 +263,18 @@ class Collector(unittest.TestCase):
         self.st.build_chat(False, 0.400, sid=A)
         rows = {r["sid"]: r for r in self.st.snapshot()["builds"]["chat"]["bySession"]}
         self.assertEqual((rows[A]["first"], rows[A]["last"], rows[A]["max"]), (100.0, 400.0, 400.0), "first is set once; last and max move")
-        self.st.chat_rows_keep({A, C})                                        # B's session left the live map
+        self.st.chat_rows_keep({A, C})                                        # B's session left the registry
         self.assertEqual(sorted(r["sid"] for r in self.st.snapshot()["builds"]["chat"]["bySession"]), sorted([A, C]))
-        self.st.chat_rows_keep(set())                                         # an empty alive set (a hiccup) drops nothing
+        self.st.chat_rows_keep(set())                                         # an empty set (a hiccup) drops nothing
         self.assertEqual(len(self.st.snapshot()["builds"]["chat"]["bySession"]), 2)
-        import inspect
-        self.assertIn("_PERF_STATS.chat_rows_keep(cur)", inspect.getsource(km._death_sweep_tick), "the death sweep's tick bounds the rows")
-        src = Path(os.path.join(BIN, "romp-kernel")).read_text()          # the two call sites live in the chat push
-        self.assertEqual(src.count('_PERF_STATS.build_chat(True, sid=str(s["sid"]))'), 1, "the cached call site hands the sid")
-        self.assertEqual(src.count('_PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss, sid=str(s["sid"]), nbytes=_nbytes)'), 1,
-                         "the built call site hands the sid and the leaf's bytes")
+        # the death sweep's tick drives the keep at its END (tests/test_sdk_registry_blind.py, ChatBuildRowsFollowTheTick:
+        # a stand-down keeps every row, a kept-open dead tab keeps its row, a session gone from the registry loses its row).
+        # The two call sites live in the chat push: every build_chat call in the push hands the sid, the built one its bytes
+        src = Path(os.path.join(BIN, "romp-kernel")).read_text()
+        calls = re.findall(r"_PERF_STATS\.build_chat\(([^\n]*)\)", src)
+        self.assertEqual(len(calls), 2, calls)
+        self.assertTrue(all('sid=str(s["sid"])' in c for c in calls), "both call sites hand the sid: %r" % calls)
+        self.assertEqual(sum("nbytes=_nbytes" in c for c in calls), 1, "the built call site hands the leaf's bytes: %r" % calls)
 
     def test_stages_builds_judge(self):
         self.st.stage("push.chat", 0.5); self.st.stage("push.chat", 0.25); self.st.stage("jobs", 0.1)
@@ -689,24 +691,33 @@ class PusherRecords(unittest.TestCase):
         self.assertEqual(self._pusher()["cycles"], before + 1)
 
     def test_cycle_jobs_split_into_push_and_jobs(self):
-        # the REAL _pusher_cycle_jobs with every tick job a no-op and _push_all a 5 ms sleep: `push` is the
-        # _push_all call, `jobs` the rest of the function, so push >= 5 and 0 <= jobs < push
+        # the REAL _pusher_cycle_jobs with every tick job a no-op and _push_all a stub that reads the clock ONCE,
+        # under a stubbed time.monotonic that steps 1 ms per read: `push` is the _push_all call (the read inside
+        # the stub plus the read that closes it: 2 ms exactly), `jobs` the rest of the function (the reads outside
+        # the push: a count of clock reads, never negative). A wall-clock ratio here (push >= a 5 ms sleep, jobs
+        # below two pushes) was green alone and a coin toss under the suite (2026-09-12, 2026-09-14); a stubbed
+        # clock makes both stages counts
         for nm in self.JOBS:
             setattr(km, nm, lambda *a, **k: None)
-        km._push_all = lambda live_map=None: time.sleep(0.005)
-        before = km._PERF_STATS.snapshot()["stages_ms"]
-        km._pusher_cycle_jobs(int(time.time()), {}, True)
-        after = km._PERF_STATS.snapshot()["stages_ms"]
-        push, jobs = after["push"] - before["push"], after["jobs"] - before["jobs"]
-        self.assertGreaterEqual(push, 5.0)
-        self.assertGreaterEqual(jobs, 0.0, "jobs is the function minus the push, never negative")
-        self.assertLess(jobs, 2 * push, "no-op jobs cost less than two 5 ms pushes (a 4 percent margin on a 5 ms measurement was a coin toss "
-                                         "on a shared runner: 5.26 ms against 5.07 ms on Python 3.10, 2026-09-12)")
-        before = km._PERF_STATS.snapshot()["stages_ms"]
-        km._pusher_cycle_jobs(int(time.time()), {}, False)   # no client: no push, the jobs still run
-        after = km._PERF_STATS.snapshot()["stages_ms"]
-        self.assertEqual(after["push"], before["push"])
-        self.assertGreaterEqual(after["jobs"], before["jobs"])
+        km._push_all = lambda live_map=None: time.monotonic()
+        reads = [0]
+        def _clock():
+            reads[0] += 1
+            return reads[0] * 0.001
+        with mock.patch.object(km.time, "monotonic", _clock):
+            before = km._PERF_STATS.snapshot()["stages_ms"]
+            km._pusher_cycle_jobs(int(time.time()), {}, True)
+            after = km._PERF_STATS.snapshot()["stages_ms"]
+            push, jobs = after["push"] - before["push"], after["jobs"] - before["jobs"]
+            n_first = reads[0]
+            self.assertAlmostEqual(push, 2.0, places=6, msg="the push stage spans the stub's read and the closing read")
+            self.assertGreaterEqual(jobs, 0.0, "jobs is the function minus the push, never negative")
+            self.assertAlmostEqual(push + jobs, (n_first - 1) * 1.0, places=6, msg="push plus jobs is the function's whole span: every read but the first")
+            before = km._PERF_STATS.snapshot()["stages_ms"]
+            km._pusher_cycle_jobs(int(time.time()), {}, False)   # no client: no push, the jobs still run
+            after = km._PERF_STATS.snapshot()["stages_ms"]
+            self.assertEqual(after["push"], before["push"])
+            self.assertAlmostEqual(after["jobs"] - before["jobs"], (reads[0] - n_first - 1) * 1.0, places=6, msg="the no-client cycle's jobs span every read but its first")
 
     def test_a_connect_serves_the_build_it_tested_when_the_cache_is_replaced_between_its_reads(self):
         # _cached_timeline tested the cached payload and returned it as two reads of the shared list while the

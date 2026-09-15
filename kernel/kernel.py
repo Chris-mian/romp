@@ -383,8 +383,9 @@ class _PerfStats:
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
             self.chat_by_session = {}                 # sid -> {first, last, max, n, cached, bytes}: the per-session chat build
-            #                                           timer (2026-09-14); bounded by the alive set (chat_rows_keep), reset
-            #                                           with the process, sids only, perf_counter deltas only
+            #                                           timer (2026-09-14); bounded by the sessions the death sweep knows
+            #                                           (chat_rows_keep), reset with the process, sids only, time.monotonic
+            #                                           deltas as the call sites take them
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
             # cold event-model parses this kernel ran (T323 stage 1): the kernel's own _parse misses, per session
@@ -650,7 +651,8 @@ class _PerfStats:
         FIRST build's ms after the boot (set once per process life per sid: the cold build the split keeps
         asking for), the last, the max (a later rebuild under contention), the build and cached counts, and
         the leaf's bytes at the last build (`nbytes`), so the largest live transcript's first chat build is a
-        read from /perf, not a claim. The aggregate is untouched."""
+        read from /perf, not a claim. `dt` is a time.monotonic delta, as the call sites take it (the aggregate's
+        clock too). The aggregate is untouched."""
         ms = dt * 1000.0
         with self.lock:
             b = self.builds["chat"]
@@ -683,10 +685,12 @@ class _PerfStats:
                 bm[lab] = bm.get(lab, 0) + 1
 
     def chat_rows_keep(self, alive):
-        """The per-session chat rows are bounded by the ALIVE set: a row whose session left the live map is dropped
-        at the death sweep's tick that saw it leave (event-keyed, no literal cap; the alive set is sized to the
-        machine's sessions). An empty alive set drops nothing: the sweep's own stand-down already keeps an
-        unreadable registry from emptying the map, and a table emptied by a hiccup would lose the boot's first builds."""
+        """The per-session chat rows are bounded by the sessions the death sweep KNOWS at the end of its tick (no
+        literal cap; the set is sized to the machine's sessions): the live map, every departure the tick stood down
+        on (an unreadable registry, recent life with no reg: re-asked next tick), and every departure whose registry
+        row exists (a dead session the user keeps open as a chat tab keeps its row, so its `first` is never minted
+        again by a warm rebuild). A row goes only with a session gone from the registry. An empty set drops nothing:
+        a table emptied by a hiccup would lose the boot's first builds (round two of the timer, 2026-09-15)."""
         alive = set(alive or ())
         if not alive:
             return
@@ -25730,9 +25734,13 @@ def _death_sweep_tick(now, live_map):
     cur = set(live_map or {})
     prev = _prev_live_sids[0]
     _prev_live_sids[0] = cur
-    _PERF_STATS.chat_rows_keep(cur)                       # the per-session chat build rows leave with their sessions (2026-09-14)
     if prev is None:
         return
+    keep = set(cur)                                       # the sessions whose per-session chat build rows stay (chat_rows_keep, at the
+    #                                                       END of the tick): the live map, every departure this tick stood down on
+    #                                                       (re-added to _prev_live_sids below), and every departure whose registry row
+    #                                                       exists (a dead session the user keeps open as a tab): a row goes only with a
+    #                                                       session gone from the registry, never with a stand-down (round two, 2026-09-15)
     cx = _codex()
     blind = _codex_records_blind(cx)
     sdk_blind = _sdk_records_blind()
@@ -25740,6 +25748,7 @@ def _death_sweep_tick(now, live_map):
     for sid in prev - cur:
         present = _sdk_reg_exists(sid)
         if present:
+            keep.add(sid)                            # a registry row stands: its chat build row stays with it
             continue                                 # an SDK death is the kill gesture's to stamp
         if not _death_stamp_due(sid):
             continue
@@ -25769,6 +25778,8 @@ def _death_sweep_tick(now, live_map):
         sys.stderr.write("death-sweep: the SDK registry directory cannot be read — %d departed sid(s) not stamped this tick\n" % stood_sdk)
     if stood:
         sys.stderr.write("death-sweep: the Codex registry cannot be read — %d departed sid(s) not stamped this tick\n" % stood)
+    _PERF_STATS.chat_rows_keep(keep | _prev_live_sids[0])   # the rows leave with their sessions, decided at the tick's END: the stood-down
+    #                                                       departures (re-asked next tick) and the registry-known ones keep theirs
 
 
 def _death_boot_pass(now=None):
