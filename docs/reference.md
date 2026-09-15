@@ -1735,6 +1735,46 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `process`: `rss_kb` (resident set size in KB: the current size on Linux,
   read from `/proc`; the peak, `ru_maxrss`, on macOS, which has no `/proc`),
   `threads`, `cpu_s`, `pid`.
+- `heap`: where that resident size sits at the moment of the read, so a
+  large `process.rss_kb` can be attributed live, without a restart or a
+  debugger (the lag investigation, 2026-09-15, had to attribute a 5-6 GiB
+  resident size from cumulative byte counters and lab runs). Every value is
+  a GAUGE, the occupancy at the read and not a count since boot, with one
+  exception named below. `allocatedBlocks` is the number of memory blocks
+  the interpreter's object allocator holds at the read, of any size
+  (`sys.getallocatedblocks`; 0 on a build that cannot count them); `gc` is
+  the collector's `enabled`, its `counts` (the young generation's
+  allocations since its last collection, then how many times each younger
+  generation was collected since the older's last) and `thresholds` as
+  lists, and `stats` (per generation: `collections`, `collected`,
+  `uncollectable`), which is cumulative by nature; `tracing` says whether a tracemalloc tracer runs in
+  this process. Then the caches that hold session content: `hydrated` (the
+  lazy bodies read on demand: `entries`, and `bytes`, the records' length on
+  disk, which `capBytes` bounds, a proxy that locates the holder without
+  sizing it: decoded bodies usually weigh more, but escaped text can make the
+  disk bytes exceed the decoded storage),
+  `assemblyEntries` (the assembly cache's entries), `parseSlots` (the one
+  parse store's slots, one per session, cut and leaf), `lazyIndexes` (the
+  lazy indexes alive, a weak count), `materializedLruSlots` (the
+  materialized-atom LRU's slots, not the atoms: on a kernel whose LRU holds
+  its atom lists weakly a collected list's slots stay until they expire, so
+  this is an upper bound on the live materialized atoms; where the LRU holds
+  the lists strongly the two are equal; it is the same read as
+  `asmIndex.resident`, repeated here so the holders sit together),
+  `judgeUsageRows` (the judge-usage reader's rows in memory), `builtChat`
+  (`tabs` cached, their `events`, the cached payloads' event counts, a count
+  and not bytes, the occupancy measure of that cache, and `serializedBytes`, the sum over the
+  cached JSON strings, which only the index wire, a proto-1 client, stores,
+  so under the shipped wire it reads 0), `imgCache` (`entries` and `bytes`
+  of the preview data URLs; the cache has no cap, so this gauge is
+  O(entries) over whatever it holds, a refused file counting as an entry of
+  zero bytes). These occupancy gauges attribute a resident size to its
+  holders; they do not sum to it. The block reads a length or a counter per
+  cache, under the cache's own lock where its readers take one and over a
+  copied value list otherwise; it walks no object graph, collects nothing,
+  evicts nothing, fills nothing and reads no file. A gauge this process
+  cannot read (an accessor the runtime lacks, a container the source has not
+  got) is `null`, said once on stderr.
 - `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
   reminder walk, the interrupt tick, the persists, the pause and retry
   family) off the pusher since 2026-09-13, so no browser frame waits on a

@@ -13,7 +13,9 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
 import collections
 import copy
+import gc
 import math
+import tracemalloc
 import zlib
 import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util
 from pathlib import Path
@@ -193,6 +195,108 @@ def _process_stats():
             "pid": os.getpid()}
 
 
+_HEAP_SAID = set()   # the heap gauges whose read failed and said so on stderr, once each: a source without that container (an
+#                      older event model beside this kernel), a test's stub module, an accessor this runtime lacks. /perf is
+#                      polled, so a line per snapshot would be the very noise the block exists to attribute.
+
+
+def _heap_read(key, fn):
+    """fn() for one heap gauge, or None when the process cannot read it, the failure said once per key. A gauge that is
+    missing must never fail the snapshot: the rest of the block is what the reader came for."""
+    try:
+        return fn()
+    except Exception as e:
+        if key not in _HEAP_SAID:
+            _HEAP_SAID.add(key)
+            sys.stderr.write("perf: heap.%s unavailable: %s: %s\n" % (key, type(e).__name__, e))
+        return None
+
+
+def _heap_stats():
+    """Where the kernel's resident memory sits at the moment of the read, the snapshot's `heap` block (the lag investigation,
+    2026-09-15). The snapshot carried VmRSS and cumulative counters (bytes read, atoms built, bodies hydrated since boot), so a
+    5-6 GiB resident size had to be attributed from source-side byte counters and lab tracemalloc runs, never from the live
+    process; this gathers, in one place beside the allocator's and the collector's own gauges, the occupancy of the caches
+    named below (the snapshot already carried some occupancy gauges, asmIndex.resident and the two document memos among
+    them, but none stood beside the process's own numbers), so one GET names the holder without a restart or a debugger.
+
+    Every value is a GAUGE, what is held at the read, except gc.stats, the collector's tally since the process began, which
+    is cumulative by nature. Each container is read the way its own readers read it: a length under the owner's lock where
+    they take one (_HYDRATED under _ASM_CKPT_LOCK, _ASM_CACHE under _ASM_LOCK, _MAT_LRU under _MAT_LOCK, the parse store under
+    _PARSE_CACHE_LOCK), a plain len() or a list() of the values where they do not (the pusher's built-chat and image caches,
+    the judge-usage rows, the WeakSet of live indexes: a dict's value list is one C-level step under the GIL, so the pusher
+    mutating beside it cannot raise). Never two container locks at once, and never under the perf lock: snapshot() assembles
+    outside it, and every holder of those four locks does dict work and thread-local stage marks only (none reaches the perf
+    stats), so there is no lock order with the perf lock to get wrong. materializedLruSlots counts the LRU's SLOTS: a kernel
+    whose LRU holds its atom lists weakly keeps a collected list's slots until they expire, so the number is an upper bound on
+    the live materialized atoms; where the LRU holds the lists strongly the two are equal; it is the same read
+    asmIndex.resident publishes, repeated here so the holders sit together. hydrated.bytes is the records' length on disk,
+    what capBytes bounds: a proxy for the memo's share that locates the holder without sizing it (decoded bodies usually
+    weigh more, but escaped text can make disk bytes exceed the decoded storage: a record of 10,000 escaped non-ASCII
+    characters is 60 KB on disk and 21 KB decoded, measured). builtChat.events counts
+    the cached payloads' events, a count and not bytes, the occupancy measure of that cache; serializedBytes sums the cached
+    JSON strings, which only the index wire (a proto-1 client) stores, so under the shipped wire it reads 0. These gauges
+    attribute a resident size to its holders; they do not sum to it.
+
+    What it never does: walk an object graph, collect, evict, fill a cache, read a file, build anything. Each gauge is O(1)
+    or O(entries) over a copied value list: the built tabs (bounded by the open tabs) and the image entries, whose cache has
+    no cap, so that gauge is O(entries) over whatever it has grown to, a refused file counting as an entry of zero bytes
+    (166 microseconds median over 100,000 hydrated entries, 10,000 LRU slots, 50,000 usage rows, 1,000 images and 50 tabs of
+    100 KB in the lab). A gauge the process cannot read is None, said once (_heap_read)."""
+    def hydrated():
+        with em._ASM_CKPT_LOCK:
+            return {"entries": len(em._HYDRATED), "bytes": int(em._HYDRATED_BYTES[0]), "capBytes": int(em._HYDRATED_CAP)}
+
+    def assembly_entries():
+        with em._ASM_LOCK:
+            return len(em._ASM_CACHE)
+
+    def parse_slots():
+        with jd._PARSE_CACHE_LOCK:
+            return len(jd._PARSE_CACHE)
+
+    def materialized_slots():
+        with em._MAT_LOCK:
+            return len(em._MAT_LRU)
+
+    def built_chat():
+        vals = list(_built_chat.values())                 # sid -> (sig, payload, serialized, deps): the copy is the snapshot
+        n = events = 0
+        for e in vals:
+            if not isinstance(e, tuple):
+                continue
+            payload = e[1] if len(e) > 1 else None
+            if isinstance(payload, dict):
+                ev = payload.get("events")
+                if isinstance(ev, (list, tuple)):
+                    events += len(ev)                     # the resident measure: what every cached tab holds
+            s = e[2] if len(e) > 2 else None
+            if isinstance(s, (str, bytes)):
+                n += len(s)                               # the index wire's cached JSON; the shipped wire stores none
+        return {"tabs": len(vals), "events": events, "serializedBytes": n}
+
+    def img_cache():
+        vals = list(_img_cache.values())                  # "path:mtime:size" -> data URL or None (a refused file)
+        return {"entries": len(vals), "bytes": sum(len(v) for v in vals if isinstance(v, (str, bytes)))}
+
+    # every accessor is looked up INSIDE its lambda: a bare attribute argument is evaluated before _heap_read runs, so a
+    # runtime lacking it would raise past the per-key guard and fail the whole snapshot (review find, 2026-09-15)
+    return {"allocatedBlocks": _heap_read("allocatedBlocks", lambda: sys.getallocatedblocks()),
+            "gc": {"enabled": _heap_read("gc.enabled", lambda: gc.isenabled()),
+                   "counts": _heap_read("gc.counts", lambda: list(gc.get_count())),
+                   "thresholds": _heap_read("gc.thresholds", lambda: list(gc.get_threshold())),
+                   "stats": _heap_read("gc.stats", lambda: [dict(s) for s in gc.get_stats()])},
+            "tracing": _heap_read("tracing", lambda: tracemalloc.is_tracing()),
+            "hydrated": _heap_read("hydrated", hydrated),
+            "assemblyEntries": _heap_read("assemblyEntries", assembly_entries),
+            "parseSlots": _heap_read("parseSlots", parse_slots),
+            "lazyIndexes": _heap_read("lazyIndexes", lambda: len(em._LIVE_INDEXES)),
+            "materializedLruSlots": _heap_read("materializedLruSlots", materialized_slots),
+            "judgeUsageRows": _heap_read("judgeUsageRows", lambda: len(_JUDGE_USAGE_CACHE["rows"])),
+            "builtChat": _heap_read("builtChat", built_chat),
+            "imgCache": _heap_read("imgCache", img_cache)}
+
+
 # The chat-build signature's components, in the order _chat_build_sig appends them. One label per position:
 # the signature is a flat tuple of exactly this length, so a miss is attributed by comparing positions
 # (_chat_sig_miss) and /perf's builds.chat.bg_miss carries one counter per label. The last three
@@ -249,6 +353,11 @@ class _PerfStats:
       process                      rss_kb (the CURRENT resident size on Linux, from /proc; the PEAK,
                                    ru_maxrss, on macOS: _process_stats), threads, cpu_s
                                    (time.process_time), pid
+      heap                         where that resident size sits at the read (_heap_stats): the allocator's
+                                   live blocks, the collector's gauges, and the occupancy of every cache that
+                                   holds session content (hydrated bodies, assembly entries, parse slots, live
+                                   indexes, materialized-atom LRU slots, judge-usage rows, built chat tabs and
+                                   their serialized bytes, preview images); gauges, not counters
       pusher                       cycles (one per _pusher_cycle), wakes (every _pusher_wake.set()
                                    call; a burst coalesces into one cycle), wakes_event /
                                    wakes_backstop (how the loop's wait ended: flag set, or the 0.5 s
@@ -870,7 +979,8 @@ class _PerfStats:
         #                                                                              on a runner nobody can log into), on demand
         #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
-                "process": _process_stats(), "pusher": pusher, "jobs": jobs, "stages_ms": stages,
+                "process": _process_stats(), "heap": _heap_stats(),   # heap: where the resident size sits, now (2026-09-15)
+                "pusher": pusher, "jobs": jobs, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
                 "fileSlice": file_slice,                   # T351: the preview popover's slice cache (hit / miss / bytes / warm)
                 "glossary": glossary_stats,                # T351 stage 2: files parsed, frames / terms / bytes BUILT per cycle, entries cut, files refused
