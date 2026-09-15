@@ -43541,6 +43541,36 @@ _session_tok_cache = {}   # transcript path -> ((mtime, size), [(t, in, out, cac
 #                           subagent transcript cache separately, so a file that moved re-parses itself alone
 
 
+_subagent_dir_memo = {}   # directory -> (st_mtime_ns or None, st_ino, [.jsonl file names], [subdirectory names]): ONE
+#                           directory's listing under a session's subagents tree, served while the directory's own
+#                           stamp holds (_subagent_transcripts); None for a directory changed within the racy window
+#                           below, kept for its names and never served. Ordered by last visit (popped and re-set on
+#                           each), so the cap evicts the least recently served directory first
+_SUBAGENT_DIR_MEMO_MAX = 16384   # directories: the five live sessions measured held 1,292 between them, so a month's
+#                                  sessions fit; past it a directory re-lists on its next visit, the cost before the memo
+_SUBAGENT_DIR_RACY_NS = 2_000_000_000   # git's racy-stamp rule: a directory whose mtime is within this of the clock is listed
+#                                         but its listing not served, because the filesystem stamps with a coarser clock than
+#                                         the wall clock (a jiffy on Linux before 6.13's multigrain stamps, a second on some
+#                                         filesystems), so an entry created in the same tick as the listing would carry the
+#                                         stamp memoised for it and stay unseen until the directory changed again
+_subagent_dir_memo_lock = threading.Lock()   # the walk runs on the HTTP handler threads (/analytics), two at once possible
+
+
+def _subagent_dir_memo_drop(d):
+    """Forget directory `d` and every directory under it: gone, or no longer a directory (a symlink in its place).
+    Nothing to do when `d` is not in the memo: a directory enters it only through its parent's listing (a directory
+    changed within the racy window is in it too, under a stamp of None), so none of its descendants is there either,
+    and the pass over every key — the memo's size, paid at every session WITHOUT a subagents tree per analytics
+    pass before this check — is skipped. A child whose parent the cap evicted stays until the cap reaches it too:
+    nothing visits it and nothing serves it."""
+    if _subagent_dir_memo.pop(d, None) is None:
+        return
+    pre = d + os.sep
+    for k in list(_subagent_dir_memo):
+        if k.startswith(pre):
+            _subagent_dir_memo.pop(k, None)
+
+
 def _subagent_transcripts(path):
     """The subagent transcripts beside a session's main one, sorted; [] when none. The CLI writes each
     spawned agent's conversation under `<sid>/subagents/` next to `<sid>.jsonl`: Task agents as
@@ -43548,21 +43578,79 @@ def _subagent_transcripts(path):
     `workflows/wf_<id>/agent-<id>.jsonl` — its path parser takes any extra segments — so the walk is
     RECURSIVE (a flat listing misses every nested file; measured on one installation, those held a
     quarter of the sessions' tokens and 62% of their output tokens). Bounded to the session's own
-    subagents tree: no symlink is followed — not a directory (os.walk's followlinks=False), not a FILE
-    (os.walk lists a symlinked file like any other and the reader would open it wherever it points; the
-    CLI writes none, so one is a user's, and it is skipped), and not the subagents directory itself.
-    Cost: one directory read per directory under it plus one lstat per file."""
+    subagents tree: no symlink is followed — not a directory, not a FILE (the reader would open one
+    wherever it points; the CLI writes none, so one is a user's, and it is skipped), and not the
+    subagents directory itself.
+
+    Each directory's LISTING is memoised on the directory's own (st_mtime_ns, st_ino) in
+    _subagent_dir_memo: a directory's mtime moves when an entry is added, removed or renamed, and NOT
+    when a file under it grows, so a stamp that holds means the same names are still there and the
+    listing (open, read, close) is skipped for that directory alone, while a stamp that moved re-lists
+    that ONE directory. The per-file stat that sees a subagent transcript grow is the reader's
+    (_transcript_tok_rows) and is untouched by this. Before the memo every call read every directory
+    of the tree, and the analytics build (_token_analytics, the settings modal's chart) calls this once
+    per session discovered in its window, live or not, on an HTTP handler thread and so on the GIL:
+    five live sessions held 3,577 agent transcripts under 1,292 directories (one of them 326 past
+    workflows' directories), every one read per pass. The chat builds' walk over the same tree is
+    _subagent_dirs, with _subagent_meta_map's own cache, not this memo. Cost per call now: one lstat
+    per directory, plus one listing per directory whose stamp moved. A directory gone, or a symlink in
+    its place, drops from the memo with everything under it; a directory unreadable when listed yields
+    nothing under it (as os.walk had it) and is not memoised, so the next call tries again.
+
+    The stamp alone cannot tell a listing from an entry that landed in the same mtime tick after it:
+    the filesystem stamps with a coarser clock than the wall clock, so on a kernel before 6.13 (a
+    jiffy) or a filesystem with second stamps, a Workflow agent's file created right after the pass
+    that listed its directory would carry the memoised stamp and stay uncounted until that directory
+    changed again. So, git's racy-stamp rule: a directory changed within _SUBAGENT_DIR_RACY_NS of the
+    clock is listed, kept for its subdirectory names (stamp None, never a hit) and listed again on the
+    next call; it is served from the memo once it has been quiet that long. Only the directories a
+    session is writing into pay that, one or two per call, never the tree."""
     base, ext = os.path.splitext(str(path))
     if ext != ".jsonl":
         return []
-    d = os.path.join(base, "subagents")
-    if os.path.islink(d):
-        return []
     out = []
-    for root, dirs, files in os.walk(d):            # followlinks=False — never leaves the session's own tree
-        dirs.sort()
-        out.extend(p for p in (os.path.join(root, n) for n in files if n.endswith(".jsonl"))
-                   if not os.path.islink(p))
+    stack = [os.path.join(base, "subagents")]
+    racy_from = time.time_ns() - _SUBAGENT_DIR_RACY_NS    # a stamp at or past this may still be the tick an entry lands in
+    with _subagent_dir_memo_lock:
+        while stack:
+            d = stack.pop()
+            try:
+                st = os.lstat(d)
+            except OSError:                          # gone (a root that never existed: [] as ever)
+                _subagent_dir_memo_drop(d)
+                continue
+            if not stat.S_ISDIR(st.st_mode):         # a symlink (the root itself pointing elsewhere), or a file in its place
+                _subagent_dir_memo_drop(d)
+                continue
+            hit = _subagent_dir_memo.pop(d, None)    # re-set below: the memo's order is by last visit, for the cap
+            if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_ino:
+                files, subdirs = hit[2], hit[3]
+            else:
+                try:
+                    with os.scandir(d) as it:
+                        entries = list(it)
+                except OSError:                      # unreadable, or gone since the lstat: nothing under it, tried again next call
+                    _subagent_dir_memo_drop(d)
+                    continue
+                files, subdirs = [], []
+                for e in entries:
+                    try:
+                        if e.is_symlink():
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            subdirs.append(e.name)
+                        elif e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False):
+                            files.append(e.name)
+                    except OSError:
+                        continue
+                if hit is not None:
+                    for name in set(hit[3]).difference(subdirs):   # a subdirectory gone: its memo goes with it
+                        _subagent_dir_memo_drop(os.path.join(d, name))
+            _subagent_dir_memo[d] = (st.st_mtime_ns if st.st_mtime_ns < racy_from else None, st.st_ino, files, subdirs)
+            while len(_subagent_dir_memo) > _SUBAGENT_DIR_MEMO_MAX:
+                _subagent_dir_memo.pop(next(iter(_subagent_dir_memo)))
+            out.extend(os.path.join(d, n) for n in files)
+            stack.extend(os.path.join(d, n) for n in subdirs)
     return sorted(out)
 
 
@@ -43642,8 +43730,9 @@ def _session_tok_rows(path):
     subagent's rows in place; a per-session fingerprint would re-parse the whole tree whenever any one
     file moved, which on a session with Workflow agents running is every build. A subagent file gone
     between the listing and the read drops out and the rest still count. Cost per call: the subagents
-    walk (one directory read per directory), one stat per file, and the concatenation; parsing only for
-    the files whose stamp moved. The analytics build calls this ONCE per session (_session_usage)."""
+    walk (one stat per directory; a listing only for a directory whose own stamp moved, or that changed
+    within the last two seconds), one stat per file, and the concatenation; parsing only for the files
+    whose stamp moved. The analytics build calls this ONCE per session (_session_usage)."""
     rows = _transcript_tok_rows(str(path))
     if rows is None:
         return None
