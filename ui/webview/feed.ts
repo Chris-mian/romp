@@ -2025,6 +2025,20 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
 // per-card update gate, feed-card-gate.ts): a card is repainted when its object is a new one or a
 // board-level input it reads changed, and left alone otherwise. Everything this function reads outside
 // `it` is therefore in that key — an input added here is added there.
+// A notice card's body (T370): markdown through the chat's renderer and the one sanitizer, remote loads stripped on the
+// inert DOM BEFORE adoption (no request ever starts). Should the sanitizer itself fail (no DOM to build it on, as in a
+// document stand-in), the body falls to PLAIN TEXT: nothing unsanitized ever reaches the page, and the card still says its
+// words; the served lab reads the rendered form.
+function noticeBodyNodes(md: string): Node[] {
+  try {
+    const clean = sanitizeMd(userMdHtml(md));
+    stripRemoteLoads(clean, (typeof window !== "undefined" && window.location ? window.location.origin : ""), "");
+    return Array.from(clean.childNodes);
+  } catch (e) {
+    return [document.createTextNode(md)];
+  }
+}
+
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
   a._it = it;   // the freshest payload copy — the right-click bell menu reads this, never a stale closure; and the gate's identity
@@ -2644,15 +2658,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       nProd.textContent = nt.producer ? "via " + nt.producer : "";
       nProd.title = nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "";
       nBody.replaceChildren();
-      if (nt.body && nt.body.trim()) {
-        const clean = sanitizeMd(userMdHtml(nt.body));
-        stripRemoteLoads(clean, location.origin, "");
-        nBody.append(...Array.from(clean.childNodes));
-      }
+      if (nt.body && nt.body.trim()) nBody.append(...noticeBodyNodes(nt.body));
       nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
       nAttach.replaceChildren();
       const att = nt.attachment;
-      if (att && att.allowed && att.kind === "image" && canPreview()) {
+      let canPrev = false;
+      try { canPrev = canPreview(); } catch (e) { canPrev = false; }   // no location (a document stand-in): no fetch, the file's name instead
+      if (att && att.allowed && att.kind === "image" && canPrev) {
         const img = el("img", "fask-nimg") as HTMLImageElement;
         img.src = fileUrl(att.path, it.sid) + (att.pin ? "&pin=" + encodeURIComponent(att.pin) : "");
         img.alt = att.path.split("/").pop() || "attachment";
