@@ -2,8 +2,10 @@
 // restart-all three seconds apart, and the second SIGTERM killed a kernel two seconds old. inflightGate is the pure
 // decision on the record's phase: from the SIGTERM until the successor is spawned a second request is FOLDED into the
 // restart in flight (the successor loads the disk as it stands); from the spawn until the successor answers its port
-// one TRAILING restart is kept and sent when it does; otherwise the request restarts. The wiring is executed with a
-// stand-in child and a stand-in kernel port. Run: node --test tests/manager-fold.test.js
+// one TRAILING restart is kept and sent when it does, if the successor's own verdict says its disk holds code it does
+// not run; a second ask during that boot is new information and restarts the successor at once; the successor's exit
+// ends the flight. The wiring is executed with a stand-in child and a stand-in kernel port.
+// Run: node --test tests/manager-fold.test.js
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -21,11 +23,16 @@ process.env.ROMP_READY_PROBE_MS = '20';
 const MGR = path.join(__dirname, '..', 'bin', 'romp-manager');
 const mgr = require(MGR);
 const { restartKernel, kernels } = mgr;
-const inflightGate = mgr.inflightGate;   // absent at the base: the assertions below then fail on their own terms
+// The new names, reached through guards so a base without them fails on the behaviour each test states, never on a TypeError.
+const inflightGate = mgr.inflightGate || (() => 'absent');
+const inflightAfterExit = mgr.inflightAfterExit || (() => 'absent');
+const awaitReady = mgr.awaitReady || (() => {});
+const SRC = fs.readFileSync(MGR, 'utf8');
 
 const AUDIT = path.join(STATE, 'restart-audit.jsonl');
 const rows = () => (fs.existsSync(AUDIT) ? fs.readFileSync(AUDIT, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 const resetAudit = () => { try { fs.unlinkSync(AUDIT); } catch (e) { /* none yet */ } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A stand-in child: records the signals it is sent, never exits on its own.
 function standIn(pid) {
@@ -37,26 +44,43 @@ function seed(id, child, over) {
                                   startedAt: Date.now(), stopping: false, requested: null, inflight: null, trail: null }, over || {}));
   return kernels.get(id);
 }
+// A stand-in kernel port: answers /busy and /version as told.
+async function kernelPort(restartPending) {
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    seen.push(req.url);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/version')) return res.end(JSON.stringify({ restart_pending: restartPending }));
+    res.end(JSON.stringify({ busy: 0 }));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  return { port: srv.address().port, seen, close: () => new Promise((r) => srv.close(r)) };
+}
 
-test('the pure gate: no flight restarts, a signaled flight folds, a spawned successor trails', () => {
-  assert.ok(inflightGate, 'inflightGate is exported');
+test('the pure gate: no flight restarts, a signaled flight folds, a spawned successor trails once, a second ask restarts', () => {
   assert.equal(inflightGate(null), 'restart');
   assert.equal(inflightGate(undefined), 'restart');
   assert.equal(inflightGate('signaled'), 'fold');
   assert.equal(inflightGate('spawned'), 'trail');
+  assert.equal(inflightGate('spawned', true), 'restart', 'a trail already pending: the new ask is new information');
+});
+
+test('the phase after an exit: a booting successor that dies ends the flight, a signaled restart keeps its phase', () => {
+  assert.equal(inflightAfterExit('spawned'), null);
+  assert.equal(inflightAfterExit(null), null);
+  assert.equal(inflightAfterExit('signaled'), 'signaled');
+  assert.match(SRC, /cur\.inflight = inflightAfterExit\(cur\.inflight\)/, 'the exit handler applies it before it respawns');
 });
 
 test('two restart requests during one restart kill once: the second is folded and noted', () => {
   resetAudit();
   const child = standIn(4242);
   const rec = seed('main', child);
-  const first = restartKernel('main', 'restart-all');
-  assert.ok(first, 'the first request restarts');
-  assert.deepEqual(child.signals, ['SIGTERM'], 'one SIGTERM');
-  assert.equal(rec.inflight, 'signaled', 'the record says a restart is in flight');
+  assert.ok(restartKernel('main', 'restart-all'), 'the first request restarts');
   const second = restartKernel('main', 'restart-all');
+  assert.deepEqual(child.signals, ['SIGTERM'], 'one SIGTERM for two requests: the base sent two');
   assert.equal(second, 'folded', 'the second request rides the restart in flight');
-  assert.deepEqual(child.signals, ['SIGTERM'], 'still one SIGTERM: the base sent two');
+  assert.equal(rec.inflight, 'signaled', 'the record says a restart is in flight');
   const r = rows();
   assert.deepEqual(r.map((x) => x.action), ['manager-sigterm', 'restart-folded'], 'the ledger: one sigterm, one fold');
   assert.equal(r[1].into, 4242, 'the fold names the pid it rode');
@@ -70,43 +94,75 @@ test('a request while the successor is up but not yet answering is kept as one t
   assert.equal(restartKernel('main', 'p2p-update'), 'trailing');
   assert.deepEqual(child.signals, [], 'nothing signaled: the new kernel is still booting');
   assert.equal(rec.trail, 'p2p-update', 'one trailing restart kept');
-  assert.equal(restartKernel('main', 'restart-all'), 'trailing');
-  assert.equal(rec.trail, 'p2p-update', 'a second request folds into the one trailing restart');
-  assert.deepEqual(rows().map((x) => x.action), ['restart-trailing', 'restart-folded']);
+  assert.deepEqual(rows().map((x) => x.action), ['restart-trailing']);
 });
 
-test('the successor answering its port ends the flight and sends the trailing restart once', async () => {
+test('a second ask during one boot restarts the successor at once: a person asking twice recovers a hung boot', () => {
   resetAudit();
-  const answers = [];
-  const srv = http.createServer((req, res) => { answers.push(req.url); res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ busy: 0 })); });
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  const port = srv.address().port;
+  const child = standIn(5252);
+  const rec = seed('main', child, { inflight: 'spawned', trail: 'p2p-update' });
+  const r = restartKernel('main', 'restart-all');
+  assert.equal(r, true, 'an ordinary restart, not a fold or a trail');
+  assert.deepEqual(child.signals, ['SIGTERM'], 'the hung successor is signaled (the base signaled too; the round-one head folded forever)');
+  assert.equal(rec.trail, null, 'the pending trail rides this restart');
+  assert.equal(rec.inflight, 'signaled');
+  assert.deepEqual(rows().map((x) => x.action), ['manager-sigterm']);
+});
+
+test('the successor answering its port ends the flight; the trailing restart goes out only when its disk holds code it does not run', async () => {
+  resetAudit();
+  const stale = await kernelPort(true);
   try {
     const child = standIn(6161);
     const rec = seed('main', child, { inflight: 'spawned', trail: 'p2p-update' });
-    rec.spec.port = port;
-    mgr.awaitReady('main', child);
-    await new Promise((r) => setTimeout(r, 300));
-    assert.ok(answers.length >= 1, 'the port was probed');
-    assert.deepEqual(child.signals, ['SIGTERM'], 'the trailing restart went out once the kernel answered');
+    rec.spec.port = stale.port;
+    awaitReady('main', child);
+    await sleep(300);
+    assert.ok(stale.seen.some((u) => u.startsWith('/version')), 'the successor was asked for its verdict');
+    assert.deepEqual(child.signals, ['SIGTERM'], 'restart_pending true: the trailing restart went out once');
     assert.equal(rec.trail, null, 'and the trail is consumed');
-    assert.equal(rec.inflight, 'signaled', 'a new flight is in progress for the trailing restart');
-    assert.deepEqual(rows().map((x) => x.action), ['manager-sigterm'], 'the trailing restart is an ordinary sigterm row');
-  } finally {
-    await new Promise((r) => srv.close(r));
-  }
+    assert.deepEqual(rows().map((x) => x.action), ['manager-sigterm']);
+  } finally { await stale.close(); }
+  resetAudit();
+  const current = await kernelPort(false);
+  try {
+    const child = standIn(6262);
+    const rec = seed('main', child, { inflight: 'spawned', trail: 'p2p-update' });
+    rec.spec.port = current.port;
+    awaitReady('main', child);
+    await sleep(300);
+    assert.deepEqual(child.signals, [], 'restart_pending false: the successor already runs the disk; no restart for a checkout it loaded');
+    assert.equal(rec.inflight, null, 'the flight is over');
+    assert.equal(rec.trail, null, 'and the trail is dropped');
+    assert.deepEqual(rows().map((x) => x.action), ['restart-trailing-current'], 'the ledger says the trail was current');
+  } finally { await current.close(); }
 });
 
-test('a successor that never answers keeps the flight open and sends nothing on its own', async () => {
+test('a successor that never answers keeps the flight open only until it exits or a second ask arrives', async () => {
   resetAudit();
   const child = standIn(7171);
   const rec = seed('main', child, { inflight: 'spawned' });
-  rec.spec.port = 1;   // nothing listens: the probe fails and retries
-  mgr.awaitReady('main', child);
-  await new Promise((r) => setTimeout(r, 120));
+  rec.spec.port = 1;   // nothing listens: the probe fails and is asked again, bounded by the exit below
+  awaitReady('main', child);
+  await sleep(120);
   assert.equal(rec.inflight, 'spawned', 'no answer, no end of flight');
-  assert.deepEqual(child.signals, [], 'and no signal');
-  child.exitCode = 1;   // the child leaves before answering: the probe stands down (its exit handler respawns)
-  await new Promise((r) => setTimeout(r, 120));
+  assert.deepEqual(child.signals, [], 'and no signal on its own');
+  assert.equal(restartKernel('main', 'restart-all'), 'trailing', 'the first ask trails');
+  assert.equal(restartKernel('main', 'restart-all'), true, 'the second ask restarts the hung successor');
+  assert.deepEqual(child.signals, ['SIGTERM']);
+  child.exitCode = 1;   // the child leaves: the probe stands down (its exit handler ends the flight)
+  await sleep(120);
   kernels.clear();
+});
+
+test('the storm history is not carried across a respawn, and the single-kernel restart answer names a fold or a trail', () => {
+  assert.doesNotMatch(SRC, /_rs: prev \? prev\._rs/, 'a completed restart is a fresh record for the storm gate');
+  assert.match(SRC, /return restartKernel\(kid\) \? json\(200, restartAnswer\(kid\)\)/, 'POST /restart answers through restartAnswer');
+  const child = standIn(8181);
+  seed('main', child, { inflight: 'signaled' });
+  restartKernel('main', 'restart');
+  assert.deepEqual(mgr.restartAnswer ? mgr.restartAnswer('main') : null, { ok: true, restarted: 'main', folded: true }, 'a folded request says so');
+  seed('main', standIn(8282));
+  restartKernel('main', 'restart');
+  assert.deepEqual(mgr.restartAnswer ? mgr.restartAnswer('main') : null, { ok: true, restarted: 'main' }, 'an ordinary restart is the plain answer');
 });

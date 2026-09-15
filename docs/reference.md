@@ -2184,9 +2184,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
   (`hit`, `miss`, `populate`, `bypass`); `convergeDeclined` counts the main
   converges that asked no restart because this kernel was already leaving (the
-  exit path held the lock when the converge finished its pull: the successor
-  boots on the disk as it stands, and a `main-converge-declined` row stands in
-  the restart-audit ledger where a second sigterm used to); `nudgeWalk` is the auto-nudge walk's
+  exit path held the lock: before the pull, the row's `phase` is before-pull
+  with the target it did not pull, and the next kernel converges on its own;
+  after the pull, after-pull with the checkout it moved, which the successor
+  boots on; either way a `main-converge-declined` row stands in the
+  restart-audit ledger where a second sigterm used to); `nudgeWalk` is the auto-nudge walk's
   parse gate (T401): `looks`, `skippedParses` (a session whose files are
   unchanged since its last completed look and whose clock legs, noted by that
   look with the instant each could flip, have not come due; the skip repeats

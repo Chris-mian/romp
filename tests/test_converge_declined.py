@@ -110,7 +110,10 @@ class ConvergeWhileLeaving(unittest.TestCase):
         self.assertEqual(_Manager.posts, [], "no restart asked of the manager: the successor boots on the disk as it stands")
         acts = [r.get("action") for r in self._rows()]
         self.assertEqual(acts, ["main-converge-declined"], "one declined row, no main-converge request row: %r" % acts)
-        self.assertEqual(self._rows()[0].get("why"), "shutting-down")
+        row = self._rows()[0]
+        self.assertEqual((row.get("why"), row.get("phase")), ("shutting-down", "before-pull"), "declined before the pull: %r" % row)
+        self.assertEqual(row.get("sha"), self.target, "the row names the target it did not pull")
+        self.assertNotEqual(git(self.checkout, "rev-parse", "--short=8", "HEAD"), self.target, "and the checkout was left alone")
         self.assertEqual((getattr(km, "_CONVERGE_DECLINED", None) or [0])[0] - n0, 1, "counted for /perf")
         self.assertIn("main-converge-declined", getattr(km, "_NO_RESTART_ACTIONS", set()), "the audit walk skips the row")
 
@@ -125,6 +128,10 @@ class ConvergeWhileLeaving(unittest.TestCase):
             self._converge()
         self.assertEqual(_Manager.posts, [], "the request after the pull is declined")
         self.assertEqual([r.get("action") for r in self._rows()], ["main-converge-declined"])
+        row = self._rows()[0]
+        self.assertEqual(row.get("phase"), "after-pull", "declined after the pull: %r" % row)
+        self.assertEqual(row.get("sha"), self.target, "the row names the checkout it moved")
+        self.assertEqual(git(self.checkout, "rev-parse", "--short=8", "HEAD"), self.target, "the checkout moved; the successor boots on it")
 
     def test_a_running_kernel_still_asks_its_restart(self):
         km._TERMINATING[0] = False

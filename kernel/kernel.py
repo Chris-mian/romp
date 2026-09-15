@@ -9367,7 +9367,8 @@ _DEPLOY_RESTART_REASONS = ("main-converge", "p2p-update", "self-update",   # led
                            "kernel-asks-manager-restart-all: self-update")   # deploy restart of this kernel
 _NO_RESTART_ACTIONS = {"main-converge-skip", "bus-converge", "end-on-idle",   # audit rows that restart no
                        "quiet-window", "main-converge-declined",   # (a converge that found this kernel already leaving asked no restart)
-                       "restart-folded", "restart-trailing"}   # (the manager's notes of a request folded into a restart in flight)   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
+                       "restart-folded", "restart-trailing", "restart-trailing-current"}   # (the manager's notes of a request that rode a
+#                                                                                        restart in flight, or a trail found current)   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
                                          #  the restart it releases writes its own manager-sigterm note)
 #                                                                              kernel (in-place converges; a
 #                                                                              session's own self-close ask)
@@ -9680,15 +9681,20 @@ def _main_drift_check():
 _PORT_FROM_ENV = object()
 
 
-def _converge_declined_shutting_down(kind):
+def _converge_declined_shutting_down(kind, phase, sha):
     """The converge found this kernel already leaving (_TERMINATING: the exit path holds the lock): it asks no restart,
     since the successor boots on the disk as it stands and a request now would kill THAT kernel (the 2026-09-15 deploy
     read: the running kernel decided a converge, a peer's push restarted it a second later, and the dying kernel's
-    request killed its two-second-old successor). One audit row (`main-converge-declined`, why shutting-down) and one
-    count on /perf (memos.convergeDeclined), so a deploy read sees the decline where it used to see a second sigterm."""
+    request killed its two-second-old successor). One audit row (`main-converge-declined`, why shutting-down, `phase`
+    before-pull with the target it did not pull, or after-pull with the checkout it moved) and one count on /perf
+    (memos.convergeDeclined), so a deploy read sees the decline where it used to see a second sigterm."""
     _CONVERGE_DECLINED[0] += 1
-    _audit_restart_request("main-converge-declined", tag=kind, why="shutting-down", sha=_checkout_sha())
-    _converge_say("main converged while this kernel was leaving: no restart asked, the next kernel boots on the disk as it stands")
+    _audit_restart_request("main-converge-declined", tag=kind, why="shutting-down", phase=phase, sha=sha)
+    if phase == "before-pull":
+        _converge_say("main is at %s but this kernel is leaving: no pull, no restart asked; the next kernel converges on its own"
+                      % (sha or "?")[:8])
+    else:
+        _converge_say("main converged on disk while this kernel was leaving: no restart asked, the next kernel boots on the disk as it stands")
     return True
 
 
@@ -9712,7 +9718,7 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
     manager) and False on every refusal, so the caller's crash-hold clear keys on the outcome and not on the
     return (the follow-up review's second round)."""
     if _TERMINATING[0]:                               # this kernel is already leaving (the manager's SIGTERM landed): its
-        return _converge_declined_shutting_down(kind)   #  successor boots on the disk as it stands; a pull or a request now is that kernel's
+        return _converge_declined_shutting_down(kind, "before-pull", target)   #  successor converges on its own; no pull, no request
     if kind == "pull":
         remote = _release_remote()
         target = _sha8(target)
@@ -9805,7 +9811,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
             _sync_notice("pre-restart bundle rebuild failed (%s) — restarting anyway; the new "
                          "kernel rebuilds at boot" % err, ok=False)
     if _TERMINATING[0]:                               # the SIGTERM landed while the pull ran (the 2026-09-15 deploy: a peer's push
-        return _converge_declined_shutting_down(kind)   #  and this converge raced; the request killed the two-second-old successor)
+        return _converge_declined_shutting_down(kind, "after-pull", _checkout_sha())   #  and this converge raced; the request killed
+    #                                                                                     the two-second-old successor)
     if manager_port is _PORT_FROM_ENV:
         manager_port = os.environ.get("ROMP_MANAGER_PORT")
     try:
