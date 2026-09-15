@@ -860,6 +860,7 @@ class _PerfStats:
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
         memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
         #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
+        memos["convergeDeclined"] = _CONVERGE_DECLINED[0]   # converges that asked no restart because this kernel was leaving
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -9360,10 +9361,13 @@ def _in_place_converge(target):
     return False
 
 
+_CONVERGE_DECLINED = [0]   # converges that found this kernel leaving and asked no restart (memos.convergeDeclined on /perf): the
+#                            2026-09-15 deploy read showed a dying kernel's converge killing its two-second-old successor
 _DEPLOY_RESTART_REASONS = ("main-converge", "p2p-update", "self-update",   # ledger reasons that ARE a
                            "kernel-asks-manager-restart-all: self-update")   # deploy restart of this kernel
 _NO_RESTART_ACTIONS = {"main-converge-skip", "bus-converge", "end-on-idle",   # audit rows that restart no
-                       "quiet-window"}   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
+                       "quiet-window", "main-converge-declined",   # (a converge that found this kernel already leaving asked no restart)
+                       "restart-folded", "restart-trailing"}   # (the manager's notes of a request folded into a restart in flight)   # (the manager's note of a quiet window APPLYING: a wait measured, T304;
                                          #  the restart it releases writes its own manager-sigterm note)
 #                                                                              kernel (in-place converges; a
 #                                                                              session's own self-close ask)
@@ -9676,6 +9680,18 @@ def _main_drift_check():
 _PORT_FROM_ENV = object()
 
 
+def _converge_declined_shutting_down(kind):
+    """The converge found this kernel already leaving (_TERMINATING: the exit path holds the lock): it asks no restart,
+    since the successor boots on the disk as it stands and a request now would kill THAT kernel (the 2026-09-15 deploy
+    read: the running kernel decided a converge, a peer's push restarted it a second later, and the dying kernel's
+    request killed its two-second-old successor). One audit row (`main-converge-declined`, why shutting-down) and one
+    count on /perf (memos.convergeDeclined), so a deploy read sees the decline where it used to see a second sigterm."""
+    _CONVERGE_DECLINED[0] += 1
+    _audit_restart_request("main-converge-declined", tag=kind, why="shutting-down", sha=_checkout_sha())
+    _converge_say("main converged while this kernel was leaving: no restart asked, the next kernel boots on the disk as it stands")
+    return True
+
+
 def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target=""):
     """Converge on newest main: advance the checkout (fast-forward only; a DIRTY shared tree refuses
     LOUDLY — peer sessions' uncommitted work is never discarded) and bounce every kernel through the
@@ -9695,6 +9711,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
     Returns True when a converge ran and succeeded (the in-place rebuild, or the restart requested of the
     manager) and False on every refusal, so the caller's crash-hold clear keys on the outcome and not on the
     return (the follow-up review's second round)."""
+    if _TERMINATING[0]:                               # this kernel is already leaving (the manager's SIGTERM landed): its
+        return _converge_declined_shutting_down(kind)   #  successor boots on the disk as it stands; a pull or a request now is that kernel's
     if kind == "pull":
         remote = _release_remote()
         target = _sha8(target)
@@ -9786,6 +9804,8 @@ def _run_main_update(kind, immediate=True, manager_port=_PORT_FROM_ENV, target="
         if not ok:
             _sync_notice("pre-restart bundle rebuild failed (%s) — restarting anyway; the new "
                          "kernel rebuilds at boot" % err, ok=False)
+    if _TERMINATING[0]:                               # the SIGTERM landed while the pull ran (the 2026-09-15 deploy: a peer's push
+        return _converge_declined_shutting_down(kind)   #  and this converge raced; the request killed the two-second-old successor)
     if manager_port is _PORT_FROM_ENV:
         manager_port = os.environ.get("ROMP_MANAGER_PORT")
     try:

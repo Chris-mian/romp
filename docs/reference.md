@@ -2182,7 +2182,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   read-only store cache (`hit`, `miss`, `compare_miss`, `refuse`, `dup`,
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
-  (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
+  (`hit`, `miss`, `populate`, `bypass`); `convergeDeclined` counts the main
+  converges that asked no restart because this kernel was already leaving (the
+  exit path held the lock when the converge finished its pull: the successor
+  boots on the disk as it stands, and a `main-converge-declined` row stands in
+  the restart-audit ledger where a second sigterm used to); `nudgeWalk` is the auto-nudge walk's
   parse gate (T401): `looks`, `skippedParses` (a session whose files are
   unchanged since its last completed look and whose clock legs, noted by that
   look with the instant each could flip, have not come due; the skip repeats
