@@ -10,8 +10,10 @@ driver opens it, scrolls the chat transcript to mid-history, and
      while the button was held (the reload is armed, waiting on the pointer);
   2. releases the button and asserts the page reloaded, landed the chat tab on the reader's saved position
      (not the bottom), and left one "Reloaded onto build …" line in the notification center;
-  3. kills the kernel and relaunches it on the same port — a socket reopen against a NEW boot id — and asserts
-     a second reload with the "kernel restarted" wording.
+  3. kills the kernel and relaunches it on the same port, a socket reopen against a NEW boot id of the SAME build,
+     and asserts NO reload (invisible restarts, the user 2026-09-14): the board stays on screen, the reader's place
+     holds, the pane's redial lands its fresh frame, and the notification center gains no line. (A changed build's
+     restart reloads once the reconnected pane has its first frame: the node leg, test_dashboard_auto_reload.py.)
 Skips LOUDLY when the extension deps or a playwright browser are absent (CI installs none); the decision code
 itself runs in node in test_dashboard_auto_reload.py regardless. All fixtures synthetic."""
 import json
@@ -150,17 +152,58 @@ await probeSet();
 await page.waitForTimeout(7000);
 out.settledAfterBuild = await probeAlive();
 
-// ---- 3. a kernel restart: kill + relaunch on the same port → a reopen against a new boot id ----
+// ---- 3. a kernel restart of the SAME build: kill + relaunch on the same port → a reopen against a new boot id ----
+// Invisible restarts (the user 2026-09-14): the page must NOT reload; the board stays, the pane redials and lands its
+// fresh frame, the reader's place holds. The shell's checkBoot counts the restart (restarted()) without owing a reload.
+const beforeRestart = await info(fr);
 process.kill(cfg.kernelPid, "SIGKILL");
 await page.waitForTimeout(500);
 const k2 = spawn(cfg.relaunch.cmd, [], { env: cfg.relaunch.env, detached: true,
   stdio: ["ignore", fs.openSync(cfg.relaunch.log, "a"), fs.openSync(cfg.relaunch.log, "a")] });
 k2.unref();
 fs.writeSync(1, "KPID:" + k2.pid + "\n");
-const reloaded2 = await page.waitForFunction(() => window.__probe !== 1, null, { timeout: 60000 }).then(() => true).catch(() => false);
-out.reloadedOnRestart = reloaded2;
-if (reloaded2) { await waitChat().catch(() => {}); await page.waitForTimeout(1500); }
+out.restartSeen = await page.waitForFunction(() => window.__rompReload && window.__rompReload.restarted() >= 1, null, { timeout: 60000 }).then(() => true).catch(() => false);
+// the chat pane's redial lands its resync frame: the fresh hold clears in the pane's own window
+out.freshAfterRestart = await fr.waitForFunction(() => window.__rompFreshPending === false, null, { timeout: 60000 }).then(() => true).catch(() => false);
+await page.waitForTimeout(7000);                       // three keepalives on the new kernel: a reload owed would have fired by now
+out.probeAfterRestart = await probeAlive();
+out.reloadedOnRestart = !out.probeAfterRestart;
+out.shellAfterRestart = await shellWaiting();
+out.afterRestart = await info(fr).catch(() => null);
+out.beforeRestart = beforeRestart;
 out.noticesAfterRestart = await notices();
+
+// ---- 4. build drift AFTER the reconnect (the control): the bundle bumps again; the chat pane's fresh frame has landed, so
+// the reload fires as it did before the reconnect (the round-two review found it held forever behind the Files pane) ----
+await probeSet();
+bump(2);
+out.reloadedOnDriftAfterReconnect = await page.waitForFunction(() => window.__probe !== 1, null, { timeout: 20000 }).then(() => true).catch(() => false);
+if (!out.reloadedOnDriftAfterReconnect) await die("no reload on build drift after the reconnect");
+fr = await waitChat();
+await probeSet();
+out.noticesAfterDrift = await notices();
+
+// ---- 5. a restart onto a CHANGED build: kill + relaunch with another code identity → the reload is owed, held on the chat
+// pane's redial, and fires once its first frame lands, well inside the core's bound ----
+await page.evaluate(() => { const R = window.__rompReload, prev = R.held, prevP = window.__rompPersistForReload;
+  R.held = (b, o) => { try { sessionStorage.setItem("lab:held", JSON.stringify({ b, reason: o.reason })); } catch (e) {} if (prev) prev(b, o); };
+  // at the fire: the chat pane's flag must be down (its frame landed), whether the shell had to hold for it or the pane's redial won the race with the shell's /version poll
+  window.__rompPersistForReload = () => { try { const w = document.querySelector('iframe[src^="/chat"]').contentWindow;
+    sessionStorage.setItem("lab:fire", JSON.stringify({ fresh: w.__rompFreshPending, stamped: !!w.__rompFreshPendingSince })); } catch (e) {} if (prevP) prevP(); }; });
+process.kill(k2.pid, "SIGKILL");
+await page.waitForTimeout(500);
+const k3 = spawn(cfg.relaunch.cmd, [], { env: { ...cfg.relaunch.env, ROMP_CODE_IDENT: "changed-build" }, detached: true,
+  stdio: ["ignore", fs.openSync(cfg.relaunch.log, "a"), fs.openSync(cfg.relaunch.log, "a")] });
+k3.unref();
+fs.writeSync(1, "KPID:" + k3.pid + "\n");
+const t0 = Date.now();
+out.reloadedOnChangedBuild = await page.waitForFunction(() => window.__probe !== 1, null, { timeout: 90000 }).then(() => true).catch(() => false);
+out.changedBuildReloadMs = Date.now() - t0;
+if (!out.reloadedOnChangedBuild) await die("no reload after a restart onto a changed build");
+fr = await waitChat();
+out.heldOnChangedBuild = await page.evaluate(() => { try { return JSON.parse(sessionStorage.getItem("lab:held") || "null"); } catch (e) { return null; } });
+out.chatAtFire = await page.evaluate(() => { try { return JSON.parse(sessionStorage.getItem("lab:fire") || "null"); } catch (e) { return null; } });
+out.noticesAfterChangedBuild = await notices();
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
@@ -206,7 +249,7 @@ class ServedAutoReload(unittest.TestCase):
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")],
                                       stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=cls.env)
-        cls.kernel2_pid = None
+        cls.relaunched_pids = []
         import urllib.request
         for _ in range(120):
             try:
@@ -220,7 +263,7 @@ class ServedAutoReload(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for pid in [getattr(cls, "kernel", None) and cls.kernel.pid, getattr(cls, "kernel2_pid", None)]:
+        for pid in [getattr(cls, "kernel", None) and cls.kernel.pid] + list(getattr(cls, "relaunched_pids", [])):
             if pid:
                 try:
                     os.kill(pid, signal.SIGKILL)
@@ -230,7 +273,7 @@ class ServedAutoReload(unittest.TestCase):
             cls.kernel.wait()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
-    def test_build_drift_reloads_after_the_gesture_ends_and_a_restart_reloads_too(self):
+    def test_build_drift_reloads_after_the_gesture_ends_a_same_build_restart_never_reloads_and_a_changed_build_reloads_on_the_chat_panes_frame(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (self.port, self.token),
@@ -251,13 +294,9 @@ class ServedAutoReload(unittest.TestCase):
                                env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
         except subprocess.TimeoutExpired as e:
             so = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode()
-            kpid = next((ln for ln in so.splitlines() if ln.startswith("KPID:")), None)
-            if kpid:
-                type(self).kernel2_pid = int(kpid.split(":", 1)[1])
+            type(self).relaunched_pids = [int(ln.split(":", 1)[1]) for ln in so.splitlines() if ln.startswith("KPID:")]
             self.fail("driver timed out; partial output:\n%s" % so)
-        kpid = next((ln for ln in p.stdout.splitlines() if ln.startswith("KPID:")), None)
-        if kpid:
-            type(self).kernel2_pid = int(kpid.split(":", 1)[1])
+        type(self).relaunched_pids = [int(ln.split(":", 1)[1]) for ln in p.stdout.splitlines() if ln.startswith("KPID:")]
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served leg needs one (CI installs none)")
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:])
@@ -283,10 +322,31 @@ class ServedAutoReload(unittest.TestCase):
         self.assertEqual(len(r["noticesAfterBuild"]), 1, "one notification-center line per reload: %r" % r["noticesAfterBuild"])
         self.assertRegex(r["noticesAfterBuild"][0], r"^Reloaded onto build \d+ — a newer romp build was served\.$")
         self.assertTrue(r["settledAfterBuild"], "one reload per drift — the fresh page must not reload again: %r" % r)
-        # 3. a kernel restart reloads too, with its own wording
-        self.assertTrue(r["reloadedOnRestart"], "a socket reopen against a new boot id reloads the page: %r" % r)
-        self.assertEqual(len(r["noticesAfterRestart"]), 2, r["noticesAfterRestart"])
-        self.assertRegex(r["noticesAfterRestart"][1], r"^Reloaded onto build \d+ — the kernel restarted\.$")
+        # 3. a kernel restart of the SAME build is invisible (the user 2026-09-14): seen, counted, never a reload
+        self.assertTrue(r["restartSeen"], "the shell saw the new boot id: %r" % r)
+        self.assertFalse(r["reloadedOnRestart"], "a restart of the same build must not reload the page: %r" % r)
+        self.assertTrue(r["freshAfterRestart"], "the chat pane redialed and landed its fresh frame: %r" % r)
+        self.assertIsNone((r["shellAfterRestart"] or {}).get("owed"), "no reload owed: %r" % r["shellAfterRestart"])
+        self.assertFalse((r["shellAfterRestart"] or {}).get("fired"))
+        self.assertEqual(len(r["noticesAfterRestart"]), 1, "no new notification-center line: %r" % r["noticesAfterRestart"])
+        # 4. build drift after the reconnect still reloads (the round-two review's control)
+        self.assertTrue(r["reloadedOnDriftAfterReconnect"], "a bundle bump after a reconnect must still reload: %r" % r)
+        self.assertEqual(len(r["noticesAfterDrift"]), 2, "one more line for the drift reload: %r" % r["noticesAfterDrift"])
+        # 5. a restart onto a changed build reloads once the chat pane's redial has its first frame, held on 'fresh' until then
+        self.assertTrue(r["reloadedOnChangedBuild"], "a changed build must reload: %r" % r)
+        self.assertLess(r["changedBuildReloadMs"], 60000, "the chat pane's frame fired it, not the bound: %r" % r)
+        # the reload never fires while the chat pane awaits its frame: either the shell held on 'fresh' until the frame landed, or
+        # the pane's redial and frame beat the shell's /version poll (a small lab's kernel answers both within milliseconds)
+        self.assertEqual(r["chatAtFire"], {"fresh": False, "stamped": True}, "the chat pane's frame had landed when the reload fired: %r" % r)
+        if r["heldOnChangedBuild"] is not None:
+            self.assertEqual(r["heldOnChangedBuild"], {"b": "fresh", "reason": "restart"}, "a hold, when there was one, was the pane's: %r" % r)
+        held_lines = [n for n in r["noticesAfterChangedBuild"] if n.startswith("The dashboard will reload")]
+        self.assertEqual(len(held_lines), 1 if r["heldOnChangedBuild"] else 0, "the held wording once per hold: %r" % r["noticesAfterChangedBuild"])
+        self.assertEqual(len(r["noticesAfterChangedBuild"]) - len(held_lines), 3, "one line for the changed-build reload: %r" % r["noticesAfterChangedBuild"])
+        self.assertRegex(r["noticesAfterChangedBuild"][-1], r"the kernel restarted\.$")
+        br, ar = r["beforeRestart"], r["afterRestart"]
+        self.assertIsNotNone(ar, "the chat frame is the same document: %r" % r)
+        self.assertLessEqual(abs(ar["scrollTop"] - br["scrollTop"]), 60, "the reader's place held through the restart: %r → %r" % (br, ar))
 
 
 if __name__ == "__main__":

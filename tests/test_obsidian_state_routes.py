@@ -397,7 +397,7 @@ if __name__ == "__main__":
 
 
 class _LockSpy:
-    """Stands in for one store's lock (_flags_lock / _order_lock) for the duration of a test and says,
+    """Stands in for one store's lock (_flags_lock / _order_lock / _ncards_lock) for the duration of a test and says,
     without a timer, when a second writer is WAITING on it: the interleaving tests below release the
     first writer on exactly that event (or on the second writer having landed, when there is no lock to
     wait on). Delegates the lock itself."""
@@ -477,6 +477,9 @@ class ConcurrentWriters(_Routes):
     def _order_file(self):
         return json.loads((km.jd.STATE / "session-order.json").read_text())
 
+    def _ncards_file(self):
+        return json.loads((km.jd.STATE / "notify-cards.json").read_text())
+
     def test_n_concurrent_flag_posts_through_the_route_all_survive_and_every_ack_is_true(self):
         n = 32
         sids = ["%08x-1111-2222-3333-444444444444" % i for i in range(n)]
@@ -533,14 +536,46 @@ class ConcurrentWriters(_Routes):
         self.assertEqual(r[0][1]["order"], [B, A, C, D],
                          "the route's ack is the order it published: its own swap on the store it read, the queued drag landing after")
 
+    def test_a_prune_and_a_card_bell_click_interleaved_the_click_survives(self):
+        # The bells store's own lost update (round-3 review find; the sibling stores got their locks
+        # 2026-09-08 and this one was left out): the pusher's prune reads the store as a card leaves the
+        # feed, a card-bell click lands on a dashboard's socket thread and is acked (no refusal frame),
+        # and the prune then publishes the `kept` it built from its pre-click snapshot -- the click is
+        # gone, and the next push echoes the old bell.
+        (km.jd.STATE / "notify-cards.json").write_text(json.dumps({SID + ":g2": False}))   # a mute whose card then leaves
+        r = self._interleave(
+            "_ncards_lock", "_notify_cards_proved",
+            lambda: km._prune_notify_cards({SID + ":g1"}),                # the feed diff: g2 left, g1 is live
+            lambda: self._ws({"type": "cardNotify", "itemId": SID + ":g1", "value": True, "sid": SID}))
+        self.assertEqual(r[1], [], "the socket arm sent no refusal")
+        self.assertEqual(self._ncards_file(), {SID + ":g1": True},
+                         "the acked click is in the store and the departed card's mute is pruned; the prune's publish did not erase the click")
+
+    def test_a_master_bell_post_and_a_card_bell_click_interleaved_both_survive(self):
+        # The master flipped on through its route while a card is muted on a socket: unlocked, the
+        # click was judged against the master it read (off), matched it, and was DELETED as a
+        # restated default -- then the master's publish landed and the card follows it, unmuted,
+        # after an ok ack. Under the lock the click queues, reads the master on, and stores the mute.
+        r = self._interleave(
+            "_ncards_lock", "_notify_cards_proved",
+            lambda: self._post("/notify-all", {"on": True}),
+            lambda: self._ws({"type": "cardNotify", "itemId": SID + ":g1", "value": False, "sid": SID}))
+        self.assertEqual(r[0], (200, {"ok": True, "on": True}))
+        self.assertEqual(r[1], [], "the socket arm sent no refusal")
+        self.assertEqual(self._ncards_file(), {km.NOTIFY_ALL_KEY: True, SID + ":g1": False},
+                         "the master is on and the card's mute is stored against it; neither writer's publish dropped the other's")
+
     def test_the_locks_are_per_store_and_taken_by_every_writer_of_the_store(self):
         src = inspect.getsource(km)
         self.assertIsInstance(km._flags_lock, type(threading.Lock()))
         self.assertIsInstance(km._order_lock, type(threading.Lock()))
+        self.assertIsInstance(km._ncards_lock, type(threading.Lock()))
         for fn in (km._set_session_flag, km._set_notify_session):
             self.assertIn("with _flags_lock:", inspect.getsource(fn), fn.__name__)
         for fn in (km._reorder_session_order, km._gc_session_order, km._ordered):
             self.assertIn("with _order_lock:", inspect.getsource(fn), fn.__name__)
+        for fn in (km._set_notify_all, km._set_notify_turns, km._set_notify_card, km._prune_notify_cards):
+            self.assertIn("with _ncards_lock:", inspect.getsource(fn), fn.__name__)
         route = inspect.getsource(km._state_write_route)
         self.assertIn("_reorder_session_order(order)", route, "the route lands the drag through the locked step")
         self.assertNotIn("_write_session_order(merged)", route)
