@@ -279,7 +279,7 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertEqual(a["stored"], '{"conn":1}', "the choice persists")
         self.assertEqual(a["n"], 1, "the entry is still STORED while muted")
         self.assertFalse(a["red"], "a muted kind neither counts unread nor holds the live-down cue")
-        self.assertIn("hidden by the filters", a["emptyText"])
+        self.assertIn("Nothing to show", a["emptyText"]); self.assertIn("the filters above are hiding everything logged", a["emptyText"])
 
     def test_unmuting_shows_what_happened_and_re_reddens(self):
         a = self.out["afterUnmute"]
