@@ -1411,9 +1411,11 @@ export class FederationManager {
       // open, above) and told now to the ones already open
       this.pageProto = m.proto === 2 ? 2 : 1;
       // told whatever the page speaks, the index wire included: a kernel that serves no chat frame before the handshake
-      // (T386 stage 2) would otherwise serve an index page's remote socket nothing (the follow-up after PR 1584, low 2)
+      // (T386 stage 2) would otherwise serve an index page's remote socket nothing (the follow-up after PR 1584, low 2).
+      // NOT to a REDIAL socket (dialedReconnect): a ready there would clear its diet the same way onopen's would (the
+      // symmetry hole is unreachable today, the page posts ready once per renderer life, but the guard closes it).
       for (const c of this.conns.values()) {
-        if (c.ws && c.ws.readyState === 1) { try { c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the socket's own close says */ } }
+        if (c.ws && c.ws.readyState === 1 && !c.dialedReconnect) { try { c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the socket's own close says */ } }
       }
     }
     // When the active tab moves OFF a remote host (to a local tab, or another host's), tell the OLD host so it
