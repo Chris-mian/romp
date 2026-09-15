@@ -31409,7 +31409,7 @@ def _chat_ident(path):
 
 
 def _chat_reg_sig(sid):
-    """Registry content that can change a chat, plus its readable/missing/unreadable state. Host journal
+    """Registry content that can change a chat or feed entry, plus its readable/missing/unreadable state. Host journal
     acknowledgements and log offsets move during ordinary output without changing the payload; keying on
     the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
     ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
@@ -38964,7 +38964,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
-      reg: (_chat_ident(STATE/sdk/<fsid>.json), _chat_ident(STATE/gone/<fsid>.json)). The launch ledger
+      reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
+        excluding host journal acknowledgements/log offsets, plus the death marker's file identity. The launch ledger
         (_thread_reg → _bg_live_norm), spawnedAt and the death marker (_sdk_spawned_at, jd._cli_epoch), the SDK-human
         flag (_display_sdk_human).
       cleared: the session's own slice of _cleared_ids(), sorted. `nid in cleared` per top, the provisional card's
@@ -39031,7 +39032,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
-    reg = (_chat_ident(jd.STATE / "sdk" / (fsid + ".json")), _chat_ident(jd.GONEDIR / (fsid + ".json")))
+    reg = (_chat_reg_sig(fsid), _chat_ident(jd.GONEDIR / (fsid + ".json")))
     cl = board["cleared_by_sid"].get(fsid, ())
     row = (tuple(sorted(((k, v) for k, v in tm.items() if k not in ("snapT", "interrupting")), key=lambda kv: kv[0]))
            if tm else None)

@@ -279,6 +279,70 @@ class ColdWarmAndFromScratch(_Board):
                          "two served entries beside one derivation must equal three derivations, byte for byte")
 
 
+class HostRegistryProgress(_Board):
+    """Host journal bookkeeping does not change cards; registry content still does."""
+
+    @staticmethod
+    def _publish_registry(sid, record):
+        path = jd.STATE / "sdk" / (sid + ".json")
+        path.parent.mkdir(exist_ok=True)
+        pending = path.with_suffix(".tmp")
+        pending.write_text(json.dumps(record))
+        os.replace(pending, path)
+        return path
+
+    def test_host_progress_replacements_keep_all_sessions_cached_and_match_a_fresh_build(self):
+        record = {"sid": WEB, "name": "web", "spawnedAt": T0}
+        self._publish_registry(WEB, record)
+        before = self._build()
+        for progress in ({"hostAck": {"host": "1:2", "offset": 10}},
+                         {"hostAck": {"host": "1:2", "offset": 20}, "hostLogPos": {"pos": 3}},
+                         {}):
+            with self.subTest(progress=progress):
+                self._publish_registry(WEB, dict(record, **progress))
+                delta, cached = self._delta(self._build)
+                self.assertEqual((delta["derived"], delta["hit"]), (0, 3), delta)
+                self.assertEqual(delta["miss_by"], {})
+                self.assertEqual(_dump(cached), _dump(before))
+                _reset_memo()
+                self.assertEqual(_dump(cached), _dump(self._build()),
+                                 "skipping host bookkeeping must preserve the real feed payload")
+
+    def test_other_registry_content_invalidates_only_its_session(self):
+        record = {"sid": API, "name": "api", "spawnedAt": T0}
+        self._publish_registry(API, record)
+        self._build()
+        for fields in ({"spawnedAt": T0 + 10}, {"bgLedger": {"worker": {"state": "running"}}},
+                       {"futureDisplayField": "changed"}):
+            with self.subTest(fields=fields):
+                record.update(fields)
+                self._publish_registry(API, record)
+                delta, cached = self._delta(self._build)
+                self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
+                self.assertEqual(delta["miss_by"], {"reg": 1})
+                _reset_memo()
+                self.assertEqual(_dump(cached), _dump(self._build()))
+
+    def test_missing_empty_object_and_unreadable_registry_remain_distinct(self):
+        self._build()
+        path = self._publish_registry(WEB, {})
+        delta, _ = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
+        self.assertEqual(delta["miss_by"], {"reg": 1})
+        path.write_text("")
+        delta, _ = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
+        self.assertEqual(delta["miss_by"], {"reg": 1})
+        path.write_text("not json")
+        delta, _ = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (0, 3), delta)
+        self.assertEqual(delta["miss_by"], {}, "both invalid forms have the same unreadable state")
+        path.unlink()
+        delta, _ = self._delta(self._build)
+        self.assertEqual((delta["derived"], delta["hit"]), (1, 2), delta)
+        self.assertEqual(delta["miss_by"], {"reg": 1})
+
+
 class EveryInputMovesItsSessionOnly(_Board):
     """Each writer below is one of the events the key covers; each re-derives exactly the session it touched,
     under exactly its label, and the card shows the change."""
