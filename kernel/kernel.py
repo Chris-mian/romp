@@ -288,8 +288,8 @@ class _PerfStats:
                                    memos.shared), save_goals calls, and the saves that reached the
                                    disk (a byte-identical republish is a save without a write)
       memos                        pass / shared / chain: the judge pass's stat-keyed store memo
-                                   (_goals_memo_report: hit, miss, fail, evict, punch, entries,
-                                   bytes), the pusher's shared read-only store cache
+                                   (_goals_memo_report: hit, miss, fail, evict, punch, skip, entries,
+                                   bytes, unowned), the pusher's shared read-only store cache
                                    (judge.shared_store_stats) and the write-moment chain memo
                                    (judge.chain_memo_stats); intrMarks / statesOverlay: the
                                    interrupt-marks memo (_intr_marks_memo_report: hit, miss, evict,
@@ -30596,7 +30596,20 @@ _goals_snap_lock = threading.Lock()
 # is the pass's failure, not the version's, so the next pass reads the file again, as every pass did
 # before the memo. Entries for paths gone from the directory are evicted at the next pass, and the
 # compaction sweep after each pass evicts the entries of stores no discovered session owns
-# (_goals_memo_evict_unowned), so the resident set is bounded by the live board.
+# (_goals_memo_evict_unowned), so the resident set is bounded by the live board. THE SWEEP'S RULING IS
+# ALSO THE PASS'S SKIP LIST (review find, 2026-09-15): the sids it evicted as unowned, while their files
+# stay in the directory and no discovered session takes them up again, sit in _goals_memo_unowned, and
+# the pass steps over their files before the stat and the open. Without that the two fought forever: the
+# directory keeps the stores of sessions gone past the discover window and of old transcript episodes
+# (49 files on one installation, 22 owned, 27 orphans holding 7 MB), the pass decoded the 27 as misses,
+# the sweep evicted them again (GET /perf memos.pass read hit 202, miss 582, evict 390; 109 store opens
+# and 68 MB read per 5 s with no mtime moving), for stores nothing rendered or judged reads. The owner
+# list is the sweep's: the discovered sessions (the ones the tiers judge) and the live ones (the ones the
+# feed renders, inside the discover window or not), so nothing rendered or judged is ruled out; what the
+# ruling lags is one sweep: a session that revives or re-enters the window between a sweep and the next
+# pass is read live for that pass (_feed_goals serves a sid absent from the snapshot live), the judges'
+# mid-pass writes showing on its card until the next sweep that runs lifts the ruling (none runs with Task
+# tracking off, and a discover that raises neither rules nor lifts: the ruling then stands as it is).
 # WHAT THE KEY RESTS ON: st_mtime_ns moving between publishes, not the inode. Inode numbers recycle
 # (on ext4, consecutive tmp+rename publishes of one path alternate between two numbers, so the third
 # version can sit on the first's inode), and equal sizes are common (a digit bump, a same-length
@@ -30608,9 +30621,14 @@ _goals_snap_lock = threading.Lock()
 # earlier parse (a stale card until the store's next publish, never a wrong write).
 _goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
-# Bare `+= 1` increments with one writer per key: hit/miss/fail/evict are written only by the producer thread
+# Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
-_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0}   # read by tests and GET /perf (memos.pass)
+_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
+# The sweep's skip list (the memo note above): the sids _goals_memo_evict_unowned ruled unowned whose stores are
+# still in the directory. That function rebuilds it whole on the producer thread, the memo's one writer, and
+# rebinds the name (a swap, never a mutation, as the memo); _begin_goals_pass reads it on the same thread, and
+# GET /perf reads its length (memos.pass unowned).
+_goals_memo_unowned = set()
 
 
 def _goals_memo_decode(data):
@@ -30627,22 +30645,50 @@ def _goals_memo_report():
     out = dict(_goals_memo_stats)
     out["entries"] = len(memo)
     out["bytes"] = sum(k[2] for k, v in memo.values() if v is not _GOALS_MEMO_BAD)
+    out["unowned"] = len(_goals_memo_unowned)          # the stores the next pass steps over (the sweep's ruling)
     return out
 
 
 def _goals_memo_evict_unowned(owned):
-    """Drop the entries of stores no session in `owned` (the discover set's sids) holds. The memo had no
-    cap: every store the directory held stayed decoded in memory between passes, tens of MB on a large
-    board (review find, 2026-09-08). The compaction sweep calls this after the tiers, on the producer
-    thread, the memo's one writer. The price is one decode at the next pass for such a store the pass
-    still lists (what every pass paid before the memo); the stores a discovered session owns keep their
-    entries. A swap, never an in-place mutation: a /perf reader may be iterating the old dict."""
+    """Drop the entries of stores no session in `owned` (the sweep's owner list: the discovered sessions and
+    the live ones) holds, and rule their sids out of the next pass. The memo had no cap: every store the directory held stayed decoded in memory
+    between passes, tens of MB on a large board (review find, 2026-09-08). The compaction sweep calls this
+    after the tiers, on the producer thread, the memo's one writer; the stores an owner holds keep their
+    entries.
+
+    The first version only evicted, and took the price to be one decode at the next pass for such a store
+    the pass still lists. On a real installation it is every pass's decode: the directory keeps the stores
+    of sessions gone past the discover window and of old transcript episodes (49 files, 22 owned, 27
+    orphans of 7 MB together, on one kernel), so every pass decoded the 27 as misses and every sweep
+    evicted them again, forever (GET /perf memos.pass read hit 202, miss 582, evict 390; 109 store opens
+    and 68 MB read per 5 s with no mtime moving), for stores nothing rendered or judged reads: `owned` is
+    the discovered sessions and the live ones together (_compact_goal_stores), the tiers' list and the
+    feed's, and _feed_goals reads a sid absent from the snapshot live (review find, 2026-09-15). So the
+    ruling is kept: _goals_memo_unowned is rebuilt here as the sids evicted now or by an
+    earlier call, minus `owned` (a session owned again is decoded at the next pass) and minus the
+    sids whose file has left the directory (bounded by the files present, never by the sids a process has
+    seen), and _begin_goals_pass steps over those files before the stat and the open. The pass never asks
+    discover itself: the sweep holds the owner list, and the pass stays independent of the walk; so the
+    ruling lags the tiers by one sweep, and a session that revives or re-enters the window between a sweep
+    and the next pass is read live for that one pass, the judges' writes showing on its card until the next
+    sweep that RUNS lifts the ruling: none runs with Task tracking off, and a discover that raises neither
+    rules nor lifts, so the ruling then stands as it is (a session merely idle past the window is live, so
+    not ruled while liveness reads). A swap,
+    never an in-place mutation, for the memo and the set alike: a /perf reader may be iterating the old
+    dict, and the pass reads the set it took at its start."""
+    global _goals_memo_unowned
     memo = _goals_memo[0]
     kept = {path: ent for path, ent in memo.items() if os.path.basename(path)[:-5] in owned}
     gone = len(memo) - len(kept)
     if gone:
         _goals_memo[0] = kept
         _goals_memo_stats["evict"] += gone
+    try:
+        present = {e.name[:-5] for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()}
+    except OSError:
+        present = set()                                # no directory: no store for the pass to step over
+    evicted = {os.path.basename(path)[:-5] for path in memo.keys() - kept.keys()}
+    _goals_memo_unowned = (_goals_memo_unowned | evicted).difference(owned) & present
     return gone
 
 
@@ -30669,19 +30715,29 @@ def _begin_goals_pass():
     such. Any race the other way (content newer than its key) only costs one extra decode next pass;
     it can never pin a stale parse, because the next stat sees a moved key. The one way a stale parse
     CAN pin is the coarse-timestamp blind spot in the memo note above (equal size, recycled inode, same
-    clock tick); on a multigrain-timestamp kernel it does not occur."""
+    clock tick); on a multigrain-timestamp kernel it does not occur.
+
+    A store the compaction sweep ruled unowned (_goals_memo_unowned: no discovered and no live session
+    holds it, and its file is still here) is stepped over before its stat, so it gets neither a memo entry nor a snapshot
+    entry, and _feed_goals reads it live should anything ask; before that the pass decoded every such
+    store as a miss and the sweep evicted it again, pass after pass (review find, 2026-09-15). The pass
+    never asks discover: the sweep's ruling is what it reads, one sweep behind the tiers' own list."""
     # ui/webview/feed-move-ack.test.ts pins the next line's comment text ("stamped BEFORE the reads").
     at = time.time()          # stamped BEFORE the reads and the stats that gate them: a write racing this loop
     snap = {}                 # must count as AFTER them, so it is replayed onto the snapshot, not lost to the read order
     prev = _goals_memo[0]
+    unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
-    hit = miss = fail = 0
+    hit = miss = fail = skip = 0
     try:
         entries = [e for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()]
     except OSError:
         entries = []
     for ent in entries:
         path, sid = ent.path, ent.name[:-5]
+        if sid in unowned:
+            skip += 1                                  # ruled unowned by the last sweep: no stat, no open, no
+            continue                                   # entry; the feed reads it live if asked (_feed_goals)
         try:
             st = ent.stat()
             key = (st.st_ino, st.st_mtime_ns, st.st_size)
@@ -30717,6 +30773,7 @@ def _begin_goals_pass():
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
     _goals_memo_stats["fail"] += fail
+    _goals_memo_stats["skip"] += skip
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
     with _goals_snap_lock:
         _goals_snap[0] = snap
@@ -30735,7 +30792,9 @@ def _end_goals_pass():
 def _feed_goals(sid):
     """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
     never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
-    snapshot → live (it has no prior state to flicker from). See the _goals_snap note above.
+    snapshot → live (it has no prior state to flicker from); so is a sid the pass stepped over because the
+    compaction sweep ruled its store unowned (no discovered and no live session held it at the sweep: the
+    pass took no copy, and a consumer that asks anyway gets the live store, 2026-09-15). See the _goals_snap note above.
 
     USER WRITES PUNCH THROUGH (the user 2026-07-21): a gesture recorded since this snapshot was taken is
     replayed onto it from the override journal — the same durable record load_goals replays, so the user's
@@ -37544,9 +37603,20 @@ def _compact_goal_stores():
         # owns: none has a cap (review find, 2026-09-08, on the first two; the writer loader's parse memo
         # of 2026-09-15 follows them, and this sweep is what fills it with every store the directory
         # holds). discover is cached behind the transcript directory's fingerprint, so this is the tiers'
-        # own list, not a second walk. A discover that raises evicts nothing: with no owner list there is
-        # no unowned.
+        # own list, not a second walk. A discover that raises evicts nothing and lifts nothing: with no
+        # owner list the pass memo's standing ruling stays as it is.
         owned = {f for f, _p, _a, _n in jd.discover(int(time.time()))}
+        # ...plus every LIVE session, inside that window or not: the feed renders a live session whatever
+        # its transcript's age (_alive_sessions resolves one past the 48 h set through the wide walk), and
+        # the pass memo's ruling below steps over an unowned store's file, so a live session ruled out here
+        # would be read live on every build of every pass (review find on the ruling, 2026-09-15). The
+        # notified-cards bound below unions the same map for the same reason. One owner list, four
+        # consumers: the two judge memos also stop re-parsing such a session's store after every sweep. A
+        # liveness read that raises leaves the discover set as the owner list, said, as before the union.
+        try:
+            owned |= set(_live_map())
+        except Exception:
+            sys.stderr.write("compact: live map unreadable (the discover set alone owns): %s\n" % traceback.format_exc())
         jd._shared_evict_unowned(owned)
         jd._raw_store_evict_unowned(owned)
         _goals_memo_evict_unowned(owned)
@@ -51246,7 +51316,8 @@ def _notify_prev_forget_gone(owned):
     """The compaction sweep's bound on the snapshot (review find on the persist, 2026-09-10): forget, in
     memory and on disk, every remembered card whose session is GONE for good, and drop its bell overrides
     with it. Gone means what it means for session-order.json (_gc_session_order): neither alive, nor with
-    a transcript still in the discover window (`owned`, the sweep's own discover set), nor a dead tab the
+    a transcript still in the discover window (`owned`, the sweep's owner list: the discovered sessions
+    and the live ones), nor a dead tab the
     user kept open. The build forgets a card only when its session RENDERS without it, and a session
     gone for good never renders again: its worktree deleted, never revived, its card cleared from the
     dashboard while it was dead (a clear reads the goal store, not the session). So the build alone kept
