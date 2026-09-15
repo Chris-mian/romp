@@ -46935,8 +46935,8 @@ def _chat_history_reply(sid, msg, now, base=None):
             # the head page at floor 0 starts at the list's first event: the head cards sit in the floor'd list itself there (turn
             # index -1, above turn 0) and head_cards is empty, so a slice from the first turn-0 event dropped the system context
             # and the /clear card while the reply said head (T386 stage 2, round seven, medium 2)
-            a = 0 if (lo == 0 and floor == 0) else next((i for i, ti in enumerate(tix) if ti >= max(lo, floor)), len(evs))
-            b = next((i for i, ti in enumerate(tix) if ti >= hi), len(evs))
+            a = 0 if (lo == 0 and floor == 0) else _turn_run_edge(tix, max(lo, floor))   # the page's edges are the frame's (one function, so the
+            b = _turn_run_edge(tix, hi)                                                    #  gap and the tail run partition the list, whatever the index)
             out = out + evs[a:b]
         if lo == 0:
             out = head_cards + out
@@ -47013,9 +47013,15 @@ def _turn_index_of_events(evs, turns):
     for e in evs:
         ti = u2t.get(str(e.get("uuid") or "").split("#", 1)[0])
         if ti is not None:
+            if ti < cur and not _tix_decrease_said[0]:   # the regions wire's edges (_turn_run_edge) partition the list whatever the
+                _tix_decrease_said[0] = True             #  index does, but the runs' labels assume it never decreases: say so once
+                sys.stderr.write("chat regions: the built list's turn index decreased (%d after %d at event %d): the run labels may cover lower turns\n" % (ti, cur, len(out)))
             cur = ti
         out.append(cur)
     return out
+
+
+_tix_decrease_said = [False]   # once per process: the stderr line above
 
 
 def _first_mapped_turn(tix, start):
@@ -47116,11 +47122,41 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     return ms
 
 
+def _turn_run_edge(tix, t):
+    """The index where turn t's run BEGINS in a built list: the first index whose turn index reaches t, walked back over the
+    unplaced events (-1) immediately before it (len(tix) when no index reaches t). The ONE edge for the two sides of the
+    regions wire, so they always partition the list: the proto-2 full frame begins its tail run here (_tail_run_start), and
+    the gap page for [lo, hi) ends here for hi and begins here for lo above the floor (loadTurns in _chat_history_reply), the
+    way review find J snaps every in-list slice. On a nondecreasing turn index, every real build's (_turn_index_of_events
+    carries the previous placed turn forward, so -1 appears only as a leading prefix: a floor-0 list's head cards above turn
+    0, a note flushed before a floor'd list's first placed record), this is the turn's first placed event, and for the FIRST
+    placed turn it is index 0: the prefix belongs to that turn's run, since no page serves events before turn 0 (a frame
+    whose tailLo is 0 must hold them itself) and a page for [0, hi) begins at the list's top. Without the walk, a cut inside
+    the prefix (the total minus the wire tail) found turn 0's edge AFTER the cut; capped at the cut, the frame began inside
+    the prefix with tailLo 0 and the head card before the cut was in neither region (the 2026-09-15 round-three read). The
+    rule for an index that is NOT nondecreasing (no builder produces one today; the index builder says so on stderr once if
+    one appears): the run of turn t begins at the first index that reaches t, wherever later stretches of lower turns lie,
+    and the page before t ends exactly there; the run's label may then cover events of lower turns, but no event is in
+    neither region, and no event is in both. A walk backward from the CUT, tried and withdrawn (2026-09-15), made the two
+    sides diverge on such an index and left the events between unreachable; the walk here is from the EDGE, inside the one
+    function, so both sides move together."""
+    i = next((i for i, ti in enumerate(tix) if ti >= t), len(tix))
+    while 0 < i < len(tix) and tix[i - 1] == -1:   # the unplaced run before turn t's first record opens the run
+        i -= 1
+    return i
+
+
 def _tail_run_start(sid, evs, head_from, now):
-    """(head_from, tailLo) for a proto-2 full frame whose cut `head_from` may fall inside a turn: the turn of the first placed
-    event at or after the cut (as _tail_lo reads it), and the index of that turn's FIRST placed event, at or before the cut,
-    so the run the page holds begins where the turn does. A parse that cannot place the cut leaves both as they were (the
-    plain cut, tailLo None: the page then asks by the tail's first key, loadOlder, as before)."""
+    """(head_from, tailLo) for a proto-2 full frame whose cut `head_from` may fall inside a turn, or inside the unplaced
+    prefix above the first placed turn: the turn of the first placed event at or after the cut, and _turn_run_edge for it,
+    so the run the page holds begins where the turn does and where the gap page before it ends. The edge never lies after
+    the cut: the events from the cut to that turn's first record are unplaced by construction (the turn is the FIRST placed
+    one from the cut on) and the edge walks back over exactly those, so the frame carries at least the wire tail and never
+    begins inside an unplaced run. A cap at the cut, min(edge, cut), did begin it there when the cut fell inside a floor-0
+    list's head cards, and stranded the card before the cut (the 2026-09-15 round-three read); the cap is gone. A cut ON an
+    unplaced event inside a turn (a note the index gave -1) resolves to that turn's edge too, so the turn's head is never
+    stranded. A parse that cannot place the cut leaves both as they were (the plain cut, tailLo None: the page then asks by
+    the tail's first key, loadOlder, as before)."""
     try:
         sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
         if sess is None or head_from >= len(evs):
@@ -47129,24 +47165,9 @@ def _tail_run_start(sid, evs, head_from, now):
         t = _first_mapped_turn(tix, head_from) if head_from < len(tix) else None
         if t is None:
             return head_from, None
-        start = next((i for i, ti in enumerate(tix) if ti >= t), head_from)   # the turn's first placed event (the loadTurns page's own edge)
-        return min(start, head_from), t
+        return _turn_run_edge(tix, t), t
     except Exception:
         return head_from, None
-
-
-def _tail_lo(sid, evs, head_from, now):
-    """The TURN index of the wire tail's first event (T386 stage 2): the page's tail run begins there, and the turns before it
-    are its head gap until it asks for them by span. None when the parse cannot say (the page then asks by the tail's first
-    key, loadOlder, as before)."""
-    try:
-        sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
-        if sess is None or head_from >= len(evs):
-            return None
-        tix = _turn_index_of_events(evs, _parse(sess["path"], sid, now)["turns"])
-        return _first_mapped_turn(tix, head_from) if head_from < len(tix) else None   # never max(0, -1)=0 for a leading note (the tail run begins at the first placed turn)
-    except Exception:
-        return None
 
 
 def _send_chat_locked(c, m, ms, change_from, led_changed):
