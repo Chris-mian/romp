@@ -344,7 +344,7 @@ class ServedAutoReload(unittest.TestCase):
         self.assertFalse(a["chipHidden"], "off the bottom, the go-to-bottom chip shows")
         self.assertEqual(len(r["noticesBefore"]), 0)
         self.assertEqual(len(r["noticesAfterBuild"]), 1, "one notification-center line per reload: %r" % r["noticesAfterBuild"])
-        self.assertRegex(r["noticesAfterBuild"][0], r"^Reloaded onto build \d+ — a newer romp build was served\.$")
+        self.assertRegex(r["noticesAfterBuild"][0], r"^Reloaded onto build \d+: a newer romp build was served\.$")
         self.assertTrue(r["settledAfterBuild"], "one reload per drift — the fresh page must not reload again: %r" % r)
         # 3. a kernel restart of the SAME build is invisible (the user 2026-09-14): seen, counted, never a reload
         self.assertTrue(r["restartSeen"], "the shell saw the new boot id: %r" % r)
