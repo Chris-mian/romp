@@ -195,9 +195,9 @@ class DroppedClientsAreLoud(unittest.TestCase):
             self.assertNotIn("fleet", texts["fleet"], "the internal id never reaches the row")
             self.assertIn("The Outline pane's", texts["fleet"])
             self.assertIn("dropping fleet client", sys.stderr.getvalue(), "…while the log line keeps it")
-            c = self._dropping(); c["app"] = "shell"   # a client with no rail label: the id itself, never a blank
+            c = self._dropping(); c["app"] = "shell"   # a client with no rail label: the id, capitalised for the sentence (_pane_label), never a blank
             km._send_client(c, ("feed",), {"type": "feed"})
-            self.assertIn("The shell pane's", km._WS_DROPS[-1]["text"])
+            self.assertIn("The Shell pane's", km._WS_DROPS[-1]["text"])
         finally:
             sys.stderr = old
 
