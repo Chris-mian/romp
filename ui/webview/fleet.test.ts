@@ -26,18 +26,18 @@ test("fleet.ts applies no delta itself: the shim reassembles every {type:\"delta
 test("each session renders the real LEDGER TREE — .ledger-* nodes, marks, collapse, recency time", () => {
   assert.match(SRC, /el\("div", "ledger-tree"\)/);
   assert.match(SRC, /"ledger-tnode"/);
-  assert.match(SRC, /el\("span", "ledger-tmark lz-nav"\)/);
+  assert.match(SRC, /el\("span", "ledger-tmark" \+ \(prov \? "" : " lz-nav"\)\)/);   // the pointer zone, withheld on a provisional row (plans/outline-pane-provisional-row.md)
   assert.match(SRC, /n\.done \? "✓" : n\.blocked \? "⏸" : ""/);   // the ledger box's marks
   assert.match(SRC, /el\("span", "ledger-tri"/);                   // the collapse triangle
-  assert.match(SRC, /el\("span", "ledger-ttext lz-nav"\)/);
+  assert.match(SRC, /el\("span", "ledger-ttext" \+ \(prov \? "" : " lz-nav"\)\)/);
   assert.match(SRC, /el\("span", "ledger-ttime"\)/);
 });
 
 test("ledger parity (the user 2026-06-24): pointer-cursor zones + grouped hover highlight (no ⊕ summary expander)", () => {
   // .lz-nav → the pointer cursor (styles.css) on the checkbox / text / time, so each reads as clickable
-  assert.match(SRC, /"ledger-tmark lz-nav"/);
-  assert.match(SRC, /"ledger-ttext lz-nav"/);
-  assert.match(SRC, /if \(time\.textContent\) \{ time\.classList\.add\("lz-nav"\)/);
+  assert.match(SRC, /"ledger-tmark" \+ \(prov \? "" : " lz-nav"\)/);
+  assert.match(SRC, /"ledger-ttext" \+ \(prov \? "" : " lz-nav"\)/);
+  assert.match(SRC, /if \(time\.textContent && !prov\) \{ time\.classList\.add\("lz-nav"\)/);
   // grouped hover (.lz-hl toggled together) — the ledger box's linkHover, ported verbatim
   assert.match(SRC, /function linkHover\(group: HTMLElement\[\]\)/);
   assert.match(SRC, /g\.classList\.add\("lz-hl"\)/);

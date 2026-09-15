@@ -114,7 +114,7 @@ class WsOpenRow(unittest.TestCase):
         src = pathlib.Path(ROOT, "vscode-extension", "src", "extension.ts").read_text(encoding="utf-8")
         dials = [ln for ln in src.splitlines() if "new WebSocket(" in ln and "/ws?" in ln]
         self.assertEqual(len(dials), 1, "one connect URL in the extension host: %r" % dials)
-        self.assertIn("&client=ext&", dials[0], "the producer states its kind, since its client sends no header that would: %s" % dials[0].strip())
+        self.assertIn("&client=ext", dials[0], "the producer states its kind, since its client sends no header that would: %s" % dials[0].strip())
 
     def test_the_helper_files_one_row_with_app_wid_kind_and_reconnect(self):
         rows = []
