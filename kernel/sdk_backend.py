@@ -15010,8 +15010,14 @@ class SdkBackend:
         if not atom.get("_echo_text") and not atom.get("command") and not atom.get("isApiError") \
                 and getattr(sess, "_first_out_t", None) is None and getattr(sess, "inflight", 0):
             sess._first_out_t = time.time()   # the turn's FIRST streamed work atom — turns.jsonl's firstOutT (T304)
+        # …but never over a PARKED ASK (the user 2026-09-16, a session blocked on an Allow prompt that showed neither the
+        # tab's dashed ring nor a Blocked card while the picker stayed up): the permission and picker marks set
+        # _cli_working False, and the running snapshot reads the LOG's last line while an ask is parked, so an assistant
+        # chunk, a subagent's stream or a parallel tool's result landing during the ask appended "working" after
+        # "permission" and every needs-you reader went dark (the record: permission, working, three times in thirteen
+        # seconds, pendingAsk true). The ask site's own settle re-marks "working" after the answer when the turn is in flight.
         if not atom.get("_echo_text") and not atom.get("command") and not atom.get("isApiError") \
-                and not sess._cli_working:
+                and not sess._cli_working and self._pending_ask.get(sess.sid) is None:
             sess._mark("working")   # (an isApiError settle is the turn DYING, not producing — never 'working')
         self._wake_push()
 
