@@ -368,14 +368,31 @@ def _identity_refusal():
     return None
 
 def _self_row(sid=None):
-    """THIS session's live agent row. CLAUDE_CODE_SESSION_ID is the CURRENT transcript fsid, and a
-    /clear or resume fork moves that off the stable romp sid every store is keyed by (names registry,
+    """THIS session's live agent row. CLAUDE_CODE_SESSION_ID is a transcript fsid, and a /clear or
+    resume fork moves that off the stable romp sid every store is keyed by (names registry,
     mailboxes, working notes, session flags) — so a forked session that trusted the env var mailed as
     "unknown", published its working note under an id no peer could see, and read an EMPTY mailbox
-    (the user 2026-07-27). Resolve through the kernel's sessions seam instead: an exact id match
-    first, else the row whose lastSid is our fsid (the SDK registry's authoritative stable→current
-    join, published on every /sessions row). A Codex session's id (_codex_self_id) IS the stable sid,
-    so it takes the exact match. `sid`: an id already resolved by the caller (_self_identity resolves
+    (the user 2026-07-27). Resolve through the kernel instead, three joins in order: an exact id match
+    on the sessions listing; the row whose lastSid is our fsid (the SDK registry's authoritative
+    stable→current join, published on every /sessions row); and, when neither matches, the kernel's
+    own answer to which live session has owned this transcript (GET /sessions/by-fsid,
+    _kernel_session_by_fsid). The third join exists because a process's environment is fixed when it
+    starts: the session's postal MCP server is a child started with the CLI, so after a /clear it still
+    carries the PRE-clear id while the kernel's row has moved lastSid to the new one — every message
+    the session sent through the MCP tools arrived "from an unidentified session" and check_inbox read
+    a mailbox keyed by a transcript id nobody delivers to, until the CLI restarted (reproduced
+    2026-09-15; a `romp mail send` from a fresh shell, whose environment carried the current id, was
+    attributed, which is the mechanism). The kernel is the authority on which session owned a prior id
+    (its episode and fork records): it answers with ONE row or refuses (404 unknown, 409 claimed by
+    two), and a refusal, an old kernel or an unreachable one leaves the fallback below exactly as it
+    was (the env id). An EMPTY listing is not asked about: it is the kernel down or no live session
+    at all, and neither can own the id. A comment thread whose stale id the kernel has on record (its
+    resume forks; a thread's own /clear leaves no row and keeps this fallback) is answered with its
+    thread row (thread/parent as the ?threads=1 listing carries them), so the sender gate then reads its
+    reg under the resolved id and the thread rule (T356) holds its mail as it would have off the listing;
+    under the stale id no reg exists and a thread read as an ordinary session. A Codex session's id
+    (_codex_self_id) IS the stable sid, so it takes the exact match. `sid`: an id already resolved by
+    the caller (_self_identity resolves
     once per command); None resolves here. None when not a romp session or the kernel is down."""
     if sid is None:
         sid = _self_id()
@@ -383,16 +400,18 @@ def _self_row(sid=None):
         return None
     agents = local_agents(threads=True)   # a comment thread resolves to its OWN row/name (2026-08-22)
     return (next((a for a in agents if a.get("id") == sid), None)
-            or next((a for a in agents if a.get("lastSid") == sid), None))
+            or next((a for a in agents if a.get("lastSid") == sid), None)
+            or (_kernel_session_by_fsid(sid) if agents else None))
 
 def _self_identity():
     """(id, name) of THIS session from ONE _self_row() resolution — one GET /sessions, where the
     `my_name(), my_id()` pair a caller used to write cost two (2026-09-06: with about 30 sessions
     beating every 30 s the heartbeat was nearly all of the kernel's GET /sessions traffic, and this
-    pair two of the three fetches each beat cost). Both fallbacks kept: no row → the env fsid as the
-    id (mail still routes by id) and the names registry for the name (kernel-down fallback; a
-    comment-thread session withholds its names entry, which is why the row comes first). (None,
-    None) when not in a romp session. Nothing is
+    pair two of the three fetches each beat cost; the by-fsid join _self_row adds for a stale
+    pre-/clear id is one more small GET, and only when the listing matched nothing). Both fallbacks
+    kept: no row → the env fsid as the id (mail still routes by id) and the names registry for the
+    name (kernel-down fallback; a comment-thread session withholds its names entry, which is why the
+    row comes first). (None, None) when not in a romp session. Nothing is
     memoized: a resolution that missed (kernel mid-restart) is retried in full by the next call."""
     fsid = _self_id()                     # once per command; a failed Codex lookup's reason is the refusing command's to say
     row = _self_row(fsid) if fsid else None
@@ -1318,6 +1337,66 @@ def _kernel_post(path, body, timeout=2):
         return {"ok": False, "status": int(e.code), "error": text}
     except Exception:
         return None
+
+
+_KERNEL_GET_SAID = set()   # (path, status) pairs a said_once caller has already had logged in this process
+
+
+def _kernel_get(path, timeout=2, said_once=()):
+    """GET one small JSON document from the kernel (loopback, X-Romp-Token from the shared 0600 file) — the
+    read twin of _kernel_post, for the one-document lookups the kernel owns (GET /sessions/by-fsid). The
+    same three answers: the parsed body on a 2xx; for a kernel that REFUSED (a 4xx/5xx) {"ok": False,
+    "status": <code>, "error": <its text>}, logged by status with a bounded slice of the kernel's own
+    reason, so a refusal never reads as a dead kernel; None when the kernel could not be reached or its
+    answer could not be parsed (the caller degrades). None under the ROMP_SESSIONS_FILE test seam, which
+    signals a test running with no live kernel: the sessions listing has its own seam, and a lookup this
+    one cannot serve falls back the way an unreachable kernel does. `said_once`: the statuses that are a
+    route's DESIGNED answer for this path rather than a failure (the by-fsid 404: no live session's records
+    hold the id) — still returned as the refusal dict, but logged the first time this process hears one for
+    the path and silent after, because the caller asks per command and the answer does not change; every
+    other status is logged each time it comes back."""
+    if os.environ.get("ROMP_SESSIONS_FILE"):
+        return None
+    try:
+        req = urllib.request.Request(KERNEL_BASE + path, headers={"X-Romp-Token": SERVE_TOKEN})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) // 100 != 2:
+                return None
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        text = ""
+        try:
+            text = " ".join((e.read(512) or b"").decode("utf-8", "replace").split())
+        except Exception:
+            pass
+        if int(e.code) not in said_once or (path, int(e.code)) not in _KERNEL_GET_SAID:
+            _log("kernel refused GET %s: HTTP %d %s" % (path, e.code, text))
+            if int(e.code) in said_once:
+                _KERNEL_GET_SAID.add((path, int(e.code)))
+        return {"ok": False, "status": int(e.code), "error": text}
+    except Exception:
+        return None
+
+
+def _kernel_session_by_fsid(fsid):
+    """The agent row of the live session that has owned transcript `fsid` at any point — GET
+    /sessions/by-fsid, where the kernel joins the id against every live session's and comment thread's
+    recorded transcripts (the sid, the current one, each /clear episode head, both ends of every resume
+    fork) and answers with that ONE session's row as its listing carries it (a thread's with thread and
+    parent, the ?threads=1 shape). None when no live session claims it (404), more than one does (409:
+    the kernel refuses to guess, and so does the bus), the kernel is unreachable or too old to serve the
+    route, or the row's id is not a session id. _self_row's third join, after the exact id and the
+    lastSid; why it exists is said there. The listing's 6 s budget, not _kernel_post's 2 s: the route
+    does a subset of the listing's work on the same loaded kernel (its p90 was 3.5 s, 2026-08-31). A 404
+    is the route's designed miss — no live session's records hold the id: an id romp never recorded, a
+    comment thread's own /clear head, a kernel from before the route — and the same for every ask this
+    process makes, so it is said once per process, not once per command; a 409 or a 5xx is said each time."""
+    resp = _kernel_get("/sessions/by-fsid?fsid=" + urllib.parse.quote(fsid, safe=""), timeout=6,
+                       said_once=(404,))
+    if not isinstance(resp, dict) or resp.get("ok") is False:
+        return None
+    rows = _agent_rows([resp])
+    return rows[0] if rows and _safe_id(rows[0]["id"]) else None
 
 
 def _kernel_up():

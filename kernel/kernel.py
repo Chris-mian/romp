@@ -25880,32 +25880,140 @@ def _session_rows():
         sys.stderr.write("session-list path sweep failed (rows serve pathless): %s\n"
                          % traceback.format_exc())
         paths = {}
-    out = []
-    for sid, meta in Sessions.live().items():
+    return [_session_listing_row(sid, meta, notes, paths.get(sid)) for sid, meta in Sessions.live().items()]
+
+
+def _session_listing_row(sid, meta, notes, path):
+    """ONE live session's GET /sessions row, from the listing's shared reads: `meta` its Sessions.live()
+    entry, `notes` the working-notes map, `path` its transcript path (None = no transcript, exactly
+    _path_of's miss). The whole listing (_session_rows) maps this over Sessions.live() with the paths from
+    its ONE sweep; GET /sessions/by-fsid (_session_by_fsid) builds the one row it serves through it, so the
+    two routes cannot drift apart in shape (2026-09-15). Never raises: one row's helper blowing up must not
+    hide the session — or the WHOLE listing (absence reads as death downstream: the postal bus refuses sends
+    on it), so the failing row is kept minimal. Same per-row contract as the SDK merge's guard (2026-08-31)."""
+    try:
+        bg, fg = _identity_of(sid)
+        return {"id": sid, "name": _name_of(sid) or sid[:8], "state": meta.get("state", ""),
+                "dir": _cwd_of(sid), "bg": bg, "fg": fg,
+                # lastSid: the session's CURRENT transcript fsid (SDK registry join, mtime-memoized).
+                # CLAUDE_CODE_SESSION_ID inside a forked session carries THIS id, not the stable sid,
+                # so the postal bus resolves self-identity through it (the user 2026-07-27: a
+                # post-/clear session mailed as "unknown" and read an empty mailbox).
+                "lastSid": jd._sdk_last_sid(sid) or sid,
+                # compacting: the corroborated signal the chat chip uses (_compacting_now, cached
+                # parse), exposed so `romp compact --wait` and scripted recycling can watch a
+                # compaction start and clear through the kernel's own read, never a scrape.
+                "compacting": bool(_compacting_now(sid, tm=meta, path=path)),
+                "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
+    except Exception:
+        sys.stderr.write("session row for %s failed (kept minimal): %s\n"
+                         % (sid, traceback.format_exc()))
+        return {"id": sid, "name": sid[:8], "state": meta.get("state", ""), "dir": "",
+                "bg": "", "fg": "", "lastSid": sid, "compacting": False,
+                "working": "", "backend": meta.get("backend", "")}
+
+
+def _session_by_fsid(fsid):
+    """(HTTP status, JSON body) for GET /sessions/by-fsid?fsid=<id>: the ONE live session's /sessions row
+    whose transcript ids include `fsid` — the sid itself, its current transcript (the row's lastSid), each
+    /clear episode head the boundary tick recorded and both ends of every resume fork
+    (SdkBackend.known_fsids; a Codex session's only transcript id is its sid; the tick walks the
+    discovered, tabbed sessions, so a comment thread's /clear heads leave no row and a thread is on record
+    here through its reg and its resume forks). A session born as a fork also carries its PARENT's
+    fork-time transcript in its records, which never makes it an owner (lineage, below). The postal bus
+    asks this for a session whose CLAUDE_CODE_SESSION_ID matched
+    no /sessions row by id or by lastSid: the session's postal MCP server is a child started with the CLI
+    and its environment is fixed for the process's life, a /clear mints a new transcript id under the same
+    sid (the row's lastSid moves; the server's variable does not), and the kernel's records are the
+    authority on which session owned the prior id. Before this every message a post-/clear session sent
+    through its tools arrived "from an unidentified session" and its inbox read a mailbox keyed by a
+    transcript id nobody delivers to, until its CLI restarted (reproduced 2026-09-15; a send from a fresh
+    shell, whose environment carried the current id, was attributed). Comment threads are joined too
+    (SdkBackend.thread_sessions, the rows Sessions.live deliberately hides), because the bus's listing is
+    the ?threads=1 one: a thread whose CLI was resumed onto a fresh head (its resumeFork row records the
+    old id; a thread's own /clear leaves no row anywhere and keeps the bus's fallback) would otherwise 404
+    here forever, fall back to its stale id, and pass the sender gate as an ORDINARY session (the thread
+    rule reads the reg under the resolved id, and no reg sits under a transcript id), mailing out
+    unattributed past the very rule that holds a thread's mail (T356). A thread answers with its ?threads=1 row (_thread_rows: thread:true, the parent,
+    its mail-off fields), so the bus sees exactly what the listing would have shown it. 404 when no live
+    session or thread claims the id; 409 when more than one does (a resumed transcript's two ends can sit
+    on two live sessions): the bus keeps its own fallback on either, and the kernel never guesses an
+    identity. Not the whole listing: /sessions is the hot route (mean 364 ms live) and this is asked per
+    postal command by every post-/clear session (and per heartbeat until its bus confirms it local), so
+    one row is built, from its own
+    transcript-path lookup, and a session whose sid or lastSid IS the id is never asked for its ledgers
+    (the memoized known_fsids answers the rest)."""
+    live = Sessions.live()
+    be = _sdk()
+    threads = {}
+    if be and hasattr(be, "thread_sessions"):
         try:
-            bg, fg = _identity_of(sid)
-            out.append({"id": sid, "name": _name_of(sid) or sid[:8], "state": meta.get("state", ""),
-                        "dir": _cwd_of(sid), "bg": bg, "fg": fg,
-                        # lastSid: the session's CURRENT transcript fsid (SDK registry join, mtime-memoized).
-                        # CLAUDE_CODE_SESSION_ID inside a forked session carries THIS id, not the stable sid,
-                        # so the postal bus resolves self-identity through it (the user 2026-07-27: a
-                        # post-/clear session mailed as "unknown" and read an empty mailbox).
-                        "lastSid": jd._sdk_last_sid(sid) or sid,
-                        # compacting: the corroborated signal the chat chip uses (_compacting_now, cached
-                        # parse), exposed so `romp compact --wait` and scripted recycling can watch a
-                        # compaction start and clear through the kernel's own read, never a scrape.
-                        "compacting": bool(_compacting_now(sid, tm=meta, path=paths.get(sid))),
-                        "working": notes.get(sid, ""), "backend": meta.get("backend", "")})
+            threads = be.thread_sessions()
         except Exception:
-            # one row's helper blowing up must not hide the session — or the WHOLE listing (this
-            # loop is what GET /sessions serves, and absence reads as death downstream: the postal
-            # bus refuses sends on it). Same per-row contract as the SDK merge's guard (2026-08-31).
-            sys.stderr.write("session row for %s failed (kept minimal): %s\n"
-                             % (sid, traceback.format_exc()))
-            out.append({"id": sid, "name": sid[:8], "state": meta.get("state", ""), "dir": "",
-                        "bg": "", "fg": "", "lastSid": sid, "compacting": False,
-                        "working": "", "backend": meta.get("backend", "")})
-    return out
+            sys.stderr.write("session by-fsid: comment threads unreadable (the sessions still count): %s\n"
+                             % traceback.format_exc())
+
+    def claims(sid, is_sdk):
+        # `fsid` is on record for `sid`: its sid or lastSid first (no ledger read when one of them is the
+        # id), else its known_fsids. Reads an ENDED session's records as readily as a live one's: the
+        # lineage check below asks it about a fork's parent whether or not that parent still runs.
+        ids = {sid, jd._sdk_last_sid(sid) or sid}
+        if fsid not in ids and is_sdk and be and hasattr(be, "known_fsids"):
+            try:
+                ids |= set(be.known_fsids(sid))
+            except Exception:
+                sys.stderr.write("session by-fsid: transcript ids of %s unreadable (its sid and lastSid "
+                                 "still count): %s\n" % (sid, traceback.format_exc()))
+        return fsid in ids
+
+    owners = [sid for sid, is_sdk in ([(sid, meta.get("backend") == "sdk") for sid, meta in live.items()]
+                                      + [(tsid, True) for tsid in threads if tsid not in live])
+              if claims(sid, is_sdk)]
+    if owners:
+        # A session born as a FORK of another carries its PARENT's fork-time transcript in its own records:
+        # the seed row _seed_fork_stores writes into episodes/<fork>.jsonl (the conversation root, under the
+        # parent's fsid, so the judges never re-judge the copied history), and a reg born with the parent's
+        # lastSid until the CLI's init flips it to the fork's own sid (backend.fork) — a deliberate fork, a
+        # comment thread and a promoted thread alike. That is lineage, not ownership: the fork's transcripts
+        # are pinned to its own sid, and the parent is the one session whose process can carry that id.
+        # Read as ownership it made the parent's next /clear after a fork produce TWO claimants of the
+        # parent's prior transcript, a 409, and the bus's fallback to its stale id — the defect standing for
+        # exactly the sessions with a live fork (review find, 2026-09-15). So a claimant whose fork parent's
+        # records hold the id yields to the parent: a live parent answers; an ended one leaves the id
+        # nobody's (404), never the fork's. fork_children is the durable forkedFrom of every deliberate or
+        # promoted fork (a stat-memoized read); a live comment thread names its parent in the listing.
+        parent_of = {tsid: str(t.get("threadOf") or "") for tsid, t in threads.items()}
+        if be and hasattr(be, "fork_children"):
+            try:
+                for psid, kids in be.fork_children().items():
+                    for kid in kids:
+                        parent_of.setdefault(kid.get("sid"), psid)
+            except Exception:
+                sys.stderr.write("session by-fsid: fork lineage unreadable (every claimant counts): %s\n"
+                                 % traceback.format_exc())
+        owners = [sid for sid in owners
+                  if not (parent_of.get(sid) and parent_of[sid] != sid and claims(parent_of[sid], True))]
+    if not owners:
+        return 404, {"ok": False, "error": "no live session has transcript %s" % fsid}
+    if len(owners) > 1:
+        return 409, {"ok": False, "error": "%d live sessions claim transcript %s (%s); refusing to guess which"
+                     % (len(owners), fsid, ", ".join(sorted(owners)))}
+    sid = owners[0]
+    if sid in threads:
+        row = next((r for r in _thread_rows() if r.get("id") == sid), None)
+        if row is None:   # the thread ended between the two reads: no row to serve, and nothing to guess
+            return 404, {"ok": False, "error": "no live session has transcript %s (comment thread %s claimed "
+                                               "it but has no listing row now)" % (fsid, sid)}
+        return 200, row
+    try:
+        path = _path_of(sid)
+    except Exception:
+        # the same containment the listing gives its sweep (2026-08-31): a discover raise degrades to a
+        # pathless row (compacting False), never a 500 for a lookup whose answer is the row's id
+        sys.stderr.write("session by-fsid: path lookup for %s failed (row serves pathless): %s\n"
+                         % (sid, traceback.format_exc()))
+        path = None
+    return 200, _session_listing_row(sid, live[sid], _working_notes(), path)
 
 
 def _thread_rows():
@@ -60103,6 +60211,17 @@ class Handler(BaseHTTPRequestHandler):
                 if (q.get("threads") or [""])[0] == "1":       # opt-in: comment-thread rows for the postal
                     rows = rows + _thread_rows()               # bus (the user 2026-08-22); every existing
                 return self._send(200, json.dumps(rows), "application/json", cache="no-cache")   # consumer unchanged
+            if p == "/sessions/by-fsid":
+                # ONE live session's (or comment thread's) row by any transcript id it has owned — the postal
+                # bus's self-identity join for a session whose environment still carries a pre-/clear id
+                # (_session_by_fsid says why). The id is checked as every id that names a store entry is
+                # (_safe_id) before any read.
+                fsid = (q.get("fsid") or [""])[0].strip()
+                if not _safe_id(fsid):
+                    return self._send(400, json.dumps({"ok": False, "error": "fsid: not a session id"}),
+                                      "application/json", cache="no-cache")
+                code, body = _session_by_fsid(fsid)
+                return self._send(code, json.dumps(body), "application/json", cache="no-cache")
             if p == "/perf":                                  # the kernel's performance counters (`romp perf`); shape: _PerfStats
                 snap = _PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")   # ?ring=all: the whole stage ring (T397)
                 if (q.get("stacks") or [""])[0] == "1":
