@@ -3,7 +3,7 @@
 recovery, a gaveup, an orphan reply, an effort change, a command gesture, flushed into the idle gap before the cut
 turn) has a synthesized uuid no turn carries, so _turn_index_of_events gives that first event turn index -1. The
 tail-run's first turn (tailLo) was `max(0, tix[head_from])`, which clamped -1 to 0: the page then derived one run
-from turn 0, no head gap, headKnown true, and never asked for the history above the floor — the reported symptom.
+from turn 0, no head gap, headKnown true, and never asked for the history above the floor: the reported symptom.
 
 Executed on the real functions (no document, no browser): a synthetic floored list led by an orphan note, over a
 parse whose turns do not carry that note's uuid. `_tail_lo` must report the first PLACED turn, never 0. The two
