@@ -153,6 +153,21 @@ class TheBrowserNeverWaitsOnTheHousekeeping(_LabCycles):
         self.assertIsNone(km._live_scope.snapshot, "the pass closes its scope")
         self.assertIsNone(km._live_scope.names)
 
+    def test_the_nudge_walk_names_its_parts_on_the_pass_split(self):
+        """plans/nudge-walk-events.md, the measurement's first step: the walk's key stats, its snapshot reads and its looks are
+        sub-stages of jobs.autoNudge on the pass's split, so a pass that spikes names what it paid; the parts sum to at most
+        the job."""
+        km = self.km
+        # the pass body directly, under the job's own stage: a test earlier in this module leaves a pass in flight on a blocked
+        # thread, and the tick's single-flight guard would stand this walk down
+        now = int(time.time())
+        km._job_stage("autoNudge", lambda: km._auto_nudge_pass(now, km._live_map(), False))
+        st = km._PERF_STATS.snapshot()["stages_ms"]
+        have = sorted(k for k in st if k.startswith("jobs.autoNudge"))
+        self.assertEqual(have, ["jobs.autoNudge", "jobs.autoNudge.key", "jobs.autoNudge.looks", "jobs.autoNudge.snapshot"], have)
+        parts = sum(st[k] for k in st if k.startswith("jobs.autoNudge."))
+        self.assertLessEqual(parts, st["jobs.autoNudge"] + 1.0, "the parts sum to at most the job")
+
     def test_the_stats_keep_two_owners_apart(self):
         """A stage closed on the jobs thread lands in the jobs split and never in the pusher's, and the other way round, while
         the cumulative totals take both."""

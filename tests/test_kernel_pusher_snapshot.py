@@ -9,6 +9,7 @@ by design, so the fix is purely structural: one snapshot at cycle start, handed 
 
 SYNTHETIC fixtures only: placeholder UUIDs, invented names.
 """
+import collections
 import json
 import os
 import tempfile
@@ -74,6 +75,14 @@ class _CycleFixture(unittest.TestCase):
                 "compactPct": None, "color": None, "mode": "", "backend": "sdk"}
         self.row = {SID: dict(meta), SID2: dict(meta)}
         self.saved_clients = list(km._clients)
+        self._files_stat_reset()
+
+    def _files_stat_reset(self):
+        """The ten-file key's standing snapshot, dirty set and observers back to a boot's: no test inherits another's marks."""
+        getattr(km, "_FILES_STAT_STANDING", {}).clear()
+        getattr(km, "_FILES_STAT_DIRTY", {}).update({"sids": set(), "all": True})
+        getattr(km, "_FILES_STAT_OBSERVED", {}).update({"postal": None, "rows": {}, "jdAll": None, "jdBy": {}, "sig": None, "sigMsgs": None})
+        km._live_scope.files_dirty = None
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
@@ -87,6 +96,8 @@ class _CycleFixture(unittest.TestCase):
         km._live_scope.sessions = None
         km._live_scope.paths = None
         km._live_scope.names = None
+        km._live_scope.files_stat = None
+        self._files_stat_reset()
         km._compact_clicked.clear()
         self.td.cleanup()
 
@@ -496,6 +507,186 @@ class LazyChatSerialization(unittest.TestCase):
         km._send_client(c, ("t",), m1, pre=json.dumps(m1), sig="same")
         km._send_client(c, ("t",), m2, pre=json.dumps(m2), sig="same")
         self.assertEqual(len(sent), 1, "the passed sig, not a recomputation, drives the dedup")
+
+
+class OneTenFileSnapshotPerPass(_CycleFixture):
+    """plans/nudge-walk-events.md, the shared snapshot: the ten-file key every event-keyed tick job reads
+    (_session_files_stat) is taken once per session per jobs pass and served to every later asker in that
+    pass, so the lift, the walk and the interrupt tick read one view of a session's files and the pass pays
+    ten stats per alive session, not ten per asker. memos.nudgeWalk.stats counts the stats paid."""
+    def test_the_tick_jobs_share_one_ten_file_snapshot_per_pass(self):
+        real, real_stat, asked, inside, stats = km._session_files_stat, os.stat, collections.Counter(), [0], [0]
+        def counting(s):                     # the asks, and the stats the key itself pays while answering them
+            asked[s["sid"]] += 1
+            inside[0] += 1
+            try:
+                return real(s)
+            finally:
+                inside[0] -= 1
+        def stat(*a, **k):
+            if inside[0]:
+                stats[0] += 1
+            return real_stat(*a, **k)
+        km._session_files_stat, os.stat = counting, stat
+        try:
+            before = km._NUDGE_WALK_STATS.get("stats")
+            km.Sessions.live = lambda: dict(self.row)
+            with km._clients_lock:
+                km._clients[:] = []
+            km._jobs_cycle()
+            counted = (km._NUDGE_WALK_STATS.get("stats") or 0) - (before or 0)
+        finally:
+            km._session_files_stat, os.stat = real, real_stat
+        self.assertGreaterEqual(min(asked[SID], asked[SID2]), 2,
+                                "more than one tick job asks for each alive session's key in a pass: %r" % dict(asked))
+        self.assertEqual(stats[0], 10 * len(self.row),
+                         "ten stats per alive session per pass, whoever asks: %r asks, %d stats" % (dict(asked), stats[0]))
+        self.assertEqual(counted, stats[0], "memos.nudgeWalk.stats counts the stats the key paid")
+
+    def _pass(self):
+        """One jobs cycle over the fixture's two live sessions: (the stats the ten-file key paid, the walk's parses, its gate
+        hits), the stats counted through os.stat while the key answers."""
+        real, real_stat, inside, stats = km._session_files_stat, os.stat, [0], [0]
+        def counting(s):
+            inside[0] += 1
+            try:
+                return real(s)
+            finally:
+                inside[0] -= 1
+        def stat(*a, **k):
+            if inside[0]:
+                stats[0] += 1
+            return real_stat(*a, **k)
+        p0, h0 = km._NUDGE_WALK_STATS["parses"], km._NUDGE_WALK_STATS["skippedParses"]
+        km._session_files_stat, os.stat = counting, stat
+        try:
+            km.Sessions.live = lambda: dict(self.row)
+            with km._clients_lock:
+                km._clients[:] = []
+            km._jobs_cycle()
+        finally:
+            km._session_files_stat, os.stat = real, real_stat
+        return stats[0], km._NUDGE_WALK_STATS["parses"] - p0, km._NUDGE_WALK_STATS["skippedParses"] - h0
+
+    def test_a_quiet_pass_stats_nothing_and_parses_nothing(self):
+        """plans/nudge-walk-events.md rule 2: with no event marked and the floor standing, the next pass serves every
+        session's key from the standing snapshot (no stat) and the walk's gate skips every look."""
+        first, _, _ = self._pass()
+        self.assertEqual(first, 10 * len(self.row), "the boot's first pass stats every alive session")
+        self._pass()                                            # the first pass's own writes (the ledger's never-seen rows) mark the second
+        served0 = km._NUDGE_WALK_STATS.get("served")
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 0, "a quiet pass pays no per-session stat")
+        self.assertEqual(parses, 0, "and the walk parses nothing")
+        self.assertEqual(hits, len(self.row), "every look is a gate hit on the standing key")
+        self.assertEqual((km._NUDGE_WALK_STATS.get("served") or 0) - (served0 or 0), len(self.row), "memos.nudgeWalk.served counts them")
+
+    def test_the_floor_re_stats_every_session_and_still_parses_nothing(self):
+        self._pass(); self._pass()
+        for v in getattr(km, "_FILES_STAT_STANDING", {}).values():
+            v[1] -= getattr(km, "NUDGE_FLOOR_S", 30)          # the standing stats are older than the floor now
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "the floor re-stats every session once")
+        self.assertEqual((parses, hits), (0, len(self.row)), "nothing moved, so the fresh keys still hit the memo")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_session_file_written_here_marks_that_session_alone(self):
+        self._pass(); self._pass()
+        jd.append_episode(SID, "h1", SID, NOW)                 # a keyed file of SID, written through the judge module's own writer
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10, "the marked session is statted, the other is served: %d stats" % stats)
+        self.assertEqual((parses, hits), (1, len(self.row) - 1), "its moved key parses once; the other session's look hits")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_judge_written_store_marks_every_session(self):
+        self._pass(); self._pass()
+        (jd.GOALDIR / (SID2 + ".json")).write_text(json.dumps({"rompUuid": SID2, "nodes": {}, "status": {}}))   # the judges' process
+        self.assertTrue(km._bump_judge_gen_if_changed(), "the producer's observer sees the store move")           # publishing a store
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "every session's key is statted after a judge write")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_live_row_change_marks_its_session(self):
+        self._pass(); self._pass()
+        self.row[SID]["state"] = "working"                      # the backend's in-memory word on a turn's edge: no file of the key yet
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10, "the row that moved is statted, the other served: %d stats" % stats)
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_the_postal_log_moving_marks_every_session(self):
+        self._pass(); self._pass()
+        (jd.STATE / "timeline").mkdir(exist_ok=True)
+        with (jd.STATE / "timeline" / "messages.jsonl").open("a") as fh:
+            fh.write(json.dumps({"id": "m1", "t": NOW}) + "\n")   # another process's log: the prelude's own stat sees it move
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "the shared log moved: every session is statted")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_clear_from_the_feed_marks_every_session(self):
+        """1736 round two, medium 2: the kernel's own clears-log writers (Clear-all and every single-card clear, Undo, the
+        conversation-boundary clear) mark every alive session, as the mute path's write does: a Clear re-looks the board on
+        the next pass, never after the floor."""
+        self._pass(); self._pass()
+        km._clear_all([SID + ":g1"])                             # the feed's Clear (and every single-card clear) appends to the clears log
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "every session is statted after a clear: %d stats" % stats)
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+        self._pass()
+        km._undo_clear()
+        self.assertEqual(self._pass()[0], 10 * len(self.row), "an undo is a clears-log write too")
+
+    def test_the_pushers_snapshot_marks_a_session_whose_transcript_grew(self):
+        """1736 round two, the failed claim: the live row never moves on a transcript record, so with a client connected the
+        pusher's producer signature (every transcript's and states log's mtime, taken for the view signature) is the observer
+        that marks the session; with no client the floor alone sees it (the body and the design line say so)."""
+        self._pass(); self._pass()
+        km._fleet_view_sig(NOW, self.row)                        # the signature a connected client's build takes: the first sighting
+        rec = {"type": "assistant", "timestamp": "2026-06-11T00:00:05.000Z", "uuid": "a1", "parentUuid": "u1",
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "hello back"}]}}
+        with open(self.paths[SID], "a") as fh:
+            fh.write(json.dumps(rec) + "\n")                    # the transcript grows; the live row stands
+        os.utime(self.paths[SID], (NOW + 100, NOW + 100))         # a stamp a same-second append could hide
+        km._fleet_view_sig(NOW, self.row)                        # the next build's signature sees the mtime move
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10, "the grown session is statted, the other served: %d stats" % stats)
+        self.assertEqual(parses, 1, "and its look parses the new record")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_outside_a_pass_every_ask_stats(self):
+        """A handler's own tick runs with no pass scope open: nothing is served stale from an earlier pass."""
+        s = {"sid": SID, "path": self.paths[SID]}
+        km._live_scope.files_stat = None
+        before = km._NUDGE_WALK_STATS.get("stats")
+        km._session_files_stat(s); km._session_files_stat(s)
+        self.assertEqual((km._NUDGE_WALK_STATS.get("stats") or 0) - (before or 0), 20, "two asks, twenty stats, no memo")
+
+
+class TheWalksPartsPartitionTheJob(_CycleFixture):
+    """1736 round two, medium 1: the four sub-stages of jobs.autoNudge (key, snapshot, looks, parse) partition the job; the
+    parse marks its own time inside the loop the looks mark spans, so the looks are the loop's wall outside the parse. Pinned
+    on a pass whose parse dominates: a transcript of thousands of records parsed cold."""
+    def test_the_four_parts_sum_to_the_job_on_a_pass_with_a_real_parse(self):
+        recs, parent = [], None
+        for i in range(4000):
+            u, a = "u%05d" % i, "a%05d" % i
+            recs.append({"type": "user", "uuid": u, "parentUuid": parent, "timestamp": "2026-06-11T00:%02d:%02d.000Z" % (i // 60 % 60, i % 60),
+                         "promptSource": "typed", "message": {"role": "user", "content": "question %d " % i + "x" * 200}})
+            recs.append({"type": "assistant", "uuid": a, "parentUuid": u, "timestamp": "2026-06-11T00:%02d:%02d.500Z" % (i // 60 % 60, i % 60),
+                         "message": {"role": "assistant", "content": [{"type": "text", "text": "answer %d " % i + "y" * 600}]}})
+            parent = a
+        with open(self.paths[SID], "w") as fh:
+            fh.write("\n".join(json.dumps(r) for r in recs) + "\n")
+        keys = ("jobs.autoNudge", "jobs.autoNudge.key", "jobs.autoNudge.snapshot", "jobs.autoNudge.looks", "jobs.autoNudge.parse")
+        before = dict(km._PERF_STATS.snapshot()["stages_ms"])
+        km.Sessions.live = lambda: dict(self.row)
+        with km._clients_lock:
+            km._clients[:] = []
+        km._jobs_cycle()
+        after = km._PERF_STATS.snapshot()["stages_ms"]
+        d = {k: after.get(k, 0.0) - before.get(k, 0.0) for k in keys}
+        job, parts = d["jobs.autoNudge"], sum(d[k] for k in keys[1:])
+        self.assertGreater(d["jobs.autoNudge.parse"], 0.3 * job, "the fixture's parse dominates the job: %r" % d)
+        self.assertLessEqual(abs(parts - job), 0.15 * job + 2.0, "the parts partition the job, no part counted twice: %r" % d)
 
 
 if __name__ == "__main__":
