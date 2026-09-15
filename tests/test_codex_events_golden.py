@@ -132,6 +132,45 @@ class Chain(unittest.TestCase):
         self.assertEqual(u["cwd"], "/TESTDIR")
         self.assertTrue(u["timestamp"].endswith("Z"))
 
+    def test_multi_call_turn_sums_usage(self):
+        # Codex sends one tokenUsage frame per model call, `last` = THAT call's numbers, and a tool
+        # round trip is a further call — so a turn's settle must carry the frames' SUM. Keeping only
+        # the newest frame reported about 1/N of an N-call turn (1200 / 35 / 900 here, not 2200 /
+        # 110 / 1700), and the kernel's analytics sum one usage per assistant record, so a session's
+        # Codex turns under-counted by their call count with nothing to flag it.
+        n = norm()
+        recs = feed(n,
+                    turn_started(),
+                    item_completed(user_item("go")),
+                    item_completed(agent_item("Looking first", "a1")),
+                    token_usage(inp=1000, out=50, cached=800, reasoning=25),
+                    item_started({"type": "commandExecution", "id": "c1", "command": "ls"}),
+                    item_completed({"type": "commandExecution", "id": "c1", "command": "ls",
+                                    "aggregatedOutput": "x", "exitCode": 0}),
+                    item_completed(agent_item("Done", "a2")),
+                    token_usage(inp=1200, out=30, cached=900, reasoning=5),
+                    turn_completed())
+        settle = recs[-1]
+        self.assertEqual(settle["message"]["stop_reason"], "end_turn")
+        usage = settle["message"]["usage"]
+        self.assertEqual(usage["input_tokens"], 2200)
+        self.assertEqual(usage["output_tokens"], 110)               # (50+25) + (30+5), reasoning folded
+        self.assertEqual(usage["cache_read_input_tokens"], 1700)
+        mid = [r for r in recs if r["type"] == "assistant" and
+               r["message"]["content"][0].get("type") == "text"][0]
+        self.assertIsNone(mid["message"]["stop_reason"])            # flushed mid-turn by the command
+        self.assertNotIn("usage", mid["message"], "the turn's numbers land on the settle, once")
+        assert_chain(self, recs)
+        # the sum is THIS turn's: the settle took it, so the next turn starts from nothing
+        recs2 = feed(n,
+                     turn_started("t2"),
+                     item_completed(user_item("again", "u2")),
+                     item_completed(agent_item("Still fine", "a3")),
+                     token_usage(inp=500, out=10, cached=100, reasoning=0),
+                     turn_completed("t2"))
+        self.assertEqual(recs2[-1]["message"]["usage"]["input_tokens"], 500)
+        self.assertEqual(recs2[-1]["message"]["usage"]["output_tokens"], 10)
+
     def test_mid_turn_text_flushes_null(self):
         n = norm()
         recs = feed(n,
