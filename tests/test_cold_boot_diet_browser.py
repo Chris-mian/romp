@@ -1,15 +1,20 @@
 """The cold-boot chat build diet, the client half (the user's ruling 2026-09-14: the selected tab builds first; the strip's other tabs
 spread over later refreshes; hidden tabs are not built until shown). A hermetic kernel over TWENTY-SEVEN synthetic sessions, the real
 /chat page served from a copy of the built bundle, driven by Playwright. Roads, one browser: (1) the dial: after a reload whose recorded
-reason is a kernel RESTART the chat pane's first socket dials skeleton=1 beside active=; after a build reload it does not; (2) the first
+reason is a kernel restart the chat pane's first socket dials skeleton=1 beside active=, and after a build reload it does too (any reload
+the reload core fired; the user's ruling that restarts are invisible leaves a changed build as the one reload); (2) the first
 refresh: one full session frame, the selected tab's, ahead of the strip's paint, the other tabs as statuses with the strip listing the
 skeleton set; (3) the spread: the visible skeletons fill on later idle callbacks one at a time, and tabs the #only= filter hides stay
 skeletons until the filter shows them; (4) the measurement: time to the selected tab's first row, to the strip's 27 tabs, to every visible
 tab built, for the restart reload and for a fresh open with no record; (5) a plain reload right after a restart reload dials no diet: the
 record is consumed by the read that acted on it; (6) after a restart record every pane of the served dashboard dials, and only the chat
 pane's dial carries the term; (7) lifting the #only= filter re-arms the idle prefetch: the revealed skeletons are asked for with no kernel
-push in between. The fresh open after a boot (no record, no diet) is covered by NEITHER half today: this lab measures it and the design
-decision on it is the manager's. Synthetic only (placeholder ids, invented text)."""
+push in between; (8a) a record a standalone feed page's reload wrote steers no chat dial and is consumed; (8b) a malformed record is
+consumed; (8c) a scalar or fieldless record is consumed and diets nothing; (9) a tagged section folded before a restart reload keeps its
+tabs unbuilt while folded, and opening it re-arms the prefetch so their asks follow with no kernel push in between; (10) a SIBLING chat
+document in the same browser context opening that section (the tab-groups store's storage event) re-arms this page too. The fresh open after a
+boot (no record, no diet) is covered by NEITHER half today: this lab measures it and the design decision on it is the manager's. Synthetic
+only (placeholder ids, invented text)."""
 import json
 import os
 import re
@@ -55,7 +60,8 @@ const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
 let browser;
 try { browser = await chromium.launch(cfg.launch || {}); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
-const page = await browser.newPage({ viewport: { width: 1200, height: 700 } });
+const context = await browser.newContext({ viewport: { width: 1200, height: 700 } });   // an explicit context: road 10 opens a sibling document in it, so the tab-groups store's storage event crosses
+const page = await context.newPage();
 const pageEvents = [];
 page.on("pageerror", (e) => pageEvents.push("pageerror:" + String(e).slice(0, 300)));
 page.on("console", (m) => { if (m.type() === "error") pageEvents.push("console:" + m.text().slice(0, 300)); });
@@ -169,12 +175,77 @@ const paneDials = [];
 for (const fr of page.frames()) { try { const ds = await fr.evaluate(() => (window.__dials || []).slice()); for (const d of ds) paneDials.push(d.replace(/token=[^&]*/, "token=X")); } catch (e) { /* a frame without the hook */ } }
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-// ROAD 1b: a BUILD reload dials as before
-await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "newer build", t: Date.now() })); });
+// ROAD 8c (round two, low b): a scalar or fieldless record is consumed and diets nothing
+const scalars = [];
+for (const raw of ["5", "\"x\"", "{}"]) {
+  await page.evaluate((r) => { sessionStorage.setItem("romp:reloadReason", r); }, raw);
+  await page.reload();
+  await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+  scalars.push({ raw, dial: (await page.evaluate(() => window.__dials[0] || null)), recordLeft: await page.evaluate(() => sessionStorage.getItem("romp:reloadReason")) });
+}
+// ROAD 9 (round two, medium 1 and the executed fold gate): the api section folded, a restart reload, its nine tabs unbuilt while folded; the header
+// clicked open, the idle prefetch re-armed, their asks following with no kernel push filling them first
+await page.evaluate(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); if (h) h.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+await page.waitForFunction(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); return !!h && h.dataset.folded === "1"; }, null, { timeout: 5000 }).catch(() => {});
+const foldedBefore = await page.evaluate(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); return h ? h.dataset.folded : null; });
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", path: "/chat", t: Date.now() })); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await page.waitForFunction(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); return !!h && h.dataset.folded === "1"; }, null, { timeout: 10000 }).catch(() => {});
+await page.waitForFunction((api) => { const shown = Array.from(document.querySelectorAll("#tabs .tab-skeleton")).map((e) => e.getAttribute("data-id")).filter((id) => id && !api.includes(id)); return shown.length === 0; }, cfg.apiSids, { timeout: 40000 }).catch(() => {});   // the shown skeletons filled
+await page.waitForFunction(() => { const f = window.__frames; const last = f.length ? f[f.length - 1].t : 0; return performance.now() - window.__t0 - last > 1500; }, null, { timeout: 30000 }).catch(() => {});   // the wire quiet
+const folded = await page.evaluate((api) => ({ header: (document.querySelector('[data-act="toggle-group"][data-group="api"]') || {}).dataset ? document.querySelector('[data-act="toggle-group"][data-group="api"]').dataset.folded : null,
+  apiFulls: window.__frames.filter((f) => f.type === "session" && f.n && api.includes(f.id)).length, apiAsks: window.__sent.filter((m) => m.type === "needFull" && api.includes(m.id)).length,
+  idles: window.__idles, frames: window.__frames.length, needFull: window.__sent.filter((m) => m.type === "needFull").length }), cfg.apiSids);
+await page.evaluate(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); if (h) h.dispatchEvent(new MouseEvent("click", { bubbles: true })); });   // opened
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "needFull").length > n, folded.needFull, { timeout: 10000 }).catch(() => {});
+const unfolded = await page.evaluate(([b, api]) => { const asks = window.__sent.filter((m) => m.type === "needFull"); const firstAsk = asks.length > b.needFull ? asks[b.needFull] : null;
+  const fills = window.__frames.slice(b.frames).filter((f) => f.type === "session" && f.n && api.includes(f.id)).length;
+  return { header: (document.querySelector('[data-act="toggle-group"][data-group="api"]') || { dataset: {} }).dataset.folded, idles: window.__idles, needFull: asks.length, firstAskWhy: firstAsk ? firstAsk.why : null, firstAskApi: firstAsk ? api.includes(firstAsk.id) : null, pushesBeforeFirstAsk: fills }; }, [folded, cfg.apiSids]);
+await page.waitForFunction(() => document.querySelectorAll("#tabs .tab-skeleton").length === 0, null, { timeout: 60000 }).catch(() => {});
+const unfoldedFilled = { skel: await page.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length),
+  apiLoaded: await page.evaluate((api) => api.filter((id) => { const e = document.querySelector(`#tabs .tab[data-id="${id}"]`); return !!e && !e.classList.contains("tab-skeleton"); }).length, cfg.apiSids),   // the strip's own word: the api tabs shown and loaded
+  apiFulls: await page.evaluate((api) => window.__frames.filter((f) => f.type === "session" && f.n && api.includes(f.id)).length, cfg.apiSids) };
+// ROAD 10 (round three, medium 1): the api section folded again on this page and a restart reload; a SIBLING chat document in the same
+// browser context clicks the section open; the store's storage event reaches this page, whose repaint must re-arm the prefetch for the
+// nine revealed tabs (before the fix the storage half rendered alone: nothing asked until an unrelated event)
+await page.evaluate(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); if (h) h.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+await page.waitForFunction(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); return !!h && h.dataset.folded === "1"; }, null, { timeout: 5000 }).catch(() => {});
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", path: "/chat", t: Date.now() })); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await page.waitForFunction((api) => { const shown = Array.from(document.querySelectorAll("#tabs .tab-skeleton")).map((e) => e.getAttribute("data-id")).filter((id) => id && !api.includes(id)); return shown.length === 0; }, cfg.apiSids, { timeout: 40000 }).catch(() => {});
+await page.waitForFunction(() => { const f = window.__frames; const last = f.length ? f[f.length - 1].t : 0; return performance.now() - window.__t0 - last > 1500; }, null, { timeout: 30000 }).catch(() => {});
+const siblingBefore = await page.evaluate((api) => ({ header: (document.querySelector('[data-act="toggle-group"][data-group="api"]') || { dataset: {} }).dataset.folded, idles: window.__idles, frames: window.__frames.length, needFull: window.__sent.filter((m) => m.type === "needFull").length, apiAsks: window.__sent.filter((m) => m.type === "needFull" && api.includes(m.id)).length }), cfg.apiSids);
+const sibling = await context.newPage();
+await sibling.goto(cfg.chat);
+await sibling.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await sibling.waitForFunction(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); return !!h && h.dataset.folded === "1"; }, null, { timeout: 10000 }).catch(() => {});
+await sibling.evaluate(() => { const h = document.querySelector('[data-act="toggle-group"][data-group="api"]'); if (h) h.dispatchEvent(new MouseEvent("click", { bubbles: true })); });   // the sibling opens the section: the store writes, this page's storage event fires
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "needFull").length > n, siblingBefore.needFull, { timeout: 10000 }).catch(() => {});
+const siblingAfter = await page.evaluate(([b, api]) => { const asks = window.__sent.filter((m) => m.type === "needFull"); const firstAsk = asks.length > b.needFull ? asks[b.needFull] : null;
+  const fills = window.__frames.slice(b.frames).filter((f) => f.type === "session" && f.n && api.includes(f.id)).length;
+  return { header: (document.querySelector('[data-act="toggle-group"][data-group="api"]') || { dataset: {} }).dataset.folded, idles: window.__idles, needFull: asks.length, firstAskWhy: firstAsk ? firstAsk.why : null, firstAskApi: firstAsk ? api.includes(firstAsk.id) : null, pushesBeforeFirstAsk: fills }; }, [siblingBefore, cfg.apiSids]);
+await page.waitForFunction(() => document.querySelectorAll("#tabs .tab-skeleton").length === 0, null, { timeout: 60000 }).catch(() => {});
+const siblingFilled = { skel: await page.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length), apiLoaded: await page.evaluate((api) => api.filter((id) => { const e = document.querySelector(`#tabs .tab[data-id="${id}"]`); return !!e && !e.classList.contains("tab-skeleton"); }).length, cfg.apiSids) };
+await sibling.close();
+// ROAD 1b: a BUILD reload dials the diet too (the follow-up after PR 1661: restarts are invisible, so the one reload the core fires is a
+// changed build, a fresh page on a kernel that just restarted)
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "newer build", path: "/chat", t: Date.now() })); });
 await page.reload();
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 const build = { dial: (await page.evaluate(() => window.__dials[0] || null)) };
-process.stdout.write("RESULT:" + JSON.stringify({ fresh, restart, spread, hidden, revealed, build, webIds, restart2, plain, beforeReveal, afterReveal, revealFilled, paneDials }) + "\n");
+// ROAD 8a (low 1): a record a standalone FEED page's own reload wrote (its path) lingers in the tab and must not steer the next chat document's dial; it is consumed
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", path: "/feed", t: Date.now() })); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+const feedRecord = { dial: (await page.evaluate(() => window.__dials[0] || null)), recordLeft: await page.evaluate(() => sessionStorage.getItem("romp:reloadReason")) };
+// ROAD 8b (low 6): a malformed record is consumed too
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", "{not json"); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+const malformed = { dial: (await page.evaluate(() => window.__dials[0] || null)), recordLeft: await page.evaluate(() => sessionStorage.getItem("romp:reloadReason")) };
+process.stdout.write("RESULT:" + JSON.stringify({ fresh, restart, spread, hidden, revealed, build, webIds, restart2, plain, beforeReveal, afterReveal, revealFilled, paneDials, feedRecord, malformed, scalars, foldedBefore, folded, unfolded, unfoldedFilled, siblingBefore, siblingAfter, siblingFilled }) + "\n");
 await browser.close();
 """
 
@@ -229,6 +300,9 @@ class ColdBootDiet(unittest.TestCase):
                                          "content": [{"type": "text", "text": "answer %d for %s: the notes api keeps its shape." % (k, name)}]}})
                 prev = a
             Path(proj, sid + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        api_sids = [s for s, n in zip(cls.sids, cls.names) if n.startswith("api")]
+        Path(cls.state, "timeline-views.json").write_text(json.dumps({"tags": [{"id": "tag-api", "name": "api", "color": "#7ee787", "members": api_sids}], "tagOrder": ["api"]}))
+        cls.api_sids = api_sids
         cls.port = _free_port()
         cls.token = "testtok-coldboot"
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token)
@@ -260,7 +334,7 @@ class ColdBootDiet(unittest.TestCase):
             cfg = os.path.join(self.lab, "diet.json")
             with open(cfg, "w") as f:
                 json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": self.sids[0], "sids": self.sids,
-                           "names": self.names, "selected": self.sids[2], "shots": ""}, f)   # session 3 (web-03): visible under #only=web
+                           "names": self.names, "selected": self.sids[2], "apiSids": self.api_sids, "shots": ""}, f)   # session 3 (web-03): visible under #only=web, not in the api section
             driver = os.path.join(self.lab, "diet.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=400,
@@ -275,12 +349,12 @@ class ColdBootDiet(unittest.TestCase):
         print("DIET:", json.dumps(self._r), file=sys.stderr)   # every test's call: pytest shows the failing test's captured stderr alone
         return self._r
 
-    def test_the_first_dial_after_a_restart_reload_is_a_skeleton_dial_and_a_build_reload_dials_as_before(self):
+    def test_the_first_dial_after_a_restart_reload_is_a_skeleton_dial_and_a_build_reload_dials_the_diet_too(self):
         r = self._result()
         self.assertIsNotNone(r["restart"]["dial"], "the page dialed after the restart reload")
         self.assertIn("&skeleton=1", r["restart"]["dial"], "the first dial after a kernel restart's reload declares the diet: %r" % r["restart"]["dial"])
         self.assertIn("&active=" + self.sids[2], r["restart"]["dial"], "…beside the selected tab: %r" % r["restart"]["dial"])
-        self.assertNotIn("skeleton=1", r["build"]["dial"] or "", "a build reload dials as before: %r" % r["build"]["dial"])
+        self.assertIn("&skeleton=1", r["build"]["dial"] or "", "a build reload dials the diet too: the one reload the core fires lands a fresh page on a kernel that just restarted (the follow-up after PR 1661): %r" % r["build"]["dial"])
         self.assertNotIn("skeleton=1", r["fresh"]["dial"] or "", "a fresh open dials as before (the kernel half's case): %r" % r["fresh"]["dial"])
 
     def test_the_first_refresh_after_a_restart_reload_builds_the_selected_tab_first_and_the_rest_as_skeletons(self):
@@ -312,6 +386,35 @@ class ColdBootDiet(unittest.TestCase):
         self.assertIsNone(r["restart2"]["recordLeft"], "the read that acted on the record consumed it: %r" % r["restart2"])
         self.assertNotIn("skeleton=1", r["plain"]["dial"] or "", "the plain reload right after dials as before: %r" % r["plain"])
 
+    def test_a_feed_pages_record_steers_no_chat_dial_and_a_malformed_record_is_consumed(self):
+        # the follow-up after PR 1661, lows 1 and 6
+        r = self._result()
+        f = r["feedRecord"]
+        self.assertNotIn("skeleton=1", f["dial"] or "", "a record a standalone feed page's reload wrote steers no chat dial: %r" % f)
+        self.assertIsNone(f["recordLeft"], "…and is consumed, so it lingers for no later document: %r" % f)
+        m = r["malformed"]
+        self.assertNotIn("skeleton=1", m["dial"] or "", "a malformed record dials no diet: %r" % m)
+        self.assertIsNone(m["recordLeft"], "…and is consumed (removed before it is parsed): %r" % m)
+        for s in r["scalars"]:   # round two, low b: only an object with the fields counts
+            self.assertNotIn("skeleton=1", s["dial"] or "", "a scalar or fieldless record dials no diet: %r" % s)
+            self.assertIsNone(s["recordLeft"], "…and is consumed: %r" % s)
+
+    def test_a_folded_section_keeps_its_tabs_unbuilt_and_opening_it_re_arms_the_prefetch(self):
+        # round two, medium 1 (the unfold re-arms the idle prefetch) and the executed fold gate (the follow-up's low 3)
+        r = self._result()
+        self.assertEqual(r["foldedBefore"], "1", "the api section folded on the header's click before the reload: %r" % r["foldedBefore"])
+        f = r["folded"]
+        self.assertEqual(f["header"], "1", "the fold survived the restart reload: %r" % f)
+        self.assertEqual((f["apiFulls"], f["apiAsks"]), (0, 0), "no folded tab was built or asked for while folded (the shown skeletons filled and the wire went quiet): %r" % f)
+        u = r["unfolded"]
+        self.assertEqual(u["header"], "0", "the header's click opened the section: %r" % u)
+        self.assertGreater(u["idles"], f["idles"], "opening the section scheduled an idle pass: %r -> %r" % (f, u))
+        self.assertGreater(u["needFull"], f["needFull"], "…and the prefetch asked: %r -> %r" % (f, u))
+        self.assertEqual((u["firstAskWhy"], u["firstAskApi"]), ("prefetch", True), "…the first ask the prefetch's own, for a revealed api tab: %r" % u)
+        self.assertEqual(u["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed tab between the open and the ask: %r" % u)
+        self.assertEqual(r["unfoldedFilled"]["skel"], 0, "every tab filled once shown: %r" % r["unfoldedFilled"])
+        self.assertEqual(r["unfoldedFilled"]["apiLoaded"], len(self.api_sids), "…the nine api tabs among them, shown and loaded in the strip: %r" % r["unfoldedFilled"])
+
     def test_only_the_chat_panes_dial_carries_the_term_after_a_restart_record(self):
         # round two, medium 2: the served dashboard's shell opens every pane; the term is the chat pane's alone
         r = self._result()
@@ -319,7 +422,8 @@ class ColdBootDiet(unittest.TestCase):
         apps = sorted(set(re.search(r"app=([a-z]+)", d).group(1) for d in dials if re.search(r"app=([a-z]+)", d)))
         self.assertGreaterEqual(len(apps), 2, "the shell dialed more than one pane: %r" % dials)
         with_term = sorted(set(re.search(r"app=([a-z]+)", d).group(1) for d in dials if "skeleton=1" in d))
-        self.assertEqual(with_term, ["chat"] if "chat" in apps else [], "the term rides the chat pane's dial alone: %r" % dials)
+        self.assertIn("chat", apps, "the chat pane dialed: %r" % dials)
+        self.assertEqual(with_term, ["chat"], "the term rides the chat pane's dial alone: %r" % dials)
 
     def test_lifting_the_filter_re_arms_the_idle_prefetch_with_no_push_in_between(self):
         # round two, medium 3
@@ -333,6 +437,19 @@ class ColdBootDiet(unittest.TestCase):
         self.assertGreaterEqual(a["skelSids"], 1, "the revealed skeletons carry their sids in the strip: %r" % a)
         self.assertEqual(a["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed skeleton between the reveal and the prefetch's first ask: %r" % a)
         self.assertEqual(r["revealFilled"]["skel"], 0, "every revealed skeleton filled: %r" % r["revealFilled"])
+
+    def test_a_sibling_documents_section_open_re_arms_the_prefetch_here_too(self):
+        # round three, medium 1: the tab-groups store's storage half re-arms like the CustomEvent half
+        r = self._result()
+        b, a = r["siblingBefore"], r["siblingAfter"]
+        self.assertEqual(b["header"], "1", "the api section folded again on this page before the sibling opened it: %r" % b)
+        self.assertEqual(b["apiAsks"], 0, "no folded tab asked for while folded: %r" % b)
+        self.assertEqual(a["header"], "0", "the sibling's click opened the section here (the store's storage event repainted): %r" % a)
+        self.assertGreater(a["idles"], b["idles"], "…and this page scheduled an idle pass: %r -> %r" % (b, a))
+        self.assertGreater(a["needFull"], b["needFull"], "…and asked: %r -> %r" % (b, a))
+        self.assertEqual((a["firstAskWhy"], a["firstAskApi"]), ("prefetch", True), "…the first ask the prefetch's own, for a revealed api tab: %r" % a)
+        self.assertEqual(a["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed tab first: %r" % a)
+        self.assertEqual(r["siblingFilled"]["apiLoaded"], len(self.api_sids), "the nine api tabs shown and loaded: %r" % r["siblingFilled"])
 
     def test_the_measurement_is_reported(self):
         r = self._result()

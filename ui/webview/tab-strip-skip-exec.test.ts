@@ -11,7 +11,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { planStrip, parseTabGroups, headWords } from "./tab-groups";
+import { planStrip, parseTabGroups, headWords, revealedTabs } from "./tab-groups";
 import { tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
 import { newSkeletonState, renderKind } from "./skeleton-tabs";
 import type { TagUnion } from "./session-views";
@@ -63,7 +63,7 @@ type Hooks = {
   groupsRaw: string | null;   // the stored tab-groups blob the plan reads (localStorage's, in the page)
   phone: boolean;             // the phone layout: the plan is the flat strip there
   heads: HeadCall[];          // every group header the paint minted, in order
-  planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords;
+  planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords; revealedTabs: typeof revealedTabs;
   tabStateClass: typeof tabStateClass; tabRingId: typeof tabRingId; RING_ORDER: typeof RING_ORDER; tabDotClass: typeof tabDotClass; tabDotTitle: typeof tabDotTitle; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
   newSkeletonState: typeof newSkeletonState; renderKind: typeof renderKind;   // the skeleton strip (2026-09-07): empty here, so every listed id is a loaded tab or a placeholder
   skeletons: number;          // skeleton tabs minted (none expected: the set stays empty in these worlds)
@@ -123,6 +123,7 @@ function lift(): (hooks: Hooks) => Api {
     // section the pane shows (snapView, null: no view open, so stripAftermath's follow does nothing), and the
     // view's own painter and focus probe (never reached while snapView is null)
     let lastStripItems = [], snapView = null;
+    const revealedTabs = H.revealedTabs; let lastShownTabIds = null; const schedulePrebuild = () => { H.prebuilds = (H.prebuilds || 0) + 1; };   // the reveal detector renderTabs runs (PR 1671 round four): the pure half, the paint memory, a counted schedule
     const renderSnapshot = () => false; const snapshotHoldsFocus = () => false; const showActive = () => {};
     const titleWithKey = () => H.keyHint; const surfaceLens = () => H.lens; const effViews = () => null; const viewTagUnion = () => H.unions;
     const hostIsDown = (id) => H.down.has(id); const hostDownNote = (id) => H.notes[id] ?? "";
@@ -186,7 +187,7 @@ function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map
   const H: Hooks = { FakeEl, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
                      keyHint: "Open a session (K)", lens: { all: true }, unions: [], tips: [], aftermaths: [], rowPaints: 0, tagSyncs: 0, placeholders: 0,
                      groupsRaw: null, phone: false, heads: [],
-                     planStrip, parseTabGroups, headWords, tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
+                     planStrip, parseTabGroups, headWords, revealedTabs, tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
                      newSkeletonState, renderKind, skeletons: 0, timers: [], activated: [] };
   const api = lift()(H);
   const sessions = new Map<string, any>([["a", session("web", "ready")], ["b", session("api", "working")]]);

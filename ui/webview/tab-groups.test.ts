@@ -202,7 +202,9 @@ test("executed: the PHONE layout renders the flat strip — every visible id, no
   // list (folded tabs absent from the scrape) until the next push. The flip IS the event — one
   // listener on the same MediaQueryList, beside the fold-state listeners; no resize polling.
   assert.match(RENDER, /try \{ window\.matchMedia\(PHONE_LAYOUT_MEDIA\)\.addEventListener\("change", \(\) => renderTabs\(\)\); \} catch \{/);
-  assert.ok(RENDER.indexOf("window.addEventListener(TABGROUPS_EVENT, () => renderTabs());") < RENDER.indexOf('matchMedia(PHONE_LAYOUT_MEDIA).addEventListener("change"'),
+  const listener = "window.addEventListener(TABGROUPS_EVENT, () => renderTabs());";   // bare: the reveal it causes re-arms the prefetch inside renderTabs (PR 1671 round four)
+  assert.ok(RENDER.includes(listener), "the tab-groups listener renders and re-arms through the one helper (an absent string would read as -1 below and pass the ordering: PR 1671 round three, low a)");
+  assert.ok(RENDER.indexOf(listener) < RENDER.indexOf('matchMedia(PHONE_LAYOUT_MEDIA).addEventListener("change"'),
     "installed once at module scope with the other strip listeners, never inside a render");
 });
 
@@ -360,7 +362,7 @@ test("headers are click-safe: data-act on the node, the action on the stable #ta
   // shows the section in the pane (snapView; tab-snapshot-pane.test.ts)
   assert.match(RENDER, /"toggle-group": \(el\) => \{\s*\n\s*const name = el\.dataset\.group;\s*\n\s*if \(!name\) return;\s*\n\s*snapView = name;\s*\n\s*writeTabGroups\(setSectionCollapsed\(tabGroups\(\), name, el\.dataset\.folded !== "1"\)\);/);
   assert.match(RENDER, /window\.addEventListener\(TABGROUPS_EVENT, \(\) => renderTabs\(\)\);/, "the same-window delivery");
-  assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === TABGROUPS_KEY\) renderTabs\(\); \}\);/, "…and a sibling pane's");
+  assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === TABGROUPS_KEY\) renderTabs\(\); \}\);/, "…and a sibling pane's (the open's reveal re-arms the prefetch inside renderTabs: strip-reveal-rearm.test.ts)");
   assert.doesNotMatch(RENDER.slice(RENDER.indexOf('"toggle-group": (el) => {'), RENDER.indexOf('"toggle-group": (el) => {') + 300), /renderTabs\(\)/,
     "the toggle does not render itself — the event does, so a local toggle and a sibling pane's take one path");
 });
