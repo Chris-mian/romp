@@ -8,6 +8,7 @@ surfaces as launch_error text instead of a silent non-start. All data synthetic 
 Run:    python3 tests/test_codex_backend.py
 """
 import contextlib
+import errno
 import json
 import os
 import queue
@@ -482,6 +483,95 @@ class ApprovalModes(unittest.TestCase):
              mock.patch.dict(sys.modules, {"openai_codex.client": module}):
             self.assertIs(be._get_client(), fake)
         self.assertEqual(module.CodexClient.call_args.kwargs["approval_handler"], be._handle_approval)
+
+
+class ExplicitBinFailures(unittest.TestCase):
+    """A codex that cannot be started from an EXPLICIT ROMP_CODEX_BIN is reported in the operator's words.
+    The kernel hands ROMP_CODEX_BIN through unchecked, and _get_client kept whatever the SDK's start() raised
+    as _client_err verbatim: for a missing file the pinned SDK's "Codex binary not found at X. Set
+    CodexConfig.codex_bin to a valid binary path." (a Python field the operator has never seen); for a file
+    that exists but cannot run (no exec bit, a directory) Popen's bare "[Errno 13] Permission denied: X", with
+    no remedy at all. Every surface that shows the record (the chat's red card, the creation refusals, the
+    resume detail, the /models note) repeated it, and nothing named the knob to fix (2026-09-11). The record
+    now names ROMP_CODEX_BIN and the managed-runtime alternative (_explicit_bin_failure). Same harness as
+    test_real_client_is_constructed_with_fail_closed_handler: the SDK module is the seam, its client's start()
+    raising exactly what the real one raises; the managed runtime's location is stubbed only so the
+    codex_bin=None case reaches start() on a state root with no runtime installed."""
+
+    def _probe(self, codex_bin, exc):
+        be, _, _ = build()
+        be._client_factory = None
+        be.codex_bin = codex_bin
+        fake = FakeClient()
+
+        def start():
+            raise exc
+        fake.start = start
+        module = SimpleNamespace(CodexClient=mock.Mock(return_value=fake),
+                                 CodexConfig=lambda **kwargs: kwargs)
+        with mock.patch.object(cb, "ensure_codex_sdk", return_value=True), \
+             mock.patch.dict(sys.modules, {"openai_codex.client": module}), \
+             mock.patch.object(cb._runtime, "runtime_path", return_value=Path("/TESTBIN/managed/bin/codex")):
+            self.assertIsNone(be._get_client())
+        return be._client_err or ""
+
+    def test_a_missing_file_names_the_knob_not_the_sdk_field(self):
+        text = self._probe("/TESTBIN/codex", FileNotFoundError(
+            "Codex binary not found at /TESTBIN/codex. Set CodexConfig.codex_bin to a valid binary path."))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("unset ROMP_CODEX_BIN", text)
+        self.assertIn("restart the ROMP kernel", text,
+                      "the knob was read once, at construction: unset alone changes nothing: %r" % text)
+        self.assertIn("No such file or directory", text)
+        self.assertNotIn("CodexConfig", text, "the SDK's dataclass field means nothing to an operator: %r" % text)
+
+    def test_a_file_that_cannot_run_names_the_knob_and_a_remedy(self):
+        # exists() passes a non-executable file or a directory; Popen then raises the errno with no remedy
+        text = self._probe("/TESTBIN/codex", PermissionError(13, "Permission denied", "/TESTBIN/codex"))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("unset ROMP_CODEX_BIN", text)
+        self.assertIn("restart the ROMP kernel", text)
+        self.assertIn("Permission denied", text, "the OS's reason is kept: %r" % text)
+
+    def test_a_file_that_is_not_a_binary_names_the_knob(self):
+        # exists() passes a text file or a wrong-arch binary; execve then answers ENOEXEC, the third path error
+        # the gate names
+        text = self._probe("/TESTBIN/codex", OSError(errno.ENOEXEC, "Exec format error", "/TESTBIN/codex"))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("Exec format error", text, "the OS's reason is kept: %r" % text)
+
+    def test_a_host_fault_with_an_explicit_bin_stays_raw(self):
+        # the knob is set, but running out of descriptors is the host's fault, not the path's: the gate is the
+        # three path errors, not every OSError, so a fault Popen raised is recorded as it came, and a non-OSError
+        # from start() passes through untouched
+        err = OSError(errno.EMFILE, "Too many open files")
+        self.assertEqual(self._probe("/TESTBIN/codex", err), str(err))
+        err = RuntimeError("synthetic start failure")
+        self.assertEqual(self._probe("/TESTBIN/codex", err), str(err))
+
+    def test_a_directory_the_kernel_cannot_read_names_the_knob_not_a_sibling_path(self):
+        # ROMP_CODEX_BIN under a directory the kernel's user cannot traverse: _codex_config's look at the helpers
+        # beside the executable raises before start() is reached (pathlib passes EACCES through from is_dir()),
+        # and the record named <package>/codex-path, a path the operator never typed. The filesystem's answer
+        # for that one path is the seam; _codex_config itself runs for real, and start() is never reached.
+        real_is_dir = Path.is_dir
+
+        def is_dir(path, *a, **k):
+            if str(path) == "/TESTBIN/codex-path":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_is_dir(path, *a, **k)
+        with mock.patch.object(Path, "is_dir", is_dir):
+            text = self._probe("/TESTBIN/codex", AssertionError("start() must not be reached: the config step raised"))
+        self.assertIn("ROMP_CODEX_BIN=/TESTBIN/codex", text)
+        self.assertIn("unset ROMP_CODEX_BIN", text)
+        self.assertIn("Permission denied", text, "the OS's reason is kept: %r" % text)
+        self.assertNotIn("codex-path", text, "the path the operator set is named, not one beside it: %r" % text)
+
+    def test_the_managed_runtime_keeps_its_raw_errno_line(self):
+        # codex_bin None: there is no knob to name, and tests/test_codex_launch_error_card.py pins the raw
+        # errno line as the shape _client_failure_text frames — the managed path is left exactly alone
+        err = OSError(2, "No such file or directory", "codex")
+        self.assertEqual(self._probe(None, err), str(err))
 
 
 class Lifecycle(unittest.TestCase):

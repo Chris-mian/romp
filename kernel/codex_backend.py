@@ -25,6 +25,7 @@ set_fast/set_auth/stop_task/rewind_files → False, on_ask → False, current_as
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -627,11 +628,11 @@ class CodexBackend:
                     if not ensure_codex_sdk(self.state):
                         raise RuntimeError(SETUP_HINT)
                     from openai_codex.client import CodexClient, CodexConfig
-                    cfg = _codex_config(CodexConfig, self.codex_bin, self.state)
+                    cfg = self._naming_explicit_bin(lambda: _codex_config(CodexConfig, self.codex_bin, self.state))
                     candidate = CodexClient(config=cfg, approval_handler=self._handle_approval)
 
                     def bring_up():
-                        candidate.start()
+                        self._naming_explicit_bin(candidate.start)
                         candidate.initialize()
                     self._handshake(candidate, bring_up)
                     self.log("app-server runtime: %s" % (self.codex_bin or "ROMP-managed %s" % getattr(_runtime, "VERSION", "")))
@@ -650,6 +651,48 @@ class CodexBackend:
             except Exception as e:
                 self._record_client_failure_locked(e, candidate)
                 return None
+
+    def _naming_explicit_bin(self, step):
+        """Run one step that reaches for the explicit ROMP_CODEX_BIN, re-raising an OSError about the path as
+        _explicit_bin_failure's sentence, cause attached. Two steps reach for it and both need this: the child's
+        start (Popen's errno line, the SDK's FileNotFoundError), and before it the config's look at the helpers
+        and assets beside the executable (_codex_config), which under a directory the kernel's user cannot
+        traverse raises first (pathlib passes EACCES through from is_dir() and exists(), verified on 3.10 to
+        3.12), naming <package>/codex-path, a path the operator never typed; a pathlib that answers False there
+        instead reaches start(), whose PermissionError this same wrap names (review find, 2026-09-14)."""
+        try:
+            return step()
+        except OSError as e:
+            named = self._explicit_bin_failure(e)
+            if named is None:
+                raise
+            raise named from e
+
+    def _explicit_bin_failure(self, error):
+        """The failure to record when a codex could not be started from an EXPLICIT ROMP_CODEX_BIN, or None
+        when the error is not that. The kernel hands the operator's ROMP_CODEX_BIN through unchecked and the
+        pinned SDK's start() raises, for a missing file, FileNotFoundError("Codex binary not found at X. Set
+        CodexConfig.codex_bin to a valid binary path.") — a Python field the operator has never seen — and,
+        for a file that exists but cannot run (no exec bit, a directory, a wrong-arch binary), Popen's bare
+        errno line, which names no remedy at all; both reached every surface that shows the record verbatim
+        (2026-09-11). The knob to fix is ROMP_CODEX_BIN, so the recorded text names it and the alternative,
+        keeping the OS's reason without the SDK's advice. Only the errors that are about the path qualify: a
+        host fault Popen can raise (out of descriptors, out of memory) is not the knob's, and stays raw. The
+        managed runtime (codex_bin None) has no knob to name, so its errno line stays raw too
+        (tests/test_codex_launch_error_card.py pins that shape). The two remedies apply at different events,
+        and the sentence says which: a file repaired at the same path is picked up by the next probe after
+        backoff, but the knob was read once, when kernel.py built this backend from its environment, so
+        unsetting it changes nothing until the kernel starts again (the wording codex_runtime.py uses for the
+        same event)."""
+        if not self.codex_bin or not isinstance(error, OSError):
+            return None
+        if not (isinstance(error, (FileNotFoundError, PermissionError)) or error.errno == errno.ENOEXEC):
+            return None
+        reason = error.strerror or (os.strerror(errno.ENOENT) if isinstance(error, FileNotFoundError)
+                                    else str(error) or error.__class__.__name__)
+        return RuntimeError("ROMP_CODEX_BIN=%s is not a runnable Codex executable (%s). Fix the file at that path, "
+                            "or unset ROMP_CODEX_BIN and restart the ROMP kernel to use the managed runtime "
+                            "(romp-codex-setup)." % (self.codex_bin, reason))
 
     def _handshake(self, candidate, bring_up):
         """Run a new client's start-up requests (`bring_up`: start + initialize on a real client; nothing for
