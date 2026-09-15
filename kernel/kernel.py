@@ -9694,7 +9694,7 @@ def _converge_declined_shutting_down(kind, phase, sha):
         _converge_say("main is at %s but this kernel is leaving: no pull, no restart asked; the next kernel converges on its own"
                       % (sha or "?")[:8])
     else:
-        _converge_say("main converged on disk while this kernel was leaving: no restart asked, the next kernel boots on the disk as it stands")
+        _converge_say("main converged on disk while this kernel was leaving: no restart asked; the successor's own answer is checked against the disk")
     return True
 
 

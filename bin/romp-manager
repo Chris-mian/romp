@@ -363,7 +363,10 @@ function spawnKernel(spec) {
 function awaitReady(id, child) {
   const rec = kernels.get(id);
   if (!rec || rec.child !== child) return;
-  fetchBusy(rec.spec.port, (n) => {
+  let acted = false;                                       // fetchBusy fires its callback twice on a timeout (destroy, then the
+  fetchBusy(rec.spec.port, (n) => {                        //  request's own error): one probe, one act, else the probes double
+    if (acted) return;
+    acted = true;
     const cur = kernels.get(id);
     if (!cur || cur.child !== child) return;
     if (n === null) {
@@ -374,16 +377,22 @@ function awaitReady(id, child) {
     cur.inflight = null;
     const trail = cur.trail;
     cur.trail = null;
-    if (!trail) return;
-    fetchVersion(cur.spec.port, (v) => {                   // the kernel's own verdict (restart_pending: its booted code identity against
-      const c2 = kernels.get(id);                          //  the disk, kernel.py _restart_pending): a trailing restart for a checkout the
-      if (!c2 || c2.child !== child) return;               //  successor already loaded would cut a kernel seconds old for nothing
-      if (v && v.restart_pending === false) {
+    fetchVersion(cur.spec.port, (v) => {                   // the kernel's own verdict on EVERY answer, trail or none (round three): its
+      const c2 = kernels.get(id);                          //  booted code identity against the disk (kernel.py _restart_pending). True:
+      if (!c2 || c2.child !== child) return;               //  a restart, since the disk moved after this kernel loaded its code (the
+      const pending = v ? v.restart_pending : null;        //  leaving kernel's pull, a push during the boot); false: a pending trail is
+      if (pending === true) {                              //  current and dropped; unreadable: a pending trail restarts (none is lost),
+        log(`kernel '${id}': the new kernel answers and its disk holds code it does not run; restarting it (${trail || 'successor-behind-disk'})`);
+        restartKernel(id, trail || 'successor-behind-disk');
+        return;
+      }
+      if (!trail) return;
+      if (pending === false) {
         log(`kernel '${id}': the new kernel answers and runs the disk's code; the trailing restart (${trail}) is current and dropped`);
         auditNote(c2.spec, 'restart-trailing-current', { trigger: trail, pid: child.pid });
         return;
       }
-      log(`kernel '${id}': the new kernel answers${v ? ' and its disk holds code it does not run' : ' (no verdict read)'}; sending the trailing restart (${trail})`);
+      log(`kernel '${id}': the new kernel answers (no verdict read); sending the trailing restart (${trail})`);
       restartKernel(id, trail);
     });
   });
@@ -391,12 +400,14 @@ function awaitReady(id, child) {
 
 // GET /version on a kernel: the JSON body, or null when it did not answer (auth-exempt, polled by every reader).
 function fetchVersion(port, cb) {
+  let done = false;                                        // one answer per ask: a timeout destroys the request, which then errors too
+  const once = (v) => { if (done) return; done = true; cb(v); };
   const req = http.get({ host: HOST, port, path: '/version', timeout: 5000 }, (res) => {
     let b = ''; res.on('data', (d) => (b += d));
-    res.on('end', () => { try { cb(JSON.parse(b)); } catch { cb(null); } });
+    res.on('end', () => { try { once(JSON.parse(b)); } catch { once(null); } });
   });
-  req.on('timeout', () => { req.destroy(); cb(null); });
-  req.on('error', () => cb(null));
+  req.on('timeout', () => { req.destroy(); once(null); });
+  req.on('error', () => once(null));
 }
 const READY_PROBE_MS = Number(process.env.ROMP_READY_PROBE_MS) || 500;   // the probe's retry while the new kernel boots
 
@@ -426,8 +437,8 @@ function restartGate(st, now, opts) {
 // the SIGTERM until the successor is spawned, a second request changes nothing the successor will not
 // already load from disk: it is FOLDED into the restart in flight. From the spawn until the successor
 // answers its port, the checkout may have moved after the code the successor loaded: the request is
-// kept as ONE trailing restart, sent when the successor is ready. No seconds anywhere. Pure on the
-// record's inflight phase ('signaled' | 'spawned' | null), unit-tested in tests/manager-fold.test.js.
+// kept as ONE trailing restart, sent when the successor is ready. Pure on the record's inflight phase
+// ('signaled' | 'spawned' | null), unit-tested in tests/manager-fold.test.js.
 function inflightGate(phase, trailPending = false) {
   if (phase === 'signaled') return 'fold';
   if (phase === 'spawned') return trailPending ? 'restart' : 'trail';   // a second ask during one boot is new information: a
@@ -535,12 +546,14 @@ function restartAnswer(kid) {
 
 function restartAll(trigger = 'restart-all', out = null) {
   const ids = [...kernels.keys()];
-  const folded = [];
+  const signaled = [], folded = [], trailing = [];
   for (const id of ids) {
     const r = restartKernel(id, trigger);
-    if (r === 'folded' || r === 'trailing') folded.push(id);   // rode a restart already in flight (inflightGate)
+    if (r === 'folded') folded.push(id);             // rode a restart already in flight (inflightGate)
+    else if (r === 'trailing') trailing.push(id);    // kept for the successor's answer
+    else if (r) signaled.push(id);                   // a SIGTERM went out
   }
-  if (out) out.folded = folded;    // for the handler's answer; the ids array stays a plain list (its callers compare it whole)
+  if (out) Object.assign(out, { signaled, folded, trailing });   // for the handler's answer; the ids array stays a plain list
   return ids;
 }
 
@@ -560,7 +573,7 @@ function restartAllOrSelf() {
   }
   const out = {};
   const ids = restartAll('restart-all', out);
-  return { self: false, ids, folded: out.folded };
+  return { self: false, ids, signaled: out.signaled, folded: out.folded, trailing: out.trailing };
 }
 
 // ── quiet-window deferral (deploy refreshes) ────────────────────────────────
@@ -935,7 +948,8 @@ function startManager() {
       }
       clearPendingQuiet();                                       // this bounce delivers any pending deploy too
       const r = restartAllOrSelf();                              // `romp refresh` — every kernel
-      return json(200, { ok: true, restarted: r.ids, managerRestart: r.self, folded: r.folded || [] });   // folded: rode a restart in flight
+      return json(200, { ok: true, restarted: r.self ? r.ids : (r.signaled || []), managerRestart: r.self,   // restarted: a signal went out
+                         folded: r.folded || [], trailing: r.trailing || [] });                            // the rest rode a flight
     }
     if (req.method === 'POST' && url.pathname === '/restart') {
       log(`restart '${kid}' requested (${url.searchParams.get('when') === 'quiet' ? 'deferred to quiet window' : 'IMMEDIATE'}) from ${req.socket.remoteAddress || '?'}`);
