@@ -4372,17 +4372,20 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
     return _membership_of(adapter)
 
 
-def file_rewound(path, rompuuid=None, sdk_human=None):
+def file_rewound(path, rompuuid=None, sdk_human=None, own=True):
     """The uuids a ONE-FILE walk of `path` classifies "rewind" (the judges' per-file discriminator). When the file is a
     leaf whose assembly document stands for a single-file lineage, the walk runs over a seeded adapter (the pre-cut
     verdicts from the document, the tail read now) instead of reading the file whole; a multi-file lineage's document
     records whole-graph verdicts, which are not this walk's, so that file reads whole as before. Raises OSError when a
-    non-empty file yields no records (a failed read, not an empty file)."""
+    non-empty file yields no records (a failed read, not an empty file). `own` False is the judges' walk over ANOTHER
+    session's leaf (2026-09-15): its document is loaded without the note, so a document that does not verify for this
+    walk (written under the other owner bit, moved, rewritten) is refused quietly and stands for its owner, and the walk
+    reads the file whole here as before the seeded road."""
     path = Path(path)
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
         _standing = _asm_refusal_stands(path)              # one sidecar read per call (low 4)
-        doc = None if _standing else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
+        doc = None if _standing else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True, own=own)
         if _standing:
             _asm_stat("seeded:refusedStanding")           # the cold walk, no proof, while the mark stands (round two)
         if doc is not None and not _tail_chains_onto_the_document(path, doc):
@@ -4392,7 +4395,11 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
                 seed, _landed = _seed_from_doc(doc)
                 ad = FileAdapter([str(path)], str(path), seed=seed)
             except Exception as e:                            # noqa: BLE001
-                _asm_ckpt_note(path, "restore", repr(e)[:120]); ad = None
+                if own:
+                    _asm_ckpt_note(path, "restore", repr(e)[:120])
+                else:
+                    _asm_stat("foreign:restore")              # another session's document: never unlinked from here
+                ad = None
     if ad is None:
         ad = FileAdapter([str(path)], str(path))
     if not ad.by_uuid and (ad.seed is None or not ad.seed["verdicts"]) and path.stat().st_size > 0:
@@ -6422,9 +6429,18 @@ def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids):
     return out
 
 
-def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet_inputs=False):
+def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet_inputs=False, own=True):
     """The verified document for `leaf_path`, or None after a counted fallback (a document that exists and does not
-    verify) or quietly when there is none."""
+    verify) or quietly when there is none. `own` False is a reader over ANOTHER session's document (the judges' cross-session
+    walk, 2026-09-15): a document that does not verify for it is refused quietly, counted under the parse's `foreign:<reason>`,
+    never noted and never unlinked; the note, which removes the document so the owner's next settle rewrites it, belongs to
+    the owner's own parse, the one reader whose inputs (its owner bit above all) are the document's."""
+    def fail(reason, detail=""):
+        if own:
+            _asm_ckpt_note(leaf_path, reason, detail)
+        else:
+            _asm_stat("foreign:" + str(reason))
+        return None
     cp = _asm_ckpt_file(leaf_path)
     if cp is None or not cp.exists():
         return None
@@ -6433,48 +6449,48 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
         _count_read(str(cp), len(data))
         doc = json.loads(gzip.decompress(data).decode("utf-8"))
     except (OSError, ValueError, EOFError) as e:
-        _asm_ckpt_note(leaf_path, "corrupt", str(e)[:80]); return None
+        return fail("corrupt", str(e)[:80])
     if not isinstance(doc, dict) or doc.get("av") != _ASM_CKPT_V:
-        _asm_ckpt_note(leaf_path, "version"); return None
+        return fail("version")
     if not isinstance(doc.get("atoms"), list) or not all(isinstance(r_, str) for r_ in doc["atoms"]):
-        _asm_ckpt_note(leaf_path, "rows"); return None     # v6 rows are strings; anything else is not this version's document
+        return fail("rows")     # v6 rows are strings; anything else is not this version's document
     if doc["atoms"]:
         try:
             first_ = json.loads(doc["atoms"][0])           # one row decoded here, cheaply: a string that is not a JSON object would
         except ValueError:                                 #  otherwise take the restore road and raise at its first build, uncounted
             first_ = None
         if not isinstance(first_, dict) or not all(r_.startswith("{") and r_.endswith("}") for r_ in doc["atoms"]):
-            _asm_ckpt_note(leaf_path, "rows"); return None   # every row must be shaped as an object (a bare string, a list, a number
+            return fail("rows")   # every row must be shaped as an object (a bare string, a list, a number
         #                                                   or truncated text is refused whole here, cheaply); a row that is shaped
         #                                                   right but does not decode is the build's belt below (LazyIndex.build)
     if doc.get("path") != os.path.realpath(str(leaf_path)) or doc.get("rompuuid") != str(rompuuid) \
             or bool(doc.get("sdkHuman")) != bool(sdk_human):
-        _asm_ckpt_note(leaf_path, "session"); return None
+        return fail("session")
     if list(doc.get("cands") or []) != [str(f) for f in candidate_files] or dict(doc.get("links") or {}) != dict(links or {}):
         if quiet_inputs:
             return None                                       # a reader asking about other inputs (the one-file walk over a
-        _asm_ckpt_note(leaf_path, "inputs"); return None      #  lineage): not this document's failure, it stands
+        return fail("inputs")      #  lineage): not this document's failure, it stands
     try:
         for fsid, f in doc["files"].items():
             st_ = os.stat(f["path"])
             if f.get("skip"):
                 if (st_.st_size, st_.st_mtime) != (f["size"], f["mtime"]):
-                    _asm_ckpt_note(leaf_path, "lineage", fsid); return None
+                    return fail("lineage", fsid)
                 continue
             cut_off, pre_n, guard_hex = f["cut"]
             if st_.st_size < cut_off:
-                _asm_ckpt_note(leaf_path, "shrunk", fsid); return None
+                return fail("shrunk", fsid)
             if st_.st_size < f["size"] or (st_.st_size == f["size"] and st_.st_mtime != f["mtime"]):
-                _asm_ckpt_note(leaf_path, "rewrite", fsid); return None
+                return fail("rewrite", fsid)
             guard = bytes.fromhex(guard_hex)
             with open(f["path"], "rb") as fh:
                 fh.seek(max(0, cut_off - len(guard)))
                 ok = fh.read(len(guard)) == guard
             _count_read(f["path"], len(guard))
             if not ok:
-                _asm_ckpt_note(leaf_path, "guard", fsid); return None
+                return fail("guard", fsid)
     except (OSError, KeyError, TypeError, ValueError) as e:
-        _asm_ckpt_note(leaf_path, "corrupt", "files: %s" % e); return None
+        return fail("corrupt", "files: %s" % e)
     return doc
 
 

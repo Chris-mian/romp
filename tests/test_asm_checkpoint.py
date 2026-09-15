@@ -2184,6 +2184,55 @@ class CrossSessionRewoundCandidates(Harness):
                     reg.unlink(missing_ok=True); jd._lastsid_memo.pop(b_sid, None)
         self.assertEqual(verdicts, [True, False], "both owner bits ran to their verdict")
 
+    def test_another_sessions_document_under_the_other_owner_bit_stands_byte_for_byte_after_the_cross_session_walk(self):
+        """2026-09-15 (the review of the cross-session fix, its data-safety low): the cross-session branch names the other leaf's
+        owner bit from its registry, and a document WRITTEN under the other bit (the parse cache keys on it; a session whose
+        owner changed, a hand-run writer) failed the load's session check, whose note UNLINKS the document and its sidecar: a
+        reader that does not own a document removed it from under its owner. The load is own=False on that road now: the
+        mismatch is refused quietly, counted under the parse's `foreign:session`, the document stands byte for byte, the walk
+        takes the memo road (the whole file, as every candidate did before the seeded road) and its set is the same; the
+        owner's own walk over the same document still verifies it."""
+        jd = kernel_module().jd
+        d = self.td / "cross-mismatch"; d.mkdir()
+        a_sid = "77777777-2222-4333-8444-000000000772"; b_sid = "88888888-2222-4333-8444-000000000882"
+        a_leaf = d / (a_sid + ".jsonl"); b_leaf = d / (b_sid + ".jsonl")
+        a_leaf.write_text("".join(json.dumps(r) + "\n" for r in G.SINGLE_FILE["queued_new_turn"][0]()))
+        recs = compacting_variant(G.SINGLE_FILE["rewind_off_path"][0](), "cm"); recs = recs + _turns_after(recs, "cm", 2)
+        b_leaf.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        jd.EPIDIR.mkdir(parents=True, exist_ok=True)
+        (jd.EPIDIR / (a_sid + ".jsonl")).write_text(json.dumps({"head": "h_cm", "fsid": b_sid, "t": NOW}) + "\n")
+        jd._episode_memo.pop(a_sid, None)
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True); reg = jd.SDKDIR / (b_sid + ".json")
+        reg.write_text(json.dumps({"sid": b_sid, "alive": True, "name": "web"})); jd._lastsid_memo.pop(b_sid, None)
+        try:
+            self.assertTrue(jd._sdk_owned(b_sid)); self.assertIsNone(jd._sdk_last_sid(b_sid))
+            self.fresh()                                                                      # B's document under the OTHER owner bit
+            em.parse_session(str(b_leaf), rompuuid=b_sid, candidate_files=[str(b_leaf)], states=None, postal_log=[], now=NOW, sdk_human=False)
+            self.assertTrue(em.asm_checkpoint_write(str(b_leaf), b_sid, sdk_human=False), em.asm_checkpoint_stats())
+            self.assertTrue(em.asm_document_seeds(str(b_leaf)))
+            doc_path = em._asm_ckpt_file(str(b_leaf)); meta = doc_path.with_name(doc_path.name + ".meta")
+            before = (doc_path.read_bytes(), meta.read_bytes())
+            self.fresh(); answer = em.rewound_uuids(str(b_leaf), drop=False); self.assertTrue(answer)
+            self.fresh(); st0 = em.asm_checkpoint_stats()
+            f0, r0, p0 = dict(st0["fallbacks"]), dict(st0["removed"]), st0["parse"].get("foreign:session", 0)
+            rewound, fails = jd._per_file_rewound(a_sid, [str(a_leaf)])
+            self.assertEqual(fails, 0); self.assertEqual(rewound, answer, "the memo road's set, as before")
+            self.assertTrue(doc_path.exists() and meta.exists(),
+                            "the other session's document stands: a reader that does not own it never unlinks it (the base removed both)")
+            self.assertEqual((doc_path.read_bytes(), meta.read_bytes()), before, "byte for byte")
+            st = em.asm_checkpoint_stats()
+            self.assertEqual(dict(st["fallbacks"]), f0, "no note: the fallback belongs to the owner's parse")
+            self.assertEqual(dict(st["removed"]), r0, "nothing removed")
+            self.assertEqual(st["parse"].get("foreign:session", 0) - p0, 1, "the refusal is counted under the parse's foreign road")
+            self.fresh()                                                                      # the owner's own walk still verifies it
+            n0 = em.asm_checkpoint_stats()["parse"].get("seeded:refusedStanding", 0)
+            self.assertEqual(em.file_rewound(str(b_leaf), rompuuid=b_sid, sdk_human=False), answer)
+            self.assertTrue(doc_path.exists()); self.assertEqual(doc_path.read_bytes(), before[0])
+            self.assertEqual(em.asm_checkpoint_stats()["parse"].get("seeded:refusedStanding", 0), n0)
+        finally:
+            (jd.EPIDIR / (a_sid + ".jsonl")).unlink(missing_ok=True); jd._episode_memo.pop(a_sid, None)
+            reg.unlink(missing_ok=True); jd._lastsid_memo.pop(b_sid, None)
+
 class LazyBodies(Harness):
     def test_a_body_read_before_hydration_is_loud_and_hydration_counts(self):
         records, _ = G.SINGLE_FILE["compaction_atom"]

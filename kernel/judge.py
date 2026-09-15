@@ -6629,9 +6629,14 @@ def _per_file_rewound(fsid, files):
                 # reads a file whole whenever its memo is stale (fold_records folds from record zero), and a live growing leaf's memo
                 # is stale at every boot: three live leaves, 570 MB, read whole on every boot's first judge pass as other sessions'
                 # candidates. A frozen file (a dead episode's, a /clear anchor: the reg's lastSid has moved on) keeps the memo road,
-                # whose fresh memo is served with no read; a live leaf no registry names (a Codex session's, a forked leaf named by
-                # a reg's lastSid rather than its sid) keeps it too, a known residue until a liveness signal exists for it
-                out |= em.file_rewound(fp, rompuuid=fp.stem, sdk_human=True)
+                # whose memo is served with no read once the converge pass has written its fold (a fresh process reads such a file
+                # whole once before that). A live leaf no registry names (a Codex session's, a forked leaf named by a reg's lastSid
+                # rather than its sid) and a live leaf whose document is over a two-file lineage (asm_document_seeds False) keep
+                # it too, a known residue until a liveness signal exists for the one and a per-file seed for the other. The load
+                # is `own=False`: this walk never notes, so a document that does not verify for it (written under the other owner
+                # bit, moved, rewritten under its owner's feet) is refused quietly and stands for its owner, never unlinked from
+                # a reader that does not own it; the walk then reads the file whole here, as every candidate did before
+                out |= em.file_rewound(fp, rompuuid=fp.stem, sdk_human=True, own=False)
             else:                                         # a dead episode's frozen file, or a leaf with no assembly document (no
                 #                                           compaction boundary yet, or ever: its seeded walk had nothing to seed
                 #                                           and read the file whole at every boot, 104 MB on one): the walk once, its

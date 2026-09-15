@@ -1864,7 +1864,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
-  the file cold, T402), `full` with
+  the file cold, T402), `foreign:<reason>` (the judges' walk over ANOTHER
+  session's leaf refused that session's document quietly for the reason named,
+  the document standing for its owner: a reader that does not own a document
+  never notes it and never unlinks it, 2026-09-15), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
