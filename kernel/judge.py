@@ -6608,12 +6608,19 @@ def _per_file_rewound(fsid, files):
             # pre-cut verdicts and the tail read now instead of the whole file (T323 stage 4a). A non-empty
             # transcript that yields ZERO records raises OSError there (the incremental reader swallows a
             # permissions break into an empty list): a failed read, not an empty file, and it must count like one.
-            if fp == leaf and len(files) == 1 and em.asm_document_seeds(fp):   # the leaf road: the document's pre-cut verdicts
-                em.rewound_memo_forget(fp)                #  and the tail read now; a document written over a two-file lineage (a
-                #                                           /clear anchor beside, or a resume fork's from-file among its inputs)
-                #                                           cannot seed the one-file walk, and the leaf takes the memo road (round
-                #                                           one, low 1); the memo's cursor from the leaf's documentless days is
-                #                                           dropped at the flip so the checkpoint's cut follows the live folds (low 2)
+            if fp == leaf and em.asm_document_seeds(fp):  # the leaf road: the document's pre-cut verdicts and the tail read now.
+                em.rewound_memo_forget(fp)                #  asm_document_seeds reads the sidecar's own inputs list, so a document
+                #                                           written over a two-file lineage (a /clear anchor beside, or a resume
+                #                                           fork's from-file among its inputs) answers False there and the leaf takes
+                #                                           the memo road (round one, low 1); the memo's cursor from the leaf's
+                #                                           documentless days is dropped at the flip so the checkpoint's cut follows the
+                #                                           live folds (low 2). Until 2026-09-15 a `len(files) == 1` guard sat beside
+                #                                           it, so a ONE-file document whose session had another candidate file (a dead
+                #                                           episode file named by its episode rows) fell to the memo road, whose boot
+                #                                           restore over a live growing leaf comes back without its state and walks the
+                #                                           file whole: the largest live transcript (282 MB) decoded once at every
+                #                                           boot's first judge pass (checkpoints.refolds.rewoundUuids, wholeReads
+                #                                           upgrade<-_per_file_rewound); the sidecar's list is the one-file answer
                 out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
             else:                                         # a dead episode's frozen file, or a leaf with no assembly document (no
                 #                                           compaction boundary yet, or ever: its seeded walk had nothing to seed

@@ -2075,6 +2075,50 @@ class ClearedSessionDocument(Harness):
         self.assertEqual(modes, ["restore"], "and the next parse restores from it")
 
 
+    def test_a_one_file_document_takes_the_seeded_leaf_road_whatever_else_the_session_carries(self):
+        """2026-09-15: the leaf-road guard carried `len(files) == 1` beside asm_document_seeds, so a ONE-file document whose session
+        had another candidate file (a dead episode file named by its episode rows) fell to the memo road, whose boot restore over a
+        live growing leaf comes back without its state and walks the file whole: the largest live transcript (282 MB) decoded once at
+        every boot's first judge pass. The sidecar's own inputs list is the one-file answer: the leaf takes the seeded walk (the
+        pre-cut verdicts from the document, the tail read now) and the memo road stays for the other file; the rewound set is EQUAL
+        on both roads."""
+        jd = kernel_module().jd
+        d = self.td / "leafroad"; d.mkdir()
+        leaf_sid = "77777777-2222-4333-8444-000000000778"
+        leaf = d / (leaf_sid + ".jsonl")
+        recs = compacting_variant(G.SINGLE_FILE["rewind_off_path"][0](), "lr")          # a rewind inside, then a compaction and turns
+        recs = recs + _turns_after(recs, "lr", 2)
+        leaf.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        other = d / ("88888888-2222-4333-8444-000000000888.jsonl")                       # a second candidate: a dead episode file, no
+        other.write_text("".join(json.dumps(r) + "\n" for r in G.SINGLE_FILE["queued_new_turn"][0]()))   # lineage relation to the leaf
+        self.fresh()
+        em.parse_session(str(leaf), rompuuid=leaf_sid, candidate_files=[str(leaf)], states=None, postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(str(leaf), leaf_sid), em.asm_checkpoint_stats())
+        self.assertTrue(em.asm_document_seeds(str(leaf)), "the sidecar lists the leaf alone: the document seeds the one-file walk")
+        # the memo road's answer, for the equality: a fresh state, the walk over the whole file
+        self.fresh()
+        memo_answer = em.rewound_uuids(str(leaf), drop=False)
+        self.assertTrue(memo_answer, "the fixture holds a rewind")
+        # the judges' walk over the leaf beside the other candidate
+        self.fresh()
+        with em._READ_BYTES_LOCK:
+            em._READ_BYTES.clear()
+        with em._CKPT_LOCK:
+            walked0 = em._REWOUND_STATS["walked"]
+        saved = jd._sdk_owned; jd._sdk_owned = lambda fsid: False
+        try:
+            rewound, fails = jd._per_file_rewound(leaf_sid, [str(leaf), str(other)])
+        finally:
+            jd._sdk_owned = saved
+        self.assertEqual(fails, 0)
+        self.assertEqual(rewound & memo_answer, memo_answer, "the rewound set of the leaf equals the memo road's answer")
+        with em._CKPT_LOCK:
+            walked = em._REWOUND_STATS["walked"] - walked0
+        self.assertEqual(walked, 1, "one memo walk: the OTHER file's; the leaf took the seeded road (the base walked both: 2)")
+        read = em.read_bytes_report().get(str(leaf), 0)
+        self.assertLess(read, os.path.getsize(leaf) // 2, "the leaf's tail was read, not the whole file: %d of %d bytes" % (read, os.path.getsize(leaf)))
+
+
 class LazyBodies(Harness):
     def test_a_body_read_before_hydration_is_loud_and_hydration_counts(self):
         records, _ = G.SINGLE_FILE["compaction_atom"]
