@@ -47029,6 +47029,13 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                          % (sid[:8], pc.get("first"), pos.get(pc.get("first")), pc.get("last"), pos.get(pc.get("last")), change_from, total,
                             [e.get("uuid") for e in evs[-3:]]))
     head_from = max(0, total - WIRE_TAIL)
+    # The tail run begins at a TURN boundary, as every window and page does (review find J): the frame names the run's first
+    # turn (tailLo) and the page lays a gap over the turns before it, asked by whole turn, so a frame cut INSIDE a long last
+    # turn left that turn's earlier events in neither the run (held from tailLo on, believed whole) nor the gap: unreachable
+    # by any ask (2026-09-15, a last turn of hundreds of tool calls). The cut moves up to the turn's first event; the frame
+    # grows by that turn's head and no more. WIRE_TAIL is a floor, not a ceiling, here. A cut already at the list's start
+    # (a floored list shorter than the tail) moves nowhere and still names its turn.
+    head_from, tail_lo = _tail_run_start(sid, evs, head_from, int(time.time()))
     _release_skeleton_locked(c, sid)
     m_send = dict(m)
     m_send["events"] = evs[head_from:]
@@ -47039,11 +47046,30 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     m_send["headTotal"] = total if head_known else None
     m_send["firstUuid"] = _event_key(evs[head_from]) if head_from < total else None
     m_send["lastUuid"] = _event_key(evs[-1]) if total else None
-    m_send["tailLo"] = 0 if head_known else _tail_lo(sid, evs, head_from, int(time.time()))   # the tail run's first turn (T386 stage 2)
+    m_send["tailLo"] = 0 if head_known else tail_lo   # the tail run's first turn (T386 stage 2), the turn the frame now begins with
     m_send["pageTurns"] = PAGE_TURNS                  # the page the gaps ask by (chat-regions.ts pagesToAsk)
     _send_client(c, ("chat", sid), m_send)
     st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
     return ms
+
+
+def _tail_run_start(sid, evs, head_from, now):
+    """(head_from, tailLo) for a proto-2 full frame whose cut `head_from` may fall inside a turn: the turn of the first placed
+    event at or after the cut (as _tail_lo reads it), and the index of that turn's FIRST placed event, at or before the cut,
+    so the run the page holds begins where the turn does. A parse that cannot place the cut leaves both as they were (the
+    plain cut, tailLo None: the page then asks by the tail's first key, loadOlder, as before)."""
+    try:
+        sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
+        if sess is None or head_from >= len(evs):
+            return head_from, None
+        tix = _turn_index_of_events(evs, _parse(sess["path"], sid, now)["turns"])
+        t = _first_mapped_turn(tix, head_from) if head_from < len(tix) else None
+        if t is None:
+            return head_from, None
+        start = next((i for i, ti in enumerate(tix) if ti >= t), head_from)   # the turn's first placed event (the loadTurns page's own edge)
+        return min(start, head_from), t
+    except Exception:
+        return head_from, None
 
 
 def _tail_lo(sid, evs, head_from, now):

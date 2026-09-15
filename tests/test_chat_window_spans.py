@@ -5,13 +5,19 @@ moves the client's base only when its span reaches the tail run, so the kernel n
 history (no client is ever detached). Over the render-floor fixture (a restored parse whose pre-cut turns are lazy) the pages
 before the floor and the floor'd list equal the whole build, so a span's events are checked against the whole. Synthetic
 transcripts only (the stage 4a served fixture's builder)."""
+import datetime
 import json
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from test_chat_pages import NOW, SID, Harness, _client, _strip, em, km, transcript  # noqa: E402  the hermetic preamble (a temp XDG root, the kernel loaded from bin) runs on import
+from test_chat_pages import NOW, SID, Harness, _client, _strip, em, km, transcript
+
+
+def _iso(t):
+    """A transcript timestamp, the builder's own form."""
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 class WindowSpans(Harness):
@@ -37,6 +43,55 @@ class WindowSpans(Harness):
         first_tail = next(a["uuid"] for a in turns[frame["tailLo"]]["atoms"] if a.get("uuid"))
         resident = [e["uuid"] for e in _strip(frame["events"])]
         self.assertEqual(resident[0], first_tail, "the run the page holds starts at the named turn")
+
+    def test_the_full_frame_starts_at_the_turn_boundary_when_the_cut_falls_inside_a_long_last_turn(self):
+        """A LAST turn longer than WIRE_TAIL (a long agentic turn: hundreds of tool calls). The full frame ships the last
+        WIRE_TAIL events and names the tail run's first turn (tailLo); the page lays a gap over the turns before it and asks
+        those by whole turn (loadTurns), and holds the run from tailLo on. Until 2026-09-15 the frame's first event was the cut
+        itself, inside that turn, so the turn's events before the cut belonged to neither the run (the page believed it held
+        the turn from its start) nor the gap (whole turns before tailLo): unreachable by any ask. The frame now begins at the
+        turn's first event, as every window and page does (review find J), and the coverage law holds: the head pages plus
+        the frame are the whole build."""
+        recs = transcript(NOW - 86400, turns=40, compact_every=25)
+        t, parent = NOW - 3600, recs[-1]["uuid"]
+        recs.append({"type": "user", "uuid": "uL", "parentUuid": parent, "timestamp": _iso(t), "promptSource": "typed", "cwd": "/w/notes-api",
+                     "message": {"role": "user", "content": "run the whole sweep and report 0"}})
+        recs.append({"type": "assistant", "uuid": "aL0", "parentUuid": "uL", "timestamp": _iso(t + 5), "cwd": "/w/notes-api",
+                     "message": {"role": "assistant", "content": [{"type": "text", "text": "Starting the sweep; the figures land as each stage finishes."}], "stop_reason": "tool_use"}})
+        parent = "aL0"
+        for i in range(km.WIRE_TAIL + 50):
+            tu, tr = "tL%d" % i, "rL%d" % i
+            recs.append({"type": "assistant", "uuid": tu, "parentUuid": parent, "timestamp": _iso(t + 10 + 2 * i), "cwd": "/w/notes-api",
+                         "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tuL%d" % i, "name": "Bash", "input": {"command": "uv run python stage.py %d" % i}}], "stop_reason": "tool_use"}})
+            recs.append({"type": "user", "uuid": tr, "parentUuid": tu, "timestamp": _iso(t + 11 + 2 * i),
+                         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tuL%d" % i, "content": "ok %d" % i}]}})
+            parent = tr
+        recs.append({"type": "assistant", "uuid": "aL1", "parentUuid": parent, "timestamp": _iso(t + 20 + 2 * (km.WIRE_TAIL + 50)), "cwd": "/w/notes-api",
+                     "message": {"role": "assistant", "content": [{"type": "text", "text": "Sweep done; every stage reported."}], "stop_reason": "end_turn"}})
+        self.write(recs)
+        whole = self.whole()                                   # the whole build's events (a proto-1 client's, floor 0)
+        m = km.build_session(SID, NOW, {}, floor=0)            # the frame a proto-2 client is sent from
+        turns = km._parse(self.leaf, SID, NOW)["turns"]
+        last = len(turns) - 1
+        self.assertGreater(len(whole), km.WIRE_TAIL, "the fixture's last turn alone outgrows the wire tail")
+        c, sent = _client()
+        km._send_chat_locked(c, m, None, 0, False)
+        frame = sent[-1]
+        self.assertEqual(frame.get("proto"), 2)
+        self.assertEqual(frame["tailLo"], last, "the cut falls inside the last turn, so the tail run starts there")
+        resident = [e["uuid"] for e in _strip(frame["events"]) if e.get("uuid")]
+        first_of_turn = next(a["uuid"] for a in turns[last]["atoms"] if a.get("uuid"))
+        self.assertEqual(resident[0], first_of_turn, "the run the page holds starts at the named turn's FIRST event, not at the cut")
+        self.assertIn("aL0", resident, "the turn's opening reply, before the cut, is in the run")
+        self.assertGreaterEqual(len(resident), km.WIRE_TAIL, "the frame still carries at least the wire tail")
+        # the coverage law: the pages the gap asks by whole turn (loadTurns, PAGE_TURNS at a time, the page's own ask), plus
+        # the run, are the whole build; no event is in neither
+        pages = []
+        for lo in range(0, last, km.PAGE_TURNS):
+            r = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": lo, "hi": min(lo + km.PAGE_TURNS, last)}, NOW)
+            pages += [e["uuid"] for e in _strip(r["events"]) if e.get("uuid") and not str(e["uuid"]).startswith("system:")]   # transcript events; the head page's cards aside
+        whole_uuids = [e["uuid"] for e in whole if e.get("uuid") and not str(e["uuid"]).startswith("system:")]
+        self.assertEqual(pages + resident, whole_uuids, "every event is reachable: in a head page (turns before tailLo) or in the run")
 
     def test_load_around_carries_its_span_and_no_connected_verdict(self):
         whole, m, frame, c = self._boot()
