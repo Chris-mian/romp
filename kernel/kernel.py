@@ -31409,7 +31409,7 @@ def _chat_ident(path):
 
 
 def _chat_reg_sig(sid):
-    """Registry content that can change a chat, plus its readable/missing/unreadable state. Host journal
+    """Registry content that can change a chat or feed entry, plus its readable/missing/unreadable state. Host journal
     acknowledgements and log offsets move during ordinary output without changing the payload; keying on
     the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
     ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
@@ -38710,7 +38710,8 @@ _FEED_MEMO_LABELS = ("transcript", "parse", "cut", "states", "names", "captions"
                      "cleared", "row", "ask", "live", "bg", "wait", "postal", "stalls", "nudge", "jauth", "jactive",
                      "hide", "watch", "subagents", "usage", "offer", "auth", "downtime", "debug", "interrupting",
                      "closer", "peers")
-_FEED_MEMO_DEPS = ("usage", "offer", "peers")    # the components evaluated over the PREVIOUS entry's record (see _feed_session_key)
+_FEED_MEMO_DEPS = ("usage", "offer", "peers", "nudge", "stalls")    # components evaluated over the previous entry's read record
+_FEED_NUDGE_FIELDS = ("count", "failed", "failedAt")  # the fields the card reads; pinned by the input census
 _feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
@@ -38900,17 +38901,20 @@ def _cleared_by_sid(cleared):
 
 def _feed_board_facts(ctx, now):
     """The board-wide inputs of every session's key, taken ONCE per build into ctx (the same value for every
-    session: one stat each, not one per living session): the clear set indexed by session, the postal maps indexed
-    by party, the nudge records' identities, usage.json's identity and the login-account window sitting at its cap
+    session: shared reads, not one per living session): the clear set indexed by session, the postal maps indexed
+    by party, a snapshot of displayed nudge fields/history, usage.json's identity and the login-account window sitting at its cap
     with its reset ahead as (window, resetsAt) or None (the `offer` component's payload), the key on hand,
     the host-suspension spans, the debug mode and its rows' identity. Taken before any session's derivation, so
-    every session's read follows its stat (stat-then-read)."""
+    every file read follows its stat and every nudge key and card uses the same snapshot."""
     b = ctx.get("board")
     if b is None:
         dbg = bool(jd._debug_mode())
         b = {"cleared_by_sid": _cleared_by_sid(ctx["cleared"]),   # the clear set indexed by owning session, once per build
              "postal": _postal_maps_indexed(),
-             "nudge": (_chat_ident(jd.STATE / "auto-nudge.json"), _chat_ident(jd.STATE / "nudge-events.jsonl")),
+             "nudge_records": {gid: ({k: rec.get(k) for k in _FEED_NUDGE_FIELDS}
+                                      if isinstance(rec, dict) else rec)
+                               for gid, rec in _auto_nudge_data().get("nudged", {}).items()},
+             "nudge_times": {gid: tuple(times[-8:]) for gid, times in _nudge_times().items()},
              "usage_ident": _chat_ident(jd.STATE / "usage.json"),
              "cap_open": (lambda w: (w["window"], w["resetsAt"]) if w else None)(_usage_cap_open(now)),
              "auth": _auth_key_present(),
@@ -38919,7 +38923,33 @@ def _feed_board_facts(ctx, now):
         ctx["board"] = b
         ctx["usage_ident"] = b["usage_ident"]      # the deps re-evaluation reads these two (see _feed_key_with_deps)
         ctx["cap_open"] = b["cap_open"]
+        ctx["nudge_records"] = b["nudge_records"]
+        ctx["nudge_times"] = b["nudge_times"]
     return b
+
+
+def _feed_nudge_key(ctx, entry):
+    """Only the nudge facts this entry read, from the same snapshot its cards consume. Exact node ids
+    include foreign-owned cards; a session-prefix filter would miss those. History is displayed only
+    when a count is present, and only its last eight timestamps can change the card."""
+    out = []
+    for gid in sorted(set(((entry or {}).get("reads") or {}).get("nudges") or ())):
+        rec = ctx["nudge_records"].get(gid) or {}
+        fields = tuple(rec.get(k) for k in _FEED_NUDGE_FIELDS)
+        times = ctx["nudge_times"].get(gid, ()) if rec.get("count") else ()
+        out.append((gid, fields, times))
+    return tuple(out)
+
+
+def _feed_stalls_key(ctx, entry):
+    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Blocked
+    filing), from the build's own _stalled_goals() snapshot in ctx, keyed by the exact node ids in the
+    entry's `reads`. The body reads a record by exact node id, a foreign-owned id included, so a slice on
+    the session's own id prefix missed those; the board-wide nudge identity covered them until the nudge
+    component was scoped to its read ids (the review, 2026-09-15). A deps component, like nudge: a cold
+    entry gets it from _feed_key_with_deps."""
+    ids = set(((entry or {}).get("reads") or {}).get("nudges") or ())
+    return tuple(sorted((g, v.get("why"), v.get("since")) for g, v in ctx["stalls"].items() if g in ids))
 
 
 def _feed_session_key(s, tm, ctx, prev_entry):
@@ -38931,7 +38961,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     `who_working`, `interrupting`, `store`, `closer`, `hide`), so a build reads each once, hit or miss, and their
     side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
     they did before the memo. `prev_entry` is the session's previous decoded entry (None when cold): its `peers` and
-    `reads` records drive the two dependency components, which _feed_key_with_deps re-evaluates over the NEW entry
+    `reads` records drive the dependency components (_FEED_MEMO_DEPS), which _feed_key_with_deps re-evaluates over the NEW entry
     after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build.
 
     Components, label: what it covers (the reads in the body), how it is taken.
@@ -38964,7 +38994,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
-      reg: (_chat_ident(STATE/sdk/<fsid>.json), _chat_ident(STATE/gone/<fsid>.json)). The launch ledger
+      reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
+        excluding host journal acknowledgements/log offsets, plus the death marker's file identity. The launch ledger
         (_thread_reg → _bg_live_norm), spawnedAt and the death marker (_sdk_spawned_at, jd._cli_epoch), the SDK-human
         flag (_display_sdk_human).
       cleared: the session's own slice of _cleared_ids(), sorted. `nid in cleared` per top, the provisional card's
@@ -38982,10 +39013,13 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         times, asks, reply-requiring sends and returns, the other parties' display names). _peer_answered and
         _peer_answered_at walk those pairs, _session_stamp_read's superseding clock is that walk, _peer_identity's
         remote names are the join; a row between two other sessions moves no key of this one.
-      stalls: the session's slice of _stalled_goals() as (gid, why, since), sorted. The stalled section and the
-        in-flight swirl.
-      nudge: (_chat_ident(STATE/auto-nudge.json), _chat_ident(STATE/nudge-events.jsonl)), board-wide.
-        _auto_nudge_data()["nudged"][nid], _nudge_times()[nid].
+      stalls: the deferral records of _stalled_goals() as (gid, why, since), sorted, for the exact node ids the
+        previous entry read (a foreign-owned id included: the body reads a record by exact node id, so a slice on
+        the session's own id prefix missed a foreign-id node's hold). The stalled section, the in-flight swirl and
+        the Blocked filing. A deps component, re-evaluated over the new entry.
+      nudge: count, failed/failedAt and the last eight displayed history timestamps for the exact node ids
+        the previous entry read. The pre-build snapshot also feeds the body; unrelated ledger writes and
+        other sessions' history do not invalidate this entry. A deps component, populated on a cold build.
       jauth: jd._auth_down_map()[fsid] as sorted items, or None. The judge-auth floor and badge.
       jactive: fsid in {r["fsid"] for r in jd.active_runs()}. The Analyzing swirl's active prong.
       hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
@@ -39031,14 +39065,13 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
-    reg = (_chat_ident(jd.STATE / "sdk" / (fsid + ".json")), _chat_ident(jd.GONEDIR / (fsid + ".json")))
+    reg = (_chat_reg_sig(fsid), _chat_ident(jd.GONEDIR / (fsid + ".json")))
     cl = board["cleared_by_sid"].get(fsid, ())
     row = (tuple(sorted(((k, v) for k, v in tm.items() if k not in ("snapT", "interrupting")), key=lambda kv: kv[0]))
            if tm else None)
     postal = _postal_session_slice(fsid, board["postal"])
-    nudge = board["nudge"]
-    stalls = tuple(sorted((k, v.get("why"), v.get("since")) for k, v in ctx["stalls"].items()
-                          if k.startswith(fsid + ":")))
+    nudge = _feed_nudge_key(ctx, prev_entry)
+    stalls = _feed_stalls_key(ctx, prev_entry)
     jauth = tuple(sorted((ctx["jauth_map"].get(fsid) or {}).items(), key=str)) or None
     jactive = fsid in ctx["jactive"]
     subagents = _subagent_dirs_ident(fsid, str(_subagents_dir(path)))[1] if path else None
@@ -39100,7 +39133,8 @@ _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build'
 
 def _feed_key_with_deps(key, ctx, entry):
     """The key with its dependency components re-evaluated over the entry a derivation just produced: `usage` and
-    `offer` from the entry's `reads`, `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
+    `offer` from the entry's `reads`, `nudge` and `stalls` from its exact read node ids and the build's snapshots,
+    `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
     took when the previous entry already named that peer. A peer this derivation read for the FIRST time has no
     pre-derivation facts, and facts taken now could pair a new key with old content (the peer's store moving while
     the body read it, the order stat-then-read forbids), so the stored key carries _FEED_PEERS_UNSETTLED instead:
@@ -39110,6 +39144,8 @@ def _feed_key_with_deps(key, ctx, entry):
     reads = (entry or {}).get("reads") or {}
     k[_FEED_MEMO_LABELS.index("usage")] = ctx.get("usage_ident") if reads.get("usage") else None
     k[_FEED_MEMO_LABELS.index("offer")] = ctx.get("cap_open") if reads.get("usage") else None
+    k[_FEED_MEMO_LABELS.index("nudge")] = _feed_nudge_key(ctx, entry)
+    k[_FEED_MEMO_LABELS.index("stalls")] = _feed_stalls_key(ctx, entry)
     if entry is None:
         peers = None
     else:
@@ -39135,7 +39171,7 @@ def _feed_session_entry(s, ctx):
       cold          True when the session is living, unparsed and worth warming (_warm_fleet_bg)
       peers         the peer sids this derivation read (origin senders, handoff recipients, stamped and awaited
                     peers): the key's `peers` dependency component re-evaluates them next build
-      reads         {"usage": True} when the derivation read usage.json (an api error's cap offer): the key's `usage`
+      reads         usage=True for a cap offer, nudges=[node ids] for the nudge facts read by this entry
     `ctx` carries the build's cross-session reads (now, live_map, cleared, dbg_rows, wmap, stalls, jauth_map,
     jactive) and the per-session facts the key already computed (ps, who_working, interrupting, store, closer):
     the body reads those from ctx and nothing twice. Every helper this body calls is covered by a component of
@@ -39917,7 +39953,8 @@ def _feed_session_entry(s, ctx):
         # human is the bottleneck now. The floor keeps requiring open to-dos AT DISPLAY TIME (agent_open)
         # so it self-heals the instant the agent crosses the items off; the live api/permission floors
         # still win (the present event).
-        nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
+        reads.setdefault("nudges", []).append(nid)
+        nrec = ctx["nudge_records"].get(nid) or {}
         _stall_rec = _stalls.get(nid)             # romp is holding this card (see "stalled" in the payload)
         # ROUTING (2026-08-13): an in-flight-class hold (jd.WHY_IN_FLIGHT — romp's own review is the
         # wait) presents as the Analyzing… swirl, never the stalled chip; every other hold paints the
@@ -40080,7 +40117,7 @@ def _feed_session_entry(s, ctx):
                                        and _sa_u and _sa_u == nodes[nid].get("summaryAnchor")) else None),
             "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
             "failLog": nodes[nid].get("failLog") or None,   # the summarizer's failed attempts (judge _fail_log): model + literal error per try → the chip's hover history + modal "What was tried" (the user 2026-08-18)
-            "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
+            "nudged": ({"count": int(nrec.get("count", 0)), "times": list(ctx["nudge_times"].get(nid, ()))}
                        if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
             "blocked": ({"state": "apiError",
                          # the OFFER (2026-08-30): login-billed + capped window + a key on hand →

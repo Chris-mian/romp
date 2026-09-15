@@ -687,10 +687,25 @@ _DROP_AFTER_QUIESCENT_S = float(os.environ.get("ROMP_RECORD_CACHE_DROP_QUIESCENT
 
 
 def _entry_weight(ent) -> int:
-    """The bytes an entry holds: the file's size less the offset a tail entry started at (a checkpoint's cut)."""
+    """The bytes an entry holds, the unit the byte budget and recordCache.bytes count: a whole entry (base 0) the
+    file's size; a TAIL entry (base > 0, the records past a checkpoint's cut) the file's size less the offset its
+    FIRST held record sits at, offs[0], and nothing while it holds no record (a checkpoint's bare cut before its
+    first read, a tail of blank lines); a tail that holds records but carries no offsets to say where they start
+    (a shape no current writer produces) is weighed as the whole file, over rather than under, because a bound
+    that under-counts is no bound. The first version subtracted ent[2], which is the CONSUMED END offset, not
+    the tail's start: after every newline-terminated read it stands at the file's size, so every tail entry
+    weighed 0, the budget never saw the bytes a restored session's tail held nor their growth on append, and
+    recordCache.bytes under-read the cache by exactly those tails (review find, 2026-09-15: a 1 MiB tail read
+    through the reader reported weight 0 and cache bytes 0). A pure function of the tuple, so an insert and its
+    pop subtract what they added."""
     try:
         size, base = int(ent[1]), int(ent[5])
-        return max(0, size - int(ent[2])) if base > 0 else size
+        if base <= 0:
+            return size
+        offs = ent[7] if len(ent) > 7 else None
+        if offs:
+            return max(0, size - int(offs[0]))
+        return size if (len(ent) > 4 and ent[4]) else 0
     except Exception:
         return 0
 
