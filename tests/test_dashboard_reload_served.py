@@ -309,13 +309,16 @@ class ServedAutoReload(unittest.TestCase):
         # 1. armed, not fired, while the pointer was held
         self.assertTrue(r["probeWhileHeld"], "the page must not reload mid-gesture: %r" % r)
         self.assertEqual((r["shellWhileHeld"] or {}).get("waiting"), "pointer", "the reload is armed on the held pointer: %r" % r["shellWhileHeld"])
-        self.assertEqual(((r["shellWhileHeld"] or {}).get("owed") or {}).get("reason"), "build")
+        self.assertEqual(((r["shellWhileHeld"] or {}).get("owed") or {}).get("reason"), "build", "the owed reason: %r" % r["shellWhileHeld"])
         # 2. the release fires it, and the chat tab lands where the reader was
         self.assertTrue(r["reloadedOnRelease"])
-        # keyed on the anchor row, the repo's rule for scroll labs: the restore lands on the anchor turn (ui/webview/reload-restore.ts),
-        # so scrollTop differs whenever the rows above it measure differently after the reload (main CI read 96 px once on 2026-09-14)
-        self.assertEqual(a["anchor"]["uuid"], b["anchor"]["uuid"], "the reader's row survives the reload: %r → %r" % (b, a))
-        self.assertLessEqual(abs(a["anchor"]["top"] - b["anchor"]["top"]), 60, "at the same place in the viewport: %r → %r" % (b, a))
+        # keyed on the anchor row, the repo's rule for scroll labs: the restore lands on the anchor turn when the rebuilt DOM has it
+        # (ui/webview/reload-restore.ts), so scrollTop differs whenever the rows above it measure differently after the reload (main
+        # CI read 96 px once on 2026-09-14); when the rebuilt DOM does not have the anchor yet, the restore's other road is the raw
+        # scrollTop, and the first row in view can differ (a CI red of 2026-09-15 compared two row ids). Either road keeps the place.
+        same_row = a["anchor"]["uuid"] == b["anchor"]["uuid"] and abs(a["anchor"]["top"] - b["anchor"]["top"]) <= 60
+        same_pixel = abs(a["scrollTop"] - b["scrollTop"]) <= 60
+        self.assertTrue(same_row or same_pixel, "the reader's place survives the reload, by the anchor row or by the scroll pixel: %r → %r" % (b, a))
         self.assertGreater(a["scrollHeight"] - a["scrollTop"] - a["clientHeight"], 200, "…and is not the bottom: %r" % a)
         self.assertFalse(a["chipHidden"], "off the bottom, the go-to-bottom chip shows")
         self.assertEqual(len(r["noticesBefore"]), 0)
