@@ -55,16 +55,19 @@ takes `25302`. Both bind loopback only, so nothing is exposed to your network
 until you choose to [reach it from elsewhere](guide.md#remote-access).
 
 **Elsewhere on the machine.** A Python virtual environment under
-`~/.local/state/romp/` for the [SDK backend's](guide.md#session-backends) one
-dependency, `claude-agent-sdk`. The VS Code / Cursor extension, built and
+`~/.local/state/romp/` for the [SDK backend's](guide.md#session-backends)
+dependency, `claude-agent-sdk`, and for `cryptography`, which
+[notifications to a phone or browser](guide.md#notifications-on-your-phone)
+need; if those say the package is missing, `bin/romp-sdk-setup` installs it.
+The VS Code / Cursor extension, built and
 installed. A `pre-push` hook in the clone's own git directory, which does
 nothing unless you give it a list of strings to watch for. The one-line
 installer also appends a `PATH` line to your shell rc; `install.sh` on its own
 only prints the line for you to add.
 
 **What it does not touch.** It installs nothing into your Python, system or
-user: the kernel and the CLI are standard library only, which is why the SDK's
-dependency gets that separate venv, built on one Python 3.10+ and rebuilt by
+user: the kernel and the CLI are standard library only, which is why those two
+packages get that separate venv, built on one Python 3.10+ and rebuilt by
 `bin/romp-sdk-setup` only when you move romp to another Python by setting
 `ROMP_PYTHON`, when the interpreter it was built with is gone and no other of
 its version and build remains, or when an interrupted build left it without

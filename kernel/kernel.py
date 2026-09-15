@@ -17451,6 +17451,17 @@ def _running_python_tag():
                         "t" if "t" in getattr(sys, "abiflags", "") else "")
 
 
+def _sdk_venv_site_packages():
+    """(match, found): the SDK venv's site-packages directories built for the python THIS process runs
+    (_running_python_tag), and every one on disk whatever its tag. bin/romp-sdk-setup builds the venv
+    under ~/.local/state/romp/sdkvenv; the kernel never touches system python. Shared by
+    _ensure_sdk_on_path (the SDK) and _push_crypto (the cryptography package the same venv carries)."""
+    import glob
+    running = _running_python_tag()
+    found = sorted(glob.glob(str(jd.STATE / "sdkvenv" / "lib" / "python3.*" / "site-packages")))
+    return [sp for sp in found if Path(sp).parent.name == "python" + running], found
+
+
 def _ensure_sdk_on_path():
     """Make claude_agent_sdk importable by the kernel's interpreter. Prefer an already-installed
     copy; otherwise add the dedicated venv's site-packages (built by bin/romp-sdk-setup under
@@ -17462,13 +17473,11 @@ def _ensure_sdk_on_path():
     stderr, once, with both remedies (a log line; the user-facing surfaces name the one remedy the disk
     supports, see SdkBackend.unavailable_verdict). Returns True when importable."""
     import importlib.util
-    import glob
     global _SDK_VENV_BUILT_FOR
     if importlib.util.find_spec("claude_agent_sdk"):
         return True
     running = _running_python_tag()
-    found = sorted(glob.glob(str(jd.STATE / "sdkvenv" / "lib" / "python3.*" / "site-packages")))
-    match = [sp for sp in found if Path(sp).parent.name == "python" + running]
+    match, found = _sdk_venv_site_packages()
     for sp in match:
         if sp not in sys.path:
             sys.path.insert(0, sp)
@@ -50881,17 +50890,37 @@ def _relay_active_chat(client, sid, nonce=None):
 #
 # Crypto is RFC 8291 (aes128gcm content encryption — Apple's/Google's push relays carry ciphertext
 # they cannot read) + RFC 8292 (VAPID, an ES256 JWT proving the sender). Both need P-256/HKDF/
-# AES-GCM, i.e. the `cryptography` package — the kernel's only soft dependency beyond the SDK. It
-# is NOT silently optional (fail loudly, CLAUDE.md): /push/subscribe answers 500 with the missing
-# package named, and a send attempted with subscriptions on file but no crypto says so on stderr.
-_PUSH_CRYPTO = [None]   # None = untried; False = unavailable; else the namespace below
+# AES-GCM, i.e. the `cryptography` package — the kernel's only soft dependency beyond the SDK.
+# bin/romp-sdk-setup installs it into the SDK venv beside the SDK (since 2026-09-14; before that
+# nothing installed it, and a fresh install's bell could only ever name it as missing). It is NOT
+# silently optional (fail loudly, CLAUDE.md): /push/vapid-key, /push/subscribe and /push/test answer
+# 500 with ONE plain-text message (_push_crypto_missing) that names the package and the command that
+# installs it on this layout, the bell's This-device sub-line shows that message, and a send attempted
+# with subscriptions on file but no crypto says the same on stderr.
+_PUSH_CRYPTO = [None]   # None = untried or missing at the last try (retried on the next call); else the namespace below
+_PUSH_CRYPTO_TRIED = [False]   # a second miss drops importlib's finder caches before it looks again
 
 
 def _push_crypto():
-    """The cryptography primitives Web Push needs, imported once, or None. Lazy, not top-of-module:
-    the package may live only in the SDK venv, whose site-packages _ensure_sdk_on_path injects
-    after import."""
+    """The cryptography primitives Web Push needs, imported on first use, or None. Lazy, not
+    top-of-module: the package may live only in the SDK venv, whose site-packages this APPENDS to
+    sys.path when they are not there yet (_sdk_venv_site_packages: _ensure_sdk_on_path adds them only
+    when the SDK itself is not importable elsewhere, and a venv built AFTER the kernel started is on
+    nobody's path). Appended, not put first: a copy of the SDK the interpreter already resolves must
+    keep winning over the venv's, exactly as _ensure_sdk_on_path left it. A miss is not cached: the
+    user the 500 sends to bin/romp-sdk-setup comes back and turns the switch on again, and that tap
+    is the retry — no kernel restart between the two (a failed import costs a few stats; importlib's
+    finder caches are dropped first so a package installed since is seen)."""
     if _PUSH_CRYPTO[0] is None:
+        import importlib
+        added = False
+        for sp in _sdk_venv_site_packages()[0]:
+            if sp not in sys.path:
+                sys.path.append(sp)
+                added = True
+        if added or _PUSH_CRYPTO_TRIED[0]:
+            importlib.invalidate_caches()
+        _PUSH_CRYPTO_TRIED[0] = True
         try:
             from cryptography.hazmat.primitives import hashes, serialization
             from cryptography.hazmat.primitives.asymmetric import ec
@@ -50901,8 +50930,18 @@ def _push_crypto():
             _PUSH_CRYPTO[0] = {"hashes": hashes, "ser": serialization, "ec": ec,
                                "decode_dss": decode_dss_signature, "AESGCM": AESGCM, "HKDF": HKDF}
         except ImportError:
-            _PUSH_CRYPTO[0] = False
-    return _PUSH_CRYPTO[0] or None
+            return None
+    return _PUSH_CRYPTO[0]
+
+
+def _push_crypto_missing():
+    """The one sentence every surface shows when the package is missing: the 500 body the push routes
+    answer (the bell's This-device sub-line shows it verbatim), the fan-out's stderr line. Names the
+    package and the exact command for this install layout: bin/romp-sdk-setup in THIS checkout (ROOT),
+    which installs it into the SDK venv the kernel reads, and builds that venv first when there is
+    none. Then the tap again, not a restart (_push_crypto retries)."""
+    return ("Notifications to this device need the python 'cryptography' package, which is missing on "
+            "the machine running romp. Run %s there, then turn this on again." % (ROOT / "bin" / "romp-sdk-setup"))
 
 
 def _b64u(b):
@@ -51028,10 +51067,10 @@ def _vapid_keys():
     """This kernel's VAPID P-256 keypair (RFC 8292), minted on first use and persisted at 0600 —
     stable thereafter, because a subscription is bound to the key it was created with. Returns
     (private_key, public_key_b64url); raises RuntimeError when cryptography is missing (the
-    subscribe route turns that into a plain-text 500 the shell surfaces)."""
+    subscribe route turns that into a plain-text 500 the shell surfaces: _push_crypto_missing)."""
     cg = _push_crypto()
     if not cg:
-        raise RuntimeError("Web Push needs the python 'cryptography' package on the kernel host")
+        raise RuntimeError(_push_crypto_missing())
     f = jd.STATE / "push-vapid.json"
     priv = None
     try:
@@ -51542,7 +51581,7 @@ def _push_notify(title, body, sid="", badge=None, kind="card", card_id="", host=
         # subscriptions exist, so a phone is expecting these — say so where the kernel's operator
         # looks, rather than dropping them silently (fail loudly, CLAUDE.md)
         print("romp: web push: %d subscription(s) on file but the python 'cryptography' package "
-              "is missing — notification not delivered" % len(subs), file=sys.stderr)
+              "is missing — notification not delivered. %s" % (len(subs), _push_crypto_missing()), file=sys.stderr)
         return
     base = _push_payload(title, body, sid, badge, kind, card_id, host, quiet=quiet, name=name)
 
@@ -56374,7 +56413,7 @@ var canPush=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notific
 var back=document.getElementById('rbell-back'),pop=document.getElementById('rbell-pop');if(!back||!pop)return;
 var rows={};['all','dev','turns'].forEach(function(k){rows[k]=pop.querySelector('[data-act='+k+']');});
 var devSubEl=document.getElementById('rbp-dev-sub'),testBtn=document.getElementById('rbp-test'),testOut=document.getElementById('rbp-test-out');
-var isOn=false,turnsOn=false,devOn=false,busy={};
+var isOn=false,turnsOn=false,devOn=false,busy={},devErr='';   // devErr: why the last This-device tap failed, in the kernel's or the browser's words, until the next tap
 function perm(){return canPush?Notification.permission:'';}
 function sw(k,on,ok){var r=rows[k];if(!r)return;r.classList.toggle('off',!ok);r.setAttribute('aria-checked',on?'true':'false');
 r.setAttribute('aria-disabled',ok?'false':'true');var s=r.querySelector('.rbp-sw');if(s)s.classList.toggle('on',!!on);}
@@ -56392,10 +56431,11 @@ pop.classList.toggle('master-off',!isOn);   // the rows under the master dim whi
 var sub;
 if(!canPush)sub="Push isn't available in this browser. On iPhone, add romp to the Home Screen first and open it from there.";
 else if(perm()==='denied')sub="Notifications are blocked for this site. On iPhone: Settings, then Notifications, then Romp. In a desktop browser: the site permission beside the address.";
+else if(devErr)sub=devErr;   // the last tap's refusal, verbatim: the kernel's 500 body (the missing 'cryptography' package and the command that installs it — _push_crypto_missing) or the browser's own reason; never the generic line over a failure that was named
 else if(devOn&&!isOn)sub="This device is set up, but nothing arrives until the main switch is on.";
 else if(devOn)sub="This browser gets a notification when a session needs you or finishes.";
 else sub="Turn on to get them on this device.";
-if(devSubEl)devSubEl.textContent=sub;}
+if(devSubEl){devSubEl.textContent=sub;devSubEl.classList.toggle('bad',!!devErr&&perm()!=='denied');}}
 window.__rompNotifyAllPaint=function(on){isOn=!!on;paint();};     // the shell WS repaints every open dashboard on a toggle
 window.__rompNotifyTurnsPaint=function(on){turnsOn=!!on;paint();};
 // The two switches are read once per page: an answer that is not the switch (a non-ok status, an unreadable body) used
@@ -56460,9 +56500,9 @@ while(el&&el!==pop&&!(el.getAttribute&&el.getAttribute('data-act')))el=el.parent
 if(!el||el===pop)return;var act=el.getAttribute('data-act');
 if(act==='all'){if(busy.all)return;setBusy('all',true);var want=!isOn;
 post('/notify-all',{on:want}).then(function(){isOn=want;paint();},fail).then(function(){setBusy('all',false);});}
-else if(act==='dev'){if(busy.dev||el.classList.contains('off'))return;setBusy('dev',true);var wantD=!devOn;
+else if(act==='dev'){if(busy.dev||el.classList.contains('off'))return;setBusy('dev',true);var wantD=!devOn;devErr='';
 var perm0=(wantD&&canPush)?Notification.requestPermission():null;   // in the tap's own stack, before any await
-(wantD?devSubscribe(perm0):devUnsubscribe()).then(function(){devOn=wantD;},function(e){fail(e);return sub().then(function(s){devOn=!!s;});})
+(wantD?devSubscribe(perm0):devUnsubscribe()).then(function(){devOn=wantD;},function(e){devErr=String((e&&e.message)||e||'');fail(e);return sub().then(function(s){devOn=!!s;});})   // the reason stays on the row (paint), not only in the toast
 .then(function(){setBusy('dev',false);paint();});}
 else if(act==='turns'){if(busy.turns)return;setBusy('turns',true);var wantT=!turnsOn;
 post('/notify-turns',{on:wantT}).then(function(){turnsOn=wantT;paint();},fail).then(function(){setBusy('turns',false);});}
@@ -57637,6 +57677,7 @@ def _landing():
             "#rbp-test[disabled]{opacity:.55;cursor:default}"
             "#rbp-test-out{padding-top:4px}#rbp-test-out:empty{display:none}"
             "#rbp-test-out.bad{color:#e5484d;opacity:1}"    # a refusal is a STATUS, so it wears the status red, not the accent
+            "#rbp-dev-sub.bad{color:#e5484d;opacity:1}"     # the This-device row's refusal (the kernel's missing-package answer) is a status too: the same red. Its own line: the string above is the END marker of ui/webview/menu-theme-tokens.test.ts's popover slice
             # Per-node fleet colour on the network glyph (the user 2026-07-29). The nodes carry their own
             # fill, so they override the icon's currentColor: accent = connected and on this build,
             # grey = attached but not answering (romp is dialing), red = needs you (drift, no kernel, or

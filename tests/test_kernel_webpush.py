@@ -35,9 +35,12 @@ Covers the four layers separately, so a failure names its layer:
 The cryptography package is required here (CI installs it; the kernel treats it as a soft
 dependency and fails loudly without it — test_subscribe_without_crypto_is_a_loud_500).
 """
+import contextlib
 import io
 import json
 import os
+import shutil
+import sys
 import time
 import threading
 import unittest
@@ -81,6 +84,23 @@ km = load_source("romp_kernel_webpush", os.path.join(BIN, "romp-kernel"))
 def _b64u(b):
     import base64
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+@contextlib.contextmanager
+def _no_crypto():
+    """The kernel with `cryptography` unimportable, the way a fresh install without the package fails:
+    every loaded cryptography module and the top-level name read None in sys.modules, which the
+    import system raises ModuleNotFoundError for, and the kernel's cache is reset so the import is
+    really attempted (patching _PUSH_CRYPTO to a sentinel would only prove the sentinel). Reset again
+    on the way out: the next call is the retry a re-installed package is found by."""
+    hidden = {k: None for k in list(sys.modules) if k == "cryptography" or k.startswith("cryptography.")}
+    hidden["cryptography"] = None
+    km._PUSH_CRYPTO[0] = None
+    try:
+        with mock.patch.dict(sys.modules, hidden):
+            yield
+    finally:
+        km._PUSH_CRYPTO[0] = None
 
 
 def _mint_browser_keys():
@@ -591,6 +611,15 @@ class SubscribeRoutes(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
 
+    def _get_text(self, path):
+        import urllib.request, urllib.error
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), headers={"X-Romp-Token": km.TOKEN})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
     def _sub_body(self):
         if HAVE_CRYPTO:
             _, p256dh, auth = _mint_browser_keys()
@@ -627,12 +656,53 @@ class SubscribeRoutes(unittest.TestCase):
 
     def test_subscribe_without_crypto_is_a_loud_500(self):
         # the fail-loudly rule: a subscription the kernel can never deliver to must be REFUSED
-        # with the missing package named, not stored and silently starved
-        with mock.patch.object(km, "_PUSH_CRYPTO", [False]):
+        # with the missing package named, not stored and silently starved. Since 2026-09-14 the body
+        # is ONE deliberate sentence (_push_crypto_missing) that also names the exact command for this
+        # install layout, bin/romp-sdk-setup in this checkout, which installs the package into the SDK
+        # venv the kernel reads; the bell's This-device sub-line shows the body verbatim
+        with _no_crypto():
             code, body = self._post("/push/subscribe", self._sub_body())
+            kcode, kbody = self._get_text("/push/vapid-key")
         self.assertEqual(code, 500)
-        self.assertIn("cryptography", body)
+        self.assertIn("'cryptography'", body)
+        self.assertIn(str(km.ROOT / "bin" / "romp-sdk-setup"), body, "the command, for this checkout")
+        self.assertIn("then turn this on again", body, "the tap is the retry, not a kernel restart")
+        self.assertNotIn("Traceback", body)
+        self.assertEqual(body, km._push_crypto_missing(), "the route answers the one message every surface shows")
+        self.assertEqual((kcode, kbody), (500, body), "the key fetch the bell makes first answers the same")
         self.assertEqual(km._push_subs(), {})
+
+    @unittest.skipUnless(HAVE_CRYPTO, "python 'cryptography' not installed")
+    def test_a_package_installed_since_is_found_on_the_next_tap_without_a_restart(self):
+        # the message sends the user to bin/romp-sdk-setup and says to turn the switch on again: that
+        # only holds if a miss is not cached for the kernel's life (it was, as _PUSH_CRYPTO[0] = False)
+        with _no_crypto():
+            code, _ = self._post("/push/subscribe", self._sub_body())
+            self.assertEqual(code, 500)
+            self.assertIsNone(km._push_crypto())
+        code, _ = self._post("/push/subscribe", self._sub_body())
+        self.assertEqual(code, 200, "the same kernel, the package importable now: the subscribe lands")
+        self.assertEqual(len(km._push_subs()), 1)
+
+    def test_the_sdk_venvs_site_packages_are_put_on_the_path_for_the_import(self):
+        # bin/romp-sdk-setup installs the package into the SDK venv; _ensure_sdk_on_path adds that venv
+        # only when the SDK itself is not importable elsewhere, and a venv built after the kernel started
+        # is on nobody's path, so the crypto import adds the venv built for THIS python (and no other tag)
+        lib = jd.STATE / "sdkvenv" / "lib"
+        mine = lib / ("python" + km._running_python_tag()) / "site-packages"
+        other = lib / "python3.1" / "site-packages"
+        mine.mkdir(parents=True, exist_ok=True)
+        other.mkdir(parents=True, exist_ok=True)
+        try:
+            with _no_crypto():
+                self.assertIsNone(km._push_crypto())
+            self.assertIn(str(mine), sys.path)
+            self.assertNotIn(str(other), sys.path, "another interpreter's venv is never added")
+        finally:
+            for d in (str(mine), str(other)):
+                while d in sys.path:
+                    sys.path.remove(d)
+            shutil.rmtree(jd.STATE / "sdkvenv", ignore_errors=True)
 
     @unittest.skipUnless(HAVE_CRYPTO, "python 'cryptography' not installed")
     def test_subscribe_records_the_pages_origin_for_the_declarative_navigate(self):
@@ -790,12 +860,13 @@ class PushPayloadShape(unittest.TestCase):
         km._save_push_subs({"https://push.example.net/send/x": {
             "endpoint": "https://push.example.net/send/x",
             "keys": {"p256dh": "k", "auth": "a"}}})
-        with mock.patch.object(km, "_PUSH_CRYPTO", [False]), \
+        with _no_crypto(), \
              mock.patch.object(km.sys, "stderr", new=io.StringIO()) as err, \
              mock.patch.object(km, "_push_send_one") as send:
             km._push_notify("romp: web", "Needs you")
         send.assert_not_called()
         self.assertIn("cryptography", err.getvalue(), "a starving phone is never silent")
+        self.assertIn(str(km.ROOT / "bin" / "romp-sdk-setup"), err.getvalue(), "and the line names the command, as the routes do")
 
 
 class DeclarativeWire(unittest.TestCase):
