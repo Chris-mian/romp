@@ -53288,11 +53288,41 @@ if sys.platform.startswith("linux"):       #  (an import or a dlopen in the fork
         _PRCTL = None
 
 
+JUDGE_END_MARGIN_S = 0.25                  # the exit's headroom under the grace when it joins the child's end (see _drain_and_exit)
+
+
 def _judge_child_budgets():
-    """(quit, terminate, kill) waits for ending the child, shares of the manager's SIGTERM grace (EXIT_GRACE_S, a quarter of it
-    in all), never fixed seconds: the exit road must leave inside the grace whatever the child does."""
+    """(terminate, kill) waits for ending the child, shares of the manager's SIGTERM grace (EXIT_GRACE_S: a tenth before the
+    kill, a twentieth after it), never fixed seconds. The quit and the SIGTERM go out at once, so no wait precedes them; on
+    the exit road the waits run on their own thread beside the exit's stages (which already spend the grace less a margin)
+    and are joined with whatever the stages leave, so the child's end never sits on the exit's critical path."""
     g = float(EXIT_GRACE_S)
-    return 0.10 * g, 0.10 * g, 0.05 * g
+    return 0.10 * g, 0.05 * g
+
+
+def _judge_child_records():
+    """Every pid record under the state root, one per kernel pid. Raises OSError when the root cannot be listed (the sweep
+    then stays unmarked and retries at the first request)."""
+    return sorted(jd.STATE.glob("judge-child*.json"))
+
+
+class _JudgeEnd:
+    """A child's end in progress on the exit road: the quit and the SIGTERM are sent, the bounded waits and the kill run on
+    `thread`; finish(remaining) joins it with what the exit has left and kills outright whatever still stands."""
+    def __init__(self, owner, proc, thread):
+        self.owner, self.proc, self.thread = owner, proc, thread
+
+    def finish(self, remaining):
+        self.thread.join(max(0.0, float(remaining)))
+        if self.thread.is_alive() or self.proc.poll() is None:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=JUDGE_END_MARGIN_S / 5)   # a SIGKILL lands in milliseconds; a fifth of the margin at most
+            except Exception:
+                pass
+            self.owner._drop_pid_record()
+            sys.stderr.write("judge child: pid %s killed outright at the exit's end (its waits outran the margin)\n" % self.proc.pid)
+        return self.proc.poll()
 
 
 JUDGE_CHILD_LOST_SPAWNS_MAX = 3            # consecutive passes lost with no done from a fresh spawn before the kernel falls back to
@@ -53431,18 +53461,19 @@ class _JudgeChild:
             self.proc = None
         self.buf = b""
         if p is None:
+            self._drop_pid_record()                       # end() took the process under us (the spawn's record may be on disk)
             return
         sys.stderr.write("judge child: %s (pid %s)\n" % (why, p.pid))
         try:
             p.kill()
-            p.wait(timeout=5)
+            p.wait(timeout=_judge_child_budgets()[1])
         except Exception:
             pass
         self._drop_pid_record()
 
-    def _write_pid_record(self):
+    def _write_pid_record(self, p):
         try:
-            _judge_child_pid_file().write_text(json.dumps({"pid": self.proc.pid, "parent": os.getpid(), "t": int(time.time())}))
+            _judge_child_pid_file().write_text(json.dumps({"pid": p.pid, "parent": os.getpid(), "t": int(time.time())}))
         except OSError:
             pass
 
@@ -53460,11 +53491,12 @@ class _JudgeChild:
         romp-judge, it is ended (SIGTERM, then SIGKILL after the terminate budget) and counted (judge.orphansSwept). A record
         naming a live parent is its own kernel's; a pid whose command is something else (the pid reused) is left alone; a
         dead kernel's record goes either way."""
-        self.swept = True
         try:
-            recs = sorted(jd.STATE.glob("judge-child*.json"))
-        except OSError:
-            return
+            recs = _judge_child_records()
+        except OSError as e:
+            sys.stderr.write("judge child: the state root could not be listed for the orphan sweep (%s); retried at the first request\n" % e)
+            return                                        # unmarked: the first request's sweep runs
+        self.swept = True                                 # marked only once the root was listed
         for f in recs:
             try:
                 rec = json.loads(f.read_text())
@@ -53482,7 +53514,7 @@ class _JudgeChild:
                 continue
             if _pid_is_judge_child(pid):
                 sys.stderr.write("judge child: sweeping the orphan pid %d left by kernel %d\n" % (pid, parent))
-                _quit_s, term_s, kill_s = _judge_child_budgets()
+                term_s, kill_s = _judge_child_budgets()
                 try:
                     os.kill(pid, signal.SIGTERM)
                     deadline = time.monotonic() + term_s
@@ -53505,18 +53537,20 @@ class _JudgeChild:
         """Spawn the child and read its ready line. False (nothing running) when it did not come up."""
         argv = _judge_child_argv()
         try:
-            self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, bufsize=0,
-                                         cwd=str(ROOT), env=dict(os.environ), preexec_fn=_judge_child_preexec)
+            p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, bufsize=0,
+                                 cwd=str(ROOT), env=dict(os.environ), preexec_fn=_judge_child_preexec)
         except Exception as e:
             sys.stderr.write("judge child: could not start %s: %s\n" % (argv[:2], e))
             self.proc = None
             return False
+        with self.exit_lock:
+            self.proc = p                                 # from here end() on the exit road may take it; this road reads the local
         self.buf = b""
         if self.started_once:
             _PERF_STATS.judge_child_restart()
         self.started_once = True
-        self._write_pid_record()
-        line = self._readline(self.proc, JUDGE_CHILD_READY_S)
+        self._write_pid_record(p)
+        line = self._readline(p, JUDGE_CHILD_READY_S)
         try:
             ready = json.loads(line) if line else None
         except ValueError:
@@ -53527,7 +53561,13 @@ class _JudgeChild:
         if ready.get("protocolVersion") not in JUDGE_PROTOCOL_VERSIONS:
             self._kill("protocol version %r is not one this kernel speaks %r" % (ready.get("protocolVersion"), JUDGE_PROTOCOL_VERSIONS))
             return False
-        self.pid = ready.get("pid") or self.proc.pid
+        with self.exit_lock:
+            taken = self.proc is not p                    # end() took the child between the spawn and here (the kernel is leaving):
+        if taken:                                         #  its ready line was already in the pipe, so the read above still answered
+            self._drop_pid_record()
+            sys.stderr.write("judge child: pid %s ended under its own spawn (the kernel is leaving)\n" % p.pid)
+            return False
+        self.pid = ready.get("pid") or p.pid
         return True
 
     def pass_(self, now, may_start=True):
@@ -53546,7 +53586,9 @@ class _JudgeChild:
                     return None
                 fresh = True
             p = self.proc                                 # the process THIS pass reads: end() on the exit road may drop self.proc
-            self.seq += 1                                 #  under us, and then the pipe reads to EOF and the pass is lost
+            if p is None:                                 #  under us, and then the pipe reads to EOF and the pass is lost
+                return None                               # (taken between the spawn's check and here: lost, nothing to write to)
+            self.seq += 1
             seq = self.seq
             self.in_pass = True
             try:
@@ -53595,17 +53637,18 @@ class _JudgeChild:
             self.lost_spawns = 0
             _judge_child_fallback_latch()
 
-    def end(self):
-        """End the child: quit, a bounded wait, SIGTERM, a bounded wait, SIGKILL, with the waits shares of the manager's SIGTERM
-        grace (_judge_child_budgets), so the exit road leaves inside the grace whatever the child does. Never waits on the
-        pass lock: a pass in flight is lost (the pass thread reads its pipe to EOF and counts it) and the child is signaled
-        at once. The exit road's call, the stop's and the off pass's; once, from any thread."""
+    def end(self, background=False):
+        """End the child: the quit and the SIGTERM at once, then a bounded wait, then SIGKILL and a bounded wait, the waits
+        shares of the manager's SIGTERM grace (_judge_child_budgets). Never waits on the pass lock: a pass in flight is lost
+        (the pass thread reads its pipe to EOF and counts it). Inline for the stop and the off pass (None returned); with
+        `background` (the exit road) the waits run on their own thread and a _JudgeEnd comes back to finish(remaining) once
+        the exit's stages are done, so the child's end adds nothing to the exit's critical path. Once, from any thread."""
         with self.exit_lock:
             p = self.proc
             self.proc = None
             if p is None:
-                return
-            quit_s, term_s, kill_s = _judge_child_budgets()
+                return None
+            term_s, kill_s = _judge_child_budgets()
             if self.in_pass:
                 sys.stderr.write("judge child: ending pid %s with a pass in flight (the pass is lost)\n" % p.pid)
             try:
@@ -53613,17 +53656,28 @@ class _JudgeChild:
                 p.stdin.flush()
             except (OSError, ValueError):
                 pass
-            for step, wait_s in (("quit", quit_s), ("terminate", term_s), ("kill", kill_s)):
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+            def reap():
                 try:
-                    if step == "terminate":
-                        p.terminate()
-                    elif step == "kill":
-                        p.kill()
-                    p.wait(timeout=wait_s)
-                    break
+                    p.wait(timeout=term_s)
                 except Exception:
-                    continue
-            self._drop_pid_record()
+                    try:
+                        p.kill()
+                        p.wait(timeout=kill_s)
+                    except Exception:
+                        pass
+                self._drop_pid_record()
+
+            if background:
+                t = threading.Thread(target=reap, name="judge-child-end", daemon=True)
+                t.start()
+                return _JudgeEnd(self, p, t)
+            reap()
+            return None
 
     def stop(self):
         self.end()
@@ -53640,7 +53694,8 @@ def _pid_is_judge_child(pid):
         if sys.platform.startswith("linux"):
             cmd = Path("/proc/%d/cmdline" % pid).read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
         else:
-            cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
+            cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
+                                 timeout=_judge_child_budgets()[1]).stdout
     except Exception:
         return False
     return "romp-judge" in cmd and "--serve" in cmd
@@ -65095,10 +65150,12 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     reason_err = ""
     be = _sdk_backend or None
     _exit_log("romp-kernel: %s, draining SDK sessions\n" % what)
-    try:
-        _JUDGE_CHILD.end()                # the judges' child first: a pass in flight must not write stores beside the successor's
+    _exit_t0 = time.monotonic()
+    _judge_end = None
+    try:                                  # the judges' child first: signaled at once, reaped beside the stages, joined after the cut row
+        _judge_end = _JUDGE_CHILD.end(background=True)
     except Exception:
-        _exit_log("romp-kernel: ending the judges' child failed: %s\n" % traceback.format_exc().strip().splitlines()[-1][:200])
+        _exit_log("romp-kernel: ending the judges' child failed\n")
     # the three memos the next kernel starts from, each persisted on its own: one memo's raise never costs the other two
     # (1610 round two, medium 3), and a failure is logged by name
     try:
@@ -65185,6 +65242,11 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
             _append_restart_cut(row)
         except Exception:
             _exit_log("romp-kernel: cut ledger failed: %s\n" % traceback.format_exc())
+        if _judge_end is not None:        # the child's end, joined after the cut row with what the grace has left less a margin;
+            try:                          #  whatever still stands is killed outright, so the exit leaves inside the grace
+                _judge_end.finish(EXIT_GRACE_S - JUDGE_END_MARGIN_S - (time.monotonic() - _exit_t0))
+            except Exception:
+                _exit_log("romp-kernel: joining the judges' child's end failed: %s\n" % traceback.format_exc().strip().splitlines()[-1][:200])
         os._exit(0)
 
 

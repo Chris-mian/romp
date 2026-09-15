@@ -309,7 +309,10 @@ class FailureRoads(_Child):
         self.assertIsNotNone(proc.poll(), "the child is gone")
         self.assertFalse(rec.exists(), "and its record with it")
         src = inspect.getsource(km._drain_and_exit)
-        self.assertLess(src.index("_JUDGE_CHILD.end()"), src.index("os._exit(0)"), "the exit road ends the child before it leaves")
+        self.assertIn("_JUDGE_CHILD.end(background=True)", src, "the exit road signals the child at once and reaps it on its own thread")
+        self.assertLess(src.index("_JUDGE_CHILD.end(background=True)"), src.index("EXIT_PRIME_BUDGET_S"), "before the first stage")
+        self.assertLess(src.index("_append_restart_cut(row)"), src.index(".finish(EXIT_GRACE_S - JUDGE_END_MARGIN_S"), "joined after the cut row")
+        self.assertLess(src.index(".finish(EXIT_GRACE_S - JUDGE_END_MARGIN_S"), src.index("os._exit(0)"), "and before the exit")
 
     def test_an_orphan_left_by_a_dead_kernel_is_swept_at_the_first_request(self):
         import subprocess
@@ -358,6 +361,10 @@ class FailureRoads(_Child):
             self.assertTrue((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).exists(), "and this kernel's is its own file")
         finally:
             other.kill()
+            try:
+                peer.unlink()
+            except OSError:
+                pass
 
     def test_three_lost_spawns_in_a_row_fall_back_to_the_in_process_tiers_until_the_switch_is_written_again(self):
         """Round two, medium 2: a crash-looping child respawned on every wake with no cap and no word where the user looks."""
@@ -456,9 +463,9 @@ class FailureRoads(_Child):
         self.assertIsNotNone(budgets, "the child's end budgets derive from the grace (the base waits fixed seconds)")
         try:
             km.EXIT_GRACE_S = 4.0
-            self.assertAlmostEqual(sum(budgets()), 1.0, places=6, msg="a quarter of the grace in all")
+            self.assertAlmostEqual(sum(budgets()), 0.6, places=6, msg="a tenth before the kill and a twentieth after, off the exit's path")
             km.EXIT_GRACE_S = 8.0
-            self.assertAlmostEqual(sum(budgets()), 2.0, places=6, msg="and it scales with the grace, never a constant")
+            self.assertAlmostEqual(sum(budgets()), 1.2, places=6, msg="and it scales with the grace, never a constant")
             km.EXIT_GRACE_S = 2.0
             self._pass()
             child = km._JUDGE_CHILD
@@ -473,6 +480,116 @@ class FailureRoads(_Child):
         finally:
             if grace_saved is not None:
                 km.EXIT_GRACE_S = grace_saved
+
+    def test_the_exit_roads_end_returns_at_once_and_its_waits_run_beside_the_stages_until_the_join(self):
+        """Round four, high: the child's end budget was added on top of the exit's four stage budgets, which already spend the
+        grace less a margin, so a wedged child pushed the exit past the manager's SIGKILL. The exit road's end() now signals
+        and returns; the waits run on a thread joined with what the stages leave, and finish() kills outright past it."""
+        km = self.km
+        self._on()
+        os.environ["FAKE_MODE"] = "wedged"
+        grace_saved = getattr(km, "EXIT_GRACE_S", None)
+        try:
+            km.EXIT_GRACE_S = 60.0                        # the kill would come after six seconds: nothing here waits for it
+            self._pass()
+            child = getattr(km, "_JUDGE_CHILD", None)
+            proc = getattr(child, "proc", None)
+            self.assertIsNotNone(proc, "a child runs after the pass (the base has none)")
+            handle = child.end(background=True)
+            self.assertIsNotNone(handle, "the exit road gets a handle back (the base's end() returned after its waits)")
+            self.assertIsNone(proc.poll(), "the wedged child still stands: the SIGTERM went out, the kill waits on the thread")
+            self.assertTrue(handle.thread.is_alive(), "the waits run on their own thread, not on the exit's path")
+            self.assertIsNone(child.proc, "and the slot is empty at once")
+            rc = handle.finish(0.0)                       # the stages left no margin: whatever stands is killed outright
+            self.assertEqual(rc, -9, "killed outright at the join")
+            self.assertFalse((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).exists(), "its record is gone")
+            km.EXIT_GRACE_S = 2.0                         # and with a margin left, the join returns once the reaper has killed
+            self._pass()
+            proc2 = child.proc
+            self.assertIsNotNone(proc2)
+            handle2 = child.end(background=True)
+            self.assertEqual(handle2.finish(km.EXIT_GRACE_S), -9, "the reaper's kill, inside the grace")
+            self.assertFalse(handle2.thread.is_alive())
+        finally:
+            if grace_saved is not None:
+                km.EXIT_GRACE_S = grace_saved
+
+    def test_a_boot_sweep_that_cannot_list_the_root_retries_at_the_first_request(self):
+        """Round four, medium: the sweep marked itself done before listing the root, so a boot sweep that could not list it
+        never retried and the first-request sweep the reference promises was dead."""
+        import subprocess
+        km = self.km
+        self._on()
+        records = getattr(km, "_judge_child_records", None)
+        self.assertIsNotNone(records, "the sweep lists the root through one helper (the base globs inline and marks first)")
+        boom = [0]
+        def failing_once():
+            if boom[0] == 0:
+                boom[0] = 1
+                raise PermissionError(13, "the root could not be listed")
+            return records()
+        km._judge_child_records = failing_once
+        orphan = subprocess.Popen([sys.executable, self.script, "--serve", "romp-judge"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        orphan.stdout.readline()
+        gone = subprocess.Popen(["true"]); gone.wait(); dead = gone.pid
+        try:
+            km._JUDGE_CHILD.sweep_orphans()               # the boot call, failing to list
+            self.assertEqual(boom[0], 1)
+            self.assertFalse(km._JUDGE_CHILD.swept, "a failed listing leaves the sweep unmarked")
+            (self.jd.STATE / ("judge-child.%d.json" % dead)).write_text(json.dumps({"pid": orphan.pid, "parent": dead, "t": 1}))
+            self._pass()                                  # the boot sweep lists this time (the producer's), and so would the first request's
+            try:
+                orphan.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            self.assertIsNotNone(orphan.poll(), "the orphan is ended by the retried sweep")
+            self.assertEqual(self._judge().get("orphansSwept") or 0, 1)
+            self.assertTrue(km._JUDGE_CHILD.swept, "marked once the root was listed")
+        finally:
+            km._judge_child_records = records
+            if orphan.poll() is None:
+                orphan.kill()
+
+    def test_an_end_landing_between_the_spawn_and_the_record_leaves_no_child_and_counts_the_pass_lost(self):
+        """Round four, low: the spawn road read self.proc after the exit road's end() had dropped it, so the pass raised
+        AttributeError, the new child kept no record and no reference, and the lost pass went uncounted."""
+        km = self.km
+        self._on()
+        child = getattr(km, "_JUDGE_CHILD", None)
+        real_file = getattr(km, "_judge_child_pid_file", None)
+        self.assertIsNotNone(real_file, "the child keeps a pid record (the base keeps none)")
+        fired = {"n": 0, "pid": None}
+        def racing_pid_file():
+            if fired["n"] == 0 and child is not None and child.proc is not None:
+                fired["n"] = 1
+                fired["pid"] = child.proc.pid
+                child.end()                               # the exit road, at the instant between the spawn and its record
+            return real_file()
+        km._judge_child_pid_file = racing_pid_file
+        try:
+            self._pass()                                  # must not raise out of the pass body
+        finally:
+            km._judge_child_pid_file = real_file
+        self.assertEqual(fired["n"], 1, "the end landed in the window")
+        self.assertEqual(self._judge().get("passesLost") or 0, 1, "the pass is counted lost (the base raised out of it)")
+        self.assertIsNone(child.proc, "no reference to a child stands")
+        try:
+            os.kill(fired["pid"], 0)
+            alive = True
+        except OSError:
+            alive = False
+        self.assertFalse(alive, "and the spawned child is gone, not orphaned")
+        self.assertFalse((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).exists(), "no record of this kernel's left behind")
+
+    def test_no_fixed_second_waits_remain_on_the_childs_roads(self):
+        """Round four, low: the kill helper and the command-line reader kept five-second waits; every wait derives from the grace."""
+        import inspect
+        km = self.km
+        cls = getattr(km, "_JudgeChild", None)
+        self.assertIsNotNone(cls, "the child class (the base has none)")
+        for fn in (cls._kill, cls.end, cls.sweep_orphans, km._pid_is_judge_child):
+            self.assertNotIn("timeout=5", inspect.getsource(fn), "%s waits fixed seconds" % fn.__name__)
+        self.assertFalse(hasattr(km, "JUDGE_CHILD_QUIT_S"), "no fixed quit bound")
 
     def test_the_spawns_preexec_does_no_work_after_fork(self):
         """Round three, medium: the preexec imported ctypes and opened libc in the forked child of a many-threaded kernel, an
