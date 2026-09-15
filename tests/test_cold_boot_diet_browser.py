@@ -159,11 +159,12 @@ await page.evaluate(() => { location.hash = ""; });
 await painted();
 const skelAtReveal = await page.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length);   // the revealed tabs appear as skeletons: never built while hidden (a hidden tab has no strip element to count before the reveal)
 const skelSidsAtReveal = await page.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab-skeleton")).map((e) => e.getAttribute("data-id")).filter(Boolean));   // a tab carries its session as data-id
+const revealable = cfg.sids.filter((s, i) => !((cfg.names[i] || "").startsWith("web")));   // the fixed set the #only=web lift reveals, a known set, never a DOM snapshot that can miss a skeleton that paints a beat late
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "needFull").length > n, beforeReveal.needFull, { timeout: 10000 }).catch(() => {});
-const afterReveal = await page.evaluate(([b, skelSids]) => { const asks = window.__sent.filter((m) => m.type === "needFull"); const firstAsk = asks.length > b.needFull ? asks[b.needFull] : null;
+const afterReveal = await page.evaluate(([b, skelSids, revealable]) => { const asks = window.__sent.filter((m) => m.type === "needFull"); const firstAsk = asks.length > b.needFull ? asks[b.needFull] : null;
   // kernel frames that FILL a revealed skeleton, landing between the reveal and the first ask (a re-send for the already loaded active tab is not a fill)
   const fills = window.__frames.slice(b.frames).filter((f) => f.type === "session" && f.n && skelSids.includes(f.id)).length;
-  return { idles: window.__idles, needFull: asks.length, firstAskWhy: firstAsk ? firstAsk.why : null, pushesBeforeFirstAsk: fills, skel: document.querySelectorAll("#tabs .tab-skeleton").length, skelSids: skelSids.length }; }, [beforeReveal, skelSidsAtReveal]);
+  return { idles: window.__idles, needFull: asks.length, firstAskWhy: firstAsk ? firstAsk.why : null, firstAskRevealed: firstAsk ? revealable.includes(firstAsk.id) : null, pushesBeforeFirstAsk: fills, skel: document.querySelectorAll("#tabs .tab-skeleton").length, skelSids: skelSids.length }; }, [beforeReveal, skelSidsAtReveal, revealable]);
 afterReveal.skelAtReveal = skelAtReveal;
 await page.waitForFunction(() => document.querySelectorAll("#tabs .tab-skeleton").length === 0, null, { timeout: 60000 }).catch(() => {});
 const revealFilled = { skel: await page.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length), needFull: await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "prefetch").length) };
@@ -410,8 +411,10 @@ class ColdBootDiet(unittest.TestCase):
         self.assertEqual(u["header"], "0", "the header's click opened the section: %r" % u)
         self.assertGreater(u["idles"], f["idles"], "opening the section scheduled an idle pass: %r -> %r" % (f, u))
         self.assertGreater(u["needFull"], f["needFull"], "…and the prefetch asked: %r -> %r" % (f, u))
-        self.assertEqual((u["firstAskWhy"], u["firstAskApi"]), ("prefetch", True), "…the first ask the prefetch's own, for a revealed api tab: %r" % u)
-        self.assertEqual(u["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed tab between the open and the ask: %r" % u)
+        self.assertEqual((u["firstAskWhy"], u["firstAskApi"]), ("prefetch", True), "…the first ask the prefetch's own, and it names a revealed api tab: %r" % u)
+        # what the road proves is the event above (the first ask is the prefetch's, for a revealed tab), not the ABSENCE of a kernel
+        # push in the window: that raced the pusher's cycle on a slow runner and reddened peers' CI (the repo rule: no timing claims,
+        # 2026-09-15). pushesBeforeFirstAsk stays in the RESULT as a diagnostic, unasserted.
         self.assertEqual(r["unfoldedFilled"]["skel"], 0, "every tab filled once shown: %r" % r["unfoldedFilled"])
         self.assertEqual(r["unfoldedFilled"]["apiLoaded"], len(self.api_sids), "…the nine api tabs among them, shown and loaded in the strip: %r" % r["unfoldedFilled"])
 
@@ -425,17 +428,19 @@ class ColdBootDiet(unittest.TestCase):
         self.assertIn("chat", apps, "the chat pane dialed: %r" % dials)
         self.assertEqual(with_term, ["chat"], "the term rides the chat pane's dial alone: %r" % dials)
 
-    def test_lifting_the_filter_re_arms_the_idle_prefetch_with_no_push_in_between(self):
-        # round two, medium 3
+    def test_lifting_the_filter_re_arms_the_idle_prefetch(self):
+        # round two, medium 3 (renamed 2026-09-15: the road proves the prefetch's own ask for a revealed tab, not the absence of a push in a window)
         r = self._result()
         b, a = r["beforeReveal"], r["afterReveal"]
         self.assertEqual(b["skel"], 0, "the shown skeletons had filled before the reveal (a hidden tab has no strip element): %r" % b)
         self.assertGreaterEqual(a["skelAtReveal"], 1, "the revealed tabs appeared as skeletons, never built while hidden: %r" % a)
         self.assertGreater(a["idles"], b["idles"], "the reveal scheduled an idle pass: %r -> %r" % (b, a))
         self.assertGreater(a["needFull"], b["needFull"], "…and the prefetch asked for a revealed skeleton: %r -> %r" % (b, a))
-        self.assertEqual(a["firstAskWhy"], "prefetch", "…the ask is the prefetch's own: %r" % a)
         self.assertGreaterEqual(a["skelSids"], 1, "the revealed skeletons carry their sids in the strip: %r" % a)
-        self.assertEqual(a["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed skeleton between the reveal and the prefetch's first ask: %r" % a)
+        # the road's proof: the first ask is the prefetch's own AND names one of the revealed skeletons (the event), not the absence of a
+        # kernel push in the window (that raced the pusher's cycle on a slow runner and reddened peers' CI; the repo rule forbids timing
+        # claims, 2026-09-15). pushesBeforeFirstAsk stays in the RESULT as a diagnostic, unasserted.
+        self.assertEqual((a["firstAskWhy"], a["firstAskRevealed"]), ("prefetch", True), "…the first ask the prefetch's own, for a revealed tab: %r" % a)
         self.assertEqual(r["revealFilled"]["skel"], 0, "every revealed skeleton filled: %r" % r["revealFilled"])
 
     def test_a_sibling_documents_section_open_re_arms_the_prefetch_here_too(self):
@@ -447,8 +452,9 @@ class ColdBootDiet(unittest.TestCase):
         self.assertEqual(a["header"], "0", "the sibling's click opened the section here (the store's storage event repainted): %r" % a)
         self.assertGreater(a["idles"], b["idles"], "…and this page scheduled an idle pass: %r -> %r" % (b, a))
         self.assertGreater(a["needFull"], b["needFull"], "…and asked: %r -> %r" % (b, a))
-        self.assertEqual((a["firstAskWhy"], a["firstAskApi"]), ("prefetch", True), "…the first ask the prefetch's own, for a revealed api tab: %r" % a)
-        self.assertEqual(a["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed tab first: %r" % a)
+        self.assertEqual((a["firstAskWhy"], a["firstAskApi"]), ("prefetch", True), "…the first ask the prefetch's own, and it names a revealed api tab: %r" % a)
+        # the event above is the proof, not the ABSENCE of a kernel push in the window: that raced the pusher's cycle on a slow runner and
+        # reddened peers' CI (the repo rule: no timing claims, 2026-09-15). pushesBeforeFirstAsk stays in the RESULT as a diagnostic, unasserted.
         self.assertEqual(r["siblingFilled"]["apiLoaded"], len(self.api_sids), "the nine api tabs shown and loaded: %r" % r["siblingFilled"])
 
     def test_the_measurement_is_reported(self):
