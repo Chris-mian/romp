@@ -19510,16 +19510,24 @@ def _dump_goals():
 # the request, the switch defaulting to the in-process loop) lives in kernel.py; this side is the child alone.
 #
 #   child  -> {"op":"ready","pid":<int>,"judgeVersion":<str>,"protocolVersion":<int>}          once, at start
-#   kernel -> {"op":"pass","seq":<int>,"now":<epoch>,"tracking":<bool>}                         one per wake
+#   kernel -> {"op":"pass","seq":<int>,"now":<epoch>,"mayStart":<bool>}                         one per wake
 #   child  -> {"op":"done","seq":<int>,"wallMs":..,"tierStarts":0|2,"tierCpuMs":..,"workerCpuMs":..,
-#              "failures":null|{"count":<int>,"first":<str>},"recordCache":{..},"asmCheckpoint":{..}}   one per pass
+#              "failures":null|{"count":<int>,"first":<str>},"recovered":<bool>,
+#              "recordCache":{..},"asmCheckpoint":{..},"parses":{..},"goalIo":{..}}                    one per pass
 #   child  -> {"op":"error","seq":<int|null>,"reason":"malformed"|"unknownOp"|"busy"}          a request it cannot take
 #   kernel -> {"op":"quit"}                                                                     (or stdin's end): exit 0
 #
-# One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and DROPPED, never queued, so a stuck
-# tier cannot pile requests behind the kernel's bound (the kernel sends one per wake; this is the fail-safe). Every stderr
-# line of the process carries the prefix `romp-judge: ` so the kernel can attribute the child's diagnostics when it drains
-# the pipe, and sys.stdout is rebound to that stderr for the whole process, so no stray print can reach the protocol channel.
+# `mayStart` is the kernel's composite gate (_tiers_may_start: the tracking switch, a live session, retries not paused),
+# evaluated on the kernel side; the child gates on it and on nothing else, and an absent field is False. The pass body is
+# run_pass, the SAME function the in-process producer calls (round two: a copy of the producer had drifted three ways before
+# it ever ran). Every counter on the done line is a PER-PASS figure: wallMs, tierCpuMs and workerCpuMs are the pass's own,
+# and the recordCache, asmCheckpoint, parses and goalIo blocks are the differences against the previous pass's snapshot (the
+# kernel feeds its /perf counters per pass); `recovered` is this process's judge-module recovery flag, consumed by the child
+# and acted on by the kernel (the give-up re-arm after a rate-limit storm ends). One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and
+# DROPPED, never queued, so a stuck tier cannot pile requests behind the kernel's bound (the kernel sends one per wake; this
+# is the fail-safe). Every stderr line of the process carries the prefix `romp-judge: ` so the kernel can attribute the
+# child's diagnostics when it drains the pipe; file descriptor 1 is dup2'd onto stderr for the whole process and the protocol
+# goes to the saved descriptor, so no print, os.write or child process can reach the channel.
 PROTOCOL_VERSION = 1
 
 
@@ -19561,10 +19569,14 @@ _SERVE_STAGE = threading.local()
 
 
 def _set_stage(name):
-    """The child's per-thread stage mark, the kernel's `_set_stage` counterpart for the serve loop: installed as the event
-    model's stage provider by serve(), so a tier thread's reads and hydrations, and its pool workers', count under
-    judge.<tier> in the child's own record cache figures (the stage census in tests/test_stage_marks.py reads this call in a
-    thread target's body as the mark). A no-op for the in-process judges: the kernel installs its own provider."""
+    """The judge module's per-thread stage mark, through the event model's installed provider: the kernel's `_set_stage`
+    when the pass runs in the kernel, the serve child's own setter (below) in `romp-judge --serve`, a no-op for a module
+    used on its own. The stage census (tests/test_stage_marks.py) reads this call in a thread target's body as the mark."""
+    em._set_stage_mark(name)
+
+
+def _serve_set_stage(name):
+    """The serve child's stage setter, installed as the event model's provider by serve()."""
     _SERVE_STAGE.name = name
 
 
@@ -19572,75 +19584,171 @@ def _read_stage():
     return getattr(_SERVE_STAGE, "name", None)
 
 
-def _serve_fault(tier):
-    """A TEST knob and nothing else: ROMP_JUDGE_SERVE_FAULT = "raise:<tier>" makes that tier raise before it runs,
-    "sleep:<tier>:<seconds>" makes it sleep first; the kernel never sets it. Enumerated behaviours, never code."""
-    spec = os.environ.get("ROMP_JUDGE_SERVE_FAULT") or ""
-    parts = spec.split(":")
-    if len(parts) >= 2 and parts[1] == tier:
-        if parts[0] == "raise":
-            raise RuntimeError("test fault in the %s tier" % tier)
-        if parts[0] == "sleep" and len(parts) >= 3:
-            time.sleep(float(parts[2]))
+def _pass_acc():
+    """A pass's accounting record: the tier threads' own CPU seconds (summed under the lock), their failures (the last
+    line of each traceback), and the lock."""
+    return {"cpuS": 0.0, "failures": [], "lock": threading.Lock()}
 
 
-def _serve_tier(fn, tier, failures, cpu):
-    """The kernel's _run_tier shape inside the child: the tier's stage mark (its reads and hydrations count under
-    judge.<tier> in the child's own record cache figures), a crash logged and counted, never raised, the thread's own
-    CPU over the run added to `cpu`."""
+def _run_tier(fn, name, acc, before=None):
+    """Run one judge tier (run_index / run_triage) on the calling thread with the tier's stage mark (its reads, builds and
+    hydrations, and its pool workers', count under judge.<tier>), logging a crash instead of letting the thread die
+    silently (the per-session futures inside already swallow and log their own errors) and counting it under
+    `acc["failures"]`; the thread's own CPU over the run lands in `acc["cpuS"]` under the lock (the kernel's /perf reads it
+    as judge.cpu_ms_sum, the serve child answers it as tierCpuMs). `before(name)` runs first when given (the child's test
+    fault knob), inside the same try. ONE body for the in-process producer and the serve child (stage three, round two)."""
     c0 = time.thread_time()
-    _set_stage("judge." + tier)
+    prev = em._read_stage()
+    _set_stage("judge." + name)
     try:
-        _serve_fault(tier)
+        if before is not None:
+            before(name)
         fn()
     except Exception:
         tb = traceback.format_exc()
-        sys.stderr.write("serve tier %s: %s\n" % (tier, tb))
-        failures.append(tb.strip().splitlines()[-1][:200])
+        sys.stderr.write("judge tier %s: %s\n" % (name, tb))
+        with acc["lock"]:
+            acc["failures"].append(tb.strip().splitlines()[-1][:200])
     finally:
-        _set_stage(None)
-        cpu[0] += time.thread_time() - c0
+        _set_stage(prev)
+        with acc["lock"]:
+            acc["cpuS"] += time.thread_time() - c0
 
 
-def _serve_pass(req, emit):
-    """ONE judge pass, exactly what the kernel's producer does between begin_pass_frame and end_pass_frame: both tiers
-    in parallel threads under one evidence frame, a barrier, then the `done` line. `tracking` False starts no tier
-    (no kernel-initiated model call) and still answers."""
-    _set_stage("producer")                        # the pass thread's own parses count under the producer, as the kernel's do
-    seq = req.get("seq")
-    now = req.get("now")
-    now = int(now) if isinstance(now, (int, float)) and not isinstance(now, bool) else None
-    tracking = bool(req.get("tracking", True))
+def run_pass(may_start, now=None, before_tier=None):
+    """THE judge pass body, shared by the kernel's producer (kernel.py _producer) and the serve child (_serve_pass), so the two
+    cannot drift while the rollout keeps both alive (stage three, round two): when `may_start` (the kernel's composite gate,
+    _tiers_may_start: the tracking switch, a live session, retries not paused; the child receives it as the request's
+    `mayStart`) both tiers run in parallel threads under ONE evidence frame (begin_pass_frame: every judge stage this pass
+    sees the same frozen world, the user 2026-07-21), a barrier joins them, the frame ends in a finally. `now` is what the
+    tiers read as their clock (None: each tier reads its own, as the in-process pass always did). Returns the pass's
+    tierStarts, its tier threads' CPU seconds, their failures and its wall seconds."""
     t0 = time.monotonic()
-    failures, cpu = [], [0.0]
-    worker0 = judge_worker_cpu_ms()
+    acc = _pass_acc()
     tiers = []
-    if tracking:
-        tiers = [threading.Thread(target=_serve_tier, args=(lambda: run_index(now=now), "index", failures, cpu), name="index"),
-                 threading.Thread(target=_serve_tier, args=(lambda: run_triage(now=now), "triage", failures, cpu), name="triage")]
+    if may_start:
+        tiers.append(threading.Thread(target=_run_tier, args=(lambda: run_index(now=now), "index", acc, before_tier), name="index"))
+        tiers.append(threading.Thread(target=_run_tier, args=(lambda: run_triage(now=now), "triage", acc, before_tier), name="triage"))
     frame = begin_pass_frame()                    # ONE evidence frame for BOTH tiers and their worker pools
     try:
         for t in tiers:
             t.start()
-        for t in tiers:                           # barrier: both tiers finish before the answer
+        for t in tiers:                           # barrier: both tiers finish before the pass answers
             t.join()
     finally:
-        end_pass_frame(frame)
-    emit({"op": "done", "seq": seq, "wallMs": round((time.monotonic() - t0) * 1000.0, 3), "tierStarts": len(tiers),
-          "tierCpuMs": round(cpu[0] * 1000.0, 3), "workerCpuMs": round(judge_worker_cpu_ms() - worker0, 3),
+        end_pass_frame(frame)                     # evidence unfreezes; the next pass pins a fresh frame (leak-proof)
+    return {"tierStarts": len(tiers), "tierCpuS": acc["cpuS"], "failures": list(acc["failures"]), "wallS": time.monotonic() - t0}
+
+
+_SERVE_FAULT = [None]                             # the parsed test knob: None, ("raise", tier), ("sleep", tier, seconds), ("stray", tier)
+_SERVE_FAULT_TIERS = ("index", "triage")
+
+
+def _serve_fault_parse(spec):
+    """The TEST knob ROMP_JUDGE_SERVE_FAULT, parsed once at serve start: "raise:<tier>" makes that tier raise before it runs,
+    "sleep:<tier>:<seconds>" makes it sleep first, "stray:<tier>" makes it write stray lines through file descriptor 1, a
+    print and a child process (the channel must not see them). Enumerated behaviours, never code; the kernel never sets it.
+    Returns (fault, None) or (None, why) for a value that is not one of these, which serve() refuses loudly and ignores."""
+    if not spec:
+        return None, None
+    parts = spec.split(":")
+    kind = parts[0]
+    tier = parts[1] if len(parts) > 1 else ""
+    if tier not in _SERVE_FAULT_TIERS:
+        return None, "no such tier %r (index or triage)" % tier
+    if kind in ("raise", "stray") and len(parts) == 2:
+        return (kind, tier), None
+    if kind == "sleep" and len(parts) == 3:
+        try:
+            return ("sleep", tier, float(parts[2])), None
+        except ValueError:
+            return None, "sleep wants seconds, got %r" % parts[2]
+    return None, "not raise:<tier>, sleep:<tier>:<seconds> or stray:<tier>: %r" % spec
+
+
+def _serve_fault(tier):
+    """Apply the parsed test knob to `tier` (run_pass's before_tier in the child)."""
+    fault = _SERVE_FAULT[0]
+    if fault is None or fault[1] != tier:
+        return
+    if fault[0] == "raise":
+        raise RuntimeError("test fault in the %s tier" % tier)
+    if fault[0] == "sleep":
+        time.sleep(fault[2])
+    if fault[0] == "stray":
+        os.write(1, b"stray line through file descriptor 1\n")
+        print("stray line through print")
+        subprocess.run(["sh", "-c", "echo stray line from a child process"], check=False)
+
+
+_SERVE_PREV = {}                                  # the previous pass's counter snapshots per block: the done line carries deltas
+
+
+def _serve_counter_blocks():
+    """The child's counter blocks the kernel's /perf reads through the judge module today, as CUMULATIVE snapshots: the record
+    cache and assembly checkpoint blocks (event_model), the parse store's misses and hits (parses.judge and sharedHits on
+    /perf) and the goal-store I/O counters (goal_io_stats)."""
+    return {"recordCache": em.record_cache_stats(), "asmCheckpoint": em.asm_checkpoint_stats(),
+            "parses": {"misses": int(parse_misses()), "hits": int(globals().get("parse_hits", lambda: 0)())},
+            "goalIo": goal_io_stats()}
+
+
+def _serve_delta(prev, cur):
+    """`cur` minus `prev` for every number in a nested counter block (dicts of numbers, dicts of dicts); a key new since the
+    previous snapshot counts whole; a non-numeric value (a cap, a multiple, a name) rides as its current value."""
+    if isinstance(cur, dict):
+        prev = prev if isinstance(prev, dict) else {}
+        return {k: _serve_delta(prev.get(k), v) for k, v in cur.items()}
+    if isinstance(cur, bool) or not isinstance(cur, (int, float)):
+        return cur
+    if isinstance(prev, bool) or not isinstance(prev, (int, float)):
+        return cur
+    d = cur - prev
+    return round(d, 6) if isinstance(d, float) else d
+
+
+def _serve_pass(req, emit):
+    """ONE judge pass through the shared body (run_pass), then the `done` line. The request's `mayStart` is the kernel's
+    composite gate evaluated on the kernel side (the tracking switch, a live session, retries not paused); the child gates
+    on it and on nothing else, and an absent field is False: no tier, no kernel-initiated model call, still an answer. The
+    line carries `recovered` (this process's judge-module recovery flag, consumed here: the kernel's own copy is never set
+    on the child road, so the kernel re-arms its given-up cards on the field) and the counter blocks as PER-PASS DELTAS
+    against the previous pass's snapshot, so the kernel feeds its /perf counters per pass (round two, the kernel head's read)."""
+    _set_stage("producer")                        # the pass thread's own parses count under the producer, as the kernel's do
+    seq = req.get("seq")
+    now = req.get("now")
+    now = int(now) if isinstance(now, (int, float)) and not isinstance(now, bool) else None
+    may_start = req.get("mayStart") is True
+    worker0 = judge_worker_cpu_ms()
+    res = run_pass(may_start, now=now, before_tier=_serve_fault)
+    failures = res["failures"]
+    cur = _serve_counter_blocks()
+    deltas = {k: _serve_delta(_SERVE_PREV.get(k), v) for k, v in cur.items()}
+    _SERVE_PREV.update(cur)
+    emit({"op": "done", "seq": seq, "wallMs": round(res["wallS"] * 1000.0, 3), "tierStarts": res["tierStarts"],
+          "tierCpuMs": round(res["tierCpuS"] * 1000.0, 3), "workerCpuMs": round(judge_worker_cpu_ms() - worker0, 3),
           "failures": ({"count": len(failures), "first": failures[0]} if failures else None),
-          "recordCache": em.record_cache_stats(), "asmCheckpoint": em.asm_checkpoint_stats()})
+          "recovered": bool(consume_judge_recovery()), **deltas})
 
 
 def serve(inp=None, out=None):
     """The child's loop (the protocol above): read request lines from `inp` (stdin), answer on `out` (the real stdout),
     one pass at a time, until `quit` or the end of input. Returns the exit status (0)."""
     inp = inp if inp is not None else sys.stdin
-    real_out = out if out is not None else sys.__stdout__
+    if out is None:
+        saved_fd = os.dup(1)                      # the protocol's own descriptor, kept for emit alone
+        os.dup2(2, 1)                             # file descriptor 1 IS stderr from here: an os.write(1), a print to a captured
+        real_out = os.fdopen(saved_fd, "w", buffering=1)   #  stream and a child process inheriting fd 1 all land on stderr
+    else:
+        real_out = out
     sys.stderr = _PrefixedStream(sys.__stderr__, "romp-judge: ")
-    sys.stdout = sys.stderr                       # no stray print reaches the protocol channel
-    em.set_stage_provider(_set_stage)             # the child's marks: judge.<tier> on the tier threads and their pool workers
+    sys.stdout = sys.stderr                       # and a Python-level print carries the prefix
+    em.set_stage_provider(_serve_set_stage)       # the child's marks: judge.<tier> on the tier threads and their pool workers
     em.set_read_stage_provider(_read_stage)
+    fault, why = _serve_fault_parse(os.environ.get("ROMP_JUDGE_SERVE_FAULT") or "")
+    if why:
+        sys.stderr.write("serve: ROMP_JUDGE_SERVE_FAULT ignored: %s\n" % why)   # a malformed knob is no fault, said once
+    _SERVE_FAULT[0] = fault
     emit_lock = threading.Lock()
 
     def emit(obj):

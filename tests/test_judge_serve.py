@@ -2,7 +2,8 @@
 side). A real child interpreter over a pipe, a synthetic transcript under a temp Claude root, a fake `claude -p` that
 answers a fixed result envelope, and a temp state root: one `pass` through the child writes the stores an in-process pass
 over the same fixture writes in a fresh interpreter, and the protocol's roads (ready, done, tracking off, malformed,
-unknown op, busy, a raising tier, quit, end of input) each answer as the protocol says. No real prompt or transcript text:
+unknown op, busy, a raising tier, quit, end of input) each answer as the protocol says; the pass body is the one the
+kernel's producer runs (judge.py run_pass), pinned by the call on both sides, never a mirror. No real prompt or transcript text:
 every string here is invented."""
 import json
 import os
@@ -195,12 +196,15 @@ class OnePass(Harness):
     def test_one_pass_through_the_child_writes_the_stores_an_in_process_pass_writes(self):
         root = self.state_root("child"); c = self.child(root)
         self.assertEqual(c.line()["op"], "ready")
-        c.send({"op": "pass", "seq": 1, "now": NOW + 0.5, "tracking": True})
+        c.send({"op": "pass", "seq": 1, "now": NOW + 0.5, "mayStart": True})
         done = c.line()
         self.assertEqual((done["op"], done["seq"], done["tierStarts"]), ("done", 1, 2), done)
         self.assertGreaterEqual(done["wallMs"], 0.0); self.assertGreaterEqual(done["tierCpuMs"], 0.0); self.assertGreaterEqual(done["workerCpuMs"], 0.0)
         self.assertIsNone(done["failures"], done["failures"])
         self.assertIn("wholeReads", done["recordCache"]); self.assertIn("parse", done["asmCheckpoint"])
+        self.assertIsInstance(done["recovered"], bool)
+        self.assertGreaterEqual(done["parses"]["misses"], 1, "the pass parsed the transcript through the store: %r" % done["parses"])
+        self.assertEqual(sorted(done["goalIo"]), sorted(jd.goal_io_stats()), "the goal-store I/O counters ride the line")
         c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
         child_calls = self.calls(root)
         self.assertTrue(child_calls, "the pass reached the model road through the fake CLI")
@@ -222,15 +226,102 @@ class OnePass(Harness):
         self.assertEqual(len(child_calls), len(self.calls(ref)), "the same number of model calls")
         self.assertTrue(all(l.startswith("romp-judge: ") for l in c.err if l.strip()), "every stderr line carries the prefix: %r" % c.err[:5])
 
-    def test_tracking_off_starts_no_tier_and_makes_no_call(self):
+    def test_may_start_false_or_absent_starts_no_tier_and_makes_no_call(self):
+        """mayStart is the kernel's composite gate (the tracking switch, a live session, retries not paused), evaluated on the
+        kernel side; the child gates on it alone, and an ABSENT field is false (round two: `tracking` absent read as true, so an
+        omitted field judged, and the switch alone was one of the gate's three inputs)."""
         root = self.state_root("off"); c = self.child(root)
         self.assertEqual(c.line()["op"], "ready")
-        c.send({"op": "pass", "seq": 7, "now": NOW, "tracking": False})
+        c.send({"op": "pass", "seq": 7, "now": NOW, "mayStart": False})
         done = c.line()
         self.assertEqual((done["op"], done["seq"], done["tierStarts"], done["failures"]), ("done", 7, 0, None), done)
-        self.assertEqual(self.calls(root), [], "no kernel-initiated model call with tracking off")
+        c.send({"op": "pass", "seq": 8, "now": NOW})                                   # no field at all
+        done = c.line()
+        self.assertEqual((done["op"], done["seq"], done["tierStarts"]), ("done", 8, 0), "an absent mayStart is false (the base started both tiers)")
+        c.send({"op": "pass", "seq": 9, "now": NOW, "mayStart": "yes"})                # not the boolean true
+        self.assertEqual(c.line()["tierStarts"], 0, "only the boolean true starts a tier")
+        self.assertEqual(self.calls(root), [], "no kernel-initiated model call")
         self.assertEqual(_tree(root).keys() - {"names/" + SID}, set(), "no store written")
         c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
+
+    def test_the_done_lines_counter_blocks_are_per_pass_deltas(self):
+        """Round two (the kernel head's read): the blocks rode as cumulative process snapshots, which the kernel could not
+        feed into its per-pass counters; the child keeps the previous snapshot and emits the difference, so a pass that
+        does nothing answers all-zero blocks, and every numeric field of a block is the pass's own."""
+        root = self.state_root("delta"); c = self.child(root)
+        self.assertEqual(c.line()["op"], "ready")
+        c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
+        first = c.line()
+        self.assertEqual((first["op"], first["tierStarts"]), ("done", 2))
+        c.send({"op": "pass", "seq": 2, "now": NOW, "mayStart": False})              # nothing runs: every delta is zero
+        second = c.line()
+        self.assertEqual((second["op"], second["seq"], second["tierStarts"]), ("done", 2, 0))
+
+        def numbers(block, path=""):
+            for k, v in block.items():
+                if isinstance(v, dict):
+                    yield from numbers(v, path + k + ".")
+                elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                    yield path + k, v
+        for name in ("recordCache", "asmCheckpoint", "parses", "goalIo"):                 # the two blocks the base carried first,
+            nonzero = [(k, v) for k, v in numbers(second.get(name) or {}) if v and k.split(".")[-1] not in   #  so its red is the totals
+                       ("budgetBytes", "countCap", "capBytes", "multiple", "parseMultiple", "entries", "bytes")]
+            self.assertEqual(nonzero, [], "%s: an idle pass reports a zero delta for every counter (the base reported the process totals)" % name)
+        self.assertEqual(second.get("parses"), {"misses": 0, "hits": 0}, "the parse store's misses and hits ride the line")
+        self.assertGreaterEqual((first.get("parses") or {}).get("misses", 0), 1, "the working pass parsed through the store")
+        self.assertEqual(sorted(second.get("goalIo") or {}), sorted(jd.goal_io_stats()))
+        c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
+
+    def test_sigterm_mid_pass_exits_promptly_and_leaves_no_half_written_store(self):
+        """A check the kernel seam relies on: the kernel ends the child by quit, then SIGTERM on its exit road (and a parent
+        death signal at spawn); a child mid-pass must die at once on SIGTERM, its tier threads with it, and every store it
+        was writing is either the old bytes or the new (the stores' atomic replace), never a temp file left behind."""
+        root = self.state_root("term"); c = self.child(root, ROMP_JUDGE_SERVE_FAULT="sleep:index:30")
+        self.assertEqual(c.line()["op"], "ready")
+        c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
+        time.sleep(0.5)                                                                # inside the held tier
+        t0 = time.monotonic(); c.proc.terminate()
+        try:
+            c.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.fail("the child did not exit within 5 s of SIGTERM")
+        self.assertLess(time.monotonic() - t0, 2.0, "prompt")
+        self.assertEqual(c.proc.returncode, -15)
+        strays = [str(p) for p in Path(root).rglob("*") if p.is_file() and (p.name.endswith(".tmp") or ".tmp." in p.name)]
+        self.assertEqual(strays, [], "no half-written store")
+        self.assertTrue(c.lines.empty(), "no done line for a killed pass")
+
+    def test_stray_writes_to_file_descriptor_one_never_reach_the_channel(self):
+        """Round two: the name swap (sys.stdout = stderr) left an os.write(1), a print to a captured stream and a child
+        process inheriting fd 1 on the channel; fd 1 is dup2'd onto stderr for the process and the protocol goes to the
+        saved descriptor. The test knob's stray shape writes all three from inside a tier."""
+        root = self.state_root("stray"); c = self.child(root, ROMP_JUDGE_SERVE_FAULT="stray:index")
+        self.assertEqual(c.line()["op"], "ready")
+        c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
+        done = c.line()
+        self.assertEqual((done["op"], done["seq"], done["tierStarts"], done["failures"]), ("done", 1, 2, None), done)
+        c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
+        joined = "".join(c.err)
+        for stray in ("stray line through file descriptor 1", "stray line through print", "stray line from a child process"):
+            self.assertIn(stray, joined, "the stray landed on stderr")
+        self.assertIn("romp-judge: stray line through print", joined, "a print carries the prefix")
+        self.assertTrue(c.lines.empty(), "no stray line reached the protocol channel")
+
+    def test_a_malformed_fault_knob_is_refused_loudly_and_ignored(self):
+        """Round two: 'boom:index', 'sleep:index' and 'raise:nosuchtier' each matched positionally and were ignored in silence;
+        the knob is parsed once at serve start, a value that is not one of its shapes is said on stderr and applies nothing."""
+        for bad, why in (("boom:index", "not raise"), ("sleep:index", "not raise"), ("raise:nosuchtier", "no such tier"), ("sleep:index:soon", "wants seconds")):
+            with self.subTest(knob=bad):
+                root = self.state_root("knob-" + bad.replace(":", "-")); c = self.child(root, ROMP_JUDGE_SERVE_FAULT=bad)
+                self.assertEqual(c.line()["op"], "ready")
+                c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
+                done = c.line()
+                self.assertEqual((done["op"], done["tierStarts"], done["failures"]), ("done", 2, None), "no fault applied")
+                c.send({"op": "quit"}); c.proc.wait(timeout=60)
+                joined = "".join(c.err)
+                self.assertIn("romp-judge: serve: ROMP_JUDGE_SERVE_FAULT ignored: ", joined, "said once on stderr (the base said nothing)")
+                self.assertIn(why, joined)
+                self.assertEqual(joined.count("ROMP_JUDGE_SERVE_FAULT ignored"), 1)
 
 
 class Roads(Harness):
@@ -243,20 +334,20 @@ class Roads(Harness):
         self.assertEqual(c.line(), {"op": "error", "seq": None, "reason": "malformed"})
         c.send({"op": "dance", "seq": 4})
         self.assertEqual(c.line(), {"op": "error", "seq": 4, "reason": "unknownOp"})
-        c.send({"op": "pass", "seq": 5, "now": NOW, "tracking": False})
+        c.send({"op": "pass", "seq": 5, "now": NOW, "mayStart": False})
         self.assertEqual(c.line()["seq"], 5, "the loop still answers a pass")
         c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
 
     def test_a_pass_during_a_pass_is_refused_busy_and_never_queued(self):
         root = self.state_root("busy"); c = self.child(root, ROMP_JUDGE_SERVE_FAULT="sleep:index:2.0")
         self.assertEqual(c.line()["op"], "ready")
-        c.send({"op": "pass", "seq": 1, "now": NOW, "tracking": True})
+        c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
         time.sleep(0.3)                                        # the first pass is inside its sleeping tier
-        c.send({"op": "pass", "seq": 2, "now": NOW, "tracking": True})
+        c.send({"op": "pass", "seq": 2, "now": NOW, "mayStart": True})
         first, second = c.line(), c.line()
         self.assertEqual(first, {"op": "error", "seq": 2, "reason": "busy"}, "the second request is refused at once")
         self.assertEqual((second["op"], second["seq"]), ("done", 1))
-        c.send({"op": "pass", "seq": 3, "now": NOW, "tracking": False})
+        c.send({"op": "pass", "seq": 3, "now": NOW, "mayStart": False})
         third = c.line()
         self.assertEqual((third["op"], third["seq"]), ("done", 3), "nothing was queued: no done for seq 2, the next pass answers")
         c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
@@ -264,15 +355,15 @@ class Roads(Harness):
     def test_a_tier_that_raises_is_counted_and_the_pass_still_answers(self):
         root = self.state_root("raise"); c = self.child(root, ROMP_JUDGE_SERVE_FAULT="raise:triage")
         self.assertEqual(c.line()["op"], "ready")
-        c.send({"op": "pass", "seq": 1, "now": NOW, "tracking": True})
+        c.send({"op": "pass", "seq": 1, "now": NOW, "mayStart": True})
         done = c.line()
         self.assertEqual((done["op"], done["seq"], done["tierStarts"]), ("done", 1, 2))
         self.assertEqual(done["failures"]["count"], 1); self.assertIn("RuntimeError", done["failures"]["first"])
-        c.send({"op": "pass", "seq": 2, "now": NOW, "tracking": False})
+        c.send({"op": "pass", "seq": 2, "now": NOW, "mayStart": False})
         self.assertEqual(c.line()["seq"], 2, "the child is alive after a tier crash")
         c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
         joined = "".join(c.err)
-        self.assertIn("romp-judge: serve tier triage:", joined)
+        self.assertIn("romp-judge: judge tier triage:", joined)
         self.assertTrue(all(l.startswith("romp-judge: ") for l in c.err if l.strip()), "every stderr line carries the prefix")
 
     def test_the_end_of_input_ends_the_child_with_exit_zero(self):
@@ -291,14 +382,22 @@ class Pins(unittest.TestCase):
         self.assertIn("sys.exit(serve())", src)
         self.assertIn("--serve |", src, "the usage line names the arm")
 
-    def test_the_pass_mirrors_the_producer(self):
+    def test_one_pass_body_for_the_producer_and_the_child(self):
+        """Round two: the child's pass was a COPY of the producer's body, pinned against itself, and had drifted three ways
+        before it ever ran; both call the one function, and the pin is on the CALL on each side."""
         import inspect
-        src = inspect.getsource(jd._serve_pass)
-        self.assertIn("frame = begin_pass_frame()", src); self.assertIn("end_pass_frame(frame)", src)
-        self.assertIn("run_index(now=now)", src); self.assertIn("run_triage(now=now)", src)
-        self.assertIn("judge_worker_cpu_ms()", src)
-        self.assertIn('_set_stage("judge." + tier)', inspect.getsource(jd._serve_tier), "the tier threads carry their stage mark")
-        self.assertIn("em.set_stage_provider(_set_stage)", inspect.getsource(jd.serve), "the child installs its own provider")
+        self.assertIn("res = run_pass(may_start, now=now, before_tier=_serve_fault)", inspect.getsource(jd._serve_pass))
+        ksrc = open(os.path.join(ROOT, "kernel", "kernel.py")).read()
+        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking))", ksrc, "the producer calls the same body")
+        self.assertNotIn("def _run_tier(", ksrc, "no copy of the tier runner in the kernel")
+        self.assertNotIn("jd.begin_pass_frame()", ksrc, "the frame is the body's")
+        body = inspect.getsource(jd.run_pass)
+        self.assertIn("frame = begin_pass_frame()", body); self.assertRegex(body, r"finally:\n\s+end_pass_frame\(frame\)")
+        self.assertIn('with acc["lock"]:', inspect.getsource(jd._run_tier), "the CPU and the failures accumulate under the lock")
+        self.assertIn('_set_stage("judge." + name)', inspect.getsource(jd._run_tier), "the tier threads carry their stage mark")
+        self.assertIn("em.set_stage_provider(_serve_set_stage)", inspect.getsource(jd.serve), "the child installs its own provider")
+        self.assertIn('may_start = req.get("mayStart") is True', inspect.getsource(jd._serve_pass), "the child gates on mayStart alone")
+        self.assertIn("os.dup2(2, 1)", inspect.getsource(jd.serve), "fd 1 is stderr for the process")
 
 
 if __name__ == "__main__":

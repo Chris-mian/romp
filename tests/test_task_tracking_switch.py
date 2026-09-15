@@ -255,11 +255,14 @@ class TheProducerGate(_Base):
     def test_the_producer_keeps_its_two_literal_tier_threads_behind_the_predicate(self):
         import inspect, re
         body = inspect.getsource(km._producer)
-        guard = re.search(r"if _tiers_may_start\(tracking\):\n(.*?)\n            for t in tiers:", body, re.S)
-        self.assertTrue(guard, "one guard for both tiers")
-        self.assertIn('args=(jd.run_index,), name="index"', guard.group(1))
-        self.assertIn('args=(jd.run_triage,), name="triage"', guard.group(1))
-        self.assertIn("_PERF_STATS.judge_tiers(len(tiers))", guard.group(1), "the counter rides the same block")
+        self.assertIn("res = jd.run_pass(_tiers_may_start(tracking))", body, "the predicate's answer gates the shared pass body")
+        self.assertIn('_PERF_STATS.judge_tiers(res["tierStarts"])', body, "the counter reads the body's tier starts")
+        guard = re.search(r"    if may_start:\n(.*?)\n    frame = begin_pass_frame\(\)", inspect.getsource(km.jd.run_pass), re.S)
+        self.assertTrue(guard, "one guard for both tiers, in the shared body")
+        self.assertIn('"index", acc, before_tier), name="index"', guard.group(1))
+        self.assertIn('"triage", acc, before_tier), name="triage"', guard.group(1))
+        res = km.jd.run_pass(False)
+        self.assertEqual((res["tierStarts"], res["failures"]), (0, []), "may_start False starts nothing, whatever the store says")
 
     def test_the_perf_counter_counts_tier_starts(self):
         before = km._PERF_STATS.snapshot()["judge"]["tierStarts"]

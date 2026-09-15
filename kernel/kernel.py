@@ -740,7 +740,7 @@ class _PerfStats:
             j["ms_last"] = ms
 
     def judge_cpu(self, cpu_dt):
-        """A judge tier thread's own CPU seconds for one tier run (_run_tier)."""
+        """A judge tier thread's own CPU seconds for one tier run (judge.py's _run_tier, the shared runner)."""
         with self.lock:
             self.judge["cpu_ms_sum"] += cpu_dt * 1000.0
 
@@ -52913,23 +52913,6 @@ def _tiers_may_start(tracking=None):
     return bool(tracking) and bool(_live_map()) and not _retry_paused_on()
 
 
-def _run_tier(fn):
-    """Run one judge tier (run_index / run_triage) in its own thread, logging a crash instead of letting
-    the thread die silently (the per-session futures inside already swallow + log their own errors).
-    The thread's own CPU over the run goes to /perf's judge.cpu_ms_sum; the per-session workers the
-    tier runs in judge.py's pools account for theirs there (judge_worker_cpu_ms)."""
-    _c0 = time.thread_time()
-    _prev = getattr(_STAGE_TL, "name", None)
-    _set_stage("judge." + threading.current_thread().name)   # the tier's reads, builds and hydrations count under judge.<tier> (T401 (5a))
-    try:
-        fn()
-    except Exception:
-        sys.stderr.write("producer tier: %s\n" % traceback.format_exc())
-    finally:
-        _set_stage(_prev)
-        _PERF_STATS.judge_cpu(time.thread_time() - _c0)
-
-
 @_stage_marked("producer")                                # the tiers' driver: its own parses count under it (T401 (5a))
 def _producer():
     _prev_wall = _prev_mono = None
@@ -52945,7 +52928,6 @@ def _producer():
             _record_suspend(_iv)                        # → the timeline closes turns left open across it
         _prev_wall, _prev_mono = _nw, _nm
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
-        _own_frame = False       # set once the pass frame opens; the finally below can then never leak it
         _t_pass = time.monotonic()
         try:
             # Two tiers, run in PARALLEL (the user 2026-06-17) — they share no store and triage never
@@ -52958,12 +52940,7 @@ def _producer():
             # hits (jd PCACHE) and each judge only makes an LLM call when it has real new work (an unplaced
             # segment, an uncaptioned unit, a fresh completion) — so an idle pass costs filesystem stats, not
             # model calls. (_producer_sig stays available but no longer gates triage.)
-            tiers = []
             tracking = _task_tracking_on()             # the master switch (T404): off, no tier starts, so no kernel-initiated model call
-            if _tiers_may_start(tracking):
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
-                _PERF_STATS.judge_tiers(len(tiers))    # /perf judge.tierStarts: the lab's proof that off starts nothing
             try:                                       # /clear boundaries FIRST (before the snapshot + tiers), so
                 _episode_boundary_tick(time.time())    # this same pass's planner/closer/nudge see a settled store
             except Exception:                          # instead of carrying dead cards into the fresh conversation
@@ -52972,14 +52949,12 @@ def _producer():
                                                        # pre-pass look; later passes anchor on the previous look
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
-            _own_frame = jd.begin_pass_frame()         # ONE evidence frame for BOTH tiers and their worker pools:
-                                                       # every judge stage this cycle sees the same frozen world
-                                                       # (the user 2026-07-21); the join below ends it
-            for t in tiers:
-                t.start()
-            for t in tiers:                            # barrier: both tiers finish before the next wake
-                t.join()
-            jd.end_pass_frame(_own_frame)              # evidence unfreezes; the next cycle pins a fresh frame
+            res = jd.run_pass(_tiers_may_start(tracking))   # THE pass body, shared with the serve child (judge.py run_pass,
+                                                       # stage three round two): both tiers in parallel under ONE evidence
+                                                       # frame (the user 2026-07-21), the barrier, the CPU accounting, the
+                                                       # frame ended in its finally; the gate's three inputs are read HERE
+            _PERF_STATS.judge_tiers(res["tierStarts"])   # /perf judge.tierStarts: the lab's proof that off starts nothing
+            _PERF_STATS.judge_cpu(res["tierCpuS"])       # the tier threads' own CPU; the pool workers account theirs in judge.py
             try:                                       # AFTER the join → single writer: archive newly-cleared
                 moved = _compact_goal_stores() if tracking else 0   # cards out of the live goal stores (keeps build_feed flat); off, the stores rest (T404)
                 if moved:                              # the first pass migrates the whole backlog of cleared nodes.
@@ -53011,7 +52986,6 @@ def _producer():
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
             _end_goals_pass()      # safety net: never leave a pass's snapshot stuck if the pass raised mid-flight
-            jd.end_pass_frame(_own_frame)   # …nor the evidence frame (idempotent with the normal-path end above)
             _PERF_STATS.judge_pass(time.monotonic() - _t_pass)
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
         # instead of waiting out the backstop. The 3s is only a BACKSTOP — for changes we don't get poked
