@@ -132,7 +132,7 @@ class UnreadableRecordOnTheKernelSide(unittest.TestCase):
         (Path(self.td) / "session-flags.json").write_text(json.dumps({PARENT: {"postalOff": True}}))
         self.assertEqual(km._mail_off_why_k(PARENT), "isolation", "the legacy key still isolates, under its reason")
         whole = Path(os.path.join(BIN, "romp-kernel")).read_text()
-        self.assertEqual(whole.count('**_mail_off_fields('), 3, "chat rows, thread rows and Sessions pane rows carry both fields from ONE derivation (the review's low: each derived the reason twice)")
+        self.assertEqual(whole.count('**_mail_off_fields('), 4, "chat rows, thread rows, the ledgers rows and the Outline's provisional row (plans/outline-pane-provisional-row.md) carry both fields from ONE derivation (the review's low: each derived the reason twice)")
         self.assertEqual(whole.count('"mailOffWhy": _mail_off_why_k('), 0, "…and no row derives it inline any more")
         fields_src = inspect.getsource(km._mail_off_fields)
         self.assertEqual(fields_src.count("_mail_off_why_k("), 1); self.assertIn('{"postalServiceOff": bool(why), "mailOffWhy": why}', fields_src)
