@@ -6548,11 +6548,21 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       feedToast("Couldn't revive " + String(m.name || m.id) + ": " + String(m.text || "unknown error"));
     }
   } else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
-    // the kernel's answer to a notice card's action (T370): the latched buttons on that card let go; a refusal says why
-    // (the card stays), a success with dismissOnAction leaves with the next push (the kernel cleared it)
-    for (const c of cardTwins(m.itemId)) {
-      for (const b of Array.from(((c as any)._nActions as HTMLElement | undefined)?.querySelectorAll("button") || []) as HTMLButtonElement[]) {
-        b.disabled = false; b.textContent = (b as any)._idle || b.textContent;
+    // the kernel's answer to a notice card's action (T370). A refusal: the latched buttons let go and the reason is said
+    // (the card stays). A success on a card that dismisses on its action: the kernel cleared it, so the card leaves NOW and
+    // no button re-arms (round four, high: re-armed, it invited a second click that delivered the words again before the
+    // push that removes the card landed). A success on a card that stays: its buttons let go.
+    const twins = cardTwins(m.itemId);
+    const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction));
+    if (m.ok && dismisses) {
+      pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
+      for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
+      dropDismissed([m.itemId]);
+    } else {
+      for (const c of twins) {
+        for (const b of Array.from(((c as any)._nActions as HTMLElement | undefined)?.querySelectorAll("button") || []) as HTMLButtonElement[]) {
+          b.disabled = false; b.textContent = (b as any)._idle || b.textContent;
+        }
       }
     }
     if (!m.ok) feedToast("The card's action was refused: " + String(m.error || "unknown error"));

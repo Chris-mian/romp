@@ -23872,6 +23872,11 @@ def _notice_action_run(m, item_id, route, body):
     act = next((a for a in (row.get("actions") or []) if a.get("route") == route and a.get("body") == body), None)
     if act is None or route not in NOTICE_ACTION_ROUTES:
         return False, "no such action on that card"
+    if row.get("dismissOnAction") and item_id in _cleared_ids():
+        # the event this action's success writes is the card's dismissal (the cleared ledger); a repeat click after it
+        # would deliver the user's words a second time (round four, high). A card that does not dismiss on its action
+        # is meant to run again.
+        return False, "that card was dismissed: its action ran already"
     if route == "/send":
         # the target is the notice's OWN session, read from the row, whatever the stored body says (the check refuses a body
         # naming one; an older row's is ignored), and the text takes the plain-message door: no typed-command routing, so a

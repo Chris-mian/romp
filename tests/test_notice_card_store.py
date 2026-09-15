@@ -228,6 +228,9 @@ class Actions(unittest.TestCase):
         ok, e = km._notice_action(iid, "/send", {"text": "please retry the sweep"})
         self.assertEqual((ok, e), (True, "")); self.assertEqual(self.w.delivered, [(SID, "please retry the sweep")])
         self.assertIn(iid, km._cleared_ids(), "dismissOnAction: a success clears the card")
+        # round four, high: the dismissal is the event; a repeat click after it must not deliver the words a second time
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "please retry the sweep"}), (False, "that card was dismissed: its action ran already"))
+        self.assertEqual(self.w.delivered, [(SID, "please retry the sweep")], "one delivery")
         self.assertEqual(km._notice_action(iid, "/send", {"text": "something else"}), (False, "no such action on that card"))
         self.assertEqual(km._notice_action(iid, "/watch", {}), (False, "no such action on that card"))
         self.assertEqual(km._notice_action("notice:%s:gone:1" % SID, "/send", {}), (False, "that notice is gone"))
@@ -281,6 +284,8 @@ class Actions(unittest.TestCase):
         self.assertEqual(km._notice_action(iid, "/send", {"text": "hello"}), (True, ""))
         self.assertEqual(self.w.delivered, [(SID, "hello")], "a body without a target delivers to the card's own session")
         self.assertNotIn(iid, km._cleared_ids())
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "hello"}), (True, ""), "a card that stays is meant to run again")
+        self.assertEqual(len(self.w.delivered), 2)
 
 
 class Retention(unittest.TestCase):

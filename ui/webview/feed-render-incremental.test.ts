@@ -1101,6 +1101,20 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":figure:2", ok: false, error: "no running backend owns web" });
   assert.equal(btns[0].disabled, false); assert.equal(btns[0].textContent, "Send again", "re-armed on the kernel's answer");
   assert.match(body.querySelector(".feed-toast")?.textContent ?? "", /refused: no running backend owns web/, "a refusal says why");
+  // round four, high: a SUCCESS on a card that dismisses on its action takes the card off the board at once with no re-arm
+  // (re-armed, it invited a second click that delivered the words again before the kernel's rebuild landed); a success on
+  // a card that stays re-arms
+  btns[0].onclick(ev);
+  await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":figure:2", ok: true, error: "" });
+  assert.equal(card("notice:" + WEB + ":figure:2"), null, "the dismissing card left on the success answer");
+  const n3 = cardOf("notice:" + WEB + ":stays:1", WEB, "web", "#3366cc", "A card that stays", "completed", {
+    live: false, tree: [], blocked: null, notice: { producer: "figure", key: "stays", rev: 1, body: "", attachment: null,
+    actions: [{ label: "Ping", route: "/send", body: { text: "ping" } }], expiresAt: null, dismissOnAction: false } });
+  await dispatch(frame([g1, g2, g3, n3], { working: ["web"] }));
+  const b3 = card("notice:" + WEB + ":stays:1")._nActions.querySelectorAll("button")[0];
+  b3.onclick(ev); assert.equal(b3.disabled, true);
+  await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":stays:1", ok: true, error: "" });
+  assert.ok(card("notice:" + WEB + ":stays:1"), "a card that stays is still on the board"); assert.equal(b3.disabled, false, "…and its button let go");
   // a needs-you notice files under Blocked; a card with no body, attachment or actions hides those blocks
   const n2 = cardOf("notice:" + API + ":dropped-sends:1", API, "api", "#cc6633", "1 message you typed before the restart was not re-sent", "needs_input", {
     live: false, tree: [], blocked: null, notice: { producer: "dropped-sends", key: "dropped-sends", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: true } });
