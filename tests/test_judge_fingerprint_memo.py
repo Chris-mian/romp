@@ -139,7 +139,8 @@ class FingerprintMemoTest(unittest.TestCase):
                         pm = os.stat(jd._proj_dir(cdir)).st_mtime
                     except OSError:
                         pm = 0
-                out.append((f.name, mt, pm, jd._sdk_last_sid(f.name) or ""))
+                out.append((f.name, mt, pm, jd._sdk_last_sid(f.name) or "",
+                            jd._sdk_transcript_path(f.name) or ""))   # signed like lastSid (2026-08-20)
             return tuple(out)
 
         (jd.NAMES / OTHER).write_text("%s\t%s" % ("TESTHOST-two", self.cdir))

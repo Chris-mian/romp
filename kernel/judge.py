@@ -205,6 +205,7 @@ def _rebind_state(path):
     CODEXDIR = STATE / "codex"
     EPIDIR = STATE / "episodes"
     _lastsid_memo.clear()   # sdk-registry reads are mtime-memoized per sid — a rebind must not serve the old root's values
+    _recpath_memo.clear()   # ...and the recorded-transcript-path memo, same registry, same reason
     _LEAF_SEEN.clear(); _LEAF_RETIRED.clear()   # the leaves discover handed out belong to the old root
     _STORE_FAULTS.clear()   # unreadable-store episodes belong to the old root's files
     _CHAIN_MEMO.clear()     # the write-moment chain memo keys on paths under STATESDIR; a new root is a new world
@@ -8764,6 +8765,35 @@ def _sdk_last_sid(sid):
     return ls
 
 
+_recpath_memo = {}   # sid -> (sdk-registry mtime, transcriptPath or None) — the _lastsid_memo idiom
+
+
+def _sdk_transcript_path(sid):
+    """The transcript path the CLI itself last REPORTED for this session (every hook payload carries
+    transcript_path; the SDK backend's Stop hook records it in the registry) — the authoritative
+    location once a session RELOCATES its transcript: Claude Code's --worktree/EnterWorktree moves it
+    to the worktree cwd's projects dir, so the launch-dir derivation finds nothing and every surface
+    read a working session as 'opening' (the user 2026-08-20). None when unrecorded (pre-record
+    sessions — the launch-dir walk still resolves those). Re-ported onto v0.15 2026-09-15. (Distinct
+    from kernel.py's same-named helper, which derives the LAUNCH-dir path this record overrides.)"""
+    p = SDKDIR / (sid + ".json")
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        _recpath_memo.pop(sid, None)
+        return None
+    hit = _recpath_memo.get(sid)
+    if hit is not None and hit[0] == mt:
+        return hit[1]
+    try:
+        tp = json.loads(p.read_text()).get("transcriptPath")
+    except (OSError, ValueError):
+        tp = None
+    tp = tp if (isinstance(tp, str) and tp) else None
+    _recpath_memo[sid] = (mt, tp)
+    return tp
+
+
 # ── Episodes: /clear is a boundary, not a deletion (the user 2026-07-26) ─────────────────────────
 # A `/clear` mints a new transcript whose head record has NO parent link, while a resume-style fork
 # chains parentUuid into the prior file — so "the session's current transcript starts at a null-rooted
@@ -9040,7 +9070,9 @@ def _discover_fingerprint():
                 pm = os.stat(pdir).st_mtime                     # a new fork in this project bumps the DIR mtime
             except OSError:
                 pm = 0
-        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or ""))
+        # the recorded transcriptPath is SIGNED like lastSid: both live in the registry, which the
+        # names-entry mtime can't see — a relocation must bust the discover cache the moment it lands
+        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or "", _sdk_transcript_path(f.name) or ""))
     if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
         live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded
         for name in [k for k in _namefp_memo if k not in live]:  # by the sessions that currently EXIST
@@ -9166,6 +9198,23 @@ def _discover_impl(now, window=None, forks=True):
         cdir = parts[1] if len(parts) > 1 else ""
         if not cdir:
             continue
+        # The CLI's OWN report of where it writes outranks the launch-dir derivation entirely: a
+        # session that entered a Claude Code worktree writes under the WORKTREE cwd's project dir,
+        # which no walk of the launch dir can find (the user 2026-08-20). A /clear fork after a
+        # relocation keeps working: lastSid resolves against the RECORDED file's directory.
+        rec = _sdk_transcript_path(sid)
+        if rec is not None and os.path.isfile(rec):
+            last = _sdk_last_sid(sid)
+            cand = os.path.join(os.path.dirname(rec), last + ".jsonl") if last else rec
+            path_str = cand if os.path.isfile(cand) else rec
+            try:
+                mt = os.stat(path_str).st_mtime
+            except OSError:
+                mt = 0
+            if mt >= cutoff and path_str not in seen:
+                seen.add(path_str)
+                out.append((sid, Path(path_str), sid, name))
+            continue   # SDK-only record; SDK transcripts carry no titles, so fork LANES never apply
         proj = _proj_dir(cdir)
         listing = _list_jsonl(proj)
         # An SDK session that FORKED (/clear mints a new fsid under the same romp sid) reads its CURRENT

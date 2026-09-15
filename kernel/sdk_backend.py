@@ -9125,6 +9125,18 @@ class SdkSession:
         ignores inp['background_tasks'] and just clears any stale awaiting:true — keeping the overlay
         channel available for signals that need durability across a backend restart."""
         append_awaiting(self.backend.state_dir, self.sid, False)
+        # Record where the CLI says it WRITES (every hook payload carries transcript_path) — the
+        # authoritative location once a session relocates its transcript: Claude Code's
+        # --worktree/EnterWorktree moves it to the WORKTREE cwd's projects dir, the launch-dir
+        # derivation then finds nothing, and every surface read a working session as 'opening'
+        # (the user 2026-08-20). Discovery prefers this record (judge._sdk_transcript_path).
+        tp = inp.get("transcript_path") if isinstance(inp, dict) else None
+        if tp and tp != getattr(self, "_last_transcript_path", None):
+            self._last_transcript_path = tp
+            try:
+                self.backend._update_reg(self.sid, transcriptPath=str(tp))
+            except Exception as e:
+                self.backend._log("stop hook (%s): transcriptPath record failed: %s" % (self.name, e))
         # Record the ARMED TIMER SET (the hook payload's session_crons: CronCreate crons, ScheduleWakeup
         # wakeups, /loop ticks). Session-scoped timers live ONLY in the CLI process's memory — the tool
         # result itself says "dies when Claude exits" — so a session romp leaves DORMANT has no process
