@@ -1867,7 +1867,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the file cold, T402), `foreign:<reason>` (the judges' walk over ANOTHER
   session's leaf refused that session's document quietly for the reason named,
   the document standing for its owner: a reader that does not own a document
-  never notes it and never unlinks it, 2026-09-15), `full` with
+  never notes it and never unlinks it, 2026-09-15; `foreign:refusedStanding` is
+  that reader's cold walk under a standing refusal mark), `seeded:docMemo` (a
+  seeded walk whose document decode was served from the per-process memo, keyed
+  on the document file's size and mtime: a leaf named by several sessions'
+  episode rows decodes its document once per boot, not once per naming session;
+  every stat check and the guard read still run per walk), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read

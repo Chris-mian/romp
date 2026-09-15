@@ -4385,9 +4385,10 @@ def file_rewound(path, rompuuid=None, sdk_human=None, own=True):
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
         _standing = _asm_refusal_stands(path)              # one sidecar read per call (low 4)
-        doc = None if _standing else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True, own=own)
-        if _standing:
-            _asm_stat("seeded:refusedStanding")           # the cold walk, no proof, while the mark stands (round two)
+        doc = None if _standing else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True, own=own,
+                                                    memo=True)   # the decode once per process per document (2026-09-15)
+        if _standing:                                     # the cold walk, no proof, while the mark stands (round two); a reader
+            _asm_stat("seeded:refusedStanding" if own else "foreign:refusedStanding")   # that does not own the leaf counts its own
         if doc is not None and not _tail_chains_onto_the_document(path, doc):
             _asm_stat("seeded:chainRefused"); doc = None      # the cold walk over a tail that re-parents into the pre-cut
         if doc is not None:                                   #  part (T402 round four)
@@ -5290,6 +5291,10 @@ _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, 
 #                                          skipped per the writer's reason
 _ASM_CKPT_LOCK = threading.Lock()
 _ASM_CKPT_SAID = set()             # (path, reason) said once per process
+_ASM_DOC_MEMO = {}                 # document path -> ((size, mtime_ns), decoded document): the seeded walk's decode served once per
+#                                   process for a document whose bytes stand (2026-09-15); only the read, gunzip and JSON decode are
+#                                   memoized, every stat check and the guard read in the load stay per call (they are the freshness proof)
+_ASM_DOC_MEMO_CAP = 64             # one entry per documented leaf; the live set is the sessions count, the oldest entry leaves first
 _LAZY_FILES = {}                   # rompuuid -> {fsid: path}: where hydrate finds a lazy atom's record
 _HYDRATED = {}                     # uuid -> the body fields read; dict order = LRU
 _HYDRATED_BYTES = [0]
@@ -6429,9 +6434,12 @@ def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids):
     return out
 
 
-def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet_inputs=False, own=True):
+def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet_inputs=False, own=True, memo=False):
     """The verified document for `leaf_path`, or None after a counted fallback (a document that exists and does not
-    verify) or quietly when there is none. `own` False is a reader over ANOTHER session's document (the judges' cross-session
+    verify) or quietly when there is none. `memo` True serves the decode (the read, the gunzip, the JSON parse) from
+    `_ASM_DOC_MEMO` when the document file's size and mtime stand, counted `seeded:docMemo`; the verification below runs on
+    the memoized document exactly as on a fresh one (2026-09-15: the judges' seeded walk over a leaf named by several sessions'
+    episode rows decoded the same document once per naming session per pass). `own` False is a reader over ANOTHER session's document (the judges' cross-session
     walk, 2026-09-15): a document that does not verify for it is refused quietly, counted under the parse's `foreign:<reason>`,
     never noted and never unlinked; the note, which removes the document so the owner's next settle rewrites it, belongs to
     the owner's own parse, the one reader whose inputs (its owner bit above all) are the document's."""
@@ -6445,9 +6453,22 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
     if cp is None or not cp.exists():
         return None
     try:
-        data = cp.read_bytes()
-        _count_read(str(cp), len(data))
-        doc = json.loads(gzip.decompress(data).decode("utf-8"))
+        doc = None
+        if memo:
+            st_ = cp.stat(); mkey = (st_.st_size, st_.st_mtime_ns)
+            with _ASM_CKPT_LOCK:
+                ent = _ASM_DOC_MEMO.get(str(cp))
+            if ent is not None and ent[0] == mkey:
+                doc = ent[1]; _asm_stat("seeded:docMemo")
+        if doc is None:
+            data = cp.read_bytes()
+            _count_read(str(cp), len(data))
+            doc = json.loads(gzip.decompress(data).decode("utf-8"))
+            if memo:
+                with _ASM_CKPT_LOCK:
+                    _ASM_DOC_MEMO.pop(str(cp), None); _ASM_DOC_MEMO[str(cp)] = (mkey, doc)
+                    for k_ in list(_ASM_DOC_MEMO)[:max(0, len(_ASM_DOC_MEMO) - _ASM_DOC_MEMO_CAP)]:
+                        _ASM_DOC_MEMO.pop(k_, None)
     except (OSError, ValueError, EOFError) as e:
         return fail("corrupt", str(e)[:80])
     if not isinstance(doc, dict) or doc.get("av") != _ASM_CKPT_V:
