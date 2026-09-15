@@ -863,6 +863,7 @@ interface Conn {
   lastRecv: number; // epoch ms of the last frame on the CURRENT socket (keepalives count); 0 = none yet
   resumeProvisional: number; // the `resume` stamp lastRecv rests on until a frame confirms it (the watchdog runs at REMOTE_PROVISIONAL_MS meanwhile); 0 = confirmed, or no stamp
   connT: number;    // when the current socket's connect() attempt started — the watchdog's reference point
+  everOpened?: boolean; // this socket has reached `open` at least once, so its next dial is a REDIAL: remoteDialUrl then carries reconnect=1&proto, the way the pane's own local socket marks a redial that held sessions before
   // KERNEL_SETTING messages (newest per type) and the pane's own BOOKKEEPING (newest per key, see
   // BOOKKEEPING) that arrived while this host's socket was down — flushed on the socket's open event
   // (sendRemote/flushPending). Bounded by construction: one entry per setting type, per bookkeeping
@@ -1622,19 +1623,44 @@ export class FederationManager {
     // from a phone reading the dashboard over `tailscale serve`, that address is the phone itself,
     // and every remote host silently vanished with no disconnected mark (the user 2026-07-30).
     // Same-origin also means the local auth cookie rides the upgrade; the remote kernel's own
-    // credential is added by the relay (_remote_ws), so this URL carries no token at all.
-    const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    // …carrying this dashboard's `wid`, exactly as the pane's own local socket does. Without it a remote
-    // kernel sees every federated viewer as one anonymous client and BROADCASTS its per-viewer messages,
-    // so one dashboard's jump to a remote session yanked every other open dashboard to that tab — the
-    // very cross-window yank the local path fixed (the user 2026-07-29).
-    const w = dashboardWid();
-    const url = `${proto}${location.host}/remote/${encodeURIComponent(host)}/ws?app=${encodeURIComponent(this.app)}`
-      + (w ? `&wid=${encodeURIComponent(w)}` : "");
-    const conn: Conn = { host, ws: null, url, closed: false, live, lastRecv: 0, resumeProvisional: 0, connT: 0, pending: new Map() };
+    // credential is added by the relay (_remote_ws), so this URL carries no token at all. The URL is
+    // built fresh on every dial (remoteDialUrl, called from connect) so a redial reflects the page's
+    // current terms, exactly as the pane's own local socket rebuilds its ?active=/reconnect on each open.
+    const conn: Conn = { host, ws: null, url: "", closed: false, live, lastRecv: 0, resumeProvisional: 0, connT: 0, pending: new Map() };
     this.conns.set(host, conn);
     this.ensureHost(host);
     this.connect(conn);
+  }
+
+  // The remote socket's URL, carrying THIS page's own dial terms for its app so a federated pane is served
+  // the way the local pane is (the design in plans/federated-pane-dial-terms.md): a bare
+  // app+wid dial made the remote build every tab whole with no skeleton diet and no provisional rows, the
+  // cost the user's long chat thread ran on. The terms come from the shim's __rompDialTerms (kernel.py, the
+  // served page's reload core), read fresh here so a redial states current state. `wid` carries this
+  // dashboard's identity, exactly as the pane's own local socket does: without it a remote kernel sees every
+  // federated viewer as one anonymous client and BROADCASTS its per-viewer messages, so one dashboard's jump
+  // to a remote session yanked every other open dashboard to that tab (the user 2026-07-29). `iid` is
+  // namespaced by that same wid so a hub pane's per-socket identity cannot collide with the remote's OWN
+  // local page's iid (the reconnect-supersession twin-retire key). `active` is the watched tab only when it
+  // is THIS host's, stripped to the bare sid the remote knows. reconnect=1&proto rides a REDIAL alone (this
+  // socket has opened before), so the remote holds what it already served this page and skeletons the rest.
+  private remoteDialUrl(host: string, everOpened: boolean): string {
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const w = dashboardWid();
+    let t: any = null;
+    try { const f = (window as any).__rompDialTerms; if (typeof f === "function") t = f(); } catch (e) { /* no terms → the bare dial, the pre-2026-09-15 behaviour */ }
+    let url = `${proto}${location.host}/remote/${encodeURIComponent(host)}/ws?app=${encodeURIComponent(this.app)}`
+      + (w ? `&wid=${encodeURIComponent(w)}` : "");
+    if (t) {
+      if (t.delta) url += "&delta=1";
+      if (t.iid) url += `&iid=${encodeURIComponent(w ? w + ":" + t.iid : t.iid)}`;
+      if (t.active && hostOf(t.active) === host) url += `&active=${encodeURIComponent(stripHost(host, t.active))}`;
+      if (t.col) url += `&col=${encodeURIComponent(t.col)}`;
+      if (t.skeleton) url += "&skeleton=1";
+      if (t.provrows) url += "&provrows=1";
+      if (everOpened && (t.proto === 1 || t.proto === 2)) url += `&reconnect=1&proto=${t.proto}`;
+    }
+    return url;
   }
 
   // HOST-CONNECTION TRIPWIRE (the user 2026-07-31, remote cards blinking in and out): every remote
@@ -1657,6 +1683,7 @@ export class FederationManager {
     conn.connT = Date.now();
     conn.lastRecv = 0;
     conn.resumeProvisional = 0;   // a fresh socket starts unmarked: the provisional rule was the resumed socket's
+    conn.url = this.remoteDialUrl(conn.host, !!conn.everOpened);   // rebuild from the page's CURRENT terms every dial; a redial (everOpened) states reconnect=1&proto
     try {
       ws = new WebSocket(conn.url);
     } catch (e) {
@@ -1667,6 +1694,7 @@ export class FederationManager {
     this.dialEvent(conn.host, true);   // a dial attempt is in flight: the host-down notice's swirl spins
     ws.onopen = () => {
       this.dialEvent(conn.host, false);
+      conn.everOpened = true;   // this socket held sessions; its NEXT dial is a redial (remoteDialUrl states reconnect=1&proto)
       // settings queued while the socket was down go out FIRST — on the open event itself, never a
       // timer — so nothing sent after the reconnect can overtake them (see flushPending). That is
       // also why the relay-up dispatch below comes AFTER the flush: the chat's upload re-ship rides
