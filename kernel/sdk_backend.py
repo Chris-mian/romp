@@ -4511,18 +4511,16 @@ def env_request_error(env, auth: str = "") -> str:
 
 
 def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bool = False,
-                       env: dict | None = None, no_helper: bool = False, helper_cmd: str = "", log=None) -> str:
+                       env: dict | None = None, no_helper: bool = False, log=None) -> str:
     """The settings file handed to the CLI (options.settings — the flag-settings layer, the CLI's
     documented per-session hook for keys the SDK has no typed field for). Returns "" when a session
     needs none, which is the common case.
 
     Four keys ride here, all per-session:
-    - `apiKeyHelper: "<bin>/romp-login-helper <id> <state dir>"` (T346, `helper_cmd`): a launch billed to a
-      STORED login names that login's own helper, which runs the token command its record holds (a secret
-      manager's read command, typically), so the CLI fetches the login's setup-token per request and no
-      credential rides romp's files or environment (docs/reference.md, "Several Claude logins").
     - `apiKeyHelper: ""` (2026-09-08, `no_helper`): a LOGIN-billed launch disables the box's apiKeyHelper for
-      this one process. In the CLI's precedence the helper outranks every login form, so without this a
+      this one process, the machine's own login and a STORED login alike (T346; the stored login's token rides
+      the launch's environment since 2026-09-14, docs/reference.md "Several Claude logins", where a helper
+      would outrank it). In the CLI's precedence the helper outranks every login form, so without this a
       login pick on a helper box would bill the key; the empty string is the value the CLI takes as unset
       (null falls through to the settings files), verified on Claude Code 2.1.257 with a marker-writing
       helper. romp holds no key of its own, so this is the whole of what a Billing pick does at launch.
@@ -4559,10 +4557,6 @@ def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bo
         keys["env"] = dict(env)
     if no_helper:
         keys["apiKeyHelper"] = ""
-    if helper_cmd:
-        # a session billed to a STORED login (T346): its own helper, bin/romp-login-helper with the record id,
-        # which runs the token command the record holds; outranks the plain disable above
-        keys["apiKeyHelper"] = helper_cmd
     if not keys:
         return ""
     d = os.path.join(str(state_dir), FLAG_SETTINGS_DIR)
@@ -11420,33 +11414,32 @@ class SdkBackend:
         the declaration — else against _launched_keyed as before; see the comment at the check."""
         _ll = getattr(sess, "_launched_login", "") or ""
         if _ll:
-            # A launch billed to a STORED login (T346) carried that login's helper. The init's source word is the
-            # EVIDENCE of what the CLI did with it, never the pick: 'apiKeyHelper' means the helper answered and the
-            # account billed is that login's subscription (the landing reads as the login's; auth_login_live names
-            # it); the source ABSENT or 'none' means the CLI never used the helper (the token command failed, or was
-            # skipped) and signed in with the MACHINE'S OWN login from its credentials file, the wrong account: said
-            # loudly, shown on the Billing row (authLoginLive ""), and the record marked refused so every menu greys
-            # it until the deciding event the other way, a served reply on that login (_ah_note_ok clears it).
+            # A launch billed to a STORED login (T346) carried that login's setup-token in its own environment as
+            # CLAUDE_CODE_OAUTH_TOKEN, the box's helper disabled (the environment road, 2026-09-14). The init's source
+            # word is the EVIDENCE of what the CLI did with it, never the pick: ABSENT or 'none' is a bearer login, the
+            # token this launch handed over (a bearer in the environment outranks the machine's own credentials file in
+            # the CLI's precedence, and the machine's tokens were not restored into this launch), so the account billed
+            # is that login's subscription (auth_login_live names it); any KEY word ('apiKeyHelper', '/login managed
+            # key', 'user', 'project', 'temporary', ANTHROPIC_API_KEY) means the CLI took a key from somewhere and never
+            # used the token, the wrong account: said loudly, shown on the Billing row (authLoginLive ""), and the record
+            # marked refused so every menu leaves it out until the deciding event the other way, a served reply on
+            # that login (_ah_note_ok clears it).
             _word = str(source or "").strip().lower()
-            if _word == "apikeyhelper":
+            if not _word or _word == "none":
                 source = "none"
                 sess.auth_login_live = _ll
-                sess._wrong_landing_reconnected = False   # the helper answers again: a later wrong landing may take the fall
+                sess._wrong_landing_reconnected = False   # the token answers again: a later wrong landing may take the fall
                 self._persist_login_evidence(sess, authLoginLive=_ll)
             else:
-                # ANY other word means the helper did not answer and the CLI signed in with something else: absent
-                # or 'none' is the machine's own login from its credentials file; '/login managed key', 'user',
-                # 'project', 'temporary' or ANTHROPIC_API_KEY another credential entirely. The wrong account either
-                # way: said loudly naming what the CLI used, the record marked refused (every menu greys it), and
-                # the session RECONNECTED so its next launch takes the documented fall (the key when a helper is
-                # configured, else the machine's own login, said in the status as authPickUnavailable/authPickFell)
-                # instead of running unflagged on whatever the CLI found; once per session, and only when there IS
-                # a fall (below). The session is not ended, since that would drop the user's conversation: it keeps
-                # running on the fallback side (or, with no fall, where it landed) with the Billing row saying so.
+                # A key word: the CLI signed in with another credential. Said loudly naming what the CLI used, the record
+                # marked refused, and the session RECONNECTED so its next launch takes the documented fall (the key when
+                # a helper is configured, else the machine's own login, said in the status as authPickUnavailable and
+                # authPickFell) instead of running unflagged on whatever the CLI found; once per session, and only when
+                # there IS a fall (below). The session is not ended, since that would drop the user's conversation: it
+                # keeps running on the fallback side (or, with no fall, where it landed) with the Billing row saying so.
                 sess.auth_login_live = ""
-                used = ("the machine's own login" if (not _word or _word == "none")
-                        else "the CLI's %s credential" % str(source).strip())
-                why = "the token command did not answer and the CLI signed in with %s instead" % used
+                used = "the CLI's %s credential" % str(source).strip()
+                why = "the token was not used and the CLI signed in with %s instead" % used
                 _logins.mark_refused(self.state_dir, _ll, why)
                 sess._launched_login = ""       # the evidence: this process does not bill the stored login
                 self._persist_login_evidence(sess, launchedLogin="", authLoginLive="")
@@ -11459,7 +11452,7 @@ class SdkBackend:
                     fall = self.pick_fall("login", _ll)
                 except Exception:
                     fall = ""
-                head = "auth (%s): the %s login's helper was not used: %s; " % (sess.name, self.login_display(_ll), why)
+                head = "auth (%s): the %s login's token was not used: %s; " % (sess.name, self.login_display(_ll), why)
                 if not fall:
                     self._log(head + "nothing to fall to on this box, so the session stays where it landed, flagged",
                               problem=True)
@@ -12097,24 +12090,46 @@ class SdkBackend:
         # pick the box cannot bill with NOTHING to fall to (a key pick on a box with neither) launches
         # plain and the CLI decides, as before.
         auth_login = getattr(sess, "auth_login", "") or ""   # the stored login the pick names ("" = the machine's own)
-        fell = self.pick_fall(sess.auth, auth_login)
-        side = fell or sess.auth                        # the ONE decision, shared with the status rows (authPickFell)
-        # WHICH login a login launch bills (T346): the stored login's id when the pick names one AND the launch
-        # is not falling away from it (a refused, expired or command-less stored login falls exactly as a dead
-        # machine login does: to the key when a helper is configured, else to the machine's own login, said
-        # once per session below); "" = the machine's own login.
-        login_id = auth_login if (side == "login" and not fell) else ""
+
+        def _decide():
+            """(fell, side, login_id): the ONE decision, shared with the status rows (authPickFell). WHICH login a login
+            launch bills (T346): the stored login's id when the pick names one AND the launch is not falling away from
+            it (a refused, expired or command-less stored login falls exactly as a dead machine login does: to the key
+            when a helper is configured, else to the machine's own login, said once per session below); "" = the
+            machine's own login. NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default
+            when one is set and this box can bill it, the rule the status already uses (effective_auth / fallback_auth),
+            so the readout and the launch agree (before, an unpicked session read Login in its status and billed the
+            key at launch, the helper unsuppressed); a STORED login as that default (the user 2026-09-14) is followed
+            by id; without one the launch stays plain and the CLI decides, as ever."""
+            fell = self.pick_fall(sess.auth, auth_login)
+            side = fell or sess.auth
+            login_id = auth_login if (side == "login" and not fell) else ""
+            if sess.auth not in ("login", "key"):
+                _exp = self.explicit_default_auth()
+                _exl = self.explicit_default_login() if _exp == "login" else ""
+                side = _exp if (_exp and not self.auth_unavailable_why(_exp, _exl)) else ""
+                if side == "login" and _exl:
+                    login_id = _exl
+            return fell, side, login_id
+
+        fell, side, login_id = _decide()
         picked = _logins.pick_value(sess.auth, auth_login)
-        if sess.auth not in ("login", "key"):
-            # NO pick of its own (T380 review): the launch follows the machine's EXPLICIT default when one is set and
-            # this box can bill it, the rule the status already uses (effective_auth / fallback_auth), so the readout
-            # and the launch agree (before, an unpicked session read Login in its status and billed the key at launch,
-            # the helper unsuppressed); without one the launch stays plain and the CLI decides, as ever
-            _exp = self.explicit_default_auth()
-            _exl = self.explicit_default_login() if _exp == "login" else ""   # a STORED login as the default (the user 2026-09-14)
-            side = _exp if (_exp and not self.auth_unavailable_why(_exp, _exl)) else ""
-            if side == "login" and _exl:
-                login_id = _exl          # the launch names that login's helper below, exactly as a pick of it would
+        # The environment road (2026-09-14; docs/reference.md "Several Claude logins"): a launch billed to a STORED login
+        # runs the record's token command NOW, the way the kernel runs the box's own helper (credentials.run_helper:
+        # /bin/sh, a whitelisted environment, stdin closed, stderr discarded, bounded), and hands the output to this one
+        # CLI as CLAUDE_CODE_OAUTH_TOKEN below. A command that fails is loud, never a quiet fall onto another account: the
+        # record is marked refused with the reason (every menu leaves it out, the status says the fall) and the decision
+        # is made again against the refusal, so this launch takes the same fall a dead machine login takes.
+        login_token = ""
+        if login_id:
+            try:
+                login_token = _logins.token_value(self.state_dir, login_id,
+                                                  lambda c: _cred.run_helper(c, label="the token command"))
+            except (_cred.CredentialError, ValueError) as e:
+                _logins.mark_refused(self.state_dir, login_id, "the token command did not answer: %s" % e)
+                self._log("auth (%s): the %s login's token command failed (%s): the record is marked refused and this "
+                          "launch takes the fall" % (sess.name, self.login_display(login_id), e), problem=True)
+                fell, side, login_id = _decide()
         if side == sess.auth and sess.auth in ("login", "key") and sess._pick_unknown_said != picked:
             why = self.pick_unknown(sess.auth, auth_login)   # cannot tell just now: the pick stands, said once per session
             if why:
@@ -12131,9 +12146,7 @@ class SdkBackend:
         login = side == "login"
         fs = flag_settings_path(self.state_dir, sess.sid,
                                 ultracode=(sess.effort or "") == "ultracode", fast=sess.fast_opt,
-                                env=env_vars, no_helper=login and not login_id,
-                                helper_cmd=_logins.helper_command(login_id, self.state_dir) if login_id else "",
-                                log=self._log)
+                                env=env_vars, no_helper=login, log=self._log)
         if fs:
             kw["settings"] = fs
         # What the launch MEANT, for _note_auth_source's per-init check: keyed when the box's helper will
@@ -12141,17 +12154,16 @@ class SdkBackend:
         # fall to) leaves the CLI to decide, and a login landing then is the pick contradicted.
         launch_keyed = not login and keyed_box
         if login_id:
-            # A launch billed to a STORED login (T346): the per-session settings layer above named THAT login's
-            # helper (apiKeyHelper: bin/romp-login-helper <id> <state dir>, flag_settings_path's helper_cmd)
-            # instead of disabling the box's; the CLI runs it per request and it runs the login's token command
-            # (a secret manager's read command, typically) into the CLI's pipe and nowhere else. No credential rides romp's
-            # files or environment, and the machine's own login tokens are NOT restored into this launch (a
-            # bearer outranks the helper in the CLI's precedence and would bill the machine's account). The
-            # door rules stand: env_request_error still refuses credential names from any client payload and
-            # the strip above still drops them from a stored session env. ANTHROPIC_API_KEY, which outranks the
-            # helper too, cannot ride the child either: this overlay cannot unset an inherited variable, and the
-            # kernel's own environment never carries the name (check_boot_environment refuses to start with it).
-            kw["env"] = dict(kw["env"])
+            # A launch billed to a STORED login (T346): the token its command printed rides this ONE process as
+            # CLAUDE_CODE_OAUTH_TOKEN, exactly where the machine's own login tokens ride a login launch (the environment
+            # road, 2026-09-14: a setup-token through an apiKeyHelper hangs the CLI's request; in the environment it is
+            # accepted), with the box's helper disabled above (a helper outranks a bearer in the CLI's precedence). The
+            # machine's own tokens are NOT restored beside it (the first bearer found would bill the machine's account),
+            # and no romp file or log line ever holds the value. The door rules stand: env_request_error still refuses
+            # credential names from any client payload and the strip above still drops them from a stored session env.
+            # ANTHROPIC_API_KEY, which outranks a bearer too, cannot ride the child either: this overlay cannot unset an
+            # inherited variable, and the kernel's own environment never carries the name (check_boot_environment).
+            kw["env"] = dict(kw["env"], CLAUDE_CODE_OAUTH_TOKEN=login_token)
         elif login or (side != "key" and not keyed_box):
             # The login tokens claimed at boot ride every launch that bills the login: a login pick, and an
             # unpicked session on a box with no helper (its effective billing IS the login, and the judges'

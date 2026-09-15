@@ -511,7 +511,11 @@ Every judge child (`claude -p`) launches with no credential in its environment.
 A key-billed call resolves the helper itself, inside its own CLI, the way a
 session does. A login-billed call passes `--settings '{"apiKeyHelper": ""}'`,
 which disables the helper for that one process, and gets back the login tokens
-the kernel claimed out of its own environment at boot. The same selection
+the kernel claimed out of its own environment at boot. A call billed to a
+stored login passes the same suppression and gets that login's setup-token
+instead, read by running the record's token command for that one child (the
+environment road, 2026-09-14; a failing command fails the call in its own
+words, never a fall onto another credential). The same selection
 applies to standalone `romp-judge --once`. A helper that fails inside a judge's
 CLI cannot silently use the login or a stale key; what the call files depends on
 how the CLI fails: a credential error the CLI reports within the call's 120 s

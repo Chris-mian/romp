@@ -161,11 +161,18 @@ class Registry(unittest.TestCase):
         self.assertFalse(lg.remove(self.state, a["id"]))
         self.assertIsNone(lg.read_record(self.state, a["id"]))
 
-    def test_the_helper_command_names_the_script_the_id_and_the_state_dir_and_nothing_secret(self):
-        cmd = lg.helper_command(ZID, "/state dir/romp")
-        self.assertTrue(cmd.endswith(" 0123456789ab '/state dir/romp'"), cmd)
-        self.assertIn("/bin/romp-login-helper", cmd)
-        self.assertTrue(os.access(os.path.join(BIN, "romp-login-helper"), os.X_OK), "the helper script is executable")
+    def test_the_token_command_is_the_records_and_a_missing_record_or_command_is_a_static_error(self):
+        rec = _rec(self.state, "Work")
+        self.assertEqual(lg.token_command(self.state, rec["id"]), "token-read 'romp login Work'")
+        with self.assertRaises(ValueError) as cm:
+            lg.token_command(self.state, ZID)
+        self.assertEqual(str(cm.exception), "no stored login with that id")
+        nocmd = _rec(self.state, "NoCmd", tokenCmd="")
+        with self.assertRaises(ValueError) as cm:
+            lg.token_command(self.state, nocmd["id"])
+        self.assertEqual(str(cm.exception), "the NoCmd login's record names no token command")
+        self.assertNotIn("romp-login-helper", open(os.path.join(ROOT, "kernel", "logins.py")).read(), "the helper road is gone (2026-09-14)")
+        self.assertFalse(os.path.exists(os.path.join(BIN, "romp-login-helper")))
 
     def test_the_module_never_touches_a_token_and_assumes_no_store(self):
         src = open(os.path.join(ROOT, "kernel", "logins.py")).read()
@@ -225,10 +232,11 @@ class Registry(unittest.TestCase):
             self.assertFalse(lg.record_state(Path(d), odd_rec["id"])["hasCmd"])
 
 
-class TheHelperScript(unittest.TestCase):
-    """bin/romp-login-helper runs the record's token command and prints what it prints, to stdout only; every
-    failure of its own is a stderr line naming the login id and never a value. The command here is a secret
-    manager's read by a synthetic tool name (token-read), answered by a fake of it on PATH."""
+class TheTokenCommand(unittest.TestCase):
+    """The environment road (2026-09-14): a launch or a judge call billed to a stored login runs the record's token
+    command through credentials.run_helper (labelled "the token command") and hands the output to that ONE child as
+    CLAUDE_CODE_OAUTH_TOKEN; logins.token_value never runs a command itself. The command here is a secret manager's
+    read by a synthetic tool name (token-read), answered by a fake of it on PATH."""
 
     def setUp(self):
         self.state = Path(tempfile.mkdtemp())
@@ -239,34 +247,36 @@ class TheHelperScript(unittest.TestCase):
         fake_op.write_text("#!/bin/sh\n[ \"$1\" = 'romp login Work' ] || { echo 'token-read: no such item' >&2; exit 1; }\n"
                            "printf '%s' '" + self.tok + "'\n")
         fake_op.chmod(0o700)
-        self.env = dict(os.environ, PATH=self.bin + ":" + os.environ.get("PATH", ""))
+        self._path = os.environ.get("PATH", "")
+        os.environ["PATH"] = self.bin + ":" + self._path
 
-    def _run(self, *args):
-        import subprocess
-        return subprocess.run([os.path.join(BIN, "romp-login-helper"), *args], capture_output=True, text=True, env=self.env)
+    def tearDown(self):
+        os.environ["PATH"] = self._path
 
-    def test_prints_the_item_for_a_recorded_reference(self):
+    def _read(self, login_id, timeout_s=None):
+        return lg.token_value(self.state, login_id, lambda c: sb._cred.run_helper(c, label="the token command", timeout_s=timeout_s))
+
+    def test_prints_the_item_for_a_recorded_command(self):
         rec = _rec(self.state, "Work")
-        p = self._run(rec["id"], str(self.state))
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, self.tok, ""))
+        self.assertEqual(self._read(rec["id"]), self.tok)
 
-    def test_failures_name_the_id_and_step_never_a_value(self):
-        p = self._run("zzz")
-        self.assertEqual(p.returncode, 2)
-        self.assertIn("12-hex id", p.stderr)
-        p = self._run(ZID, str(self.state))
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIn(ZID, p.stderr)
-        self.assertIn("does not read", p.stderr)
-        rec = _rec(self.state, "Other")          # a reference the fake op does not know
-        p = self._run(rec["id"], str(self.state))
-        self.assertNotEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, "")
-        self.assertNotIn(self.tok, p.stderr + p.stdout)
+    def test_failures_name_the_step_never_a_value(self):
+        with self.assertRaises(ValueError) as cm:
+            self._read(ZID)
+        self.assertEqual(str(cm.exception), "no stored login with that id")
+        rec = _rec(self.state, "Other")          # a reference the fake tool does not know
+        with self.assertRaises(sb._cred.CredentialError) as cm:
+            self._read(rec["id"])
+        self.assertEqual(str(cm.exception), "the token command failed (non-zero exit)")
+        self.assertNotIn(self.tok, str(cm.exception))
         nocmd = _rec(self.state, "NoCmd", tokenCmd="")
-        p = self._run(nocmd["id"], str(self.state))
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIn("names no token command", p.stderr)
+        with self.assertRaises(ValueError) as cm:
+            self._read(nocmd["id"])
+        self.assertIn("names no token command", str(cm.exception))
+        empty = _rec(self.state, "Empty", tokenCmd="true")
+        with self.assertRaises(sb._cred.CredentialError) as cm:
+            self._read(empty["id"])
+        self.assertEqual(str(cm.exception), "the token command printed an empty or invalid key (one line on stdout, exit 0)")
 
     def test_the_command_runs_under_a_whitelisted_environment_with_its_stderr_discarded(self):
         # the command sees PATH/HOME and the XDG names, never the kernel's serve token or a stray variable; whatever it
@@ -274,10 +284,16 @@ class TheHelperScript(unittest.TestCase):
         probe = Path(tempfile.mkdtemp()) / "seen.json"
         code = 'import json,os,sys; json.dump(dict(os.environ), open(sys.argv[1], "w")); sys.stderr.write("secret-manager diagnostic quoting NOISE"); print("tok-out")'
         rec = _rec(self.state, "Env", tokenCmd="python3 -c '%s' %s" % (code, probe))
-        env = dict(self.env, ROMP_SERVE_TOKEN="serve-token-value", STRAY_VAR="stray", XDG_CONFIG_HOME="/x/config", LC_TIME="C")
-        import subprocess
-        p = subprocess.run([os.path.join(BIN, "romp-login-helper"), rec["id"], str(self.state)], capture_output=True, text=True, env=env)
-        self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (0, "tok-out", ""), "stdout is the command's, stderr is empty")
+        saved = {k: os.environ.get(k) for k in ("ROMP_SERVE_TOKEN", "STRAY_VAR", "XDG_CONFIG_HOME", "LC_TIME")}
+        os.environ.update(ROMP_SERVE_TOKEN="serve-token-value", STRAY_VAR="stray", XDG_CONFIG_HOME="/x/config", LC_TIME="C")
+        try:
+            self.assertEqual(self._read(rec["id"]), "tok-out", "stdout is the command's, one trailing newline forgiven")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
         seen = json.loads(probe.read_text())
         self.assertNotIn("ROMP_SERVE_TOKEN", seen)
         self.assertNotIn("STRAY_VAR", seen)
@@ -288,14 +304,13 @@ class TheHelperScript(unittest.TestCase):
                         | {k for k in seen if k.startswith(("LC_", "XDG_"))}, sorted(seen))
 
     def test_a_hung_command_is_cut_by_the_bound(self):
-        import subprocess, time as _t
+        import time as _t
         rec = _rec(self.state, "Hung", tokenCmd="sleep 30")
         t0 = _t.time()
-        p = subprocess.run([os.path.join(BIN, "romp-login-helper"), rec["id"], str(self.state)], capture_output=True, text=True,
-                           env=dict(self.env, ROMP_LOGIN_HELPER_TIMEOUT_S="1"))
+        with self.assertRaises(sb._cred.CredentialError) as cm:
+            self._read(rec["id"], timeout_s=1)
         self.assertLess(_t.time() - t0, 10, "the bound cut it")
-        self.assertNotEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, "")
+        self.assertEqual(str(cm.exception), "the token command timed out after 1 s")
 
     def test_any_command_serves(self):
         # a token kept in a private file, read by a plain command: romp assumes nothing about the store
@@ -303,8 +318,7 @@ class TheHelperScript(unittest.TestCase):
         priv.write_text(self.tok)
         priv.chmod(0o600)
         rec = _rec(self.state, "File", tokenCmd="cat %s" % priv)
-        p = self._run(rec["id"], str(self.state))
-        self.assertEqual((p.returncode, p.stdout), (0, self.tok))
+        self.assertEqual(self._read(rec["id"]), self.tok)
 
 
 class MachineLoginRecord(unittest.TestCase):
@@ -479,6 +493,16 @@ class _Backend(unittest.TestCase):
         self._tokens = sb._STARTUP_AUTH_ENV
         sb._STARTUP_AUTH_ENV = {}
         _stage_helper(self.cfg)
+        # the environment road (2026-09-14): a launch billed to a stored login RUNS the record's token command; the records'
+        # default command is a read by a synthetic tool name (token-read), so a fake of it sits on the runner's PATH and
+        # prints one synthetic bearer for any `romp login <label>` item, refusing anything else
+        self.tools = tempfile.mkdtemp()
+        self.tok = _token_shaped()
+        tool = Path(self.tools) / "token-read"
+        tool.write_text("#!/bin/sh\ncase \"$1\" in 'romp login '*) printf '%s' '" + self.tok + "' ;; *) echo 'token-read: no such item' >&2; exit 1 ;; esac\n")
+        tool.chmod(0o700)
+        self._henv = sb._cred.helper_env
+        sb._cred.helper_env = lambda: dict(self._henv(), PATH=self.tools + ":" + self._henv().get("PATH", ""))
         self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
         self.be.login_ok = lambda: True
         import sys, types
@@ -498,6 +522,7 @@ class _Backend(unittest.TestCase):
         sb._FAST_ORG_VERDICTS.clear()
         sb._cred.forget_helper_key()
         sb._cred.managed_settings_path = self._managed
+        sb._cred.helper_env = self._henv
         sb._STARTUP_AUTH_ENV = self._tokens
         os.environ["CLAUDE_CONFIG_DIR"] = self._cfg_before
         if self._exp is not None:
@@ -570,7 +595,8 @@ class StoredLoginPick(_Backend):
         judged on its record as a pick of it would be; the seed carries the id; a session with no pick of its own reads
         that login in its status (live and dormant), launches with its helper, and its judges' resolver names it. A
         refused (or removed) stored default falls through to the machine's own login everywhere, and is refused at the door."""
-        rec = _rec(self.be.state_dir, "Work", org="Acme")
+        default_tok = _token_shaped()
+        rec = _rec(self.be.state_dir, "Work", org="Acme", tokenCmd="printf '%%s' '%s'" % default_tok)
         self.assertTrue(self.be.set_auth_default("login:" + rec["id"]))
         d = sb.read_sdk_defaults(self.be.state_dir)
         self.assertEqual((d.get("auth"), d.get("authExplicit"), d.get("authLogin")), ("login", True, rec["id"]))
@@ -587,9 +613,9 @@ class StoredLoginPick(_Backend):
         row = self.be._live_row({"sid": s.sid}, s.sid)
         self.assertEqual((row["auth"], row["authLogin"], row["authLabel"]), ("login", rec["id"], "Work · Acme"), "the dormant row too")
         kw = self._launch_options(s)
-        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), lg.helper_command(rec["id"], self.be.state_dir), "the launch names that login's helper")
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "the box's helper disabled")
+        self.assertEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), default_tok, "the launch carries that login's token (the environment road)")
         self.assertEqual(s._launched_login, rec["id"])
-        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"])
         # refused: the status, the launch and the resolver fall through to the machine's own login
         lg.mark_refused(self.be.state_dir, rec["id"], "refused")
         self.assertEqual((self.be.explicit_default_login(), self.be.fallback_auth(), self.be.default_login({})), ("", "login", ""))
@@ -673,15 +699,20 @@ class StoredLoginPick(_Backend):
         junk = self._sess(3, auth="login", authLogin="not-an-id")
         self.assertEqual(junk.auth_login, "", "junk reads as the machine's login")
 
-    def test_the_launch_carries_the_login_helper_and_no_machine_token(self):
-        rec = _rec(self.be.state_dir, "Work")
-        sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": _token_shaped()}
+    def test_the_launch_carries_the_stored_token_in_its_environment_and_no_machine_token(self):
+        """The environment road (2026-09-14): the launch runs the record's token command and hands the output to this
+        one CLI as CLAUDE_CODE_OAUTH_TOKEN, the box's helper disabled; the machine's own token is not beside it."""
+        tok = _token_shaped()
+        rec = _rec(self.be.state_dir, "Work", tokenCmd="printf '%%s' '%s'" % tok)
+        machine_tok = _token_shaped()
+        sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": machine_tok}
         s = self._sess(1, auth="login", authLogin=rec["id"])
         kw = self._launch_options(s)
         st = self._settings_of(kw)
-        self.assertEqual(st.get("apiKeyHelper"), lg.helper_command(rec["id"], self.be.state_dir))
-        self.assertIn("romp-login-helper %s" % rec["id"], st["apiKeyHelper"])
-        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "the machine's token stays out of a stored-login launch")
+        self.assertEqual(st.get("apiKeyHelper"), "", "the box's helper disabled, as for the machine's own login")
+        self.assertEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), tok, "the stored login's token, from its command")
+        self.assertNotEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), machine_tok, "the machine's token stays out of a stored-login launch")
+        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", kw["env"])
         # ANTHROPIC_API_KEY outranks the helper in the CLI's precedence, and the launch's overlay cannot unset an
         # inherited variable: the guarantee is the kernel's own environment, which the boot check refuses to run with
         # while that name is set (credentials.check_boot_environment, RETIRED_VARS), so no child inherits it
@@ -690,12 +721,31 @@ class StoredLoginPick(_Backend):
         self.assertIn("RETIRED_VARS", inspect.getsource(sb._cred.check_boot_environment))
         self.assertEqual(s._launched_login, rec["id"])
         self.assertFalse(s._launched_keyed)
-        # the machine's own login launch is exactly as before: the helper disabled, the token restored
+        # the machine's own login launch is exactly as before: the helper disabled, the machine's token restored
         s2 = self._sess(2, auth="login")
         kw2 = self._launch_options(s2)
         self.assertEqual(self._settings_of(kw2).get("apiKeyHelper"), "")
-        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", kw2["env"])
+        self.assertEqual(kw2["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), machine_tok)
         self.assertEqual(s2._launched_login, "")
+
+    def test_a_failing_token_command_marks_the_record_refused_and_the_launch_takes_the_fall(self):
+        """A command that fails at launch (the fake tool knows no such item) is loud, never a quiet fall: the record is
+        marked refused with the reason, the problem ring says so, and this launch falls exactly as a refused stored
+        login does (the key: a helper is configured here), carrying neither the stored nor the machine's token."""
+        rec = _rec(self.be.state_dir, "Work", tokenCmd="false")   # a command that exits non-zero
+        sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": _token_shaped()}
+        logs = []
+        self.be._log = lambda m, problem=False: logs.append((m, problem))
+        s = self._sess(1, auth="login", authLogin=rec["id"])
+        kw = self._launch_options(s)
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "a key launch: no token of either kind")
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw), "the box's helper runs (the fall is the key)")
+        self.assertEqual(s._launched_login, "")
+        state = lg.record_state(self.be.state_dir, rec["id"])
+        self.assertTrue(state.get("refused"))
+        self.assertEqual(str(state.get("refused")), "the token command did not answer: the token command failed (non-zero exit)")
+        self.assertTrue(any("token command failed" in m and p for m, p in logs), logs)
+        self.assertEqual(self.be.pick_unavailable("login", rec["id"]), "login")
 
     def test_a_refused_stored_login_launch_falls_to_the_key_and_says_so_once(self):
         rec = _rec(self.be.state_dir, "Work")
@@ -712,12 +762,15 @@ class StoredLoginPick(_Backend):
         self.assertIn("'Work' login", said[0][:80] + said[0]) if False else self.assertIn("Work", said[0])
         self.assertIn("billing the API key", said[0])
 
-    def test_the_init_reads_the_helper_landing_as_the_login_and_labels_its_own_bucket(self):
+    def test_the_init_reads_a_bearer_landing_as_the_stored_login_and_labels_its_own_bucket(self):
+        """The environment road (2026-09-14): the launch handed the CLI the stored login's token as a bearer, so an init
+        reporting NO key source is that login's landing (a bearer outranks the machine's credentials file, and the
+        machine's tokens were not restored beside it)."""
         rec = _rec(self.be.state_dir, "Work", org="Acme", kind="enterprise")
         s = self._sess(1, auth="login", authLogin=rec["id"])
         self._launch_options(s)
-        self.be._note_auth_source(s, "apiKeyHelper")
-        self.assertEqual(s.auth_live, "login", "the stored login rides the helper, so the helper landing IS the login")
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(s.auth_live, "login", "the stored login rides the environment as a bearer, so a bearer landing IS the login")
         self.assertTrue(s.auth_label.startswith("login:"), s.auth_label)
         self.assertNotEqual(s.auth_label, self.be.api_health.auth_label("none"), "its own bucket, not the machine's")
         self.assertNotEqual(s.auth_label, "login:unknown")
@@ -731,7 +784,7 @@ class StoredLoginPick(_Backend):
         self.be._note_auth_source(s2, "apiKeyHelper")
         self.assertEqual(s2.auth_live, "key")
 
-    def test_a_landing_without_the_helper_is_loud_refused_and_cleared_by_a_served_reply(self):
+    def test_a_landing_on_a_key_is_loud_refused_and_cleared_by_a_served_bearer_reply(self):
         rec = _rec(self.be.state_dir, "Work")
         logs = []
         self.be._log = lambda m, problem=False: logs.append((m, problem))
@@ -743,15 +796,15 @@ class StoredLoginPick(_Backend):
         self.assertEqual((s._launched_login, s2._launched_login), (rec["id"], rec["id"]))
         self.assertIsNone(s.auth_login_live, "no evidence before an init")
         self.assertIsNone(s.snapshot()["authLoginLive"])
-        # the first CLI reports NO key source: it never used the helper and signed in with the machine's own login
-        self.be._note_auth_source(s, "none")
+        # the first CLI reports a KEY source: it never used the bearer and signed in with a key it found
+        self.be._note_auth_source(s, "apiKeyHelper")
         self.assertEqual(s.auth_login_live, "")
         self.assertEqual(s.snapshot()["authLoginLive"], "")
-        self.assertTrue(any("helper was not used" in m and p for m, p in logs), logs)
-        self.assertIn("the token command did not answer", lg.read_record(self.be.state_dir, rec["id"])["refused"])
-        self.assertIn("was refused", self.be.auth_unavailable_why("login", rec["id"]), "every menu greys it")
-        # the second CLI's helper DID answer: a served reply there is the deciding event that clears the refusal
-        self.be._note_auth_source(s2, "apiKeyHelper")
+        self.assertTrue(any("token was not used" in m and p for m, p in logs), logs)
+        self.assertIn("the token was not used and the CLI signed in with the CLI's apiKeyHelper credential", lg.read_record(self.be.state_dir, rec["id"])["refused"])
+        self.assertIn("was refused", self.be.auth_unavailable_why("login", rec["id"]), "every menu leaves it out")
+        # the second CLI DID use the bearer (no key source): a served reply there is the deciding event that clears the refusal
+        self.be._note_auth_source(s2, "none")
         self.assertEqual(s2.auth_login_live, rec["id"])
         import types
         s2._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m1", parent_tool_use_id=None, error=None))
@@ -768,7 +821,7 @@ class StoredLoginPick(_Backend):
         self.be._log = lambda m, problem=False: logs.append((m, problem))
         for word, named in (("/login managed key", "the CLI's /login managed key credential"),
                             ("ANTHROPIC_API_KEY", "the CLI's ANTHROPIC_API_KEY credential"),
-                            ("none", "the machine's own login"), ("", "the machine's own login")):
+                            ("apiKeyHelper", "the CLI's apiKeyHelper credential"), ("user", "the CLI's user credential")):
             lg.clear_refused(self.be.state_dir, rec["id"])
             s = self._sess(9, auth="login", authLogin=rec["id"])
             self._launch_options(s)
@@ -779,7 +832,7 @@ class StoredLoginPick(_Backend):
             self.assertEqual(s._launched_login, "", "this process does not bill the stored login (spend and the ring say so)")
             self.assertIn(named, lg.read_record(self.be.state_dir, rec["id"])["refused"], word)
         self.assertEqual(len(recon), 4, "every wrong landing asks for the reconnect onto the fallback side")
-        self.assertTrue(all("reconnecting onto the fallback side" in m for m, p in logs if "helper was not used" in m))
+        self.assertTrue(all("reconnecting onto the fallback side" in m for m, p in logs if "token was not used" in m))
 
     def test_a_wrong_landing_with_nothing_to_fall_to_stays_put_and_reconnects_at_most_once(self):
         rec = _rec(self.be.state_dir, "Work")
@@ -791,12 +844,12 @@ class StoredLoginPick(_Backend):
         s = self._sess(3, auth="login", authLogin=rec["id"])
         self._launch_options(s)
         s.request_reconnect = lambda defer=True: recon.append(1)
-        self.be._note_auth_source(s, "none")
+        self.be._note_auth_source(s, "apiKeyHelper")     # a key word: the wrong landing
         self.assertEqual(self.be.pick_fall("login", rec["id"]), "", "the probe: nothing to fall to")
         self.assertEqual(recon, [], "an identical relaunch is never asked for")
         self.assertEqual((s.auth_login_live, s._launched_login), ("", ""), "refused and flagged where it landed")
         self.assertIn("refused", lg.read_record(self.be.state_dir, rec["id"]))
-        rows = [m for m, p in logs if "helper was not used" in m and p]
+        rows = [m for m, p in logs if "token was not used" in m and p]
         self.assertEqual(len(rows), 1, logs)
         self.assertIn("nothing to fall to", rows[0])
         self.assertNotIn("reconnecting", rows[0])
@@ -806,11 +859,11 @@ class StoredLoginPick(_Backend):
         s2 = self._sess(4, auth="login", authLogin=rec["id"])
         self._launch_options(s2)
         s2.request_reconnect = lambda defer=True: recon.append(2)
-        self.be._note_auth_source(s2, "none")
+        self.be._note_auth_source(s2, "apiKeyHelper")
         self.assertEqual(recon, [2])
         self.assertTrue(any("reconnecting onto the fallback side (login)" in m for m, p in logs), logs)
         s2._launched_login = rec["id"]           # a second init reporting the same wrong landing
-        self.be._note_auth_source(s2, "none")
+        self.be._note_auth_source(s2, "apiKeyHelper")
         self.assertEqual(recon, [2], "asked once")
         self.assertTrue(any("already reconnected once" in m for m, p in logs), logs)
 
@@ -820,17 +873,19 @@ class StoredLoginPick(_Backend):
         picked = self.be.api_health.auth_label("none", login_id=rec["id"], display=self.be.login_display(rec["id"]))
         machine = self.be.api_health.auth_label("none")
         self.assertNotEqual(picked, machine)
-        # the helper answered: the bucket is the stored login's
+        # the bearer answered (no key source): the bucket is the stored login's
         s = self._sess(5, auth="login", authLogin=rec["id"])
         self._launch_options(s)
-        self.be._note_auth_source(s, "apiKeyHelper")
+        self.be._note_auth_source(s, "none")
         self.assertEqual(s.auth_label, picked)
-        # the helper did not answer and the machine's own login did the work: the machine's bucket, not the pick's
+        # the CLI took a key instead: the key's bucket, never the pick's
         s = self._sess(6, auth="login", authLogin=rec["id"])
         self._launch_options(s)
         s.request_reconnect = lambda defer=True: None
-        self.be._note_auth_source(s, "none")
-        self.assertEqual(s.auth_label, machine)
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertTrue(s.auth_label.startswith("key"), s.auth_label)
+        self.assertNotEqual(s.auth_label, picked)
+        self.assertNotEqual(s.auth_label, machine)
         # the fallback relaunch (the record now refused, the key does the work) files under the key's bucket
         s = self._sess(7, auth="login", authLogin=rec["id"])
         self._launch_options(s)
@@ -839,14 +894,14 @@ class StoredLoginPick(_Backend):
         self.assertTrue(s.auth_label.startswith("key"), s.auth_label)
         self.assertNotEqual(s.auth_label, picked)
 
-    def test_a_relaunch_without_the_helper_clears_the_live_evidence_and_persists_it(self):
+    def test_a_relaunch_without_the_token_clears_the_live_evidence_and_persists_it(self):
         rec = _rec(self.be.state_dir, "Work")
         self.be._log = lambda m, problem=False: None
         sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
         s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
         self._launch_options(s)
         self.assertEqual(s._launched_login, rec["id"])
-        self.be._note_auth_source(s, "apiKeyHelper")
+        self.be._note_auth_source(s, "none")
         self.assertEqual(s.auth_login_live, rec["id"])
         reg = sb.read_reg(self.be.state_dir, sid)
         self.assertEqual((reg.get("launchedLogin"), reg.get("authLoginLive")), (rec["id"], rec["id"]), "persisted with the evidence")
@@ -872,7 +927,7 @@ class StoredLoginPick(_Backend):
         lg.clear_refused(self.be.state_dir, rec["id"])
         self._launch_options(s)
         s.request_reconnect = lambda defer=True: None
-        self.be._note_auth_source(s, "none")
+        self.be._note_auth_source(s, "apiKeyHelper")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLoginLive"), "")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("launchedLogin"), "")
 
@@ -884,7 +939,7 @@ class StoredLoginPick(_Backend):
         # a kernel child's launch: the options build, then the connect's stamp from them
         self._launch_options(s)
         self.assertEqual((s._options_login, s._launched_login, s.auth_login_live), (rec["id"], rec["id"], None))
-        self.be._note_auth_source(s, "apiKeyHelper")
+        self.be._note_auth_source(s, "none")
         reg = sb.read_reg(self.be.state_dir, sid)
         self.assertEqual((reg["launchedLogin"], reg["authLoginLive"]), (rec["id"], rec["id"]))
         # the kernel restarts while a host keeps the CLI running; the reg names that CLI (the identity the hello's decision
@@ -928,7 +983,7 @@ class StoredLoginPick(_Backend):
         reg4 = sb.read_reg(self.be.state_dir, sid)
         self.assertEqual((reg4["launchedLogin"], reg4["authLoginLive"]), ("", None))
 
-    def test_the_once_flag_resets_on_a_new_pick_and_on_a_helper_answered_init(self):
+    def test_the_once_flag_resets_on_a_new_pick_and_on_a_bearer_answered_init(self):
         rec = _rec(self.be.state_dir, "Work")
         recon = []
         self.be._log = lambda m, problem=False: None
@@ -937,7 +992,7 @@ class StoredLoginPick(_Backend):
         self.be.sessions[sid] = s
         s.request_reconnect = lambda defer=True: recon.append(1)
         self._launch_options(s)
-        self.be._note_auth_source(s, "none")          # the wrong landing: the one reconnect
+        self.be._note_auth_source(s, "apiKeyHelper")  # the wrong landing (a key word): the one reconnect
         self.assertTrue(s._wrong_landing_reconnected)
         self.assertEqual(len(recon), 1)
         # the user fixes the command and picks the login again: the fall may be taken again
@@ -947,12 +1002,12 @@ class StoredLoginPick(_Backend):
         n0 = len(recon)
         self._launch_options(s)
         self.assertEqual(s._launched_login, rec["id"])
-        self.be._note_auth_source(s, "none")
+        self.be._note_auth_source(s, "apiKeyHelper")
         self.assertEqual(len(recon), n0 + 1, "the documented fall is taken again after a new pick")
-        # a helper-answered init resets it as well
+        # a bearer-answered init (no key source) resets it as well
         lg.clear_refused(self.be.state_dir, rec["id"])
         self._launch_options(s)
-        self.be._note_auth_source(s, "apiKeyHelper")
+        self.be._note_auth_source(s, "none")
         self.assertFalse(s._wrong_landing_reconnected)
 
     def test_the_seed_skip_names_a_dead_remembered_stored_login(self):
@@ -993,8 +1048,9 @@ class UsersShape(_Backend):
             "accessToken": _token_shaped(), "subscriptionType": "max"}}))
         km._ACCT_CACHE["mtime"] = -2.0
         km._KIND_CACHE["mtime"] = -2.0
+        self.ent_tok = _token_shaped()
         self.ent = _rec(self.be.state_dir, "Enterprise", org="Acme", kind="enterprise",
-                        tokenCmd="token-read 'claude setup-token'")
+                        tokenCmd="printf '%%s' '%s'" % self.ent_tok)   # a command that prints the synthetic bearer (the environment road)
         self.saved = (km._sdk, km.jd._cred.helper_source)
         km._sdk = lambda: self.be
         self._state = km.jd.STATE
@@ -1019,8 +1075,8 @@ class UsersShape(_Backend):
         se = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, enterprise))
         kwp, kwe = self.be._options(sp, dict), self.be._options(se, dict)
         self.assertEqual(self._settings_of(kwp).get("apiKeyHelper"), "", "personal: the ordinary login, as now")
-        self.assertEqual(self._settings_of(kwe).get("apiKeyHelper"), lg.helper_command(self.ent["id"], self.be.state_dir))
-        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kwe["env"])
+        self.assertEqual(self._settings_of(kwe).get("apiKeyHelper"), "", "enterprise: the helper disabled too")
+        self.assertEqual(kwe["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), self.ent_tok, "…and the enterprise token in its environment (the environment road)")
         self.assertEqual((sp.snapshot()["authLabel"], se.snapshot()["authLabel"]), ("", "Enterprise · Acme · enterprise"))
         # the judges follow each session's account
         (jd.SDKDIR).mkdir(parents=True, exist_ok=True)
@@ -1142,30 +1198,44 @@ class Judges(unittest.TestCase):
     def setUp(self):
         self.state = km.jd.STATE
         km.jd.SDKDIR.mkdir(parents=True, exist_ok=True)
-        self.rec = _rec(self.state, "Work", org="Acme", kind="enterprise")
+        self.rec_tok = _token_shaped()
+        self.rec = _rec(self.state, "Work", org="Acme", kind="enterprise", tokenCmd="printf '%%s' '%s'" % self.rec_tok)
         (km.jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"sid": SID, "auth": "login", "authLogin": self.rec["id"]}))
 
     def tearDown(self):
         (km.jd.SDKDIR / (SID + ".json")).unlink(missing_ok=True)
         lg.remove(self.state, self.rec["id"])
 
-    def test_the_call_bills_the_stored_login_through_its_helper(self):
+    def test_the_call_bills_the_stored_login_through_its_token_in_the_childs_environment(self):
+        """The environment road (2026-09-14): the child's overlay disables the box's helper as for the machine's login, and
+        its environment carries the token the record's command printed, never the machine's own; a command that fails is a
+        CredentialError the call notes in its own words."""
         self.assertEqual(jd._judge_auth(SID), "login:" + self.rec["id"])
         cmd = jd._judge_cmd("sonnet", "SYS", None, auth="login:" + self.rec["id"])
         overlay = json.loads(cmd[cmd.index("--settings") + 1])
-        self.assertEqual(overlay["apiKeyHelper"], jd._login_helper_cmd(self.rec["id"]))
-        self.assertIn("romp-login-helper %s" % self.rec["id"], overlay["apiKeyHelper"])
+        self.assertEqual(overlay["apiKeyHelper"], "", "the box's helper disabled, as for the machine's login")
         plain = jd._judge_cmd("sonnet", "SYS", None, auth="login")
         self.assertEqual(json.loads(plain[plain.index("--settings") + 1])["apiKeyHelper"], "", "the machine's login: unchanged")
+        machine_tok = _token_shaped()
         saved = jd._LOGIN_AUTH_ENV_FN
-        jd._LOGIN_AUTH_ENV_FN = lambda: {"CLAUDE_CODE_OAUTH_TOKEN": _token_shaped()}
+        jd._LOGIN_AUTH_ENV_FN = lambda: {"CLAUDE_CODE_OAUTH_TOKEN": machine_tok}
         try:
-            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", jd._judge_env("triage", "login:" + self.rec["id"]),
-                             "no machine token beside a stored login's helper")
-            self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", jd._judge_env("triage", "login"))
+            env = jd._judge_env("triage", "login:" + self.rec["id"])
+            self.assertEqual(env.get("CLAUDE_CODE_OAUTH_TOKEN"), self.rec_tok, "the stored login's token, from its command")
+            self.assertNotEqual(env.get("CLAUDE_CODE_OAUTH_TOKEN"), machine_tok, "never the machine's token beside it")
+            self.assertEqual(jd._judge_env("triage", "login").get("CLAUDE_CODE_OAUTH_TOKEN"), machine_tok)
+            bad = _rec(self.state, "Bad", tokenCmd="false")   # a command that exits non-zero
+            with self.assertRaises(jd._cred.CredentialError) as cm:
+                jd._judge_env("triage", "login:" + bad["id"])
+            self.assertEqual(str(cm.exception), "the token command failed (non-zero exit)")
+            with self.assertRaises(jd._cred.CredentialError) as cm:
+                jd._judge_env("triage", "login:" + ZID)
+            self.assertEqual(str(cm.exception), "no stored login with that id")
+            lg.remove(self.state, bad["id"])
         finally:
             jd._LOGIN_AUTH_ENV_FN = saved
         self.assertTrue(jd._is_login_auth("login:" + self.rec["id"]) and jd._is_login_auth("login") and not jd._is_login_auth("key"))
+        self.assertFalse(hasattr(jd, "_login_helper_cmd"), "the helper road is gone")
 
     def test_a_refused_stored_login_never_runs_a_judge_call(self):
         import io, contextlib
