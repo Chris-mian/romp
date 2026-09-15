@@ -34931,6 +34931,19 @@ def _prov_ledger_memo_report():
     return dict(_prov_ledger_memo_stats, entries=len(_prov_ledger_memo))
 
 
+def _prov_ledger_memo_evict(listed, reader):
+    """Drop the provisional ledger memo's dead entries, at every ledgers attach (the review of PR 1694, 2026-09-15): with no
+    flagged Outline connected there is no reader, so every entry goes (a frozen store reference per cold tab would otherwise
+    linger until a strip change); with one, the entries of tabs no longer listed and of tabs built since (warm: the gate never
+    skips them again). Iterates a snapshot and pops with a default, as the _built_chat prune does: _push runs on the pusher
+    thread and on the connect handlers' threads at once, so another push may insert while this one evicts, and a comprehension
+    over the live dict raises RuntimeError (dictionary changed size during iteration), which _push's broad except would turn
+    into a push that sends no frame."""
+    for _k in list(_prov_ledger_memo):
+        if not reader or _k not in listed or _k in _built_chat:
+            _prov_ledger_memo.pop(_k, None)
+
+
 def _provisional_ledger(sid):
     """The ledger the Outline reads (tree, current, archivedTops) for a tab the cold-tab gate skipped, from the goal store alone:
     the shared walk without anchors under the parse-free memo, the mute and the cap through _ledger_tree, `current` None (the live
@@ -34954,8 +34967,10 @@ def _provisional_ledger(sid):
         else:
             _chat_memo_bump(_prov_ledger_memo_stats, "miss")
             tree, _ = _goal_tree_walk(sid, gstore, anchors=False)
-            _prov_ledger_memo[sid] = (gstore, ck, tree)
-    return {"tree": _ledger_tree(sid, tree), "current": None, "archivedTops": _fleet_archived_tops(sid)}
+            tree = tree[:80]                          # the memo holds the CAPPED tree (the review's low 1): the walk's whole list
+            _prov_ledger_memo[sid] = (gstore, ck, tree)   # per cold tab would hold every node of a 349-tab set; the mute is
+    return {"tree": _ledger_tree(sid, tree), "current": None,   # applied at the read, not stored: a flag flip shows at once
+            "archivedTops": _fleet_archived_tops(sid)}
 
 
 def _provisional_row(sid, name, light):
@@ -49137,6 +49152,7 @@ def _push(targets, connect=False, live_map=None):
             with _clients_lock:
                 _all_chat = [c for c in _clients if c.get("app") == "chat"]
                 _plain_outline = any(c.get("app") == "fleet" and not c.get("provRows") for c in _clients)   # an Outline pane (app fleet) WITHOUT the provisional-row capability: the gate stands down for it, as for every pane before the flag (plans/outline-pane-provisional-row.md)
+                _flagged_outline = any(c.get("app") == "fleet" and c.get("provRows") for c in _clients)     # a reader of the provisional rows is connected: the memo's entries are worth keeping
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
             _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
             #                                                                          not this push's targets alone (round two, low 2)
@@ -49397,11 +49413,10 @@ def _push(targets, connect=False, live_map=None):
                                     "ledger": ({**m["ledger"], "archivedTops": _fleet_archived_tops(m["id"])}
                                                if isinstance(m.get("ledger"), dict)
                                                else m.get("ledger"))} for m in chat_sessions]
+                _bo = {s["sid"]: i for i, s in enumerate(build_order)}
                 if _prov_rows:   # the skipped tabs' provisional rows join in build order (plans/outline-pane-provisional-row.md)
-                    _bo = {s["sid"]: i for i, s in enumerate(build_order)}
                     feed["ledgers"] = sorted(feed["ledgers"] + _prov_rows, key=lambda r: _bo.get(r["sid"], len(_bo)))
-                    for _k in [x for x in _prov_ledger_memo if x not in _bo]:   # the memo of a tab no longer listed goes
-                        del _prov_ledger_memo[_k]
+                _prov_ledger_memo_evict(_bo, _flagged_outline)   # at EVERY attach, not only with rows: no reader, an unlisted tab or a built one drops its entry (thread-safe: another push may be inserting)
             if feed.get("off"):                          # the chat's dots carry on while the feed is not built (T404 round two,
                 _dots_w, _dots_a = _chat_dots_off(now, live_map)   # low 9): the same two signals, derived outside the feed build
             else:

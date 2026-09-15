@@ -202,6 +202,7 @@ class OutlineProvisionalRows(unittest.TestCase):
         by = {r["sid"]: r for r in self._ledgers(o)}
         self.assertNotIn("provisional", by[S2], "its row is the build's now"); self.assertEqual(by[S2]["ledger"]["tree"][0]["text"], "built row")
         self.assertTrue(by[S3].get("provisional"), "the still-skeleton tab keeps its provisional row")
+        self.assertNotIn(S2, km._prov_ledger_memo, "the built tab's memo entry went at the attach: the gate never skips a warm tab again")
 
     def test_05_a_muted_session_shows_no_goals_and_the_tree_is_capped_at_eighty(self):
         (km.jd.STATE / "session-flags.json").write_text(json.dumps({S2: {"hideFromFeed": True}}))
@@ -215,6 +216,7 @@ class OutlineProvisionalRows(unittest.TestCase):
         self.store_path.write_text(json.dumps(_store(nodes)))
         del o["_frames"][:]; km._push([c, o])
         self.assertEqual(len({r["sid"]: r for r in self._ledgers(o)}[S2]["ledger"]["tree"]), 80, "the cap, inside the shared helper")
+        self.assertEqual(len(km._prov_ledger_memo[S2][2]), 80, "the memo stores the CAPPED tree, not the walk's ninety")
 
     def test_06_the_parse_free_memo_hits_across_cycles_and_misses_on_a_store_write(self):
         c = self._client(reconnect=True, active=S1); o = self._client(app="fleet", provRows=True)
@@ -232,6 +234,56 @@ class OutlineProvisionalRows(unittest.TestCase):
         self.assertGreater(st2["miss"], st1["miss"], "a store write misses the memo: %r -> %r" % (st1, st2))
         self.assertEqual([n["text"] for n in {r["sid"]: r for r in self._ledgers(o)}[S2]["ledger"]["tree"]], ["a new goal"])
         self.assertIn("outlineProvisional", km._PERF_STATS.snapshot()["memos"], "the memo reports under /perf")
+
+    def test_09_the_memo_eviction_survives_a_concurrent_insert_and_drops_the_dead_entries(self):
+        # the review's medium (2026-09-15): _push runs on the pusher thread and on the connect handlers' threads at once, so a
+        # comprehension over the live memo at the attach raised RuntimeError against an inserter and the broad except turned
+        # that push into one that sent no frame. The eviction is a helper over a snapshot, popping with a default.
+        import threading
+        km._prov_ledger_memo.clear()
+        km._prov_ledger_memo.update({("11111111-2222-3333-4444-%012d" % i): (None, None, []) for i in range(400)})
+        stop, errs = threading.Event(), []
+        def inserter():   # a connect push on a handler thread: _provisional_ledger stores a skipped tab's tree, and pops as it goes
+            i = 0
+            while not stop.is_set() and i < 2_000_000:   # loop-ok: bounded by the event the evictor sets and by the count
+                km._prov_ledger_memo["insert-%d" % i] = (None, None, [])
+                km._prov_ledger_memo.pop("insert-%d" % (i - 50), None)
+                i += 1
+        th = threading.Thread(target=inserter, daemon=True); th.start()
+        try:
+            for _ in range(2000):   # loop-ok: a bounded drive of the eviction against the inserter
+                try:
+                    km._prov_ledger_memo_evict({}, True)   # nothing listed: every entry is stale, as after a strip change
+                except Exception as e:
+                    errs.append(type(e).__name__ + ": " + str(e)[:80]); break
+                km._prov_ledger_memo.update({("11111111-2222-3333-4444-%012d" % i): (None, None, []) for i in range(400)})
+        finally:
+            stop.set(); th.join(timeout=5)
+        self.assertEqual(errs, [], "the eviction never raised against the concurrent inserter")
+        # the semantics: with a reader, the listed and unbuilt entries stay; an unlisted or a built one goes; with no reader, all go
+        km._prov_ledger_memo.clear()
+        km._prov_ledger_memo.update({S1: (None, None, []), S2: (None, None, []), S3: (None, None, [])})
+        km._built_chat[S1] = (None, {})
+        try:
+            km._prov_ledger_memo_evict({S1: 0, S2: 1}, True)
+            self.assertEqual(set(km._prov_ledger_memo), {S2}, "S1 built (warm) and S3 unlisted went; S2, listed and cold, stays")
+            km._prov_ledger_memo_evict({S1: 0, S2: 1}, False)
+            self.assertEqual(km._prov_ledger_memo, {}, "no flagged Outline connected: no reader, every entry goes")
+        finally:
+            km._built_chat.pop(S1, None)
+        # the attach goes through the helper, and no live-dict comprehension or bare del over the memo remains in the kernel
+        self.assertIn("_prov_ledger_memo_evict(_bo, _flagged_outline)", SRC)
+        self.assertNotIn("for _k in [x for x in _prov_ledger_memo", SRC); self.assertNotIn("del _prov_ledger_memo[", SRC)
+
+    def test_10_the_memo_empties_when_the_flagged_outline_goes_away(self):
+        # the review's low 1: the entries lingered after the Outline disconnected, each holding a frozen store reference
+        c = self._client(reconnect=True, active=S1); o = self._client(app="fleet", provRows=True)
+        km._clients[:] = [c, o]
+        km._push([c, o])
+        self.assertIn(S2, km._prov_ledger_memo, "the store-backed cold tab has an entry while the Outline reads")
+        km._clients[:] = [c]                             # the Outline pane closed
+        km._push([c])
+        self.assertEqual(km._prov_ledger_memo, {}, "no reader: the attach dropped every entry")
 
     def test_07_the_handshake_reads_the_flag_for_the_outline_app_only(self):
         for path, expect in (("/ws?app=fleet&delta=1&iid=page-7&provrows=1", True), ("/ws?app=fleet&delta=1&iid=page-7", False),
