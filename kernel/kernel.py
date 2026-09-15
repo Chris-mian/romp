@@ -45231,6 +45231,28 @@ def _note_ws_open(client, reconnect=False, now=None):
         return False
 
 
+def _note_history_reply(client, sid, mtype, reply, nbytes, now=None):
+    """One client-diag row per proto-2 history reply (loadTurns/loadOlder/loadAround/loadNewer) the kernel serves to ANY
+    client (2026-09-15). The kernel kept no per-client record of a history round trip, so a scroll-back that stalls
+    could not be read from the SERVING kernel: whether the ask arrived, over what span, and what was answered (events,
+    bytes) or refused. The row names the client's cid and kind (page/relay/hub, plus the host of a relayed side) so a
+    relay client's asks are told from a local page's, the reply's turn span, its event count and wire bytes, and whether
+    it was the head, empty (missing) or a fault (refused, with the reason). Diagnostic only, no behaviour change; the
+    file's own failure is never the reply's and is swallowed (the wsopen row carries the once-per-kernel sink notice)."""
+    try:
+        now = time.time() if now is None else now
+        data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "type": mtype,
+                "span": reply.get("span"), "events": len(reply.get("events") or []), "bytes": int(nbytes),
+                "head": bool(reply.get("head")), "missing": bool(reply.get("missing")),
+                "refused": bool(reply.get("fault")), "reason": reply.get("error")}
+        if client.get("host"):
+            data["host"] = str(client.get("host"))
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "historyReply",
+                                                                        "data": data}) + "\n")
+    except Exception:
+        pass
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -62683,7 +62705,9 @@ class Handler(BaseHTTPRequestHandler):
                             old = client.get("echat", {}).get(sid)
                             if isinstance(old, dict):
                                 client.setdefault("echat", {})[sid] = {"first": base["first"], "last": old.get("last")}
-                        client["send"](json.dumps(reply))
+                        _wire = json.dumps(reply)
+                        client["send"](_wire)
+                    _note_history_reply(client, sid, msg["type"], reply, len(_wire))   # one diag row per history reply, for reading a scroll-back from the serving kernel (2026-09-15)
             except Exception:
                 sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))
             return
