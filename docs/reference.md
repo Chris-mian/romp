@@ -2196,7 +2196,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   read-only store cache (`hit`, `miss`, `compare_miss`, `refuse`, `dup`,
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
-  (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
+  (`hit`, `miss`, `populate`, `bypass`); `convergeDeclined` counts the main
+  converges that asked no restart because this kernel was already leaving (the
+  exit path held the lock: before the pull, the row's `phase` is before-pull
+  with the target it did not pull, and the next kernel converges on its own;
+  after the pull, after-pull with the checkout it moved, which the successor
+  boots on; either way a `main-converge-declined` row stands in the
+  restart-audit ledger where a second sigterm used to); `nudgeWalk` is the auto-nudge walk's
   parse gate (T401): `looks`, `skippedParses` (a session whose files are
   unchanged since its last completed look and whose clock legs, noted by that
   look with the instant each could flip, have not come due; the skip repeats
@@ -3686,7 +3692,17 @@ And the manager writes a `quiet-window` row to `restart-audit.jsonl` when a
 parked deploy refresh applies (`since`, `waitedS`, `reason` as the gate's
 verdict, `backstop` when the fifteen-minute cap fired, `coalesced`, `mode`,
 `lastInflight`, `misses`, and the park's drain-hold counts); it is a note, not
-a request, and the kernel's restart-reason walk passes it over.
+a request, and the kernel's restart-reason walk passes it over. Three more
+manager notes sit beside it: `restart-folded` (a restart request that arrived
+while a restart was in flight and its successor not yet spawned rode that
+restart: `trigger`, `into` the pid signaled), `restart-trailing` (a request
+during the successor's boot, kept as one trailing restart: `trigger`, `after`
+the successor's pid) and `restart-trailing-current` (the successor answered
+and its own `restart_pending` verdict said it runs the disk's code, so the
+trail was dropped). The kernel's own `main-converge-declined` row (a converge
+that found its kernel leaving, `phase` before-pull or after-pull) is the same
+kind. None of the four signals a kernel, and the kernel's restart-reason walk
+passes them over as it does the quiet-window note.
 
 The two host registries there, `remotes.json` (attached and checked-in
 machines, each row with that machine's serve token) and `remotes-known.json`
