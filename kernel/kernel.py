@@ -12443,12 +12443,14 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     except OSError:
         postal_stat = (0.0, 0)                            # the postal log's stat FIRST, then the asker index built from that log
     asks_by_target = _nudge_asks_by_target()              # once per pass: the open asks by debtor
-    for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
-        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
-        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
+    with _sub_stage("autoNudge.key"):                 # the ten stats per session (plans/nudge-walk-events.md)
+        for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
+            _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
+            _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
     #                                                       are read, so no snapshot handed to a look is older than the key its memo
     #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
     #                                                       clears log and the store under a memo that then silenced the un-cleared goal)
+    _snap_t = time.monotonic(); _set_stage("jobs.autoNudge.snapshot")   # the ledger, the peer graph and the clear set, closed where the walk begins
     snap = _auto_nudge_data()
     if snap.get(UNPROVED):
         _auto_nudge_pause(snap[UNPROVED])
@@ -12484,6 +12486,8 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     cleared = _cleared_ids()                              # one parsed clear set for every session this pass walks (2026-09-09):
     #                                                       a clear landing mid-pass reaches the later sessions next pass; the
     #                                                       node's own cleared flag, written in the same gesture, covers the gap
+    _set_stage("jobs.autoNudge"); _PERF_STATS.stage("jobs.autoNudge.snapshot", time.monotonic() - _snap_t)
+    _looks_t = time.monotonic(); _set_stage("jobs.autoNudge.looks")   # the looks: one mark over the loop (plans/nudge-walk-events.md)
     for _i, s in enumerate(alive):
         if _yielding and getattr(_NUDGE_HORIZON, "cold", 0) >= 1 and getattr(_NUDGE_HORIZON, "cold_last", False):
             _NUDGE_WALK_STATS["deferredSessions"] += len(alive) - _i
@@ -12517,6 +12521,7 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
+    _set_stage("jobs.autoNudge"); _PERF_STATS.stage("jobs.autoNudge.looks", time.monotonic() - _looks_t)   # the looks close with the loop, however it ended
     _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()   # the keys were this pass's: a look outside a pass keys for itself
     try:
         _relay_tick(now, alive_ids)                    # T334: a worker's block toward its delegating peer goes out as its
@@ -14505,7 +14510,8 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         # (a synthesized leading idle opens it, vs the human prompt), so the closer-gate below would never
         # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
         _cold = jd._parse_entry(sid) is None          # no cached parse: this look pays it (T401 (2): the yield's event)
-        turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+        with _sub_stage("autoNudge.parse"):        # the parse-store read (a hit while the transcript stands) under its own mark
+            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         _NUDGE_HORIZON.parsed = True
         _NUDGE_WALK_STATS["parses"] += 1
         if _cold:
@@ -53083,6 +53089,21 @@ def _pusher_cycle():
             _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
         elif not _BOOT_HEALTH_DONE[0]:
             _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
+
+
+@contextlib.contextmanager
+def _sub_stage(name):
+    """A finer stage INSIDE a tick job, `jobs.<job>.<part>`: the thread's mark for the block (its reads count under the part) and
+    the part's own milliseconds on the ring, so a job whose passes spike names what they paid (plans/nudge-walk-events.md, the
+    measurement's first step). The enclosing job's stage still closes over the whole; the parts sum to at most that."""
+    _t = time.monotonic()
+    prev = getattr(_STAGE_TL, "name", None)
+    _set_stage("jobs." + name)
+    try:
+        yield
+    finally:
+        _set_stage(prev)
+        _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
 
 
 def _job_stage(name, thunk):
