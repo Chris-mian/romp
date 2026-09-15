@@ -96,8 +96,9 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   const C = ps.chat;
   assert.ok(C.indexOf(">Display<") < C.indexOf("id=rs-compact") && C.indexOf("id=rs-dense") < C.indexOf("id=rs-chatscheme") && C.indexOf("id=rs-chatscheme") < C.indexOf("id=rs-striprows")
             && C.indexOf("id=rs-striprows") < C.indexOf(">Comments<") && C.indexOf(">Comments<") < C.indexOf("id=rs-cmtmodel") && C.indexOf("id=rs-cmtfast") < C.indexOf(">Thinking<")
-            && C.indexOf(">Thinking<") < C.indexOf("id=rs-thinksum") && C.indexOf("id=rs-thinksum") < C.indexOf("data-section=tabwidgets")
-            && C.indexOf("data-section=tabwidgets") < C.indexOf("data-section=statusline"), "Chat: Display, Comments, Thinking, Tab widgets, Status line (T409)");
+            && C.indexOf(">Thinking<") < C.indexOf("id=rs-thinksum") && C.indexOf("id=rs-thinksum") < C.indexOf(">Chat history<")
+            && C.indexOf(">Chat history<") < C.indexOf("id=rs-wholechat") && C.indexOf("id=rs-wholechat") < C.indexOf("data-section=tabwidgets")
+            && C.indexOf("data-section=tabwidgets") < C.indexOf("data-section=statusline"), "Chat: Display, Comments, Thinking, Chat history, Tab widgets, Status line (T409)");
   assert.doesNotMatch(C, /id=rs-badge|id=rs-branch/, "the badge and branch checkboxes left the Display section: the Status line section's rows are the controls (T409)");
   assert.doesNotMatch(C, />Transcript<|>Text and comments<|>Files<|>Strip</, "the old Chat heads are gone");
   // Automation: the nudges; Task tracking: the judges alone; Debug: the judges' views then the diagnostics

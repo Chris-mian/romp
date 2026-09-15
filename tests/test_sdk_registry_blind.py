@@ -225,6 +225,29 @@ class ChatBuildRowsLeaveWithTheCertifiedDeath(_Root):
                     self._restore_rows()
         self.assertEqual(len(kept), len(arms), "every unstamped arm kept the row over three ticks: %s" % kept)
 
+    def test_the_already_stamped_arm_is_free_when_the_departure_has_no_row(self):
+        """The 1677 read, low 2: the arm paid _sdk_thread_alive and a whole states-file read for a not-due departure that had no
+        /perf row at all. Membership in the rows table is tested first, so with nothing to drop the arm reads nothing."""
+        rows = self._seed()
+        self._rows(SID)                                                   # SID2 has no row
+        self._tick(NOW, rows)
+        _marker_write(SID2, t=NOW - 50)                                   # a real marker standing: not due
+        os.unlink(jd.SDKDIR / (SID2 + ".json"))
+        calls = []
+        saved = (km._sdk_thread_alive, km._recent_life)
+        km._sdk_thread_alive = lambda sid: calls.append(("thread", sid)) or False
+        km._recent_life = lambda sid, now: calls.append(("life", sid)) or False
+        try:
+            self._tick(NOW + 1, {SID: rows[SID]})
+        finally:
+            km._sdk_thread_alive, km._recent_life = saved
+        self.assertEqual(calls, [], "no row to drop: neither the thread nor the states file was read")
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID})
+        self._rows(SID, SID2)                                             # with a row the arm reads and drops as before
+        km._prev_live_sids[0] = {SID, SID2}
+        self._tick(NOW + 2, {SID: rows[SID]})
+        self.assertEqual(set(km._PERF_STATS.chat_by_session), {SID})
+
     def test_a_standing_marker_another_road_stamped_drops_the_row_only_on_the_ticks_own_dead_verdict(self):
         """Round five: a REAL marker standing (written by another road or process, no states row postdating it, so the stamp
         is not due) for a departure. The row goes only when the tick's own verdict is dead: reg present False (never None),

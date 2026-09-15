@@ -5375,6 +5375,12 @@ def _asm_retire_refusal_mark(meta):
         return
     if not (isinstance(d, dict) and isinstance(d.get("refused"), dict)):
         return
+    for prior in meta.parent.glob(meta.name + ".retired-*"):   # this very mark already kept aside (a retirement whose rewrite keeps
+        try:                                                    #  failing retries at every sweep): one copy, never one per retry (the
+            if prior.read_bytes() == text:                      #  1717 read, low 2)
+                return
+        except OSError:
+            continue
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     aside, n = meta.with_name("%s.retired-%s" % (meta.name, stamp)), 0
     while aside.exists():                               # loop-ok: a second retirement in the same second
@@ -5382,8 +5388,9 @@ def _asm_retire_refusal_mark(meta):
         aside = meta.with_name("%s.retired-%s-%d" % (meta.name, stamp, n))
     try:
         aside.write_bytes(text)
-    except OSError:
-        pass
+    except OSError as e:                                # best effort by design, but never silent: the mark's forensic copy is lost, so
+        _asm_removed("refusedMark:asideFailed")         #  count it and say so once (the 1717 read, low 4); the retirement itself proceeds
+        _say_once("checkpoint: the refusal mark of %s could not be kept aside (%s)" % (meta.name, e))
 
 
 def _asm_refusal_stands(leaf_path):
@@ -5598,8 +5605,11 @@ def asm_checkpoint_stats():
 
 
 def _asm_removed(reason):
-    """A document file removed, counted per reason (T398): the fallback that refused it, or the boot sweep; and, under
-    `refusedMark:version`, a refusal mark the sweep retired from a version-old sidecar (the document itself stays)."""
+    """The checkpoint directory's removals and retirements, counted per reason (T398): a document file removed by the fallback
+    that refused it or by the boot sweep (`fallback:<reason>`, `sweep`); a refusal mark the sweep retired from a version-old
+    sidecar (`refusedMark:version`, the document stays); a retirement whose sidecar rewrite failed and left the mark standing
+    (`refusedMark:versionFailed`, nothing removed, retried next boot); a mark whose forensic aside could not be written
+    (`refusedMark:asideFailed`, the retirement proceeded). The report is `asmCheckpoint.removed` on /perf."""
     with _ASM_CKPT_LOCK:
         r = _ASM_CKPT_STATS.setdefault("removed", {})
         r[reason] = r.get(reason, 0) + 1
@@ -5721,7 +5731,14 @@ def _pre_tree_identity(atoms, rompuuid):
     return h.hexdigest()
 
 
-_ASM_SKIP_STRUCTURAL = ("unsplittable", "reconstruction", "unencodable", "oversize", "noCut", "reuse", "closure")   # true of a cut until it moves
+_ASM_SKIP_STRUCTURAL = ("unsplittable", "reconstruction", "unencodable", "oversize", "noCut", "reuse", "closure", "young")   # true of a cut until it moves
+_ASM_FIRST_DOC_MIN = _env_or("ROMP_CKPT_FIRST_DOC_KB", _CKPT_FOLD_CAP // 8, 1024)   # the young-session floor (the 1695 read, low 1): no FIRST
+#                                       document until the pre-cut part holds this many bytes (an eighth of the fold cap: 1 MB by default, moving with
+#                                       ROMP_CKPT_FOLD_CAP_KB; ROMP_CKPT_FIRST_DOC_KB sets it outright, 0 turns the floor off, as the test suite does
+#                                       over its small fixtures). Why: with uniform turns the churn bound (the tail past the cut times eight at least
+#                                       the pre-cut bytes) is met on almost every settle until the pre-cut part reaches eight times the two-to-three
+#                                       turn lag, so a young session rewrote its document at nearly every settle (27 rewrites over its first 30 settled
+#                                       turns measured); below the floor a whole parse costs milliseconds and a document saves nothing
 _ASM_TAIL_SHARE = 8                   # the churn bound (stage one b): a standing document is rewritten when the tail past its cut has
 #                                       grown to ONE EIGHTH of the pre-cut bytes (each rewrite is a whole parse, so a share bounds the
 #                                       rewrites over a leaf's life to a logarithm of its growth while the tail every cold parse still
@@ -6015,6 +6032,10 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 if "toolUseResult" in a:
                     row["tur"] = a["toolUseResult"]
             pre_atoms.append(row)
+        if standing is None and not cp.exists() and cut_off_total < _ASM_FIRST_DOC_MIN:
+            return skip("young")                          # the young-session floor: no first document under the floor's bytes; the memo
+            #                                               re-arms as the cut moves with the settled turns, so the first write lands once
+            #                                               the pre-cut part is worth a document (a standing document is never held by it)
         # the pre-cut spine, root to cut: the leaf's parent chain as the PARSE resolves it (repeated uuids last-wins, a
         # self-link a root), walked with a visited set that ends at the first revisit exactly as active_path does, so the
         # document's spine is the spine the chat shows. Until 2026-09-14 the walk was hop-bounded and a cycle in the

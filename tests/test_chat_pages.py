@@ -14,6 +14,7 @@ from unittest import mock
 import inspect
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -872,6 +873,25 @@ class Proto2Wire(Harness):
         self.assertIsNone(km._set_whole_chat_frames(True, gt=stamp - 1), "an older gesture stands down")
         self.assertFalse(km._whole_chat_frames_on())
 
+    def test_a_non_boolean_store_reads_off_and_says_so_once(self):
+        """The 1704 read, low 2: a hand-edited store with the string "false" read ON silently (a truthy non-boolean). Only a real
+        true or false is a proved answer; anything else reads OFF and is said once per value on stderr, as the task-tracking
+        switch does; the next write repairs it."""
+        store = km.jd.STATE / km.WHOLE_CHAT_FRAMES_FILE
+        self.addCleanup(lambda: store.unlink(missing_ok=True))
+        km._wcf_read_fault_said.clear()
+        err = io.StringIO()
+        store.write_text(json.dumps({"enabled": "false", "gt": 1}))
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(km._whole_chat_frames_on(), "the string false is not a proved ON")
+            self.assertFalse(km._whole_chat_frames_on())
+        self.assertEqual(err.getvalue().count("not a boolean"), 1, "said once per value")
+        store.write_text(json.dumps({"enabled": "true", "gt": 2}))
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(km._whole_chat_frames_on(), "the string true is not a proved ON either")
+        self.assertEqual(err.getvalue().count("not a boolean"), 2, "a new value: said again, once")
+        self.assertIsNotNone(km._set_whole_chat_frames(True)); self.assertTrue(km._whole_chat_frames_on(), "a real write repairs it")
+
     def test_the_boot_seed_of_the_whole_chat_frames_switch_runs_after_every_definition_it_reaches_and_seeds_once(self):
         """The 1704 read, low 1: the ROMP_CHAT_FLOOR0 seed sat in a module-level try beside the boot sweep, where the setter's
         _mark_views_dirty call raised NameError (defined far below), swallowed by the bare except: the store write landed and
@@ -880,9 +900,30 @@ class Proto2Wire(Harness):
         env set); without the env nothing happens."""
         store = km.jd.STATE / km.WHOLE_CHAT_FRAMES_FILE
         self.addCleanup(lambda: store.unlink(missing_ok=True))
+        # the 1717 read, low 3: the base's red must be the BEHAVIOUR, not a missing name. At the base the seed ran at import
+        # (writing the store, never dirtying the views: the setter raised NameError at _mark_views_dirty, swallowed), so a fresh
+        # interpreter importing the kernel with the env set and no store shows a store and a dirty mark of 0.0; at the head the
+        # import seeds nothing (main does) and the seed function, reached through getattr, dirties the views
+        child = subprocess.run([sys.executable, "-c", "\n".join([
+            "import os, sys, tempfile, json",
+            "root = tempfile.mkdtemp(); os.environ['XDG_STATE_HOME'] = root; os.environ.pop('ROMP_STATE_DIR', None)",
+            "os.environ['ROMP_KERNEL_NO_OPEN'] = '1'; os.environ.setdefault('ROMP_SERVE_TOKEN', 'testtok'); os.environ['ROMP_CHAT_FLOOR0'] = '1'",
+            "sys.path.insert(0, %r)" % HERE, "from romp_load import load_source",
+            "km = load_source('romp_kernel_seedprobe', %r)" % os.path.join(BIN, "romp-kernel"),
+            "store = km.jd.STATE / km.WHOLE_CHAT_FRAMES_FILE",
+            "print(json.dumps({'storeAfterImport': store.exists(), 'dirtyAfterImport': km._views_dirty[0]}))"])],
+            capture_output=True, text=True, timeout=600,
+            env=dict(os.environ, ROMP_CHAT_FLOOR0="1",                    # the postal trio: the child's bus is its own and never started
+                     ROMP_POSTAL_PORT=str(20000 + os.getpid() % 20000), ROMP_POSTAL_PEERS="0", ROMP_POSTAL_CLIENT_ONLY="1"))
+        self.assertEqual(child.returncode, 0, child.stderr[-2000:])
+        probe = json.loads(child.stdout.strip().splitlines()[-1])
+        self.assertEqual(probe, {"storeAfterImport": False, "dirtyAfterImport": 0.0},
+                         "the import seeds nothing: the base wrote the store at import with the views never dirtied")
+        seed = getattr(km, "_seed_whole_chat_frames", None)
+        self.assertIsNotNone(seed, "the seed is a function main() calls once the module is loaded")
         with mock.patch.dict(os.environ, {"ROMP_CHAT_FLOOR0": "1"}):
             d0 = km._views_dirty[0]
-            self.assertTrue(km._seed_whole_chat_frames(), "no store, the env set: seeded")
+            self.assertTrue(seed(), "no store, the env set: seeded")
             self.assertTrue(km._whole_chat_frames_on()); self.assertGreater(km._views_dirty[0], d0, "the flip dirties the views: no NameError")
             self.assertIsNotNone(km._set_whole_chat_frames(False), "the user flips it off later")
             self.assertFalse(km._seed_whole_chat_frames(), "a second boot with the env set leaves the flip alone")

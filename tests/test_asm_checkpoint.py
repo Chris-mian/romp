@@ -1433,6 +1433,136 @@ class VersionOldMarksRetireAtTheSweep(Harness):
         self.assertFalse(cp.exists()); self.assertFalse(meta.exists()); self.assertEqual(list(meta.parent.glob(meta.name + ".retired-*")), [])
 
 
+
+class LowsOfTheSettledCutReads(Harness):
+    """The lows queued by the reads of stage one b, the mark retirement and the data-safety pair (2026-09-15)."""
+    def _base(self, name, extra_turns=2, big=False):
+        opener = [G.uline(NOW - 3600, "hello " * (2000 if big else 1), "u1", None), G.aline(NOW - 3595, "hi " * (4000 if big else 1), "a1", "u1", stop="end_turn")]
+        recs = compacting_variant(opener, name) + _turns_after(compacting_variant(opener, name), name, extra_turns)
+        path = self.write(name, recs)
+        self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        return path, recs
+
+    def test_the_young_session_floor_holds_the_first_document_and_never_a_standing_one(self):
+        """The 1695 read, low 1: with uniform turns the churn bound alone is met at nearly every settle until the pre-cut part
+        outgrows the two-to-three turn lag (27 rewrites over a young session's first 30 settled turns measured), so a session's
+        FIRST document waits until its pre-cut part holds _ASM_FIRST_DOC_MIN bytes (an eighth of the fold cap, 1 MB live; the
+        suite runs with the floor off); a standing document is never held by the floor."""
+        saved = em._ASM_FIRST_DOC_MIN; self.addCleanup(setattr, em, "_ASM_FIRST_DOC_MIN", saved)
+        path, recs = self._base("young")
+        em._ASM_FIRST_DOC_MIN = 10 ** 9
+        self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"young": 1}, "under the floor: no first document")
+        self.assertIn("young", em._ASM_SKIP_STRUCTURAL, "structural: the memo re-arms as the cut moves")
+        em._ASM_FIRST_DOC_MIN = 0
+        self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertTrue(self.doc(path), "the floor off: written")
+        n0 = len(_doc(path)["records"])
+        em._ASM_FIRST_DOC_MIN = 10 ** 9                                   # a standing document is never held by the floor
+        recs = recs + _turns_after(recs, "grow", 6)
+        Path(path).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        wrote = self.doc(path)
+        self.assertTrue(wrote or em.asm_checkpoint_stats()["skipped"] == {"written": 1}, "the standing document is written on or stands: %s" % em.asm_checkpoint_stats()["skipped"])
+        self.assertNotIn("young", em.asm_checkpoint_stats()["skipped"])
+        if wrote:
+            self.assertGreater(len(_doc(path)["records"]), n0, "the cut advanced under the churn bound, the floor silent")
+        self.assertEqual(em._env_or("ROMP_CKPT_FIRST_DOC_KB", em._CKPT_FOLD_CAP // 8, 1024), 0, "the suite runs with the floor knob at 0 (conftest)")
+
+    def test_a_pre_cut_record_whose_parent_points_forward_is_refused_under_closure(self):
+        """The 1695 read, low 2: the closure guard had no failing test. A record on the kept chain whose parentUuid names a record
+        the file writes only LATER closes a ring across every candidate cut (u1 parents on a_fwd, which the tail writes parented
+        on the last reply): every cut before a_fwd leaves a pre-cut record whose parent resolves past it, every cut after it
+        holds the reuse of nothing, so the guard refuses under its own name and the cold parse serves."""
+        t = NOW - 3600
+        recs = [G.uline(t, "opener parented forward", "u1", "a_fwd"), G.aline(t + 5, "reply", "a1", "u1", stop="end_turn"),
+                G.uline(t + 10, "second", "u2", "a1"), G.aline(t + 15, "reply", "a2", "u2", stop="end_turn"),
+                G.uline(t + 20, "third", "u3", "a2"), G.aline(t + 25, "reply", "a3", "u3", stop="end_turn"),
+                G.uline(t + 30, "fourth", "u4", "a3"), G.aline(t + 35, "the forward record", "a_fwd", "u4", stop="end_turn")]
+        path = self.write("closure", recs)
+        cold = self.cold(path)
+        self.fresh(); self.parse(path); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertFalse(self.doc(path)); self.assertEqual(em.asm_checkpoint_stats()["skipped"], {"closure": 1}, "the named refusal")
+        self.fresh(); modes = []
+        self.assertEqual(_strip(self.parse(path, modes)), cold); self.assertEqual(modes, ["full"])
+
+    def test_a_garbled_stamp_across_the_cut_steps_the_cut_back(self):
+        """The 1695 read, low 3: the write-time stamp-order rule had no failing test. The last pre-cut reply stamped AFTER the
+        tail's first record (a garbled clock) fails the chronological split at the settled cut, so the cut steps back to a turn
+        whose split holds: the document's rows end before the garbled record, and the restore equals the cold parse."""
+        path, recs = self._base("stamps", extra_turns=3)
+        self.assertTrue(self.doc(path)); rows_clean = [r[0] for r in _doc(path)["records"]]
+        garbled = list(recs)
+        k = max(i for i, r in enumerate(garbled) if r.get("uuid") == rows_clean[-1])   # the clean cut's last pre-cut record
+        garbled[k] = dict(garbled[k]); garbled[k]["timestamp"] = G.iso(NOW + 9999)     # stamped after every tail record
+        path2 = self.write("stamps2", garbled)
+        cold = self.cold(path2)
+        self.fresh(); self.parse(path2); em._ASM_CKPT_STATS["skipped"] = {}
+        self.assertTrue(self.doc(path2), em.asm_checkpoint_stats()["skipped"])
+        rows = [r[0] for r in _doc(path2)["records"]]
+        self.assertNotIn(rows_clean[-1], rows, "the garbled record is the tail's: the cut stepped back")
+        self.assertLess(len(rows), len(rows_clean))
+        got, modes, _n = self.restored(path2)
+        self.assertEqual((modes, got), (["restore"], cold))
+
+    def test_the_restores_reuse_check_reads_the_documents_xu_beside_its_rows(self):
+        """The 1695 read, low 4: `xu` is empty under the guarded writer, so the restore's rows-plus-xu branch had no test. A
+        hand-written document carrying a ghost uuid in `xu` refuses a tail that reuses it; the same tail over `xu` empty
+        restores (the ghost was no row)."""
+        for label, xu, expect_restore in (("xu names the ghost", ["ghost"], False), ("xu empty", [], True)):
+            with self.subTest(case=label):
+                path, recs = self._base("xu-" + label.split()[0] + label.split()[-1])
+                self.assertTrue(self.doc(path))
+                d = _doc(path); d["xu"] = xu; _write_doc(path, d)
+                extra = [G.uline(NOW + 900, "a tail record under the ghost uuid", "ghost", _last_uuid(recs)),
+                         G.aline(NOW + 905, "reply", "a_ghost", "ghost", stop="end_turn")]
+                Path(path).write_text(Path(path).read_text() + "".join(json.dumps(r) + "\n" for r in extra))
+                cold = self.cold(path)
+                self.fresh(); modes = []
+                tree = self.parse(path, modes); em.hydrate(tree, SID)
+                self.assertEqual(modes == ["restore"], expect_restore, "%s: %s" % (label, em.asm_checkpoint_stats()))
+                self.assertEqual(_strip(tree), cold)
+
+    def _marked_v6(self, name):
+        records, sent = G.SINGLE_FILE["manual_compact_detached"]
+        path = self.write(name, records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        cp = em._asm_ckpt_file(path); meta = cp.with_name(cp.name + ".meta")
+        d = json.loads(meta.read_text()); st = em._asm_leaf_stat(path)
+        d["refused"] = {"reason": "shape", "size": st[0], "mtime": st[1]}; d["av"] = 6; meta.write_text(json.dumps(d))
+        doc = _doc(path); doc["av"] = 6; _write_doc(path, doc)
+        return path, cp, meta
+
+    def test_a_retirement_that_keeps_failing_keeps_one_aside_not_one_per_retry(self):
+        """The 1717 read, low 2: a failing rewrite retried at every sweep wrote a fresh .meta.retired-<stamp> each time."""
+        path, cp, meta = self._marked_v6("dedupe")
+        real_replace = em.os.replace
+        def failing_replace(src, dst):
+            if str(dst).endswith(".meta"):
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst)
+        with mock.patch.object(em.os, "replace", failing_replace), contextlib.redirect_stderr(io.StringIO()):
+            em.checkpoint_sweep(); em.checkpoint_sweep(); em.checkpoint_sweep()
+        asides = list(meta.parent.glob(meta.name + ".retired-*"))
+        self.assertEqual(len(asides), 1, "one copy of the mark, whatever the retries: %s" % asides)
+        self.assertTrue(em._asm_refusal_stands(path))
+
+    def test_an_aside_that_cannot_be_written_is_counted_and_said_and_the_retirement_proceeds(self):
+        """The 1717 read, low 4: the aside write was best effort and silent."""
+        path, cp, meta = self._marked_v6("aside")
+        em._ASM_CKPT_STATS["removed"] = {}
+        real_write = Path.write_bytes
+        def failing_write(self_, data):
+            if ".retired-" in self_.name:
+                raise OSError(30, "Read-only file system")
+            return real_write(self_, data)
+        err = io.StringIO()
+        with mock.patch.object(Path, "write_bytes", failing_write), contextlib.redirect_stderr(err):
+            em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"refusedMark:asideFailed": 1, "refusedMark:version": 1}, "counted, and the retirement proceeded")
+        self.assertIn("could not be kept aside", err.getvalue())
+        self.assertFalse(em._asm_refusal_stands(path)); self.assertEqual(list(meta.parent.glob(meta.name + ".retired-*")), [])
+
+
 class HydrationAttribution(Harness):
     def test_a_shared_text_reader_is_attributed_with_its_caller(self):
         """T377: the boot's 1.06 GB of hydration read as `_unit_text`, the judges' shared text reader, which every walker calls;

@@ -685,17 +685,17 @@ class _PerfStats:
                 bm[lab] = bm.get(lab, 0) + 1
 
     def chat_row_drop(self, sid):
-        """A per-session chat row leaves with the CERTIFIED death of its session: _record_death, the one producer of a
-        death marker (five call sites: the sweep's tick, the kill gesture twice, the boot pass, the self-close), calls this
-        after the marker lands. Nothing else removes a row: a live session, a departure the sweep stood down on or
+        """A per-session chat row leaves with the CERTIFIED death of its session, and TWO callers remove one, both keyed on
+        that certainty: _record_death, the one producer of a death marker (five call sites: the sweep's tick, the kill
+        gesture twice, the boot pass, the self-close), after the marker lands; and the death sweep's tick, inside its own
+        walk, for a departure whose marker another road or process already stamped, only when the tick's own verdict is
+        dead (reg present False, never None; no registry blind; no alive arm), one classifier, never a simpler predicate
+        beside it (round five). Nothing else removes a row: a live session, a departure the sweep stood down on or
         certified alive, a dead session the user keeps open as a tab all keep theirs, so `first` is never minted again by
         a warm rebuild (rounds one to three of the timer computed a keep from a moving window each tick and forgot what it
         kept). What else can leave a row, and its bound: a session forgotten or renamed away without a death keeps a row
         until the process ends; every row was minted by a build of a session on the chat tab list, so the table holds at
-        most the sessions this kernel life ever showed (the names registry's size), reset with the process; and the death
-        sweep's tick drops the row of a departure whose marker another road or process stamped, inside its own walk, only
-        when the tick's own verdict is dead (reg present False, never None; no registry blind; no alive arm), the way the
-        boot pass sweeps the registry: one classifier, never a simpler predicate beside it (round five)."""
+        most the sessions this kernel life ever showed (the names registry's size), reset with the process."""
         with self.lock:
             self.chat_by_session.pop(str(sid), None)
 
@@ -8309,9 +8309,28 @@ def _whole_chat_frames_on():
     restart; the flip dirties the view caches (the chat signature carries the floor, so every tab rebuilds). The reversible
     lever for a page that cannot fill the regions above a documented tab's cut: on until the page fix lands, then off."""
     try:
-        return bool(json.loads((jd.STATE / WHOLE_CHAT_FRAMES_FILE).read_text()).get("enabled"))
+        d = json.loads((jd.STATE / WHOLE_CHAT_FRAMES_FILE).read_text())
     except Exception:
         return False
+    v = d.get("enabled") if isinstance(d, dict) else None
+    if isinstance(v, bool):
+        return v
+    if v is not None:                                    # a hand-edited store (the string "false", a number): not a proved answer, so
+        _note_whole_chat_frames_read_fault(v)            #  OFF, said once per value (the 1704 read, low 2); the next write repairs it
+    return False
+
+
+_wcf_read_fault_said = {}
+
+
+def _note_whole_chat_frames_read_fault(v):
+    """The switch's unproved read, loud once per value: a store whose `enabled` is not a boolean reads OFF (the default), and
+    the stderr line says which value it refused, so a hand edit that meant ON is found rather than silently ignored."""
+    text = "the whole chat frames switch file holds %r for enabled, not a boolean; the switch reads off until a real true or false is written" % (v,)
+    if _wcf_read_fault_said.get("last") == text:
+        return
+    _wcf_read_fault_said["last"] = text
+    sys.stderr.write("romp-kernel: %s\n" % text)
 
 
 def _set_whole_chat_frames(enabled, gt=None):
@@ -26031,7 +26050,8 @@ def _death_sweep_tick(now, live_map):
             # stand-down, as the two other death writers read it), neither registry is blind, and no alive arm fires (not
             # Codex-owned, no driver thread, no recent life); every other case keeps the row (round five, 2026-09-15: a sweep
             # with a simpler predicate at the tick's top dropped a live session's row four ways)
-            if (present is False and not sdk_blind and not blind
+            if (sid in _PERF_STATS.chat_by_session          # nothing to drop: the arm is free (the 1677 read, low 2: the thread and
+                    and present is False and not sdk_blind and not blind   #  states reads below ran for every not-due departure)
                     and not (cx is not None and cx._session(sid) is not None and cx.owns(sid))
                     and not _sdk_thread_alive(sid) and not _recent_life(sid, now)):
                 _PERF_STATS.chat_row_drop(sid)
