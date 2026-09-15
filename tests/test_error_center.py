@@ -294,7 +294,8 @@ class ErrorCenterExecutes(unittest.TestCase):
         a = self.out["jump"]
         self.assertTrue(a["linky"], "a targeted entry renders as a link row")
         self.assertTrue(a["closed"], "the popover closes on jump")
-        self.assertEqual(a["posted"], {"romp": "revealCard", "itemId": "TESTSID:g9", "sid": "TESTSID"})
+        self.assertEqual(a["posted"], {"romp": "revealCard", "itemId": "TESTSID:g9", "sid": "TESTSID", "gesture": True},
+                         "the bell click is the reader's gesture, marked on the frame so the feed's fallback switch honours it (T416)")
         # the unread count rides into the feed pane for the gear's Open log button (T290): the drop posted a 1,
         # opening the Log (everything seen) posted a 0
         self.assertIn(1, self.out["unseenPosts"]); self.assertIn(0, self.out["unseenPosts"])
@@ -325,7 +326,7 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertEqual(n["rowText"], "api \u2014 anomaly on a card")
         self.assertEqual(n["sent"], [], "…and its jump takes the feed road, not the chat's")
         self.assertEqual(n["toggles"], ["feed:true"])
-        self.assertEqual(n["posted"], [{"romp": "revealCard", "itemId": "TESTSID:g7", "sid": "TESTSID"}])
+        self.assertEqual(n["posted"], [{"romp": "revealCard", "itemId": "TESTSID:g7", "sid": "TESTSID", "gesture": True}])
         js = km._LANDING_ERRS_JS
         self.assertIn("function feedHere(){return !(window.__rompPaneEnabled&&!window.__rompPaneEnabled('feed'));}", js)
         self.assertIn("if(!feedHere()){jumpChat(n.tgt.sid||'');return;}", js)
@@ -382,7 +383,7 @@ class ErrorCenterWiring(unittest.TestCase):
         self.assertIn("var DESC={conn:", html)
         self.assertIn("b.title='Show or hide these entries. '+KINDLBL[k]+': '+DESC[k]", html)
         # targeted entries jump: close, reveal the feed pane, post revealCard into the feed iframe
-        self.assertIn("{romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''}", html)
+        self.assertIn("{romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||'',gesture:true}", html)
         # timestamps wear the SHARED recency ramp: the standalone dist bundle is loaded BEFORE the
         # errs script and read behind a feature test (dim default if the bundle is stale/missing)
         self.assertLess(html.index("/dist/age-color-global.js"), html.index("window.__rompAgeColor"))

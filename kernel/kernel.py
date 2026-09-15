@@ -2145,6 +2145,7 @@ _clients_lock = threading.Lock()
 # (T347: the feed's focused-session section is a view of the chat pane's active tab; one window's panes share
 # a wid, so the chat's report is filed under it and read by that window's feed — _relay_active_chat below)
 _ACTIVE_CHAT_BY_WID = {}   # type: dict[str, str | None]
+_ACTIVE_CHAT_NONCE_BY_WID = {}   # type: dict[str, int | None]   # the chat's announcement number behind the record, echoed on the relayed frame (T416 round two)
 _client_seen = [0.0]
 # SIDs seen ALIVE at any point during THIS kernel run. (Retained for diagnostics; it no longer drives
 # tabs — the user 2026-06-17 reversed the earlier keep-a-tab-when-it-dies rule: a dead session is now TIMELINE-ONLY,
@@ -19049,6 +19050,8 @@ def _reveal_or_confirm(sid, focus_msg, client=None):
     dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
     if sid and sid not in _live_map():
         _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
+        if client:
+            _reaffirm_active_chat(client)   # the asking window's feeds learn that no tab changed (T416)
     else:
         # a LIVE session's anchored focus also carries the anchor turn's own moment for the chat's reveal progress line
         # (T336), resolved here and only here: a dead session's card never pays for it (the confirm goes out without it)
@@ -50851,7 +50854,7 @@ def _active_chat_wid(client):
     return str(client.get("wid") or "")
 
 
-def _send_active_chat(client):
+def _send_active_chat(client, reaffirm=False):
     """Tell ONE feed client which session the chat pane of its window shows — {type: "activeChat", id: sid|null},
     the value recorded for its wid — on the ("activeChat",) dedup slot, so an unchanged value is not re-sent
     (_send_client, within _DEDUP_REPOST_S). Nothing when no chat of that window has reported yet: the feed keeps
@@ -50866,11 +50869,32 @@ def _send_active_chat(client):
     wid = _active_chat_wid(client)
     if wid not in _ACTIVE_CHAT_BY_WID:
         return False
+    frame = {"type": "activeChat", "id": _ACTIVE_CHAT_BY_WID[wid]}
+    if _ACTIVE_CHAT_NONCE_BY_WID.get(wid) is not None:
+        frame["nonce"] = _ACTIVE_CHAT_NONCE_BY_WID[wid]   # the echo (T416 round two): every announcement goes, the slot's dedup keys on it
+    if reaffirm:
+        # the kernel's ANSWER to a jump that reached a closed session (T416): the feed moved its section on the click it
+        # made and holds that against the relay's stale frames; this frame, marked, is the one it yields to. A nonce, so
+        # the slot's dedup never swallows a second answer within its window (the same record answered twice is two answers)
+        frame["reaffirm"] = True
+        frame["nonce"] = _next_nonce()
     try:
-        _send_client(client, ("activeChat",), {"type": "activeChat", "id": _ACTIVE_CHAT_BY_WID[wid]})
+        _send_client(client, ("activeChat",), frame)
     except Exception:
         return False
     return True
+
+
+def _reaffirm_active_chat(client):
+    """A jump from `client`'s window reached a closed session (the chat got confirmRevive, no tab changed): tell the
+    window's feeds which session the chat still shows, marked as the answer (T416: the feed's focused-session section
+    moved on the click it made and holds that against the relay's stale frames; the marked frame is the one it yields
+    to). Nothing when no chat of the window has reported yet, as _send_active_chat."""
+    wid = _active_chat_wid(client)
+    with _clients_lock:
+        feeds = [c for c in _clients if c.get("alive") and c.get("app") == "feed" and _active_chat_wid(c) == wid]
+    for c in feeds:
+        _send_active_chat(c, reaffirm=True)
 
 
 def _forget_active_chat_if_last(client):
@@ -50881,9 +50905,10 @@ def _forget_active_chat_if_last(client):
     wid = _active_chat_wid(client)
     if wid in _ACTIVE_CHAT_BY_WID and not any(_active_chat_wid(c) == wid for c in _clients):
         _ACTIVE_CHAT_BY_WID.pop(wid, None)
+        _ACTIVE_CHAT_NONCE_BY_WID.pop(wid, None)
 
 
-def _relay_active_chat(client, sid):
+def _relay_active_chat(client, sid, nonce=None):
     """A chat client's activeTab: record the session under its window's wid (None for no tab) and send the window's
     live feed clients the frame (T347: the feed's focused-session section is a view of the chat pane's active tab,
     never a move of a card; one window's panes share a wid, and a pane outside a dashboard files under ""). The
@@ -50891,6 +50916,9 @@ def _relay_active_chat(client, sid):
     under _clients_lock; the sends run outside it, as every other fan-out does."""
     wid = _active_chat_wid(client)
     _ACTIVE_CHAT_BY_WID[wid] = str(sid) if sid else None
+    # the chat's announcement number (T416 round two), echoed on the frame: the feed clears its pending record on the
+    # echo of its own switch and never on a stranger's; a chat that sends none keeps the plain frame and its dedup
+    _ACTIVE_CHAT_NONCE_BY_WID[wid] = nonce if isinstance(nonce, int) and not isinstance(nonce, bool) else None
     with _clients_lock:
         feeds = [c for c in _clients if c.get("alive") and c.get("app") == "feed" and _active_chat_wid(c) == wid]
     for c in feeds:
@@ -53805,6 +53833,11 @@ function visCols(){return allCols().filter(paneVisible);}
 function focusPane(id,dir){var f=document.getElementById(id);if(!f)return;
 try{f.contentWindow.focus();}catch(e){}setFocus(id);
 try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');}catch(e){}}
+// The chat pane's active tab, handed to the feed pane on this page (T416): the chat posts {romp:'activeTab',id} to its
+// parent on every switch, and the feed's current-session section moves on it at once, ahead of the kernel's relay of
+// the same post over the sockets, which then reconciles. From a child frame of this page only (a chat column).
+window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
+var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*');}catch(x){}});
 function moveFocus(dir){
   if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
     if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
@@ -53987,7 +54020,7 @@ row.addEventListener('click',function(){close();
 if(!feedHere()){jumpChat(n.tgt.sid||'');return;}
 try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',true);}catch(e){}
 var f=document.getElementById('f-feed');
-try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''},'*');}catch(e){}});}
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||'',gesture:true},'*');}catch(e){}});}
 row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
 if(!shown){var e=document.createElement('div');e.className='rerr-empty';
 e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'Nothing logged';list.appendChild(e);}}
@@ -56602,7 +56635,7 @@ var feedReady=false,pendingCard=null,chatUp=false;   // chatUp: this page's own 
 function revealCard(itemId,sid){if(window.__rompPaneEnabled&&!window.__rompPaneEnabled('feed'))return;
 if(!feedReady){pendingCard={itemId:itemId,sid:sid};return;}
 var f=document.getElementById('f-feed');
-try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid},'*');}catch(e){}}
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid,gesture:true},'*');}catch(e){}}
 window.addEventListener('message',function(e){var m=e&&e.data;
 if(m&&m.romp==='wsState'&&m.app==='chat'&&m.state==='up')chatUp=true;   // the chat pane's shim, on its socket's open: from here a tap is delivered live
 if(!(m&&m.romp==='ready'&&m.app==='feed'))return;
@@ -61417,7 +61450,7 @@ class Handler(BaseHTTPRequestHandler):
             _pusher_wake.set()                 # …and that push starts when the in-flight cycle ends, not
             #                                     after the 0.5 s backstop (the tab switch IS the event)
             if client.get("app") == "chat":
-                _relay_active_chat(client, msg.get("id"))   # …and the window's feed learns which session is focused (T347)
+                _relay_active_chat(client, msg.get("id"), msg.get("nonce"))   # …and the window's feed learns which session is focused (T347), the announcement number echoed (T416)
             return
         if msg and msg.get("type") == "needSlot" and msg.get("slot") in _DELTA_SLOTS:
             # The shim could not apply a view delta (its base revision did not match what it holds — a
