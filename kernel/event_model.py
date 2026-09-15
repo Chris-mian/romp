@@ -1586,6 +1586,22 @@ def checkpoint_sweep():
             _count_read(str(cp), len(text))
             doc = json.loads(text.decode("utf-8"))
             keep = isinstance(doc, dict) and isinstance(doc.get("path"), str) and os.path.exists(doc["path"])
+            if keep and meta is not None and meta.exists() and isinstance(doc.get("refused"), dict):
+                av = doc.get("av")
+                if not isinstance(av, int) or av < _ASM_CKPT_V:
+                    # A refusal mark belongs to the cut rule it was made under (plans/checkpoint-mark-version-retirement.md,
+                    # 2026-09-15): this sidecar's mark was made against an older document version, and since the mark is read
+                    # BEFORE the document (_asm_refusal_stands), the load's version check never reached the leaf: an idle session
+                    # parsed whole at every boot (sixteen of them at the measurement boot after stage one b). The mark is retired
+                    # here, once: the sidecar's bytes kept beside it as .meta.retired-<stamp>, the sidecar rewritten without the
+                    # block (its av, path, files and linked unchanged), so the next parse takes the version-refusal road once and
+                    # the settle's write produces the current version's document. A sidecar without av is version-old too
+                    _asm_retire_refusal_mark(meta)
+                    d2 = {k: v for k, v in doc.items() if k != "refused"}
+                    mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+                    mtmp.write_text(json.dumps(d2))
+                    os.replace(mtmp, meta)
+                    _asm_removed("refusedMark:version")
         except (OSError, ValueError):
             keep = False
         if not keep:
@@ -5560,7 +5576,8 @@ def asm_checkpoint_stats():
 
 
 def _asm_removed(reason):
-    """A document file removed, counted per reason (T398): the fallback that refused it, or the boot sweep."""
+    """A document file removed, counted per reason (T398): the fallback that refused it, or the boot sweep; and, under
+    `refusedMark:version`, a refusal mark the sweep retired from a version-old sidecar (the document itself stays)."""
     with _ASM_CKPT_LOCK:
         r = _ASM_CKPT_STATS.setdefault("removed", {})
         r[reason] = r.get(reason, 0) + 1
