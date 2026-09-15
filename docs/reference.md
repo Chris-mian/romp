@@ -1867,7 +1867,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the file cold, T402), `foreign:<reason>` (the judges' walk over ANOTHER
   session's leaf refused that session's document quietly for the reason named,
   the document standing for its owner: a reader that does not own a document
-  never notes it and never unlinks it, 2026-09-15), `full` with
+  never notes it and never unlinks it, 2026-09-15; `foreign:refusedStanding` is
+  that reader's cold walk under a standing refusal mark), `seeded:asmDocMemo` (a
+  seeded walk whose document decode was served from the per-process memo, keyed
+  on the document file's size and mtime: a leaf named by several sessions'
+  episode rows decodes its document once per boot, not once per naming session;
+  every stat check and the guard read still run per walk, a document is
+  memoized only once those checks passed, and an owner's fallback drops it;
+  the memo is reported under `asmCheckpoint.asmDocMemo` with `entries`, `bytes`
+  as the documents' RESIDENT weight, each file's compressed size times
+  `multiple`, the measured 10 a decoded document weighs against its gzipped
+  bytes, and `capBytes`, a ceiling on that weight of MemTotal / 512 floored at
+  64 MiB, `ROMP_ASM_DOC_MEMO_CAP_MB`; unrelated to `checkpoints.docMemo`, the
+  fold documents' read memo), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
@@ -3267,6 +3279,25 @@ its document passes through as answered (404 for an unknown host, 502 when the
 tunnel is down). The merge happens in the browser and follows the federation
 rule: per-host maps in, one line per machine out, the worst state wins for the
 dot, and no count or clock is ever added to or compared with another kernel's.
+
+Three more relays of one call to an attached host sit beside it, all behind the
+local token, all forwarding the remote's own token, all bounded at ten seconds
+(a peer that accepts and never answers is reported as not answering then, and
+the tunnel is re-dialed). `GET /remote/<host>/sessions` reads the peer's own
+session roster: 200 with `{ok, host, sessions}` (each row the public shape with
+its identity colors, nothing of this kernel's added), 404 in prose for an
+unknown host, the peer's own status and prose for a refusal or an older build
+without the route, 502 in prose for a dead tunnel or a body that is not a list.
+`POST /remote/<host>/new` and `POST /remote/<host>/send` relay a control call
+that lands on that machine: a session spawned there, and its briefing sent
+before this kernel's poll has learned the new id (a `POST /send` here would
+route it nowhere). The body must be a JSON object and crosses as sent; the
+peer validates and answers for itself, and its status and JSON verdict are
+mirrored (its 400 or 409 arrives as a 400 or 409 with its words). Every answer
+this side writes is JSON `{ok, error}`: 404 for a path that names no host
+(`/remote/new`), for an op other than `new` and `send`, or for an unknown host;
+400 for a body that is not a JSON object (the peer is never reached); 502 for
+a dead tunnel or a peer that answered without a JSON verdict.
 
 ### The ledger
 
