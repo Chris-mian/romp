@@ -1657,6 +1657,7 @@ def _record_suspend(iv):
     try:                                             #  the two sees the suspension and a stat that will move under its memo; the
         with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:   #  other order let a look record a skippable memo without the
             f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")   #  suspension under the final stat (T401 (2) round six)
+        _files_stat_mark()                           # the downtime log is a keyed file of every session
     except OSError:
         _nudge_memos_forget()                        # the list moved with no file to say so: every nudge memo keyed on the downtime
     #                                                  log is stale, so none may skip (round five, low b)
@@ -7421,6 +7422,7 @@ def _set_session_flag(sid, flag, value):
                     for nid in tops:
                         fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
                 _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
+                _files_stat_mark()                            # the clears log is a keyed file of every session
         except Exception:
             pass
     if flag == "hideFromFeed" and not value:
@@ -8033,6 +8035,8 @@ def _ledger_write_proved(p, what, d, cache, normalize=None):
             _sdk_problem(line)                # the error center: on record once, however many gestures repeat it
         raise
     _ledger_write_failed.pop(what, None)     # a landed write ends the write-fault episode
+    if what == "auto-nudge":
+        _files_stat_mark()                   # the ledger is the tenth keyed file of every session: the next pass stats them all
     _ledger_proved(what, None)               # a proved write ends the episode too
     try:
         st = p.stat()
@@ -10839,6 +10843,85 @@ def _warm_wanted(s, tm):
     return _session_moved_since_boot(s) or (tm or {}).get("state", "") in _PARSE_WARM_STATES
 
 
+NUDGE_FLOOR_S = 30                    # the bound on the standing snapshot's trust (plans/nudge-walk-events.md): a session no event marked is
+#                                       re-statted once this many seconds after its last stat, so an event this process missed heals within it
+_FILES_STAT_STANDING = {}             # (sid, path) -> [the ten files' stat, monotonic taken]: the last pass's stat, served to later passes
+#                                       until an event marks the session or the floor passes; jobs thread only (pruned to the pass's askers)
+_FILES_STAT_DIRTY = {"sids": set(), "all": True}   # fed by _files_stat_mark from any thread, taken whole by the next pass; "all" at boot
+_FILES_STAT_LOCK = threading.Lock()
+_FILES_STAT_OBSERVED = {"postal": None, "rows": {}, "jdAll": None, "jdBy": {}}   # the pass prelude's own observers, compared pass to
+#                                       pass: the postal log's stat, each live row's (state, since, live-tail revision) and the judge
+#                                       module's write counters (jd.SESSION_FILE_WRITES: the store, journal, archive and episode writers)
+
+
+def _files_stat_mark(sid=None):
+    """One of the ten keyed files moved by this process's hand, or an observer saw one move: the next jobs pass stats `sid`'s
+    files afresh (None: every session's, for a shared file such as the clears log, the ledger, the downtime or the postal
+    log). The writers call this AFTER their write lands, so a pass that took the mark sees the moved file."""
+    with _FILES_STAT_LOCK:
+        if sid is None:
+            _FILES_STAT_DIRTY["all"] = True
+        else:
+            _FILES_STAT_DIRTY["sids"].add(str(sid))
+
+
+def _files_stat_pass_open(live_map):
+    """The jobs pass's prelude: take the dirty set whole (a mark landing during the pass waits for the next), add what the
+    prelude observes itself (the postal log's stat, written by another process; the judge module's per-session write counters;
+    each live row's state, since and live-tail revision, the backends' in-memory word on a turn's edges and queued sends), and
+    open the pass's shared snapshot. Returns
+    True when this call opened the slot (a caller that already holds one, a test driving the pass inside a cycle, keeps its own)."""
+    with _FILES_STAT_LOCK:
+        sids, every = set(_FILES_STAT_DIRTY["sids"]), _FILES_STAT_DIRTY["all"]
+        _FILES_STAT_DIRTY["sids"].clear(); _FILES_STAT_DIRTY["all"] = False
+    try:
+        _pst = os.stat(str(jd.STATE / "timeline" / "messages.jsonl")); postal = (_pst.st_mtime, _pst.st_size)
+    except OSError:
+        postal = (0.0, 0)
+    if postal != _FILES_STAT_OBSERVED["postal"]:
+        _FILES_STAT_OBSERVED["postal"] = postal
+        every = True
+    writes = getattr(jd, "SESSION_FILE_WRITES", None)      # the judge module's own writers, counted per session (in this process)
+    if isinstance(writes, dict):
+        try:
+            by = dict(writes.get("by") or {})
+        except RuntimeError:                                  # a writer on another thread mid-append: every session, this once
+            by, every = dict(_FILES_STAT_OBSERVED["jdBy"]), True
+        if writes.get("all") != _FILES_STAT_OBSERVED["jdAll"]:
+            _FILES_STAT_OBSERVED["jdAll"] = writes.get("all")
+            every = True
+        prev = _FILES_STAT_OBSERVED["jdBy"]
+        sids.update(sid for sid, n in by.items() if prev.get(sid) != n)
+        sids.update(sid for sid in prev if sid not in by)
+        _FILES_STAT_OBSERVED["jdBy"] = by
+    rows = {}
+    for sid, row in (live_map or {}).items():
+        try:
+            rows[sid] = ((row or {}).get("state"), (row or {}).get("since"), Sessions.live_rev(sid))
+        except Exception:
+            rows[sid] = object()                          # unreadable: never equal, so the session is looked at (when unsure, look)
+        if rows[sid] != _FILES_STAT_OBSERVED["rows"].get(sid):
+            sids.add(str(sid))
+    _FILES_STAT_OBSERVED["rows"] = rows
+    _live_scope.files_dirty = (sids, every)
+    opened = getattr(_live_scope, "files_stat", None) is None
+    if opened:
+        _live_scope.files_stat = {}
+    return opened
+
+
+def _files_stat_pass_close(opened):
+    """The pass's end: the standing snapshot keeps only the sessions this pass asked about (a dead session's entry goes
+    with it), and the slot closes when this pass opened it."""
+    memo = getattr(_live_scope, "files_stat", None)
+    if memo is not None:
+        for k in [k for k in _FILES_STAT_STANDING if k not in memo]:
+            _FILES_STAT_STANDING.pop(k, None)
+    _live_scope.files_dirty = None
+    if opened:
+        _live_scope.files_stat = None
+
+
 def _session_files_stat(s):
     """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
     episode log, the clears log, the postal log, the kernel's downtime log and the nudge ledger, zeros for a missing file:
@@ -10850,13 +10933,23 @@ def _session_files_stat(s):
     rule; tests/test_kernel_interrupt_machine_cut.py pins it).
     One snapshot per session per jobs pass (plans/nudge-walk-events.md, 2026-09-15): inside a pass the first asker's stat is kept on
     the pass's scope and served to every later asker, so the lift, the walk and the interrupt tick read ONE view of the ten files
-    and the pass pays ten stats per alive session, not ten per job; `stats` under memos.nudgeWalk counts the stats paid. Outside
-    a pass (a handler's own tick, a test) there is no scope and every ask stats."""
+    and the pass pays ten stats per alive session, not ten per job; `stats` under memos.nudgeWalk counts the stats paid. Across
+    passes the stat STANDS (_FILES_STAT_STANDING) until an event marks the session (_files_stat_mark: the writers of the ten files
+    in this process, the pass prelude's observers) or NUDGE_FLOOR_S passes, so a quiet pass stats nothing (`served` counts the
+    standing keys served). Outside a pass (a handler's own tick, a test) there is no scope and every ask stats."""
     sid = str(s.get("sid") or "")
     memo = getattr(_live_scope, "files_stat", None)
     key = (sid, s.get("path") or "")
-    if memo is not None and key in memo:
-        return memo[key]
+    if memo is not None:
+        if key in memo:
+            return memo[key]
+        dirty = getattr(_live_scope, "files_dirty", None)    # (the sids an event marked, every session marked): taken by the pass prelude
+        stand = _FILES_STAT_STANDING.get(key)
+        if (stand is not None and dirty is not None and not dirty[1] and sid not in dirty[0]
+                and time.monotonic() - stand[1] < NUDGE_FLOOR_S):
+            _NUDGE_WALK_STATS["served"] += 1                # the last pass's stat stands: no event marked the session, the floor holds
+            memo[key] = stand[0]
+            return stand[0]
     out = []
     for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
@@ -10882,6 +10975,7 @@ def _session_files_stat(s):
     _NUDGE_WALK_STATS["stats"] += len(out) // 2   # the stats paid (a served key pays none)
     if memo is not None:
         memo[key] = out
+        _FILES_STAT_STANDING[key] = [out, time.monotonic()]
     return out
 
 
@@ -11098,7 +11192,7 @@ def _tick_job_skips(job, s):
 # so the walk's bookkeeping does not flap. The first boot with per-stage byte rows (dc8ad7fb, 2026-09-13) spent 58.9 s of a
 # 63 s first cycle in this walk, parsing every alive session cold before a single nudge could be due.
 _NUDGE_HORIZON = threading.local()    # the walking thread's collector: .notes (the flips a look's clock legs declined on)
-_NUDGE_WALK_STATS = {"looks": 0, "stats": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
+_NUDGE_WALK_STATS = {"looks": 0, "stats": 0, "served": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
                      "clockDue": 0, "wakeOnly": 0, "unboundedBy": {}}   # unboundedBy: the None notes per leg (T401 follow-up)
 _NUDGE_LOOK_STATS = {}                # sid -> the stat the pass took before its snapshots, for the look (a side map: the session
 #                                       rows are shared, read-only and memoised per cycle, never written into)
@@ -30576,6 +30670,7 @@ def _bump_judge_gen_if_changed(before_fp=None):
     _last_judge_fp[0] = cur
     if cur != anchor:
         _judge_gen[0] += 1
+        _files_stat_mark()                           # a judge-written store moved (the judges' own process too): every session's key may have
         return True
     return False
 
@@ -53202,9 +53297,8 @@ def _jobs_pass(now, live_map):
     _t_pass = time.monotonic()
     if not _PERF_STATS._mine():
         _PERF_STATS.cycle_begin("jobs")   # a caller that did not open the pass (a test driving the jobs alone) opens it here
-    _own_stat = getattr(_live_scope, "files_stat", None) is None   # the pass's shared ten-file snapshot (_session_files_stat): opened
-    if _own_stat:                                                    # here when the caller did not, closed at the pass's end (the cycle's
-        _live_scope.files_stat = {}                                  # finally clears it too, so a raise never leaks a pass's view)
+    _own_stat = _files_stat_pass_open(live_map)   # the dirty set taken, the prelude's observers read, the pass's shared ten-file
+    #                                               snapshot opened when the caller did not (closed below; the cycle's finally too)
     try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
         _job_stage('liftSpentAwaiting', lambda: _lift_spent_awaiting(now, live_map))   # so the nudge tick below never wakes a wait that already ended
     except Exception:
@@ -53282,8 +53376,7 @@ def _jobs_pass(now, live_map):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
-    if _own_stat:
-        _live_scope.files_stat = None
+    _files_stat_pass_close(_own_stat)
     _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
 
 
@@ -53322,6 +53415,7 @@ def _jobs_cycle():
         _live_scope.auth = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
+        _live_scope.files_dirty = None
         _PERF_STATS.jobs_pass(time.monotonic() - _t, time.thread_time() - _c)
         if first:
             _first_cycle_sampler_stop(_FIRST_PASS_SAMPLER)

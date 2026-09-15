@@ -75,6 +75,14 @@ class _CycleFixture(unittest.TestCase):
                 "compactPct": None, "color": None, "mode": "", "backend": "sdk"}
         self.row = {SID: dict(meta), SID2: dict(meta)}
         self.saved_clients = list(km._clients)
+        self._files_stat_reset()
+
+    def _files_stat_reset(self):
+        """The ten-file key's standing snapshot, dirty set and observers back to a boot's: no test inherits another's marks."""
+        getattr(km, "_FILES_STAT_STANDING", {}).clear()
+        getattr(km, "_FILES_STAT_DIRTY", {}).update({"sids": set(), "all": True})
+        getattr(km, "_FILES_STAT_OBSERVED", {}).update({"postal": None, "rows": {}, "jdAll": None, "jdBy": {}})
+        km._live_scope.files_dirty = None
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
@@ -89,6 +97,7 @@ class _CycleFixture(unittest.TestCase):
         km._live_scope.paths = None
         km._live_scope.names = None
         km._live_scope.files_stat = None
+        self._files_stat_reset()
         km._compact_clicked.clear()
         self.td.cleanup()
 
@@ -533,6 +542,85 @@ class OneTenFileSnapshotPerPass(_CycleFixture):
         self.assertEqual(stats[0], 10 * len(self.row),
                          "ten stats per alive session per pass, whoever asks: %r asks, %d stats" % (dict(asked), stats[0]))
         self.assertEqual(counted, stats[0], "memos.nudgeWalk.stats counts the stats the key paid")
+
+    def _pass(self):
+        """One jobs cycle over the fixture's two live sessions: (the stats the ten-file key paid, the walk's parses, its gate
+        hits), the stats counted through os.stat while the key answers."""
+        real, real_stat, inside, stats = km._session_files_stat, os.stat, [0], [0]
+        def counting(s):
+            inside[0] += 1
+            try:
+                return real(s)
+            finally:
+                inside[0] -= 1
+        def stat(*a, **k):
+            if inside[0]:
+                stats[0] += 1
+            return real_stat(*a, **k)
+        p0, h0 = km._NUDGE_WALK_STATS["parses"], km._NUDGE_WALK_STATS["skippedParses"]
+        km._session_files_stat, os.stat = counting, stat
+        try:
+            km.Sessions.live = lambda: dict(self.row)
+            with km._clients_lock:
+                km._clients[:] = []
+            km._jobs_cycle()
+        finally:
+            km._session_files_stat, os.stat = real, real_stat
+        return stats[0], km._NUDGE_WALK_STATS["parses"] - p0, km._NUDGE_WALK_STATS["skippedParses"] - h0
+
+    def test_a_quiet_pass_stats_nothing_and_parses_nothing(self):
+        """plans/nudge-walk-events.md rule 2: with no event marked and the floor standing, the next pass serves every
+        session's key from the standing snapshot (no stat) and the walk's gate skips every look."""
+        first, _, _ = self._pass()
+        self.assertEqual(first, 10 * len(self.row), "the boot's first pass stats every alive session")
+        self._pass()                                            # the first pass's own writes (the ledger's never-seen rows) mark the second
+        served0 = km._NUDGE_WALK_STATS.get("served")
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 0, "a quiet pass pays no per-session stat")
+        self.assertEqual(parses, 0, "and the walk parses nothing")
+        self.assertEqual(hits, len(self.row), "every look is a gate hit on the standing key")
+        self.assertEqual((km._NUDGE_WALK_STATS.get("served") or 0) - (served0 or 0), len(self.row), "memos.nudgeWalk.served counts them")
+
+    def test_the_floor_re_stats_every_session_and_still_parses_nothing(self):
+        self._pass(); self._pass()
+        for v in getattr(km, "_FILES_STAT_STANDING", {}).values():
+            v[1] -= getattr(km, "NUDGE_FLOOR_S", 30)          # the standing stats are older than the floor now
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "the floor re-stats every session once")
+        self.assertEqual((parses, hits), (0, len(self.row)), "nothing moved, so the fresh keys still hit the memo")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_session_file_written_here_marks_that_session_alone(self):
+        self._pass(); self._pass()
+        jd.append_episode(SID, "h1", SID, NOW)                 # a keyed file of SID, written through the judge module's own writer
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10, "the marked session is statted, the other is served: %d stats" % stats)
+        self.assertEqual((parses, hits), (1, len(self.row) - 1), "its moved key parses once; the other session's look hits")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_judge_written_store_marks_every_session(self):
+        self._pass(); self._pass()
+        (jd.GOALDIR / (SID2 + ".json")).write_text(json.dumps({"rompUuid": SID2, "nodes": {}, "status": {}}))   # the judges' process
+        self.assertTrue(km._bump_judge_gen_if_changed(), "the producer's observer sees the store move")           # publishing a store
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "every session's key is statted after a judge write")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_a_live_row_change_marks_its_session(self):
+        self._pass(); self._pass()
+        self.row[SID]["state"] = "working"                      # the backend's in-memory word on a turn's edge: no file of the key yet
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10, "the row that moved is statted, the other served: %d stats" % stats)
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
+
+    def test_the_postal_log_moving_marks_every_session(self):
+        self._pass(); self._pass()
+        (jd.STATE / "timeline").mkdir(exist_ok=True)
+        with (jd.STATE / "timeline" / "messages.jsonl").open("a") as fh:
+            fh.write(json.dumps({"id": "m1", "t": NOW}) + "\n")   # another process's log: the prelude's own stat sees it move
+        stats, parses, hits = self._pass()
+        self.assertEqual(stats, 10 * len(self.row), "the shared log moved: every session is statted")
+        self.assertEqual(self._pass()[0], 0, "and the pass after it is quiet again")
 
     def test_outside_a_pass_every_ask_stats(self):
         """A handler's own tick runs with no pass scope open: nothing is served stale from an earlier pass."""

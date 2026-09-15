@@ -16,6 +16,21 @@ CLI:
 import collections
 import shlex
 import contextlib, copy, hashlib, json, os, pickle, re, secrets, shutil, signal, stat, sys, time, subprocess, threading, traceback, importlib.util
+
+SESSION_FILE_WRITES = {"all": 0, "by": {}}   # this module's writes of a session's keyed files since load: a count per session id
+#                                               (the goal store, its override journal and archive, the episode log) and one for the
+#                                               files every session shares (the clears log). The kernel's housekeeping pass compares
+#                                               these with its last look to re-stat only the sessions whose files moved
+#                                               (plans/nudge-walk-events.md); a counter, not a callback list, because a test process
+#                                               loads the kernel many times over ONE judge module and re-executes this file each time.
+
+
+def _session_file_written(fsid):
+    if fsid is None:
+        SESSION_FILE_WRITES["all"] += 1
+    else:
+        by = SESSION_FILE_WRITES["by"]
+        by[fsid] = by.get(fsid, 0) + 1
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -5260,6 +5275,7 @@ def append_override(fsid, node_id, op, t):
     d.mkdir(parents=True, exist_ok=True)
     with (d / (fsid + ".jsonl")).open("a") as f:
         f.write(json.dumps({"node": node_id, "op": op, "t": int(t)}) + "\n")
+    _session_file_written(fsid)
 
 
 def append_clear(fsid, node_id, src, why, t):
@@ -5275,6 +5291,7 @@ def append_clear(fsid, node_id, src, why, t):
     d.mkdir(parents=True, exist_ok=True)
     with (d / (fsid + ".jsonl")).open("a") as f:
         f.write(json.dumps({"node": node_id, "op": "clear", "src": src, "why": why, "t": int(t)}) + "\n")
+    _session_file_written(fsid)
 
 
 def append_block(fsid, node_id, src, why, t):
@@ -5290,6 +5307,7 @@ def append_block(fsid, node_id, src, why, t):
     d.mkdir(parents=True, exist_ok=True)
     with (d / (fsid + ".jsonl")).open("a") as f:
         f.write(json.dumps({"node": node_id, "op": "block", "src": src, "why": why, "t": int(t)}) + "\n")
+    _session_file_written(fsid)
 
 
 def append_restore(fsid, nodes, status, t):
@@ -5305,6 +5323,7 @@ def append_restore(fsid, nodes, status, t):
         f.write(json.dumps({"op": "restore", "t": int(t),
                             "nodes": {k: dict(v) for k, v in nodes.items()},
                             "status": dict(status)}) + "\n")
+    _session_file_written(fsid)
 
 
 def _replay_overrides(fsid, store, lines=None):
@@ -6251,6 +6270,7 @@ def save_goals(fsid, store):
             _disk_seed(GOALDIR / (fsid + ".json"), tmp, mine)
         tmp.rename(GOALDIR / (fsid + ".json"))        # atomic publish
         published = True
+        _session_file_written(fsid)
         _shared_forget(str(GOALDIR / (fsid + ".json")))   # the shared read-only view of the old version goes
         #                                               with it (its identity check would miss anyway; this frees the bytes)
         if pending:
@@ -6337,6 +6357,7 @@ def save_goal_archive(fsid, store):
     tmp = _publish_tmp(GOALARCHDIR, fsid)
     tmp.write_text(json.dumps(store))
     tmp.rename(GOALARCHDIR / (fsid + ".json"))        # atomic publish
+    _session_file_written(fsid)
 
 
 # The goals-archive has NONE of save_goals' rev/rebase discipline — save_goal_archive is a blind
@@ -8894,6 +8915,7 @@ def append_episode(sid, head, fsid, t):
     with (EPIDIR / (sid + ".jsonl")).open("a") as fh:
         fh.write(json.dumps({"head": head, "fsid": fsid, "t": t}) + "\n")
     _episode_memo.pop(sid, None)
+    _session_file_written(sid)
 
 
 def append_episode_settle(sid, head, t, settled):
@@ -8907,6 +8929,7 @@ def append_episode_settle(sid, head, t, settled):
     with (EPIDIR / (sid + ".jsonl")).open("a") as fh:
         fh.write(json.dumps({"settleFor": head, "t": t, "settled": settled}) + "\n")
     _episode_memo.pop(sid, None)
+    _session_file_written(sid)
 
 
 def episode_floor(sid):
@@ -12405,6 +12428,7 @@ def _apply_echo_clears(fsid, store, targets, batch_t, now, why):
     with (STATE / "cleared.jsonl").open("a") as fh:
         for tid in targets:
             fh.write(json.dumps({"id": tid, "t": batch_t, "op": "clear"}) + "\n")
+    _session_file_written(None)                  # the clears log is every session's
     for tid in targets:
         record_verdict(store, store["nodes"][tid], "romp", "clear", now, why=why)
     rollup_status(store, False)

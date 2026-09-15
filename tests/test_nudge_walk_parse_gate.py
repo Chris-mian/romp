@@ -490,6 +490,8 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_live_scope",                          # the jobs pass's thread-local scope: its files_stat slot holds the ten files' stats this
             #                                         key function itself took earlier in the SAME pass (plans/nudge-walk-events.md, the
             #                                         shared snapshot), a memo of the keyed files' own stats and never an input of its own
+            "_FILES_STAT_STANDING",                 # the same stats standing across passes until a writer's mark or the floor (the dirty
+            #                                         set is read through the scope's files_dirty slot): the key's own stats, no input
             "_NUDGE_ASKER_ROWS_MAX",                # a constant
             "_views_dirty", "_pusher_wake",         # the writers' dirty mark and the pusher's wake (_mark_views_dirty): outputs of a
             #                                         block filed or lifted, never inputs to the verdict
