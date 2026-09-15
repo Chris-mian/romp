@@ -60,7 +60,8 @@ class Harness {
   win: any;                    // the sandbox window (the shim hangs __rompLocalSend on it)
   bars: any[] = [];            // the bars a standalone page raised (selfBar): {text, kind, buttons}
   liveBar: any = null;         // the one bar standing (the #romp-stale-self slot)
-  constructor(js: string, opts: { standalone?: boolean; session?: Map<string, string>; pathname?: string } = {}) {
+  notified: any[] = [];        // what the shell's own write path (__rompNotify on the parent) received, synchronously
+  constructor(js: string, opts: { standalone?: boolean; session?: Map<string, string>; pathname?: string; parentNotify?: boolean } = {}) {
     const h = this;
     const session = opts.session || new Map<string, string>();
     class FakeWS {
@@ -74,7 +75,8 @@ class Harness {
     class FakeDate extends Date { static now() { return h.now; } }
     const sandbox: any = {
       window: {
-        parent: opts.standalone ? undefined : { postMessage: (m: any) => h.posted.push(m) },   // embedded: the shell owns the banner
+        parent: opts.standalone ? undefined : Object.assign({ postMessage: (m: any) => h.posted.push(m) },   // embedded: the shell owns the banner
+          opts.parentNotify ? { __rompNotify: (kind: string, text: string) => h.notified.push({ kind, text }) } : {}),
         sessionStorage: { getItem: (k: string) => (session.has(k) ? session.get(k) : ""), setItem: (k: string, v: string) => { session.set(k, String(v)); },
                           removeItem: (k: string) => { session.delete(k); } },
         dispatchEvent: (e: any) => { if (e && e.data !== undefined) h.toBundle.push(e.data); return true; },
@@ -490,10 +492,17 @@ test("the loss line is said at the reload from the queue's state then, names the
   assert.equal(h.posted.filter((m) => m.romp === "notify").length, 0, "delivered before the reload: no line");
   h.ws.close(); h.win.__rompLocalSend({ type: "activeTab", id: "t2" }); h.win.__rompLocalSend({ type: "activeTab", id: "t3" });
   (h.win.__rompShimPersist || (() => {}))();
-  const said = h.posted.filter((m) => m.romp === "notify");
+  const said = h.posted.filter((m) => m.romp === "notify");   // this harness's parent has no write path: the message is the fallback
   assert.equal(said.length, 1, "still queued at the reload: the line");
   assert.equal(said[0].kind, "warn");   // field by field: the posted object lives in the sandbox's realm, so a strict deep compare reads two prototypes
   assert.equal(said[0].text, "2 messages queued for the Chat pane could not be sent before the dashboard reloaded; they were not delivered.");
+  // the shell's own write path, when the parent exposes it: written synchronously, before location.reload() can take the page
+  // (a message would be delivered after the reload began); nothing posted then
+  const sync = new Harness(shimJs("chat"), { parentNotify: true });
+  sync.ws.open(); sync.bundleReady(); sync.ws.close(); sync.win.__rompLocalSend({ type: "activeTab", id: "t1" });
+  (sync.win.__rompShimPersist || (() => {}))();
+  assert.deepEqual(sync.notified.map((n) => [n.kind, n.text]), [["warn", "1 message queued for the Chat pane could not be sent before the dashboard reloaded; it was not delivered."]]);
+  assert.equal(sync.posted.filter((m) => m.romp === "notify").length, 0, "written, not posted");
   // every pane names itself by the label the rail shows, never by its internal key (a runtime pin: the key is interpolated)
   const LABELS: Record<string, string> = { chat: "Chat", timeline: "Sessions", fleet: "Outline", feed: "Feed", files: "Files", settings: "Settings" };
   for (const app of Object.keys(LABELS)) {

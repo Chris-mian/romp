@@ -45392,7 +45392,7 @@ def _note_ws_drop(c, why, frame_len, key=None):
             _WS_DROPS.append({"seq": _WS_DROP_SEQ[0], "t": time.time(),
                               "text": "The %s pane's live connection was dropped: it had %.1f MB of "
                                       "updates waiting and had stopped reading them. It reconnects on "
-                                      "its own." % (dict(_PANE_ORDER).get(app, app), int(c.get("qbytes") or 0) / 1e6)})
+                                      "its own." % (_pane_label(app), int(c.get("qbytes") or 0) / 1e6)})
             del _WS_DROPS[:-20]
     except Exception:
         pass
@@ -53095,13 +53095,13 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
 # this code in node with fakes and pins the wiring.
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdDue=0,holdStart=0,holdDiag=false,freshSince=0,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdDue=0,holdStart=0,holdDiag=false,freshSince=0,lastStamps=[],ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
 if(!textual)return false;var val=(a.value!=null?a.value:(a.textContent||''));return !!String(val).trim();}catch(e){return false;}}
-function busyHere(){if(ptr>0)return 'pointer';if(pan)return 'pan';if(drag)return 'drag';
-try{if(window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}   /* the chat pane's redial awaiting its first frame; a hold older than the bound no longer holds (the frame never came: the reload fires as before) */
+function busyHere(skipFresh){if(ptr>0)return 'pointer';if(pan)return 'pan';if(drag)return 'drag';
+try{if(!skipFresh&&window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}   /* skipFresh: the shell's walk asks again past the fresh answer for the pane's OTHER holds (an upload, queued sends): a pane's answers compose */   /* the chat pane's redial awaiting its first frame; a hold older than the bound no longer holds (the frame never came: the reload fires as before) */
 try{var s=document.getSelection&&document.getSelection();var focused=!document.hasFocus||document.hasFocus();
 if(focused&&s&&s.rangeCount&&!s.isCollapsed&&String(s).length)return 'selection';}catch(e){}
 if(editing())return 'typing';
@@ -53119,9 +53119,12 @@ var edge=freshSince?freshSince+FRESH_HOLD_MS:0,newest=0;for(var i=0;i<stamps.len
 if(newest){freshSince=newest;return now-freshSince<FRESH_HOLD_MS;}return false;}
 function freshStamp(w){try{if(w.__rompFreshPendingSince)return w.__rompFreshPendingSince;if(!w.__rompFreshSeenAt)w.__rompFreshSeenAt=Date.now();return w.__rompFreshSeenAt;}catch(e){return 0;}}   /* a pane answering fresh without a stamp is stamped once at first sighting (never per walk: that would reopen the window forever); cleared when it stops answering fresh */
 function freshSeenClear(w){try{if(w.__rompFreshSeenAt)w.__rompFreshSeenAt=0;}catch(e){}}
-function busy(){var stamps=[],hold=busyHere();if(hold==='fresh'){stamps.push(freshStamp(window));hold='';}else freshSeenClear(window);var ps=panes();
-for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){stamps.push(freshStamp(ps[i]));b='';}else freshSeenClear(ps[i]);if(b&&!hold)hold=b;}
-var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
+/* a pane answering fresh is asked again for its other holds (busyHere(true)): the fresh answer must not MASK an upload or queued
+   sends in that pane, or the page window's edge would fire the reload over them (the round-four review's high) */
+function otherHold(w){var o='';try{o=w.__rompReload.busyHere(true)||'';}catch(e){}return o==='fresh'?'':o;}
+function busy(){var stamps=[],hold=busyHere();if(hold==='fresh'){stamps.push(freshStamp(window));hold=busyHere(true)||'';if(hold==='fresh')hold='';}else freshSeenClear(window);var ps=panes();
+for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){stamps.push(freshStamp(ps[i]));b=otherHold(ps[i]);}else freshSeenClear(ps[i]);if(b&&!hold)hold=b;}
+lastStamps=stamps;var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
 /* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age since
    the hold BEGAN, not since the last backstop) through a pane's diagnostics door, so a page that never reloads after a deploy is
    readable from the kernel's client-diag.jsonl; once per owed request, latched only once a door took it */
@@ -53129,9 +53132,11 @@ var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
    earliest stamp plus the minute, a known instant) when a window is open, else the bound from now. Re-armed earlier when a
    walk opens a new window sooner than the timer stands for; never later. The held line's "within a minute of its reconnect"
    is true because the walk runs AT the edge, not at the next tick of a fixed cadence (the round-three review, item 4). */
-function armBackstop(){var now=Date.now(),due=now+FRESH_HOLD_MS;if(freshSince&&freshSince+FRESH_HOLD_MS<due)due=freshSince+FRESH_HOLD_MS;
-if(holdTimer&&holdDue&&holdDue<=due)return;if(holdTimer)clearTimeout(holdTimer);holdDue=due;
-holdTimer=setTimeout(function(){holdTimer=null;holdDue=0;heldLong();tryFire();},Math.max(0,due-now));}
+function armBackstop(){var now=Date.now(),due=now+FRESH_HOLD_MS,c;
+if(freshSince){c=freshSince+FRESH_HOLD_MS;if(c>now&&c<due)due=c;}                       /* the window's edge, when still ahead */
+for(var i=0;i<lastStamps.length;i++){c=lastStamps[i]+FRESH_HOLD_MS;if(c>now&&c<due)due=c;}   /* the next stamp's own expiry, when ahead */
+if(holdTimer&&holdDue&&holdDue<=due)return;if(holdTimer)clearTimeout(holdTimer);holdDue=due;   /* an edge already past is not an event: the ordinary cadence stands, so the walk never re-arms itself at zero delay (the round-four review's medium: 250 walks a second under a draft) */
+holdTimer=setTimeout(function(){holdTimer=null;holdDue=0;heldLong();tryFire();},due-now);}
 function heldLong(){if(!owed||fired||holdDiag)return;if(Date.now()-holdStart<FRESH_HOLD_MS)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdStart};
 try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
 function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}try{if(window.__rompShimPersist)window.__rompShimPersist();}catch(e){}
@@ -53411,12 +53416,14 @@ window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if
 // once by the next life on the same path (below), since the bar raised now goes with the page.
 window.__rompShimPersist=function(){var n=queue.length-queuedDiag;if(n<=0)return;
 var t=n+" message"+(n===1?"":"s")+" queued for the "+LABEL+" pane could not be sent before the dashboard reloaded; "+(n===1?"it was":"they were")+" not delivered.";
-try{if(window.parent!==window)window.parent.postMessage({romp:"notify",kind:"warn",text:t},"*");
+try{if(window.parent!==window){var pn=null;try{pn=window.parent.__rompNotify;}catch(e3){}   // same origin: the shell's write path, synchronously, before location.reload() takes the page; a message would arrive too late
+if(typeof pn==="function")pn("warn",t);else window.parent.postMessage({romp:"notify",kind:"warn",text:t},"*");}
 else sessionStorage.setItem(SENDS_DROPPED_KEY,JSON.stringify({text:t,path:location.pathname}));}catch(e){}};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
 // …and shows the loss line its previous life kept at the reload (__rompShimPersist), on the same path only, once
-try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){var sdd=JSON.parse(sdk);if(!sdd.path||sdd.path===location.pathname){sessionStorage.removeItem(SENDS_DROPPED_KEY);if(sdd.text)selfBar(String(sdd.text),"warn");}}}}catch(e){}
+try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){var sdd=null;try{sdd=JSON.parse(sdk);}catch(e2){sessionStorage.removeItem(SENDS_DROPPED_KEY);}   // a value that will not parse is consumed, never kept forever
+if(sdd&&(!sdd.path||sdd.path===location.pathname)){sessionStorage.removeItem(SENDS_DROPPED_KEY);if(sdd.text)selfBar(String(sdd.text),"warn");}}}}catch(e){}
 try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
