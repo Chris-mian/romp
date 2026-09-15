@@ -38,6 +38,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 from romp_load import load_source
 from pathlib import Path
 
@@ -588,6 +589,83 @@ class Differential(_World):
         (jd.GONEDIR / (SID + ".json")).write_text(json.dumps({"t": NOW - 10, "by": "test"}))
         self.assertEqual(self.moved(b, self.sig()), ("gone",))
 
+    def test_registry_host_offsets_do_not_change_the_key_or_mutate_the_record(self):
+        reg = jd.STATE / "sdk" / (SID + ".json")
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        row = {"sid": SID, "name": "web", "alive": False}
+        reg.write_text(json.dumps(row))
+        before = self.sig()
+        for fields in ({"hostAck": {"host": "1:2", "offset": 10}},
+                       {"hostAck": {"host": "1:2", "offset": 20}, "hostLogPos": {"host": "1:2", "pos": 3}},
+                       {}):
+            with self.subTest(fields=fields):
+                published = dict(row, **fields)
+                pending = reg.with_suffix(".next")
+                pending.write_text(json.dumps(published))
+                pending.replace(reg)
+                self.assertEqual(self.moved(before, self.sig()), ())
+                self.assertEqual(km._thread_reg_read(SID), ("ok", published), "the shared record keeps its offsets")
+
+    def test_registry_content_changes_still_invalidate_including_unknown_fields(self):
+        reg = jd.STATE / "sdk" / (SID + ".json")
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        row = {"sid": SID, "name": "web", "alive": False}
+        reg.write_text(json.dumps(row))
+        for field, value in (("alive", True), ("cwd", "/proj/TESTHOST/app"), ("spawnedAt", NOW),
+                             ("forkedFrom", {"sid": SID_A, "name": "api"}), ("threadOf", SID_B),
+                             ("liveCtxTokens", 123), ("futureDisplayField", {"value": [1, 2]})):
+            with self.subTest(field=field):
+                before = self.sig()
+                row[field] = value
+                reg.write_text(json.dumps(row))
+                self.assertEqual(self.moved(before, self.sig()), ("reg",))
+        before = self.sig()
+        del row["futureDisplayField"]
+        reg.write_text(json.dumps(row))
+        self.assertEqual(self.moved(before, self.sig()), ("reg",))
+
+    def test_registry_missing_unreadable_and_empty_records_have_distinct_keys(self):
+        reg = jd.STATE / "sdk" / (SID + ".json")
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        missing = self.sig()
+        reg.write_text("{broken")
+        unreadable = self.sig()
+        self.assertEqual(self.moved(missing, unreadable), ("reg",))
+        reg.write_text("{}")
+        readable = self.sig()
+        self.assertEqual(self.moved(unreadable, readable), ("reg",))
+        reg.unlink()
+        self.assertEqual(self.moved(readable, self.sig()), ("reg",))
+        self.assertEqual(self.sig(), missing)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read a mode-000 registry")
+    def test_registry_permissions_repair_changes_the_chat_key_without_a_rewrite(self):
+        reg = jd.STATE / "sdk" / (SID + ".json")
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        reg.write_text("{}")
+        readable = self.sig()
+        original = reg.stat()
+        try:
+            reg.chmod(0)
+            unreadable = self.sig()
+            self.assertEqual(self.moved(readable, unreadable), ("reg",))
+        finally:
+            reg.chmod(0o600)
+        repaired = reg.stat()
+        self.assertEqual((repaired.st_ino, repaired.st_mtime_ns, repaired.st_size),
+                         (original.st_ino, original.st_mtime_ns, original.st_size))
+        self.assertEqual(self.moved(unreadable, self.sig()), ("reg",))
+        self.assertEqual(self.sig(), readable)
+
+    def test_unchanged_registry_is_decoded_once_across_chat_key_checks(self):
+        reg = jd.STATE / "sdk" / (SID + ".json")
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        reg.write_text(json.dumps({"sid": SID, "hostAck": {"offset": 1}}))
+        with mock.patch.object(Path, "read_text", autospec=True, side_effect=Path.read_text) as read:
+            for _ in range(5):
+                self.sig()
+            self.assertEqual(sum(call.args[0] == reg for call in read.call_args_list), 1)
+
     def test_the_task_store_misses_under_tasks(self):
         a = self.sig()
         d = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "tasks" / SID
@@ -1104,6 +1182,24 @@ class Pusher(unittest.TestCase):
         km._push([self.chat])
         self.assertEqual(self.built[2:], [SID_B], "the generation alone rebuilds no tab")
 
+    def test_host_acknowledgements_rebuild_neither_the_active_nor_background_tab(self):
+        self.chat["active"] = SID_A
+        regs = jd.STATE / "sdk"
+        regs.mkdir(parents=True, exist_ok=True)
+        for sid in (SID_A, SID_B):
+            (regs / (sid + ".json")).write_text(json.dumps({"sid": sid, "hostAck": {"offset": 1}}))
+        km._push([self.chat])
+        self.assertEqual(sorted(self.built), sorted([SID_A, SID_B]))
+        before = self._chat()
+        for sid in (SID_A, SID_B):
+            pending = regs / (sid + ".next")
+            pending.write_text(json.dumps({"sid": sid, "hostAck": {"offset": 2}}))
+            pending.replace(regs / (sid + ".json"))
+        km._push([self.chat])
+        self.assertEqual(self.built[2:], [], "host progress is not new chat content")
+        change = self._delta(before, self._chat())
+        self.assertEqual((change["built"], change["cached"], change["bg_miss"]), (0, 2, {}))
+
     def test_a_bare_dirty_mark_rebuilds_nothing_and_a_live_tail_echo_rebuilds_its_tab(self):
         self.chat["active"] = SID_A
         km._push([self.chat]); km._push([self.chat])
@@ -1397,6 +1493,34 @@ class RecordedDependencies(unittest.TestCase):
         ent = km._built_chat.get(SID_R)
         self.assertIsNotNone(ent, "the build is cached: its static components held across it")
         return ent[1], ent[3], dict(ent[3]["task_outs"])
+
+    def test_host_progress_reuses_the_real_chat_and_a_branch_change_rebuilds_it(self):
+        self.append(self.turn(1))
+        reg = jd.STATE / "sdk" / (SID_R + ".json")
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        row = {"sid": SID_R, "name": "web", "alive": True, "hostAck": {"offset": 1}}
+
+        def publish():
+            pending = reg.with_suffix(".next")
+            pending.write_text(json.dumps(row))
+            pending.replace(reg)
+
+        publish()
+        km._push([self.chat])
+        original, _, _ = self.record()
+        self.assertIsNone(original.get("branch"))
+        with mock.patch.object(km, "build_session", wraps=km.build_session) as build:
+            row["hostAck"] = {"offset": 2}
+            row["hostLogPos"] = {"pos": 3}
+            publish()
+            km._push([self.chat])
+            build.assert_not_called()
+            self.assertIs(self.record()[0], original)
+            row["forkedFrom"] = {"sid": SID_A, "name": "api", "t": self.t}
+            publish()
+            km._push([self.chat])
+            self.assertEqual(build.call_count, 1)
+            self.assertEqual(self.record()[0]["branch"]["fromSid"], SID_A)
 
     def test_a_running_tasks_output_and_the_agents_own_transcript_are_recorded_as_they_are_read(self):
         out = Path(self.td.name) / "agent-out.log"
