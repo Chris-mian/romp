@@ -50,8 +50,10 @@ class Harness {
   visibility: Array<() => void> = [];
   now = 1_000_000;
   win: any;                    // the sandbox window (the shim hangs __rompLocalSend on it)
-  constructor(js: string) {
+  bars: any[] = [];            // the bars a standalone page raised (selfBar): {text, kind}
+  constructor(js: string, opts: { standalone?: boolean; session?: Map<string, string> } = {}) {
     const h = this;
+    const session = opts.session || new Map<string, string>();
     class FakeWS {
       url: string; readyState = 0; onopen: any; onmessage: any; onclose: any; onerror: any;
       constructor(url: string) { this.url = url; h.sockets.push(this); }
@@ -63,14 +65,18 @@ class Harness {
     class FakeDate extends Date { static now() { return h.now; } }
     const sandbox: any = {
       window: {
-        parent: { postMessage: (m: any) => h.posted.push(m) },   // embedded: the shell owns the banner
-        sessionStorage: { getItem: () => "" },
+        parent: opts.standalone ? undefined : { postMessage: (m: any) => h.posted.push(m) },   // embedded: the shell owns the banner
+        sessionStorage: { getItem: (k: string) => (session.has(k) ? session.get(k) : ""), setItem: (k: string, v: string) => { session.set(k, String(v)); },
+                          removeItem: (k: string) => { session.delete(k); } },
         dispatchEvent: (e: any) => { if (e && e.data !== undefined) h.toBundle.push(e.data); return true; },
         addEventListener: () => {}, innerWidth: 800, innerHeight: 600,
       },
       document: {
         addEventListener: (t: string, f: () => void) => { if (t === "visibilitychange") h.visibility.push(f); },
         visibilityState: "visible", getElementById: () => null,
+        // enough of a DOM for a standalone page's bar (selfBar): elements that take children and text, and a body to hold them
+        createElement: () => { const el: any = { style: {}, dataset: {}, children: [] as any[], textContent: "", appendChild(c: any) { el.children.push(c); } }; return el; },
+        body: { appendChild: (b: any) => { h.bars.push({ text: (b.children[0] || {}).textContent, kind: b.dataset.kind }); } },
       },
       localStorage: { getItem: () => null, setItem: () => {} },
       location: { protocol: "http:", host: "TESTHOST:29855", search: "" },
@@ -88,6 +94,8 @@ class Harness {
       performance: { getEntriesByType: () => [] },
     };
     sandbox.window.window = sandbox.window;
+    if (opts.standalone) sandbox.window.parent = sandbox.window;   // no shell: the page is its own parent
+    sandbox.sessionStorage = sandbox.window.sessionStorage;
     this.win = sandbox.window;
     vm.runInNewContext(js, sandbox);
   }
@@ -438,13 +446,14 @@ test("queued messages hold the reload for a minute, then the hold ends; a draine
   assert.equal(h.win.__rompPaneBusy(), "sends", "inside the bound it still holds");
   h.now += 2_000;
   assert.equal(h.win.__rompPaneBusy(), "", "past the bound the hold ends, the reload may go");
-  // the 1698 lows, low 2: the reload that follows takes the queued messages, so the pane says so once, to the shell
-  const dropped = h.posted.filter((m) => m.romp === "sendsDropped");
+  // the 1698 lows, low 2: the reload that follows takes the queued messages, so the pane says so once, to the shell, on the
+  // notify bridge the shell's bell already listens for (__rompNotify keeps the line across the reload)
+  const dropped = h.posted.filter((m) => m.romp === "notify");
   assert.equal(dropped.length, 1, "one line for the loss");
-  assert.equal(dropped[0].n, 1); assert.equal(dropped[0].app, "chat");
-  assert.match(dropped[0].text, /^1 message queued for the chat pane could not be sent before the dashboard reloaded; they were not delivered\.$/);
+  assert.equal(dropped[0].kind, "warn");
+  assert.equal(dropped[0].text, "1 message queued for the chat pane could not be sent before the dashboard reloaded; it was not delivered.");
   h.win.__rompPaneBusy();
-  assert.equal(h.posted.filter((m) => m.romp === "sendsDropped").length, 1, "said once per bound, not once per walk");
+  assert.equal(h.posted.filter((m) => m.romp === "notify").length, 1, "said once per bound, not once per walk");
   h.runTimers(); h.ws.open();                                       // the redial drains the queue
   assert.equal(h.win.__rompPaneBusy(), "", "drained: no hold, and the stamp is cleared");
   h.ws.close(); h.win.__rompLocalSend({ type: "activeTab", id: "t2" });
@@ -460,4 +469,25 @@ test("the diagnostics door sends a reload-core breadcrumb up this pane's socket"
   const rows = h.sent.filter((m) => m.type === "clientDiag" && m.surface === "reload-core");
   assert.equal(rows.length, 1);
   assert.deepEqual(rows[0], { type: "clientDiag", surface: "reload-core", what: "held", data: { reason: "build", hold: "typing", ageMs: 60000 } });
+});
+
+// A standalone page (no shell) reloads in the same task that ends the hold, so a bar raised then goes with the page (and
+// selfBar declines while the connection bar already stands, the normal state after 30 s of a dead socket). The line is kept
+// in the page's session store and shown by its next life, once.
+test("a standalone page keeps the abandoned-messages line for its next life and shows it once", () => {
+  const session = new Map<string, string>();
+  const h = new Harness(shimJs("chat"), { standalone: true, session });
+  h.ws.open(); h.bundleReady(); h.ws.close();
+  h.win.__rompLocalSend({ type: "activeTab", id: "t1" }); h.win.__rompLocalSend({ type: "activeTab", id: "t2" });
+  assert.equal(h.win.__rompPaneBusy(), "sends");
+  h.now += 61_000;
+  assert.equal(h.win.__rompPaneBusy(), "", "the bound ends the hold");
+  assert.equal(h.posted.length, 0, "nothing posted: there is no shell");
+  const text = "2 messages queued for the chat pane could not be sent before the dashboard reloaded; they were not delivered.";
+  assert.equal(session.get("romp:sendsDropped"), text, "kept for the page that follows the reload");
+  const next = new Harness(shimJs("chat"), { standalone: true, session });   // the re-entry after the reload
+  assert.deepEqual(next.bars.map((b) => [b.text, b.kind]), [[text, "warn"]], "the next life shows the line");
+  assert.equal(session.has("romp:sendsDropped"), false, "and consumes it: once");
+  const third = new Harness(shimJs("chat"), { standalone: true, session });
+  assert.equal(third.bars.length, 0, "a later load says nothing");
 });

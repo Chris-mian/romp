@@ -53117,14 +53117,15 @@ function freshHeld(stamps){if(!stamps.length){freshSince=0;return false;}var now
 if(freshSince&&now-freshSince<FRESH_HOLD_MS)return true;
 var edge=freshSince?freshSince+FRESH_HOLD_MS:0,newest=0;for(var i=0;i<stamps.length;i++){var st=stamps[i];if(st>=edge&&(!newest||st<newest))newest=st;}
 if(newest){freshSince=newest;return now-freshSince<FRESH_HOLD_MS;}return false;}
-function freshStamp(w){try{return w.__rompFreshPendingSince||Date.now();}catch(e){return Date.now();}}   /* a pane answering fresh without a stamp counts from now (a real pane's own check needs the stamp; a bare answer is a harness) */
-function busy(){var stamps=[],hold=busyHere();if(hold==='fresh'){stamps.push(freshStamp(window));hold='';}var ps=panes();
-for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){stamps.push(freshStamp(ps[i]));b='';}if(b&&!hold)hold=b;}
+function freshStamp(w){try{if(w.__rompFreshPendingSince)return w.__rompFreshPendingSince;if(!w.__rompFreshSeenAt)w.__rompFreshSeenAt=Date.now();return w.__rompFreshSeenAt;}catch(e){return 0;}}   /* a pane answering fresh without a stamp is stamped once at first sighting (never per walk: that would reopen the window forever); cleared when it stops answering fresh */
+function freshSeenClear(w){try{if(w.__rompFreshSeenAt)w.__rompFreshSeenAt=0;}catch(e){}}
+function busy(){var stamps=[],hold=busyHere();if(hold==='fresh'){stamps.push(freshStamp(window));hold='';}else freshSeenClear(window);var ps=panes();
+for(var i=0;i<ps.length;i++){var b=ps[i].__rompReload.busyHere();if(b==='fresh'){stamps.push(freshStamp(ps[i]));b='';}else freshSeenClear(ps[i]);if(b&&!hold)hold=b;}
 var fresh=freshHeld(stamps);return hold||(fresh?'fresh':'');}
 /* a hold that has stood for the bound files one breadcrumb (surface reload-core, what held: the reason, the hold and its age since
    the hold BEGAN, not since the last backstop) through a pane's diagnostics door, so a page that never reloads after a deploy is
    readable from the kernel's client-diag.jsonl; once per owed request, latched only once a door took it */
-function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-(holdStart||holdSince)};
+function heldLong(){if(!owed||fired||holdDiag)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdStart};
 try{var f=window.__rompDiag;if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++)f=ps[i].__rompDiag;}if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
 function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}
 var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}}}
@@ -53391,16 +53392,19 @@ var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: 
 // messages queued for a socket that has not come back hold the reload (their loss is the reload's cost), bounded like the fresh hold:
 // after a minute the reload goes anyway, so a dead socket cannot keep a page on an old build (the manager 2026-09-14)
 var sendsSince=0,SENDS_HOLD_MS=60000;
-var sendsDroppedSaid=false;
+var sendsDroppedSaid=false,SENDS_DROPPED_KEY="romp:sendsDropped";
 // when the bound ends the hold with messages still queued, the reload that follows takes them: say so once, on the page (the
 // shell's notification center, which survives the reload; a standalone pane's own bar), never a silent loss (the 1698 lows, low 2)
-function sendsDropped(n){if(sendsDroppedSaid)return;sendsDroppedSaid=true;var t=n+" message"+(n===1?"":"s")+" queued for the "+APP+" pane could not be sent before the dashboard reloaded; they were not delivered.";
-try{if(window.parent!==window)window.parent.postMessage({romp:"sendsDropped",app:APP,n:n,text:t},"*");else selfBar(t,"warn");}catch(e){}}
+function sendsDropped(n){if(sendsDroppedSaid)return;sendsDroppedSaid=true;var t=n+" message"+(n===1?"":"s")+" queued for the "+APP+" pane could not be sent before the dashboard reloaded; "+(n===1?"it was":"they were")+" not delivered.";
+try{if(window.parent!==window)window.parent.postMessage({romp:"notify",kind:"warn",text:t},"*");   // the shell's one write path: __rompNotify keeps it across the reload
+else{sessionStorage.setItem(SENDS_DROPPED_KEY,t);selfBar(t,"warn");}}catch(e){}}   // a standalone page reloads in the same task: the line is kept for its re-entry (below)
 window.__rompPaneBusy=function(){var q=everConnected&&queue.length>queuedDiag;if(!q){sendsSince=0;sendsDroppedSaid=false;return "";}if(!sendsSince)sendsSince=Date.now();
 if(Date.now()-sendsSince<SENDS_HOLD_MS)return "sends";sendsDropped(queue.length-queuedDiag);return "";};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
-try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
+// …and shows the loss line its previous life kept before reloading (sendsDropped): the bar it raised then went with the page
+try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY);if(sdk){sessionStorage.removeItem(SENDS_DROPPED_KEY);selfBar(sdk,"warn");}}}catch(e){}
+try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
 else selfBar("A newer romp build is available.","build");}
@@ -57304,7 +57308,7 @@ _STALE_JS = (
     "if(RL){RL.refused=function(){buildStale=true;show(BUILDMSG);};"
     # a reload HELD by a pane (an upload in flight, a held send, queued sends) says so, once per hold: the notification
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
-    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, a minute at most.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
+    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
     "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
     # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
@@ -57327,10 +57331,7 @@ _STALE_JS = (
     # (and re-asserts its wording): a resync delivers state, never new code, so only a reload answers it.
     "window.addEventListener('message',function(e){var m=e&&e.data;"
     "if(m&&m.romp==='wsStale'){if(m.build){if(RL)RL.request('build','');else{buildStale=true;show(BUILDMSG);}}else{connStale=true;show(CONNMSG);}}"
-    "else if(m&&m.romp==='wsFresh'){connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');}"
-    # {romp:'sendsDropped'} (the 1698 lows, low 2): a pane's queued messages were abandoned when the sends hold's bound ended;
-    # the notification center keeps the line across the reload that follows, so the loss is never silent
-    "else if(m&&m.romp==='sendsDropped'){if(window.__rompNotify&&m.text)window.__rompNotify('warn',String(m.text));}});"
+    "else if(m&&m.romp==='wsFresh'){connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');}});"
     # T132 (the user 2026-08-27): the banner is DRAGGABLE — movable out of the way so it can STAY up
     # (it was covering a tab they needed before accepting the build). Moving never dismisses, mutes, or
     # times it out; Reload keeps working identically after any number of moves (BUTTON targets never

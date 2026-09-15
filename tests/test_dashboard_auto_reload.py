@@ -430,7 +430,7 @@ process.stdout.write("RESULT:" + JSON.stringify(OUT) + "\\n");
         self.assertEqual(r.returncode, 0, "node failed:\n" + r.stderr)
         line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULT:")), None)
         out = json.loads(line[len("RESULT:"):])
-        wording = "The dashboard will reload onto the new build once the chat pane has caught up, a minute at most."
+        wording = "The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect."
         typing = "The dashboard will reload onto the new build once the draft is sent or cleared."
         selection = "The dashboard will reload onto the new build once the selected text is released."
         upload = "The dashboard will reload once the upload in progress finishes."
@@ -528,11 +528,9 @@ out({ after: state() });""", code="abc1234")
         core = km._reload_core_js(5, "1.1", "abc")
         self.assertIn("try{if(window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}", core)
         self.assertIn('var LOADED=5,BOOT="1.1",CODE="abc",FRESH_HOLD_MS=60000,', core, "the page's own code identity is baked beside its build and boot")
-        wording = "The dashboard will reload onto the new build once the chat pane has caught up, a minute at most."
+        wording = "The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect."
         self.assertIn(wording, js, "the held wording, the pane's bar")
         self.assertIn(wording, km._STALE_JS, "and the shell's")
-        self.assertIn("else if(m&&m.romp==='sendsDropped'){if(window.__rompNotify&&m.text)window.__rompNotify('warn',String(m.text));}", km._STALE_JS,
-                      "the shell keeps a pane's abandoned-messages line in the notification center (ui/webview/pane-shim-stale.test.ts posts it)")
         self.assertIn("CODE=%s," % json.dumps(km._code_ident() or ""), km._reload_core(), "the served core bakes this kernel's code identity")
 
     def test_version_readings_feed_both_signals(self):
