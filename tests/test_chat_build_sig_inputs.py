@@ -55,7 +55,6 @@ jd = km.jd
 # Module-level functions build_session calls by name. Where a helper reads through several inputs the
 # label names the one that identifies it and the note lists the rest; every listed input has a label.
 CENSUS = {
-    "_agent_open_set": ("pure", "over the goal store (store)"),
     "_api_error": ("pure", "the transcript's tail, memoized on its (mtime, size) (transcript)"),
     "_apply_rewind_hold": ("sig", "hold", "and the store; the kept-chain read is over the transcript, states and cut"),
     "_archive_roots": ("sig", "store", "the goals-archive identity is the store triple's third member"),
@@ -88,7 +87,6 @@ CENSUS = {
     "_claude_account_label": ("sig", "acct"),
     "_claude_login_display": ("sig", "acct", "the login as the Billing rows name it: the account file's name and organisation plus the credentials file's kind word (T346)"),
     "_claudemd_docs": ("sig", "claudemd", "the CLAUDE.md files on the chain from the cwd to its git root, plus the global one"),
-    "_cleared_ids": ("sig", "cleared"),
     "_clearing_now": ("sig", "backend", "the backend's clearing bracket"),
     "_cmd_gestures": ("sig", "states"),
     "_colormap": ("sig", "colormap"),
@@ -114,7 +112,8 @@ CENSUS = {
     "_msg_summaries_scoped": ("sig", "postal", "the cycle's caption map (one fetch per pusher cycle; fresh on a handler thread), read only through the caption values each card embeds (the postal deps)"),
     "_name_color": ("sig", "names"),
     "_name_of": ("sig", "names"),
-    "_node_anchor_uuids": ("sig", "anchors", "the warm-anchor table by this sid's revision; else pure over the node and the parse's segment maps"),
+    "_goal_tree_walk": ("sig", "cleared", "the shared store walk (plans/outline-pane-provisional-row.md): over the store (store) and the parse's segment maps with the warm-anchor table by this sid's revision (anchors), reading the cleared set inside"),
+    "_ledger_tree": ("sig", "flags", "the mute (_session_flag) and the cap of 80 over the walk's rows, shared with the Outline's provisional row"),
     "_norm_branch": ("pure", "over a branch string"),
     "_notify_session_effective": ("sig", "ncards", "the master bell; the session's own override is in flags"),
     "_op_qid": ("pure", "over a parked op"),
