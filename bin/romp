@@ -1177,7 +1177,7 @@ print(json.dumps(b))' "$_c_key_name" "$_c_who" "$_c_key" "$_c_title" "$_c_body" 
         || { echo "romp card: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
         _crev="$(python3 -c 'import json,sys; n = json.loads(sys.argv[1]).get("notice") or {}; print("%s rev %s" % (n.get("key"), n.get("rev")))' "$_resp" 2>/dev/null || true)"
-        echo "romp card: posted${_crev:+ ($_crev)} — it shows on the feed until you dismiss it, a new revision replaces it, or it expires"
+        echo "romp card: posted${_crev:+ ($_crev)}: it shows on the feed until you dismiss it, a new revision replaces it, or it expires"
         exit 0
     fi
     _err="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error") or sys.argv[1])' "$_resp" 2>/dev/null || printf '%s' "$_resp")"

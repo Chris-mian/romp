@@ -33,7 +33,10 @@ import { initStrip } from "./strip";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
 import { applyTheme } from "./theme";
 import { hostsGear, openGear } from "./gear-host";
-import { canPreview } from "./preview";
+import { canPreview, fileUrl } from "./preview";
+import { sanitizeMd } from "./md-sanitize";
+import { userMdHtml } from "./chat-md";
+import { stripRemoteLoads } from "./file-preview";
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
@@ -120,6 +123,14 @@ interface AskItem {
               capOffer?: { resetsAt: number; window?: string };   // apiError: login-billed session dead on the account's cap + a key on hand → the explicit switch OFFER; the pick is yours alone, both directions (2026-08-30)
               toName?: string; toSid?: string;    // parkedHandoff adds to*
               mid?: string; frm?: string; to?: string; origin?: string; body?: string; gist?: string };   // quarantine (held peer mail) adds these; gist = the bus's 90-char collapse for the compact card line
+  // a NOTICE CARD (T370, plans/notice-cards.md): a producer's card the kernel made without a judge; the flavour object
+  // discriminates the family the way blocked.state does the kernel-made ones. The face shows the title (text), the producer
+  // beside the session, the body (markdown through the sanitizer), the attachment (an image inline, pinned as posted), and
+  // the action buttons the kernel executes against its allowlist; Clear dismisses it through cleared.jsonl like every card
+  notice?: { producer: string; key: string; rev: number; body: string;
+             attachment: { path: string; kind: string | null; allowed: boolean; why: string; pin: string | null } | null;
+             actions: { label: string; route: string; body: Record<string, unknown> }[];
+             expiresAt: number | null; dismissOnAction: boolean } | null;
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
@@ -1379,7 +1390,15 @@ function makeAskCard(it: AskItem): HTMLElement {
   // 2026-07-26). Editing happens in the Edit modal, never inline. Only on a quarantine card.
   const qbody = el("div", "fask-qbody");
   qbody.style.display = "none";
-  main.append(row1, row2, row3, secs, qbody, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
+  // NOTICE CARD (T370): the producer label beside the session name, then the body, the attachment and the actions, all
+  // hidden until updateAskCard finds it.notice. The body is the sanitizer's inert DOM adopted (never innerHTML), the
+  // attachment an image the kernel already judged and pinned, the actions buttons the kernel executes (noticeAction).
+  const nprod = el("span", "fask-nprod"); nprod.style.display = "none";
+  row2.appendChild(nprod);
+  const nbody = el("div", "fask-nbody"); nbody.style.display = "none";
+  const nattach = el("div", "fask-nattach"); nattach.style.display = "none";
+  const nactions = el("div", "fask-nactions"); nactions.style.display = "none";
+  main.append(row1, row2, row3, secs, qbody, nbody, nattach, nactions, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -1520,6 +1539,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._jauthBadge = jauthBadge;
   a._cont = cont;
   a._qApprove = qApprove; a._qDeny = qDeny; a._qBody = qbody;
+  a._nProd = nprod; a._nBody = nbody; a._nAttach = nattach; a._nActions = nactions;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
@@ -2609,6 +2629,56 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // clear — the next kernel push removes the card on success, or re-renders it (buttons re-enabled)
   // if the bus refused (e.g. the recipient is no longer live; the warn toast says why).
   // Human-in-the-loop is the whole point of directed trust.
+  // NOTICE CARD (T370, plans/notice-cards.md): the producer beside the name; the body through the markdown sanitizer with
+  // remote loads stripped BEFORE adoption; an image attachment inline from the file route with its pin (the picture as
+  // posted), only where the page can reach the kernel (canPreview) and only when the kernel allowed it; the actions as
+  // buttons that latch on the click and re-arm on the kernel's noticeActionDone (a refusal is toasted; a success with
+  // dismissOnAction leaves with the next push). Rebuilt only when the notice's own fields change (the rev key).
+  const nt = it.notice || null;
+  const nProd = a._nProd as HTMLElement, nBody = a._nBody as HTMLElement, nAttach = a._nAttach as HTMLElement, nActions = a._nActions as HTMLElement;
+  for (const e of [nProd, nBody, nAttach, nActions]) e.style.display = nt ? "" : "none";
+  if (nt) {
+    const nkey = JSON.stringify([nt.key, nt.rev, nt.producer, nt.body, nt.attachment, nt.actions, it.sid]);
+    if ((a._nKey as string | undefined) !== nkey) {
+      a._nKey = nkey;
+      nProd.textContent = nt.producer ? "via " + nt.producer : "";
+      nProd.title = nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "";
+      nBody.replaceChildren();
+      if (nt.body && nt.body.trim()) {
+        const clean = sanitizeMd(userMdHtml(nt.body));
+        stripRemoteLoads(clean, location.origin, "");
+        nBody.append(...Array.from(clean.childNodes));
+      }
+      nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
+      nAttach.replaceChildren();
+      const att = nt.attachment;
+      if (att && att.allowed && att.kind === "image" && canPreview()) {
+        const img = el("img", "fask-nimg") as HTMLImageElement;
+        img.src = fileUrl(att.path, it.sid) + (att.pin ? "&pin=" + encodeURIComponent(att.pin) : "");
+        img.alt = att.path.split("/").pop() || "attachment";
+        img.title = att.path;
+        nAttach.appendChild(img);
+      } else if (att && att.allowed) {
+        const f = el("span", "fask-nfile"); f.textContent = att.path.split("/").pop() || att.path; f.title = att.path + " (" + (att.kind || "file") + ")";
+        nAttach.appendChild(f);
+      }
+      nAttach.style.display = nAttach.childNodes.length ? "" : "none";
+      nActions.replaceChildren();
+      for (const act of nt.actions || []) {
+        const b = el("button", "fdismiss fnact") as HTMLButtonElement;
+        b.textContent = act.label; (b as any)._idle = act.label;
+        b.onclick = (ev: Event) => {
+          ev.stopPropagation();
+          vscodeApi?.postMessage({ type: "noticeAction", itemId: it.itemId, sid: it.sid, route: act.route, body: act.body });
+          b.disabled = true; b.textContent = act.label + "…";
+        };
+        nActions.appendChild(b);
+      }
+      nActions.style.display = (nt.actions || []).length ? "" : "none";
+    }
+  } else {
+    a._nKey = undefined;
+  }
   const isQuar = it.blocked?.state === "quarantine";
   const qBody = a._qBody as HTMLElement;
   qBody.style.display = isQuar ? "" : "none";
@@ -6447,6 +6517,15 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     if (rearmLatches({ kind: "revive", id: m.id })) {
       feedToast("Couldn't revive " + String(m.name || m.id) + ": " + String(m.text || "unknown error"));
     }
+  } else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
+    // the kernel's answer to a notice card's action (T370): the latched buttons on that card let go; a refusal says why
+    // (the card stays), a success with dismissOnAction leaves with the next push (the kernel cleared it)
+    for (const c of cardTwins(m.itemId)) {
+      for (const b of Array.from(((c as any)._nActions as HTMLElement | undefined)?.querySelectorAll("button") || []) as HTMLButtonElement[]) {
+        b.disabled = false; b.textContent = (b as any)._idle || b.textContent;
+      }
+    }
+    if (!m.ok) feedToast("The card's action was refused: " + String(m.error || "unknown error"));
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
