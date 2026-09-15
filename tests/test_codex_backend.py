@@ -1945,7 +1945,12 @@ class EchoAtoms(unittest.TestCase):
 
 class LaunchErrorNames(unittest.TestCase):
     """A LIVE launch-error row without a shared name let a retry mint a duplicate live session
-    under the same name (the v1.3.12 audit's P2) — both failure branches now write names/."""
+    under the same name (the v1.3.12 audit's P2) — both failure branches now write names/. Both
+    also keep the identity colour the caller picked: a placeholder that dropped it wrote an empty
+    colour into names/ and the registry row, and every later writer (the thread create once the
+    app-server was back, the load-time republish) copied that empty colour forward, so the
+    session ran colourless on every identity surface for its whole life while the kernel's
+    picker, which counts held colours from names/, handed its colour to the next session."""
 
     def test_a_clientless_spawn_writes_its_shared_name(self):
         import tempfile
@@ -1970,6 +1975,50 @@ class LaunchErrorNames(unittest.TestCase):
             name_file = os.path.join(td, "names", sid)
             self.assertTrue(os.path.exists(name_file))
             self.assertIn("webby", open(name_file).read())
+
+    def _assert_wears_the_picked_colour(self, td, be, sid):
+        parts = (Path(td) / "names" / sid).read_text().rstrip("\n").split("\t")
+        self.assertEqual(parts, ["web", "/TESTDIR", "#336699", "#ffffff"],
+                         "the shared identity file carries the picked colour, both fields")
+        self.assertEqual(be.live_sessions()[sid]["color"], "#336699",
+                         "so does the row: it is what the later thread create republishes from")
+        be2 = cb.CodexBackend(td, client_factory=lambda: None)
+        self.assertEqual(be2.live_sessions()[sid]["color"], "#336699",
+                         "and durably: the row rebuilt at the next load still carries it")
+
+    def test_a_clientless_spawn_keeps_the_picked_identity_colour(self):
+        with tempfile.TemporaryDirectory() as td:
+            be = cb.CodexBackend(td, client_factory=lambda: None)
+            sid = be.spawn("web", "/TESTDIR", "#336699", "#ffffff")
+            self.assertTrue(be._session(sid).tid.startswith("pending-"), "the client-missing branch")
+            self._assert_wears_the_picked_colour(td, be, sid)
+
+    def test_a_thread_start_failure_keeps_the_picked_identity_colour(self):
+        class BoomClient(FakeClient):
+            def thread_start(self, params):
+                raise RuntimeError("no threads today")
+        with tempfile.TemporaryDirectory() as td:
+            fake = BoomClient()
+            be = cb.CodexBackend(td, client_factory=lambda: fake)
+            sid = be.spawn("web", "/TESTDIR", "#336699", "#ffffff")
+            self.assertTrue(be._session(sid).tid.startswith("failed-"), "the thread/start-failure branch")
+            self._assert_wears_the_picked_colour(td, be, sid)
+
+    def test_the_placeholder_colour_outlives_the_thread_it_later_gets(self):
+        # the loss was for LIFE, not just while the row was red: once the app-server was back, the
+        # create path turned the placeholder into a real thread and republished names/ from the
+        # row, whose colour was the same empty string. With the colour on the row, that republish
+        # carries it forward.
+        with tempfile.TemporaryDirectory() as td:
+            be = cb.CodexBackend(td, client_factory=lambda: None)
+            sid = be.spawn("web", "/TESTDIR", "#336699", "#ffffff")
+            s = be._session(sid)
+            self.assertTrue(be._prepare_thread(s, FakeClient()), "the placeholder became a real thread")
+            self.assertFalse(s.tid.startswith("pending-"))
+            parts = (Path(td) / "names" / sid).read_text().rstrip("\n").split("\t")
+            self.assertEqual(parts[2:], ["#336699", "#ffffff"],
+                             "the republish after thread start keeps the colour")
+            self.assertEqual(be.live_sessions()[sid]["color"], "#336699")
 
 
 class RegistryNamesHeal(unittest.TestCase):
