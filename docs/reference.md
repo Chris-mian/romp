@@ -2172,7 +2172,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `watch`, `subagents`, `usage`, `offer`, `auth`, `downtime`, `debug`,
   `interrupting`, `closer`, `peers`, plus `cold` for a session with no
   entry) to the re-derivations it caused; a miss with several moved
-  components counts under each. The nudge records, the key on hand, the
+  components counts under each. Nudge facts invalidate only entries that read
+  the changed node's count, failure state or displayed history. The key on hand, the
   host-suspension spans and the debug mode are board-wide inputs: a change
   to one re-derives every session. The clock is not a component of the key:
   a card's clock-derived fields either leave the memoized entry and are
@@ -2202,7 +2203,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   with the target it did not pull, and the next kernel converges on its own;
   after the pull, after-pull with the checkout it moved, which the successor
   boots on; either way a `main-converge-declined` row stands in the
-  restart-audit ledger where a second sigterm used to); `nudgeWalk` is the auto-nudge walk's
+  restart-audit ledger where a second sigterm used to); `sessionsListing` is
+  the kept GET /sessions listing (`built` by the pusher's cycle when its key
+  moved, `served` to requests from memory, `requestBuilt` once before the first
+  cycle, `faultBuilt` per request while a cycle's build failed and the kept
+  listing may be stale, `missBy` the key input that moved: rows, names, notes
+  or registry); `nudgeWalk` is the auto-nudge walk's
   parse gate (T401): `looks`, `skippedParses` (a session whose files are
   unchanged since its last completed look and whose clock legs, noted by that
   look with the instant each could flip, have not come due; the skip repeats
