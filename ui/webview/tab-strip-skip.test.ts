@@ -94,7 +94,7 @@ test("the column partition (the chat split, 2026-09-11): the sets are read once 
   assert.match(fn, /if \(stripSig === tabStripSig && !\(mslotEl && !mslotEl\.firstChild\)\) \{ stripAftermath\(visibleIds, ids\); return; \}/);
   assert.ok(!sig.includes("colSets"), "the sets are not a signature input of their own: visibleIds already carries the filter");
   // …and the shell's write of the sets re-renders through the storage event (the tab-groups idiom)
-  assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === "romp-chat-cols"\) renderTabs\(\); \}\);/);
+  assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === "romp-chat-cols"\) renderTabsAndPrefetch\(\); \}\);/);   // another column's holds shown here re-arm the prefetch too (PR 1671 round three)
 });
 
 test("what follows a render runs on both paths: the placeholder and the all-hidden blank", () => {

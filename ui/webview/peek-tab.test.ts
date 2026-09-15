@@ -58,9 +58,9 @@ test("a view change that excludes the ACTIVE session converts it into the peek �
   assert.match(RENDER, /pendingSessionViews = null; viewsWrites = \[\]; legacyViewsAge = 0;\s*\n\s*\}[\s\S]{0,700}?if \(activeId\) assertPeekFor\(activeId\);\s*\n\}/);
   // …and the local optimistic edit (holdViews, shared by postViews/postTagEdit), BEFORE the
   // renderTabs that follows in either poster so the repaint sees the fresh peek state
-  assert.match(RENDER, /pendingSessionViews = v; legacyViewsAge = 0;\s*\n\s*if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,900}?renderTabs\(\);/);
+  assert.match(RENDER, /pendingSessionViews = v; legacyViewsAge = 0;\s*\n\s*if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,900}?renderTabsAndPrefetch\(\);/);
   // …and the kernel's ack, a views arrival like the pushed frame
-  assert.match(RENDER, /if \(out\.clearPending\) pendingSessionViews = null;[\s\S]{0,300}?if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,200}?renderTabs\(\);/);
+  assert.match(RENDER, /if \(out\.clearPending\) pendingSessionViews = null;[\s\S]{0,300}?if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,200}?renderTabsAndPrefetch\(\);/);
   // the derivation is symmetric, so a view that now INCLUDES the active peek sheds the dress — the
   // same next-null branch the auto-close pin above holds; and the fallback's fire-time revalidation
   // (below) re-checks tabInView, so a converted peek can never be bounced by an in-flight timeout

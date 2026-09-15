@@ -873,7 +873,7 @@ function postViews(v: SessionViews, edited: string[] = []) {
   // refusal on a tag this page never touched (a stale copy of it) as ok, with the refusal listed, and
   // no toast follows: nothing the user did was refused, and the ack's blob carries the newer tag
   if (vscodeApi) vscodeApi.postMessage({ type: "setTimelineViews", views: v, writeId, edited });
-  renderTabs();
+  renderTabsAndPrefetch();
 }
 // a LENS or ORDER write — the whole blob, built from the STORE's blob (sessionViews, the last one
 // adopted) plus the fields set, never from the pending copy: a copy carrying targeted edits still
@@ -885,7 +885,7 @@ function postLens(fields: LensFields) {
   const v = lensBlob(sessionViews, fields);
   const writeId = holdViews(applyLensFields(effViews(), fields), { lens: fields });
   if (vscodeApi) vscodeApi.postMessage({ type: "setTimelineViews", views: v, writeId, edited: [] });
-  renderTabs();
+  renderTabsAndPrefetch();
 }
 // the union display order (a group drag on the sectioned strip) — a lens write of tagOrder alone
 function postTagOrder(order: readonly string[]) { postLens({ tagOrder: order.slice() }); }
@@ -913,7 +913,7 @@ function postTagEdit(nv: SessionViews, edit: TagEditOp, newId?: string) {
   }
   const writeId = holdViews(nv, { edit, newId });
   if (vscodeApi) vscodeApi.postMessage({ type: "tagEdit", writeId, edit });
-  renderTabs();
+  renderTabsAndPrefetch();
 }
 // the LOCAL kernel's capabilities, sent on every `ready` — the page's own at load, and the shim's
 // re-send on a reconnected socket. A reconnect is the one event that can lose an ack (the socket died
@@ -947,7 +947,7 @@ function onKernelCaps(m: { caps?: unknown; viewsSeq?: unknown }) {
     syncNewTagInput();                     // a dropped create no longer gates the flyout's input
   } else if (!adopted) return;             // nothing in flight, nothing adopted: the caps changed, nothing shown did
   if (activeId) assertPeekFor(activeId);   // a views arrival like any other: re-derive the active session's peek
-  renderTabs();
+  renderTabsAndPrefetch();
 }
 // the kernel does not know an op this page posted (a dashboard newer than its kernel): the write is
 // refused — the copy reverts and the toast says why — and the capability is withdrawn, so the next
@@ -973,7 +973,7 @@ function onViewsAck(m: ViewsAck) {
   if (out.refusal) warnToast("Tag edit not applied — " + out.refusal);
   if (activeId) assertPeekFor(activeId);   // a views arrival like any other: re-derive the active session's peek
   syncNewTagInput();                       // a create's ack re-arms the flyout's New tag… input in place
-  renderTabs();
+  renderTabsAndPrefetch();
 }
 // The Tags flyout's New tag… input, while the flyout is open: DISABLED while a create is in flight
 // (the 2026-09-05 review: a second Enter before the ack made a second tag), re-armed in
@@ -1066,6 +1066,12 @@ let draggedGroup: string | null = null;   // a section header mid-drag (reorders
 // the tags a create in flight named (openProvisional): the provisional tab sections under every tag it
 // named from the first paint (planStrip's `pending`), instead of landing loose and jumping on the frame
 let provisionalTags: string[] = [];
+/** A strip repaint that can REVEAL tabs renders, then re-arms the idle prefetch for the skeletons it now shows (the user 2026-09-14: hidden
+ *  tabs are not built until shown, and shown ones are): a section opened or the grouping switch flipped, from this window or a sibling
+ *  document (the tab-groups store), the shell's column holds changed, the #only= filter lifted, a view or lens change, a tag edit, the
+ *  kernel's caps and views acknowledgements. One helper, so no repaint path leaves revealed tabs as skeletons until an unrelated event
+ *  (PR 1671 rounds two and three). */
+function renderTabsAndPrefetch(): void { renderTabs(); schedulePrebuild(); }
 function visibleOrder(): string[] { return order.filter((id) => tabInView(id) && !collapsedTabIds.has(id)); }
 /** The strip SHOWS this tab right now: in view (the views, another column's holds), not hidden by the #only= filter, and not folded under
  *  a collapsed section header. The idle prefetch's gate (the user 2026-09-14: hidden tabs are not built until shown; the follow-up after
@@ -7705,7 +7711,7 @@ window.addEventListener("romp:hostDial", () => { syncHostOfflineFoot(); repaintE
 // this pane is a same-origin iframe of the shell and the filter lives on the SHELL's URL (only-filter.ts reads
 // window.top), so the listener binds to the window onlyTag reads: the shell's there, this pane's own on a top-level
 // page or under a cross-origin top (the review: the pane's own hash never changes on the dashboard)
-const onOnlyHashChange = (): void => { renderTabs(); schedulePrebuild(); };   // a reveal is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows (round two of PR 1661, medium 3: the repaint alone left them skeletons until an unrelated push)
+const onOnlyHashChange = (): void => renderTabsAndPrefetch();   // a reveal is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows (round two of PR 1661, medium 3: the repaint alone left them skeletons until an unrelated push)
 const onlyHashWindow = onlyWindow();
 onlyHashWindow.addEventListener("hashchange", onOnlyHashChange);
 // a closed split column: the shell removes this pane's iframe, and a listener left on the shell's window would hold the
@@ -20209,12 +20215,12 @@ window.addEventListener("storage", (e) => {
 });
 // TAB SECTIONS state (tab-groups.ts): a fold/open or the "Group tabs by tag" switch — from this
 // window (the CustomEvent) or a sibling pane (the storage event) — re-renders the strip
-window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_KEY) renderTabs(); });
+window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_KEY) renderTabsAndPrefetch(); });   // a sibling document's fold or open reveals tabs here too (round three, medium 1)
 // …and so does the shell's write of which sessions each column holds (the chat split): the tab of a session moved
 // away is simply gone from this strip and a session moved here appears; an equal signature skips the rebuild (the
 // source's own dragend render already read the new sets in the same task)
-window.addEventListener("storage", (e) => { if (e.key === "romp-chat-cols") renderTabs(); });
-window.addEventListener(TABGROUPS_EVENT, () => { renderTabs(); schedulePrebuild(); });   // a section opened is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows, as the #only= reveal does (the follow-up after PR 1661, round two, medium 1)
+window.addEventListener("storage", (e) => { if (e.key === "romp-chat-cols") renderTabsAndPrefetch(); });   // a column's hold change flips tabInView: the tabs it shows here are prefetched
+window.addEventListener(TABGROUPS_EVENT, () => renderTabsAndPrefetch());   // a section opened is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows (PR 1671 round two, medium 1)
 // a hot key bound or removed (the shell's dialog writes the bindings store; this document's own Remove does too)
 // repaints the tabs' badges — the store's key doubles as the same-document event name
 window.addEventListener("storage", (e) => { if (e.key === KEYS_EVENT) renderTabs(); });

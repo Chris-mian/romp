@@ -146,7 +146,7 @@ test("the hash listener is a named handler and comes off the shell's window on p
   const paneHandlers: Record<string, () => void> = {};
   const pane: any = { addEventListener(t: string, f: () => void) { paneHandlers[t] = f; } };
   let repaints = 0, rearms = 0;
-  new Function("onlyWindow", "renderTabs", "schedulePrebuild", "window", js)(() => shell, () => { repaints++; }, () => { rearms++; }, pane);
+  new Function("onlyWindow", "renderTabsAndPrefetch", "window", js)(() => shell, () => { repaints++; rearms++; }, pane);   // the one helper renders and re-arms (PR 1671 round three)
   assert.deepEqual(shell.added, ["hashchange"], "one listener on the window the filter is read from");
   assert.deepEqual(Object.keys(paneHandlers), ["pagehide"], "the pane's own window carries only the pagehide belt");
   shell.f(); assert.equal(repaints, 1, "the named handler repaints the strip");

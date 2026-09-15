@@ -189,7 +189,7 @@ test("pins: render.ts keeps the last blob its gate turned away, lets it go on th
     "the verdict runs on EVERY caps frame, in-flight writes or not, on the frame's viewsSeq, and before the in-flight drop: the dropped copy reverts to the adopted base; the kept blob is let go either way; a frame that adopted nothing leaves the announced seq in the one slot");
   assert.equal((RENDER.match(/announcedViewsSeq = /g) || []).length, 2, "past its declaration the slot is written in exactly two places: the gate's re-derivation on adoption, and the caps frame");
   assert.match(caps, /\} else if \(!adopted\) return;/, "nothing in flight and nothing adopted: the caps frame changes nothing shown");
-  assert.match(caps, /if \(activeId\) assertPeekFor\(activeId\);[^\n]*\n\s*renderTabs\(\);\n\}/, "an adoption renders like any views arrival: the peek is re-derived and the strip redrawn");
+  assert.match(caps, /if \(activeId\) assertPeekFor\(activeId\);[^\n]*\n\s*renderTabsAndPrefetch\(\);\n\}/, "an adoption renders like any views arrival: the peek is re-derived, the strip redrawn and the prefetch re-armed");
   assert.doesNotMatch(RENDER, /forgetSeq|adoptOnCaps/, "the held seq is never forgotten and no kept blob is adopted unnamed: the gate is never left open (the one-cycle flap window an earlier fix left)");
 });
 

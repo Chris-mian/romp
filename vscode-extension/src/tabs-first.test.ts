@@ -35,7 +35,7 @@ test("makePlaceholderTab draws name + identity color, and is CLICKABLE while loa
   // the user 2026-08-25: click a loading tab to be there when it opens — it rides the SAME stable
   // #tabs select delegate as a real tab (activation → MRU + peek), keyboard included; still no
   // close/drag (no session to end yet)
-  const fn = RENDER.slice(RENDER.indexOf("function makePlaceholderTab"), RENDER.indexOf("function renderTabs"));
+  const fn = RENDER.slice(RENDER.indexOf("function makePlaceholderTab"), RENDER.indexOf("function renderTabs() {"));   // the exact head: renderTabsAndPrefetch shares the prefix
   assert.match(fn, /tab\.dataset\.act = "select";/);
   assert.match(fn, /tab\.tabIndex = 0;/);
   assert.match(fn, /tab\.addEventListener\("keydown", onTabKey\);/);
