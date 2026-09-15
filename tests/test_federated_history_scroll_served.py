@@ -337,6 +337,9 @@ await browser.close();
 class FederatedRedialReask(FederatedHistoryScroll):
     """The redial re-asks an outstanding loadTurns (the redial-no-reask fix, 2026-09-15): the relay socket is cut
     while a deep page's answer is in flight, so gapLoading holds a key the relay drop never cleared (no romp:wsdown
-    for a relay) and the gap can never re-ask on its own. At the base the gap stays a gap; at the head the relay's
-    redial (romp:hostRelayUp) re-sends the outstanding loadTurns and the gap fills to turn 0."""
+    for a relay) and the gap can never re-ask on its own. The red state is the PARSE-FIXED intermediate: at the true
+    base the host-prefixed key mis-parses, gapHasAsk reads no ask, and the gap observer re-fires and re-asks FREELY, so
+    the gap fills (the base passes); once the parse is correct the guard suppresses that re-fire and the gap stays a gap
+    until, at the head, the relay's redial (romp:hostRelayUp) re-sends the outstanding loadTurns and it fills to turn 0.
+    That coupling (a correct guard needs the re-ask) is why the parse and the relay re-ask ship together."""
     DRIVER = DRIVER_CUT

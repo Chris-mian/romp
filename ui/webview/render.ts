@@ -17355,8 +17355,12 @@ function onWireDown(): void {
   // notice stands forever. gapLoading and its glyphs, the landing's held gap, the older-ask set, and the notice all go; a landing in flight
   // is told once the jump was lost. A gap met again on the healed socket asks anew.
   const liveLanding = !!landingNoticeSid || Array.from(windowAsks.values()).some((a) => a.some((r) => !r.cancelled && !!r.gap));   // a jump the reader already cancelled owes no toast (round four, low 1)
-  gapReaskOnWsup = Array.from(gapLoading).filter((k) => hostOf(parseGapKey(k).sid) === "");   // snapshot the LOCAL outstanding gaps for the redial (romp:wsup) to re-ask; a relay's keys are kept (no wsdown) and re-asked on romp:hostRelayUp
-  gapLoading.clear(); windowAsks.clear(); loadingOlder.clear();   // every window ask's record too (round eight): its reply comes on no socket, and a cancelled one left standing would eat the next landing on its anchor
+  // clear only the LOCAL in-flight gaps: their replies come on no socket, and the gap observer re-fires after the redial's rebuild
+  // and re-asks by itself (windowAsks is cleared here, so gapHasAsk no longer suppresses that re-fire), so the local road needs no
+  // explicit re-ask. A relay host's keys are KEPT: a relay drop fires no romp:wsdown, so a local outage must not strip the remote
+  // keys the relay's own reopen (romp:hostRelayUp) re-asks from (2026-09-15, review round two: the local re-ask was dropped).
+  for (const k of Array.from(gapLoading)) if (hostOf(parseGapKey(k).sid) === "") gapLoading.delete(k);
+  windowAsks.clear(); loadingOlder.clear();   // every window ask's record too (round eight): its reply comes on no socket, and a cancelled one left standing would eat the next landing on its anchor
   document.querySelectorAll("#content .tx-gap-loading").forEach((g) => g.classList.remove("tx-gap-loading"));
   hideLandingNotice();
   pendingAnchor = null; anchorPendingOlder = false;
@@ -17506,13 +17510,12 @@ function gapHasAsk(sid: string, gap: { lo: number; hi: number }): boolean {
   }
   return false;
 }
-// The redial re-ask (2026-09-15): a socket that dropped WITH a loadTurns outstanding never gets that page's reply,
-// and with the in-flight guard now correct for a remote sid the gap stays suppressed until a full reload. So on a
-// REDIAL the page re-sends every loadTurns still outstanding, keyed on the event (romp:hostRelayUp for a relay,
-// romp:wsup for the local socket), never a timer. A relay drop fires no romp:wsdown, so gapLoading still holds the
-// host's keys and they are re-sent from it; a local drop's onWireDown cleared them, so it snapshots the LOCAL keys
-// into gapReaskOnWsup for the wsup listener to replay.
-let gapReaskOnWsup: string[] = [];
+// The redial re-ask (2026-09-15): a RELAY socket that dropped WITH a loadTurns outstanding never gets that page's reply,
+// and with the in-flight guard now correct for a remote sid the gap stays suppressed until a full reload. So on a relay
+// (re)open the page re-sends every loadTurns still outstanding for that host, keyed on the event (romp:hostRelayUp),
+// never a timer: a relay drop fires no romp:wsdown, so gapLoading still holds the host's keys and they are re-sent from it.
+// The LOCAL socket needs no such re-ask (review round two, 2026-09-15): its drop fires romp:wsdown, onWireDown clears the
+// window-ask records, and the gap observer re-fires after the redial's rebuild and re-asks by itself.
 function reaskOutstandingGaps(keys: Iterable<string>, host: string | null): void {
   for (const k of keys) {
     const { sid, lo, hi } = parseGapKey(k);
@@ -17523,7 +17526,6 @@ function reaskOutstandingGaps(keys: Iterable<string>, host: string | null): void
     vscodeApi?.postMessage({ type: "loadTurns", id: sid, lo, hi });
   }
 }
-window.addEventListener("romp:wsup", () => { const keys = gapReaskOnWsup; gapReaskOnWsup = []; reaskOutstandingGaps(keys, ""); });   // the local socket redialed: replay the local gaps outstanding at the drop
 /** The romp loading glyph at a size read at a glance (the swirl as the o of the wordmark, the three accent dots): the mark of a gap
  *  whose page is on the wire; never the small pill. */
 function gapGlyph(): HTMLElement {

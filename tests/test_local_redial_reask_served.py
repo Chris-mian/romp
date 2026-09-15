@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""The redial re-ask, LOCAL single-kernel twin (the long-session scroll-back diagnosis, 2026-09-15). The federated twin
-(test_federated_history_scroll_served.py FederatedRedialReask) cuts a relay socket mid-answer and the redial
-re-sends the outstanding loadTurns over romp:hostRelayUp; this is its local counterpart on romp:wsup. A cut-floor
-session is served to a proto-2 page; the page scrolls up to ask the first head page, the LOCAL socket is cut with
-that loadTurns outstanding (its reply lost), and the page then SITS (no further scroll). Without the redial re-ask
-the outstanding page never re-loads on its own (the reader has to scroll again); with it, the socket's reopen
-(romp:wsup) re-sends the outstanding loadTurns and the page fills, no scroll and no timer.
+"""The LOCAL redial self-heal (the long-session scroll-back diagnosis, 2026-09-15, review round two). The FEDERATED
+twin (test_federated_history_scroll_served.py FederatedRedialReask) cuts a RELAY socket mid-answer, where a relay drop
+fires no romp:wsdown so the page must re-send the outstanding loadTurns itself on romp:hostRelayUp. The LOCAL road is
+different and needs no such re-ask: a cut-floor session is served to a proto-2 page; the page scrolls up to ask the
+first head page, the LOCAL socket is cut with that loadTurns outstanding (its reply lost, and onWireDown clears the
+window-ask records), and the page then SITS (no further scroll). The socket's reopen rebuilds the session, the gap
+observer re-fires on the recreated gap element (gapHasAsk no longer suppresses it, the records were cleared), and it
+re-asks by itself, so the page fills with no scroll, no timer and no local re-ask. This lab pins that self-heal: it is
+why the redial fix ships the parse plus the RELAY re-ask (the user's road), and dropped a local re-ask this road never
+needed (the review's medium 1).
 
 One hermetic kernel. Synthetic only: placeholder uuids, the 4a served builder's invented text."""
 import glob
@@ -213,13 +216,14 @@ class LocalRedialReask(unittest.TestCase):
         print("LOCALREDIAL %s" % json.dumps(type(self)._r), file=sys.stderr)
         return type(self)._r
 
-    def test_the_redial_re_asks_the_outstanding_page_with_no_scroll(self):
+    def test_the_local_redial_self_heals_the_outstanding_page_with_no_scroll(self):
         r = self._result()
         self.assertIsNone(r.get("died"), "driver error: %s" % r.get("died"))
         self.assertTrue((r.get("cut") or {}).get("cut"), "the first loadTurns fired and cut the local socket: %r" % r.get("cut"))
         self.assertGreater(r.get("wsup") or 0, 0, "the local socket redialed (romp:wsup): %r" % r)
-        # the first ask was DROPPED; the outstanding page re-loads only if the redial re-sent it (no scroll happened)
-        self.assertTrue(r.get("filled"), "the outstanding page re-loaded after the redial with no scroll (the re-ask): reasks=%r after=%r boot=%r regions=%r"
+        # the first ask was DROPPED; the outstanding page re-loads because the gap observer re-fires after the redial's
+        # rebuild (onWireDown cleared the ask records, so gapHasAsk no longer suppresses it): no scroll, no local re-ask
+        self.assertTrue(r.get("filled"), "the outstanding page re-loaded after the redial with no scroll (the observer's self-heal): reasks=%r after=%r boot=%r regions=%r"
                         % (r.get("reasks"), r.get("afterTurns"), r.get("bootTurns"), r.get("regionsAfter")))
 
 
