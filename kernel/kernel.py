@@ -53277,7 +53277,7 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # pane's scroll position + follow mode, per tab in sessionStorage; the draft and the active tab are persisted
 # already); once location.reload has been accepted the shell's lifted modals close (settings/picker) and a marker
 # rides sessionStorage, stamped with the page's path, so the fresh LANDING leaves ONE notification-center line
-# ("Reloaded onto build N — the kernel restarted / a newer romp build was served") and a standalone pane's marker
+# ("Reloaded onto build N: the kernel restarted / a newer romp build was served") and a standalone pane's marker
 # is consumed by nobody else. The marker is removed only by the page whose path it names (T272, 2026-09-08):
 # sessionStorage is shared across the shell and its same-origin panes, and a pane's shim, running before the
 # shell's own core existed (it reads as standalone then), consumed the shell's marker while checking the path
@@ -53337,8 +53337,8 @@ for(var i=0;i<lastStamps.length;i++){c=lastStamps[i]+FRESH_HOLD_MS;if(c>now&&c<d
 if(holdTimer&&holdDue&&holdDue<=due)return;if(holdTimer)clearTimeout(holdTimer);holdDue=due;   /* an edge already past is not an event: the ordinary cadence stands, so the walk never re-arms itself at zero delay (the round-four review's medium: 250 walks a second under a draft) */
 holdTimer=setTimeout(function(){holdTimer=null;holdDue=0;heldLong();tryFire();},due-now);}
 function heldLong(){if(!owed||fired||holdDiag)return;if(Date.now()-holdStart<FRESH_HOLD_MS)return;var b=busy();if(!b)return;var row={reason:owed.reason,detail:owed.detail||'',hold:b,ageMs:Date.now()-holdStart};
-var f=null;try{f=window.__rompDiag;}catch(e){}if(!f){var ps=panes();for(var i=0;i<ps.length&&!f;i++){try{f=ps[i].__rompDiag;}catch(e){f=null;}}}   /* one pane that throws on the read does not end the search (the 1725 lows, low 4) */
-try{if(f){f('held',row);holdDiag=true;}}catch(e){}}   /* latched only once a door took the row: no pane yet, or a door that throws, retries at the next bound */
+var doors=[window],ps=panes();for(var i=0;i<ps.length;i++)doors.push(ps[i]);
+for(var d=0;d<doors.length&&!holdDiag;d++){var f=null;try{f=doors[d].__rompDiag;}catch(e){f=null;}if(!f)continue;try{f('held',row);holdDiag=true;}catch(e){}}}   /* every door is tried in turn, the read and the call each guarded: one that throws on either does not end the search (the 1725 lows, low 4, round two); latched only once a door took the row, else retried at the next bound */
 function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForReload();}catch(e){}try{if(window.__rompShimPersist)window.__rompShimPersist();}catch(e){}
 var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}try{if(ps[i].__rompShimPersist)ps[i].__rompShimPersist();}catch(e){}}}   /* the shim's own hook: what its queue still holds at this moment is lost with the page, and it says so */
 function key(o){return o?o.reason+':'+(o.detail||''):'';}
@@ -54714,7 +54714,7 @@ var DESC={conn:"the dashboard lost its live connection to the kernel for a visib
 limit:"an account-wide Claude usage window (5h session or 7d weekly) hit 100%: retries and background judging pause until it resets",
 judge:"romp's summarizer gave up on one or more cards: open a flagged card to see what happened",
 warn:"romp's judge stamped an anomaly on a card; the card wears the same yellow chip with the detail",
-stalled:"romp itself is holding a working thread and nothing is moving it, not waiting on you",
+stalled:"romp itself is holding a working thread and nothing is moving it. It is not waiting on you.",
 nudge:"romp's one automatic follow-up on a stalled thread didn't resolve it; the thread now needs you",
 retry:"a session is inside an API-error retry storm; auto-retry is already working on it",
 apierror:"a session stopped on an API error (rate limit, spend cap, or prompt too long) and its card is blocked",
@@ -54762,7 +54762,7 @@ var f=document.getElementById('f-feed');
 try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||'',gesture:true},'*');}catch(e){}});}
 row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
 if(!shown){var e=document.createElement('div');e.className='rerr-empty';
-e.textContent=NOTES.length?'Nothing to show: hidden by the filters above':'Nothing logged';list.appendChild(e);}}
+e.textContent=NOTES.length?'Nothing to show: the filters above are hiding everything logged.':'Nothing logged';list.appendChild(e);}}
 // the Feed pane is in this browser's dashboard (window.__rompPaneEnabled, the head script's reader of the gear's
 // Panes section; a shell without it shows every pane). With the pane off here, a card's Log entry (the feed's
 // badge mirror posts them with the card's itemId) is not logged, since no card is shown here to open, and a jump

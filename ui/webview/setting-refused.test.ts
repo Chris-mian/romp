@@ -166,7 +166,7 @@ test("the shell's bell knows the `refused` kind: listed, labelled, explained, an
   assert.match(KERNEL, /refused:'not saved'/);
   // the tooltip covers BOTH things filed under the kind (review find, 2026-09-08): a change that did not
   // save (a read OR a write fault), and a state file that could not be read or was moved aside
-  assert.match(KERNEL, /refused:"a setting that could not be saved, or a state file that could not be read\. A change you made \\u2014 a lane or tab setting, a card bell, a lane order \\u2014 was not saved because romp could not read or write the file that holds it/);
+  assert.match(KERNEL, /refused:"a setting that could not be saved, or a state file that could not be read\. A change you made \(a lane or tab setting, a card bell, a lane order\) was not saved because romp could not read or write the file that holds it/);
   assert.match(KERNEL, /refused:"[^"]*could not be read \(the last values are shown until it can\), or held bytes romp could not parse and was moved aside/);
   assert.match(KERNEL, /\.rerr-chip\.k-refused\{color:#ffd166;border-color:rgba\(255,209,102,0\.6\)\}/);
   // and every pane files under it -- none under `warn`

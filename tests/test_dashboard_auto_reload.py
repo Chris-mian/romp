@@ -452,6 +452,17 @@ R.noteDv(8); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
 out({ diag: DIAG.length });""")
         self.assertEqual(s["diag"], 1, "the next pane's door took the row")
 
+    def test_a_door_that_throws_when_called_does_not_end_the_search_either(self):
+        # round two, low 4: a door that throws when CALLED (not read) ended the search on every pass and cost the breadcrumb
+        s = run_core("""
+var R = window.__rompReload;
+var bad = pane(function () { return 'typing'; }, 0); bad.contentWindow.__rompDiag = function () { throw new Error("a door that throws"); };
+var good = pane(function () { return ''; }, 0); good.contentWindow.__rompDiag = function (what, data) { DIAG.push({ what: what, data: data }); };
+IFRAMES = [bad, good];
+R.noteDv(8); CLOCK += 60000; TIMERS.shift().f(); await tick(); await tick();
+out({ diag: DIAG.length });""")
+        self.assertEqual(s["diag"], 1, "the next pane's door took the row on the same pass")
+
     def test_the_breadcrumbs_age_counts_from_the_holds_start_not_the_last_backstop(self):
         # the 1698 lows, low 3: a row filed at a later bound (no door at the earlier ones) read 60000 for a three-minute hold
         s = run_core("""
@@ -642,13 +653,18 @@ out({ after: state() });""", code="abc1234")
 
     def test_the_reload_cores_and_the_bells_user_facing_lines_carry_no_em_dash(self):
         # the user's writing rule bars them; the reload line and the bell's filter descriptions and connection lines carried one
+        import re as _re
         core = km._reload_core_js(5, "1.1", "abc")
         self.assertNotIn("\u2014", core); self.assertIn("'Reloaded onto build '+LOADED+': '+why+'.'", core)
         holder = next(getattr(km, n) for n in dir(km) if isinstance(getattr(km, n, None), str) and "var PN=" in getattr(km, n))
-        code_lines = [ln for ln in holder.splitlines() if not ln.lstrip().startswith("//")]
-        for ln in code_lines:
-            body = ln.split("   //")[0]                       # the code, not a trailing comment
-            self.assertNotIn("\\u2014", body, body[:80]); self.assertNotIn("\u2014", body, body[:80])
+        # the code lines of every page script the reload road serves: the bell holder, the pane shim and the stale block; a
+        # trailing comment is cut at its first `//` after whitespace, whatever the spacing (round two, low 3)
+        for name, js in (("the bell holder", holder), ("the pane shim", km._shim("chat", 5)), ("the stale block", km._STALE_JS)):
+            for ln in js.splitlines():
+                if ln.lstrip().startswith("//") or ln.lstrip().startswith("#"):
+                    continue
+                body = _re.split(r"\s+//", ln, maxsplit=1)[0]
+                self.assertNotIn("\\u2014", body, "%s: %s" % (name, body[:100])); self.assertNotIn("\u2014", body, "%s: %s" % (name, body[:100]))
 
     def test_the_shim_arms_the_fresh_hold_on_a_reconnect_and_the_resync_frame_ends_it(self):
         js = km._shim("chat", 5)
