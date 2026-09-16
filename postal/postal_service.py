@@ -59,6 +59,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
 from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -3531,6 +3532,20 @@ def _refuse_loudly(why):
     sys.stderr.write("romp-postal-service: " + why + "\n")
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    """The bus's server, whose bind does NOT reverse-resolve its own address. HTTPServer.server_bind runs
+    socket.getfqdn(host) after bind() and before listen(), and a host whose resolver cannot reverse-resolve
+    loopback quickly holds the whole server there: GitHub's macOS 15 and 16 images block about 36 seconds per
+    server on it (measured 2026-09-16 on the bats leg, where every Python stub and the postal bus paid it once),
+    and a Mac with a stale resolver would keep this bus from answering for as long. server_name feeds
+    nothing this bus reads (the CGI handler's environment, never used here), so it is the bind address."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)     # the bind, with allow_reuse_address as HTTPServer sets it
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def serve():
     why = _fixed_port_refusal()
     if why:
@@ -3543,7 +3558,7 @@ def serve():
     if peers_on():
         _seed_peers_from_kernel()          # a restarted bus re-learns its peers without waiting for a transition
     try:
-        httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+        httpd = _LoopbackServer((HOST, PORT), Handler)     # no reverse lookup at the bind (the class's docstring)
     except OSError as e:
         _log("bus already running on %d (%s)" % (PORT, e))
         return 0

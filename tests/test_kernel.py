@@ -6592,7 +6592,10 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(km._session_backend("x", None), "codex")                # a Codex record, live or dead → codex
             km._codex = lambda: None
             lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
-            self.assertNotIn("backend", lane, "the lane never read it — dropped (2026-07-07 payload audit)")
+            # the lane reads it again (2026-09-16): its model/effort pickers speak the backend's vocabulary and a live Codex
+            # lane draws its effort picker before any level is picked, both keyed on the row's backend; the 2026-07-07
+            # payload audit had dropped the field because no lane code read it then
+            self.assertEqual(lane["backend"], "", "a names-only session: the lane carries the same '' label as the tab")
             self.assertEqual(km.build_session(SID, NOW)["status"]["backend"], "", "a names-only session: no label")
         finally:
             km._sdk, km._codex = saved, saved_cx

@@ -694,8 +694,15 @@ class TheBoundAndTheDepartures(_Board):
         self.assertGreater(km.FEED_MEMO_BYTES, 0)
 
     def test_a_departed_sessions_entry_leaves_with_it(self):
+        # a subagents root for every session, so the feed key walks and memoizes each in the shared walk memo
+        # (_SUBAGENT_TREES, 2026-09-16, which replaced the key's own sid-keyed memo this test used to read) and the
+        # departed session's root has something to leave with its entry
+        roots = {sid: str(km._subagents_dir(self.tpath[sid])) for sid in SIDS}
+        for r in roots.values():
+            Path(r).mkdir(parents=True)
         self._build()
         self.assertEqual(km._feed_memo_report()["entries"], 3)
+        self.assertLessEqual(set(roots.values()), set(km._SUBAGENT_TREES), "every alive session's root is memoized")
         self.live.pop(TESTS)                  # the session is gone from the backend's live map ...
         (jd.NAMES / TESTS).unlink()           # ... and from the names registry
         jd._discover_cache.clear()
@@ -707,8 +714,10 @@ class TheBoundAndTheDepartures(_Board):
         self.assertEqual(set(km._feed_memo), {WEB, API})
         self.assertEqual(rep["bytes"], sum(e[2] for e in km._feed_memo.values()))
         self.assertNotIn(TESTS + ":g1", self._cards(f))
-        self.assertEqual(set(km._SUBAGENT_DIRS_MEMO) & set(SIDS), {WEB, API},
-                         "the key's subagent-walk memo drops the departed session with its entry (round two, low 1)")
+        self.assertNotIn(roots[TESTS], km._SUBAGENT_TREES,
+                         "the subagents walk memo drops the departed session's root with its entry (round two, low 1; the "
+                         "root-keyed memo bounded by the alive set, 2026-09-16)")
+        self.assertLessEqual({roots[WEB], roots[API]}, set(km._SUBAGENT_TREES), "...and keeps the alive sessions' roots")
 
     def test_the_perf_snapshot_carries_the_memo_beside_the_feed_builds_counters(self):
         self._build()

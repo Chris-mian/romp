@@ -30,6 +30,7 @@ export const DEFAULT_CHORDS: Record<string, string> = {
   // the editor convention for a split (VS Code's Cmd/Ctrl+\); closing a split stays unbound — Cmd+W is
   // the browser's tab close, and a mis-aimed close of a column costs a re-split, so the palette owns it
   "chat.split": "Mod+\\",
+  "chat.splitDown": "Mod+Shift+\\",
 };
 
 const commands = new Map<string, PaletteCommand>();

@@ -135,11 +135,12 @@ class SplitSourcePins(unittest.TestCase):
         self.assertEqual(rr.count("return not fresh"), 2, "the no-hint return and the set's return both say whether a REDIAL popped")
         self.assertNotIn("return True", rr)
         # the hand-over is GONE: the seeded blob's activeId is the page's wantActive, so no focus is posted into a NEW frame;
-        # the one load listener a new frame may carry hands over the moved tab's drafts, never a focus
+        # a load listener a new frame may carry hands over the moved tab's drafts, never a focus (one for a side column in
+        # make(), one for a bottom pane in makeBelow(), same shape)
         split = km._LANDING_SPLIT_JS
         self.assertNotIn("own:true", split)
         self.assertIn("if(state)f.addEventListener('load',function(){adopt(f,sid,state);state=null;});", split)
-        self.assertEqual(split.count("addEventListener('load'"), 1)
+        self.assertEqual(split.count("addEventListener('load'"), 2)
 
     def test_the_rail_carries_no_split_button_and_the_menu_no_door(self):
         # a tab is placed by dragging it (the drop zones) or from the palette; a bottom-bar button for it read as
@@ -158,7 +159,7 @@ class SplitSourcePins(unittest.TestCase):
         for needle in ["function edgeWidth(w){return Math.max(72,Math.min(180,0.2*w));}",
                        "function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}",
                        "function mountZones(){", "function unmountZones(){", "ghost=document.getElementById('col-ghost')",
-                       "ghost.textContent=refused?'Four columns at most':drag.name;"]:
+                       "ghost.textContent=refused?'Four panes at most':drag.name;"]:
             self.assertIn(needle, split, needle)
         self.assertNotIn("setTimeout", split, "nothing is timed")
         # the rectangle's element beside the divider drag's landing line: a child of .col, never a flex item of the row
@@ -243,7 +244,7 @@ class SplitSourcePins(unittest.TestCase):
         # a refused move says why (the acknowledgement rule), and the tab menu can ask first
         self.assertIn("function canSplit(){return !mobile()&&cols.length+1<MAX;}", split)
         self.assertIn("window.__rompCanSplit=canSplit;", split)
-        self.assertIn("Four chat columns at most", split)
+        self.assertIn("Four panes at most", split)
         self.assertIn("The phone shows one pane at a time", split)
         self.assertIn("This session is already alone in its column.", split)
         # no hand-over focus (2026-09-11): the seeded blob names the tab, and a later reload of the frame keeps the tab
@@ -254,7 +255,7 @@ class SplitSourcePins(unittest.TestCase):
     def test_the_partition_s_functions_exist_and_the_owner_lookup_reads_no_pane_s_dom(self):
         split = km._LANDING_SPLIT_JS
         # the store's shape and its one-shot migration
-        self.assertIn("JSON.stringify({v:2,cols:cols.map(function(c){return {n:c.n,ids:c.ids.slice()};})})", split)
+        self.assertIn("JSON.stringify({v:2,cols:cols.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;})})", split)
         self.assertIn("if(Array.isArray(raw)){migrated=true;", split, "a v1 array of numbers is read once more…")
         self.assertIn("if(r0.migrated)save();", split, "…and written back in the new shape")
         # the three pure readers, the sets the pages read, the one mutation, the claim
@@ -268,7 +269,7 @@ class SplitSourcePins(unittest.TestCase):
         target = re.search(r"function target\(sid\)\{.*?\}\n", split).group(0)
         self.assertNotIn("activeIn(", target)
         self.assertIn("frameOfCol(ownerOf(sid))", target)
-        self.assertEqual(split.count("activeIn("), 2, "defined once, called once (the palette's move of the focused column's tab)")
+        self.assertEqual(split.count("activeIn("), 3, "defined once, called twice (the palette's move to a new column and split-down of the focused column's tab)")
         self.assertIn("activeIn(focused())", split)
         # the emptiness message, the drafts hand-off and the other dashboard tab's write
         self.assertIn("m.romp==='colEmpty'&&Array.isArray(m.gone)", split)
@@ -290,9 +291,9 @@ class SplitSourcePins(unittest.TestCase):
         # a peer's write that drops a busy column is deferred, not closed under the create (its queued text died with the
         # document): the entry stays where it was, the number waits, and the page's idle signal closes it against a fresh read
         for needle in ["var deferred={};",
-                       "if(busy(frameOfCol(c.n))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});",
-                       "kept.forEach(function(k){cols.splice(Math.min(k[0],cols.length),0,{n:k[1].n,ids:k[1].ids.slice()});});",
-                       "if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source));if(!deferred[bc])return;delete deferred[bc];var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}",
+                       "var kb=belowOf(c.n);if(busy(frameOfCol(c.n))||(kb&&busy(frameOfCol(kb.n)))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});",
+                       "kept.forEach(function(k){var e=k[1],o={n:e.n,ids:e.ids.slice()};if(e.place==='below'){o.place='below';o.parent=e.parent;o.ratio=e.ratio;}cols.splice(Math.min(k[0],cols.length),0,o);});",
+                       "if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source)),e2=entry(bc),marks=[bc];if(e2&&e2.place==='below')marks.push(e2.parent);var hit=false;marks.forEach(function(mk){if(deferred[mk]){delete deferred[mk];hit=true;}});if(!hit)return;var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}",
                        "cols.splice(i,1);delete deferred[n];"]:
             self.assertIn(needle, split, needle)
         # a column closed for emptiness tells the first column which of its gone ids the page's own cross removed, ahead of
@@ -307,12 +308,77 @@ class SplitSourcePins(unittest.TestCase):
         self.assertIn("if(t&&t!==sf&&loaded(t))adopt(t,sid,take(sf,sid));", split)
         # a closing column's width goes to the column on its left before its key is dropped (the halving's twin)
         cl = split[split.index("function close(n,keep){"):split.index("function closeFocused(){")]
-        self.assertIn("if(window.__rompSplitShrink)window.__rompSplitShrink(left,paneId(n));", cl)
-        self.assertLess(cl.index("__rompSplitShrink(left,paneId(n))"), cl.index("__rompUnregisterPane(paneId(n))"))
-        self.assertLess(cl.index("var left=i>0?paneId(cols[i-1].n):'chat-pane';"), cl.index("cols.splice(i,1);"))
+        self.assertIn("if(window.__rompSplitShrink)window.__rompSplitShrink(leftPane,paneId(n));", cl)
+        self.assertLess(cl.index("__rompSplitShrink(leftPane,paneId(n))"), cl.index("__rompUnregisterPane(paneId(n))"))
+        self.assertLess(cl.index("var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';"), cl.index("cols.splice(i,1);"))
         self.assertIn("window.addEventListener('storage',function(e){if(!e||e.key!==CK||mobile())return;var r=read();if(!r.migrated)reconcile(r.cols);});", split)
         # the cross's title reads as what it does now
         self.assertIn("x.title='Close this column';", split)
+
+    def test_the_vertical_split_nests_a_bottom_pane_and_persists_its_placement(self):
+        # The chat vertical split (drag a tab to a pane's bottom edge): moveTab(sid,'down') splits the source column into a
+        # top and a bottom pane. A bottom pane is a cols entry with place:'below', parent and ratio under v:2; makeBelow
+        # nests it inside the parent's .pane as a .chat-sub with a .gh.gh-chat row-resize gutter, WITHOUT reparenting the
+        # top iframe (which reloads it); closeBelow un-nests; the horizontal nav skips a bottom pane via __rompChatColumnIds.
+        split = km._LANDING_SPLIT_JS
+        # persistence carries the placement, still v:2 (an old bundle ignores place/parent/ratio and shows a side column)
+        self.assertIn("if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}", split)
+        self.assertIn("e.place='below';e.parent=", split, "read() sanitises place/parent/ratio")
+        # the one mutation gains a 'down' branch pushing a place:'below' entry keyed on the source column
+        self.assertIn("if(to==='down'){var pc=from;", split)
+        self.assertIn("cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});", split)
+        self.assertIn("window.__rompSplitDownChat=function(sid){", split)
+        # makeBelow nests without reparenting the top iframe (it flexes in place), adds a .gh.gh-chat gutter and a .chat-sub
+        self.assertIn("function makeBelow(ce,sid,state){", split)
+        self.assertIn("pp.classList.add('split-v');topf.style.flex=r+' 1 0';", split)
+        self.assertIn("g.className='gh gh-chat';", split)
+        self.assertIn("sub.className='chat-sub';", split)
+        self.assertIn("var ce0=entry(n);if(ce0&&ce0.place==='below')return makeBelow(ce0,sid,state);", split)
+        # the vertical gutter trades the two subs' HEIGHT and persists the ratio
+        self.assertIn("function gutterV(gid,topId,botId,colN){", split)
+        self.assertIn("ce.ratio=Math.max(0.05,Math.min(0.95,nT/sum));save();", split)
+        # closeBelow un-nests: the bottom's sessions rejoin the parent's top, the split-v class and the top flex clear
+        self.assertIn("function closeBelow(i,keep){", split)
+        self.assertIn("if(isBelow(cols[i]))return closeBelow(i,keep);", split)
+        self.assertIn("if(pp)pp.classList.remove('split-v');if(topf)topf.style.flex='';", split)
+        # a bottom pane is a vertical child, not a horizontal column: the nav uses a columns-only accessor, and a bottom
+        # pane rings its PARENT column (one ring per column)
+        self.assertIn("window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};", split)
+        self.assertIn("function columnFrames(){", split)
+        self.assertIn("function belowOf(n){", split)
+        self.assertIn("if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);", split)
+        # the CSS a split column needs: the .pane becomes a column flexbox, each sub wraps its iframe, the top iframe flexes
+        self.assertIn(".pane.split-v{display:flex;flex-direction:column}", self.html)
+        self.assertIn(".chat-sub{position:relative;flex:1 1 0;min-width:0;min-height:0;overflow:hidden}", self.html)
+        self.assertIn(".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}", self.html)
+        self.assertIn(".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0}", self.html)
+        # round two: the gutter resizes the two FLEX children (the top iframe and the .chat-sub), NEVER the bottom
+        # iframe (position:absolute, its flex inert), else a drag collapses the pane
+        self.assertIn("gutterV(g.id,topId,sub.id,ce.n);", split)
+        self.assertNotIn("gutterV(g.id,topId,f.id,ce.n)", split, "the gutter is not wired to the absolute bottom iframe")
+        # lastPane skips bottom panes (a bottom pane has no chat-pane-<n>; else the edge zone/gutters/splitGrow get a missing id)
+        self.assertIn("function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s.length?paneId(s[s.length-1].n):'chat-pane';}", split)
+        # the vertical cap refusal counts PANES, not columns
+        self.assertIn("function refusePane(){", split)
+        self.assertIn("Four panes at most, close one to split.", split)
+        self.assertIn("if(!canSplit())return refusePane();", split)
+        # the per-half focus ring: __rompTopFrameOf tells a bottom frame from a top, and the CSS rings the focused half
+        self.assertIn("window.__rompTopFrameOf=function(fid){", split)
+        self.assertIn(".pane.pane-focused.split-v::after{display:none}", self.html)
+        self.assertIn(".pane.pane-focused.split-v.focus-top>iframe,.pane.pane-focused.split-v.focus-bottom>.chat-sub{outline:2px solid rgba(156,210,255,0.55);outline-offset:-2px}", self.html)
+        # round three, MEDIUM 1 census: EVERY cols neighbour walk routes through sideCols (a bottom pane has no
+        # chat-pane-<n>, so cols[i-1]/cols[cols.length-1] would resolve a dead id); the split JS has no raw neighbour walk
+        self.assertIn("function sideCols(){return cols.filter(function(c){return !isBelow(c);});}", split)
+        self.assertNotIn("cols[i-1]", split, "no raw left-neighbour walk; sideCols resolves the left side column")
+        self.assertNotIn("cols[cols.length-1]", split, "no raw last-column walk; sideCols resolves the last side column")
+        self.assertIn("var s=sideCols(),si=-1;for(var q=0;q<s.length;q++){if(s[q].n===n){si=q;break;}}return si>0?paneId(s[si-1].n)", split)   # make()'s gutter left neighbour
+        self.assertIn("var sc=sideCols();if(!c&&sc.length)c=String(sc[sc.length-1].n);", split)   # closeFocused's fallback
+        # round three, MEDIUM 2: a parent whose nested pane is busy is deferred like a busy column; the bottom pane's idle clears the parent's mark
+        self.assertIn("var kb=belowOf(c.n);if(busy(frameOfCol(c.n))||(kb&&busy(frameOfCol(kb.n)))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});", split)
+        self.assertIn("e2=entry(bc),marks=[bc];if(e2&&e2.place==='below')marks.push(e2.parent);", split)
+        # round three, LOW b: the persisted ratio is the on-screen fraction (0.05..0.95), matching the drag, restore and read
+        self.assertIn("e.ratio=(r>=0.05&&r<=0.95)?r:0.5;", split)
+        self.assertIn("var r=(ce.ratio>=0.05&&ce.ratio<=0.95)?ce.ratio:0.5;", split)
 
     def test_the_parked_push_tap_reveal_is_addressed_to_the_client_that_consumes_it_and_forwarded_by_the_page(self):
         # one chat client consumes the parked tap (_consume_pending_reveal), so it rides `own`; under the partition the
@@ -682,6 +748,17 @@ const claimed = window.__rompClaimSession(X, 2);
 BUSY['f-chat-2'] = false;
 msg({ romp: 'colBusy', busy: false }, 'f-chat-2');
 out.deferred.created = { claimed, ids: ids(), sets: window.__rompChatSets(), stored: cols(), saves: saves() };
+// Q) a peer write that drops a PARENT column whose BOTTOM pane is BUSY defers the WHOLE column (MEDIUM 2): reconcile
+//    reaches the parent first, not busy, and a plain close(keep) would skip the kid's busy gate and tear the busy bottom
+//    iframe down; instead the parent is deferred because its nested pane is busy, and the kid's idle signal closes it
+boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }, { n: 3, ids: [API], place: 'below', parent: 2, ratio: 0.5 }] }) }, false);
+BUSY['f-chat-2'] = false; BUSY['f-chat-3'] = true; CALLS.notify = [];
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+out.kidBusy = { ids: ids(), stored: cols() };
+BUSY['f-chat-3'] = false;
+msg({ romp: 'colBusy', busy: false }, 'f-chat-3');   // the bottom pane's idle clears the PARENT's deferral and the column closes
+out.kidBusy.afterIdle = { ids: ids(), stored: cols() };
 console.log(JSON.stringify(out));
 """
 
@@ -903,7 +980,7 @@ class SplitExecutes(unittest.TestCase):
         c = self.out["cap"]
         self.assertEqual(c["ids"], ["f-chat", "f-chat-2", "f-chat-3", "f-chat-4"])
         self.assertIsNone(c["fourth"])
-        self.assertEqual(c["notify"], [["warn", "Four chat columns at most — close one to open another."]], "a refused move says why")
+        self.assertEqual(c["notify"], [["warn", "Four panes at most, close one first."]], "a refused move says why")
         self.assertFalse(c["canSplit"], "…and the tab menu can ask before offering the item")
         self.assertEqual(c["stored"], {"v": 2, "cols": [{"n": 2, "ids": [WEB]}, {"n": 3, "ids": [API]}, {"n": 4, "ids": [TESTS]}]})
 
@@ -999,6 +1076,14 @@ class SplitExecutes(unittest.TestCase):
         self.assertEqual(c["ids"], ["f-chat", "f-chat-2"], "so the idle signal that follows keeps it, with the new session")
         self.assertEqual(c["sets"], {"2": [WEB, X]})
 
+    def test_a_peer_dropping_a_parent_with_a_busy_bottom_pane_defers_the_whole_column(self):
+        # MEDIUM 2: reconcile reaches the parent first, not busy, and a plain close(keep) would skip the kid's busy gate,
+        # tearing the busy bottom iframe down over its create. A parent whose nested pane is busy is deferred like a busy
+        # column, and the bottom pane's idle signal (which clears the PARENT's deferral) then closes it.
+        k = self.out["kidBusy"]
+        self.assertEqual(k["ids"], ["f-chat", "f-chat-2", "f-chat-3"], "the parent AND its busy bottom pane stand (deferred, frames present), not torn down: %r" % k)
+        self.assertEqual(k["afterIdle"]["ids"], ["f-chat"], "the bottom pane's idle signal closes the deferred column and its kid: %r" % k["afterIdle"])
+
     def test_a_column_closed_for_emptiness_tells_the_first_column_which_ids_are_on_their_way_home(self):
         # the kernel may still list a member closed from its own cross for a push or two, and the first column would draw
         # its tab until then (review find 2026-09-11): the CROSSED ids ride ahead of the store write, so the first column's
@@ -1045,7 +1130,7 @@ class SplitExecutes(unittest.TestCase):
         self.assertEqual(m["ids"], ["f-chat"])
         self.assertIsNone(m["sets"], "null sets: the one chat shows everything")
         self.assertIsNone(m["moved"])
-        self.assertEqual(m["notify"], [["warn", "The phone shows one pane at a time — no split here."]])
+        self.assertEqual(m["notify"], [["warn", "The phone shows one pane at a time, no split here."]])
         self.assertFalse(m["canSplit"])
         self.assertEqual(m["order"], ["chat-pane", "gv-a", "fleet-pane", "gv-b", "feed-pane"])
         self.assertEqual(m["stored"], m["storedWas"], "the desktop's arrangement stays in the store")
@@ -1148,6 +1233,14 @@ boot({}, false); rects();
 msg({ romp: 'tabDrag', on: true, sid: WEB, name: 'web', stripH: 38 });
 out.unknown = { zones: zonesOf('chat-pane') };
 on('', 'web', 'f-chat'); out.unknown.noSid = zonesOf('chat-pane');
+// J) a DOWN split of a later column leaves the right-edge zone mounted: lastPane must skip the bottom pane (which has
+// no chat-pane-<n> element), else mountZones' if(!p)return short-circuits before the edge zone
+boot({}, false);
+window.__rompMoveTab(API, 'new'); window.__rompMoveTab(TESTS, 2); rects();   // col 2 = [API, TESTS]
+window.__rompMoveTab(TESTS, 'down'); rects();                                 // split col 2: TESTS to col 2's bottom pane
+on(WEB, 'web', 'f-chat');                                                     // drag from col 1
+out.downSplitLast = { edgeOn2: !!zoneIn('chat-pane-2', true), stored: cols(), zones: allZones() };
+off();
 console.log(JSON.stringify(out));
 """
 
@@ -1253,11 +1346,11 @@ class DragZonesExecute(unittest.TestCase):
         o = self.out["cap"]
         self.assertEqual(o["refused"], "1", "mounted with data-refused")
         self.assertEqual(o["zones"]["chat-pane-4"], [self._col("4"), self._edge("0px", refused="1")])
-        self.assertEqual(sorted(o["ghost"]["cls"].split()), ["on", "refused"]); self.assertEqual(o["ghost"]["text"], "Four columns at most")
+        self.assertEqual(sorted(o["ghost"]["cls"].split()), ["on", "refused"]); self.assertEqual(o["ghost"]["text"], "Four panes at most")
         d = o["dropped"]
         self.assertEqual(d["ids"], ["f-chat", "f-chat-2", "f-chat-3", "f-chat-4"], "nothing opened")
         self.assertEqual(d["stored"], {"v": 2, "cols": [{"n": 2, "ids": [WEB]}, {"n": 3, "ids": [API]}, {"n": 4, "ids": [TESTS]}]}, "nothing moved")
-        self.assertEqual(d["notify"], [["warn", "Four chat columns at most — close one to open another."]], "the existing refusal, said once")
+        self.assertEqual(d["notify"], [["warn", "Four panes at most, close one first."]], "the existing refusal, said once")
         self.assertEqual(d["saves"], 0)
         self.assertEqual(d["zones"], {"chat-pane": [], "chat-pane-2": [], "chat-pane-3": [], "chat-pane-4": []}); self.assertEqual(d["ghost"]["cls"], "")
 
@@ -1279,6 +1372,13 @@ class DragZonesExecute(unittest.TestCase):
     def test_the_phone_and_a_message_from_no_chat_column_mount_nothing(self):
         self.assertEqual(self.out["phone"], {"zones": [], "body": ["po-chat", "po-feed", "po-timeline"]}, "no zone, and no body class for the gesture (nothing read one; review find 2026-09-11)")
         self.assertEqual(self.out["unknown"], {"zones": [], "noSid": []})
+
+    def test_a_down_split_of_the_last_column_leaves_the_right_edge_zone_mounted(self):
+        o = self.out["downSplitLast"]
+        # lastPane() must skip the bottom pane (no chat-pane-<n> element): the edge zone stays on the last SIDE column
+        self.assertTrue(any(isinstance(c, dict) and c.get("place") == "below" and c.get("parent") == 2 for c in o["stored"]["cols"]),
+                        "col 2 is split down (a place:'below' entry with parent 2): %r" % o["stored"])
+        self.assertTrue(o["edgeOn2"], "the right-edge (new-column) zone is still mounted on the last side column after a down split: %r" % o["zones"])
 
 
 if __name__ == "__main__":
