@@ -76,6 +76,11 @@ class World:
 _REAL_DELIVER = km._deliver_text   # the module's delivery door, before any test world stubs it
 
 
+def _revs(ip):
+    """The revision index's map (the file holds it beside the archive's stat it describes since round two of PR 1776)."""
+    return json.loads(ip.read_text())["revs"]
+
+
 def _rows(sid):
     p = km._notice_path(sid)
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
@@ -384,14 +389,14 @@ class Retention(unittest.TestCase):
         # cannot be read refuses; never a revision minted blind
         km._clear_ask("notice:%s:figure:3" % SID); self.assertEqual(km._compact_notices(now=700), 3)
         ap, ip = km._notice_archive_dir() / (SID + ".jsonl"), km._notice_revs_path(SID)
-        self.assertEqual(json.loads(ip.read_text()), {"figure": 3}, "the pass wrote the high-water mark")
+        self.assertEqual(_revs(ip), {"figure": 3}, "the pass wrote the high-water mark")
         ip.unlink(); ip.mkdir()
         row, err = km.post_notice(SID, "figure", "fourth", producer="figure", now=800)
         self.assertEqual(row, None); self.assertIn("revision index could not be read", err)
         ip.rmdir()
         row, err = km.post_notice(SID, "figure", "fourth", producer="figure", now=800)
         self.assertEqual((err, row["rev"]), (None, 4), "absent index over the archive: rebuilt, then read")
-        self.assertEqual(json.loads(ip.read_text()), {"figure": 3}, "the rebuilt index stands on disk")
+        self.assertEqual(_revs(ip), {"figure": 3}, "the rebuilt index stands on disk")
         ip.unlink(); saved = ap.read_bytes(); ap.unlink(); ap.mkdir()
         row, err = km.post_notice(SID, "figure", "fifth", producer="figure", now=900)
         self.assertEqual(row, None); self.assertIn("the notice archive could not be read", err)
@@ -457,12 +462,12 @@ class Retention(unittest.TestCase):
         ip = km._notice_revs_path(SID)
         self.assertFalse(ip.exists(), "nothing archived, no index")
         self.assertEqual(km._compact_notices(now=200), 1, "rev 1 of figure superseded")
-        self.assertEqual(json.loads(ip.read_text()), {"figure": 1})
+        self.assertEqual(_revs(ip), {"figure": 1})
         km._clear_ask("notice:%s:figure:2" % SID); km._clear_ask("notice:%s:other:1" % SID)
         self.assertEqual(km._compact_notices(now=300), 2)
-        self.assertEqual(json.loads(ip.read_text()), {"figure": 2, "other": 1}, "the high-water mark of every post row that left")
+        self.assertEqual(_revs(ip), {"figure": 2, "other": 1}, "the high-water mark of every post row that left")
         km._undo_clear(); km._undo_clear()
-        self.assertEqual(json.loads(ip.read_text()), {"figure": 2, "other": 1}, "Undo moves rows back live and never lowers the mark")
+        self.assertEqual(_revs(ip), {"figure": 2, "other": 1}, "Undo moves rows back live and never lowers the mark")
         row, err = km.post_notice(SID, "figure", "third", producer="figure", now=400, t=400)
         self.assertEqual((err, row["rev"]), (None, 3), "1 + max(live 2, index 2)")
         # the pass holds a session's rows when its index cannot be written: nothing archived, nothing lost, the reason said
@@ -476,7 +481,7 @@ class Retention(unittest.TestCase):
         # the archive holds figure 1 alone (the two restored rows left it), so the rebuild reads {figure: 1}; then the pass
         # archives rev 3 (dismissed) and rev 2 (superseded) and raises the mark; other 1 is live and undismissed, so it stays
         self.assertEqual(km._compact_notices(now=600), 2, "rebuilt from the archive, then the pass runs")
-        self.assertEqual(json.loads(ip.read_text()), {"figure": 3})
+        self.assertEqual(_revs(ip), {"figure": 3})
 
     def test_the_index_memo_counts_under_the_rows_memos_byte_bound_and_in_the_report(self):
         km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
@@ -531,6 +536,74 @@ class Retention(unittest.TestCase):
             self.assertEqual(len(km._notice_cards(600, km._cleared_ids())), 6)
         finally:
             km.NOTICE_ARCHIVE_READ_BLOCK = block
+
+    def test_an_index_left_behind_the_archive_is_rebuilt_not_trusted(self):
+        # round two, low 1: a rollback to a kernel that archives and writes no index leaves the index BEHIND the archive; a
+        # repost trusting it recycled an id the cleared ledger holds, invisible with a success answer. The index records the
+        # archive's size and mtime it describes, and a mismatch rebuilds it from one whole read
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        km._clear_ask("notice:%s:figure:1" % SID); self.assertEqual(km._compact_notices(now=200), 1)
+        ap, ip = km._notice_archive_dir() / (SID + ".jsonl"), km._notice_revs_path(SID)
+        self.assertEqual(json.loads(ip.read_text())["archive"], {"size": ap.stat().st_size, "mtimeNs": ap.stat().st_mtime_ns},
+                         "the pass's second write describes the archive as appended")
+        rebuilt = km._NOTICE_ARCH_REBUILDS["count"]
+        km.post_notice(SID, "figure", "second", producer="figure", now=300, t=300)
+        self.assertEqual(km._NOTICE_ARCH_REBUILDS["count"], rebuilt, "the index describes the archive: no rebuild at a post")
+        # the older kernel's pass, by hand: rev 2 dismissed and moved to the archive, the index untouched
+        km._clear_ask("notice:%s:figure:2" % SID)
+        live = _rows(SID); row2 = next(r for r in live if r["rev"] == 2)
+        with open(ap, "a") as f:
+            f.write(json.dumps(row2) + "\n")
+        km._notice_path(SID).write_text("".join(json.dumps(r) + "\n" for r in live if r["rev"] != 2))
+        row, err = km.post_notice(SID, "figure", "third", producer="figure", now=400, t=400)
+        self.assertEqual((err, row["rev"]), (None, 3), "post, an older kernel's pass, repost: rev 3, never rev 2 again")
+        self.assertEqual(km._NOTICE_ARCH_REBUILDS["count"], rebuilt + 1, "one whole read rebuilt the index")
+        self.assertEqual(_revs(ip), {"figure": 2}); self.assertNotIn("notice:%s:figure:3" % SID, km._cleared_ids())
+        # a bare map of the first shape reads as behind an unknown archive: rebuilt too
+        ip.write_text(json.dumps({"figure": 1}))
+        with km._notice_lock:
+            km._NOTICE_ARCH_REVS.clear()
+        row, err = km.post_notice(SID, "figure", "fourth", producer="figure", now=500, t=500)
+        self.assertEqual((err, row["rev"], km._NOTICE_ARCH_REBUILDS["count"]), (None, 4, rebuilt + 2))
+        # the restore rewrites the archive and refreshes the stat the index describes: the next post rebuilds nothing
+        km._undo_clear()
+        n = km._NOTICE_ARCH_REBUILDS["count"]
+        km.post_notice(SID, "figure", "fifth", producer="figure", now=600, t=600)
+        self.assertEqual(km._NOTICE_ARCH_REBUILDS["count"], n, "the restore's index write covers its rewrite")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes through chmod; the permission fault needs a real one")
+    def test_a_rebuild_whose_index_write_fails_still_answers_the_post(self):
+        # round two, low 2: the true map was in hand and the post was refused for a write that failed; the map is returned
+        # uncached, the next post rebuilds again, and only an archive that cannot be read refuses
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        km._clear_ask("notice:%s:figure:1" % SID); self.assertEqual(km._compact_notices(now=200), 1)
+        ad, ip = km._notice_archive_dir(), km._notice_revs_path(SID)
+        ip.unlink(); rebuilt = km._NOTICE_ARCH_REBUILDS["count"]
+        try:
+            os.chmod(ad, 0o555)                          # the archive readable, the index unwritable
+            row, err = km.post_notice(SID, "figure", "second", producer="figure", now=300, t=300)
+            self.assertEqual((err, row["rev"]), (None, 2), "rebuilt from the archive and answered")
+            self.assertFalse(ip.exists(), "the write failed: no index")
+            row, err = km.post_notice(SID, "figure", "third", producer="figure", now=400, t=400)
+            self.assertEqual((err, row["rev"], km._NOTICE_ARCH_REBUILDS["count"]), (None, 3, rebuilt + 2), "rebuilt again, uncached")
+        finally:
+            os.chmod(ad, 0o755)
+        row, err = km.post_notice(SID, "figure", "fourth", producer="figure", now=500, t=500)
+        self.assertEqual((err, row["rev"]), (None, 4)); self.assertTrue(ip.exists(), "writable again: the index stands")
+
+    def test_the_index_memo_counts_its_hits_and_misses_in_the_report(self):
+        # round two, low 3: the report counted entries and bytes for both memos but hits and misses for the rows memo alone
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        km._clear_ask("notice:%s:figure:1" % SID); self.assertEqual(km._compact_notices(now=200), 1)
+        with km._notice_lock:
+            km._NOTICE_MEMO.clear(); km._NOTICE_ARCH_REVS.clear()
+        hit, miss = km._NOTICE_MEMO_STATS["hit"], km._NOTICE_MEMO_STATS["miss"]
+        km.post_notice(SID, "figure", "second", producer="figure", now=300, t=300)
+        self.assertEqual((km._NOTICE_MEMO_STATS["hit"], km._NOTICE_MEMO_STATS["miss"]), (hit, miss + 1), "the index file read is a miss")
+        km.post_notice(SID, "figure", "third", producer="figure", now=400, t=400)
+        self.assertEqual((km._NOTICE_MEMO_STATS["hit"], km._NOTICE_MEMO_STATS["miss"]), (hit + 1, miss + 1), "a stat-match is a hit")
+        rep = km._notice_memo_report()
+        self.assertEqual((rep["hit"], rep["miss"]), (km._NOTICE_MEMO_STATS["hit"], km._NOTICE_MEMO_STATS["miss"]))
 
     def test_rows_archived_before_the_stamp_existed_are_read_as_one_block(self):
         for i in range(1, 4):
