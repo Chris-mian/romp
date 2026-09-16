@@ -223,9 +223,10 @@ export function openFileBrowse(path: string, sid?: string | null): void {
     const onKey = (e: KeyboardEvent) => {
       const box2 = document.getElementById("romp-filebrowse");
       if (!box2) return;                                      // closed: closeFileBrowse unbinds us
-      // the row menu is the topmost surface: its Escape is the shared builder's (its listener runs first, at the capture
-      // phase, and marks the event), so a marked Escape peels nothing more here
-      if (e.key === "Escape" && (e.defaultPrevented || document.getElementById("fb-ctx"))) return;
+      // the row menu is the topmost surface and EVERY key is its while it is open (the shared builder's: arrows, Home, End,
+      // Enter, Space, Tab); its Escape is taken first, at the capture phase, and marked on the event, so a marked Escape
+      // peels nothing more here either (round two of the tidy: the arrows once walked the listing under the open card)
+      if (document.getElementById("fb-ctx") || (e.key === "Escape" && e.defaultPrevented)) return;
       if (document.getElementById("romp-fileview")) return;   // the viewer is topmost — its key
       if (e.key === "Escape") { e.preventDefault(); closeFileBrowse(); return; }
       if (e.key === "Backspace" || e.key === "ArrowLeft") {

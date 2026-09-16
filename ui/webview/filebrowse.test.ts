@@ -173,6 +173,7 @@ test("a lost reply recovers on the socket's own events, and a federation drop fa
 
 test("Escape peels the TOPMOST layer: row menu, then viewer, then browser", () => {
   const key = BROWSE.split("const onKey =")[1].split("document.addEventListener(\"keydown\", onKey)")[0];
+  assert.match(key, /if \(document\.getElementById\("fb-ctx"\) \|\| \(e\.key === "Escape" && e\.defaultPrevented\)\) return;/, "every key yields to an open row menu (round two of the tidy: the arrows once walked the listing under the card)");
   const ctxAt = key.indexOf('getElementById("fb-ctx")');
   const viewAt = key.indexOf('getElementById("romp-fileview")');
   const closeAt = key.indexOf("closeFileBrowse()");

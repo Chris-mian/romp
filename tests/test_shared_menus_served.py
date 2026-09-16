@@ -13,8 +13,10 @@ transcripts, so nothing is ever spawned) and a project folder holding one file a
      with the bell row (its drawn icon) and Browse files; ArrowDown focuses the first row; Escape closes; ArrowDown twice and
      Enter pick Browse files and the file browser opens over the feed with the folder's rows;
   3. the file browser's row menu: a right-click on the file's row opens #fb-ctx in the menu role with Copy path, Download and Open
-     folder window (its sub-line); ArrowDown focuses the first row; Escape closes the menu and leaves the browser up (the topmost
-     layer peels first); the directory's row offers no Download; a second Escape closes the browser.
+     folder window (its sub-line); ArrowDown focuses the first row; with the card open, ArrowDown, ArrowUp and Backspace move the
+     menu's focus alone, never the listing's highlight or its folder (round two: the browser's handler walked its rows under the
+     card, and Enter after Escape opened a row nobody picked); Escape closes the menu and leaves the browser up (the topmost layer
+     peels first) and Enter then opens nothing; the directory's row offers no Download; a second Escape closes the browser.
 Red first per road at the tidy's base, where each menu opened without the role and without the keys. Skips loudly without the
 extension deps or a browser.
 """
@@ -173,11 +175,26 @@ out.roads.browserOpened = { up: browserUp, menu: (await menuState("f-feed")).ope
 await rightClick("f-feed", '#fb-list .fb-row[data-act="file"]');
 await page.waitForTimeout(80);
 out.roads.rowMenu = await menuState("f-feed", "#fb-ctx");
+// …the menu's keys are the menu's alone (round two, medium): with the card open, ArrowDown, ArrowUp and Backspace move its
+// focus and never the listing's highlight or its folder; after Escape, Enter opens nothing, since no row was ever picked
+const listing = () => page.evaluate(() => { const d = document.getElementById("f-feed").contentDocument; const a = d.querySelector("#fb-list .fb-row.active");
+  const crumbs = Array.from(d.querySelectorAll("#fb-crumbs [data-path]")); return { active: a ? a.dataset.path : null, folder: crumbs.length ? crumbs[crumbs.length - 1].dataset.path : null, rows: d.querySelectorAll("#fb-list .fb-row[data-act]").length }; });
+const before = await listing();
 await page.keyboard.press("ArrowDown");
 out.roads.rowMenuArrow = await menuState("f-feed", "#fb-ctx");
+const afterDown = await listing();
+await page.keyboard.press("ArrowUp");
+const upFocus = (await menuState("f-feed", "#fb-ctx")).focus;
+const afterUp = await listing();
+await page.keyboard.press("Backspace");
+await page.waitForTimeout(200);
+out.roads.rowMenuKeys = { before, afterDown, afterUp, upFocus, afterBackspace: await listing(), menuOpen: (await menuState("f-feed", "#fb-ctx")).open };
 await page.keyboard.press("Escape");
 await page.waitForTimeout(80);
-out.roads.rowEscape = { menu: (await menuState("f-feed", "#fb-ctx")).open, browserUp: await page.evaluate(() => !!document.getElementById("f-feed").contentDocument.getElementById("romp-filebrowse")) };
+await page.keyboard.press("Enter");   // no row was picked under the card: nothing opens
+await page.waitForTimeout(200);
+out.roads.rowEscape = { menu: (await menuState("f-feed", "#fb-ctx")).open, browserUp: await page.evaluate(() => !!document.getElementById("f-feed").contentDocument.getElementById("romp-filebrowse")),
+  viewer: await page.evaluate(() => !!document.getElementById("f-feed").contentDocument.getElementById("romp-fileview")), listing: await listing() };
 await rightClick("f-feed", '#fb-list .fb-row[data-act="dir"]');
 await page.waitForTimeout(80);
 out.roads.dirMenu = await menuState("f-feed", "#fb-ctx");
@@ -325,7 +342,13 @@ class SharedMenusServed(unittest.TestCase):
                          ("fb-ctx", "menu", ["Copy path", "Download", "Open folder window"], "on the machine the session runs on", True, "menu"),
                          "#fb-ctx in the menu role with the three rows and the sub-line, reachable, holding the focus: %r" % m)
         self.assertEqual(r["rowMenuArrow"]["focus"], 0, "ArrowDown moves the focus to Copy path: %r" % r["rowMenuArrow"])
-        self.assertEqual(r["rowEscape"], {"menu": False, "browserUp": True}, "Escape closes the menu and leaves the browser up: %r" % r["rowEscape"])
+        k = r["rowMenuKeys"]
+        self.assertEqual((k["afterDown"], k["afterUp"], k["afterBackspace"]), (k["before"], k["before"], k["before"]),
+                         "the listing's highlight and folder never move under the open card (the round-two medium: the arrows walked the rows and Backspace left the folder): %r" % k)
+        self.assertEqual((k["upFocus"], k["menuOpen"]), (2, True), "ArrowUp from the first row wraps to the last, the menu's own key; Backspace leaves the card open: %r" % k)
+        e = r["rowEscape"]
+        self.assertEqual((e["menu"], e["browserUp"], e["viewer"], e["listing"]), (False, True, False, k["before"]),
+                         "Escape closes the menu and leaves the browser up; Enter then opens nothing, the listing as it was: %r" % e)
         self.assertEqual(r["dirMenu"]["rows"], ["Copy path", "Open folder window"], "a directory's row offers no Download: %r" % r["dirMenu"])
         self.assertTrue(r["browserClosed"], "the second Escape closes the browser")
 

@@ -36,11 +36,11 @@ test("dismissal is a press outside, Escape, any scroll or the window's blur; eve
 
 test("keyboard reach: arrows and Home/End move between rows, Enter or Space picks, Escape closes; a keyboard opening focuses the first row", () => {
   assert.match(SRC, /if \(ev\.key === "Escape"\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); closeContextMenu\(\); return; \}/);
-  assert.match(SRC, /else if \(ev\.key === "ArrowDown"\) \{ ev\.preventDefault\(\); move\(list, at, 1\); \}/);
-  assert.match(SRC, /else if \(ev\.key === "ArrowUp"\) \{ ev\.preventDefault\(\); move\(list, at < 0 \? list\.length : at, -1\); \}/);
+  assert.match(SRC, /else if \(ev\.key === "ArrowDown"\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); move\(list, at, 1\); \}/);
+  assert.match(SRC, /else if \(ev\.key === "ArrowUp"\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); move\(list, at < 0 \? list\.length : at, -1\); \}/);
   assert.match(SRC, /else if \(\(ev\.key === "Enter" \|\| ev\.key === " "\) && at >= 0\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); list\[at\]\.click\(\); \}/);
   assert.match(SRC, /if \(opts\.viaKeyboard && list\.length\) list\[0\]\.focus\(\); else menu\.focus\(\);/);
-  assert.match(SRC, /if \(ev\.key === "Tab"\) \{ ev\.preventDefault\(\); closeContextMenu\(\); \}/, "Tab closes the card (round two, low b)");
+  assert.match(SRC, /if \(ev\.key === "Tab"\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); closeContextMenu\(\); \}/, "Tab closes the card (round two, low b)");
   assert.match(SRC, /menu\.addEventListener\("focusout", \(e\) => \{ const to = e\.relatedTarget as Node \| null; if \(to && !menu\.contains\(to\)\) closeContextMenu\(\); \}\);/, "focus leaving the card closes it");
 });
 
@@ -74,4 +74,13 @@ test("the tidy (v0.16.0): every menu opens through the builder; a caller with ro
   assert.match(read("file-browse.ts"), /openContextMenu\(e\.clientX, e\.clientY, items, \{ id: "fb-ctx" \}\);/, "the file browser's row menu");
   for (const f of ["render.ts", "feed.ts", "file-browse.ts"]) assert.doesNotMatch(read(f), /el\("div", "ctx-menu"\)/, f + " builds no top-level card by hand");
   assert.doesNotMatch(read("render.ts"), /window\.addEventListener\("(mousedown|scroll)", \(e\) => \{ if \(ctxMenuEl/, "no dismissal listeners of the tab menu's own");
+});
+
+test("every key the menu consumes stops at the card: a surface under it never walks on the menu's arrows (round two)", () => {
+  // the file browser's document-level handler walked its listing on the same ArrowDown that moved the menu's focus
+  const keys = SRC.slice(SRC.indexOf('menu.addEventListener("keydown"'), SRC.indexOf("// the menu never becomes the row's click"));
+  for (const k of ["Tab", "ArrowDown", "ArrowUp", "Home", "End"]) assert.match(keys, new RegExp('ev\\.key === "' + k + '"\\) \\{ ev\\.preventDefault\\(\\); ev\\.stopPropagation\\(\\);'), k + " stops");
+  assert.doesNotMatch(keys, /preventDefault\(\); (?:move|list\[|closeContextMenu)/, "no consumed key without the stop");
+  const browse = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-browse.ts"), "utf8");
+  assert.match(browse, /if \(document\.getElementById\("fb-ctx"\) \|\| \(e\.key === "Escape" && e\.defaultPrevented\)\) return;/, "the browser yields every key to an open row menu, per its topmost-first comment");
 });

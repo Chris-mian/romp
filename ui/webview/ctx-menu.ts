@@ -122,11 +122,13 @@ export function showMenuCard(menu: HTMLElement, x: number, y: number, opts: CtxM
     if (typingIn(ev.target)) return;
     const list = rows();
     const at = list.indexOf(document.activeElement as HTMLElement);
-    if (ev.key === "Tab") { ev.preventDefault(); closeContextMenu(); }   // Tab leaves the menu: the card goes with the focus (the opener has it back)
-    else if (ev.key === "ArrowDown") { ev.preventDefault(); move(list, at, 1); }
-    else if (ev.key === "ArrowUp") { ev.preventDefault(); move(list, at < 0 ? list.length : at, -1); }
-    else if (ev.key === "Home") { ev.preventDefault(); list[0]?.focus(); }
-    else if (ev.key === "End") { ev.preventDefault(); list[list.length - 1]?.focus(); }
+    // every key the menu consumes stops here: a surface under the card (the file browser's listing, whose document-level
+    // handler walks its rows on the same arrows) must never see it as its own (round two of the tidy)
+    if (ev.key === "Tab") { ev.preventDefault(); ev.stopPropagation(); closeContextMenu(); }   // Tab leaves the menu: the card goes with the focus (the opener has it back)
+    else if (ev.key === "ArrowDown") { ev.preventDefault(); ev.stopPropagation(); move(list, at, 1); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); ev.stopPropagation(); move(list, at < 0 ? list.length : at, -1); }
+    else if (ev.key === "Home") { ev.preventDefault(); ev.stopPropagation(); list[0]?.focus(); }
+    else if (ev.key === "End") { ev.preventDefault(); ev.stopPropagation(); list[list.length - 1]?.focus(); }
     else if ((ev.key === "Enter" || ev.key === " ") && at >= 0) { ev.preventDefault(); ev.stopPropagation(); list[at].click(); }
   });
   // the menu never becomes the row's click: a press inside it stays inside it
