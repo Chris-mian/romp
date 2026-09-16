@@ -6,6 +6,7 @@ live badge change, a colormap/session-flags change, or a 5s time bucket (so age 
 import os
 import time
 import unittest
+from unittest import mock
 from romp_load import load_source
 import tempfile
 
@@ -72,6 +73,53 @@ class FleetCacheTest(unittest.TestCase):
         finally:
             km._built_feed[:] = feed_save
             km._views_dirty[0] = dirty_save
+
+    def test_a_dirty_mark_in_the_same_clock_tick_as_the_build_still_busts_the_cache(self):
+        """2026-09-16 (the macOS CI leg, and any fast box): the build's start stamp and the dirty mark are both wall stamps,
+        and the strict compare served the stale payload when the two landed in one clock tick. The rule is one function,
+        _dirty_since, with `>=`; forced here by pinning the clock to one value for the build and the mark, never by sleeping."""
+        feed_save = list(km._built_feed)
+        dirty_save = km._views_dirty[0]
+        try:
+            T = 1789500000.123456
+            f_stale = {"type": "feed", "cards": ["stale"]}
+            with mock.patch.object(km.time, "time", return_value=T):
+                km._built_feed[:] = [("SIG",), f_stale, km.time.time(), km.time.time()]   # a build stamped at T
+                km._mark_views_dirty()                                                    # the mutation lands at T as well
+                self.assertEqual(km._views_dirty[0], km._built_feed[3], "the mark and the start share one tick")
+                got = km._cached_feed(int(T), {}, ("SIG",))
+            self.assertIsNot(got, f_stale, "a dirty mark in the build's own tick must force a rebuild (the base served the stale payload)")
+            with mock.patch.object(km.time, "time", return_value=T):                      # the rule and the pusher's gate, at the head
+                km._built_feed[:] = [("SIG",), f_stale, km.time.time(), km.time.time()]
+                km._mark_views_dirty()
+                self.assertTrue(km._dirty_since(km._built_feed[3]), "an equal tick is not older than the build's read")
+                self.assertFalse(km._feed_servable(("SIG",), False), "the pusher's cache does not serve it")
+        finally:
+            km._built_feed[:] = feed_save
+            km._views_dirty[0] = dirty_save
+
+    def test_the_timeline_pure_feed_and_thread_caches_ask_the_same_rule(self):
+        """The census of every dirty-mark compare against a build's start: four sites, one rule (_dirty_since); the timeline
+        driven at an equal tick, the other two pinned on the call."""
+        import inspect
+        tl_save = list(km._built_timeline); dirty_save = km._views_dirty[0]
+        try:
+            T = 1789500000.5
+            km._built_timeline[:] = [("SIG",), {"type": "timeline"}, T, T]
+            km._views_dirty[0] = T
+            self.assertFalse(km._timeline_cache_fresh(("SIG",)), "a timeline built in the mark's tick is not fresh (the base served it)")
+            km._views_dirty[0] = T - 1e-6
+            self.assertTrue(km._timeline_cache_fresh(("SIG",)), "a mark older than the start leaves the build fresh")
+        finally:
+            km._built_timeline[:] = tl_save; km._views_dirty[0] = dirty_save
+        self.assertIn("return _views_dirty[0] >= started", inspect.getsource(km._dirty_since))
+        for fn, call in ((km._feed_servable, "_dirty_since(e[3])"), (km._timeline_cache_fresh, "_dirty_since(e[3])"),
+                         (km._pure_feed, "_dirty_since(pf[2])")):
+            self.assertIn(call, inspect.getsource(fn), fn.__name__)
+        src = open(km.__file__).read()
+        self.assertIn("and not _dirty_since(hit[3]):", src, "the thread cache")
+        self.assertNotIn("_views_dirty[0] > ", src, "no strict compare against the mark survives")
+        self.assertNotIn("_views_dirty[0] <= ", src)
 
     def test_a_mutation_landing_mid_build_is_not_swallowed_by_that_build(self):
         """A build takes ~1-1.6s and reads the stores one session at a time, so a mutation landing

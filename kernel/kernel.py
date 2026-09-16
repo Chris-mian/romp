@@ -17073,7 +17073,7 @@ def _thread_events(tsid, cut_uuid, now, live_map):
         #                                         thread and the frame never hands one here, so no entry is shared.
         key = None                              # an input we cannot key → build, never cache
     hit = _built_thread.get(tsid)
-    if key is not None and hit is not None and hit[0] == key and hit[1] == cut_uuid and _views_dirty[0] <= hit[3]:
+    if key is not None and hit is not None and hit[0] == key and hit[1] == cut_uuid and not _dirty_since(hit[3]):
         _PERF_STATS.build("thread", True)
         return list(hit[2])
     started = time.time()
@@ -51991,6 +51991,16 @@ def _mark_views_dirty():
     _pusher_wake.set()
 
 
+def _dirty_since(started):
+    """Whether the views dirty mark postdates a build that STARTED at the wall stamp `started` (taken before the build
+    read anything): the one rule the feed, the pure feed, the timeline and the thread caches ask. The mark is a wall
+    stamp too, so a mark landing in the SAME clock tick as the start is not older than the build's read and must bust
+    it: `>=`, never `>` (2026-09-16: the macOS runner stamped a build and the mark it was meant to see in one tick, and
+    the strict compare served the stale payload; a fast box can do the same). The cost of the equal case is one extra
+    rebuild after a mark that shares its tick with the rebuild's own start, then the next start stamp is newer."""
+    return _views_dirty[0] >= started
+
+
 def _wake_kernel():
     """The backends' turn-end POKE: wake BOTH loops. The producer runs a judge pass; the pusher runs the
     cycle that delivers parked ops (_apply_pending_ops) and pushes what changed. Until 2026-09-03 the poke
@@ -52311,7 +52321,8 @@ def _cached_feed(now, live_map, sig, connect=False):
 
 def _feed_servable(sig, connect):
     """Whether the built feed stands for this caller: a connect serves any warmed build (never rebuilds); the pusher
-    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark newer than its start."""
+    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark that is not older than its
+    start (_dirty_since)."""
     e = _built_feed
     # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
     # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
@@ -52321,7 +52332,7 @@ def _feed_servable(sig, connect):
     # until the next sig bust — the window a client fallback needs to bounce a just-replied card
     # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
     # so back-to-back starts must not shrink its window.
-    dirty = not connect and _views_dirty[0] > e[3]
+    dirty = not connect and _dirty_since(e[3])
     return e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S)
 
 
@@ -52465,7 +52476,7 @@ def _pure_feed(now, live_map):
         # _cached_feed's question minus the connect arm. Never a copy a dirty mark postdates (start-keyed,
         # as there: a mutation landing mid-build may have been missed by it). Inside the floor the clock
         # answers and no sig is swept; past it, an unchanged sig answers (the idle board's case).
-        if pf is not None and not _views_dirty[0] > pf[2]:
+        if pf is not None and not _dirty_since(pf[2]):
             if (time.time() - pf[1]) < REBUILD_MIN_S:
                 return _served(pf[0])
             sig = _fleet_view_sig(now, live_map)
@@ -54307,7 +54318,7 @@ def _timeline_cache_fresh(sig):
     when this is False; a connect push, which never rebuilds the full build on the handler thread, builds
     its LANES fresh instead of projecting a stale cache (review find, 2026-09-08; see _push)."""
     e = _built_timeline
-    if e[1] is None or _views_dirty[0] > e[3]:
+    if e[1] is None or _dirty_since(e[3]):
         return False
     return e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S
 
