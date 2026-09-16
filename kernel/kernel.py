@@ -24264,7 +24264,7 @@ def _compact_notices(now=None):
 
 
 _NOTICE_SWEPT = {}                         # sid -> (the file's stat key, the cleared ledger's) the sweep last saw: unmoved, skipped
-_NOTICE_ARCH_REVS = {}                     # sid -> [the revision index's stat key, {key: its highest archived rev}, bytes]; under _notice_lock
+_NOTICE_ARCH_REVS = {}                     # sid -> [the index's stat key, {key: its highest archived rev}, bytes, the archive description it read]; under _notice_lock
 NOTICE_ARCHIVE_READ_BLOCK = 64 * 1024      # the restore reads the archive backwards, this many bytes a block (plans/notice-cards.md, the archive bound)
 _NOTICE_ARCH_READ = {"rows": 0, "bytes": 0}   # what the restore's tail read parsed and read, for the tests
 
@@ -24343,16 +24343,18 @@ def _notice_revs_read_unlocked(sid):
         return None, None, 0, "the notice archive's revision index could not be read (%s)" % e
 
 
-def _notice_revs_rebuild_unlocked(sid, ap, arch_st):
-    """One whole read of the archive into {key: rev}, written as the index over the archive's stat: (revs, error). A write
-    that fails is said on stderr and the map returned uncached, so the next post rebuilds again (round two, low 2: the true
-    map was in hand and the post was refused); only an archive that cannot be read refuses. The caller holds _notice_lock."""
+def _notice_revs_rebuild_unlocked(sid, ap, arch_st, standing=None):
+    """One whole read of the archive into {key: rev}, merged over the STANDING marks (a high-water mark never lowers: an
+    archive that shrank under its index, or came back older, must not hand a dismissed key its old revision; round three),
+    written as the index over the archive's stat: (revs, error). A write that fails is said on stderr and the map returned
+    uncached, so the next post rebuilds again (round two, low 2: the true map was in hand and the post was refused); only
+    an archive that cannot be read refuses. The caller holds _notice_lock."""
     try:
         raw = ap.read_text()
     except OSError as e:
         return None, "the notice archive could not be read (%s)" % e
     _NOTICE_ARCH_REBUILDS["count"] += 1
-    revs = {}
+    revs = dict(standing or {})
     for line in raw.splitlines():
         try:
             o = json.loads(line)
@@ -24396,30 +24398,31 @@ def _notice_revs_index_unlocked(sid):
     ent = _NOTICE_ARCH_REVS.get(sid)
     if ent is not None and ent[0] == ist:
         _NOTICE_MEMO_STATS["hit"] += 1
-        if ent[3] == want:
-            return ent[1], ""
+        standing, arch = ent[1], ent[3]
+        if arch == want:
+            return standing, ""
         _NOTICE_ARCH_REVS.pop(sid, None)                # the archive moved under a standing index: behind
-        return _notice_revs_rebuild_unlocked(sid, ap, ast_)
-    revs, arch, size, err = _notice_revs_read_unlocked(sid)
-    if err:
-        return None, err
-    _NOTICE_MEMO_STATS["miss"] += 1
-    if revs is None or arch != want:                    # absent between the stats, a bare map, or behind the archive
+    else:
+        standing, arch, size, err = _notice_revs_read_unlocked(sid)
+        if err:
+            return None, err
+        _NOTICE_MEMO_STATS["miss"] += 1
+        if standing is None:                            # gone between the two stats: as an absent index
+            _NOTICE_ARCH_REVS.pop(sid, None)
+            return _notice_revs_rebuild_unlocked(sid, ap, ast_) if ast_ is not None else ({}, "")
+        if arch == want:
+            _NOTICE_ARCH_REVS[sid] = [ist, standing, size, arch]
+            _notice_memo_shed_unlocked()
+            return standing, ""
         _NOTICE_ARCH_REVS.pop(sid, None)
-        if ast_ is None and revs is not None and arch != want:
-            return _notice_revs_rebuild_unlocked_absent(sid)
-        return _notice_revs_rebuild_unlocked(sid, ap, ast_) if ast_ is not None else ({}, "")
-    _NOTICE_ARCH_REVS[sid] = [ist, revs, size, arch]
-    _notice_memo_shed_unlocked()
-    return revs, ""
-
-
-def _notice_revs_rebuild_unlocked_absent(sid):
-    """An index that describes an archive which is gone: the map is empty and the index says so. (revs, error)."""
-    werr = _notice_revs_write_unlocked(sid, {}, None)
-    if werr:
-        sys.stderr.write("notice: %s's revision index could not be reset over the absent archive (%s)\n" % (sid[:8], werr))
-    return {}, ""
+    if ast_ is None:
+        # the archive VANISHED under a standing index: the marks stand (a dismissed key must not take its old revision
+        # again, the reference's promise; round three, low), and the index says it describes no archive
+        werr = _notice_revs_write_unlocked(sid, standing, None)
+        if werr:
+            sys.stderr.write("notice: %s's revision index could not be re-described over the vanished archive (%s)\n" % (sid[:8], werr))
+        return standing, ""
+    return _notice_revs_rebuild_unlocked(sid, ap, ast_, standing)   # behind, or a bare map: one whole read, the marks merged
 
 
 def _notice_archive_rev_unlocked(sid, key):
@@ -24522,6 +24525,7 @@ def _restore_notice_archive(item_ids):
                 continue
             if not back:
                 continue
+            pre_st, pre_err = _notice_file_stat(ap, "the notice archive")   # the archive as the index may describe it, before the rewrite
             try:
                 _notice_dir().mkdir(parents=True, exist_ok=True)
                 with open(_notice_path(sid), "a") as f:
@@ -24545,8 +24549,12 @@ def _restore_notice_archive(item_ids):
                 os.replace(tmp, ap)
             except OSError as e:                     # live already: a row in both files is history twice, never a loss
                 sys.stderr.write("notice: the archive could not be shrunk after %s's restore (%s)\n" % (sid[:8], e))
-            revs, _arch, _size, rerr = _notice_revs_read_unlocked(sid)   # the index keeps its mark and describes the archive as rewritten, so the next post rebuilds nothing
-            if not rerr and revs is not None:
+            # the index keeps its marks and, ONLY when it described the archive as it stood before this rewrite, is re-described
+            # over the rewritten one, so the next post rebuilds nothing; an index that was already behind stays behind (round
+            # three, medium: re-describing the standing map blessed an index a rollback had left behind, and the next post
+            # minted a revision the cleared ledger holds), and the next post pays its one rebuild
+            revs, arch, _size, rerr = _notice_revs_read_unlocked(sid)
+            if not rerr and revs is not None and not pre_err and arch == _notice_archive_desc(pre_st):
                 ast_, rerr = _notice_file_stat(ap, "the notice archive")
                 rerr = rerr or _notice_revs_write_unlocked(sid, revs, ast_)
             if rerr:
