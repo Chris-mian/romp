@@ -6239,11 +6239,14 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
 }
 /** A ROW BREAK (T264, the user 2026-09-08): a zero-height item spanning the strip, so whatever follows
  *  opens a new line — every tag group starts on its own row (chip at the left edge, its tabs after
- *  it, wrapping as they need) instead of the groups running on as one long concatenation. The
+ *  it, wrapping as they need) instead of the groups running on as one long concatenation; the one
+ *  header that gets no break is a folded one packed onto the folded header before it (planStrip's
+ *  `packed`, the user 2026-09-16: folded neighbours share a row, since each is only its header). The
  *  untagged trail's break also wears .tab-group-sep, the boundary sectionHeadOf reads (the trail
  *  stays unlabeled by the user's ruling — its own line, with no chip, says "in no tag"). Breaks are
  *  layout only: no drop, no hover, not a row for paintTabRowLines, and in the tab drag's virtual
- *  layout the box AFTER a break starts a row (`br`) so the simulation wraps where the strip does.
+ *  layout the box AFTER a break starts a row (`br`) so the simulation wraps where the strip does; a
+ *  packed header, with no break ahead of it, is a plain box in its row there as here.
  *  Breaks are emitted only under the `stripGroupRows` setting (the gear's "One tag group per row in
  *  the tab strip", on by default): with it off the groups follow one another and wrap as they need,
  *  and the trail stands behind makeTrailSep's divider. */
@@ -6738,10 +6741,12 @@ function renderTabs() {
   for (const item of plan.items) {
     if ("head" in item) {
       // every group on its own line (T264), under the one-group-per-row setting: a row break ahead of
-      // each header except the strip's first item, which already opens the first row; the untagged
-      // trail's header IS a break. With the setting off, heads and tabs follow one another and wrap
-      // as they need, and the trail stands behind its divider (makeGroupHead).
-      if (settings.stripGroupRows && item.head.name !== null && bar.childElementCount) bar.appendChild(makeRowBreak(false));
+      // each header except the strip's first item, which already opens the first row, and except a
+      // folded header PACKED onto the folded header before it (planStrip: a run of bare folded headers
+      // shares one row, the user 2026-09-16); the untagged trail's header IS a break. With the setting
+      // off, heads and tabs follow one another and wrap as they need, and the trail stands behind its
+      // divider (makeGroupHead).
+      if (settings.stripGroupRows && item.head.name !== null && bar.childElementCount && !item.packed) bar.appendChild(makeRowBreak(false));
       bar.appendChild(makeGroupHead(item.head, item.folded, item.active, item.hidden));
       copyGroup = item.head.name;
       continue;
@@ -20592,8 +20597,11 @@ setupSettings();
     // simulation (`br`), as does the untagged trail's break itself, a zero-width row opener, so the
     // slot past a group's last tab (the end of its row) and the slot before the trail's first tab
     // (the head of the next row) stay two distinct slots, as they were when the trail stood behind a
-    // visible separator. With the setting off the trail's divider is a real 13px box and no break
-    // exists, so the boxes below measure it as they did before T264. A drop changes
+    // visible separator. A folded header PACKED onto the folded header before it (planStrip, the user
+    // 2026-09-16) has no break ahead of it and so opens no row here either: a plain box on the shared
+    // row, and the slot before it is the slot between the two headers. With the setting off the
+    // trail's divider is a real 13px box and no break exists, so the boxes below measure it as they
+    // did before T264. A drop changes
     // no membership (the tab re-sections on the next render); "Move to" in the tab menu is the
     // membership path.
     const others = Array.from(tabs.querySelectorAll<HTMLElement>(".tab[data-id], .tab-group-head, .tab-group-sep")).filter((t) => t !== dragged);

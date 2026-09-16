@@ -24,10 +24,23 @@ layout in which the trail has a row of its own); a fix in the simulation (a zero
 gap) was tried and reverted here, and it lands every one of these drops under the cursor.
 
 This lab drives the real /chat page of a hermetic kernel: twenty sessions, three under one tag (the group's
-row) and seventeen in no tag (the trail's row), REAL mouse drags (page.mouse down, a run of moves across the
-strip, up over the target tab), the tab order read from the DOM and from the persisted arrangement
-(romp:vieworder). The classic theme is the control; the yatharth theme is set the way the user sets it, the
-`theme` key of the romp:settings store (theme.ts and the kernel's inline reader turn it into the body class).
+row), two under a second tag (its own row) and fifteen in no tag (the trail's row), REAL mouse drags (page.mouse
+down, a run of moves across the strip, up over the target tab), the tab order read from the DOM and from the
+persisted arrangement (romp:vieworder). The classic theme is the control; the yatharth theme is set the way the
+user sets it, the `theme` key of the romp:settings store (theme.ts and the kernel's inline reader turn it into
+the body class).
+
+FOLDED NEIGHBOURS SHARE A ROW (the user 2026-09-16): a folded group is one small header, yet each took a whole
+row; now a folded header right after another folded header is PACKED onto its row (tab-groups.ts planStrip
+`packed`: no row break ahead of it), while an open group and the trail keep rows of their own. The last phase
+folds both groups by a click on each header and measures the layout: the two headers on one row (equal tops, no
+break between them, the two boxes side by side and their chips apart), the trail on the row below; drags on the
+trail's row still land under the cursor (the dragover marks a header `br` only when a break precedes it, so the
+virtual layout has the packed row as ONE row, as the strip does; with a row per folded group the pointer's row
+would read one too low and every trail drop would miss); a drop released between the two headers lands at the
+trail's head (the slot between them; the tab keeps its group, so it re-sections); a header dragged across the
+shared row still reorders the groups; and with one of the two opened again the folded one keeps a row of its own
+between the open group's row and the trail's. Then the same packed layout under the classic theme (gap 0).
 Each case records the row layout (every tab's left/top/width), the release point and the landing rect, and
 expects the tab to sit where the pointer was released: after every other tab on the release row whose
 midpoint is left of the cursor once the dragged tab is taken out of the row (the pre-drag layout, the strip's
@@ -35,7 +48,7 @@ own virtual model), before the rest. The log each case keeps (every drag event's
 strip's rebuilds) says, when a case fails, whether a drop reached the strip at all. Skips LOUDLY without the
 extension deps or a Playwright browser. SYNTHETIC fixtures only (the notes-api demo world, host TESTHOST,
 placeholder sids). TAB_DRAG_DIST=<dir> serves another tree's UI bundle (the bisect's before);
-TAB_DRAG_DUMP=<path> writes the whole measurement."""
+TAB_DRAG_DUMP=<path> writes the whole measurement; TAB_DRAG_SHOTS=<prefix> writes strip screenshots of the packed layouts."""
 import json
 import os
 import re
@@ -66,7 +79,10 @@ SIDS = {n: "%s-1111-2222-3333-444444444444" % (chr(ord("a") + i) * 8) for i, n i
 PALETTE = [("#9cd2ff", "#0c1a2e"), ("#1EA1EB", "#ffffff"), ("#54B204", "#ffffff"), ("#c98cff", "#1a0c2e"),
            ("#e5a50a", "#1a1200"), ("#4EC9B0", "#00201a")]
 TAGGED = ["web", "api", "deploy"]   # the infra group: the strip's first row
-TAGS = [{"id": "tag-infra", "name": "infra", "color": "#4EC9B0", "members": [SIDS[n] for n in TAGGED]}]
+QA = ["tests", "docs"]              # the qa group: the second row; folded beside a folded infra, the two pack onto one row
+TAGS = [{"id": "tag-infra", "name": "infra", "color": "#4EC9B0", "members": [SIDS[n] for n in TAGGED]},
+        {"id": "tag-qa", "name": "qa", "color": "#c98cff", "members": [SIDS[n] for n in QA]}]
+TRAIL = [n for n in NAMES if n not in TAGGED and n not in QA]
 
 
 def _free_port():
@@ -113,9 +129,9 @@ await page.addInitScript(() => {
       if (removed > 2) L("rebuild:-" + removed, null); }).observe(bar, { childList: true }); };
   watch();
 });
-const settle = async () => {
+const settle = async (n = cfg.count) => {   // n: the tabs the strip shows (a folded group's members have none)
   await page.waitForSelector("#tabs .tab[data-id]", { timeout: 30000 });
-  await page.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length >= n, cfg.count, { timeout: 30000 });
+  await page.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length >= n, n, { timeout: 30000 });
   await page.waitForTimeout(800);
 };
 await page.goto(cfg.chat);
@@ -126,9 +142,11 @@ const layout = () => page.evaluate(() => {
   const bar = document.getElementById("tabs"); const b = bar.getBoundingClientRect();
   const r1 = (v) => Math.round(v * 10) / 10;
   const items = Array.from(bar.children).map((el) => { const r = el.getBoundingClientRect();
+    const chip = el.querySelector(".tab-group-chip"), c = chip ? chip.getBoundingClientRect() : null;   // a header's tag chip: how far apart two packed headers' labels sit
     return { cls: el.className, id: el.dataset.id || null, group: el.dataset.group || null,
              name: el.dataset.id ? (el.querySelector(".tab-label") || el).textContent.trim() : el.className,
-             top: r1(r.top - b.top), left: r1(r.left - b.left), w: r1(r.width), h: r1(r.height), draggable: !!el.draggable }; });
+             top: r1(r.top - b.top), left: r1(r.left - b.left), w: r1(r.width), h: r1(r.height), draggable: !!el.draggable,
+             chip: c ? { left: r1(c.left - b.left), right: r1(c.right - b.left) } : null }; });
   const tabs = items.filter((i) => i.id);
   const tops = [...new Set(tabs.map((t) => t.top))].sort((a, b) => a - b);
   const rows = tops.map((top) => tabs.filter((t) => t.top === top));
@@ -261,6 +279,106 @@ await drag("yatharth: group row, 1st tab to the 3rd slot (right part of the 3rd)
 L = await layout();
 const lastName = L.rows[trail][L.rows[trail].length - 1].name;
 await dragAcrossPush("push mid-drag: trail, 2nd tab to the 6th slot (right part of the 6th)", trail, 1, trail, 5, 0.75, lastName, lastName + "-renamed");
+// …and its name back, so the phases below read the fixture's names again
+await fetch(cfg.rename, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: lastName + "-renamed", name: lastName }) });
+await page.waitForFunction((n) => { const names = Array.from(document.querySelectorAll("#tabs .tab-label")).map((l) => l.textContent.trim()); return names.includes(n) && !names.includes(n + "-renamed"); }, lastName, { timeout: 15000 });
+// 4. FOLDED NEIGHBOURS SHARE A ROW (the user 2026-09-16): both groups folded by a click on each header. The two bare
+//    headers pack onto ONE row and the trail is the row below; the trail's drags still land under the cursor (the
+//    virtual layout has the packed row as one row, as the strip does), a drop between the two headers lands at the
+//    trail's head, a header dragged across the shared row still reorders the groups, and with one group opened again
+//    the folded one keeps a row of its own. Then the same under the classic theme.
+const foldGroup = async (name, folded) => {   // a real click on the header; the wait is for the fold's own render (its members' tabs gone, or back)
+  await page.click(`#tabs .tab-group-head[data-group="${name}"]`);
+  await page.waitForFunction(([n, f]) => { const h = document.querySelector(`#tabs .tab-group-head[data-group="${n}"]`);
+    return !!h && h.classList.contains("collapsed") === f && (document.querySelector(`#tabs .tab[data-copy="${n}"]`) === null) === f; }, [name, folded], { timeout: 10000 });
+  await page.waitForTimeout(400);
+};
+const stripShot = async (tag) => { if (cfg.shots) { const b = await page.evaluate(() => { const r = document.getElementById("tabbar").getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; });
+  await page.screenshot({ path: cfg.shots + "-" + tag + ".png", clip: b }); } };
+// the strip's shape for the layout assertions: the headers (row, box, chip, fold), the breaks, the rows of tabs
+const shape = (Lx) => ({ theme: Lx.theme, gap: Lx.bar.gap, rows: Lx.rows.map((r) => r.map((t) => t.name)),
+  heads: Lx.items.filter((i) => i.group).map((h) => ({ group: h.group, top: h.top, left: h.left, right: r1(h.left + h.w), h: h.h, chip: h.chip,
+                                                        collapsed: h.cls.includes("collapsed"), shown: h.cls.includes("snap-shown") })),
+  breaks: Lx.items.filter((i) => i.cls.includes("tab-group-break")).map((i) => ({ top: i.top, sep: i.cls.includes("tab-group-sep") })),
+  items: Lx.items.map((i) => (i.id ? i.name : "[" + i.cls + "]") + "@" + i.left + "," + i.top + "+" + i.w + "x" + i.h) });
+// a header dragged onto another: the dragged group takes the target's slot in tagOrder (a kernel write, acked back as a
+// frame), so the headers' DOM order changes; measured once the order has changed, or after the wait gives up
+async function dragHead(label, fromGroup, toGroup) {
+  const pre = await layout();
+  const hs = pre.items.filter((i) => i.group);
+  const src = hs.find((h) => h.group === fromGroup), tgt = hs.find((h) => h.group === toGroup);
+  if (!src || !tgt) { cases.push({ label, skipped: "no such header: " + JSON.stringify(hs.map((h) => h.group)) }); return; }
+  const sx = pre.bar.left + src.left + src.w / 2, sy = pre.bar.top + src.top + src.h / 2;
+  const tx = pre.bar.left + tgt.left + tgt.w / 2, ty = pre.bar.top + tgt.top + tgt.h / 2;
+  const before = hs.map((h) => h.group);
+  await page.evaluate(() => { window.__log = []; });
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  await page.mouse.move(sx + 4, sy + 1, { steps: 2 });
+  await page.mouse.move(tx, ty, { steps: 12 });
+  for (let i = 0; i < 3; i++) await page.mouse.move(tx, ty);
+  await page.mouse.up();
+  const reordered = await page.waitForFunction((b) => JSON.stringify(Array.from(document.querySelectorAll("#tabs .tab-group-head")).map((h) => h.dataset.group)) !== JSON.stringify(b), before, { timeout: 10000 })
+    .then(() => true).catch(() => false);
+  await page.waitForTimeout(500);
+  await page.mouse.move(900, 700);
+  const post = await layout(), log = await page.evaluate(() => window.__log);
+  const count = (k) => log.filter((e) => e.k === k).length;
+  cases.push({ label, theme: post.theme, gap: post.bar.gap, headDrag: true, from: { name: fromGroup, draggable: src.draggable }, before, reordered,
+               after: post.items.filter((i) => i.group).map((h) => h.group), shape: shape(post),
+               ev: { dragstart: count("dragstart"), dragover: count("dragover"), drop: count("drop"), dragend: count("dragend") },
+               tail: log.filter((e) => e.k !== "dragenter" && e.k !== "dragleave" && e.k !== "pointercancel").slice(-6).map((e) => e.k + "@" + e.x + (e.tgt ? " on " + e.tgt : "") + (e.prevented ? " accepted" : "")) });
+}
+// a tab dragged to a HEADER's slot: released over `frac` of the header's width (0.25: its left part, so the slot before it)
+async function dragToHead(label, fromRow, fromIdx, group, frac) {
+  const pre = await layout();
+  const src = pre.rows[fromRow] && pre.rows[fromRow][fromIdx], tgt = pre.items.find((i) => i.group === group);
+  if (!src || !tgt) { cases.push({ label, skipped: "no such tab or header: rows=" + JSON.stringify(pre.rows.map((r) => r.map((t) => t.name))) }); return; }
+  const sx = pre.bar.left + src.left + src.w / 2, sy = pre.bar.top + src.top + src.h / 2;
+  const tx = pre.bar.left + tgt.left + tgt.w * frac, ty = pre.bar.top + tgt.top + tgt.h / 2;
+  await page.evaluate(() => { window.__log = []; });
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  await page.mouse.move(sx + 4, sy + 1, { steps: 2 });
+  await page.mouse.move(tx, ty, { steps: 16 });
+  for (let i = 0; i < 3; i++) await page.mouse.move(tx, ty);
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  await page.mouse.move(900, 700);
+  await record(label, pre, src, { name: "#" + group, left: tgt.left, w: tgt.w, top: tgt.top }, tx, ty);
+}
+const groups = L.items.filter((i) => i.group).map((h) => h.group);   // in strip order (tagOrder)
+await foldGroup(groups[0], true);
+await foldGroup(groups[1], true);
+L = await layout();
+out.packed = shape(L);
+await stripShot("packed-yatharth");
+trail = L.rows.length - 1;   // the only row of tabs
+await drag("packed: trail, 1st tab to the 3rd slot (right part of the 3rd)", trail, 0, trail, 2, 0.75);
+await drag("packed: trail, 4th tab to the 2nd slot (left part of the 2nd)", trail, 3, trail, 1, 0.25);
+await dragToHead("packed: trail, 3rd tab to the slot BETWEEN the two folded headers (left part of the second)", trail, 2, groups[1], 0.25);
+await dragHead("packed: the second header dragged onto the first (the groups swap)", groups[1], groups[0]);
+// one of the two opened again: the open group's row, the folded one's own row, the trail's
+L = await layout();
+const order = L.items.filter((i) => i.group).map((h) => h.group);
+await foldGroup(order[0], false);
+L = await layout();
+out.unfolded = shape(L);
+await stripShot("unfolded-neighbour-yatharth");
+await foldGroup(order[0], true);   // back to the packed row: the fold state is per browser, so the classic reload below keeps it
+// 5. the CLASSIC theme over the same folds (gap 0): the packed row again, and its drags
+await page.evaluate(() => { let s = {}; try { s = JSON.parse(localStorage.getItem("romp:settings") || "{}") || {}; } catch (e) {}
+                            s.theme = "classic"; localStorage.setItem("romp:settings", JSON.stringify(s)); });
+await page.reload();
+await settle(cfg.trail);
+L = await layout();
+out.packedClassic = shape(L);
+await stripShot("packed-classic");
+trail = L.rows.length - 1;
+const groupsC = L.items.filter((i) => i.group).map((h) => h.group);
+await drag("classic packed: trail, 1st tab to the 3rd slot (right part of the 3rd)", trail, 0, trail, 2, 0.75);
+await drag("classic packed: trail, 4th tab to the 2nd slot (left part of the 2nd)", trail, 3, trail, 1, 0.25);
+await dragToHead("classic packed: trail, 3rd tab to the slot BETWEEN the two folded headers (left part of the second)", trail, 2, groupsC[1], 0.25);
 out.cases = cases;
 fs.writeFileSync(cfg.out, JSON.stringify(out));   // a file, not stdout: the per-case logs outgrow one pipe write
 fs.writeSync(1, "RESULT:" + cfg.out + "\n");
@@ -324,7 +442,7 @@ class ServedTabDragReorder(unittest.TestCase):
                      "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
                                  "content": [{"type": "text", "text": "It keeps the %s side of the notes-api tidy." % name}]}}]
             Path(proj, sid + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
-        # one tag holding three sessions: the strip groups by tag, the group on its own row, the other seventeen in the trail
+        # two tags, three and two sessions: the strip groups by tag, a row per group, the other fifteen in the trail
         Path(state, "timeline-views.json").write_text(json.dumps({"active": "all", "tags": TAGS}))
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-tabdrag"
@@ -367,8 +485,9 @@ class ServedTabDragReorder(unittest.TestCase):
         cfg = os.path.join(cls.lab, "cfg.json")
         out = os.path.join(cls.lab, "result.json")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (cls.port, cls.token), "count": len(NAMES), "out": out,
-                       "rename": "http://127.0.0.1:%d/rename?token=%s" % (cls.port, cls.token)}, f)
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (cls.port, cls.token), "count": len(NAMES), "trail": len(TRAIL), "out": out,
+                       "rename": "http://127.0.0.1:%d/rename?token=%s" % (cls.port, cls.token),
+                       "shots": os.environ.get("TAB_DRAG_SHOTS", "")}, f)   # TAB_DRAG_SHOTS=<prefix>: strip screenshots of the packed layouts
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -423,9 +542,10 @@ class ServedTabDragReorder(unittest.TestCase):
             self.assertEqual(g["theme"], theme, "%s: the body wears the theme the settings store names: %r" % (key, g))
             self.assertEqual(g["gap"], gap, "%s: the strip's column gap under that theme: %r" % (key, g["bar"]))
             rows = g["rows"]
-            self.assertGreaterEqual(len(rows), 2, "%s: the group and the trail wrap onto separate rows: %r" % (key, g))
+            self.assertGreaterEqual(len(rows), 3, "%s: the two groups and the trail wrap onto separate rows: %r" % (key, g))
             self.assertEqual(sorted(rows[0]), sorted(TAGGED), "%s: row 0 is the infra group: %r" % (key, rows))
-            self.assertEqual(sorted(rows[-1]), sorted(n for n in NAMES if n not in TAGGED), "%s: the last row is the trail: %r" % (key, rows))
+            self.assertEqual(sorted(rows[1]), sorted(QA), "%s: row 1 is the qa group: %r" % (key, rows))
+            self.assertEqual(sorted(rows[-1]), sorted(TRAIL), "%s: the last row is the trail: %r" % (key, rows))
 
     # ── the classic theme: the control ──
     def test_classic_trail_row_drag_to_the_first_slot(self):
@@ -465,6 +585,93 @@ class ServedTabDragReorder(unittest.TestCase):
         self.assertFalse(c["rebuiltMidDrag"], "the strip was rebuilt under the drag: the hold did not outlive the browser's pointercancel" + table)
         self._assert_landed_under_cursor(c)
         self.assertTrue(c["shownAfter"], "the push's render, held through the drag, lands once the gesture is over: the new name shows" + table)
+
+    # ── FOLDED NEIGHBOURS SHARE A ROW (the user 2026-09-16) ──
+    @staticmethod
+    def _tab_tops(g):
+        """name → the row top of every TAB in a recorded shape (its items read `name@left,top+wxh`; a header or a break is `[cls]@…`)."""
+        out = {}
+        for it in g["items"]:
+            if it.startswith("["):
+                continue
+            name, rect = it.split("@", 1)
+            out[name] = float(rect.split(",")[1].split("+")[0])
+        return out
+
+    def _assert_packed(self, key):
+        r = self._run()
+        g = r[key]
+        heads = g["heads"]
+        detail = "\n  %s: heads %r\n  breaks %r\n  rows %r\n  items %r" % (key, heads, g["breaks"], g["rows"], g["items"])
+        self.assertEqual([h["collapsed"] for h in heads], [True, True], "both groups folded" + detail)
+        self.assertEqual(heads[0]["top"], heads[1]["top"], "the two folded headers share ONE row (equal tops)" + detail)
+        self.assertEqual(len(g["breaks"]), 1, "one break in the strip, the trail's — none between the two folded headers" + detail)
+        self.assertTrue(g["breaks"][0]["sep"], "…and it is the trail's (it wears the boundary class)" + detail)
+        self.assertEqual(len(g["rows"]), 1, "the trail is the only row of tabs" + detail)
+        self.assertEqual(sorted(g["rows"][0]), sorted(TRAIL), "…and every trail tab is on it" + detail)
+        self.assertGreater(min(self._tab_tops(g).values()), heads[0]["top"] + heads[0]["h"] - 1, "the trail's row sits below the headers' row" + detail)
+        # the two headers sit side by side as two tabs do: the second's box starts where the first's ends (plus the strip's
+        # column gap), the boxes never overlap, and the labels (the chips) stand clear of each other by both paddings
+        gap = float(g["gap"].replace("px", "") or 0)
+        self.assertGreaterEqual(heads[1]["left"], heads[0]["right"], "the second header's box starts after the first's" + detail)
+        self.assertLessEqual(heads[1]["left"] - heads[0]["right"], gap + 1, "…right after it: the strip's column gap, nothing else" + detail)
+        self.assertGreaterEqual(heads[1]["chip"]["left"] - heads[0]["right"], 6, "the second chip is at least its header's padding in from the first header's edge" + detail)
+        self.assertGreaterEqual(heads[1]["chip"]["left"] - heads[0]["chip"]["right"], 24, "the two chips stand clear of each other (the count and caret between, plus both paddings)" + detail)
+
+    def test_two_folded_groups_share_one_row_under_the_yatharth_theme(self):
+        self._assert_packed("packed")
+
+    def test_two_folded_groups_share_one_row_under_the_classic_theme(self):
+        self._assert_packed("packedClassic")
+
+    def test_an_open_neighbour_keeps_its_own_row_and_so_does_the_lone_folded_group(self):
+        r = self._run()
+        g = r["unfolded"]
+        heads = g["heads"]
+        detail = "\n  heads %r\n  breaks %r\n  rows %r\n  items %r" % (heads, g["breaks"], g["rows"], g["items"])
+        self.assertEqual([h["collapsed"] for h in heads], [False, True], "the first group open, the second folded" + detail)
+        self.assertLess(heads[0]["top"], heads[1]["top"], "the folded header is on a row BELOW the open group's header: nothing to pack with" + detail)
+        self.assertEqual(len(g["breaks"]), 2, "a break ahead of the folded header and the trail's" + detail)
+        self.assertEqual(len(g["rows"]), 2, "two rows of tabs: the open group's and the trail's" + detail)
+        open_members = QA if heads[0]["group"] == "qa" else TAGGED
+        self.assertEqual(sorted(g["rows"][0]), sorted(open_members), "the open group's row holds its members" + detail)
+        self.assertEqual(sorted(g["rows"][1]), sorted(TRAIL), "the trail's row holds the rest" + detail)
+        tops = self._tab_tops(g)
+        self.assertEqual({tops[n] for n in open_members}, {heads[0]["top"]}, "the open group's members sit on their header's own row" + detail)
+        self.assertLess(heads[1]["top"], min(tops[n] for n in TRAIL), "the folded header's row is above the trail's" + detail)
+        self.assertEqual([n for n, t in tops.items() if t == heads[1]["top"]], [], "the lone folded header's row holds nothing else" + detail)
+
+    def test_packed_row_trail_drag_1st_to_3rd(self):
+        self._assert_landed_under_cursor(self._case("packed: trail, 1st tab to the 3rd"))
+
+    def test_packed_row_trail_drag_4th_to_2nd(self):
+        self._assert_landed_under_cursor(self._case("packed: trail, 4th tab to the 2nd"))
+
+    def test_packed_row_drop_between_the_two_folded_headers_lands_at_the_trails_head(self):
+        c = self._case("packed: trail, 3rd tab to the slot BETWEEN")
+        self._assert_landed_under_cursor(c)
+        self.assertEqual(c["actual"], 0, "the slot between the two headers is the slot before the trail: the tab lands first" + self._table(c))
+
+    def test_packed_row_header_drag_reorders_the_groups(self):
+        c = self._case("packed: the second header dragged onto the first")
+        detail = "\n  before %r after %r reordered %r\n  events %r\n  tail %r\n  shape %r" % (c["before"], c["after"], c["reordered"], c["ev"], c["tail"], c["shape"])
+        self.assertTrue(c["from"]["draggable"], "a header drags to reorder the groups" + detail)
+        self.assertGreater(c["ev"]["drop"], 0, "the drop reached the strip" + detail)
+        self.assertEqual(c["after"], list(reversed(c["before"])), "the dragged group took the target's slot: the two swapped" + detail)
+        heads = c["shape"]["heads"]
+        self.assertEqual(heads[0]["top"], heads[1]["top"], "…and the two still share one row" + detail)
+        self.assertEqual([h["collapsed"] for h in heads], [True, True], "…both still folded" + detail)
+
+    def test_classic_packed_row_trail_drag_1st_to_3rd(self):
+        self._assert_landed_under_cursor(self._case("classic packed: trail, 1st tab to the 3rd"))
+
+    def test_classic_packed_row_trail_drag_4th_to_2nd(self):
+        self._assert_landed_under_cursor(self._case("classic packed: trail, 4th tab to the 2nd"))
+
+    def test_classic_packed_row_drop_between_the_two_folded_headers(self):
+        c = self._case("classic packed: trail, 3rd tab to the slot BETWEEN")
+        self._assert_landed_under_cursor(c)
+        self.assertEqual(c["actual"], 0, "the slot between the two headers is the slot before the trail" + self._table(c))
 
 
 if __name__ == "__main__":

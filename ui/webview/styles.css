@@ -493,7 +493,12 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    visible divider: a line of its own, with no chip, already says "in no tag" (the trail stays
    unlabeled by the user's ruling); the element keeps the .tab-group-sep class as the boundary
    sectionHeadOf reads. With the setting off the divider below returns. The tab drag's virtual layout
-   (dragslot.ts) opens a row at the same places (`br`), so a drag wraps where the strip wraps. */
+   (dragslot.ts) opens a row at the same places (`br`), so a drag wraps where the strip wraps. The one
+   header no break precedes is a folded one right after another folded header (tab-groups.ts planStrip
+   `packed`, the user 2026-09-16): a run of folded groups, each only its header, shares one row instead
+   of a row apiece, wrapping like tabs when the run is wider than the strip; an open group and the
+   trail keep their own rows. Two packed headers sit as two tabs do — the strip's column gap apart,
+   their own 7px paddings between the labels — and each header's box is its own click target. */
 .tab-group-break { flex: 0 0 100%; height: 0; margin: 0; padding: 0; pointer-events: none; }
 /* THE UNTAGGED TRAIL'S DIVIDER with the one-group-per-row setting off (render.ts makeTrailSep): a 1px
    line between 6px gutters. The gutters are PADDING, not margin, and the line is the content box, so

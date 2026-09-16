@@ -601,10 +601,11 @@ export function headWords(name: string, total: number, hidden: number, folded: b
 }
 
 /** One strip item: a section header (folded or open; `active` = it holds the active tab; `hidden` =
- *  the member ids a folded header stands in for — its members less the pinned ones, [] when open) or
+ *  the member ids a folded header stands in for — its members less the pinned ones, [] when open;
+ *  `packed` = this folded header shares the row of the folded header right before it, see planStrip) or
  *  a tab. The same id may appear as a tab under several headers (T264b: a session under N tags has N
  *  copies); render.ts paints each copy as a full tab of the one session. */
-export type StripItem = { head: TabSection; folded: boolean; active: boolean; hidden: string[] } | { id: string };
+export type StripItem = { head: TabSection; folded: boolean; active: boolean; hidden: string[]; packed: boolean } | { id: string };
 export interface StripPlan {
   items: StripItem[];
   folded: Set<string>;   // the ids a folded header stands in for — keyboard cycling skips them
@@ -636,7 +637,16 @@ export interface StripPlan {
  *    fold) is marked `active`; when no copy shows anywhere exactly one holder, the first in tagOrder, is
  *    marked: the header that stands in for the tab. Nothing springs open (the active tab's section folds
  *    like any other, above). A tab joins the `folded` set only when EVERY copy is off the strip; one
- *    copy on screen keeps it in the keyboard order. */
+ *    copy on screen keeps it in the keyboard order.
+ *  - FOLDED NEIGHBOURS SHARE A ROW (the user 2026-09-16: a folded group is one small header, yet each
+ *    took a whole row). Under the one-group-per-row layout every header opens a row, except a folded
+ *    header whose item right before it in strip order is another folded header: that one is `packed`,
+ *    and render.ts emits no row break ahead of it, so a run of bare folded headers reads as one row
+ *    (wrapping like tabs when the run outgrows the strip). An open group keeps a row of its own, and so
+ *    does the trail; a lone folded group between open ones has nothing to pack with and keeps its row.
+ *    The item right before, not the section: a folded section with a member pinned through its fold
+ *    ends in that member's tab, so the next folded header opens a row as it would after an open group.
+ *    Never on the phone, where nothing folds. */
 export function planStrip(visibleIds: readonly string[], unions: readonly TagUnion[], st: TabGroupsState,
                           activeId: string | null, phone: boolean,
                           pending?: { id: string; tags: readonly string[] } | null): StripPlan {
@@ -667,7 +677,11 @@ export function planStrip(visibleIds: readonly string[], unions: readonly TagUni
     const active = activeId !== null && holders.includes(sec) && (shows(sec, activeId) || (!shownSomewhere && sec === holders[0]));
     const f = foldOf(sec);
     const hidden = f ? sec.ids.filter((id) => !isPinned(st, sec, id)) : [];
-    items.push({ head: sec, folded: f, active, hidden });
+    // packed: this header is folded and the item right before it is a folded header too (the trail's header
+    // is never folded, so a folded header never packs onto the trail, nor the trail onto anything)
+    const prev = items[items.length - 1];
+    const packed = f && prev !== undefined && "head" in prev && prev.folded;
+    items.push({ head: sec, folded: f, active, hidden, packed });
     for (const id of sec.ids) { if (hidden.includes(id)) folded.add(id); else items.push({ id }); }
   }
   // a session under several tags (T264b) has a copy in each: it is folded away — skipped by the
