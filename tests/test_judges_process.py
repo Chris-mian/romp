@@ -5,7 +5,7 @@ own bookkeeping standing around the request in the loop's order (the goals snaps
 bumped only when a store moved); a child that exits mid-pass, hangs past the hard bound, answers a malformed line or speaks a
 protocol version this kernel does not know costs a lost pass, never a silent accept, and comes back on the next wake; with the
 switch off (the default) the in-process tiers run and no child starts; tracking off sends no request. The child is a stand-in
-script answering the protocol romp_metrics's child speaks, through ROMP_JUDGE_SERVE_CMD."""
+script answering the protocol the kernel's child speaks, through ROMP_JUDGE_SERVE_CMD."""
 import json
 import os
 import sys
@@ -605,6 +605,42 @@ class FailureRoads(_Child):
         for fn in (cls._kill, cls.end, cls.sweep_orphans, km._pid_is_judge_child):
             self.assertNotIn("timeout=5", inspect.getsource(fn), "%s waits fixed seconds" % fn.__name__)
         self.assertFalse(hasattr(km, "JUDGE_CHILD_QUIT_S"), "no fixed quit bound")
+
+    def test_a_child_that_exited_on_its_own_is_never_reported_killed_at_the_join(self):
+        """The clean-exit road of the exit's join, pinned (the round-five read: nothing asserted the absence of the line, so the
+        old condition, which killed and said so whenever the reap thread was still alive, passed the suite). Two shapes: a
+        child that quit on the request before the join, and a child that exited inside the reap thread's tail, the thread
+        still standing at the join."""
+        import contextlib, io, subprocess, threading
+        km = self.km
+        self._on()
+        self._pass()
+        child = getattr(km, "_JUDGE_CHILD", None)
+        proc = getattr(child, "proc", None)
+        self.assertIsNotNone(proc, "a child runs after the pass (the base has none)")
+        handle = child.end(background=True)               # the fake quits on the request
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = handle.finish(km.EXIT_GRACE_S)
+        self.assertIsNotNone(rc)
+        self.assertNotEqual(rc, -9, "the child left on the quit, not on a kill")
+        self.assertNotIn("killed outright", err.getvalue(), "a clean exit is not reported as a kill")
+        gone = subprocess.Popen(["true"]); gone.wait()   # a process already exited...
+        stop = threading.Event()
+        tail = threading.Thread(target=stop.wait, daemon=True); tail.start()   # ...inside a reap thread still on its tail
+        (self.jd.STATE / ("judge-child.%d.json" % os.getpid())).write_text("{}")
+        try:
+            end_cls = getattr(km, "_JudgeEnd", None)
+            self.assertIsNotNone(end_cls, "the exit's handle class")
+            h = end_cls(child, gone, tail)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = h.finish(0.0)
+            self.assertEqual(rc, 0, "the exit code the child left with, no kill")
+            self.assertNotIn("killed outright", err.getvalue(), "nothing said about a kill (the old condition said it whenever the thread stood)")
+            self.assertFalse((self.jd.STATE / ("judge-child.%d.json" % os.getpid())).exists(), "only the record is owed, and it is dropped")
+        finally:
+            stop.set(); tail.join(2)
 
     def test_the_spawns_preexec_does_no_work_after_fork(self):
         """Round three, medium: the preexec imported ctypes and opened libc in the forked child of a many-threaded kernel, an
