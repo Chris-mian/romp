@@ -29,6 +29,7 @@
 // round-trip itself — an event, not a timer). File BYTES stay on HTTP /file via the existing viewer.
 import { closeFileView, openFileClick } from "./file-view";
 import { fileUrl } from "./preview";
+import { openContextMenu, closeContextMenu, CtxItem } from "./ctx-menu";   // the one menu builder (the v0.16.0 tidy): the row menu's card, dismissal and keys
 
 type DirEntry = {
   name: string; isDir: boolean; isLink: boolean;
@@ -94,7 +95,7 @@ export function closeFileBrowse(): void {
   const box = document.getElementById("romp-filebrowse");
   if (!box) return;
   box.remove();
-  document.getElementById("fb-ctx")?.remove();     // a row menu must not outlive its listing
+  if (document.getElementById("fb-ctx")) closeContextMenu();     // a row menu must not outlive its listing
   document.body.classList.remove("filebrowse-open");
   // Unbind + reset EXPLICITLY: a ✕-close sees no keydown, so a lazy self-removing handler would
   // survive into the next open and double every keystroke; and a module-level inflight surviving a
@@ -222,10 +223,9 @@ export function openFileBrowse(path: string, sid?: string | null): void {
     const onKey = (e: KeyboardEvent) => {
       const box2 = document.getElementById("romp-filebrowse");
       if (!box2) return;                                      // closed: closeFileBrowse unbinds us
-      if (e.key === "Escape") {
-        const ctx = document.getElementById("fb-ctx");
-        if (ctx) { e.preventDefault(); ctx.remove(); return; }   // the menu is the topmost surface
-      }
+      // the row menu is the topmost surface: its Escape is the shared builder's (its listener runs first, at the capture
+      // phase, and marks the event), so a marked Escape peels nothing more here
+      if (e.key === "Escape" && (e.defaultPrevented || document.getElementById("fb-ctx"))) return;
       if (document.getElementById("romp-fileview")) return;   // the viewer is topmost — its key
       if (e.key === "Escape") { e.preventDefault(); closeFileBrowse(); return; }
       if (e.key === "Backspace" || e.key === "ArrowLeft") {
@@ -292,16 +292,8 @@ function onAct(row: HTMLElement, ev?: MouseEvent | KeyboardEvent): void {
 }                                                       // a viewer that could only apologize helps nobody
 
 function showRowMenu(e: MouseEvent, path: string, isDir: boolean): void {
-  document.getElementById("fb-ctx")?.remove();
-  const menu = el("div", "ctx-menu");
-  menu.id = "fb-ctx";
-  const add = (label: string, fn: () => void, sub?: string) => {
-    const item = el("div", "ctx-item");
-    item.textContent = label;
-    if (sub) { const s = el("span", "ctx-item-sub"); s.textContent = sub; item.appendChild(s); }
-    item.addEventListener("click", (ev) => { ev.stopPropagation(); menu.remove(); fn(); });
-    menu.appendChild(item);
-  };
+  const items: CtxItem[] = [];
+  const add = (label: string, fn: () => void, sub?: string) => { items.push({ label, sub, pick: fn }); };
   add("Copy path", () => { navigator.clipboard?.writeText(path); });
   if (!isDir) add("Download", () => startDownload(path));
   // the demoted OS-open (the user 2026-08-14): openFolder always runs via the LOCAL kernel, which
@@ -310,12 +302,9 @@ function showRowMenu(e: MouseEvent, path: string, isDir: boolean): void {
     const cwd = isDir ? path : dirnameOf(path);
     post(curSid ? { type: "openFolder", cwd, id: curSid } : { type: "openFolder", cwd });
   }, "on the machine the session runs on");
-  document.body.appendChild(menu);
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
-  const dismiss = () => { menu.remove(); document.removeEventListener("click", dismiss); };
-  document.addEventListener("click", dismiss);
+  // the shared card, keeping the #fb-ctx id the sheet draws over both overlays (feed.css): placed inside the pane, dismissed
+  // on a press outside, Escape, a scroll or the window's blur, the rows reachable by the arrows
+  openContextMenu(e.clientX, e.clientY, items, { id: "fb-ctx" });
 }
 
 // One in-flight ask; a navigation typed meanwhile waits as `queued` and fires when the reply lands —

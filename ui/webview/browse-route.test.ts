@@ -185,9 +185,11 @@ test("browseRouteNow reads the cache and the host at the call, so the tab menu's
 });
 
 test("the tab menu's sub-line, executed: it names where Browse files will land, from the reader the click uses", () => {
-  const code = ts(sliceOf(RENDER, "const where = browseRouteNow();", "bodyEl.appendChild(sb);", "the tab menu's Browse files sub-line"));
-  const subLine = (where: BrowseRoute): string =>
-    (new Function("browseRouteNow", "el", code + "return sb.textContent;") as (r: () => BrowseRoute, e: (t: string, c?: string) => { textContent: string }) => string)(() => where, () => ({ textContent: "" }));
+  // the row is the shared builder's (addMenuItem); its sub-line is the expression handed as `sub:`, run here for each route
+  const block = sliceOf(RENDER, "const where = browseRouteNow();", 'pick: () => openBrowse(s?.cwd || ".", id) });', "the tab menu's Browse files sub-line");
+  const subAt = block.indexOf("sub: ");
+  const expr = block.slice(subAt + 5, block.indexOf(",\n", subAt));
+  const subLine = (where: BrowseRoute): string => (new Function("where", "return " + expr) as (w: BrowseRoute) => string)(where);
   assert.equal(subLine("pane"), "the session's working tree, in the Files pane");
   assert.equal(subLine("here"), "the session's working tree, in a viewer over this chat");
 });
@@ -259,7 +261,7 @@ test("render.ts: the import; browseRouteNow beside openBrowse, outside the openP
   assert.match(RENDER, /initFileBrowse\(\(m\) => vscodeApi\?\.postMessage\(m\), \{\n\s*shellRestore: false,\n\s*onRelay: \(m\) => openBrowse\(m\.path, typeof m\.sid === "string" \? m\.sid : null\),\n\}\);/,
     "the chat's own browser instance, with the chat's contract");
   assert.match(RENDER, /const where = browseRouteNow\(\);/);
-  assert.match(RENDER, /sb\.textContent = "the session's working tree, " \+ \(where === "pane" \? "in the Files pane" : "in a viewer over this chat"\);/,
+  assert.match(RENDER, /sub: "the session's working tree, " \+ \(where === "pane" \? "in the Files pane" : "in a viewer over this chat"\),/,
     "the sub-line names where Browse files will land");
   assert.equal((RENDER.match(/= browseRouteNow\(\);/g) || []).length, 2, "two readers: the click and the menu's sub-line");
 });

@@ -55,8 +55,10 @@ test("every mode wears a tagline, and 'Accept edits' reads 'Accept' everywhere (
 test("no width blowout: every new tagline is no longer than the accepted bypass line (T117 fit rule)", () => {
   // the menu sizes to its longest line; the bypass sub shipped 2026-08-15 and set the accepted
   // width — the new taglines must all fit inside it, so the menu gets no wider than it already was
-  const subs = [...RENDER.matchAll(/sub: "([^"]+)"/g)].map((m) => m[1]);
   const bypass = "every tool runs unasked, and romp stops showing approvals";
+  // the mode selector's own entries (the tab menu's rows, on the shared builder since v0.16.0, carry `sub:` lines of their own width)
+  const modes = RENDER.slice(RENDER.indexOf('{ label: "Normal", value: "default"'), RENDER.indexOf(bypass) + bypass.length + 1);
+  const subs = [...modes.matchAll(/sub: "([^"]+)"/g)].map((m) => m[1]);
   assert.ok(subs.includes(bypass));
   for (const sub of subs) assert.ok(sub.length <= bypass.length, `tagline wider than the accepted menu: ${sub}`);
 });

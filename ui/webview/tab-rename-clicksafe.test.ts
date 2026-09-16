@@ -19,7 +19,7 @@ const rename = RENDER.slice(RENDER.indexOf("function startTabRename"),
                             RENDER.indexOf("// Keyboard nav on a focused tab"));
 
 test("the menu's Rename hands over the id alone — no captured nodes", () => {
-  assert.match(RENDER, /dismissTabMenu\(\); startTabRename\(id, copy\); \}\);/,
+  assert.match(RENDER, /label: "Rename", sub: RENAME_SUBLINE, pick: \(\) => startTabRename\(id, copy\) \}\);/,
                "the click resolves the tab itself; a node captured at menu-open time may be detached");
   assert.doesNotMatch(RENDER, /startTabRename\(tab, label, id\)/);
 });

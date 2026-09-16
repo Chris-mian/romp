@@ -21,7 +21,7 @@ test("asFolderLink routes by host: BROWSE on the web, folder-open in VS Code (th
   assert.match(SW, /click to browse this folder/);
   assert.match(SW, /click to open this folder/);
   // OS-open demoted, not deleted: the folder link's right-click still posts the old openFolder
-  assert.match(SRC, /item\.textContent = "Open folder window";/);
+  assert.match(SRC, /label: "Open folder window", sub: "on the machine the session runs on",/);   // on the shared menu builder since v0.16.0
 });
 
 test("it's applied to the statusline folder AND the System-context Directory row, carrying the session id", () => {

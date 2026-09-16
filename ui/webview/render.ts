@@ -88,6 +88,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";   // the browser
 import { pastedFilePath } from "./paste-path";
 import { insertAtCaret } from "./composer-insert";
 import { hostNameNodes, hostPartsNodes, hostPrefix, hostOf, hostIsDown, hostIsDialing, hostDownNote } from "./host-prefix";
+import { menuCard, addMenuItem, addMenuSep, showMenuCard, openContextMenu, closeContextMenu } from "./ctx-menu";   // the one menu builder (the v0.16.0 tidy)
 import { focusAfterDismiss, emptyStateParts } from "./pane-focus";   // where focus goes when a tab leaves, and the empty body's line (T357)
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";   // the @-mention card's rules, pure; the DOM is setupComposer's mention block and markMentions
 import type { MentionCandidate, MentionQuery } from "./composer-mention";
@@ -7005,9 +7006,13 @@ function stripAftermath(visibleIds: readonly string[], ids: readonly string[]): 
 // Right-click context menu on a tab. Webviews can't use VS Code's native menus,
 // so this is a small themed floating menu; one open at a time, dismissed by any
 // outside click, Escape, scroll, or losing window focus.
-let ctxMenuEl: HTMLElement | null = null;
+let ctxMenuEl: HTMLElement | null = null;   // the open tab or selection menu's card (the shared builder's), read by the composer's typing gates
 function dismissTabMenu() {
-  ctxMenuEl?.remove();
+  closeContextMenu();   // the builder's teardown hands the focus back and runs onTabMenuClosed
+}
+// the card is gone (a pick, Escape, a press outside, a scroll, the window's blur, Tab, the focus leaving): forget it and the
+// tags flyout's input with it
+function onTabMenuClosed() {
   ctxMenuEl = null;
   tagsFlyNewInput = null;
 }
@@ -7023,13 +7028,8 @@ function showSelectionMenu(e: MouseEvent) {
   if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
   e.preventDefault();
   dismissTabMenu();
-  const menu = el("div", "ctx-menu");
-  const mk = (labelText: string, fn: () => void) => {
-    const item = el("div", "ctx-item");
-    item.textContent = labelText;
-    item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
-    menu.appendChild(item);
-  };
+  const items: { label: string; pick: () => void }[] = [];
+  const mk = (labelText: string, fn: () => void) => { items.push({ label: labelText, pick: fn }); };
   // Comment first, Quote second (the user 2026-08-23): Comment is the primary act — a side thread
   // about the passage — and Quote is the lighter one. Comment only when the selection sits in a real
   // transcript turn (transcriptSelection's uuid) on a real session.
@@ -7043,11 +7043,7 @@ function showSelectionMenu(e: MouseEvent) {
   // the item just puts the caret where the reply goes. The in-box editable-blockquote form is gone.
   mk("Quote", () => { (document.getElementById("composer-input") as HTMLTextAreaElement | null)?.focus(); });
   mk("Copy", () => copyToClipboard(text));
-  document.body.appendChild(menu);
-  ctxMenuEl = menu;
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+  ctxMenuEl = openContextMenu(e.clientX, e.clientY, items, { onClose: onTabMenuClosed });   // the shared card: placed, dismissed and keyed the one way
 }
 
 function copyToClipboard(text: string) {
@@ -7191,7 +7187,7 @@ function wireFlyout(menu: HTMLElement, item: HTMLElement, sel: string, open: (by
 
 function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: the group the right-clicked copy sits in (T264b), a plain string so the menu stays id-keyed
   dismissTabMenu();
-  const menu = el("div", "ctx-menu");
+  const menu = menuCard();   // the shared card: the standard rows through addMenuItem, the swatches and the flyouts appended beside them
   // Four sections, dividers only; the titles live here and in tab-menu-sections.test.ts (the user
   // 2026-09-11, who asked for the menu regrouped by what each item changes about the session).
   // ── 1. HOW IT SHOWS: Rename; the colour swatches. Both change the tab's label and tint and nothing
@@ -7203,35 +7199,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // id only, never the tab node under the cursor: the menu (on document.body) outlives kernel pushes,
   // but the tab it was opened from does not — renderTabs() swaps the strip on every push, so a node
   // captured here is usually DETACHED by the time Rename is clicked (the click-safety rule).
-  {
-    const rename = el("div", "ctx-item ctx-item-toggle");
-    rename.appendChild(ctxIcon("pencil", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Rename"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub"); sb.textContent = RENAME_SUBLINE; bodyEl.appendChild(sb);   // one copy with the Sessions pane's menu (clear-confirm.ts)
-    rename.appendChild(bodyEl);
-    rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id, copy); });
-    menu.appendChild(rename);
-  }
+  addMenuItem(menu, { icon: ctxIcon("pencil", false), label: "Rename", sub: RENAME_SUBLINE, pick: () => startTabRename(id, copy) });   // the sub-line is one copy with the Sessions pane's menu (clear-confirm.ts)
   // Hot key (the user 2026-09-10): a key combination that switches to this tab, recorded in the shell's
   // shortcuts dialog (it owns the recorder and the conflict check) — this pane only asks. The chord shows
   // minified on the tab (the T379 keycap widget, from the same store). ONE row (the user 2026-09-11): while a chord is bound it reads "Update hot key…", and the
   // recorder it opens both re-records and removes (Backspace, or its Remove button — an unbind in the shared store).
   if (inRompShell() && typeof (window.parent as any).__rompHotkeyConfigure === "function") {
     const cur = tabHotkey(id);
-    const hot = el("div", "ctx-item ctx-item-toggle");
-    hot.appendChild(ctxIcon("key", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = cur ? "Update hot key…" : "Hot key…"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = cur ? "now " + miniChord(cur) + " — press a new combination, or remove it" : "press a key combination that switches to this tab";
-    bodyEl.appendChild(sb);
-    hot.appendChild(bodyEl);
-    hot.addEventListener("click", (ev) => {
-      ev.stopPropagation(); dismissTabMenu();
-      try { window.parent.postMessage({ romp: "hotkeyConfigure", sid: id, name: sessions.get(id)?.name || "" }, "*"); } catch (e) { /* no shell to ask */ }
-    });
-    menu.appendChild(hot);
+    addMenuItem(menu, { icon: ctxIcon("key", false), label: cur ? "Update hot key…" : "Hot key…",
+      sub: cur ? "now " + miniChord(cur) + " — press a new combination, or remove it" : "press a key combination that switches to this tab",
+      pick: () => { try { window.parent.postMessage({ romp: "hotkeyConfigure", sid: id, name: sessions.get(id)?.name || "" }, "*"); } catch (e) { /* no shell to ask */ } } });
   }
   // The colour swatches close the section with Rename (the user 2026-08-24, who grouped the menu by
   // kind). The swatch row itself is unchanged (the user 2026-06-29): the identity palette as circles,
@@ -7255,7 +7232,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     }
     menu.appendChild(row);
   }
-  menu.appendChild(el("div", "ctx-sep"));
+  addMenuSep(menu);
   // ── 2. WHERE IT BELONGS: Tags (flyout); Move to folder…. Membership and location
   // are functional: they change what the kernel and the file system know about the session, and the
   // user placed Move beside Tags. A session's chat COLUMN is placed by dragging its tab (the shell's drop
@@ -7524,19 +7501,8 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // session should follow it; the user 2026-09-11 placed it here) — the same dress, the sub-line saying what a move KEEPS. The dialog does
   // the rest (showMovePrompt); the kernel wraps the CLI's own relocation. Every session moves (T331: the
   // terminal backend, which had no relocation primitive, is no longer offered).
-  {
-    const mv = el("div", "ctx-item ctx-item-toggle");
-    mv.appendChild(ctxIcon("folder", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Move to folder…"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = "the conversation, mail, goals and history stay with the session";
-    bodyEl.appendChild(sb);
-    mv.appendChild(bodyEl);
-    mv.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); showMovePrompt(id); });
-    menu.appendChild(mv);
-  }
-  menu.appendChild(el("div", "ctx-sep"));
+  addMenuItem(menu, { icon: ctxIcon("folder", false), label: "Move to folder…", sub: "the conversation, mail, goals and history stay with the session", pick: () => showMovePrompt(id) });
+  addMenuSep(menu);
   // ── 3. WHAT REACHES YOU: Hide from feed / Show in feed; Mute mail / Rejoin mail; Notify me / Stop
   // notifying; Billing (flyout). Per-session switches on how the session takes part in the dashboard's
   // surfaces and who pays; the icon-plus-sub-line toggle dress throughout.
@@ -7547,14 +7513,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   const offMail = !!(s && s.postalServiceOff);
   const onBell = !!(s && s.notify);
   const toggle = (kind: "feed" | "mail" | "bell", off: boolean, lab: string, sub: string, fn: () => void) => {
-    const item = el("div", "ctx-item ctx-item-toggle");
-    item.appendChild(ctxIcon(kind, off));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = lab; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub"); sb.textContent = sub; bodyEl.appendChild(sb);
-    item.appendChild(bodyEl);
-    item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
-    menu.appendChild(item);
+    addMenuItem(menu, { icon: ctxIcon(kind, off), label: lab, sub, pick: fn });
   };
   toggle("feed", offFeed,
     offFeed ? "Show in feed" : "Hide from feed",
@@ -7708,28 +7667,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // names that place, read when the menu builds. Web-only: the VS Code webview cannot reach the kernel
   // origin, and the editor has its own explorer.
   if (location.protocol === "http:" || location.protocol === "https:") {
-    menu.appendChild(el("div", "ctx-sep"));
-    const browse = el("div", "ctx-item ctx-item-toggle");
-    browse.appendChild(ctxIcon("folder", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Browse files"; bodyEl.appendChild(l);
+    addMenuSep(menu);
     const where = browseRouteNow();
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = "the session's working tree, " + (where === "pane" ? "in the Files pane" : "in a viewer over this chat");
-    bodyEl.appendChild(sb);
-    browse.appendChild(bodyEl);
-    browse.addEventListener("click", (ev) => {
-      ev.stopPropagation(); dismissTabMenu();
-      openBrowse(s?.cwd || ".", id);
-    });
-    menu.appendChild(browse);
+    addMenuItem(menu, { icon: ctxIcon("folder", false), label: "Browse files",
+      sub: "the session's working tree, " + (where === "pane" ? "in the Files pane" : "in a viewer over this chat"),
+      pick: () => openBrowse(s?.cwd || ".", id) });
   }
-  document.body.appendChild(menu);
-  ctxMenuEl = menu;
-  // at the cursor, clamped so it never overflows the pane
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+  // at the cursor, clamped inside the pane; dismissed on a press outside, Escape, a scroll outside the card (its own scroll is
+  // not a dismissal: taller than the window it scrolls inside it, styles.css max-height, 2026-09-13), Tab, the focus leaving,
+  // the window's blur; the rows reachable by the arrows; the focus back on the opener at the close (the shared builder)
+  ctxMenuEl = showMenuCard(menu, e.clientX, e.clientY, { onClose: onTabMenuClosed });
 }
 // A remote host coming or going flips the disconnected marks on its tabs. The federation manager fires
 // this only when the reachable set actually CHANGES (its own /tunnels poll is the event), so this is a
@@ -7752,14 +7699,8 @@ onlyHashWindow.addEventListener("hashchange", onOnlyHashChange);
 // detached pane's document alive for the shell's lifetime (retention is the whole cost: Chromium does not run a removed
 // frame's handler, the review's probe showed): pagehide takes it off again
 window.addEventListener("pagehide", () => onlyHashWindow.removeEventListener("hashchange", onOnlyHashChange));
-window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
-// an Escape that closed the menu says so on the event (preventDefault), so the section view's own Escape
-// (installSnapshotEscape, armed at this same capture phase, later in the listener order) yields to it
-window.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenuEl) { dismissTabMenu(); e.preventDefault(); } }, true);
-// …but not the menu's own scroll: taller than the window it scrolls inside it (styles.css max-height, 2026-09-13), and a
-// dismissal on that scroll closed it under the pointer the moment a row below the fold was brought into view
-window.addEventListener("scroll", (e) => { if (ctxMenuEl && ctxMenuEl.contains(e.target as Node)) return; dismissTabMenu(); }, true);
-window.addEventListener("blur", () => dismissTabMenu());
+// (the menus' dismissal listeners, a press outside, Escape marked on the event so the section view's own Escape yields to it,
+// a scroll outside the card and the window's blur, are the shared builder's, installed per open: ctx-menu.ts showMenuCard)
 
 // "Rename" (tab context menu): swap the tab's label for an inline input. Enter
 // or clicking away commits (the kernel renames the session and confirms with
@@ -20232,28 +20173,11 @@ setupSettings();
     const link = (ev.target as HTMLElement).closest?.(".folder-link[data-cwd]") as HTMLElement | null;
     if (!link || link.dataset.act !== "browseFiles") return;   // openFolder clicks need no second door
     ev.preventDefault();
-    document.getElementById("folder-ctx")?.remove();
-    const menu = el("div", "ctx-menu");
-    menu.id = "folder-ctx";
-    const item = el("div", "ctx-item");
-    item.textContent = "Open folder window";
-    const sub = el("span", "ctx-item-sub");
-    sub.textContent = "on the machine the session runs on";
-    item.appendChild(sub);
     const cwd = link.dataset.cwd || "";
     const id = link.dataset.id;
-    item.addEventListener("click", (e2) => {
-      e2.stopPropagation();
-      menu.remove();
-      vscodeApi?.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd });
-    });
-    menu.appendChild(item);
-    document.body.appendChild(menu);
-    const r = menu.getBoundingClientRect();
-    menu.style.left = Math.max(0, Math.min(ev.clientX, window.innerWidth - r.width - 4)) + "px";
-    menu.style.top = Math.max(0, Math.min(ev.clientY, window.innerHeight - r.height - 4)) + "px";
-    const dismiss = () => { menu.remove(); document.removeEventListener("click", dismiss); };
-    document.addEventListener("click", dismiss);
+    // the shared card (the v0.16.0 tidy), keeping its #folder-ctx id: placed, dismissed and keyed the one way
+    openContextMenu(ev.clientX, ev.clientY, [{ label: "Open folder window", sub: "on the machine the session runs on",
+      pick: () => vscodeApi?.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd }) }], { id: "folder-ctx" });
   });
   delegate(document.body, {
     // Subagent transcripts (plans/subagent-transcripts.md): the arrow on an Agent head / agent bg row

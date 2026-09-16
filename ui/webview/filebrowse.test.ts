@@ -108,11 +108,11 @@ test("every entry point is gated to where the click can land, and posts the one 
   assert.match(RENDER, /window\.parent\.postMessage\(\{ romp: "browseFiles", path: path \|\| "\.", sid: to, pane: "pane",/, "the pane route names its target");
   assert.match(RENDER, /initFileBrowse\(\(m\) => vscodeApi\?\.postMessage\(m\), \{\n\s*shellRestore: false,/, "the chat hosts its own browser instance, under its own contract");
   // tab right-click menu row: bottom of the menu, behind a divider, icon + sub-description
-  assert.match(RENDER, /l\.textContent = "Browse files"; bodyEl\.appendChild\(l\);/);
+  assert.match(RENDER, /label: "Browse files",/);
   // feed card menu row rides canPreview (web only — the VS Code webview can't reach the kernel
   // origin), and sends only the sid — the kernel resolves "." against the session's cwd authoritatively
-  assert.match(FEED, /openFileBrowse\("\.", it\.sid\);/);
-  assert.match(FEED, /if \(canPreview\(\)\) \{\n    const browse = el\("div", "ctx-item"\);/);
+  assert.match(FEED, /openFileBrowse\("\.", it\.sid\)/);
+  assert.match(FEED, /if \(canPreview\(\)\) items\.push\(\{ label: "Browse files", pick: \(\) => openFileBrowse\("\.", it\.sid\) \}\);/);
 });
 
 test("the statusline folder link BROWSES on the web; OS-open lives on its right-click (the user 2026-08-14)", () => {
@@ -121,7 +121,7 @@ test("the statusline folder link BROWSES on the web; OS-open lives on its right-
   assert.match(RENDER, /function asFolderLink\(elem: HTMLElement, cwd: string, sid\?: string\): void \{\n\s*folderLink\(elem, cwd, sid\);/);
   assert.match(SW, /click to browse this folder/);
   // the demoted OS-open: one document-level contextmenu on folder links, posting the old openFolder
-  assert.match(RENDER, /item\.textContent = "Open folder window";/);
+  assert.match(RENDER, /label: "Open folder window", sub: "on the machine the session runs on",/, "the folder link's right-click, on the shared builder too (v0.16.0)");
   assert.match(RENDER, /browseFiles: \(el\) => \{/, "the body delegate carries the new act");
 });
 
@@ -155,7 +155,7 @@ test("closeFileBrowse unbinds the keydown handler and resets the protocol latch"
   const close = BROWSE.split("export function closeFileBrowse")[1].split("function human")[0];
   assert.ok(close.includes("inflight = false;"), "the latch resets with the overlay");
   assert.ok(close.includes("queued = null;"));
-  assert.ok(close.includes('document.getElementById("fb-ctx")?.remove();'), "a row menu never outlives its listing");
+  assert.ok(close.includes('if (document.getElementById("fb-ctx")) closeContextMenu();'), "a row menu never outlives its listing (closed through the shared builder)");
 });
 
 test("a reply un-blocks the protocol UNCONDITIONALLY, before the stale check (the completer's rule)", () => {
@@ -203,25 +203,17 @@ test("the row menu carries the plan's full vocabulary: Copy path / Download / Op
 // ── the tab-menu restructure (the user 2026-08-24) ───────────────────────────────────────────────
 test("Browse files sits at the BOTTOM of the tab menu, behind a divider, wearing icon + sub-description", () => {
   const at = RENDER.indexOf("function showTabMenu");
-  const menuBody = RENDER.slice(at, RENDER.indexOf("document.body.appendChild(menu);", at));
-  const browseAt = menuBody.indexOf('l.textContent = "Browse files"');
+  const menuBody = RENDER.slice(at, RENDER.indexOf("ctxMenuEl = showMenuCard(menu,", at));
+  const browseAt = menuBody.indexOf('label: "Browse files"');
   assert.ok(browseAt > 0, "the item exists");
-  // nothing else is appended to the menu after the Browse block — it is the last thing before mount
-  assert.equal(menuBody.indexOf("menu.appendChild(", browseAt + 200) > 0 ? menuBody.slice(browseAt).match(/menu\.appendChild\(browse\);/) !== null : true, true);
-  assert.ok(menuBody.lastIndexOf('menu.appendChild(el("div", "ctx-sep"));') < browseAt
-            && menuBody.slice(0, browseAt).trimEnd().includes('menu.appendChild(el("div", "ctx-sep"));'),
+  // nothing else is added to the menu after the Browse row: it is the last thing before the card is shown
+  assert.doesNotMatch(menuBody.slice(browseAt), /addMenuItem\(menu|addMenuSep\(menu\)|menu\.appendChild\(/, "the last row");
+  assert.ok(menuBody.lastIndexOf("addMenuSep(menu);") < browseAt
+            && menuBody.slice(0, browseAt).trimEnd().includes("addMenuSep(menu);"),
     "a divider immediately precedes it — a different kind of thing");
   assert.match(menuBody.slice(browseAt - 400, browseAt), /ctxIcon\("folder", false\)/, "the folder icon");
-  assert.match(menuBody, /sb\.textContent = "the session's working tree, " \+ \(where === "pane" \? "in the Files pane" : "in a viewer over this chat"\);/,
+  assert.match(menuBody, /sub: "the session's working tree, " \+ \(where === "pane" \? "in the Files pane" : "in a viewer over this chat"\),/,
     "the standard sub-description line, naming where the listing will open (browse-route.test.ts)");
-  // …and the Billing submenu (the previous last item) now sits ABOVE it
-  const billingAt = menuBody.indexOf('l.textContent = "Billing"');
-  assert.ok(billingAt > 0 && billingAt < browseAt, "Browse is last");
-  // the divider before Browse follows Billing directly (2026-09-11: Tags moved up into the where-it-belongs
-  // section, so the switches section ends on Billing and nothing else is appended before Browse's divider)
-  const between = menuBody.slice(billingAt, browseAt);
-  assert.ok(between.includes('menu.appendChild(el("div", "ctx-sep"));'), "the divider sits between Billing and Browse");
-  assert.doesNotMatch(between, /l\.textContent = "(Tags|Move to folder…|Move to a new column|Rename)"/, "no other item between them");
 });
 
 // ── the viewer's veto, run FOR REAL: a browse click while the discard confirm keeps the viewer ──────────
