@@ -23916,21 +23916,26 @@ def _compact_notices(now=None):
     """The retention pass beside _compact_goal_stores: move each session's dismissed (in the cleared ledger), expired and
     superseded rows, and every expire row with its target, into STATE/notices-archive/<sid>.jsonl; nothing is deleted.
     Triggers on the presence of archivable rows and a moved modification time, never on bytes (the _USAGE_PRUNE_BYTES
-    lesson). Returns the count moved."""
+    lesson). The cleared ledger is read per session under the lock (memoized on its stat, so one stat a session): read once
+    before the loop, a pass running beside an Undo archived the restored row back out, and no later Undo could reach it
+    (round six, low). Returns the count moved."""
     now = int(now if now is not None else time.time())
     moved = 0
     try:
         names = [n[:-6] for n in os.listdir(_notice_dir()) if n.endswith(".jsonl")]
     except OSError:
         return 0
-    cleared = _cleared_ids()
-    ledger_st = _stat_key(jd.STATE / "cleared.jsonl")
+    ledger = jd.STATE / "cleared.jsonl"
     for sid in names:
         p = _notice_path(sid)
         st = _stat_key(p)
-        if st is None or _NOTICE_SWEPT.get(sid) == (st, ledger_st):   # unmoved file AND ledger: a dismissal moves the ledger alone (round five)
+        if st is None:
             continue
         with _notice_lock:
+            ledger_st = _stat_key(ledger)          # per session and under the lock, the stat before the read (the chain-memo rule): a
+            cleared = _cleared_ids()               # snapshot from before the loop archived back out a row an Undo restored meanwhile
+            if _NOTICE_SWEPT.get(sid) == (st, ledger_st):   # unmoved file AND ledger: a dismissal moves the ledger alone (round five)
+                continue
             rows = _notice_rows_unlocked(sid)
             newest = {}
             for r in rows:
@@ -23990,10 +23995,14 @@ def _notice_archive_rev_unlocked(sid, key):
     sweep or an Undo. The caller holds _notice_lock."""
     sid = str(sid)
     ap = _notice_archive_dir() / (sid + ".jsonl")
-    st = _stat_key(ap)
-    if st is None:
-        _NOTICE_ARCH_REVS.pop(sid, None)
+    try:
+        so = ap.stat()                             # explicit: an absent file is absence, a stat that FAILS (the directory
+    except FileNotFoundError:                      # unreadable) is a refusal, never absence (_stat_key folds both into None,
+        _NOTICE_ARCH_REVS.pop(sid, None)           # under which a repost minted rev 1 blind; round six, low)
         return 0, ""
+    except OSError as e:
+        return 0, "the notice archive could not be read (%s), so no revision was assigned" % e
+    st = (so.st_mtime_ns, so.st_size, so.st_ino, so.st_ctime_ns)
     ent = _NOTICE_ARCH_REVS.get(sid)
     if ent is None or ent[0] != st:
         try:
@@ -38349,11 +38358,18 @@ def _gesture_store_refusal(client, gesture, skipped):
     or the write itself), so the prose says "read or write" and lets the fault text name which; this is
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
-    for sid, fault in (skipped or {}).items():
+    for key, fault in (skipped or {}).items():
+        notices = key.startswith("notice:")          # an undo whose NOTICE archive faulted: worded per store (round six, low), since
+        sid = key[len("notice:"):] if notices else key   # the session's goal cards did come back
         who = _name_of(sid) or sid[:8]
-        if gesture == "undo":
+        if gesture == "undo" and notices:
+            title = "That undo did not fully land for %s" % who
+            text = ("Its notice cards were not restored: romp could not read that session's notice archive (%s). "
+                    "They are still held for you; press Undo again once it can. Its other cards and the other "
+                    "sessions were not affected." % fault)
+        elif gesture == "undo":
             title = "That undo did not land for %s" % who
-            text = ("Its cards were not restored: romp could not read or write that session's goals file or its notice cards' archive (%s). "
+            text = ("Its cards were not restored: romp could not read or write that session's goals file (%s). "
                     "They are still held for you; press Undo again once it can. The other sessions "
                     "were not affected." % fault)
         elif gesture == "drop":
@@ -38416,7 +38432,8 @@ def _undo_clear():
     them); journaling last is not an option either, since the reopen verdict's gate needs the undo
     row on disk before the flag step runs (its comment says why). A notice card's rows come back OUT of
     notices-archive after its undo row lands (_restore_notice_archive, round six), and a session whose notice
-    archive could not be read is owed the same way. Returns {sid: fault} for the sessions skipped."""
+    archive could not be read is owed the same way, its fault keyed "notice:<sid>" so the refusal names the store that
+    faulted and not the session's every card. Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
     cur = _cleared_ids()
     if not cur:
         return {}
@@ -38447,7 +38464,7 @@ def _undo_clear():
                 if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate):
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
         _files_stat_mark()                            # the re-journal is a clears-log write too
-        skipped.update(late); skipped.update(nlate)
+        skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
 

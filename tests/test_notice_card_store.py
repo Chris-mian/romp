@@ -392,12 +392,64 @@ class Retention(unittest.TestCase):
         km._clear_ask(iid); self.assertEqual(km._compact_notices(now=200), 1)
         ap = km._notice_archive_dir() / (SID + ".jsonl"); saved = ap.read_text(); ap.unlink(); ap.mkdir()
         faults = km._undo_clear()
-        self.assertEqual(list(faults), [SID]); self.assertIn("the notice archive could not be read", faults[SID])
+        self.assertEqual(list(faults), ["notice:" + SID], "keyed apart from a goals-file fault"); self.assertIn("the notice archive could not be read", faults["notice:" + SID])
         self.assertIn(iid, km._cleared_ids(), "re-journaled: the batch stays owed for the next Undo")
         self.assertEqual(km._notice_cards(300, km._cleared_ids()), [], "nothing restored blind")
+        # the refusal is worded per store (round six, low): the notice archive's fault says notice cards and names the session,
+        # never that none of its cards came back; a goals-file fault keeps its own sentence
+        sent = []; client = {"send": lambda m: sent.append(json.loads(m))}
+        km._gesture_store_refusal(client, "undo", faults)
+        self.assertEqual((sent[0]["type"], sent[0]["sid"]), ("err", SID))
+        self.assertIn("notice cards were not restored", sent[0]["text"]); self.assertIn("notice archive", sent[0]["text"])
+        self.assertNotIn("goals file", sent[0]["text"]); self.assertIn("Its other cards and the other sessions were not affected", sent[0]["text"])
+        km._gesture_store_refusal(client, "undo", {SID: "a goals fault"})
+        self.assertIn("goals file (a goals fault)", sent[1]["text"]); self.assertNotIn("notice", sent[1]["text"])
         ap.rmdir(); ap.write_text(saved)
         self.assertEqual(km._undo_clear(), {})
         self.assertEqual([c["itemId"] for c in km._notice_cards(400, km._cleared_ids())], [iid], "the next Undo restores it")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads through chmod 0; the permission fault needs a real one")
+    def test_an_unreadable_archive_directory_refuses_the_post_rather_than_minting_a_revision_blind(self):
+        # round six, low: the stat helper folds a FAILED stat into None, the absent-file answer, so with the archive directory
+        # unreadable a repost minted rev 1 blind and reported success on an invisible card; the stat is explicit now
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        km._clear_ask("notice:%s:figure:1" % SID); self.assertEqual(km._compact_notices(now=200), 1)
+        ad = km._notice_archive_dir(); ap = ad / (SID + ".jsonl")
+        try:
+            os.chmod(ad, 0)                                   # the directory: the file's stat fails, which is not an absent file
+            row, err = km.post_notice(SID, "figure", "second", producer="figure", now=300)
+            self.assertEqual(row, None); self.assertIn("the notice archive could not be read", err)
+        finally:
+            os.chmod(ad, 0o755)
+        try:
+            os.chmod(ap, 0)                                   # the file: its stat reads, its bytes do not
+            row, err = km.post_notice(SID, "figure", "second", producer="figure", now=300)
+            self.assertEqual(row, None); self.assertIn("the notice archive could not be read", err)
+        finally:
+            os.chmod(ap, 0o644)
+        row, err = km.post_notice(SID, "figure", "second", producer="figure", now=300)
+        self.assertEqual((err, row["rev"]), (None, 2), "readable again: the count resumes")
+
+    def test_the_pass_reads_the_ledger_under_the_lock_so_an_undo_landing_during_it_is_not_archived_back_out(self):
+        # round six, low: the pass snapshotted the cleared ledger once before its per-session loop, so an Undo that landed
+        # while it walked an earlier session had its restored row archived back out under the stale snapshot, and no later
+        # Undo could reach it; the ledger is read per session, under the lock, after the file's stat
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        iid = "notice:%s:figure:1" % SID
+        km._clear_ask(iid); self.assertEqual(km._compact_notices(now=200), 1)
+        real, fired = km._stat_key, []
+        def stat_then_undo(path):
+            if not fired and Path(path) == km._notice_path(SID):   # the pass reaches this session's file: the Undo lands first
+                fired.append(1); km._undo_clear()
+            return real(path)
+        km._stat_key = stat_then_undo
+        try:
+            moved = km._compact_notices(now=300)
+        finally:
+            km._stat_key = real
+        self.assertEqual(fired, [1]); self.assertEqual(moved, 0, "the restored row stays: the ledger was read after the Undo")
+        self.assertEqual([c["itemId"] for c in km._notice_cards(400, km._cleared_ids())], [iid], "the card is on the board")
+        self.assertEqual((km._notice_archive_dir() / (SID + ".jsonl")).read_text(), "", "and not in the archive")
 
     def test_the_memo_is_bounded_by_bytes_as_a_fraction_of_memory_with_the_environment_override(self):
         saved = km._mem_total_bytes
