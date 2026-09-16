@@ -23,7 +23,7 @@ import { linkifyPrRefs, installPrLinkOpener } from "./pr-links";
 import { listenForFrames } from "./frame-listener";
 import { openGear } from "./gear-host";
 import { openContextMenu, openConfirmBox } from "./ctx-menu";
-import { openTopTitles, endConfirmDetail } from "./clear-confirm";
+import { openTopTitles, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -435,6 +435,8 @@ let paneVisible: boolean | null = null;   // the observer's last word; null unti
 let paneDirty = false;
 let renameHold = false;    // an in-place rename is open on a row: render() waits (renameDirty remembers a push that arrived meanwhile); declared
 let renameDirty = false;   //  beside the paint gate's state, inside the slice outline-visibility.test.ts lifts, so that harness needs no stub
+let focusedHeadSid: string | null = null;   // the session head holding keyboard focus: render() rebuilds the list on every push, so the focus
+//                                              is put back on the same session's new head (a row a reader is on stays theirs across pushes)
 function watchPaneVisibility(list: HTMLElement): void {
   if (typeof IntersectionObserver === "undefined") return;   // no observer → the tab's visibility alone gates
   new IntersectionObserver((entries) => {
@@ -692,6 +694,9 @@ function render() {
   } else {
     emptyShown = false;
   }
+  // the rebuild dropped the focused head with the old list: the same session's new head takes the focus back, so a row
+  // reached by keyboard (and the row the menu returns focus to) is not lost to the next push (round two, low a)
+  if (focusedHeadSid && document.activeElement === document.body) headOf(focusedHeadSid)?.focus({ preventScroll: true });
 }
 
 // The Fleet controls live in a DOCKED bottom bar — its own dedicated rectangle in normal flow (#fleet-foot),
@@ -833,21 +838,30 @@ onExternalSettingsChange((s) => { applyTheme(document, s); render(); });
 // confirm (its title, the open goals named in the detail, its buttons) and then endSession and closeTab in its order.
 // The row leaves on the kernel's push (the kill is the event), never locally ahead of it. plans/sessions-pane-session-menu.md.
 function sessionRow(sid: string): FleetSession | undefined { return sessions.find((s) => s.sid === sid); }
-
-function showSessionMenu(x: number, y: number, head: HTMLElement, viaKeyboard: boolean): void {
-  const sid = head.dataset.sid || "";
-  if (!sid) return;
-  const s = sessionRow(sid);
-  const name = s?.name || (head.querySelector(".fl-name") as HTMLElement | null)?.textContent || "";
-  openContextMenu(x, y, [
-    { label: "Rename", sub: "the name is a label: mail, goals and history follow the session", pick: () => startRowRename(head, sid, name) },
-    { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid, name, s) },
-  ], { className: "fl-sess-menu", viaKeyboard });
+// the row's head as it stands NOW: render() rebuilds the list on every push (every half second to three seconds), so a node
+// captured when the menu opened may be detached by the time an item is picked; every pick resolves by sid (the strip's own
+// rule for its menu: the id only, never the node under the cursor)
+function headOf(sid: string): HTMLElement | null {
+  return document.querySelector('#fleet-list .fl-head[data-sid="' + CSS.escape(sid) + '"]') as HTMLElement | null;
+}
+function displayName(sid: string): string {
+  return sessionRow(sid)?.name || (headOf(sid)?.querySelector(".fl-name") as HTMLElement | null)?.textContent || "";
 }
 
-function startRowRename(head: HTMLElement, sid: string, base: string): void {
-  const nm = head.querySelector(".fl-name") as HTMLElement | null;
-  if (!nm || renameHold) return;
+function showSessionMenu(x: number, y: number, sid: string, viaKeyboard: boolean): void {
+  if (!sid) return;
+  openContextMenu(x, y, [
+    { label: "Rename", sub: RENAME_SUBLINE, pick: () => startRowRename(sid) },
+    { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid) },
+  ], { className: "fl-sess-menu", viaKeyboard, onClose: () => { const h = headOf(sid); if (h) h.focus({ preventScroll: true }); } });   // focus returns to the row
+}
+
+function startRowRename(sid: string): void {
+  const head = headOf(sid);                                     // resolved now: a push since the menu opened rebuilt the row
+  const nm = head?.querySelector(".fl-name") as HTMLElement | null;
+  if (!head || !nm || renameHold) return;                       // the row is gone (the session ended): nothing to edit, nothing held
+  const full = displayName(sid);
+  const base = hostPrefix(full, sid)?.rest ?? full;             // a federated row shows "host:name"; the name itself is edited and posted bare (the strip's rule)
   const input = document.createElement("input");
   input.className = "fl-rename";
   input.value = base;
@@ -858,7 +872,7 @@ function startRowRename(head: HTMLElement, sid: string, base: string): void {
     if (settled) return;
     settled = true;
     const v = input.value.trim();
-    input.replaceWith(nm);
+    if (input.isConnected) input.replaceWith(nm);
     renameHold = false;
     if (renameDirty) { renameDirty = false; render(); }
     if (commit && v && v !== base) vscodeApi?.postMessage({ type: "renameSession", id: sid, name: v });   // the strip's message; the kernel's push renames the row
@@ -870,16 +884,18 @@ function startRowRename(head: HTMLElement, sid: string, base: string): void {
   });
   input.addEventListener("blur", () => finish(true));
   for (const ev of ["click", "mousedown", "dblclick", "contextmenu"]) input.addEventListener(ev, (e) => e.stopPropagation());   // never the head's open
-  renameHold = true;
   nm.replaceWith(input);
+  if (!input.isConnected) return;                               // never hold render() for an input that is not in the document
+  renameHold = true;
   input.focus();
   input.select();
 }
 
-function confirmEndSession(sid: string, name: string, s: FleetSession | undefined): void {
-  const titles = openTopTitles((s?.ledger?.tree || []) as any);
+function confirmEndSession(sid: string): void {
+  const name = displayName(sid);
+  const titles = openTopTitles((sessionRow(sid)?.ledger?.tree || []) as any);   // the live ledger at click time, as the strip reads it
   openConfirmBox("End \u201c" + name + "\u201d?",
-    endConfirmDetail(titles, "The session shuts down. Its history stays on disk; revive it any time from the picker or the timeline."),
+    endConfirmDetail(titles, END_SESSION_STANDING),
     [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
     (v) => {
       if (v !== "end") return;   // Cancel, Escape, the backdrop: nothing
@@ -895,7 +911,11 @@ function confirmEndSession(sid: string, name: string, s: FleetSession | undefine
     const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
     if (!head || !head.dataset.sid) return;   // the goal rows below keep their own clicks; a right-click there does nothing new
     e.preventDefault(); e.stopPropagation();
-    showSessionMenu(e.clientX, e.clientY, head, false);
+    showSessionMenu(e.clientX, e.clientY, head.dataset.sid, false);
+  });
+  document.addEventListener("focusin", (e) => {   // which session head has the focus, for the restore after a rebuild
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    focusedHeadSid = head ? head.dataset.sid || null : null;
   });
   list.addEventListener("keydown", (e) => {
     const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
@@ -903,7 +923,7 @@ function confirmEndSession(sid: string, name: string, s: FleetSession | undefine
     if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
       e.preventDefault();
       const r = head.getBoundingClientRect();
-      showSessionMenu(r.left + 12, r.bottom, head, true);
+      showSessionMenu(r.left + 12, r.bottom, head.dataset.sid, true);
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       openSession(head.dataset.sid);

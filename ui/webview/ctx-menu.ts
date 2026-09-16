@@ -61,6 +61,7 @@ export function openContextMenu(x: number, y: number, items: CtxItem[], opts: Ct
   menu.addEventListener("keydown", (ev) => {
     const at = rows.indexOf(document.activeElement as HTMLElement);
     if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeContextMenu(); }
+    else if (ev.key === "Tab") { ev.preventDefault(); closeContextMenu(); }   // Tab leaves the menu: the card goes with the focus (onClose returns it to the opener)
     else if (ev.key === "ArrowDown") { ev.preventDefault(); move(at, 1); }
     else if (ev.key === "ArrowUp") { ev.preventDefault(); move(at < 0 ? rows.length : at, -1); }
     else if (ev.key === "Home") { ev.preventDefault(); rows[0]?.focus(); }
@@ -69,6 +70,8 @@ export function openContextMenu(x: number, y: number, items: CtxItem[], opts: Ct
   });
   // the menu never becomes the row's click: a press inside it stays inside it
   for (const ev of ["mousedown", "pointerdown", "contextmenu"]) menu.addEventListener(ev, (e) => { e.stopPropagation(); if (ev === "contextmenu") e.preventDefault(); });
+  // focus leaving the card for anywhere outside it closes the card: an open menu never outlives its focus
+  menu.addEventListener("focusout", (e) => { const to = e.relatedTarget as Node | null; if (to && !menu.contains(to)) closeContextMenu(); });
   document.body.appendChild(menu);
   const r = menu.getBoundingClientRect();
   const at = placeMenu(x, y, r.width, r.height, window.innerWidth, window.innerHeight);
@@ -97,9 +100,12 @@ export function openContextMenu(x: number, y: number, items: CtxItem[], opts: Ct
 
 export interface ConfirmButton { label: string; value: string; danger?: boolean; }
 
+let confirmFinish: ((value: string) => void) | null = null;   // the open box's settle, so a replacing box settles it first (its listener and callback never leak)
+
 /** The chat's confirm dialog for a pane: `cb` gets the pressed button's value, or "" for Cancel, Escape and the backdrop
  *  (the chat's cb reads "" as nothing to do). One box at a time. */
 export function openConfirmBox(title: string, detail: string, buttons: ConfirmButton[], cb: (value: string) => void): HTMLElement {
+  if (confirmFinish) confirmFinish("");   // a box already open answers Cancel and goes, its Escape listener with it
   document.getElementById("confirm")?.remove();
   const overlay = document.createElement("div"); overlay.className = "picker-overlay confirm-overlay"; overlay.id = "confirm";
   const box = document.createElement("div"); box.className = "picker-box confirm-box";
@@ -110,10 +116,12 @@ export function openConfirmBox(title: string, detail: string, buttons: ConfirmBu
   const finish = (value: string) => {
     if (settled) return;
     settled = true;
+    if (confirmFinish === finish) confirmFinish = null;
     document.removeEventListener("keydown", onKey, true);
     overlay.remove();
     cb(value);
   };
+  confirmFinish = finish;
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(""); } };
   for (const b of buttons) {
     const btn = document.createElement("button"); btn.type = "button";

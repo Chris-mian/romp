@@ -11,7 +11,13 @@ for api with one open top, so its row carries a tree. Roads, one browser run:
   3. Delete on the running session: the confirm carries the strip's title and names the open goal; Cancel posts nothing and
      the row stays; End session posts endSession then closeTab, the row leaves the pane and the tab leaves the strip;
   4. keyboard: Shift+F10 on the focused head opens the menu with its first row focused; ArrowDown and Enter pick Delete; Escape
-     closes the confirm with nothing posted.
+     closes the confirm with nothing posted;
+  5. a push between the menu's opening and the pick: the list is rebuilt under the open menu (another session renamed by
+     the kernel meanwhile), and Rename still edits the row as it stands now, and the pane keeps rendering afterwards (the
+     round-two high: the pick once worked on the detached row and latched the render hold, freezing the pane);
+  6. a federated row (a synthetic frame with a host-prefixed session): Rename edits the bare name and posts it bare (the
+     round-two medium: the display string with its host prefix was seeded and posted, which the far kernel refuses);
+  7. focus returns to the row's head when the menu closes, and Tab closes the menu (the round-two lows).
 Red first per road at the merge base (no menu opens there). Skips loudly without the extension deps or a browser.
 """
 import json
@@ -120,12 +126,16 @@ const confirmState = () => page.evaluate(() => {
 });
 const rowName = (sid) => page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const n = d.querySelector(sel + " .fl-name"); return n ? n.textContent : null; }, headSel(sid));
 const tabLabel = (sid) => page.evaluate((sid) => { const d = document.getElementById("f-chat").contentDocument; const t = d.querySelector('#tabs .tab[data-id="' + sid + '"] .tab-label'); return t ? t.textContent : null; }, sid);
-const rightClick = async (sid) => { const fr = await paneFrame(); await fr.locator(headSel(sid) + " .fl-name").first().click({ button: "right" }); await page.waitForTimeout(80); };
+const rightClick = async (sid) => { const fr = await paneFrame(); const ok = await fr.locator(headSel(sid) + " .fl-name").first().click({ button: "right", timeout: 5000 }).then(() => true).catch(() => false); await page.waitForTimeout(80); return ok; };   // a row that is not there reads as a red claim, never a dead driver
 // a row or a button that never appears (the merge base has no menu) is recorded as such, so each road reads red on its own
 // claim there instead of the driver dying on the first missing row
 const pickRow = async (label) => { const fr = await paneFrame(); const ok = await fr.locator(".ctx-menu.fl-sess-menu .ctx-item", { hasText: label }).first().click({ timeout: 2500 }).then(() => true).catch(() => false); await page.waitForTimeout(80); return ok; };
 const pressButton = async (label) => { const fr = await paneFrame(); const ok = await fr.locator("#confirm .confirm-btn", { hasText: label }).first().click({ timeout: 2500 }).then(() => true).catch(() => false); await page.waitForTimeout(80); return ok; };
 const setLight = (on) => page.evaluate((on) => { const d = document.getElementById("f-fleet").contentDocument; d.body.classList.toggle("theme-light", on); }, on);
+const deliver = (m) => page.evaluate((m) => new Promise((res) => { const w = document.getElementById("f-fleet").contentWindow; w.dispatchEvent(new w.MessageEvent("message", { data: m })); w.requestAnimationFrame(() => res(null)); }), m);
+const postFromPane = (m) => page.evaluate((m) => { const w = document.getElementById("f-fleet").contentWindow; if (w.__rompLocalSend) w.__rompLocalSend(m); }, m);
+const focusedHead = () => page.evaluate(() => { const d = document.getElementById("f-fleet").contentDocument; const a = d.activeElement; return a && a.classList.contains("fl-head") ? a.dataset.sid : null; });
+const activeDesc = () => page.evaluate(() => { const d = document.getElementById("f-fleet").contentDocument; const a = d.activeElement; return a ? (a.tagName + "." + a.className).slice(0, 60) : null; });
 
 // ---- load: the chat's tabs, the Sessions pane switched on, api's row with its tree ----
 await page.goto(cfg.url);
@@ -206,6 +216,51 @@ out.roads.kbConfirm = await confirmState();
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 out.roads.kbEscaped = { confirm: await confirmState(), posted: (await posted("endSession")).length, row: await rowName(cfg.web) };
+// 5. a push between the open and the pick: the kernel renames web meanwhile and the list is rebuilt under the open menu
+await clearPosted();
+await rightClick(cfg.web);
+out.roads.pushOpen = await menuState();
+await postFromPane({ type: "renameSession", id: cfg.tests, name: "tests-two" });
+const rebuilt = await page.waitForFunction((sid) => { const d = document.getElementById("f-fleet").contentDocument; const n = d.querySelector('.fl-head[data-sid="' + sid + '"] .fl-name'); return !!n && n.textContent === "tests-two"; }, cfg.tests, { timeout: 8000 }).then(() => true).catch(() => false);
+out.roads.pushRebuilt = { rebuilt, menuStillOpen: (await menuState()).open };
+const picked = await pickRow("Rename");
+out.roads.pushRename = { picked, input: await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const i = d.querySelector(sel + " .fl-rename"); return i ? { value: i.value, connected: i.isConnected, focused: d.activeElement === i } : null; }, headSel(cfg.web)) };
+await page.keyboard.press("Escape");
+await page.waitForTimeout(100);
+await postFromPane({ type: "renameSession", id: cfg.tests, name: "tests-three" });   // a later push must still render: the pane is not frozen
+const stillRendering = await page.waitForFunction((sid) => { const d = document.getElementById("f-fleet").contentDocument; const n = d.querySelector('.fl-head[data-sid="' + sid + '"] .fl-name'); return !!n && n.textContent === "tests-three"; }, cfg.tests, { timeout: 8000 }).then(() => true).catch(() => false);
+out.roads.pushAfter = { stillRendering, inputLeft: await page.evaluate(() => !!document.getElementById("f-fleet").contentDocument.querySelector(".fl-rename")) };
+// 6. a federated row: a synthetic frame the pane consumes, one host-prefixed session with a tree
+await clearPosted();
+const remote = "TESTHOST:aaaaaaaa-5000-2222-3333-000000000101";
+const nowS = Math.floor(Date.now() / 1000);   // a goal inside the pane's age cutoff, or the row has nothing to show
+await deliver({ type: "feed", ledgers: [{ sid: remote, name: "TESTHOST:notes", color: { bg: "#3a86ff", fg: "#ffffff" }, status: { state: "ready" },
+  ledger: { current: null, archivedTops: [], tree: [{ id: "r1", depth: 0, done: false, text: "notes-api: the remote index", t: nowS - 60, mt: nowS - 60, children: [] }] } }], sessions: [], asks: [] });
+out.roads.remoteErrors = out.errors.slice();
+await page.waitForFunction((sel) => !!document.getElementById("f-fleet").contentDocument.querySelector(sel), headSel(remote), { timeout: 5000 }).catch(() => null);
+out.roads.remoteRow = await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const n = d.querySelector(sel + " .fl-name"); return n ? n.textContent : null; }, headSel(remote));
+if (await rightClick(remote) && await pickRow("Rename")) {
+  out.roads.remoteInput = await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const i = d.querySelector(sel + " .fl-rename"); return i ? i.value : null; }, headSel(remote));
+  await page.keyboard.type("notes2");   // the seeded name is selected: the typing replaces it
+  await page.keyboard.press("Enter");
+} else out.roads.remoteInput = null;
+await page.waitForTimeout(150);
+out.roads.remotePosted = (await posted("renameSession")).map((m) => [m.id, m.name]);
+// the kernel pushes only on a change: rename tests once more so a real frame replaces the synthetic rows
+await postFromPane({ type: "renameSession", id: cfg.tests, name: "tests-four" });
+out.roads.realRowsBack = await page.waitForFunction((sel) => !!document.getElementById("f-fleet").contentDocument.querySelector(sel), headSel(cfg.web), { timeout: 8000 }).then(() => true).catch(() => false);
+// 7. focus returns to the head on close; Tab closes the menu
+// opened from the keyboard, as road 4 does: the claims here are the close's focus return and Tab closing, whichever way it opened
+await page.waitForTimeout(800);   // the rename's pushes settle, so the head under the keys is not rebuilt mid-press
+const openByKeys = async (sid) => { await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const h = d.querySelector(sel); if (h) h.focus(); }, headSel(sid)); const fr = await paneFrame(); await fr.locator(headSel(sid)).press("Shift+F10"); await page.waitForTimeout(80); return (await menuState()).open; };
+const opened7 = await openByKeys(cfg.web);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(80);
+out.roads.focusBack = { menu: (await menuState()).open, focused: await focusedHead(), opened: opened7, active: await activeDesc() };
+const opened7b = await openByKeys(cfg.web);
+await page.keyboard.press("Tab");
+await page.waitForTimeout(80);
+out.roads.tabCloses = { menu: (await menuState()).open, focused: await focusedHead(), opened: opened7b, active: await activeDesc() };
 await finish();
 """
 
@@ -355,6 +410,29 @@ class SessionsMenuServed(unittest.TestCase):
         self.assertEqual(r["kbMoved"]["focusedRow"], 1, "ArrowDown moves to Delete: %r" % r["kbMoved"])
         self.assertTrue(r["kbConfirm"]["open"] and r["kbConfirm"]["title"].startswith("End “web”"), "Enter picks Delete and the confirm opens for web: %r" % r["kbConfirm"])
         self.assertEqual((r["kbEscaped"]["confirm"]["open"], r["kbEscaped"]["posted"], r["kbEscaped"]["row"]), (False, 0, "web"), "Escape closes the confirm with nothing posted: %r" % r["kbEscaped"])
+
+    def test_5_a_push_between_the_open_and_the_pick_leaves_rename_working_on_the_row_as_it_stands_and_the_pane_rendering(self):
+        r = self.result["roads"]
+        self.assertTrue(r["pushOpen"]["open"], "the menu opened on web's row: %r" % r["pushOpen"])
+        self.assertEqual(r["pushRebuilt"], {"rebuilt": True, "menuStillOpen": True}, "the kernel's push rebuilt the list under the open menu: %r" % r["pushRebuilt"])
+        pr = r["pushRename"]
+        self.assertTrue(pr["picked"], "Rename was picked: %r" % pr)
+        self.assertEqual(pr["input"], {"value": "web", "connected": True, "focused": True}, "the input sits on the row as it stands now, in the document and focused (the round-two high): %r" % pr)
+        self.assertEqual(r["pushAfter"], {"stillRendering": True, "inputLeft": False}, "a later push still renders: the pane is not frozen: %r" % r["pushAfter"])
+
+    def test_6_a_federated_rows_rename_edits_and_posts_the_bare_name(self):
+        r = self.result["roads"]
+        self.assertEqual(r["remoteRow"], "TESTHOST:notes", "the frame's host-prefixed row rendered: %r" % r["remoteRow"])
+        self.assertEqual(r["remoteInput"], "notes", "the input holds the bare name (the round-two medium): %r" % r["remoteInput"])
+        self.assertEqual(r["remotePosted"], [["TESTHOST:aaaaaaaa-5000-2222-3333-000000000101", "notes2"]], "the post carries the prefixed id and the BARE name: %r" % r["remotePosted"])
+
+    def test_7_focus_returns_to_the_row_when_the_menu_closes_and_tab_closes_it(self):
+        r = self.result["roads"]
+        self.assertTrue(r["realRowsBack"], "the kernel's push put the real rows back after the synthetic frame")
+        fb = r["focusBack"]
+        self.assertEqual((fb["opened"], fb["menu"], fb["focused"]), (True, False, SID_WEB), "the menu opened; Escape closed it and the row's head has focus again: %r" % fb)
+        tc = r["tabCloses"]
+        self.assertEqual((tc["opened"], tc["menu"], tc["focused"]), (True, False, SID_WEB), "the menu opened; Tab closed it, focus back on the head: %r" % tc)
 
 
 if __name__ == "__main__":

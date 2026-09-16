@@ -40,6 +40,8 @@ test("keyboard reach: arrows and Home/End move between rows, Enter or Space pick
   assert.match(SRC, /else if \(ev\.key === "ArrowUp"\) \{ ev\.preventDefault\(\); move\(at < 0 \? rows\.length : at, -1\); \}/);
   assert.match(SRC, /else if \(\(ev\.key === "Enter" \|\| ev\.key === " "\) && at >= 0\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); rows\[at\]\.click\(\); \}/);
   assert.match(SRC, /if \(opts\.viaKeyboard && rows\.length\) rows\[0\]\.focus\(\); else menu\.focus\(\);/);
+  assert.match(SRC, /else if \(ev\.key === "Tab"\) \{ ev\.preventDefault\(\); closeContextMenu\(\); \}/, "Tab closes the card (round two, low b)");
+  assert.match(SRC, /menu\.addEventListener\("focusout", \(e\) => \{ const to = e\.relatedTarget as Node \| null; if \(to && !menu\.contains\(to\)\) closeContextMenu\(\); \}\);/, "focus leaving the card closes it");
 });
 
 test("the confirm box is the chat's dialog in its classes; Cancel, Escape and the backdrop all answer with the empty value once", () => {
@@ -48,7 +50,8 @@ test("the confirm box is the chat's dialog in its classes; Cancel, Escape and th
   assert.match(SRC, /h\.className = "confirm-title"; h\.textContent = title;/);
   assert.match(SRC, /d\.className = "confirm-detail"; d\.textContent = detail;/);
   assert.match(SRC, /btn\.className = "picker-action confirm-btn" \+ \(b\.danger \? " danger" : ""\);/);
-  assert.match(SRC, /if \(settled\) return;\s*\n\s*settled = true;/, "one answer per box");
+  assert.match(SRC, /if \(settled\) return;\s*\n\s*settled = true;\s*\n\s*if \(confirmFinish === finish\) confirmFinish = null;/, "one answer per box");
+  assert.match(SRC, /if \(confirmFinish\) confirmFinish\(""\);   \/\/ a box already open answers Cancel and goes, its Escape listener with it/, "a replacing box settles the open one first (round two, low c)");
   assert.match(SRC, /overlay\.addEventListener\("click", \(e\) => \{ if \(e\.target === overlay\) finish\(""\); \}\);/);
   assert.match(SRC, /const onKey = \(e: KeyboardEvent\) => \{ if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); finish\(""\); \} \};/);
 });
