@@ -216,6 +216,8 @@ def _heap_read(key, fn, block="heap", said=_HEAP_SAID):
 
 _GC_SAID = set()   # the gc block's collector accessors whose read failed and said so once (the heap block's _HEAP_SAID, for the block beside it)
 _gc_read = functools.partial(_heap_read, block="gc", said=_GC_SAID)
+_GC_HOOK_SAID = [False]   # whether a failure inside the gc.callbacks hook has been said on stderr: once per process (gc_event), the
+#                           rest counted only, since the hook runs at every collection and a line per failure would be the noise
 
 
 def _heap_stats():
@@ -269,15 +271,24 @@ def _heap_stats():
         vals = list(_built_chat.values())                 # sid -> (sig, payload, serialized, deps): the copy is the snapshot
         n = events = 0
         for e in vals:
-            if not isinstance(e, tuple):
-                continue
-            payload = e[1] if len(e) > 1 else None
-            if isinstance(payload, dict):
-                ev = payload.get("events")
-                if isinstance(ev, (list, tuple)):
-                    events += len(ev)                     # the resident measure: what every cached tab holds
-            s = e[2] if len(e) > 2 else None
-            if isinstance(s, (str, bytes)):
+            # an entry of another shape RAISES, so _heap_read turns the gauge None and says the key once, as every other gauge
+            # does on a failed read; a first cut skipped it and read the fields by position with a fallback, so a later change
+            # to what the pusher caches would have under-counted in silence (review round). The happy path counts as before.
+            if not isinstance(e, tuple) or len(e) != 4:
+                raise ValueError("built-chat entry is a %s%s, not the (sig, payload, serialized, deps) tuple"
+                                 % (type(e).__name__, " of length %d" % len(e) if hasattr(e, "__len__") else ""))
+            payload, s = e[1], e[2]
+            if not isinstance(payload, dict):
+                raise ValueError("built-chat payload is a %s, not a dict" % type(payload).__name__)
+            ev = payload.get("events")                    # read as the pusher reads it: an absent events list is empty,
+            if ev is None:                                #  and only an ABSENT one (a falsy non-list is a shape, below)
+                ev = []
+            if not isinstance(ev, (list, tuple)):
+                raise ValueError("built-chat events is a %s, not a list" % type(ev).__name__)
+            events += len(ev)                             # the resident measure: what every cached tab holds
+            if s is not None:
+                if not isinstance(s, (str, bytes)):
+                    raise ValueError("built-chat serialized is a %s, not a string or None" % type(s).__name__)
                 n += len(s)                               # the index wire's cached JSON; the shipped wire stores none
         return {"tabs": len(vals), "events": events, "serializedBytes": n}
 
@@ -773,7 +784,9 @@ class _PerfStats:
         review), and because the collector's `collecting` flag stays set through the callbacks, every later collection in
         the process was skipped as well (reproduced in the lab: an explicit gc.collect() returned 0 for good). That same
         flag serialises collections, so one start slot per collector is enough. The body never raises into the collector:
-        a failure is counted under gc_errors and the next collection is timed as before."""
+        a failure is counted under gc_errors, the first one in the process said once on stderr (a count nobody reads left a
+        broken hook silent; review round) and the next collection is timed as before. The stderr write sits inside its own
+        guard: a failing stderr must not reach the collector either."""
         try:
             if phase == "start":
                 self._gc_t0 = time.perf_counter()
@@ -785,8 +798,14 @@ class _PerfStats:
             d = self.gc                                    # loaded once: a reset that swaps the dict mid-body keeps this
             n, ms_sum, ms_max, _last, _collected = d.get(g, self._GC_ZERO)   #  collection in the dict it read (review find)
             d[g] = (n + 1, ms_sum + dt, dt if dt > ms_max else ms_max, dt, int(info.get("collected", 0)))
-        except Exception:
+        except Exception as e:
             self.gc_errors += 1
+            if not _GC_HOOK_SAID[0]:                       # said once per process; every later failure is the count alone
+                _GC_HOOK_SAID[0] = True
+                try:
+                    sys.stderr.write("perf: gc hook: %s: %s (further failures counted only)\n" % (type(e).__name__, e))
+                except Exception:
+                    pass                                   # a failing stderr is no reason to raise into the collector
 
     def install_gc_hook(self):
         """gc_event into gc.callbacks, once: main calls this at boot; a test calls it on its own collector. A second call
@@ -25574,15 +25593,23 @@ def _boot_health_row(pending=False):
         row["jobsSlow"] = pas > BOOT_FIRST_CYCLE_BOUND_S
     if pending:
         row["jobsFirstPassPending"] = True                 # the backstop wrote the row: the jobs pass had not ended
+    cyc_split, pas_split = _PERF_STATS.first_cycle_split(), _PERF_STATS.first_pass_split()
     stages = {}
-    for split in (_PERF_STATS.first_cycle_split(), _PERF_STATS.first_pass_split()):   # T397: both splits ride the row (the
-        for k, v in ((split or {}).get("stages") or {}).items():                       #  ledger reader sees which stage a slow
-            if k in stages:                                                            #  boot spent its time in without the
-                stages[k] = {f: stages[k][f] + v[f] for f in ("ms", "bytes", "hydrated")}   # kernel); a key both threads own
-            else:                                                                      #  (jobs.other, the glue) is summed
+    for split in (cyc_split, pas_split):                    # T397: both splits ride the row (the ledger reader sees which stage
+        for k, v in ((split or {}).get("stages") or {}).items():   #  a slow boot spent its time in without the kernel); a key
+            if k in stages:                                        #  both threads own (jobs.other, the glue) is summed
+                stages[k] = {f: stages[k][f] + v[f] for f in ("ms", "bytes", "hydrated")}
+            else:
                 stages[k] = dict(v)
     if stages:
         row["stages"] = stages
+    # each split's gc delta on its own, never summed: the collector's tallies are process-wide, so a collection inside both
+    # windows is in both deltas and their sum would count it twice (review round); absent when neither split carries one (a
+    # split closed without an opening mark reads None)
+    gc_first = {name: dict(g) if g is not None else None
+                for name, g in (("firstCycle", (cyc_split or {}).get("gc")), ("firstPass", (pas_split or {}).get("gc")))}
+    if gc_first["firstCycle"] is not None or gc_first["firstPass"] is not None:
+        row["gc"] = gc_first
     try:
         row["parse"] = em.asm_checkpoint_stats().get("parse")   # T398: the parse's roads at the first cycle's end (serve, fold,
     except Exception:                                           #  restore, full with its reason, bypass, the g:<reason> demotions)

@@ -1769,12 +1769,17 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   of the preview data URLs; the cache has no cap, so this gauge is
   O(entries) over whatever it holds, a refused file counting as an entry of
   zero bytes). These occupancy gauges attribute a resident size to its
-  holders; they do not sum to it. The block reads a length or a counter per
+  holders; they do not sum to it. The transcript record cache, the largest
+  resident holder when the kernel is large, is not among them: its occupancy
+  already rides this response under `recordCache` (`entries` and `bytes`
+  against `budgetBytes`), so a resident size these gauges leave unaccounted
+  for is read there first. The block reads a length or a counter per
   cache, under the cache's own lock where its readers take one and over a
   copied value list otherwise; it walks no object graph, collects nothing,
   evicts nothing, fills nothing and reads no file. A gauge this process
   cannot read (an accessor the runtime lacks, a container the source has not
-  got) is `null`, said once on stderr.
+  got, a cached entry of a shape the gauge does not know) is `null`, said
+  once on stderr.
 - `gc`: the interpreter's garbage collections, counted and timed (2026-09-16:
   pusher cycles stalled for 9-33 s and a profile of the process caught a 9.2 s
   generation-2 collection charged to whichever stage happened to be running,
@@ -1792,16 +1797,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the block reads on its own (how near the next collection is); `frozen`
   counts the objects moved out of the collector's reach by `gc.freeze`, which
   it never scans; `errors` counts callback failures (counted, never raised
-  into the collector); `hooked` says whether the kernel's `gc.callbacks` hook
-  is installed, so zeros with `hooked` false mean no hook, not no
-  collections. To read a slow cycle: find its row in `pusher.stageRing` (or
-  `jobs.stageRing`) and read the row's `gc` (`null` when the cycle closed
-  without an opening mark): `n0`, `n1` and `n2`, the collections per
-  generation that ran anywhere in the process while the cycle was open, on
-  whichever thread triggered them (a collection holds the interpreter lock
-  for its whole pause, so the cycle waited on it either way), and `ms2`, the
-  generation-2 milliseconds among them; the young generations' pauses are in
-  `gen.0` and `gen.1` only. A row whose `n2` is 1 and whose `ms2` is most of
+  into the collector; the first in the process is said once on stderr, a
+  line prefixed `perf: gc hook:`, the rest counted only); `hooked` says
+  whether the kernel's `gc.callbacks` hook is installed, so zeros with
+  `hooked` false mean no hook, not no collections. To read a slow cycle: find
+  its row in `pusher.stageRing` (or `jobs.stageRing`) and read the row's `gc`
+  (`null` when the cycle closed without an opening mark): `n0`, `n1` and
+  `n2`, the collections per generation that ran anywhere in the process
+  while the cycle was open, on whichever thread triggered them (a collection
+  holds the interpreter lock for its whole pause, so the cycle waited on it
+  either way), and `ms2`, the generation-2 milliseconds among them; the
+  young generations' pauses are in `gen.0` and `gen.1` only. A row whose
+  `n2` is 1 and whose `ms2` is most of
   `s` x 1000 spent its time in the collector, not in the stage that was
   running, and the stage's own `ms` overstates it by that much. A collection
   inside overlapping pusher and jobs windows shows in both rings' rows, so
@@ -1880,7 +1887,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   finishes its first LAST, so `stages` carries both splits (a key both own,
   `jobs.other`, is summed); a jobs pass still open ten minutes after the
   pusher's first cycle closed has the row written without it, marked
-  `jobsFirstPassPending`. The row also carries `parse`, the assembly's road counters at
+  `jobsFirstPassPending`. The row's `gc` carries each first split's collector
+  delta on its own, `firstCycle` and `firstPass` (each the split row's `gc`,
+  the shape the `stageRing` rows carry, or `null`), never summed: the tallies
+  are process-wide, so a collection inside both windows is in both deltas and
+  a sum would count it twice; the key is absent when neither split has one.
+  The row also carries `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood

@@ -19,7 +19,8 @@ collector's tallies empty and an explicit gc.collect() returning 0).
 Pinned: the block's keys and a fresh collector's zeros (a); a forced full collection with the hook installed counts under
 generation 2 with a positive pause (b); the deadlock regression, a helper thread allocating past the young threshold under
 the stats lock finishes (c); the split rows carry the cycle's own delta, zero for a cycle with no collection and None for a
-cycle closed without an opening mark (d); a failing callback counts an error and raises nothing (e); the kernel-samples
+cycle closed without an opening mark (d); a failing callback counts an error, says the first once on stderr and raises
+nothing (e); the kernel-samples
 row carries the generation-2 tallies (f); main installs the hook before the boot warm (g); the reference names every
 field (h). Synthetic fixtures only."""
 import gc
@@ -223,7 +224,9 @@ class Attribution(_Hooked):
 
 
 class Robustness(_Hooked):
-    """(e) A failure inside the callback is counted and never raises into the collector; the hook goes on counting."""
+    """(e) A failure inside the callback is counted and never raises into the collector; the hook goes on counting. The
+    first failure in the process is said once on stderr, the rest are the count alone (review round: a count nobody reads
+    left a broken hook silent)."""
 
     def test_a_failing_callback_counts_an_error_and_raises_nothing(self):
         st = self.st
@@ -232,6 +235,39 @@ class Robustness(_Hooked):
         before = st.snapshot()["gc"]["gen"]["2"]["collections"]
         gc.collect(2)
         self.assertGreaterEqual(st.snapshot()["gc"]["gen"]["2"]["collections"] - before, 1, "the hook still counts after its failure")
+
+    def test_the_first_failure_is_said_once_on_stderr_and_the_rest_are_counted_only(self):
+        saved = km._GC_HOOK_SAID[0]
+        km._GC_HOOK_SAID[0] = False
+        self.addCleanup(km._GC_HOOK_SAID.__setitem__, 0, saved)
+        st = km._PerfStats()                                     # private and unhooked: no collection moves its tallies
+        before = st.snapshot()["gc"]["gen"]
+        err = io.StringIO()
+        with redirect_stderr(err):
+            st.gc_event("stop", None)                            # info None: the body raises inside, twice
+            st.gc_event("stop", None)
+        self.assertEqual(st.gc_errors, 2, "both failures counted")
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 1, "said once: %r" % lines)
+        self.assertTrue(lines[0].startswith("perf: gc hook: TypeError: "), lines[0])
+        self.assertTrue(lines[0].endswith(" (further failures counted only)"), lines[0])
+        self.assertEqual(st.snapshot()["gc"]["gen"], before, "a failed event moves no tally")
+        self.assertEqual(st.snapshot()["gc"]["errors"], 2)
+
+    def test_a_failing_stderr_never_escapes_into_the_collector(self):
+        """The line itself sits inside a guard: a stderr whose write raises leaves the failure counted and raises nothing."""
+        saved = km._GC_HOOK_SAID[0]
+        km._GC_HOOK_SAID[0] = False
+        self.addCleanup(km._GC_HOOK_SAID.__setitem__, 0, saved)
+        st = km._PerfStats()
+
+        class _Broken(io.StringIO):
+            def write(self, s):
+                raise OSError("stderr is closed")
+        with redirect_stderr(_Broken()):
+            st.gc_event("stop", None)
+        self.assertEqual(st.gc_errors, 1)
+        self.assertTrue(km._GC_HOOK_SAID[0], "the say was attempted once and is not retried")
 
     def test_a_runtime_lacking_a_collector_accessor_answers_none_for_that_key_alone_said_once(self):
         """The heap block's review find (2026-09-15) applied here: the collector accessors sit inside lambdas behind the per-key

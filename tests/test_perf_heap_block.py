@@ -11,7 +11,7 @@ their serialized strings, the preview images) beside the allocator's and the col
 Pinned here: the gauges move by exactly what a test adds and fall back when it removes it, and two snapshots move no
 cumulative counter (a); the block serializes and every leaf is a plain scalar (b); a container the source lacks or an
 accessor that raises yields None for its key, the snapshot still serves, and the failure is said once per key, not per
-snapshot (c); a snapshot reads no file, builds nothing, evicts nothing and collects nothing (d); and the read stays under
+snapshot, a built-chat entry of a shape the gauge does not know being such a failure and never a silent under-count (c); a snapshot reads no file, builds nothing, evicts nothing and collects nothing (d); and the read stays under
 5 ms over populated caches (e). Synthetic fixtures only: invented strings and placeholder uuids."""
 import contextlib
 import gc
@@ -377,9 +377,54 @@ class Overhead(_Caches):
         self.assertLess(med, 0.005, "median %.3f ms" % (med * 1000))
 
 
+class ShapeChange(_Caches):
+    """A built-chat entry of a shape the gauge does not know is a failed read, not a silent under-count: the gauge is None and
+    the key is said once, as every other gauge does (review round: a first cut skipped non-tuples and read the fields by
+    position with a fallback, so a later change to what the pusher caches would have read as fewer tabs and events)."""
+
+    def test_a_malformed_entry_turns_the_gauge_none_and_says_the_key_once(self):
+        self.add_tabs(2, 100, events=4)
+        h0 = self.st.snapshot()["heap"]["builtChat"]
+        self.assertGreaterEqual(h0["tabs"], 2)
+        bad = SID % 999                                           # a private key, popped with the module's other plants
+        km._built_chat[bad] = {"events": [None] * 4}              # the payload alone, not the (sig, payload, serialized, deps) tuple
+        self.tabs.append(bad)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            h1 = self.st.snapshot()["heap"]
+            h2 = self.st.snapshot()["heap"]
+        self.assertIsNone(h1["builtChat"]); self.assertIsNone(h2["builtChat"])
+        self.assertIsInstance(h1["imgCache"], dict, "the rest of the block still serves")
+        lines = [l for l in err.getvalue().splitlines() if l.startswith("perf: heap.")]
+        self.assertEqual(len(lines), 1, "said once over two snapshots: %r" % lines)
+        self.assertTrue(lines[0].startswith("perf: heap.builtChat unavailable: ValueError: "), lines[0])
+        self.assertIn("dict", lines[0], "the line names the shape it met")
+        km._built_chat.pop(bad); self.tabs.remove(bad)
+        err2 = io.StringIO()
+        with redirect_stderr(err2):
+            h3 = self.st.snapshot()["heap"]["builtChat"]
+        self.assertEqual(h3, h0, "well-formed entries alone: the counts are what they were")
+        self.assertEqual(err2.getvalue(), "", "nothing more to say once the read succeeds")
+
+    def test_a_short_tuple_and_a_payload_of_another_type_are_shapes_too(self):
+        for bad, entry, word in ((SID % 998, (("sig",), {"events": []}), "length 2"),
+                                 (SID % 997, (("sig",), ["not", "a", "dict"], None, None), "payload is a list"),
+                                 (SID % 996, (("sig",), {"events": {}}, None, None), "events is a dict")):   # falsy, not a list: a shape, never an empty list
+            km._HEAP_SAID.clear()
+            km._built_chat[bad] = entry
+            self.tabs.append(bad)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                self.assertIsNone(self.st.snapshot()["heap"]["builtChat"], word)
+            self.assertIn("perf: heap.builtChat unavailable: ValueError", err.getvalue(), word)
+            self.assertIn(word, err.getvalue())
+            km._built_chat.pop(bad); self.tabs.remove(bad)
+
+
 class Documented(unittest.TestCase):
     """docs/reference.md's GET /perf section names the block, every gauge in it, and the two caveats: gauge against
-    counter (gc.stats is cumulative) and slots against atoms (materializedLruSlots is an upper bound under weak ownership)."""
+    counter (gc.stats is cumulative) and slots against atoms (materializedLruSlots is an upper bound under weak ownership),
+    and points at the record cache, the largest resident holder, which is not a heap gauge but rides the same response."""
 
     def test_the_reference_names_every_gauge_and_both_caveats(self):
         doc = Path(HERE).parent.joinpath("docs", "reference.md").read_text()
@@ -395,6 +440,8 @@ class Documented(unittest.TestCase):
         self.assertIn("cumulative", para)
         self.assertIn("upper bound", para)
         self.assertIn("`null`", para)
+        self.assertIn("`recordCache`", para, "the record cache is pointed at from inside the heap bullet")
+        self.assertIn("`budgetBytes`", para, "with the key its occupancy is read against")
 
 
 if __name__ == "__main__":
