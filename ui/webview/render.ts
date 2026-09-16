@@ -15926,8 +15926,14 @@ function updateStatusline() {
   // controls that are always there. A widget that renders nothing adds nothing.
   const rec = statusRecordOf(s, activeId || "");
   composeStatusWidgets(sl, "left", rec, settings.statusWidgets);
-  // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
-  // states get the plain chip (no timer). Right: model + effort · ctx%, always.
+  // Left: the state chip. WORKING gets a sine color-pulse + elapsed timer; idle
+  // states get the plain chip (no timer), and the stop button sits right after the chip and its timer
+  // (the user 2026-09-16: back where it sat from 2026-06-19 to 2026-08-27). The three are ONE
+  // non-wrapping unit (.sl-left, flex: none): a narrow pane wraps the right cluster below as a
+  // whole, and the button never separates from its badge, which is what riding in the right
+  // cluster had bought (bd9a1dab). Right: model + effort · ctx%, always.
+  const left = el("span", "sl-left");
+  sl.appendChild(left);
   if (s.status.state === "working") {
     // pill bg stays on the chip; the gradient text-clip lives on an inner span
     // (background-clip:text on the chip itself would erase the pill background)
@@ -15935,11 +15941,11 @@ function updateStatusline() {
     const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
     chip.appendChild(label);
-    sl.appendChild(chip);
+    left.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
-    sl.appendChild(timer);
+    left.appendChild(timer);
   } else if (s.status.state === "awaitingBg") {
     // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own await-green
     // chip — no pulse (nothing is computing HERE), but the elapsed timer stays so the wait has a clock
@@ -15964,26 +15970,26 @@ function updateStatusline() {
     // the tip: the per-kind breakdown when there are rows, the kernel's why, and what the click does
     setTip(chip, [awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
                   "click to see what it's waiting on"].filter(Boolean).join("\n"));
-    sl.appendChild(chip);
+    left.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
-    sl.appendChild(timer);
+    left.appendChild(timer);
     // The WHY renders in the #bg-tasks box between transcript and composer (renderBgTasks), not
     // here — a reason line beside the chip crowded the composer area (the user 2026-08-13, on the
     // same day's PR #350 that first surfaced it here).
   } else if (s.status.state === "compacting") {
     const c = el("span", "compacting-line");
     c.textContent = "⟳ Compacting context…";
-    sl.appendChild(c);
+    left.appendChild(c);
   } else if (s.status.state === "clearing") {
     const c = el("span", "compacting-line");   // same in-progress line treatment as compacting (one style per info type)
     c.textContent = "⟳ Clearing conversation…";
-    sl.appendChild(c);
+    left.appendChild(c);
   } else if (s.status.state === "opening") {
-    sl.appendChild(openingLine());             // spawned, transcript not on disk yet — dots until the first record
+    left.appendChild(openingLine());             // spawned, transcript not on disk yet: dots until the first record
   } else {
-    sl.appendChild(statusChip(chipWords(s.status)));   // the shared chip (status-chip.ts): `chip chip-<state>`, the state's words in sentence case
+    left.appendChild(statusChip(chipWords(s.status)));   // the shared chip (status-chip.ts): `chip chip-<state>`, the state's words in sentence case
   }
 
   // The right-side cluster — dir · branch · mode/model/effort/fast badges · ctx battery — grouped in ONE
@@ -16005,15 +16011,16 @@ function updateStatusline() {
   const bar = ctxBar();
   setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
   right.appendChild(bar);
-  // stop/interrupt button — at the FAR RIGHT of the statusline (the user 2026-08-28; it sat
-  // beside the state chip on the left before), riding inside the right cluster so a wrapped
-  // narrow statusline keeps it with the controls. Shown while busy (working/compacting) AND while
-  // stuck retrying / blocked, where it doubles as the per-thread auto-retry off-switch (the user
-  // 2026-07-06). Omitted in idle states (nothing to interrupt — the user 2026-06-19) and while
-  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie — the user 2026-07-02).
-  if (s.status.state === "working" || s.status.state === "compacting"
-      || s.status.state === "retrying" || s.status.state === "blocked") right.appendChild(stopButton(s.status.state));
   sl.appendChild(right);
+  // stop/interrupt button: beside the state chip, after its timer, inside the left unit (the user
+  // 2026-09-16, its place from 2026-06-19; the far right from 2026-08-28 to today rode the right
+  // cluster so a wrapped narrow statusline kept it with the controls: the unit keeps it with its
+  // badge instead, and the right cluster wraps below whole). Shown while busy (working/compacting)
+  // AND while stuck retrying / blocked, where it doubles as the per-thread auto-retry off-switch (the
+  // user 2026-07-06). Omitted in idle states (nothing to interrupt, the user 2026-06-19) and while
+  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie, the user 2026-07-02).
+  if (s.status.state === "working" || s.status.state === "compacting"
+      || s.status.state === "retrying" || s.status.state === "blocked") left.appendChild(stopButton(s.status.state));
   pruneTip();   // a rebuilt statusline tears tip anchors (the stop button) out mid-hover — drop the orphan (PR #763 item 8; the feed's render does the same)
 }
 

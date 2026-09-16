@@ -12,10 +12,11 @@ both themes for the user's word, then one feature-tier pull request. No code bef
 `#statusline` (render.ts `updateStatusline`) is rebuilt from the active session's record on every push. Left to
 right: the session-name chip (an opt-in, `showSessionBadge`, off by default since 2026-09-10), the state chip with
 its elapsed timer (Working, Awaiting with its button, Ready, and the transient lines Compacting, Clearing, Opening,
-Loading),
+Loading) and, while busy, the stop button, the three one non-wrapping unit `.sl-left` (the user 2026-09-16: the button
+back beside its badge, where it sat from 2026-06-19 to 2026-08-27; a narrow pane wraps the right cluster below it whole),
 then the right cluster `.sl-right`: the folder (basename, full path on hover, a click opens it), the git branch (an
 opt-in, `showBranch === true`, off by default since 2026-08-10), the mode, model, effort and fast controls in
-`#spinner-meta`, the context battery, and the stop button while busy. A subagent viewer shows a read-only line
+`#spinner-meta`, and the context battery. A subagent viewer shows a read-only line
 instead of all of it.
 
 ## 1. The registry
