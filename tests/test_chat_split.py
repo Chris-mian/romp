@@ -276,7 +276,8 @@ class SplitSourcePins(unittest.TestCase):
         self.assertIn("__rompTakeSessionState", split)
         # the page's two answers the shell asks for before it moves a tab or closes a column (review finds 2026-09-11), and
         # the one refusal line each; the movable check at the top of the one mutation, the busy check where a column's
-        # last listed member would leave and where a column is closed by hand (a reconcile of another tab's write is not)
+        # last listed member would leave and where a column is closed by hand (a reconcile of another tab's write passes
+        # that gate with `keep`, and DEFERS a busy column's close instead, below)
         for needle in ["function movable(f,sid){", "function busy(f){", "function loaded(f){",
                        "var why=refusal(src,sid);if(why==='locked')return notify(LOCKED);if(why||!movable(src,sid))return notify('Only an open session can be moved between columns.');",
                        "var BUSY='A session is still being created in this column.';",
@@ -286,6 +287,14 @@ class SplitSourcePins(unittest.TestCase):
         mt = split[split.index("function moveTab(sid,to){"):split.index("function close(n,keep){")]
         self.assertLess(mt.index("var why=refusal(src,sid);"), mt.index("if(to==='new'){"), "refused before anything is taken or grown (the reason read first, T395)")
         self.assertLess(mt.index("busy(src)"), mt.index("var st=take(src,sid)"), "refused before the hand-off")
+        # a peer's write that drops a busy column is deferred, not closed under the create (its queued text died with the
+        # document): the entry stays where it was, the number waits, and the page's idle signal closes it against a fresh read
+        for needle in ["var deferred={};",
+                       "if(busy(frameOfCol(c.n))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});",
+                       "kept.forEach(function(k){cols.splice(Math.min(k[0],cols.length),0,{n:k[1].n,ids:k[1].ids.slice()});});",
+                       "if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source));if(!deferred[bc])return;delete deferred[bc];var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}",
+                       "cols.splice(i,1);delete deferred[n];"]:
+            self.assertIn(needle, split, needle)
         # a column closed for emptiness tells the first column which of its gone ids the page's own cross removed, ahead of
         # the store write; nothing else is held (the vanishing tab, 2026-09-12)
         self.assertIn("var crossed=Array.isArray(m.crossed)?gone.filter(function(id){return m.crossed.indexOf(id)>=0;}):[];", split)
@@ -546,7 +555,8 @@ out.mobile = { ids: ids(), sets: window.__rompChatSets(), moved: window.__rompMo
 // L) REFUSALS the page decides (review finds 2026-09-11): an id no column can hold (a create in flight, a sub-agent viewer)
 //    is refused at the one mutation with a line and nothing changes, from the palette too; a column whose last listed
 //    member would leave over a create in flight keeps it — from a move, the cross and the palette's close alike — while a
-//    column with two members lets one go, and the create resolving frees it; another dashboard tab's write is the truth
+//    column with two members lets one go, and the create resolving frees it; another dashboard tab's write that drops it is
+//    deferred, not refused (P below)
 boot({}, false);
 window.__rompMoveTab(API, 'new');
 const PROV = 'new-abc123', VIEWER = WEB + '/agent/a1';
@@ -579,7 +589,7 @@ out.busy.thenFree = { home: (window.__rompMoveTab(API, 1) || {}).id, ids: ids(),
 boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }] }) }, false);
 BUSY['f-chat-2'] = true; STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] }); CALLS.notify = [];
 window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
-out.busy.reconciled = { ids: ids(), notify: CALLS.notify.slice() };
+out.busy.reconciled = { ids: ids(), notify: CALLS.notify.slice(), saves: saves() };
 // M) a colEmpty that closes a column tells the first column which of its gone ids the page's own cross removed (crossed),
 //    ahead of the store write; a prune that leaves members says nothing; a gone id nobody crossed is not held (it is the
 //    first column's the moment its strip repaints); a crossed id the entry did not hold is ignored
@@ -625,6 +635,53 @@ out.shrink = { third: CALLS.splitShrink.slice(), unregister: CALLS.unregister.sl
 CALLS.splitShrink = [];
 window.__rompCloseSplit(2);
 out.shrink.second = CALLS.splitShrink.slice();
+// P) a peer dashboard's write that drops a BUSY column is DEFERRED: the reconcile's close passed `keep`, which skips close()'s
+//    busy gate, so it tore the column down over a create in flight and the queued text died with the document. The column,
+//    its entry and every reader stand and nothing is written back; the page's idle signal closes it against a fresh read of
+//    the store, so a column the peer listed again meanwhile stays; a column that is not busy still closes at once
+boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }, { n: 3, ids: [API] }] }) }, false);
+BUSY['f-chat-2'] = true; CALLS.sets = []; CALLS.posted = []; CALLS.taken = []; CALLS.unregister = []; CALLS.notify = [];
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [{ n: 3, ids: [API] }] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+out.deferred = { ids: ids(), order: order(), sets: window.__rompChatSets(), saves: saves(), unregister: CALLS.unregister.slice(), notify: CALLS.notify.slice(), targetWeb: tgt(WEB) };
+msg({ romp: 'colBusy', busy: true }, 'f-chat-2');    // not idle yet: nothing
+msg({ romp: 'colBusy', busy: false }, 'f-chat-3');   // an idle signal from a column nobody deferred: nothing
+out.deferred.notYet = { ids: ids(), saves: saves(), unregister: CALLS.unregister.slice() };
+BUSY['f-chat-2'] = false; TAKE['f-chat-2'] = { [WEB]: { draft: 'typed while it started', citations: [], files: [], staged: [] } };
+msg({ romp: 'colBusy', busy: false }, 'f-chat-2');
+out.deferred.idle = { ids: ids(), sets: window.__rompChatSets(), saves: saves(), unregister: CALLS.unregister.slice(), posted: CALLS.posted.slice(), taken: CALLS.taken.slice(),
+                      targetWeb: tgt(WEB), notify: CALLS.notify.slice(), stored: cols() };
+// the peer lists the column again before the page is idle: unheard (the fresh read finds it) and heard (the entry is the peer's again)
+boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }] }) }, false);
+BUSY['f-chat-2'] = true; CALLS.sets = []; CALLS.unregister = [];
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }] });
+BUSY['f-chat-2'] = false;
+msg({ romp: 'colBusy', busy: false }, 'f-chat-2');
+out.deferred.relisted = { ids: ids(), sets: window.__rompChatSets(), saves: saves(), unregister: CALLS.unregister.slice() };
+BUSY['f-chat-2'] = true;
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB, TESTS] }] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+out.deferred.relistedHeard = { ids: ids(), sets: window.__rompChatSets(), saves: saves(), unregister: CALLS.unregister.slice() };
+BUSY['f-chat-2'] = false;
+msg({ romp: 'colBusy', busy: false }, 'f-chat-2');
+out.deferred.relistedHeard.thenIdle = { ids: ids(), sets: window.__rompChatSets(), saves: saves() };
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+out.deferred.notBusy = { ids: ids(), saves: saves(), unregister: CALLS.unregister.slice() };
+// the create RESOLVES in the deferred column: the page claims the real id for it (adoptProvisional, ahead of the drop), which
+// writes the column back into the store, so the idle signal that follows keeps it
+boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }] }) }, false);
+BUSY['f-chat-2'] = true; CALLS.sets = [];
+STORE['romp-chat-cols'] = JSON.stringify({ v: 2, cols: [] });
+window.dispatchEvent({ type: 'storage', key: 'romp-chat-cols' });
+const claimed = window.__rompClaimSession(X, 2);
+BUSY['f-chat-2'] = false;
+msg({ romp: 'colBusy', busy: false }, 'f-chat-2');
+out.deferred.created = { claimed, ids: ids(), sets: window.__rompChatSets(), stored: cols(), saves: saves() };
 console.log(JSON.stringify(out));
 """
 
@@ -884,7 +941,7 @@ class SplitExecutes(unittest.TestCase):
     def test_a_column_with_a_create_in_flight_keeps_its_last_member_and_stays_open(self):
         # its queued text and draft would die with the document (review find 2026-09-11): the move that would empty it,
         # its cross and the palette's close are refused with the line; a column with two members lets one go; the create
-        # resolving frees it; another dashboard tab's write is the truth and is not refused
+        # resolving frees it; another dashboard tab's write that drops it is deferred, not refused (the test below)
         b = self.out["busy"]
         self.assertIsNone(b["home"], "the move that would empty the column is refused")
         self.assertEqual(b["notify"], [["warn", "A session is still being created in this column."]])
@@ -901,7 +958,46 @@ class SplitExecutes(unittest.TestCase):
         f = b["thenFree"]
         self.assertEqual(f["home"], "f-chat", "the create resolved: the last member leaves and the column closes")
         self.assertEqual(f["ids"], ["f-chat"]); self.assertEqual(f["stored"], {"v": 2, "cols": []}); self.assertEqual(f["notify"], [])
-        self.assertEqual(b["reconciled"], {"ids": ["f-chat"], "notify": []}, "another dashboard tab's write closes a busy column all the same, and says nothing")
+        self.assertEqual(b["reconciled"], {"ids": ["f-chat", "f-chat-2"], "notify": [], "saves": 0},
+                         "another dashboard tab's write that drops a busy column is deferred, not carried out under the create, and says nothing")
+
+    def test_a_peer_s_write_that_drops_a_busy_column_is_deferred_until_the_page_is_idle(self):
+        # the reconcile's close passed `keep`, which skips close()'s busy gate, so a peer dashboard closing a column tore this
+        # tab's column down over a create in flight and its queued text died with the document. Deferred now: the column, its
+        # entry and every reader stand, nothing is written back, and the page's idle signal closes it against a fresh read of
+        # the store, so a column the peer listed again meanwhile stays; a column that is not busy still closes at once
+        d = self.out["deferred"]
+        self.assertEqual(d["ids"], ["f-chat", "f-chat-2", "f-chat-3"], "the busy column stands")
+        self.assertEqual(d["order"][:5], ["chat-pane", "gv-chat-2", "chat-pane-2", "gv-chat-3", "chat-pane-3"])
+        self.assertEqual(d["sets"], {"2": [WEB], "3": [API]}, "its entry stays, at its place: the pages still filter by it")
+        self.assertEqual(d["targetWeb"], "f-chat-2", "…and the owner lookup still finds it")
+        self.assertEqual(d["saves"], 0, "the peer's store is the truth: nothing is written back"); self.assertEqual(d["unregister"], [])
+        self.assertEqual(d["notify"], [], "no toast: nothing was refused")
+        n = d["notYet"]
+        self.assertEqual(n["ids"], ["f-chat", "f-chat-2", "f-chat-3"], "a busy:true, or an idle signal from a column nobody deferred, changes nothing")
+        self.assertEqual(n["saves"], 0); self.assertEqual(n["unregister"], [])
+        i = d["idle"]
+        self.assertEqual(i["ids"], ["f-chat", "f-chat-3"], "the page's idle signal: the store still lacks the column, so it closes")
+        self.assertEqual(i["sets"], {"3": [API]}); self.assertEqual(i["unregister"], ["chat-pane-2"])
+        self.assertEqual(i["taken"], [["f-chat-2", WEB, True]])
+        self.assertEqual(i["posted"], [{"id": "f-chat", "m": {"romp": "adopt", "sid": WEB, "state": {"draft": "typed while it started", "citations": [], "files": [], "staged": []}}}],
+                         "its session returns to the first column, drafts and all")
+        self.assertEqual(i["targetWeb"], "f-chat"); self.assertEqual(i["saves"], 0, "still nothing written back"); self.assertEqual(i["notify"], [])
+        self.assertEqual(i["stored"], {"v": 2, "cols": [{"n": 3, "ids": [API]}]})
+        r = d["relisted"]
+        self.assertEqual(r["ids"], ["f-chat", "f-chat-2"], "the peer listed the column again before the idle signal: the fresh read keeps it")
+        self.assertEqual(r["sets"], {"2": [WEB]}); self.assertEqual(r["saves"], 0); self.assertEqual(r["unregister"], [])
+        h = d["relistedHeard"]
+        self.assertEqual(h["ids"], ["f-chat", "f-chat-2"], "…heard as a storage event, the entry is the peer's again and the mark clears")
+        self.assertEqual(h["sets"], {"2": [WEB, TESTS]}); self.assertEqual(h["saves"], 0); self.assertEqual(h["unregister"], [])
+        self.assertEqual(h["thenIdle"], {"ids": ["f-chat", "f-chat-2"], "sets": {"2": [WEB, TESTS]}, "saves": 0}, "the idle signal then changes nothing")
+        self.assertEqual(d["notBusy"], {"ids": ["f-chat"], "saves": 0, "unregister": ["chat-pane-2"]}, "a column that is not busy still closes at once")
+        c = d["created"]
+        self.assertTrue(c["claimed"], "the create resolved: the page claims the real id for its column, whose entry the deferral kept")
+        self.assertEqual(c["stored"], {"v": 2, "cols": [{"n": 2, "ids": [WEB, X]}]}, "the claim writes the column back into the store")
+        self.assertEqual(c["saves"], 1)
+        self.assertEqual(c["ids"], ["f-chat", "f-chat-2"], "so the idle signal that follows keeps it, with the new session")
+        self.assertEqual(c["sets"], {"2": [WEB, X]})
 
     def test_a_column_closed_for_emptiness_tells_the_first_column_which_ids_are_on_their_way_home(self):
         # the kernel may still list a member closed from its own cross for a push or two, and the first column would draw
