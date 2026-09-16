@@ -5949,7 +5949,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // the chat footer's chips wears the SAME colour here, from the one helper the footer calls (metaColor), so the
   // association learned on the footer is reproduced and the two cannot drift. Model and effort carry the colormap
   // rank; the permission mode is untinted on the footer too, and the backend carries no tone, so they stay plain.
-  const rows: Array<[string, string, string?, string?]> = [];   // label, value, the value's colour, the value's hover tip
+  const rows: Array<[string, string, string?]> = [];
   if (s.cwd) rows.push(["📁", s.cwd]);
   if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
   if (s.workTree) rows.push(["Worktree", s.workTree.dir + (s.workTree.branch ? "  ⎇ " + s.workTree.branch : "")]);
@@ -5961,15 +5961,16 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (be) rows.push(["Backend", backendLabel(be)]);
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
   // The value is a GLANCE (the user 2026-09-16): an accent check mark when mail is on, the bare word off or held when it is
-  // not, and the reasons out of the row in the value's hover tip (the shared .romp-tip dress), so the state reads at once
-  // and the why is one hover away.
-  const mailWhy = !s.postalServiceOff ? "on: peers can see and mail this session, and its own sends go out"
-    : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
-    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
-    : s.mailOffWhy === "thread" ? "off until the thread is broken out"
-    : "off: this session neither sends nor receives peer mail";
+  // not, and no explanation inline. The reasons live where a hover works, the Sessions pane's mail mark title (mail off /
+  // mail held with the four reasons); this rich tip is pointer-inert by tip.ts's contract, so a value tip here
+  // could never show (round two of PR 1803). The two HELD states, a session that needs repair, get one dim sub-line
+  // under the row; off gets none.
   rows.push(["Mail", !s.postalServiceOff ? "\u2713" : (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags") ? "held" : "off",
-             !s.postalServiceOff ? "var(--accent)" : undefined, mailWhy]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+             !s.postalServiceOff ? "var(--accent)" : undefined]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+  if (s.postalServiceOff && (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags")) {
+    rows.push(["", s.mailOffWhy === "unreadable" ? "its record cannot be read; mail waits until it is repaired"
+                 : "its settings file cannot be read; mail waits until it is written again", "var(--dim)"]);
+  }
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
   // user 2026-08-09: shown whenever the backend reports it, one-auth machines included). No key material, ever.
   // When the CLI's own init landed on the OTHER side (authLive — say, a key found via apiKeyHelper
@@ -5999,12 +6000,11 @@ function showTabTip(tab: HTMLElement, s: Session): void {
           + `${s.status.authLive === "key" ? "the API key" : "the login"} — this session bills that`
         : s.status.auth === "key" ? "API key"
           : (loginName(s.status) ? `Login (${loginName(s.status)})` : "Login")]);
-  for (const [k, v, color, why] of rows) {
+  for (const [k, v, color] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
-    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372)
-    if (why) setTip(ve, why);            // the reason behind a bare value, one hover away (the Mail row)
+    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372); the Mail sub-line's dim
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
   // context BATTERY (the same widget as the bottom bar), not a text %

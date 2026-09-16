@@ -42,3 +42,12 @@ test("render.ts groups dir, branch, badges and ctx battery into .sl-right", () =
   assert.match(RENDER, /right\.appendChild\(bar\)/);
   assert.match(RENDER, /sl\.appendChild\(right\)/);
 });
+
+
+test("the state unit shrinks with wrappable words while the stop button alone stays whole", () => {
+  // round two of PR 1803: flex:none plus nowrap on the unit overflowed a 280 px pane for a named-peer Awaiting chip (the
+  // timer pushed out of view); the unit shrinks and its chip wraps its words, the button keeps flex:none beside its badge
+  assert.match(CSS, /\.sl-left \{[^}]*flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px 10px;/);
+  assert.doesNotMatch(CSS, /\.sl-left \{[^}]*white-space: nowrap/);
+  assert.match(CSS, /\.sl-left > \.stop-btn \{ flex: none; \}/);
+});

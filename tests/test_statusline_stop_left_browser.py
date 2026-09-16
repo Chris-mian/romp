@@ -29,7 +29,8 @@ sys.path.insert(0, HERE)
 import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment
 
 SID = "aaaaaaaa-1111-2222-3333-444444444444"   # web, the notes-api demo world
-WIDTHS = {"wide": 1440, "narrow": 420}
+WIDTHS = {"wide": 1440, "narrow": 420, "tight": 280}
+PEER, PEER_HOST = "api", "TESTHOST"   # the one named peer of the Awaiting case, remote so the chip carries its host prefix (the notes-api demo world)
 
 
 def _free_port():
@@ -61,13 +62,27 @@ const readLine = (chatF) => chatF.evaluate(() => {
   const rect = (n) => { if (!n) return null; const b = n.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, cy: (b.top + b.bottom) / 2 }; };
   const left = sl.querySelector(".sl-left"), right = sl.querySelector(".sl-right"), stop = sl.querySelector(".stop-btn");
   return { chip: rect(sl.querySelector(".chip")), timer: rect(document.getElementById("work-timer")), stop: rect(stop),
-           stopParent: stop ? stop.parentElement.className : null,
+           stopParent: stop ? stop.parentElement.className : null, scrollWidth: sl.scrollWidth, clientWidth: sl.clientWidth,
+           peer: (sl.querySelector(".chip .chip-peer-name") || {}).textContent || null, chipHeight: sl.querySelector(".chip") ? sl.querySelector(".chip").getBoundingClientRect().height : null,
            leftKids: left ? Array.from(left.children).map((n) => n.className) : null,
            right: rect(right), rightKids: right ? Array.from(right.children).map((n) => rect(n)) : null,
            line: rect(sl), width: window.innerWidth, chipCls: (sl.querySelector(".chip") || {}).className || null };
 });
-for (const [name, width] of Object.entries(cfg.widths)) {
+// the Awaiting case: the web session's status patched on the federation manager's inbound door (the shim hands every
+// local frame to window.__rompFed.inbound, deltas applied), so the chip reads Awaiting with one named peer and no button
+const awaiting = { state: "awaitingBg", sinceEpoch: Math.floor(Date.now() / 1000) - 60, awaitingKind: "peer", awaitingCount: 1,
+                   awaitingWhy: "waiting on a peer's reply", awaitingItems: [{ kind: "peer", id: cfg.peer, label: cfg.peer }],
+                   awaitingPeers: [{ name: cfg.peer, host: cfg.peerHost, color: { bg: "#B69513", fg: "black" } }] };
+const cases = Object.entries(cfg.widths).map(([name, width]) => [name, width, null]);
+cases.push(["awaiting", 280, awaiting]);
+for (const [name, width, patch] of cases) {
   const ctx = await browser.newContext({ viewport: { width, height: 800 } });
+  if (patch) await ctx.addInitScript(({ sid, status }) => {
+    let fed;
+    Object.defineProperty(window, "__rompFed", { configurable: true, get() { return fed; },
+      set(v) { fed = v; if (v && typeof v.inbound === "function" && !v.__patched) { const orig = v.inbound.bind(v);
+        v.inbound = (h, m) => { if (m && m.id === sid && m.status) m.status = Object.assign({}, m.status, status); return orig(h, m); }; v.__patched = true; } } });
+  }, { sid: cfg.sid, status: patch });
   const page = await ctx.newPage();
   await page.goto(cfg.url);
   await page.waitForSelector("#rail-gear", { state: "attached", timeout: 20000 });   // attached, not visible: the narrow rail hides the gear
@@ -77,7 +92,8 @@ for (const [name, width] of Object.entries(cfg.widths)) {
   await chatF.waitForFunction(() => document.querySelectorAll("#tabs .tab[data-id]").length >= 1, null, { timeout: 30000 });
   await chatF.click('#tabs .tab[data-id="' + cfg.sid + '"]');
   await chatF.waitForSelector("#statusline .sl-right #spinner-meta", { state: "attached", timeout: 20000 });
-  await chatF.waitForSelector("#statusline .stop-btn", { state: "attached", timeout: 20000 });   // the chip reads Working: the button shows
+  if (patch) await chatF.waitForSelector("#statusline .chip-awaitingBg .chip-peer-name", { state: "attached", timeout: 20000 });   // the patched frame landed
+  else await chatF.waitForSelector("#statusline .stop-btn", { state: "attached", timeout: 20000 });   // the chip reads Working: the button shows
   await chatF.evaluate(() => (document.fonts && document.fonts.ready) || null).catch(() => {});
   await chatF.waitForTimeout(400);
   out[name] = await readLine(chatF);
@@ -152,7 +168,7 @@ class ServedStopButtonBesideTheChip(unittest.TestCase):
         cfg = os.path.join(cls.lab, "cfg.json")
         outp = os.path.join(cls.lab, "out.json")
         with open(cfg, "w") as f:
-            json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (cls.port, cls.token), "out": outp, "sid": SID, "widths": WIDTHS}, f)
+            json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (cls.port, cls.token), "out": outp, "sid": SID, "widths": WIDTHS, "peer": PEER, "peerHost": PEER_HOST}, f)
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -187,6 +203,23 @@ class ServedStopButtonBesideTheChip(unittest.TestCase):
         o = self.out["wide"]
         self.assertLess(abs(o["right"]["cy"] - o["chip"]["cy"]), 6, "one row at 1440")
         self.assertGreater(o["right"]["left"], o["stop"]["right"], "the right cluster stands to the right of the unit")
+
+    def test_tight_at_280_the_button_still_sits_on_the_chips_row(self):
+        self._unit("tight")
+        o = self.out["tight"]
+        self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "nothing overflows the line at 280")
+
+    def test_a_named_peer_awaiting_chip_at_280_shrinks_the_unit_instead_of_overflowing(self):
+        # round two of PR 1803: flex:none plus nowrap on the unit put a named-peer Awaiting chip's timer out of view at 280
+        # (scrollWidth 352 against 280); the unit shrinks and the chip wraps its words, the timer stays in view
+        o = self.out["awaiting"]
+        self.assertIn("chip-awaitingBg", o["chipCls"] or "", "the patched frame landed: the chip reads Awaiting")
+        self.assertEqual(o["peer"], PEER_HOST + ":" + PEER, "with its one named peer, host-prefixed")
+        if os.environ.get("STOPLEFT_DUMP"): print("MEASURE", json.dumps({k: o[k] for k in ("scrollWidth", "clientWidth", "chipHeight", "timer", "line")}))
+        self.assertIsNone(o["stop"], "no button while awaiting (nothing to interrupt)")
+        self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "the line does not overflow (scrollWidth %s against %s)" % (o["scrollWidth"], o["clientWidth"]))
+        self.assertLessEqual(o["timer"]["right"], o["line"]["right"] + 1, "the timer stays in view")
+        self.assertGreaterEqual(o["right"]["top"], o["chip"]["bottom"] - 2, "the right cluster still wraps below the unit whole")
 
     def test_narrow_the_right_cluster_wraps_below_the_unit_whole_and_the_button_stays_with_its_badge(self):
         self._unit("narrow")

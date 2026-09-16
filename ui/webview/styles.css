@@ -1608,9 +1608,10 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
    clustered on the right edge instead of restarting at the left (the user 2026-08-10, on a phone;
    flat statusline children right-justify only the row holding the auto margin). Same 10px column gap
    the statusline uses between siblings, so the wide-pane look is unchanged. */
-.sl-left {   /* the state chip, its timer and the stop button: one unit that never wraps inside (the user 2026-09-16); the right cluster wraps below it whole */
-  flex: none; display: inline-flex; align-items: center; gap: 4px 10px; white-space: nowrap;
+.sl-left {   /* the state chip, its timer and the stop button: one row that keeps its parts on one line (the user 2026-09-16); the right cluster wraps below it whole */
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px 10px;   /* shrinkable: a 280px pane with a named-peer Awaiting chip wraps the chip's words instead of overflowing (round two of PR 1803) */
 }
+.sl-left > .stop-btn { flex: none; }   /* the button stays whole beside its badge; the row's own nowrap keeps it on the chip's line */
 .sl-right {
   margin-left: auto; min-width: 0;
   display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 10px;
