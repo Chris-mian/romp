@@ -368,7 +368,10 @@ unreachable is dropped with the existing toast, as every gesture is.
 The live file holds current revisions. The compaction sweep that already runs after the judge tiers
 (`_compact_goal_stores`, skipping stores whose modification time has not moved) gains a pass that
 moves dismissed, expired and superseded rows into `STATE/notices-archive/<sid>.jsonl`. Nothing is
-deleted. A session gone for good is forgotten the way `_notify_prev_forget_gone` forgets one.
+deleted. A session gone for good is forgotten the way `_notify_prev_forget_gone` forgets one. Undo moves a
+card's rows back out of the archive (`_restore_notice_archive`, the pass's inverse for one card, run after the undo
+row lands so the pass never meets a live row the ledger still holds), and `post_notice` counts a key's archived
+revisions, so an id the cleared ledger holds is never minted again.
 
 The in-memory memo of parsed notice files is bounded by bytes as a fraction of machine memory,
 through `_mem_total_bytes()`, following `_spend_tree_memo_bound`'s shape: `ROMP_NOTICE_MEMO_BYTES`

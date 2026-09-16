@@ -1104,9 +1104,11 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   // round four, high: a SUCCESS on a card that dismisses on its action takes the card off the board at once with no re-arm
   // (re-armed, it invited a second click that delivered the words again before the kernel's rebuild landed); a success on
   // a card that stays re-arms
+  let left = 0; card("notice:" + WEB + ":figure:2").addEventListener("mouseleave", () => { left++; });   // round six, low: the removal runs the card's own leave logic
   btns[0].onclick(ev);
   await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":figure:2", ok: true, error: "" });
   assert.equal(card("notice:" + WEB + ":figure:2") === null, true, "the dismissing card left on the success answer");   // a boolean: a failure must not diff the element
+  assert.equal(left, 1, "the removed card received its synthetic mouseleave (freezeLeave, the hover highlight), as the clear paths dispatch it");
   const n3 = cardOf("notice:" + WEB + ":stays:1", WEB, "web", "#3366cc", "A card that stays", "completed", {
     live: false, tree: [], blocked: null, notice: { producer: "figure", key: "stays", rev: 1, body: "", attachment: null,
     actions: [{ label: "Ping", route: "/send", body: { text: "ping" } }], expiresAt: null, dismissOnAction: false } });

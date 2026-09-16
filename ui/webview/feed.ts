@@ -6557,12 +6557,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction));
     if (m.ok && dismisses) {
       pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
-      if (hoverAskId === m.itemId) {   // removed under the pointer: no mouseleave fires, so the hover path is closed here (round five, low)
-        hoverAskId = null; applyFocus();
-        const pin = focusAnchorId(pinnedAskId);
-        if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, sid: sidOfItem(pin), locate: false });
-        else vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: sidOfItem(m.itemId), off: true });
-      }
+      for (const c of twins) c.dispatchEvent(new MouseEvent("mouseleave"));   // removed under the pointer: the card's own leave logic (freezeLeave, the hover highlight off or back to the pin), as the clear paths dispatch it (round six, low)
       for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
       dropDismissed([m.itemId]);
     } else {

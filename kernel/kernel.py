@@ -23674,7 +23674,7 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
     human-readable refusal, never a silent drop (add_watch's contract). One validation for every door: the key's grammar,
     the title and body caps, the producer label, the session known to this kernel, the attachment's verdict (a refusal
     carries its why), the actions' allowlist and cap. The kernel assigns `rev`, the revision count for the key in the
-    session, stamps `at`, appends under the lock, marks the views dirty and wakes the pusher."""
+    session across the live file and the archive (an id the cleared ledger holds is never minted again), stamps `at`, appends under the lock, marks the views dirty and wakes the pusher."""
     now = int(now if now is not None else time.time())
     sid = str(sid or "").strip()
     key = str(key or "").strip()
@@ -23717,7 +23717,10 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
         return None, "t must be epoch seconds"
     with _notice_lock:
         prior = [r for r in _notice_rows_unlocked(sid) if r.get("op") == "post" and r.get("key") == key]
-        rev = 1 + max([int(r.get("rev") or 0) for r in prior] or [0])
+        arch_rev, aerr = _notice_archive_rev_unlocked(sid, key)   # the archived revisions count too (round six, medium)
+        if aerr:
+            return None, aerr
+        rev = 1 + max([int(r.get("rev") or 0) for r in prior] + [arch_rev])
         row = {"op": "post", "t": tt, "at": now, "key": key, "rev": rev, "sid": sid, "producer": producer,
                "title": title, "body": body, "attachment": att, "actions": acts, "needsYou": bool(needs_you),
                "expiresAt": exp, "dismissOnAction": bool(dismiss_on_action)}
@@ -23975,6 +23978,101 @@ def _compact_notices(now=None):
 
 
 _NOTICE_SWEPT = {}                         # sid -> (the file's stat key, the cleared ledger's) the sweep last saw: unmoved, skipped
+_NOTICE_ARCH_REVS = {}                     # sid -> (the archive file's stat key, {key: its highest archived rev}); read under _notice_lock
+
+
+def _notice_archive_rev_unlocked(sid, key):
+    """The highest revision of `key` the sweep has archived for `sid`, as (rev, error): 0 when nothing is archived, and a
+    refusal's prose when the archive cannot be read, so a post never mints a revision blind (round six, medium: the count
+    read the live file alone, a repost under a dismissed key took rev 1 again once the pass had moved the first post, its id
+    still stood in the cleared ledger, and the producer was told the card was up while nothing showed). The archive is read
+    whole once per file state (its stat, taken before the read) and kept as {key: rev}, a few bytes a key; it moves at a
+    sweep or an Undo. The caller holds _notice_lock."""
+    sid = str(sid)
+    ap = _notice_archive_dir() / (sid + ".jsonl")
+    st = _stat_key(ap)
+    if st is None:
+        _NOTICE_ARCH_REVS.pop(sid, None)
+        return 0, ""
+    ent = _NOTICE_ARCH_REVS.get(sid)
+    if ent is None or ent[0] != st:
+        try:
+            raw = ap.read_text()
+        except OSError as e:
+            return 0, "the notice archive could not be read (%s), so no revision was assigned" % e
+        revs = {}
+        for line in raw.splitlines():
+            try:
+                o = json.loads(line)
+                k, rv = o.get("key"), int(o.get("rev") or 0)
+            except Exception:
+                continue
+            if k and rv > revs.get(k, 0):
+                revs[k] = rv
+        ent = (st, revs)
+        _NOTICE_ARCH_REVS[sid] = ent
+    return ent[1].get(key, 0), ""
+
+
+def _restore_notice_archive(item_ids):
+    """Undo-clear: move each restored notice card's rows (its post, its acted mark, an expire row on that revision) back OUT
+    of notices-archive into the live file, the inverse of _compact_notices for one card, so the projection shows the card
+    again (round six, high: the archive pass runs inside the housekeeping pass, seconds after a Clear, so the card was gone
+    for good before Undo could reach it, where the reference promises the restore). Grouped by session, under the lock. The
+    live append lands before the archive shrinks, so a fault between leaves a row in both files and none nowhere; a card
+    with nothing archived (the pass has not run, or the id never was a card) is not a fault. Called after the undo rows
+    land, so the pass never meets a live row the ledger still holds. Returns {sid: fault} for the sessions whose archive
+    could not be read or whose live file could not be written: the caller re-journals their clears (owed, the next Undo
+    retries them)."""
+    by_sid = {}
+    for iid in item_ids:
+        parts = str(iid).split(":", 3)
+        if len(parts) != 4 or parts[0] != "notice":
+            continue
+        try:
+            by_sid.setdefault(parts[1], set()).add((parts[2], int(parts[3])))
+        except ValueError:
+            continue
+    faults, moved = {}, 0
+    for sid, wants in by_sid.items():
+        ap = _notice_archive_dir() / (sid + ".jsonl")
+        with _notice_lock:
+            try:
+                raw = ap.read_text()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                faults[sid] = "the notice archive could not be read (%s)" % e
+                continue
+            keep, back = [], []
+            for line in raw.splitlines():
+                try:
+                    o = json.loads(line)
+                    hit = (o.get("key"), int(o.get("rev") or 0)) in wants
+                except Exception:
+                    hit = False
+                (back if hit else keep).append(line)
+            if not back:
+                continue
+            try:
+                _notice_dir().mkdir(parents=True, exist_ok=True)
+                with open(_notice_path(sid), "a") as f:
+                    f.write("".join(l + "\n" for l in back))
+            except OSError as e:
+                faults[sid] = "the notice could not be restored (%s)" % e
+                continue
+            try:
+                tmp = ap.with_name(ap.name + ".tmp.%d" % os.getpid())
+                tmp.write_text("".join(l + "\n" for l in keep))
+                os.replace(tmp, ap)
+            except OSError as e:                     # live already: a row in both files is history twice, never a loss
+                sys.stderr.write("notice: the archive could not be shrunk after %s's restore (%s)\n" % (sid[:8], e))
+            _NOTICE_SWEPT.pop(sid, None)             # the pass looks again: the row is live and, once the ledger reads, undismissed
+            moved += len(back)
+    if moved:
+        _mark_views_dirty()
+        _push_soon()
+    return faults
 
 
 def _deliver_text(sid, text, plain=False):
@@ -38255,7 +38353,7 @@ def _gesture_store_refusal(client, gesture, skipped):
         who = _name_of(sid) or sid[:8]
         if gesture == "undo":
             title = "That undo did not land for %s" % who
-            text = ("Its cards were not restored: romp could not read or write that session's goals file (%s). "
+            text = ("Its cards were not restored: romp could not read or write that session's goals file or its notice cards' archive (%s). "
                     "They are still held for you; press Undo again once it can. The other sessions "
                     "were not affected." % fault)
         elif gesture == "drop":
@@ -38316,21 +38414,25 @@ def _undo_clear():
     and the user's next Undo retries exactly them. Journaling every id first consumed the batch on a
     fault (the ids read as undone, the nodes stayed in the archive, and no later Undo could reach
     them); journaling last is not an option either, since the reopen verdict's gate needs the undo
-    row on disk before the flag step runs (its comment says why). Returns {sid: fault} for the
-    sessions skipped."""
+    row on disk before the flag step runs (its comment says why). A notice card's rows come back OUT of
+    notices-archive after its undo row lands (_restore_notice_archive, round six), and a session whose notice
+    archive could not be read is owed the same way. Returns {sid: fault} for the sessions skipped."""
     cur = _cleared_ids()
     if not cur:
         return {}
     newest = max(cur.values())
     restored = [i for i, ct in cur.items() if ct == newest]
+    notices = [i for i in restored if i.startswith("notice:")]     # notice cards have no goal node: their rows come back below (round six)
+    restored = [i for i in restored if not i.startswith("notice:")]
     skipped = dict(_restore_goal_archive(restored))   # pull the restored tops back OUT of the archive FIRST,
     restored = [i for i in restored if i.rsplit(":", 1)[0] not in skipped]   # (a session it could not read
     with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
-        for iid in restored:
+        for iid in restored + notices:
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
-    late = _mark_nodes_cleared(restored, False)       # so this finds the nodes → un-set the durable flag → real status
-    if late:
+    late = _mark_nodes_cleared(restored, False) if restored else {}   # so this finds the nodes → un-set the durable flag → real status
+    nlate = _restore_notice_archive(notices)          # a notice card's rows come back OUT of notices-archive now its undo row is down
+    if late or nlate:
         # The store read fine (or held nothing archived) a moment ago and faults NOW, after the undo row
         # landed (at the flag step's read, or at its publish): the node is restored flag-cleared, which
         # build_feed hides exactly like the clear did, and the modal has no op that could reach it (resolve
@@ -38341,11 +38443,11 @@ def _undo_clear():
         # card, against the promise that the next Undo restores exactly them (review find, 2026-09-08).
         t = time.time()
         with (jd.STATE / "cleared.jsonl").open("a") as f:
-            for iid in restored:
-                if iid.rsplit(":", 1)[0] in late:
+            for iid in restored + notices:
+                if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate):
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
         _files_stat_mark()                            # the re-journal is a clears-log write too
-        skipped.update(late)
+        skipped.update(late); skipped.update(nlate)
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
 

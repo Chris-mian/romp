@@ -331,6 +331,74 @@ class Retention(unittest.TestCase):
         self.assertEqual(km._compact_notices(now=700), 0, "an unmoved file is skipped")
         self.assertEqual([c["itemId"] for c in km._notice_cards(700, km._cleared_ids())], ["notice:%s:keep:2" % SID, "notice:%s:figure:2" % SID], "post order by t")
 
+    def test_undo_restores_a_dismissed_card_the_housekeeping_pass_had_archived(self):
+        # round six, high: the archive pass runs inside the housekeeping pass, seconds after a Clear, so Undo must find the
+        # card's rows in the archive and move them back (the reference: Clear; Undo restores it)
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        iid = "notice:%s:figure:1" % SID
+        self.assertEqual(km._compact_notices(now=200), 0, "a live card stays")
+        km._clear_ask(iid)
+        self.assertEqual(km._compact_notices(now=300), 1, "the pass archives the dismissed row")
+        self.assertEqual(_rows(SID), [], "gone from the live file")
+        self.assertEqual(km._undo_clear(), {}, "no fault")
+        self.assertNotIn(iid, km._cleared_ids())
+        self.assertEqual([c["itemId"] for c in km._notice_cards(400, km._cleared_ids())], [iid], "post, pass, Clear, pass, Undo: the card is back")
+        self.assertEqual([(r["key"], r["rev"], r["op"]) for r in _rows(SID)], [("figure", 1, "post")], "its row is live again")
+        self.assertEqual((km._notice_archive_dir() / (SID + ".jsonl")).read_text(), "", "moved back, not copied")
+        self.assertEqual(km._compact_notices(now=500), 0, "restored and undismissed: the pass keeps it")
+        # the one-shot mark rides back with its post: a spent card returns spent, and a click delivers nothing
+        acts = [{"label": "Send", "route": "/send", "body": {"text": "x"}}]
+        km.post_notice(SID, "act", "t", producer="cli", actions=acts, dismiss_on_action=True, now=600, t=600)
+        aid = "notice:%s:act:1" % SID
+        self.assertEqual(km._notice_action(aid, "/send", {"text": "x"}), (True, ""))
+        self.assertEqual(km._compact_notices(now=700), 2, "the post and its acted mark are archived together")
+        km._undo_clear()
+        back = next(c for c in km._notice_cards(800, km._cleared_ids()) if c["itemId"] == aid)
+        self.assertEqual((back["notice"]["acted"], back["notice"]["actions"]), (True, []), "back spent")
+        self.assertEqual(km._notice_action(aid, "/send", {"text": "x"}), (False, "that card's action ran already"))
+        self.assertEqual(self.w.delivered, [(SID, "x")], "one delivery across click, Clear, pass, Undo, click")
+        # Undo walks back one batch a press, so an older batch's rows must come back from the archive too, not the newest's alone
+        km._clear_ask(iid); km._clear_ask(aid)
+        self.assertEqual(km._compact_notices(now=900), 3)
+        km._undo_clear()
+        self.assertEqual([c["itemId"] for c in km._notice_cards(1000, km._cleared_ids())], [aid], "the newest batch first")
+        km._undo_clear()
+        self.assertEqual(sorted(c["itemId"] for c in km._notice_cards(1100, km._cleared_ids())), sorted([iid, aid]), "then the older")
+
+    def test_a_repost_under_a_dismissed_key_takes_the_next_revision_once_the_pass_archived_the_first(self):
+        # round six, medium: the revision counted the live file alone, so a repost after the pass took rev 1 again, an id the
+        # cleared ledger still held: the projection dropped it while the producer was told the card was up
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        km._clear_ask("notice:%s:figure:1" % SID)
+        self.assertEqual(km._compact_notices(now=200), 1)
+        row, err = km.post_notice(SID, "figure", "second", producer="figure", now=300, t=300)
+        self.assertEqual((err, row["rev"]), (None, 2), "post, dismiss, pass, repost: rev 2")
+        self.assertEqual([c["itemId"] for c in km._notice_cards(400, km._cleared_ids())], ["notice:%s:figure:2" % SID], "the card shows")
+        # the count follows the rows wherever they sit: Undo moves rev 1 back live (superseded by rev 2), a third post is rev 3
+        km._undo_clear()
+        self.assertEqual([c["itemId"] for c in km._notice_cards(500, km._cleared_ids())], ["notice:%s:figure:2" % SID], "rev 1 back but superseded")
+        row, err = km.post_notice(SID, "figure", "third", producer="figure", now=600, t=600)
+        self.assertEqual((err, row["rev"]), (None, 3))
+        # an archive that cannot be read refuses the post with its reason, never a revision minted blind
+        km._clear_ask("notice:%s:figure:3" % SID); self.assertEqual(km._compact_notices(now=700), 3)
+        ap = km._notice_archive_dir() / (SID + ".jsonl"); ap.unlink(); ap.mkdir()
+        row, err = km.post_notice(SID, "figure", "fourth", producer="figure", now=800)
+        self.assertEqual(row, None); self.assertIn("the notice archive could not be read", err)
+        ap.rmdir()
+
+    def test_an_unreadable_archive_keeps_the_undo_owed_and_says_so(self):
+        km.post_notice(SID, "figure", "first", producer="figure", now=100, t=100)
+        iid = "notice:%s:figure:1" % SID
+        km._clear_ask(iid); self.assertEqual(km._compact_notices(now=200), 1)
+        ap = km._notice_archive_dir() / (SID + ".jsonl"); saved = ap.read_text(); ap.unlink(); ap.mkdir()
+        faults = km._undo_clear()
+        self.assertEqual(list(faults), [SID]); self.assertIn("the notice archive could not be read", faults[SID])
+        self.assertIn(iid, km._cleared_ids(), "re-journaled: the batch stays owed for the next Undo")
+        self.assertEqual(km._notice_cards(300, km._cleared_ids()), [], "nothing restored blind")
+        ap.rmdir(); ap.write_text(saved)
+        self.assertEqual(km._undo_clear(), {})
+        self.assertEqual([c["itemId"] for c in km._notice_cards(400, km._cleared_ids())], [iid], "the next Undo restores it")
+
     def test_the_memo_is_bounded_by_bytes_as_a_fraction_of_memory_with_the_environment_override(self):
         saved = km._mem_total_bytes
         try:
