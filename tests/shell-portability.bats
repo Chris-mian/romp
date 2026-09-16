@@ -38,25 +38,51 @@ exec {fd}< or {fd}> (bash 4.1)	exec[[:space:]]+\{[A-Za-z_][A-Za-z0-9_]*\}[<>]
 negative-length substring ${var:off:-n} (bash 4.2)	\$\{[A-Za-z_][A-Za-z0-9_]*:[0-9]+:-[0-9]+\}
 dollar-quote unicode escape (bash 4.2)	\$'"'"'[^'"'"']*\\[uU][0-9A-Fa-f]'
 
-_shell_files() {   # the surfaces: every shell script the repo ships, found by an sh or bash shebang on its first line
+_shell_files() {   # the surfaces: every TRACKED shell script the repo ships, found by an sh or bash shebang on its first line. git
+                   # ls-files, not a glob over the working tree: a stray file another test left under bin/ or tools/ cannot enter the
+                   # set (the tagged tip's confirming macOS run stalled here for the job's whole 180 s per-test bound where the proof
+                   # run took 3.3 s, with no shell file changed between them, 2026-09-16)
     local f
-    for f in "$REPO"/bin/* "$REPO"/scripts/*.sh "$REPO"/install.sh "$REPO"/bootstrap.sh "$REPO"/hooks/*.sh "$REPO"/.githooks/* "$REPO"/tools/* "$REPO"/tools/*/*.sh "$REPO"/vscode-extension/install.sh; do
-        [ -f "$f" ] || continue
-        head -1 "$f" | grep -qE '^#!.*(/|env )(ba)?sh([[:space:]]|$)' && echo "$f"
-    done
+    git -C "$REPO" ls-files -z -- bin 'scripts/*.sh' install.sh bootstrap.sh 'hooks/*.sh' .githooks tools vscode-extension/install.sh 2>/dev/null \
+        | tr '\0' '\n' | while IFS= read -r f; do
+            [ -n "$f" ] && [ -f "$REPO/$f" ] || continue
+            head -1 "$REPO/$f" | grep -qE '^#!.*(/|env )(ba)?sh([[:space:]]|$)' && echo "$REPO/$f"
+        done
     return 0
 }
 
-_scan() {   # $@ files: every non-comment line holding a construct, as "family: file:line:text"
-    local name re f line
+_bounded_fn() {   # $1 seconds, $2 a function of this file, $@ its args: the function in a child bash under a bound of its own, so a
+                  # stall in the list or the scan is cut and named by the pin, never left to the job's per-test bound. coreutils
+                  # timeout where it exists (124 at the bound), else perl's alarm (the child dies to SIGALRM: 142), else unbounded.
+    local secs="$1" fn="$2"; shift 2
+    local body; body="$(declare -f _shell_files _scan); $fn \"\$@\""
+    if command -v timeout >/dev/null 2>&1; then
+        REPO="$REPO" CONSTRUCTS="$CONSTRUCTS" timeout "$secs" bash -c "$body" _ "$@"
+    elif command -v perl >/dev/null 2>&1; then
+        REPO="$REPO" CONSTRUCTS="$CONSTRUCTS" perl -e 'alarm shift; exec @ARGV' "$secs" bash -c "$body" _ "$@"
+    else
+        REPO="$REPO" CONSTRUCTS="$CONSTRUCTS" bash -c "$body" _ "$@"
+    fi
+}
+
+_scan() {   # $@ files: every non-comment line holding a construct, as "family: file:line:text". ONE grep per file with every
+            # family's pattern joined, then the family named in this shell (bash's =~ is the same POSIX ERE grep -E reads): 22
+            # families x 21 files x 2 greps was 924 processes, minutes on a slow macOS runner; this is 42.
+    local name re f line n text all="" hit
     while IFS=$'\t' read -r name re; do
         [ -n "$name" ] || continue
-        for f in "$@"; do
-            while IFS= read -r line; do
-                printf '%s: %s:%s\n' "$name" "${f#$REPO/}" "$line"
-            done < <(grep -nE -- "$re" "$f" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*#')
-        done
+        all="${all:+$all|}($re)"
     done <<< "$CONSTRUCTS"
+    for f in "$@"; do
+        while IFS= read -r line; do
+            n="${line%%:*}"; text="${line#*:}"; hit=""
+            while IFS=$'\t' read -r name re; do
+                [ -n "$name" ] || continue
+                if [[ "$text" =~ $re ]]; then printf '%s: %s:%s:%s\n' "$name" "${f#$REPO/}" "$n" "$text"; hit=1; fi
+            done <<< "$CONSTRUCTS"
+            [ -n "$hit" ] || printf '%s: %s:%s:%s\n' "unclassified construct" "${f#$REPO/}" "$n" "$text"   # grep saw it; still a hit
+        done < <(grep -nE -- "$all" "$f" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*#')
+    done
     return 0
 }
 
@@ -125,10 +151,32 @@ EOF
     [ -z "$output" ]
 }
 
+@test "portability pin: a head that blocks is cut at the list's own bound, not the job's" {
+    # the tagged tip's confirming macOS run (2026-09-16): the pin sat 180 s until the job's per-test bound killed it, nameless as
+    # to WHICH command stalled. The list and the scan run under bounds of their own now, and the pin says which one stalled.
+    local tools="$TEST_DIR/blocking"; mkdir -p "$tools"
+    printf '#!/usr/bin/env bash\nsleep 300\n' > "$tools/head"; chmod +x "$tools/head"
+    local t0=$SECONDS rc=0
+    PATH="$tools:$PATH" _bounded_fn 3 _shell_files >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]                    # timeout's 124, or perl's SIGALRM
+    [ $((SECONDS - t0)) -lt 10 ]
+}
+
+@test "portability pin: a stray shell file in the tree is not a surface: the set is git's tracked list" {
+    local stray="$REPO/bin/stray-portability-probe-$$.sh"
+    printf '#!/usr/bin/env bash\nv="${1,,}"\n' > "$stray"
+    local out; out="$(_shell_files)"; rm -f "$stray"
+    [[ "$out" != *"stray-portability-probe"* ]]
+    [[ "$out" == *"/bin/romp-service"* ]]                    # the tracked surfaces are still the set
+}
+
 @test "portability pin: the shell surfaces use no bash-4-only construct" {
-    local files; files="$(_shell_files)"
+    local files rc=0
+    files="$(_bounded_fn 30 _shell_files)" || rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then echo "the shell-surface list stalled: _shell_files did not return within 30 s (a blocking head or grep on PATH, a hung git)"; return 1; fi
     [ -n "$files" ]
-    run _scan $files
+    run _bounded_fn 120 _scan $files
+    if [ "$status" -eq 124 ] || [ "$status" -eq 142 ]; then echo "the shell-surface scan stalled: _scan did not return within 120 s"; return 1; fi
     if [ -n "$output" ]; then
         echo "bash-4-only constructs in the shell surfaces (a stock mac's /bin/bash is 3.2; use a case pattern, tr, a plain array, 2>&1):"
         echo "$output"
