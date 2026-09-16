@@ -837,7 +837,10 @@ class BootReconcile(unittest.TestCase):
               ) % (sid, sid, sid)
         killed = []
         with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout=ps)) as run, \
-             mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))):
+             mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
+             mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):   # the fake pid reads as gone on every platform:
+            #   with no /proc (macOS) _pid_alive falls to os.kill(pid, 0), which is the recorder above and never raises, so the
+            #   orphan read alive, the liveness polls landed as (pid, 0) and the grace expired into a SIGKILL (11 entries for 1)
             be._boot_reconcile([sb.read_reg(Path(d), sid)])
         self.assertEqual(killed, [(9999555, sb.signal.SIGTERM)],
                          "the SDK orphan is reaped; the tmux CLI and the live (parented) CLI "

@@ -213,7 +213,11 @@ class ScopePath(unittest.TestCase):
         runs = []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=listing if argv == sb.SCOPE_LIST_ARGV else "", returncode=0)
-        n = be._stop_leftover_scopes([SID], run=run)
+        # the sweep proves the live child's parentage from /proc/<pid>/stat (_read_ppid); with no procfs (macOS) that reads
+        # None and the child's scope would be stopped too, so the parent is answered here for the child's pid alone: the
+        # sweep itself returns 0 there before any read, as soon as systemctl is missing
+        with mock.patch.object(sb, "_read_ppid", lambda pid: os.getpid() if pid == child.pid else None):
+            n = be._stop_leftover_scopes([SID], run=run)
         self.assertEqual(n, 1)
         # the session scopes first, then the per-session HOST scopes are listed too (T315; none here, so no stop)
         self.assertEqual(runs, [sb.SCOPE_LIST_ARGV, ["systemctl", "--user", "stop", "romp-session-11111111-%d-1757374800.scope" % CLI],

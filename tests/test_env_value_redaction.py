@@ -1114,6 +1114,11 @@ class HookEndToEnd(unittest.TestCase):
         assertion explanation nor trims the short summary's message to the terminal width, and the
         tests here pin the truncated rendering wherever the suite runs. `env` adds variables on top
         (a probe value; CI itself, for the untruncated rendering)."""
+        # Resolved ONCE for cwd and --rootdir: on macOS tempfile's dir sits under /var, a symlink to /private/var, and
+        # a child handed the unresolved path renders the collected file's node id as a long ../../var/... relative
+        # path, so its short summary line begins with that path and is cut at the terminal width before the message
+        # the tests below read (the macOS cells, 2026-09-16). Same tree, one spelling.
+        d = os.path.realpath(d)
         child = dict(os.environ)
         for name in ("CI", "BUILD_NUMBER"):
             child.pop(name, None)
