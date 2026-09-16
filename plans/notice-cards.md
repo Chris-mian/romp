@@ -453,6 +453,10 @@ unreadable archive refuses the post; an unreadable index refuses the post; the i
 reads no further (a counter on the blocks read), walks to an old batch's pass on repeated presses, strips
 `archivedAt` on the way back, and reads rows without a stamp whole. Red first at the head that lacks each piece.
 
+**Landed (PR 1776):** the index, the stamp and the tail read as designed; the memo joins `NOTICE_MEMO_BYTES` under the
+same keys in `memos.notices`; the pass holds a session's rows when its index cannot be written. Disk growth stays as the
+reference says; the byte bound is the user's call.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key
