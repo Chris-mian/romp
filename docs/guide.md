@@ -215,7 +215,9 @@ reorders the tags on every surface (the timeline's tag table shows the same orde
 a tab into another group, right-click it and pick **Move to <tag>** under **Tags**: one click
 adds that tag and drops the tag of the group you right-clicked it in, leaving its other tags alone. The row's
 **+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
-button's menu, turns the sections off for this browser. The Sessions pane has the same
+button's menu, turns the sections off for this browser. On a phone the session picker, which stands in
+for the strip, lists the sessions the same way: each under its tag's heading, in the same order, and
+nothing folded (its tag menu has the same switch). The Sessions pane has the same
 sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row

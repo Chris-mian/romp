@@ -55075,6 +55075,14 @@ _CHAT_MOBILE_CSS = (
     # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
     # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
     ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
+    # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
+    # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
+    # (cloned) and the count; no caret and no pointer, since the phone folds nothing
+    ".mhead{display:flex;align-items:center;gap:6px;padding:9px 12px 3px;font-size:.82em;letter-spacing:.04em;"
+    "color:var(--dim,#8a8a8a);user-select:none;-webkit-user-select:none}"
+    ".mhead .mcount{opacity:.7}"
+    # the untagged trail's divider (the strip's makeTrailSep, turned for a list): a 1px line in 6px gutters
+    ".msep{height:13px;box-sizing:border-box;padding:6px 12px;background:var(--box-border,#3a3a3a);background-clip:content-box}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
     # more space than is available, about 20 percent too wide, with the controls not all fitting). Measured
     # at 390px: the STATUSLINE row (model/effort/mode/branch chips + the context bar) is flex/no-wrap with
@@ -55095,6 +55103,13 @@ _CHAT_MOBILE_CSS = (
 # (name + identity color), the dropdown list shows every session with its color dot, a row tap clicks the
 # real tab (so render.js's own setActive/focus runs), and + clicks the real .tab-add (open/new session).
 # A MutationObserver re-syncs on any tab change.
+# The list mirrors the strip's CHILDREN in order (the user 2026-09-16, whose phone listed the sessions in
+# another order than the desktop strip once the tabs were grouped by tag): a heading row per group header
+# (.mhead — the tag's chip and the count, cloned from the header, so the tag wears its one treatment), a
+# row per tab COPY (a session under two tags is a row under each, as it is a tab under each), and a
+# divider where the untagged trail begins (.msep, the strip's .tab-group-sep). The plan sections the
+# phone's strip like the desktop's (tab-groups.ts planStrip) and folds nothing there, so a heading is a
+# label, never a control: the list is the phone's only switcher and every session stays a tap away.
 _CHAT_MOBILE_JS = """
 (function(){var tabbar=document.getElementById('tabbar'),tabs=document.getElementById('tabs');
 if(!tabbar||!tabs)return;
@@ -55110,12 +55125,20 @@ hdr.appendChild(cur);hdr.appendChild(tslot);hdr.appendChild(add);
 tabbar.appendChild(hdr);tabbar.appendChild(list);
 function realTab(id){return tabs.querySelector('.tab[data-id="'+id+'"]');}
 function hide(){list.classList.remove('open');}
-function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),function(t){
-var lab=t.querySelector('.tab-label');
-return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),lab:lab,
+// the strip's children IN ORDER — the plan's order, headings included — one entry each, keyed the way the
+// strip tells them apart: a group header by its tag (g:), the trail's divider (sep), a tab by its id AND
+// the group its copy sits in (t:; a session under two tags is two entries, as it is two tabs). Anything
+// else in the bar (the + tab, the controls, a row break between groups) is not a row.
+function read(){var out=[];[].forEach.call(tabs.children,function(t){
+if(t.classList.contains('tab-group-head')&&t.hasAttribute('data-group')){var g=t.getAttribute('data-group'),cnt=t.querySelector('.tab-group-count');
+out.push({key:'g:'+g,group:g,chip:t.querySelector('.tab-group-chip'),count:cnt?cnt.textContent:''});return;}
+if(t.classList.contains('tab-group-sep')){out.push({key:'sep'});return;}
+if(!t.classList.contains('tab')||!t.hasAttribute('data-id'))return;
+var lab=t.querySelector('.tab-label'),id=t.getAttribute('data-id'),copy=t.getAttribute('data-copy');
+out.push({key:'t:'+id+'/'+(copy===null?'':copy),id:id,copy:copy,name:(lab?lab.textContent:id),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
 working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),ask:t.classList.contains('ring-waiting-on-you'),active:t.classList.contains('active'),
-ph:t.classList.contains('tab-placeholder')};});}
+ph:t.classList.contains('tab-placeholder')});});return out;}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
 // metadata (host-prefix.ts: dim, italic, never bold, a step smaller), and textContent threw that span
@@ -55140,10 +55163,19 @@ if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className=
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
 else if(wd)wd.remove();
 var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';}
-function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);
+function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);row.setAttribute('data-key',s.key);
+if(s.copy!==null)row.setAttribute('data-copy',s.copy);   // the group this copy sits in ('' for the trail), as the tab carries it
 var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
 var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
 row.appendChild(x);rowUpdate(row,s);return row;}
+// a GROUP HEADING: the header's own chip (tag-menu.ts tagChip, cloned — the one tag treatment, T251) and its
+// count. No caret, since the phone folds nothing (a chevron would promise a fold this row cannot do), and no
+// data-id, so the delegated tap below passes it by: a label, not a pick.
+function headUpdate(row,s){row.textContent='';if(s.chip)row.appendChild(s.chip.cloneNode(true));
+var c=document.createElement('span');c.className='mcount';c.textContent=s.count;row.appendChild(c);}
+function headMake(s){var row=document.createElement('div');row.className='mhead';row.setAttribute('data-key',s.key);row.setAttribute('data-group',s.group);headUpdate(row,s);return row;}
+// the untagged trail's divider (the strip's makeTrailSep, turned for a list)
+function sepMake(){var d=document.createElement('div');d.className='msep';d.setAttribute('data-key','sep');d.title='sessions in no tag';return d;}
 var pendingId=null,held=false,dirty=false;
 function sync(){
 // pointer-held defer (the timeline draw()'s pattern, CLAUDE.md click-safety): a push landing while a
@@ -55151,9 +55183,9 @@ function sync(){
 // innerHTML wipe here rebuilt every row per push (0.5-3s) and reset the list's scroll to the top,
 // so a tap raced a 2s window and rows below the fold snapped away mid-reach (the user 2026-08-19).
 if(held){dirty=true;return;}
-var ts=read(),act=null;
-for(var i=0;i<ts.length;i++){if(ts[i].active){act=ts[i];break;}}
-if(!act&&ts.length)act=ts[0];
+var ts=read(),act=null,first=null;
+for(var i=0;i<ts.length;i++){if(!ts[i].id)continue;if(!first)first=ts[i];if(ts[i].active){act=ts[i];break;}}
+if(!act)act=first;   // the first SESSION row, never a heading
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
@@ -55169,10 +55201,14 @@ if(prt&&!prt.classList.contains('tab-placeholder')){pendingId=null;prt.click();h
 else if(!prt){pendingId=null;}}
 // IN-PLACE list update keyed by data-id — never a wipe: rows persist across pushes (click-safe),
 // and the list keeps its scroll position because nothing detaches unchanged rows
-var want={};ts.forEach(function(s){want[s.id]=1;});
-[].slice.call(list.children).forEach(function(r){if(!want[r.getAttribute('data-id')])r.remove();});
-ts.forEach(function(s,i){var row=list.querySelector('.mrow[data-id="'+s.id.replace(/"/g,'\\"')+'"]');
-if(!row)row=rowMake(s);else rowUpdate(row,s);
+// keyed by the strip's own key (data-key: a tab's id + the group of its copy, a heading's tag, the
+// divider), read back from the rows themselves — no selector, so a tag name needs no escaping
+var want={};ts.forEach(function(s){want[s.key]=1;});
+var have={};[].slice.call(list.children).forEach(function(r){var k=r.getAttribute('data-key');if(!want[k])r.remove();else have[k]=r;});
+ts.forEach(function(s,i){var row=have[s.key];
+if(s.id){if(!row)row=rowMake(s);else rowUpdate(row,s);}
+else if(s.group!==undefined){if(!row)row=headMake(s);else headUpdate(row,s);}
+else if(!row)row=sepMake();
 var at=list.children[i];if(at!==row)list.insertBefore(row,at||null);});}
 // ONE delegated listener on the STABLE list (rows are swapped by sync; the parent survives) — the
 // same delegation rule the desktop strip follows, so a mid-press row swap can still land its tap
