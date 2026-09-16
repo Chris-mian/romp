@@ -35913,7 +35913,7 @@ _git_file_faults = {}   # .git pointer-file path (RESOLVED) -> the fault text of
 _git_file_faults_lock = threading.Lock()   # the pusher and a connect push both run _push, on their own threads
 
 
-def _git_file_fault(path, exc):
+def _git_file_fault(path, exc, handed=None):
     """Name a .git pointer file that cannot be followed (an OS error reading it, or a gitdir with no HEAD)
     on stderr AND as a dashboard bell row ONCE per fault episode. One non-UTF-8 byte in one session cwd's
     .git file used to raise UnicodeDecodeError through _git_branch and build_session into _push's single
@@ -35923,13 +35923,17 @@ def _git_file_fault(path, exc):
     that cannot be read gets. The episode is the fault TEXT (the judge's _file_store_fault rule): an
     identical repeat says nothing, a DIFFERENT fault on the same file is a new episode — a pointer that
     goes EACCES, then readable but dangling, reports both — and a clean read ends it (_git_head_file drops
-    the entry). Never raises: the bell is a courtesy, and this runs inside the push."""
+    the entry). `path` is the file at its PHYSICAL place, the episode's key; `handed` is the form the session carries
+    (its registered cwd's .git), named beside it when the two differ, so the operator finds the directory they
+    registered without resolving the symlink themselves (the 1781 review). Never raises: the bell is a courtesy, and
+    this runs inside the push."""
     text = "%s: %s" % (type(exc).__name__, exc)
     with _git_file_faults_lock:                       # check-and-set as ONE step: read-then-write let two _push
         if _git_file_faults.get(path) == text:        # threads faulting the same file both see "no episode"
             return                                    # and both speak (review find, 2026-09-08)
         _git_file_faults[path] = text
-    msg = "git: %s cannot be read (%s); sessions there show no branch until it is fixed" % (path, text)
+    where = path if not handed or handed == path else "%s (reached as %s)" % (path, handed)
+    msg = "git: %s cannot be read (%s); sessions there show no branch until it is fixed" % (where, text)
     sys.stderr.write(msg + "\n")
     try:
         _sync_notice(msg, ok=False, kind="refused")   # the kind a state file that cannot be read wears (#1020)
@@ -35978,7 +35982,7 @@ def _git_head_file(cwd):
             shown = os.fsencode(hp).decode("utf-8", "backslashreplace")
             raise FileNotFoundError(errno.ENOENT, "the gitdir it names has no HEAD", shown)
     except OSError as e:                              # unreadable, or dangling (above): the same episode rule
-        _git_file_fault(real, e)                      # never silent: the operator learns WHICH file is bad
+        _git_file_fault(real, e, dotgit)              # never silent: the operator learns WHICH file is bad, under both its names
         return ""                                     # uncached: the next read retries, so a repair ends the episode
     with _git_file_faults_lock:
         _git_file_faults.pop(real, None)              # a clean read ends the episode, under whichever path form it came
