@@ -23857,22 +23857,16 @@ def _notice_rows(sid):
     with _notice_lock:
         _NOTICE_MEMO_STATS["miss"] += 1
         _NOTICE_MEMO[sid] = [st, rows, size, time.time()]
-        total = sum(e[2] for e in _NOTICE_MEMO.values())
-        if total > NOTICE_MEMO_BYTES:                          # shed the deficit, largest first, this entry included
-            for k in sorted(_NOTICE_MEMO, key=lambda k: -_NOTICE_MEMO[k][2]):
-                if total <= NOTICE_MEMO_BYTES:
-                    break
-                total -= _NOTICE_MEMO[k][2]
-                del _NOTICE_MEMO[k]
-                _NOTICE_MEMO_STATS["evicted"] += 1
+        _notice_memo_shed_unlocked()                           # the deficit, largest first, this entry included, the revision indexes counted too
     return rows
 
 
 def _notice_memo_report():
     """GET /perf memos.notices: entries, their bytes and the bound they are held under, so a bound that binds is visible."""
     with _notice_lock:
-        return {"entries": len(_NOTICE_MEMO), "bytes": sum(e[2] for e in _NOTICE_MEMO.values()), "bound": NOTICE_MEMO_BYTES,
-                **_NOTICE_MEMO_STATS}
+        return {"entries": len(_NOTICE_MEMO) + len(_NOTICE_ARCH_REVS),   # the parsed rows and the revision indexes, one bound
+                "bytes": sum(e[2] for e in _NOTICE_MEMO.values()) + sum(e[2] for e in _NOTICE_ARCH_REVS.values()),
+                "bound": NOTICE_MEMO_BYTES, **_NOTICE_MEMO_STATS}
 
 
 def _notice_session_known(sid):
@@ -24234,11 +24228,26 @@ def _compact_notices(now=None):
                         or k in capped)
                 (arch if gone else keep).append(r)
             if arch:
+                # the revision index first (the archive bound): the high-water mark of every post row leaving the live file,
+                # so a repost never mints a revision the cleared ledger may hold without any reader opening the archive; an
+                # index that cannot be read or written holds this session's pass (the rows stay live, nothing is lost)
+                revs, ierr = _notice_revs_index_unlocked(sid)
+                apath = _notice_archive_dir() / (sid + ".jsonl")
+                if not ierr:
+                    revs = dict(revs)
+                    for r in arch:
+                        if r.get("op") == "post" and int(r.get("rev") or 0) > revs.get(r.get("key"), 0):
+                            revs[r.get("key")] = int(r.get("rev") or 0)
+                    ast_, ierr = _notice_file_stat(apath, "the notice archive")
+                    ierr = ierr or _notice_revs_write_unlocked(sid, revs, ast_)   # the mark durable before the rows leave: this write describes the archive as it is now, so a death before the second write leaves an index the next post rebuilds
+                if ierr:
+                    sys.stderr.write("notice: the archive pass held %s's rows (%s)\n" % (sid[:8], ierr))
+                    continue
                 try:
                     _notice_archive_dir().mkdir(parents=True, exist_ok=True)
-                    with open(_notice_archive_dir() / (sid + ".jsonl"), "a") as f:
+                    with open(apath, "a") as f:
                         for r in arch:
-                            f.write(json.dumps(r) + "\n")
+                            f.write(json.dumps(dict(r, archivedAt=now)) + "\n")   # the pass's stamp: one block a pass, the restore's tail read stops at its edge
                     tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
                     tmp.write_text("".join(json.dumps(r) + "\n" for r in keep))
                     os.replace(tmp, p)
@@ -24246,49 +24255,242 @@ def _compact_notices(now=None):
                 except OSError as e:
                     sys.stderr.write("notice: the archive pass could not move %s's rows (%s)\n" % (sid[:8], e))
                     continue
+                ast_, werr = _notice_file_stat(apath, "the notice archive")   # the index now describes the archive it counts; a fault here costs one rebuild at the next post
+                werr = werr or _notice_revs_write_unlocked(sid, revs, ast_)
+                if werr:
+                    sys.stderr.write("notice: %s's revision index describes an older archive (%s); the next post rebuilds it\n" % (sid[:8], werr))
             _NOTICE_SWEPT[sid] = (_stat_key(p), ledger_st)
     return moved
 
 
 _NOTICE_SWEPT = {}                         # sid -> (the file's stat key, the cleared ledger's) the sweep last saw: unmoved, skipped
-_NOTICE_ARCH_REVS = {}                     # sid -> (the archive file's stat key, {key: its highest archived rev}); read under _notice_lock
+_NOTICE_ARCH_REVS = {}                     # sid -> [the index's stat key, {key: its highest archived rev}, bytes, the archive description it read]; under _notice_lock
+NOTICE_ARCHIVE_READ_BLOCK = 64 * 1024      # the restore reads the archive backwards, this many bytes a block (plans/notice-cards.md, the archive bound)
+_NOTICE_ARCH_READ = {"rows": 0, "bytes": 0}   # what the restore's tail read parsed and read, for the tests
+
+
+def _notice_revs_path(sid):
+    return _notice_archive_dir() / (str(sid) + ".revs.json")
+
+
+def _notice_file_stat(path, what):
+    """(stat key, error): an absent file is (None, ""); a stat that FAILS (the directory unreadable) is the refusal's prose,
+    never absence (_stat_key folds both into None, under which a repost once minted rev 1 blind)."""
+    try:
+        so = path.stat()
+    except FileNotFoundError:
+        return None, ""
+    except OSError as e:
+        return None, "%s could not be read (%s)" % (what, e)
+    return (so.st_mtime_ns, so.st_size, so.st_ino, so.st_ctime_ns), ""
+
+
+def _notice_memo_shed_unlocked():
+    """Both memos, the parsed rows and the revision indexes, sit under NOTICE_MEMO_BYTES together: over it the largest
+    entries go first, whichever memo holds them, and only the deficit is shed. The caller holds _notice_lock."""
+    total = sum(e[2] for e in _NOTICE_MEMO.values()) + sum(e[2] for e in _NOTICE_ARCH_REVS.values())
+    if total <= NOTICE_MEMO_BYTES:
+        return
+    ents = [(_NOTICE_MEMO[k][2], "rows", k) for k in _NOTICE_MEMO] + [(_NOTICE_ARCH_REVS[k][2], "revs", k) for k in _NOTICE_ARCH_REVS]
+    for size, kind, k in sorted(ents, reverse=True):
+        if total <= NOTICE_MEMO_BYTES:
+            break
+        (_NOTICE_MEMO if kind == "rows" else _NOTICE_ARCH_REVS).pop(k, None)
+        total -= size
+        _NOTICE_MEMO_STATS["evicted"] += 1
+
+
+_NOTICE_ARCH_REBUILDS = {"count": 0}      # whole reads of an archive to rebuild its index, for the tests
+
+
+def _notice_archive_desc(st):
+    """The archive as the index records it: its size and mtime, or None for no archive (round two, low 1: an index left
+    BEHIND the archive by a rollback to a kernel that archives and writes no index must not be trusted)."""
+    return None if st is None else {"size": st[1], "mtimeNs": st[0]}
+
+
+def _notice_revs_write_unlocked(sid, revs, arch_st):
+    """The index written whole (a temp file and a rename) as {"revs": {key: rev}, "archive": {size, mtimeNs} | None}, the
+    archive's stat it describes beside the map: "" or the fault's prose. The caller holds _notice_lock."""
+    ip = _notice_revs_path(sid)
+    try:
+        _notice_archive_dir().mkdir(parents=True, exist_ok=True)
+        tmp = ip.with_name(ip.name + ".tmp.%d" % os.getpid())
+        tmp.write_text(json.dumps({"revs": revs, "archive": _notice_archive_desc(arch_st)}, sort_keys=True))
+        os.replace(tmp, ip)
+        return ""
+    except OSError as e:
+        return "the notice archive's revision index could not be written (%s)" % e
+
+
+def _notice_revs_read_unlocked(sid):
+    """The index file as it stands: (revs, archive description, bytes, error). An absent file is (None, None, 0, ""); a file
+    of the first shape (a bare map, no archive description) reads as a map behind an unknown archive, so the caller rebuilds.
+    The caller holds _notice_lock."""
+    ip = _notice_revs_path(sid)
+    try:
+        raw = ip.read_text()
+    except FileNotFoundError:
+        return None, None, 0, ""
+    except OSError as e:
+        return None, None, 0, "the notice archive's revision index could not be read (%s)" % e
+    try:
+        o = json.loads(raw)
+        if isinstance(o, dict) and isinstance(o.get("revs"), dict):
+            return {str(k): int(v) for k, v in o["revs"].items()}, o.get("archive"), len(raw), ""
+        return {str(k): int(v) for k, v in o.items()}, "behind", len(raw), ""
+    except (ValueError, AttributeError, TypeError) as e:
+        return None, None, 0, "the notice archive's revision index could not be read (%s)" % e
+
+
+def _notice_revs_rebuild_unlocked(sid, ap, arch_st, standing=None):
+    """One whole read of the archive into {key: rev}, merged over the STANDING marks (a high-water mark never lowers: an
+    archive that shrank under its index, or came back older, must not hand a dismissed key its old revision; round three),
+    written as the index over the archive's stat: (revs, error). A write that fails is said on stderr and the map returned
+    uncached, so the next post rebuilds again (round two, low 2: the true map was in hand and the post was refused); only
+    an archive that cannot be read refuses. The caller holds _notice_lock."""
+    try:
+        raw = ap.read_text()
+    except OSError as e:
+        return None, "the notice archive could not be read (%s)" % e
+    _NOTICE_ARCH_REBUILDS["count"] += 1
+    revs = dict(standing or {})
+    for line in raw.splitlines():
+        try:
+            o = json.loads(line)
+            k, rv = o.get("key"), int(o.get("rev") or 0)
+        except Exception:
+            continue
+        if k and rv > revs.get(k, 0):
+            revs[k] = rv
+    werr = _notice_revs_write_unlocked(sid, revs, arch_st)
+    if werr:
+        sys.stderr.write("notice: %s's revision index was rebuilt but not written (%s); the next post rebuilds again\n" % (sid[:8], werr))
+    return revs, ""
+
+
+def _notice_revs_index_unlocked(sid):
+    """The revision index of `sid`, {key: the highest revision the pass has archived}, as (revs, error): the sidecar
+    notices-archive/<sid>.revs.json, a high-water mark the pass writes before it archives and an Undo never lowers, read
+    in the archive's place (the archive bound, plans/notice-cards.md: the archive grows without bound and every poster
+    read it whole under the lock). The index records the archive's size and mtime it describes; when the archive's
+    current stat differs (a kernel that archived and wrote no index, a pass whose second write failed, a restore's
+    rewrite), or the index is absent over an archive, it is rebuilt from one whole read and written: a cache with a
+    rebuild path, never a second source of truth. Absent over no archive, {}. Memoized on the index's stat under the
+    rows memo's byte bound; a stat-match is a hit and a file read a miss in memos.notices, as the rows memo counts. A
+    refusal's prose when the index or the archive cannot be read: no revision is minted blind. The caller holds
+    _notice_lock."""
+    sid = str(sid)
+    ip = _notice_revs_path(sid)
+    ap = _notice_archive_dir() / (sid + ".jsonl")
+    ist, err = _notice_file_stat(ip, "the notice archive's revision index")
+    if err:
+        return None, err
+    ast_, err = _notice_file_stat(ap, "the notice archive")
+    if err:
+        return None, err
+    want = _notice_archive_desc(ast_)
+    if ist is None:
+        _NOTICE_ARCH_REVS.pop(sid, None)
+        if ast_ is None:
+            return {}, ""
+        return _notice_revs_rebuild_unlocked(sid, ap, ast_)
+    ent = _NOTICE_ARCH_REVS.get(sid)
+    if ent is not None and ent[0] == ist:
+        _NOTICE_MEMO_STATS["hit"] += 1
+        standing, arch = ent[1], ent[3]
+        if arch == want:
+            return standing, ""
+        _NOTICE_ARCH_REVS.pop(sid, None)                # the archive moved under a standing index: behind
+    else:
+        standing, arch, size, err = _notice_revs_read_unlocked(sid)
+        if err:
+            return None, err
+        _NOTICE_MEMO_STATS["miss"] += 1
+        if standing is None:                            # gone between the two stats: as an absent index
+            _NOTICE_ARCH_REVS.pop(sid, None)
+            return _notice_revs_rebuild_unlocked(sid, ap, ast_) if ast_ is not None else ({}, "")
+        if arch == want:
+            _NOTICE_ARCH_REVS[sid] = [ist, standing, size, arch]
+            _notice_memo_shed_unlocked()
+            return standing, ""
+        _NOTICE_ARCH_REVS.pop(sid, None)
+    if ast_ is None:
+        # the archive VANISHED under a standing index: the marks stand (a dismissed key must not take its old revision
+        # again, the reference's promise; round three, low), and the index says it describes no archive
+        werr = _notice_revs_write_unlocked(sid, standing, None)
+        if werr:
+            sys.stderr.write("notice: %s's revision index could not be re-described over the vanished archive (%s)\n" % (sid[:8], werr))
+        return standing, ""
+    return _notice_revs_rebuild_unlocked(sid, ap, ast_, standing)   # behind, or a bare map: one whole read, the marks merged
 
 
 def _notice_archive_rev_unlocked(sid, key):
-    """The highest revision of `key` the sweep has archived for `sid`, as (rev, error): 0 when nothing is archived, and a
-    refusal's prose when the archive cannot be read, so a post never mints a revision blind (round six, medium: the count
-    read the live file alone, a repost under a dismissed key took rev 1 again once the pass had moved the first post, its id
-    still stood in the cleared ledger, and the producer was told the card was up while nothing showed). The archive is read
-    whole once per file state (its stat, taken before the read) and kept as {key: rev}, a few bytes a key; it moves at a
-    sweep or an Undo. The caller holds _notice_lock."""
-    sid = str(sid)
-    ap = _notice_archive_dir() / (sid + ".jsonl")
-    try:
-        so = ap.stat()                             # explicit: an absent file is absence, a stat that FAILS (the directory
-    except FileNotFoundError:                      # unreadable) is a refusal, never absence (_stat_key folds both into None,
-        _NOTICE_ARCH_REVS.pop(sid, None)           # under which a repost minted rev 1 blind; round six, low)
-        return 0, ""
-    except OSError as e:
-        return 0, "the notice archive could not be read (%s), so no revision was assigned" % e
-    st = (so.st_mtime_ns, so.st_size, so.st_ino, so.st_ctime_ns)
-    ent = _NOTICE_ARCH_REVS.get(sid)
-    if ent is None or ent[0] != st:
-        try:
-            raw = ap.read_text()
-        except OSError as e:
-            return 0, "the notice archive could not be read (%s), so no revision was assigned" % e
-        revs = {}
-        for line in raw.splitlines():
-            try:
-                o = json.loads(line)
-                k, rv = o.get("key"), int(o.get("rev") or 0)
-            except Exception:
-                continue
-            if k and rv > revs.get(k, 0):
-                revs[k] = rv
-        ent = (st, revs)
-        _NOTICE_ARCH_REVS[sid] = ent
-    return ent[1].get(key, 0), ""
+    """The highest revision of `key` the pass has archived for `sid`, as (rev, error): read from the revision index, never
+    the archive, so a revision never recycles an id the cleared ledger holds (round six, medium) and a post pays a small
+    file, not the archive's size; an index or archive that cannot be read refuses the post with its reason. The caller
+    holds _notice_lock."""
+    revs, err = _notice_revs_index_unlocked(sid)
+    if err:
+        return 0, err + ", so no revision was assigned"
+    return revs.get(str(key), 0), ""
+
+
+def _notice_archive_tail_read_unlocked(ap, wants):
+    """The archive read BACKWARDS in NOTICE_ARCHIVE_READ_BLOCK blocks for the rows of the wanted (key, rev) pairs. The pass
+    appends a session's archived rows in one write and stamps them with its time (archivedAt), so one pass is one contiguous
+    block and every row of a revision sits in one pass; once every wanted pair has a row, the read goes on only to the first
+    row whose stamp differs (an older pass) and stops there. Rows without a stamp (archived before it existed) read as one
+    block to the file's start. Returns (cut, kept, back): the byte offset where the parsed region begins (the head before it
+    is unread and copied byte for byte by the caller), the parsed region's other lines in file order (bytes), and the wanted
+    rows in file order (dicts). Raises OSError as the file does. The caller holds _notice_lock."""
+    size = ap.stat().st_size
+    kept, back, found = [], [], set()
+    stamp, stop, cut, rem = None, False, 0, b""
+    with open(ap, "rb") as f:
+        pos = size
+        while pos > 0 and not stop:
+            step = min(NOTICE_ARCHIVE_READ_BLOCK, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + rem
+            _NOTICE_ARCH_READ["bytes"] += step
+            if pos > 0:
+                nl = buf.find(b"\n")
+                if nl < 0:                         # a line longer than the block: its start lies further up
+                    rem, body = buf, b""
+                else:
+                    rem, body = buf[:nl + 1], buf[nl + 1:]
+            else:
+                rem, body = b"", buf
+            lines = body.split(b"\n")
+            if lines and lines[-1] == b"":
+                lines.pop()
+            region = pos + len(rem)
+            for i in range(len(lines) - 1, -1, -1):
+                line = lines[i]
+                _NOTICE_ARCH_READ["rows"] += 1
+                try:
+                    o = json.loads(line)
+                    pair = (o.get("key"), int(o.get("rev") or 0))
+                    at = o.get("archivedAt")
+                except Exception:
+                    o, pair, at = None, None, None
+                if found >= wants and stamp is not None and at != stamp:
+                    cut = region + sum(len(l) + 1 for l in lines[:i + 1])   # this row and everything before it stay unread
+                    stop = True
+                    break
+                if pair in wants:
+                    back.append(o)
+                    found.add(pair)
+                    stamp = at
+                else:
+                    kept.append(line)
+            else:
+                cut = region
+    kept.reverse()
+    back.reverse()
+    return cut, kept, back
 
 
 def _restore_notice_archive(item_ids):
@@ -24315,35 +24517,48 @@ def _restore_notice_archive(item_ids):
         ap = _notice_archive_dir() / (sid + ".jsonl")
         with _notice_lock:
             try:
-                raw = ap.read_text()
+                cut, kept, back = _notice_archive_tail_read_unlocked(ap, wants)   # from the tail, as far as the batch's pass
             except FileNotFoundError:
                 continue
             except OSError as e:
                 faults[sid] = "the notice archive could not be read (%s)" % e
                 continue
-            keep, back = [], []
-            for line in raw.splitlines():
-                try:
-                    o = json.loads(line)
-                    hit = (o.get("key"), int(o.get("rev") or 0)) in wants
-                except Exception:
-                    hit = False
-                (back if hit else keep).append(line)
             if not back:
                 continue
+            pre_st, pre_err = _notice_file_stat(ap, "the notice archive")   # the archive as the index may describe it, before the rewrite
             try:
                 _notice_dir().mkdir(parents=True, exist_ok=True)
                 with open(_notice_path(sid), "a") as f:
-                    f.write("".join(l + "\n" for l in back))
+                    for o in back:
+                        f.write(json.dumps({k: v for k, v in o.items() if k != "archivedAt"}) + "\n")   # the pass's stamp stays in the archive
             except OSError as e:
                 faults[sid] = "the notice could not be restored (%s)" % e
                 continue
             try:
                 tmp = ap.with_name(ap.name + ".tmp.%d" % os.getpid())
-                tmp.write_text("".join(l + "\n" for l in keep))
+                with open(ap, "rb") as src, open(tmp, "wb") as dst:
+                    left = cut                         # the unread head, byte for byte, never parsed
+                    while left > 0:
+                        chunk = src.read(min(1 << 20, left))
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        left -= len(chunk)
+                    for l in kept:
+                        dst.write(l + b"\n")
                 os.replace(tmp, ap)
             except OSError as e:                     # live already: a row in both files is history twice, never a loss
                 sys.stderr.write("notice: the archive could not be shrunk after %s's restore (%s)\n" % (sid[:8], e))
+            # the index keeps its marks and, ONLY when it described the archive as it stood before this rewrite, is re-described
+            # over the rewritten one, so the next post rebuilds nothing; an index that was already behind stays behind (round
+            # three, medium: re-describing the standing map blessed an index a rollback had left behind, and the next post
+            # minted a revision the cleared ledger holds), and the next post pays its one rebuild
+            revs, arch, _size, rerr = _notice_revs_read_unlocked(sid)
+            if not rerr and revs is not None and not pre_err and arch == _notice_archive_desc(pre_st):
+                ast_, rerr = _notice_file_stat(ap, "the notice archive")
+                rerr = rerr or _notice_revs_write_unlocked(sid, revs, ast_)
+            if rerr:
+                sys.stderr.write("notice: %s's revision index describes an older archive after the restore (%s); the next post rebuilds it\n" % (sid[:8], rerr))
             _NOTICE_SWEPT.pop(sid, None)             # the pass looks again: the row is live and, once the ledger reads, undismissed
             moved += len(back)
     if moved:
@@ -56680,9 +56895,10 @@ var curFocus='f-chat', lastCol='f-chat';   // for Shift-Up out of the timeline: 
 // pointerdown / focusin / window-focus — event-based, no polling. Exactly one pane is ringed at a time.
 var lastChat='f-chat';   // the chat column the user last worked in (split screen 2026-09-08): where shell relays land
 function paneOf(id){return PANE[id]||(window.__rompChatPaneOf?window.__rompChatPaneOf(id):null);}   // split columns are made after this map
-function allCols(){var c=window.__rompChatFrameIds?window.__rompChatFrameIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat column, then Outline, Feed
+function allCols(){var c=window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat COLUMN (not a bottom pane, which is a vertical child), then Outline, Feed
 function setFocus(id){var pid=paneOf(id);if(!pid)return;curFocus=id;if(allCols().indexOf(id)>=0)lastCol=id;if(pid.indexOf('chat-pane')===0)lastChat=id;
-Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){el.classList.toggle('pane-focused',el.id===pid);});}
+var isBottom=!!(window.__rompTopFrameOf&&window.__rompTopFrameOf(id));   // id is the BOTTOM half of a split column (its top frame exists)
+Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){var on=el.id===pid;el.classList.toggle('pane-focused',on);el.classList.toggle('focus-bottom',on&&isBottom);el.classList.toggle('focus-top',on&&!isBottom&&el.classList.contains('split-v'));});}
 window.__rompFocusedChatId=function(){return document.getElementById(lastChat)?lastChat:'f-chat';};
 // A FILE dragged onto the shell's own chrome (a gutter, the bar between panes) must not navigate the page to the file —
 // the browser's default for an unhandled drop (the user 2026-09-12). The chat columns take a drop anywhere in their
@@ -59902,15 +60118,19 @@ var BK='romp-vscode-state-chat:';   // a column's state blob (the shim's SK for 
 var row=document.querySelector('.row'),gva=document.getElementById('gv-a');
 if(!row||!gva)return;
 function mobile(){var b=document.getElementById('mtabs');try{return !!b&&getComputedStyle(b).display!=='none';}catch(e){return false;}}
-function save(){try{localStorage.setItem(CK,JSON.stringify({v:2,cols:cols.map(function(c){return {n:c.n,ids:c.ids.slice()};})}));}catch(e){}}
+function save(){try{localStorage.setItem(CK,JSON.stringify({v:2,cols:cols.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;})}));}catch(e){}}
 function paneId(n){return 'chat-pane-'+n;}function frameId(n){return 'f-chat-'+n;}
 function idx(n){for(var i=0;i<cols.length;i++){if(cols[i].n===n)return i;}return -1;}
 function entry(n){var i=idx(n);return i<0?null:cols[i];}
 function frames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}
+function isBelow(c){return !!(c&&c.place==='below');}   // a cols entry that is a bottom pane (nested under parent), not a side column
+function belowOf(n){for(var i=0;i<cols.length;i++){if(isBelow(cols[i])&&cols[i].parent===n)return cols[i];}return null;}   // the bottom pane under column n, if any
+function sideCols(){return cols.filter(function(c){return !isBelow(c);});}   // the SIDE columns in row order: EVERY cols neighbour walk (left/right/last) routes through this, because a bottom pane is a vertical child with no chat-pane-<n> element and must never be resolved as a neighbour
+function columnFrames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){if(!isBelow(c))out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}   // the horizontal columns only: a bottom pane is a vertical child, not a column
 function frameOfWin(win){if(!win)return null;var fs=frames();for(var i=0;i<fs.length;i++){try{if(fs[i].contentWindow===win)return fs[i];}catch(e){}}return null;}
 function colOf(win){var f=frameOfWin(win);return f?String(f.getAttribute('data-col')||''):'';}
 function frameOfCol(n){return document.getElementById(n===1?'f-chat':frameId(n));}
-function lastPane(){return cols.length?paneId(cols[cols.length-1].n):'chat-pane';}
+function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s.length?paneId(s[s.length-1].n):'chat-pane';}   // the rightmost SIDE column's pane; a bottom pane has no chat-pane-<n> element, so it must not be the rightmost (else mountZones' edge zone, the gv-a/b/c gutters and __rompSplitGrow all get a missing id)
 // THE PARTITION, three pure readers of cols: the column holding a session (1, the first, when no entry lists it);
 // the sets every column page filters by (an id listed twice — a store another dashboard wrote — belongs to the
 // first entry in row order, so no two columns show it); the lowest free number (a reused number's blob and grow
@@ -59955,7 +60175,35 @@ function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__ro
 var BUSY='A session is still being created in this column.';
 var LOCKED='The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session.';
 var deferred={};   // column numbers a peer dashboard's write dropped while their page had a create in flight: closed on the page's idle signal (colBusy below), never under the create
+// A VERTICAL split (drag a tab to a pane's bottom edge): a bottom pane nested inside its PARENT column's pane. The
+// parent's own iframe is kept IN PLACE (an iframe reparented in the DOM reloads, so the top pane is never moved): the
+// .pane becomes .split-v, the parent iframe stops absolute-filling and flexes by the top ratio, and a .gh.gh-chat
+// row-resize gutter plus a .chat-sub holding the bottom iframe follow it. The bottom iframe dials /chat?col=<n>&skeleton=1
+// like any column, seeded on its session; to the kernel it is one more col client.
+function gutterV(gid,topId,botId,colN){var h=document.getElementById(gid);if(!h)return;
+h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.getElementById(topId),B=document.getElementById(botId);if(!T||!B)return;
+document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
+function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
+function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
+var ce=entry(colN);if(ce){ce.ratio=Math.max(0.05,Math.min(0.95,nT/sum));save();}}   // persist the ON-SCREEN top ratio (nT/sum after the pixel-clamped drag); a reload restores exactly this, no divider jump
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
+var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
+var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
+var r=(ce.ratio>=0.05&&ce.ratio<=0.95)?ce.ratio:0.5;   // accept the same range the drag persists, so the restore matches the screen
+pp.classList.add('split-v');topf.style.flex=r+' 1 0';
+var g=document.createElement('div');g.className='gh gh-chat';g.id='gh-chat-'+ce.n;
+var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-'+ce.n;sub.style.flex=(1-r)+' 1 0';
+var f=document.createElement('iframe');f.id=frameId(ce.n);f.className='chat-col';f.setAttribute('data-col',String(ce.n));
+seed(ce.n,sid);f.src='/chat?col='+ce.n+'&skeleton=1';
+if(state)f.addEventListener('load',function(){adopt(f,sid,state);state=null;});
+sub.appendChild(f);pp.appendChild(g);pp.appendChild(sub);   // .col-x is position:absolute (out of the flex flow), so appending the gutter and the bottom sub after it keeps the flex order top / gutter / bottom
+gutterV(g.id,topId,sub.id,ce.n);   // the two FLEX children: the top iframe (a direct .pane child) and the .chat-sub wrapper; never the bottom iframe (position:absolute in the sub, its flex inert)
+if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
+try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:ce.n,open:true}}));}catch(e){}
+return f;}
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
+var ce0=entry(n);if(ce0&&ce0.place==='below')return makeBelow(ce0,sid,state);   // a bottom pane nests, it is not a new column in the row
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
 p.style.flex='var(--g-chat'+n+',60) 1 0';
@@ -59968,14 +60216,15 @@ p.appendChild(f);p.appendChild(x);
 row.insertBefore(g,gva);row.insertBefore(p,gva);
 if(window.__rompRegisterPane)window.__rompRegisterPane(p.id,'chat'+n);
 if(window.__rompGrowFairIfNew)window.__rompGrowFairIfNew('chat'+n);else if(window.__rompGrowFair)window.__rompGrowFair('chat'+n);   // the half __rompSplitGrow wrote, or a fair width at a restore — never a sliver — and a dragged width survives a reload
-if(window.__rompGutter)window.__rompGutter(g.id,function(){var i=idx(n);return i>0?paneId(cols[i-1].n):'chat-pane';},p.id);
+if(window.__rompGutter)window.__rompGutter(g.id,function(){var s=sideCols(),si=-1;for(var q=0;q<s.length;q++){if(s[q].n===n){si=q;break;}}return si>0?paneId(s[si-1].n):'chat-pane';},p.id);   // the left neighbour among SIDE columns (a bottom pane between them has no chat-pane-<n>, which would kill the gutter)
 if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:n,open:true}}));}catch(e){}   // palette-main wires its keys
 return f;}
 function canSplit(){return !mobile()&&cols.length+1<MAX;}
 // a refused move says why (the click-acknowledgement rule): the cap, the phone's one-pane layout, or nothing to do
 function notify(why){try{if(window.__rompNotify)window.__rompNotify('warn',why);}catch(e){}return null;}
-function refuse(){return notify(mobile()?'The phone shows one pane at a time — no split here.':'Four chat columns at most — close one to open another.');}
+function refuse(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one first.');}   // the cap counts PANES (a bottom pane holds a slot too), so a new column at the cap says panes as well
+function refusePane(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one to split.');}   // the vertical split adds a PANE, not a column: the cap message counts panes
 function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexOf(sid);if(j>=0){c.ids.splice(j,1);return c.ids.length?0:c.n;}}return 0;}   // the number of an entry the removal emptied, else 0
 // THE ONE MUTATION of the sets. `to` is a column number (1 = the first, which derives and takes no entry) or "new":
 // a column of its own to the right of the rightmost, half that column's width. Steps: the source page hands over
@@ -59993,6 +60242,13 @@ var state=take(src,sid),n=nextNumber();
 if(window.__rompSplitGrow)window.__rompSplitGrow(lastPane(),'chat'+n);   // the rightmost column and the new one each take half its width
 unlist(sid);cols.push({n:n,ids:[sid]});save();
 var nf=make(n,sid,state);try{nf.contentWindow.focus();}catch(e){}return nf;}
+if(to==='down'){var pc=from;   // split THIS session's own column (or the first) into a top and a bottom pane
+if(isBelow(entry(pc)))return notify('A split pane cannot split again.');   // sid already sits in a bottom pane: at most two rows deep
+if(belowOf(pc))return notify('This column is already split top and bottom.');
+var seD=entry(pc);if(seD&&seD.ids.length===1)return notify('This session is already alone in its column.');   // parity with the "new" path: a lone session has nothing to split off
+if(!canSplit())return refusePane();
+var stD=take(src,sid),nD=nextNumber();unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
+var bf=make(nD,sid,stD);try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
 var tf=frameOfCol(tn);if(!tf)return null;
 if(tn===from)return tf;   // already there: nothing moves
@@ -60006,22 +60262,42 @@ try{tf.contentWindow.focus();}catch(e){}return tf;}
 // and its grow go; the Log drops its connection state; the ring moves to the column on its left. `keep` skips the
 // store write (a reconcile of another dashboard tab's write, which is already the truth).
 function close(n,keep){var i=idx(n);if(i<0)return;
+if(isBelow(cols[i]))return closeBelow(i,keep);   // a bottom pane un-nests, it is not a column in the row
 var f=document.getElementById(frameId(n)),home=document.getElementById('f-chat');
 if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with the document (its queued text with it)
+var kid=belowOf(n);   // a bottom pane nested in this column closes WITH it: its sessions rejoin the first column too
+if(!keep&&kid){var kf0=document.getElementById(frameId(kid.n));if(kf0&&busy(kf0)){notify(BUSY);return;}}
 if(f&&home)cols[i].ids.forEach(function(sid){adopt(home,sid,take(f,sid));});
-var left=i>0?paneId(cols[i-1].n):'chat-pane';   // the column on its left: takes the ring below, and the width first
-cols.splice(i,1);delete deferred[n];if(!keep)save();   // a deferred close is moot once the column is gone by any road
+if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice
+var sideL=sideCols(),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
+var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';
+cols.splice(i,1);delete deferred[n];if(!keep)save();   // delete deferred[n] (#1774): a deferred close is moot once the column is gone by any road
 var p=document.getElementById(paneId(n)),g=document.getElementById('gv-chat-'+n);
-if(window.__rompSplitShrink)window.__rompSplitShrink(left,paneId(n));   // its pixels go to the column on its left (the halving's twin), while the pane is still in the row
+if(window.__rompSplitShrink)window.__rompSplitShrink(leftPane,paneId(n));   // its pixels go to the column on its left (the halving's twin), while the pane is still in the row
 if(window.__rompUnregisterPane)window.__rompUnregisterPane(paneId(n));
-if(p)p.remove();if(g)g.remove();
+if(p)p.remove();if(g)g.remove();   // the nested bottom pane's DOM goes with the parent .pane
 if(window.__rompColGone)window.__rompColGone(String(n));
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:n,open:false}}));}catch(e){}
-var pf=document.getElementById(i>0?frameId(cols[i-1].n):'f-chat');   // the ring moves to the column before it
+var pf=document.getElementById(leftFrame);   // the ring moves to the column before it
 try{pf&&pf.contentWindow.focus();}catch(e){}}
-function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';if(!c&&cols.length)c=String(cols[cols.length-1].n);if(c)close(Number(c));}
+// UN-NEST a bottom pane: its sessions rejoin its PARENT column's top pane, the bottom iframe and the gutter go, and the
+// parent returns from a two-pane split to a single iframe. Reached when a bottom pane empties (colEmpty -> close) or a
+// close targets it directly.
+function closeBelow(i,keep){var ce=cols[i];var topId=ce.parent===1?'f-chat':frameId(ce.parent),pid=ce.parent===1?'chat-pane':paneId(ce.parent);
+var bf=document.getElementById(frameId(ce.n)),home=document.getElementById(topId);
+if(!keep&&busy(bf)){notify(BUSY);return;}   // a busy bottom pane a PEER's write drops is DEFERRED upstream by reconcile (frameOfCol resolves it), so this direct-close busy gate is the by-hand path
+if(bf&&home)ce.ids.forEach(function(sid){adopt(home,sid,take(bf,sid));});
+if(ce.parent!==1){var pe=entry(ce.parent);if(pe)ce.ids.forEach(function(sid){if(pe.ids.indexOf(sid)<0)pe.ids.push(sid);});}   // a side-column parent LISTS them; the first column derives them from the rest
+cols.splice(i,1);delete deferred[ce.n];if(!keep)save();   // clear any deferred mark, as close() does (a deferred close is moot once the pane is gone)
+var g=document.getElementById('gh-chat-'+ce.n),sub=document.getElementById('chat-sub-'+ce.n);if(g)g.remove();if(sub)sub.remove();
+var pp=document.getElementById(pid),topf=document.getElementById(topId);if(pp)pp.classList.remove('split-v');if(topf)topf.style.flex='';   // the top pane returns to absolute-fill
+if(window.__rompColGone)window.__rompColGone(String(ce.n));
+try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:ce.n,open:false}}));}catch(e){}
+try{home&&home.contentWindow.focus();}catch(e){}}
+function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';var sc=sideCols();if(!c&&sc.length)c=String(sc[sc.length-1].n);if(c)close(Number(c));}   // the last SIDE column when nothing is focused (never a bottom pane)
 // the palette's Move this session to a new column: the focused column's active tab (the one DOM read kept, for this)
 window.__rompSplitChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to move.');return moveTab(id,'new');};
+window.__rompSplitDownChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to split.');return moveTab(id,'down');};   // the vertical split: the focused column's active tab to a new bottom pane
 window.__rompCanSplit=canSplit;window.__rompMoveTab=moveTab;
 window.__rompCloseSplit=function(n){if(n===undefined)closeFocused();else close(Number(n));};
 window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the phone: the one chat shows everything
@@ -60029,7 +60305,9 @@ window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the
 // provisional resolves; a session an entry already lists is never stolen
 window.__rompClaimSession=function(sid,col){var n=Number(col),e=entry(n);if(typeof sid!=='string'||!sid||!e||ownerOf(sid)!==1)return false;e.ids.push(sid);save();return true;};
 window.__rompChatFrames=frames;window.__rompChatFrameIds=function(){return frames().map(function(f){return f.id;});};
-window.__rompChatPaneOf=function(fid){return fid==='f-chat'?'chat-pane':(String(fid).indexOf('f-chat-')===0?paneId(String(fid).slice(7)):null);};
+window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};   // columns only: the horizontal focus nav and column-cycling skip a bottom pane (a vertical child)
+window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column; the CALLER (setFocus) adds .focus-top/.focus-bottom so each half shows its own ring
+window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top)
 window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOfWin=frameOfWin;window.__rompChatTarget=target;
 // THE DRAG (the user 2026-09-11, who asked for a tab dragged to the right edge to make a column and onto another column
 // to move it). The page posts {romp:'tabDrag',on:true,sid,name,stripH} at its dragstart and {on:false} at dragend
@@ -60054,7 +60332,7 @@ function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,l
 function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on','refused');ghost.textContent='';return;}
 var r=ghostRect(z.parentElement.getBoundingClientRect(),row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
-ghost.textContent=refused?'Four columns at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
+ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
 function cue(z,on){if(z.classList.contains('col-drop-edge'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
@@ -60098,34 +60376,43 @@ m.sids.forEach(function(sid){if(typeof sid!=='string'||!sid)return;var o=ownerOf
 // A column a peer dashboard's write dropped while this page was busy was DEFERRED (reconcile below), not closed under the
 // create; it closes now against a fresh read of the store, and only if the store still lacks it (the peer may have listed
 // it again meanwhile, or the page claimed a created session for it). A signal from a column nobody deferred changes nothing
-if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source));if(!deferred[bc])return;delete deferred[bc];var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}});
+if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source)),e2=entry(bc),marks=[bc];if(e2&&e2.place==='below')marks.push(e2.parent);var hit=false;marks.forEach(function(mk){if(deferred[mk]){delete deferred[mk];hit=true;}});if(!hit)return;var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}});   // a bottom pane's idle clears its OWN and its PARENT's deferral (a parent deferred because its nested pane was busy)
 // THE STORE, read: the v2 object, or a v1 array of numbers migrated once (each number to the session its blob names;
 // a number with no session is dropped). Sanitised on the way in: integer numbers from 2, each once; string ids, each
 // in one entry; no empty entry; at most MAX-1 entries.
 function read(){var raw=null;try{raw=JSON.parse(localStorage.getItem(CK)||'null');}catch(e){}
 var out=[],seen={},migrated=false;
-function add(n,ids){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
-var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(keep.length)out.push({n:n,ids:keep});}
+function add(n,ids,place,parent,ratio){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
+var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(!keep.length)return;
+var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>=0.05&&r<=0.95)?r:0.5;}out.push(e);}
 if(Array.isArray(raw)){migrated=true;raw.forEach(function(n){var st=null;try{st=JSON.parse(localStorage.getItem(BK+Number(n))||'null');}catch(e){}add(n,[st&&typeof st.activeId==='string'?st.activeId:'']);});}
-else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[]);});
+else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[],c.place,c.parent,c.ratio);});
+// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, degrades to a side
+// column (never orphaned, never two-deep). One bottom pane per parent.
+var kidPar={};out.forEach(function(c){if(c.place!=='below')return;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
+if(!ok||kidPar[c.parent]){delete c.place;delete c.parent;delete c.ratio;return;}kidPar[c.parent]=true;});
 return {cols:out,migrated:migrated};}
 // another dashboard tab's write (this window never hears its own): its arrangement is the truth — close what it
-// dropped, make what it added (seeded like a restore), take its sets — and nothing is written back. One close is
-// DEFERRED, never skipped: a dropped column whose page has a create in flight (busy). `keep` passes close()'s busy gate,
-// so this tore the column down over the create and its queued text died with the document. The entry stays in cols at
-// its place, so every reader still knows the column, and its number waits in `deferred` for the page's idle signal (the
-// colBusy handler above), which re-reads the store and closes it only if the store still lacks it. A dropped column the
-// store lists again clears its mark: the store speaks for it once more.
+// dropped, make what it added (seeded like a restore), take its sets, and nothing is written back. One close is
+// DEFERRED, never skipped (#1774): a dropped column whose page has a create in flight (busy). `keep` passes close()'s
+// busy gate, so this tore the column down over the create and its queued text died with the document. The entry stays
+// in cols at its place, its number waits in `deferred` for the page's idle signal (the colBusy handler above), which
+// re-reads the store and closes it only if the store still lacks it. A bottom pane is deferred the same way
+// (frameOfCol resolves it; close dispatches it to closeBelow) and re-inserted with its placement.
 function reconcile(next){var kept=[];
 cols.slice().forEach(function(c,i){if(next.some(function(d){return d.n===c.n;})){delete deferred[c.n];return;}
-if(busy(frameOfCol(c.n))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});
-cols=next.map(function(c){return {n:c.n,ids:c.ids.slice()};});
-kept.forEach(function(k){cols.splice(Math.min(k[0],cols.length),0,{n:k[1].n,ids:k[1].ids.slice()});});   // the busy column, where it was
-cols.forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});}
+var kb=belowOf(c.n);if(busy(frameOfCol(c.n))||(kb&&busy(frameOfCol(kb.n)))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});   // defer a busy column OR a column whose nested bottom pane is busy (else close(keep) tears the busy kid down, its queued text with it)
+cols=next.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;});
+kept.forEach(function(k){var e=k[1],o={n:e.n,ids:e.ids.slice()};if(e.place==='below'){o.place='below';o.parent=e.parent;o.ratio=e.ratio;}cols.splice(Math.min(k[0],cols.length),0,o);});   // the busy column or bottom pane, where it was, with its placement
+cols.filter(function(c){return !isBelow(c);}).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});   // columns first, then their bottom panes (a bottom pane nests into a parent that must already be up)
+cols.filter(isBelow).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});}
 window.addEventListener('storage',function(e){if(!e||e.key!==CK||mobile())return;var r=read();if(!r.migrated)reconcile(r.cols);});
 // the columns this browser had open come back, each on a member of its own (the phone restores nothing: the
 // arrangement stays in the store for the desktop); a v1 store is written back in the new shape, once
-try{if(!mobile()){var r0=read();cols=r0.cols;cols.forEach(function(c){make(c.n,seedFor(c),null);});if(r0.migrated)save();}}catch(e){}
+try{if(!mobile()){var r0=read();cols=r0.cols;
+cols.filter(function(c){return !isBelow(c);}).forEach(function(c){make(c.n,seedFor(c),null);});   // columns first
+cols.filter(isBelow).forEach(function(c){if(!make(c.n,seedFor(c),null)){var bi=idx(c.n);if(bi>=0)cols.splice(bi,1);}});   // then bottom panes; a parent that never came up drops the entry to the first column's rest
+if(r0.migrated)save();}}catch(e){}
 })();
 """
 
@@ -61110,12 +61397,26 @@ def _landing():
             "#col-ghost.on{display:flex}"
             "#col-ghost.refused{background:transparent;box-shadow:inset 0 0 0 1px var(--accent,#9cd2ff)}"
             ".pane>iframe{position:absolute;inset:0;width:100%;height:100%}"
+            # a VERTICALLY split chat column (the chat vertical split, drag a tab to a pane's bottom edge): the .pane
+            # becomes a column flexbox of two .chat-sub wrappers with a .gh.gh-chat row-resize gutter between. Each sub
+            # wraps its OWN iframe, so the .pane>iframe absolute-fill above does not apply: the subs flex by the stored
+            # ratio and their iframes fill the sub instead. The gutter reuses .gh (the band gutter's row-resize dress).
+            ".pane.split-v{display:flex;flex-direction:column}"
+            ".chat-sub{position:relative;flex:1 1 0;min-width:0;min-height:0;overflow:hidden}"
+            ".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}"
+            # the TOP sub of a split column is the parent's own iframe, kept in place (never reparented, moving an
+            # iframe reloads it): under .split-v it stops absolute-filling and flexes by its stored ratio instead
+            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0}"
             # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
             # The focused pane gets a thin inset border (drawn as an inset box-shadow over the iframe edges);
             # the others get nothing, so the only lines on screen are the splitters + this focus ring. The ring
             # is pointer-events:none (never blocks) and z below the timeline collapse handle (z-30).
             ".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;"
             "box-shadow:inset 0 0 0 2px rgba(156,210,255,0.55)}"   # the romp accent — focus cues wear it (CLAUDE.md)
+            # a SPLIT column rings the focused HALF, not the whole column: the whole-pane ring is dropped and the top
+            # iframe or the bottom .chat-sub wears the accent instead, so the user sees which half takes the paste or command
+            ".pane.pane-focused.split-v::after{display:none}"
+            ".pane.pane-focused.split-v.focus-top>iframe,.pane.pane-focused.split-v.focus-bottom>.chat-sub{outline:2px solid rgba(156,210,255,0.55);outline-offset:-2px}"
             "#mtabs{display:none}"
             # narrow OR a touch device up to 1024px → one pane + bottom tabs; mouse desktops keep the grid
             # (_MOBILE_MQ: the same query the mobile script's __rompMobileOn probe answers by)

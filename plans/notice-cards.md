@@ -453,6 +453,15 @@ unreadable archive refuses the post; an unreadable index refuses the post; the i
 reads no further (a counter on the blocks read), walks to an old batch's pass on repeated presses, strips
 `archivedAt` on the way back, and reads rows without a stamp whole. Red first at the head that lacks each piece.
 
+**Landed (PR 1776):** the index, the stamp and the tail read as designed; the memo joins `NOTICE_MEMO_BYTES` under the
+same keys in `memos.notices`, hits and misses included; the pass holds a session's rows when its index cannot be written.
+Round two: the index records the archive's size and mtime it describes and is rebuilt when the archive's stat differs (a
+kernel that archived and wrote no index, a pass whose second write failed, a restore's rewrite), so it is the cache with a
+rebuild path and never trusted behind the archive; a rebuild whose write fails still answers the post, uncached. Disk
+growth stays as the reference says; the byte bound is the user's call. Known and queued: an Undo whose batch the pass has
+not archived yet reads the whole archive (its rows are live, the tail read finds none and walks to the start), no worse
+than before the bound.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key
