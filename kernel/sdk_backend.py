@@ -8619,7 +8619,7 @@ class SdkSession:
                 mark(self.sid, prompt, why)
             except Exception as e:
                 self.backend._log("cron dedupe (%s): refused-echo mark failed: %s" % (self.name, e))
-        t = threading.Thread(target=run, name="romp-refused-mark-" + self.sid[:8], daemon=True)
+        t = threading.Thread(target=run, name="romp-refused-mark:" + self.sid[:8], daemon=True)
         t.start()
         return t
 
