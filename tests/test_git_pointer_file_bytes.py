@@ -78,7 +78,7 @@ def _git(*args, cwd):
 
 
 def _mk_repo(td, name="repo"):
-    repo = Path(td) / name
+    repo = Path(os.path.realpath(td)) / name      # the physical place: the kernel names a pointer file by its resolved path
     repo.mkdir()
     init_repo(repo, "-q", "-b", "main", ident=_IDENT, timeout=10)
     (repo / "a.txt").write_text("a\n")
@@ -88,7 +88,7 @@ def _mk_repo(td, name="repo"):
 
 
 def _torn_cwd(td, name="work"):
-    cwd = Path(td) / name
+    cwd = Path(os.path.realpath(td)) / name       # the physical place (a temp root under /var on macOS is one symlink away)
     cwd.mkdir()
     (cwd / ".git").write_bytes(TORN)
     return cwd
@@ -164,6 +164,41 @@ class Resolver(unittest.TestCase):
                 self.assertEqual(km._git_branch(str(cwd)), "")
             self.assertEqual(len(err4.getvalue().splitlines()), 1, "a new episode → one new line")
             self.assertIn(dotgit, err4.getvalue())
+            self.assertEqual(len(_bell()), 2, "a new episode rings once more")
+
+    def test_a_repo_reached_through_a_symlinked_path_ends_its_fault_episode_on_repair(self):
+        """The fault comes in under the session cwd (git's toplevel query fails on the torn pointer, so the branch falls to
+        the handed directory) and the clean read under git's toplevel, which git returns physically resolved. Where the two
+        differ (a temp root under /var or /tmp on macOS, a symlinked project directory anywhere) the episode must still end,
+        or the next real break of the same pointer sees the recorded text and says nothing: no stderr line, no bell row (the
+        macOS triage of v0.16). The record and the clear key on the file's resolved path, which the line names."""
+        with tempfile.TemporaryDirectory() as td:
+            real = _torn_cwd(td, "real")                       # the pointer file at its physical place
+            link = Path(td) / "link"
+            os.symlink(real, link)                             # the session cwd, one symlink away
+            handed = str(link / ".git")
+            resolved = os.path.realpath(handed)
+            self.assertNotEqual(handed, resolved, "the premise: the handed path is not canonical")
+            with _stderr() as err:
+                self.assertEqual(km._git_branch(str(link)), "", "torn: no branch, never a raise")
+            lines = err.getvalue().splitlines()
+            self.assertEqual(len(lines), 1, "one stderr line for the fault: %r" % lines)
+            self.assertIn(resolved, lines[0], "the line names the file at its physical place")
+            self.assertEqual(len(_bell()), 1)
+            # the repair: the clean read comes through git's toplevel, the resolved path
+            repo = _mk_repo(td)
+            (real / ".git").write_text("gitdir: %s\n" % (repo / ".git"))
+            with _stderr() as err2:
+                self.assertEqual(km._git_branch(str(link)), "main", "a repaired pointer file resolves again")
+            self.assertEqual(err2.getvalue(), "", "a clean read is not news")
+            self.assertEqual(km._git_file_faults, {}, "the clean read under git's toplevel ends the episode opened under the session cwd")
+            # the same pointer breaking again is a NEW episode, whichever path form the break comes in under
+            (real / ".git").write_bytes(TORN)
+            km._head_path_cache.clear(); km._branch_cache.clear(); km._tree_cache.clear()
+            with _stderr() as err3:
+                self.assertEqual(km._git_branch(str(link)), "")
+            self.assertEqual(len(err3.getvalue().splitlines()), 1, "a new episode: one new line, never silence: %r" % err3.getvalue())
+            self.assertIn(resolved, err3.getvalue())
             self.assertEqual(len(_bell()), 2, "a new episode rings once more")
 
     @unittest.skipIf(os.geteuid() == 0, "root reads through chmod 0; the EACCES step needs a real permission fault")

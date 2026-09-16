@@ -34,10 +34,13 @@ class StageSplitUnit(unittest.TestCase):
         saved = km._STAGE_RING_LEN[0]
         self.addCleanup(lambda: km._STAGE_RING_LEN.__setitem__(0, saved))
         km._STAGE_RING_LEN[0] = None
+        # the override is clamped to this machine's fraction by design (min(n, frac)): a 7 GB runner reads 28, so the
+        # expectation is the clamp of 40, not the literal (a literal held only on a box of 10 GB or more)
+        frac = max(16, km._mem_total_bytes() // (256 * 1024 * 1024))
         with mock.patch.dict(os.environ, {"ROMP_PERF_STAGE_RING": "40"}):
-            self.assertEqual(km._stage_ring_len(), 40, "the override names the length")
+            self.assertEqual(km._stage_ring_len(), min(40, frac), "the override names the length, clamped to the memory fraction")
         with mock.patch.dict(os.environ, {"ROMP_PERF_STAGE_RING": "9000"}):
-            self.assertEqual(km._stage_ring_len(), 40, "resolved once: a later environment does not move it")
+            self.assertEqual(km._stage_ring_len(), min(40, frac), "resolved once: a later environment does not move it")
         km._STAGE_RING_LEN[0] = None
         with mock.patch.dict(os.environ, {"ROMP_PERF_STAGE_RING": "nonsense"}):
             self.assertGreaterEqual(km._stage_ring_len(), 16, "a bad override falls to the memory fraction")

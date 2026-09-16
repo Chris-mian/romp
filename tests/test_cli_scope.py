@@ -1299,9 +1299,11 @@ class LimitsSettledAtBoot(unittest.TestCase):
         self.assertIn('/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.max', sb.CLI_SCOPE_MEMORY_PROBE_CMD[2])
         # the controller command's contract, on this box's own sh (no scope): one of its two markers on
         # stdout and exit 0 either way, so a non-zero exit from systemd-run can only mean the scope never ran
-        rc, err, out = sb._cli_scope_probe(subprocess.run, sb.CLI_SCOPE_MEMORY_PROBE_CMD, stdout=True)
-        self.assertEqual((rc, err), (0, ""))
-        self.assertIn(out, sb.CLI_SCOPE_MEMORY_PROBE_MARKS)
+        if os.path.exists("/proc/self/cgroup"):   # the live run needs procfs: without it `cut` names the missing file on stderr
+            #                                        (macOS), where the feature is off anyway (cli_scope_supported needs systemd-run)
+            rc, err, out = sb._cli_scope_probe(subprocess.run, sb.CLI_SCOPE_MEMORY_PROBE_CMD, stdout=True)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertIn(out, sb.CLI_SCOPE_MEMORY_PROBE_MARKS)
         self.assertEqual(sb.CLI_SCOPE_MEMORY_PROBE_MARKS, {"has-memory-max": True, "no-memory-max": False})
         self.assertEqual(sb.CLI_SCOPE_ADJ_PROBE_CMD,
                          ["sh", "-c", 'true > /proc/self/oom_score_adj || exit 3; echo "$1" > /proc/self/oom_score_adj', "sh"])

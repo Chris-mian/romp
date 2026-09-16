@@ -82,7 +82,9 @@ def _strip(tree):
 
 class Harness(unittest.TestCase):
     def setUp(self):
-        self.td = Path(tempfile.mkdtemp())
+        self.td = Path(tempfile.mkdtemp()).resolve()   # the parse is handed the REAL path: the reader's record-cache key must match the
+        #                                                 assembly cache's realpath key (a symlinked temp root on macOS kept them apart: the
+        #                                                 converge pass saw noEntry for every leaf, 2026-09-16)
         self.ck = self.td / "checkpoints"
         em.set_checkpoint_dir(lambda: self.ck)
         self.states, self.sent = None, []                       # what parse() hands the parser until write() sets them
@@ -823,6 +825,35 @@ class ConvergeAssembly(Harness):
     def cycle(self, now):
         self.km._begin_checkpoint_cycle()
         return self.km._converge_checkpoints(now)
+
+    def test_the_pass_asks_the_reader_under_the_path_it_holds_when_the_root_crosses_a_symlink(self):
+        """The assembly cache keys on the resolved path, the reader on the path as handed. A transcript root that crosses a
+        symlink (a temp root under /var on macOS; a symlinked home or CLAUDE_CONFIG_DIR anywhere) made the pass enumerate the
+        resolved path, ask the reader under it, find no entry, count noEntry every cycle and write no document, so the next
+        boot paid the whole read T376 exists to avoid (the macOS triage of v0.16). The pass asks under the path the boot's
+        parse handed, which is the reader's key; the document lands where the restore looks (keyed on the resolved path)."""
+        import time
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        real = self.write("symlinked", records(), sent=sent)                 # the leaf at its physical place
+        link = self.td / "alias"
+        os.symlink(self.td / "symlinked", link)
+        handed = str(link / (SID + ".jsonl"))                                 # the path the boot hands the parse
+        self.assertNotEqual(handed, os.path.realpath(handed), "the premise: the handed path is not canonical")
+        old = time.time() - 600; os.utime(real, (old, old))
+        self.fresh(); self.parse(handed)                                      # the boot's whole read, under the handed path
+        self.assertTrue(em.entry_whole_resident(handed), "the reader holds the leaf under the handed path")
+        self.assertFalse(em.entry_whole_resident(real), "…and not under the resolved one")
+        whole = em.asm_whole_entries()
+        self.assertEqual([w[0] for w in whole], [handed], "the pass enumerates the path the reader holds: %r" % whole)
+        saved = self.km._sessions; self.km._sessions = lambda now, **kw: []   # no discover row: the enumeration road alone
+        self.addCleanup(setattr, self.km, "_sessions", saved)
+        self.assertFalse(em._asm_ckpt_file(handed).exists())
+        self.cycle(NOW + 600)
+        cv = em.asm_checkpoint_stats()["converge"]
+        self.assertEqual(cv["writes"], 1, "one document written from the boot's parse: %s" % cv)
+        self.assertFalse(cv["skipped"].get("noEntry"), "nothing counted noEntry: %s" % cv)
+        self.assertTrue(em._asm_ckpt_file(handed).exists(), "the document stands where the restore looks")
+        self.assertEqual(em._asm_ckpt_file(handed), em._asm_ckpt_file(real), "one document, keyed on the resolved path")
 
     def test_the_pass_writes_an_idle_leafs_document_from_the_boots_parse_and_the_next_boot_reads_a_tail(self):
         path = self.idle_leaf()

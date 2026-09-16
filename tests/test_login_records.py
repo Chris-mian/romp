@@ -27,6 +27,7 @@ import inspect
 import json
 import os
 import secrets
+import sys
 import tempfile
 import threading
 import time
@@ -300,8 +301,10 @@ class TheTokenCommand(unittest.TestCase):
         for k in ("PATH", "HOME"):
             self.assertIn(k, seen, k)
         self.assertEqual((seen.get("XDG_CONFIG_HOME"), seen.get("LC_TIME")), ("/x/config", "C"), "the XDG and LC names pass")
+        injected = {"__CF_USER_TEXT_ENCODING"} if sys.platform == "darwin" else set()   # CoreFoundation adds it to every child at
+        #                                                                                  start-up on macOS; romp passed nothing
         self.assertTrue(set(seen) <= {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "CLAUDE_CONFIG_DIR", "PWD", "SHLVL", "_", "OLDPWD"}
-                        | {k for k in seen if k.startswith(("LC_", "XDG_"))}, sorted(seen))
+                        | {k for k in seen if k.startswith(("LC_", "XDG_"))} | injected, sorted(seen))
 
     def test_a_hung_command_is_cut_by_the_bound(self):
         import time as _t

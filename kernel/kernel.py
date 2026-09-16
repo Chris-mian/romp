@@ -35504,7 +35504,7 @@ def _tree_of(d):
 
 _branch_cache = {}   # toplevel -> (branch, head_mtime) — git branch derived straight from the FOLDER
 _head_path_cache = {}   # toplevel -> the resolved HEAD file path (worktrees indirect through a .git FILE)
-_git_file_faults = {}   # .git pointer-file path -> the fault text of its CURRENT episode; ONE stderr line + bell row per episode
+_git_file_faults = {}   # .git pointer-file path (RESOLVED) -> the fault text of its CURRENT episode; ONE stderr line + bell row per episode
 _git_file_faults_lock = threading.Lock()   # the pusher and a connect push both run _push, on their own threads
 
 
@@ -35554,6 +35554,12 @@ def _git_head_file(cwd):
     if hp:
         return hp
     dotgit = os.path.join(cwd, ".git")
+    # The episode's key and name: the pointer file at its PHYSICAL place. The fault comes in under the session cwd (git's
+    # toplevel query fails on a torn pointer, so _git_branch falls to the handed directory) and the clean read under git's
+    # toplevel, which git returns resolved; keyed on the handed forms the two never met where the path crosses a symlink (a
+    # temp root under /var or /tmp on macOS, a symlinked project directory anywhere), the entry was never popped, and the
+    # next real break of that pointer saw its own text on record and said nothing (the macOS triage of v0.16).
+    real = os.path.realpath(dotgit)
     try:
         gd = _gitdir_of(cwd, strict=True)              # strict: an unreadable pointer file RAISES, to be named below
         if not gd and _is_bare_gitdir(cwd):
@@ -35567,10 +35573,10 @@ def _git_head_file(cwd):
             shown = os.fsencode(hp).decode("utf-8", "backslashreplace")
             raise FileNotFoundError(errno.ENOENT, "the gitdir it names has no HEAD", shown)
     except OSError as e:                              # unreadable, or dangling (above): the same episode rule
-        _git_file_fault(dotgit, e)                    # never silent: the operator learns WHICH file is bad
+        _git_file_fault(real, e)                      # never silent: the operator learns WHICH file is bad
         return ""                                     # uncached: the next read retries, so a repair ends the episode
     with _git_file_faults_lock:
-        _git_file_faults.pop(dotgit, None)            # a clean read ends the episode
+        _git_file_faults.pop(real, None)              # a clean read ends the episode, under whichever path form it came
     if hp:
         if len(_head_path_cache) > 512:                  # bounded, like _tree_cache
             _head_path_cache.clear()
@@ -50689,7 +50695,7 @@ def _repo_index_stood_down(cwd, why):
     # a .git pointer file that cannot be followed is already named, once per fault episode, by _git_file_fault (its
     # stderr line and bell row carry the path): the index standing down there is the same finding, not a second line
     with _git_file_faults_lock:
-        if os.path.join(_tree_of(cwd)[0] or cwd, ".git") in _git_file_faults:
+        if os.path.realpath(os.path.join(_tree_of(cwd)[0] or cwd, ".git")) in _git_file_faults:   # the episode's key: the resolved path
             return
     if len(_REPO_INDEX_STOOD_DOWN) >= 256:
         _REPO_INDEX_STOOD_DOWN.clear()

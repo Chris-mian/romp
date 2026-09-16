@@ -112,7 +112,7 @@ class Slices(unittest.TestCase):
 
 class Cache(unittest.TestCase):
     def setUp(self):
-        self.lab = tempfile.mkdtemp(prefix="fileslice-")
+        self.lab = os.path.realpath(tempfile.mkdtemp(prefix="fileslice-"))   # the slice cache keys on the real path (a symlinked temp root on macOS)
         km._SLICE_CACHE.clear()
 
     def test_a_miss_reads_and_indexes_a_hit_serves_the_same_entry_a_rewrite_replaces_it(self):
@@ -177,7 +177,7 @@ class Cache(unittest.TestCase):
 
 class Allowed(unittest.TestCase):
     def setUp(self):
-        self.lab = tempfile.mkdtemp(prefix="fileslice-allow-")
+        self.lab = os.path.realpath(tempfile.mkdtemp(prefix="fileslice-allow-"))   # the same real-path key for the warmed entry
         self.cwd = os.path.join(self.lab, "proj"); os.makedirs(os.path.join(self.cwd, "docs"))
         os.makedirs(os.path.join(self.lab, "outside"))
         self._saved_cwd_of = km._cwd_of                       # the session's folder, the way test_path_links.py seams it
