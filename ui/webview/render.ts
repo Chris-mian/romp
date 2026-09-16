@@ -1085,10 +1085,12 @@ function visibleOrder(): string[] { return order.filter((id) => tabInView(id) &&
  *  PR 1661, low 3, for the folded ones). */
 function stripShowsTab(id: string): boolean { return stripShows(id) && !collapsedTabIds.has(id); }
 // THE PHONE LAYOUT: the kernel's chat page swaps the tab strip for its own session list (#mhdr/#mlist,
-// built by scraping every rendered tab) under EXACTLY this media rule (_CHAT_MOBILE_CSS in kernel.py)
-// — the same string here, so what the CSS hides and what the plan flattens cannot disagree. Sections
-// are desktop-only: the phone list has no header to unfold and no switch, so a folded section there
-// made its sessions unreachable (tests pin the two strings equal).
+// built by scraping the strip's children in order, group headers included) under EXACTLY this media rule
+// (_CHAT_MOBILE_CSS in kernel.py) — the same string here, so what the CSS hides and what the plan does
+// for it cannot disagree. The phone plan sections like the desktop's (the user 2026-09-16: the picker
+// must read in the strip's order, under the same headings), but FOLDS are desktop-only: the phone list's
+// heading is a label, not a fold control, so a folded section there made its sessions unreachable from
+// the phone's only switcher (tests pin the two strings equal).
 const PHONE_LAYOUT_MEDIA = "(pointer:coarse) and (max-width:1024px)";
 function phoneLayout(): boolean {
   try { return window.matchMedia(PHONE_LAYOUT_MEDIA).matches; } catch { return false; }
@@ -6640,9 +6642,10 @@ function renderTabs() {
   // gist survives the fold (progressive disclosure). The ACTIVE tab's section folds like any other: its
   // header is then the hidden tab's stand-in (focus, the arrows) and the pane shows the section at a
   // glance (renderSnapshot); the keyboard walk (visibleOrder()) drops the folded ids so ←/→
-  // skip them. DESKTOP ONLY: on the phone layout (phoneLayout — the kernel page's own media rule) the
-  // plan is the flat strip, since the phone's session list is scraped from every rendered tab and has
-  // no header to unfold. A create in flight (the provisional tab) sections under the tags its request
+  // skip them. On the phone layout (phoneLayout — the kernel page's own media rule) the plan sections
+  // the same way, so the phone's session list, scraped from the strip's children in order, reads as the
+  // desktop strip does (the user 2026-09-16); nothing folds there, since that list's heading is a label
+  // with no fold to open. A create in flight (the provisional tab) sections under the tags its request
   // named.
   const unions = viewTagUnion(effViews());
   const plan = planStrip(visibleIds, unions, readTabGroups(unions), activeId, phoneLayout(),
@@ -6832,6 +6835,12 @@ function renderTabs() {
   bar.appendChild(add);
   // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user; since T415, 2026-09-14, the lock is a checkbox row in the
   // settings' Tab strip section, where the strip's gear jumps; its state, its drag rules and its saveSettings road are unchanged.)
+  // "Group tabs by tag" (tab groups, the user 2026-09-04): the per-browser sectioned-strip switch, at the
+  // foot of the tag menu beside Configure tags… — the write notifies and the strip re-renders. ONE object
+  // for both mounts: the strip's button here and the phone header's below (2026-09-16: the phone plan
+  // sections by the same store now, so the phone offers the same switch).
+  const groupToggle = { label: "Group tabs by tag", on: () => readTabGroups().on,
+                        toggle: () => { const st = tabGroups(); writeTabGroups({ ...st, on: !st.on }); } };
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6839,13 +6848,7 @@ function renderTabs() {
       lens: () => surfaceLens(effViews(), "chat"),
       unions: () => viewTagUnion(effViews()),
       onApply: (l) => { postLens({ actives: Object.assign({}, (effViews() || {}).actives, { chat: l }) }); },
-      // "Group tabs by tag" (tab groups, the user 2026-09-04): the per-browser sectioned-strip
-      // switch, at the foot beside Configure tags… — the write notifies and the strip re-renders.
-      // Desktop only: the phone layout renders the flat strip (planStrip), so it offers no switch —
-      // neither here nor on the phone mount below.
-      ...(phoneLayout() ? {} : {
-        groupToggle: { label: "Group tabs by tag", on: () => readTabGroups().on,
-                       toggle: () => { const st = tabGroups(); writeTabGroups({ ...st, on: !st.on }); } } }),
+      groupToggle,
       onConfigure: () => { vscodeApi?.postMessage({ type: "openTagsDialog" }); },
     });
   });
@@ -6917,6 +6920,7 @@ function renderTabs() {
           lens: () => surfaceLens(effViews(), "chat"),
           unions: () => viewTagUnion(effViews()),
           onApply: (l) => { postLens({ actives: Object.assign({}, (effViews() || {}).actives, { chat: l }) }); },
+          groupToggle,   // the phone's picker groups by the same store (2026-09-16): the same switch, the same menu
           onConfigure: () => { vscodeApi?.postMessage({ type: "openTagsDialog" }); },
         });
       });
