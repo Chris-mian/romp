@@ -31803,6 +31803,16 @@ _judge_gen = [0]                                 # bumped when a producer pass C
 # point: a lazy snapshot could capture the planner's mid-pass "blocked" and freeze on THAT.
 _goals_snap = [None]                             # {sid: store} while a judge pass is mid-flight, else None
 _goals_snap_at = [0.0]                           # when that snapshot's file reads STARTED (see _feed_goals)
+_goals_snap_key = [{}]                           # sid → the version its snapshot entry renders: the (ino, mtime_ns, size)
+#                                                  it was decoded from and the pass memo's count of byte changes the stat
+#                                                  did not show for that store (carried on the memo entry). The feed's
+#                                                  memo key names this in place of the pass's clock stamp, which moved
+#                                                  every snapshotted session's key at every pass begin and end although
+#                                                  the store rendered was the same object or the same version
+#                                                  (2026-09-16). {} between passes. A snapshot must be installed through
+#                                                  _begin_goals_pass (or its key set beside it): the feed memo keys a
+#                                                  sid whose snapshot entry has no key as the live file, and serves the
+#                                                  live entry for it.
 _goals_snap_done = {}                            # sid → the user-write mark already punched onto THIS snapshot
 _goals_snap_owned = set()                        # sids whose snapshot entry is THIS pass's private copy (copy-on-punch;
 #                                                  the punch counter's once-per-pass guard, not the copy's: see _feed_goals)
@@ -31847,7 +31857,8 @@ _goals_snap_lock = threading.Lock()
 # loader's parse memo (_RAW_STORE) and the shared view (_SHARED) do; other bytes under an unchanged stat
 # decode afresh (memos.pass compare_miss). Before it the pass served the earlier parse until the store's
 # next publish: a stale card, never a wrong write, and one the feed's own memo would go on serving.
-_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD, bytes)
+_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD, bytes,
+#                                                  the path's count of byte changes no stat showed: the feed key's tie-breaker)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
 # Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
@@ -31954,6 +31965,7 @@ def _begin_goals_pass():
     # ui/webview/feed-move-ack.test.ts pins the next line's comment text ("stamped BEFORE the reads").
     at = time.time()          # stamped BEFORE the reads and the stats that gate them: a write racing this loop
     snap = {}                 # must count as AFTER them, so it is replayed onto the snapshot, not lost to the read order
+    keys = {}                 # sid → the version its snapshot entry renders (_goals_snap_key)
     prev = _goals_memo[0]
     unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
@@ -31979,7 +31991,12 @@ def _begin_goals_pass():
                 memo[path] = old                           # (or its remembered decode failure) stands
                 if old[1] is not _GOALS_MEMO_BAD:
                     snap[sid] = old[1]
-                continue
+                    keys[sid] = (key, old[3])              # the same version: the feed's key sees no move at the pass
+                continue                                   # boundary (2026-09-16); a remembered failure has no key
+            # The path's count of byte changes no stat showed, carried across versions: a compare miss decodes under
+            # the SAME (ino, mtime_ns, size), and this count is what tells the feed's memo key that decode from the
+            # last (2026-09-16); a version move carries it unchanged so the key stands across the publish.
+            alias = (old[3] if old is not None else 0) + (1 if same else 0)
             store = _goals_memo_decode(data)
         except FileNotFoundError:
             continue                                       # gone between the listing and the read: no store
@@ -31990,7 +32007,7 @@ def _begin_goals_pass():
             continue
         except Exception as e:                             # undecodable: out of the snapshot (the feed reads it
             fail += 1                                      # live, as before), said once per version
-            memo[path] = (key, _GOALS_MEMO_BAD, data)
+            memo[path] = (key, _GOALS_MEMO_BAD, data, alias)
             sys.stderr.write("goals-pass: %s: %s: %s (not in the pass snapshot; served live until the file changes)\n"
                              % (ent.name, type(e).__name__, e))
             continue
@@ -31998,8 +32015,9 @@ def _begin_goals_pass():
             compare_miss += 1                              # same stat, other bytes: the coarse-timestamp alias is a
         else:                                              # new version to the reader whatever the stat says (2026-09-16)
             miss += 1
-        memo[path] = (key, store, data)
+        memo[path] = (key, store, data, alias)
         snap[sid] = store
+        keys[sid] = (key, alias)                           # the version this entry renders (fstat on the fd the bytes came from)
     _goals_memo[0] = memo
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
@@ -32009,6 +32027,7 @@ def _begin_goals_pass():
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
     with _goals_snap_lock:
         _goals_snap[0] = snap
+        _goals_snap_key[0] = keys
         _goals_snap_at[0] = at
         _goals_snap_done.clear()
         _goals_snap_owned.clear()
@@ -32018,12 +32037,15 @@ def _end_goals_pass():
     The memo keeps its parsed stores: they are the next pass's cache hits."""
     with _goals_snap_lock:
         _goals_snap[0] = None
+        _goals_snap_key[0] = {}
         _goals_snap_done.clear()
         _goals_snap_owned.clear()
 
-def _feed_goals(sid):
-    """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
-    never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
+def _feed_goals_keyed(sid):
+    """(the goal store for the FEED, the key of the snapshot entry it came from): the store frozen at the pre-pass
+    snapshot while a judge pass is mid-flight (so a card never shows a half-applied intermediate), else a live
+    read, keyed None. The key is read under the same lock hold as the entry, so the feed's memo key names exactly
+    the version this read rendered (2026-09-16); _feed_goals is this read without the key. A sid minted DURING the pass isn't in the
     snapshot → live (it has no prior state to flicker from); so is a sid the pass stepped over because the
     compaction sweep ruled its store unowned (no discovered and no live session held it at the sweep: the
     pass took no copy, and a consumer that asks anyway gets the live store, 2026-09-15). See the _goals_snap note above.
@@ -32040,6 +32062,7 @@ def _feed_goals(sid):
         snap = _goals_snap[0]
         if snap is not None and sid in snap:
             store, mark = snap[sid], _user_goal_write.get(str(sid), 0.0)
+            snap_key = _goals_snap_key[0].get(sid)     # the version this entry renders (None: installed by hand, unkeyed)
             if mark >= _goals_snap_at[0] and _goals_snap_done.get(sid) != mark:
                 # COPY-ON-PUNCH, a fresh copy per gesture: the entry is the memo's object, shared with
                 # every later pass that finds the file unchanged, so the replay and rollup below land on
@@ -32060,14 +32083,19 @@ def _feed_goals(sid):
                     #                                    card for the whole pass (the user 2026-07-23)
                 except Exception:
                     sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
-            return _apply_rewind_hold(sid, store)      # a pending rewind's cards are hidden NOW (latched
-            #                                            at the gesture; archive lands at the branch-take)
+            return _apply_rewind_hold(sid, store), snap_key   # a pending rewind's cards are hidden NOW (latched
+            #                                                   at the gesture; archive lands at the branch-take)
     store, fault = jd.load_goals_or_fault(sid)     # no pass in flight → live read, outside the lock
     if fault is not None:
-        return None                                    # the read FAULTED (the pre-pass snapshot skips such a file
+        return None, None                              # the read FAULTED (the pre-pass snapshot skips such a file
     #                                                    too): the row is filed once per episode, and build_feed
     #                                                    renders this one session without goal-derived content
-    return _apply_rewind_hold(sid, store)
+    return _apply_rewind_hold(sid, store), None
+
+
+def _feed_goals(sid):
+    """The FEED's goal store alone: _feed_goals_keyed without the key it was served under."""
+    return _feed_goals_keyed(sid)[0]
 
 # Delta-send (the user 2026-06-25, who wanted to stop re-sending what didn't change): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
@@ -40039,12 +40067,17 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         colour (_name_color); the snapshot's CONTENT, not the file, since the body reads the cycle's snapshot.
       captions: _chat_ident(CAPDIR/<fsid>.jsonl). The placeholders' gist (_provisional_card / _blocked_placeholder →
         _seg_caption(_captions(fsid))).
-      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the judge-pass
-        snapshot's stamp when this sid is in it (_goals_snap_at[0], else None: _feed_goals serves the pre-pass
-        snapshot while a pass is mid-flight), the user-gesture mark _user_goal_write[fsid], the punch record
-        _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an EIO or a
-        permissions fault moves no stat)). _feed_goals, jd.load_goals_shared inside _bg_placed_tops and
-        _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
+      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the store
+        VERSION the body's read rendered (the key of the pass-snapshot entry _feed_goals_keyed served it from while a
+        pass is mid-flight, since the feed serves the pre-pass snapshot then; else the live file's identity beside
+        the pass memo's count of byte changes the stat did not show for that store, taken before the read like the
+        stat), whether the override journal is replayed onto that version (the live loader replays it, the raw
+        snapshot does not until a punch; None with no journal), the user-gesture mark _user_goal_write[fsid], the
+        punch record _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an
+        EIO or a permissions fault moves no stat)). _feed_goals_keyed, jd.load_goals_shared inside _bg_placed_tops
+        and _session_stamp_read, jd.review_boundary, jd._done_since and every node read. The pass's clock stamp is
+        not a component (2026-09-16): a new snapshot that decodes the same versions is not new information, and the
+        stamp moved every snapshotted session's key twice per pass.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
       reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
@@ -40111,10 +40144,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                    for k in dict.fromkeys([fsid, str(s.get("anchor") or "")]) if k)
     names = (s.get("name"), tuple(_names_parts(fsid) or ()))
     captions = _chat_ident(jd.CAPDIR / (fsid + ".jsonl"))
-    sident = jd._store_identity(fsid)[1:]
-    with _goals_snap_lock:
-        _snap = _goals_snap[0]
-        snap_at = _goals_snap_at[0] if (_snap is not None and fsid in _snap) else None
+    sidentity = jd._store_identity(fsid)             # (the store's path, its identity, the journal's, the archive's)
+    path_s, sident = sidentity[0], sidentity[1:]
+    _ent = _goals_memo[0].get(path_s)                # the pass memo's entry for the store, taken BEFORE the read like
+    alias = _ent[3] if _ent is not None else 0       # the stat: its count of byte changes the stat did not show
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
@@ -40152,7 +40185,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     wait = tuple(sorted((ctx["wmap"].get(fsid) or {}).items(), key=str)) or None
     # ── the per-session facts the body reads through ctx, once per build (a hidden session reads none of them,
     #    exactly as the loop's `continue` skipped them) ──
-    ps, st, who_working, interrupting, closer = None, None, False, False, False
+    ps, st, who_working, interrupting, closer, snap_key = None, None, False, False, False, None
     if not hide:
         ps = _parse_cached(s["path"]) if path else None   # CACHE-ONLY: the cards paint at once on a cold kernel (the user 2026-06-26)
         if ps is not None:
@@ -40163,14 +40196,26 @@ def _feed_session_key(s, tm, ctx, prev_entry):
             who_working = False
         sess_interrupting = _interrupting(fsid, ps or {}, now, tm)   # pops its stamp on the settled path, once per build
         interrupting = sess_interrupting
-        st = _feed_goals(fsid)                       # the store the body renders (None: the read faulted)
+        st, snap_key = _feed_goals_keyed(fsid)       # the store the body renders (None: the read faulted) and the
+        #                                              snapshot key it was served from (None: the live file)
         closer = bool(live and ps and not who_working and not jactive
                       and _closer_pending(fsid, path, now, st if st is not None else {"nodes": {}, "status": {}}))
     ctx.update(ps=ps, who_working=who_working, interrupting=interrupting, store=st, closer=closer, hide=hide)
     # the store component closes on the READ's outcome (st is None: the read faulted, jd.load_goals_or_fault filed it):
     # an EIO or a permissions fault moves no stat, so without the bit a faulted derivation (no cards) would serve
     # on after the fault cleared, and a pre-fault entry would serve through it (tests/test_goal_store_fault_boundary)
-    store = (sident, snap_at, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
+    # The store VERSION the body's read rendered, and whether the override journal is replayed onto it (2026-09-16):
+    # the snapshot entry's key when the read served the pass snapshot, else the live file's identity beside the pass
+    # memo's count of byte changes the stat did not show for this path (a rewrite the pass memo's byte compare caught
+    # moves the key once; the same count on both sides keeps it still); the live loader replays the journal, the raw
+    # snapshot does not (a punch does, and is keyed by its own record below). The mode comes from the read itself, so
+    # a pass boundary between the stat above and the read cannot pair one mode's key with the other's rendering. The
+    # pass's clock stamp stood here before, and it moved every snapshotted session's key at every pass begin and end
+    # although the store rendered was the same object or the same file version: a whole-board re-derivation per pass
+    # boundary, most of a busy board's derivations when short passes run back to back.
+    rendered = snap_key if snap_key is not None else (sident[0], alias)
+    replayed = (snap_key is None) if sident[1] is not None else None
+    store = (sident, rendered, replayed, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
              st is None and not hide)                # a hidden session's skipped read is not a fault
     bg = (tuple((r.get("tid"), r.get("desc"), r.get("t"), r.get("type"), r.get("deadline"), r.get("agentId"))
                 for r in _bg_live_norm(fsid, path)) if (ps is not None and path) else None)
