@@ -205,10 +205,11 @@ try {
   await page.addInitScript(() => { try { if (window === window.top && !sessionStorage.getItem("_labcleared")) { localStorage.removeItem("romp-chat-cols"); Object.keys(localStorage).filter((k) => k.indexOf("romp-vscode-state-chat") === 0).forEach((k) => localStorage.removeItem(k)); sessionStorage.setItem("_labcleared", "1"); } } catch (e) {} });   // first load only, so a reload preserves the split
   await page.goto(cfg.url);
   await page.waitForFunction((ids) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + ids[0] + '"]') && d.querySelector('#tabs .tab[data-id="' + ids[1] + '"]')); }, [cfg.remote, cfg.remote2], { timeout: 40000 });
-  // move SID_R2 to a NEW column (col 2); the move focuses col 2
-  await page.evaluate((r2) => window.__rompMoveTab(r2, "new"), cfg.remote2);
+  // move SID_R2 to a NEW column (col 2), or DOWN into col 1's bottom pane (the vertical split); either focuses the new pane
+  await page.evaluate((a) => window.__rompMoveTab(a.r2, a.to), { r2: cfg.remote2, to: cfg.focus === "down" ? "down" : "new" });
   await page.waitForFunction(() => !!document.getElementById("f-chat-2"), null, { timeout: 20000 });
   await page.waitForTimeout(600);
+  if (cfg.focus === "down") out.geom = await page.evaluate(() => { const top = document.getElementById("f-chat"), bot = document.getElementById("f-chat-2"); if (!top || !bot) return null; const tr = top.getBoundingClientRect(), br = bot.getBoundingClientRect(); const g = document.querySelector(".pane.split-v .gh-chat"); return { sameLeft: Math.abs(tr.left - br.left) <= 2, belowTop: br.top > tr.top + tr.height / 2, gutterCursor: g ? getComputedStyle(g).cursor : null, paneSplit: !!(top.closest(".pane") && top.closest(".pane").classList.contains("split-v")) }; });
   // focus col 1 (col1 / reload_empty leave col 2 as the NON-focused column), or col 2 for the mirror
   const focusCol1 = async () => { const f1 = await frameOf("f-chat"); await f1.locator('#tabs .tab[data-id="' + cfg.remote + '"]').first().click(); };
   if (cfg.focus === "col2") { const f2 = await frameOf("f-chat-2"); await f2.locator('#tabs .tab[data-id="' + cfg.remote2 + '"]').first().click(); }
@@ -360,6 +361,23 @@ class FederatedTwoColWall(unittest.TestCase):
                         "col 2 fills to turn 0 on the strip's arrival, no scroll: after=%r" % c2.get("after"))
         self.assertNotEqual(r.get("focusedFrame"), "f-chat-2",
                             "the silent activation did NOT move focus to col 2: focusedFrame=%r" % r.get("focusedFrame"))
+
+    def test_split_down_the_non_focused_remote_bottom_pane_fills_on_the_relay(self):
+        # The VERTICAL split, remote face (the chat vertical split): SID_R2 is split DOWN into col 1's bottom pane, a
+        # relay client of its own; focus stays on the TOP pane so the bottom is NON-focused. The bottom pane must fill
+        # to turn 0 over the relay, the #1754 diet plus silent re-announce carrying a non-focused relay pane the same
+        # way they carry a non-focused side column. It is stacked under the top with a row-resize gutter.
+        r = self._drive("down")
+        self.assertIsNone(r.get("died"), "driver error: %s" % r.get("died"))
+        g = r.get("geom") or {}
+        self.assertTrue(g.get("paneSplit") and g.get("sameLeft") and g.get("belowTop"),
+                        "the bottom pane is nested under the top (same left, greater top): %r" % g)
+        self.assertEqual(g.get("gutterCursor"), "row-resize", "a row-resize gutter between the panes: %r" % g)
+        c2 = r.get("col2") or {}
+        self.assertTrue((c2.get("boot") or {}).get("hasGapRegion"),
+                        "the non-focused remote BOTTOM pane shows a head gap: boot=%r dials=%r" % (c2.get("boot"), r.get("dials")))
+        self.assertTrue(any(x.get("kind") == "run" and x.get("lo") == 0 for x in ((c2.get("after") or {}).get("regions") or [])),
+                        "the bottom pane fills to turn 0 over the relay: after=%r" % c2.get("after"))
 
 
 if __name__ == "__main__":
