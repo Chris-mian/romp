@@ -200,16 +200,22 @@ _HEAP_SAID = set()   # the heap gauges whose read failed and said so on stderr, 
 #                      polled, so a line per snapshot would be the very noise the block exists to attribute.
 
 
-def _heap_read(key, fn):
+def _heap_read(key, fn, block="heap", said=_HEAP_SAID):
     """fn() for one heap gauge, or None when the process cannot read it, the failure said once per key. A gauge that is
-    missing must never fail the snapshot: the rest of the block is what the reader came for."""
+    missing must never fail the snapshot: the rest of the block is what the reader came for. The gc block beside it reads
+    its collector accessors through the same guard under its own block name and said-set (_gc_read, 2026-09-16), so a
+    runtime lacking gc.get_freeze_count answers None for that key alone and the two blocks' `gc.*` keys never share a line."""
     try:
         return fn()
     except Exception as e:
-        if key not in _HEAP_SAID:
-            _HEAP_SAID.add(key)
-            sys.stderr.write("perf: heap.%s unavailable: %s: %s\n" % (key, type(e).__name__, e))
+        if key not in said:
+            said.add(key)
+            sys.stderr.write("perf: %s.%s unavailable: %s: %s\n" % (block, key, type(e).__name__, e))
         return None
+
+
+_GC_SAID = set()   # the gc block's collector accessors whose read failed and said so once (the heap block's _HEAP_SAID, for the block beside it)
+_gc_read = functools.partial(_heap_read, block="gc", said=_GC_SAID)
 
 
 def _heap_stats():
@@ -358,6 +364,15 @@ class _PerfStats:
                                    holds session content (hydrated bodies, assembly entries, parse slots, live
                                    indexes, materialized-atom LRU slots, judge-usage rows, built chat tabs and
                                    their serialized bytes, preview images); gauges, not counters
+      gc                           the collector's collections and their pauses (gc_event, a gc.callbacks hook
+                                   main installs once): per generation, collections, msSum / msMax / msLast
+                                   (wall on the collecting thread) and collectedLast; thresholds and counts
+                                   (gc.get_threshold / gc.get_count, repeated from heap.gc so the block reads
+                                   on its own), frozen (gc.get_freeze_count), errors (callback failures,
+                                   counted, never raised) and hooked (whether this collector's hook is in
+                                   gc.callbacks). Each split row on the rings carries the cycle's own delta
+                                   as `gc` (n0, n1, n2 collections per generation and ms2), so a slow cycle
+                                   names the full collection it paid for
       pusher                       cycles (one per _pusher_cycle), wakes (every _pusher_wake.set()
                                    call; a burst coalesces into one cycle), wakes_event /
                                    wakes_backstop (how the loop's wait ended: flag set, or the 0.5 s
@@ -458,6 +473,7 @@ class _PerfStats:
 
     def __init__(self):
         self.lock = threading.Lock()
+        self._gc_t0 = None                        # perf_counter at the collector's "start" callback, read at its "stop" (gc_event)
         self.reset()
 
     def reset(self):
@@ -487,7 +503,13 @@ class _PerfStats:
             self.first_pass = None
             self.pass_ring = None
             self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
-            self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
+            self._cycle_state = {k: {"stages": {}, "mark": None, "gc": None} for k in self.OWNERS}   # per owner: the open split, the byte
+            #                                                                                            mark, the gc tallies at cycle_begin
+            # The collector's collections and pauses (2026-09-16), per generation: ONE immutable tuple (collections, msSum, msMax,
+            # msLast, collectedLast) that gc_event replaces in a single store, never under self.lock: see gc_event for why the
+            # callback cannot take it. A reset replaces the dict; a collection landing in that instant counts into the old one.
+            self.gc = {g: self._GC_ZERO for g in range(3)}
+            self.gc_errors = 0                        # gc_event bodies that raised: counted, never propagated into the collector
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
@@ -582,6 +604,7 @@ class _PerfStats:
         a wake another thread sets during the cycle, or the periodic repost of an unchanged frame past the
         dedup window, marks that cycle busy though the cycle itself changed nothing."""
         ms = dt * 1000.0
+        gc_now = self._gc_mark()                          # the collector's tallies at the close: the split's gc delta (2026-09-16)
         with self.lock:
             p = self.pusher
             p["cycles"] += 1
@@ -597,7 +620,7 @@ class _PerfStats:
             self.ring.append(ms)
             st = self._cycle_state["pusher"]
             try:                                          # the split's bookkeeping never ends the pusher thread (it runs in
-                split = self._split(dt, st)               #  the cycle's finally, caught nowhere): a failure is counted
+                split = self._split(dt, st, gc_now)       #  the cycle's finally, caught nowhere): a failure is counted
                 if self.first_cycle is None:
                     self.first_cycle = split
                 if self.stage_ring is None:
@@ -607,18 +630,31 @@ class _PerfStats:
                 p["splitFailed"] = p.get("splitFailed", 0) + 1
             st["stages"] = {}
             st["mark"] = None
+            st["gc"] = None
 
     @staticmethod
-    def _split(dt, st):
+    def _split(dt, st, gc_now=None):
+        # the collections the cycle waited on (2026-09-16): the process-wide tallies at the close less the mark cycle_begin took,
+        # whichever thread triggered them, so a slow row names the full collection it paid for (n2, ms2: generation 2 alone
+        # carries milliseconds here; the young generations' pauses live in gc.gen.0/1.msSum) rather than the stage the collector
+        # happened to interrupt; None when the cycle closed without an opening mark (a caller that never began it), since a
+        # delta with no base is not one
+        mark = st.get("gc")
+        gc_row = None
+        if mark is not None and gc_now is not None:
+            gc_row = {"n0": gc_now[0] - mark[0], "n1": gc_now[1] - mark[1], "n2": gc_now[2] - mark[2],
+                      "ms2": round(gc_now[3] - mark[3], 1)}
         return {"s": round(dt, 3), "t": time.time(),
                 "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
-                           for k, v in st["stages"].items()}}
+                           for k, v in st["stages"].items()},
+                "gc": gc_row}
 
     def jobs_pass(self, dt, cpu_dt=0.0):
         """One pass of the jobs thread (the housekeeping loop split off the pusher, 2026-09-13): its wall and its own CPU
         seconds, the boot's FIRST pass's split kept for the process (the boot arc reads it beside the pusher's first cycle),
         and every pass's split on a ring of the same length as the pusher's."""
         ms = dt * 1000.0
+        gc_now = self._gc_mark()                          # as in cycle(): the pass's own gc delta
         with self.lock:
             j = self.jobs
             j["passes"] += 1
@@ -630,7 +666,7 @@ class _PerfStats:
             self.jobs_ring.append(ms)
             st = self._cycle_state["jobs"]
             try:
-                split = self._split(dt, st)
+                split = self._split(dt, st, gc_now)
                 if self.first_pass is None:
                     self.first_pass = split
                 if self.pass_ring is None:
@@ -640,6 +676,7 @@ class _PerfStats:
                 j["splitFailed"] = j.get("splitFailed", 0) + 1
             st["stages"] = {}
             st["mark"] = None
+            st["gc"] = None
 
     def pass_failed(self):
         """A jobs pass that raised out of its loop and was skipped (the loop's guard), the jobs thread's cycleFailed."""
@@ -714,12 +751,69 @@ class _PerfStats:
         that owner's split records, the split emptied (a push in the gap between cycles, on any thread, lands in no cycle),
         and the first byte mark the stages are measured from."""
         marks = self._byte_marks()
+        gc_mark = self._gc_mark()                      # the collector's tallies as the cycle opens: its split's gc delta's base
         tid = threading.get_ident()
         with self.lock:
             for k in [k for k, ident in self._owners.items() if ident == tid and k != kind]:
                 del self._owners[k]                    # a thread owns one cycle kind at a time (a test drives both loops on one)
             self._owners[kind] = tid
-            self._cycle_state[kind] = {"stages": {}, "mark": marks}
+            self._cycle_state[kind] = {"stages": {}, "mark": marks, "gc": gc_mark}
+
+    _GC_ZERO = (0, 0.0, 0.0, 0.0, 0)          # a generation's tally before its first collection: (collections, msSum, msMax, msLast, collectedLast)
+
+    def gc_event(self, phase, info):
+        """The gc.callbacks hook (2026-09-16): times each collection from its "start" to its "stop" callback on the collecting
+        thread and folds it into self.gc[generation] as one immutable tuple, replaced in a single store. Pusher cycles stalled
+        for 9-33 s and a native profile caught a 9.2 s generation-2 collection charged to whichever stage was running; nothing
+        in the kernel counted collections or their pauses, and the collector's own stats carry no durations.
+
+        NEVER takes self.lock, or any lock a writer may hold. CPython runs an automatic collection on the thread whose
+        allocation crossed the threshold, at that thread's next eval-breaker check, which can be INSIDE one of this class's
+        own `with self.lock:` regions; a first draft that took the lock here waited on its own thread forever (found in
+        review), and because the collector's `collecting` flag stays set through the callbacks, every later collection in
+        the process was skipped as well (reproduced in the lab: an explicit gc.collect() returned 0 for good). That same
+        flag serialises collections, so one start slot per collector is enough. The body never raises into the collector:
+        a failure is counted under gc_errors and the next collection is timed as before."""
+        try:
+            if phase == "start":
+                self._gc_t0 = time.perf_counter()
+                return
+            t0 = self._gc_t0
+            self._gc_t0 = None
+            dt = (time.perf_counter() - t0) * 1000.0 if t0 is not None else 0.0   # a stop with no start: a collection of no known pause
+            g = info["generation"]
+            d = self.gc                                    # loaded once: a reset that swaps the dict mid-body keeps this
+            n, ms_sum, ms_max, _last, _collected = d.get(g, self._GC_ZERO)   #  collection in the dict it read (review find)
+            d[g] = (n + 1, ms_sum + dt, dt if dt > ms_max else ms_max, dt, int(info.get("collected", 0)))
+        except Exception:
+            self.gc_errors += 1
+
+    def install_gc_hook(self):
+        """gc_event into gc.callbacks, once: main calls this at boot; a test calls it on its own collector. A second call
+        adds no second entry (a hook counted twice would double every tally)."""
+        self._gc_t0 = None                            # a start can only pair with a stop of the same hooked span
+        if self.gc_event not in gc.callbacks:
+            gc.callbacks.append(self.gc_event)
+
+    def remove_gc_hook(self):
+        """gc_event out of gc.callbacks; a no-op when it is not there."""
+        try:
+            gc.callbacks.remove(self.gc_event)
+        except ValueError:
+            pass
+        self._gc_t0 = None                            # a stale start from a span the hook left must not pair with a later stop
+
+    def _gc_mark(self):
+        """(gen-0 collections, gen-1, gen-2, gen-2 ms) so far: what a cycle's split is differenced against (cycle_begin takes
+        the mark, cycle and jobs_pass the reading). The tallies are the whole process's: a row's delta counts every collection
+        that ran on ANY thread while the cycle was open (the collector holds the interpreter lock for its pause, so the cycle
+        waited on it whichever thread triggered it), and a collection inside overlapping pusher and jobs windows shows in both
+        rows, so the rings never sum to gen.collections. Read without the lock: each tuple is replaced whole, so a read sees one
+        collection or the next, never a half, per generation; the three reads are not one instant, so a collection landing
+        between them shows in the next row instead."""
+        d = self.gc
+        r0, r1, r2 = d.get(0, self._GC_ZERO), d.get(1, self._GC_ZERO), d.get(2, self._GC_ZERO)
+        return (r0[0], r1[0], r2[0], r2[1])
 
     def first_cycle_split(self):
         with self.lock:
@@ -940,6 +1034,8 @@ class _PerfStats:
             file_slice = dict(self.file_slice_stats)
             glossary_stats = dict(self.glossary_stats)
             since = self.since
+            gc_rows = dict(self.gc)                        # the collector's tallies (gc_event writes them without this lock, so the
+            gc_errors = self.gc_errors                     #  read never waits on a collection and a collection never waits on us)
         try:                                           # the feed's per-session card memo (T368): its own lock, a copy per read
             builds["feed"]["memo"] = _feed_memo_report()
         except Exception:
@@ -1004,6 +1100,20 @@ class _PerfStats:
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
+        # the collector's collections and pauses (2026-09-16): the hook's tallies per generation, and beside them the collector's
+        # own thresholds and counts (repeated from heap.gc so the block reads on its own: how near the next collection is), the
+        # frozen count, the callback failures, and whether this collector's hook is installed at all (zeros with hooked false
+        # say "no hook", not "no collections")
+        gc_block = {"gen": {str(g): {"collections": n, "msSum": round(s, 1), "msMax": round(mx, 1), "msLast": round(last, 1),
+                                     "collectedLast": col}                # rounded like every ms on the snapshot; the tallies stay exact
+                            for g, (n, s, mx, last, col) in sorted(gc_rows.items())},
+                    # the accessors inside lambdas, through the per-key guard: a runtime lacking one answers None for that key
+                    # and the block still serves (the heap block's review find, 2026-09-15, applied here)
+                    "thresholds": _gc_read("thresholds", lambda: list(gc.get_threshold())),
+                    "counts": _gc_read("counts", lambda: list(gc.get_count())),
+                    "frozen": _gc_read("frozen", lambda: gc.get_freeze_count()),
+                    "errors": gc_errors,
+                    "hooked": _gc_read("hooked", lambda: self.gc_event in gc.callbacks)}
         now = time.time()
         stacks = _thread_stacks() if os.environ.get("ROMP_PERF_STACKS") else None   # every thread's frames, named and staged: under
         #                                                                              the switch here (T358's aid for a served test
@@ -1011,6 +1121,7 @@ class _PerfStats:
         #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
                 "process": _process_stats(), "heap": _heap_stats(),   # heap: where the resident size sits, now (2026-09-15)
+                "gc": gc_block,                                       # gc: the collector's collections and pauses (2026-09-16)
                 "pusher": pusher, "jobs": jobs, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
                 "fileSlice": file_slice,                   # T351: the preview popover's slice cache (hit / miss / bytes / warm)
@@ -25149,8 +25260,9 @@ def _kernel_sample_due(uptime_s):
 
 def _kernel_sample_tick(now=None):
     """The pusher's tick: at 5, 30 and 60 minutes of uptime and every hour after, one row in kernel-samples.jsonl with
-    the kernel's resident size, processor seconds, thread count and the record cache's held bytes (when the event model
-    reports them), so the kernel's growth within a life is a series beside the restart ledger's two bookends and a
+    the kernel's resident size, processor seconds, thread count, the record cache's held bytes (when the event model
+    reports them) and the collector's full collections and their milliseconds so far (cumulative, like cpuS: two rows
+    differenced give the interval's), so the kernel's growth within a life is a series beside the restart ledger's two bookends and a
     change that lets it climb again shows in the file, not in the machine's swap. Best-effort; never raises."""
     try:
         now = time.time() if now is None else now
@@ -25172,6 +25284,12 @@ def _kernel_sample_tick(now=None):
                 row["recordCacheBytes"] = int(st.get("bytes") or 0); row["recordCacheEntries"] = int(st.get("entries") or 0)
             except Exception:
                 pass
+        try:                                              # the collector's full collections and their pauses so far (2026-09-16),
+            g2 = _PERF_STATS.gc.get(2)                    #  cumulative like cpuS: two rows differenced give the interval's, beside
+            if g2 is not None:                            #  rssKb's growth over the same hour
+                row["gcGen2Collections"] = int(g2[0]); row["gcGen2MsSum"] = round(float(g2[1]), 1)
+        except Exception:
+            pass
         with open(KERNEL_SAMPLES_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
         return True
@@ -65538,6 +65656,8 @@ def main():
     # (a federated host) has no ~/.local/bin on PATH — bare `claude` exec-failed silently there.
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
     signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
+    _PERF_STATS.install_gc_hook()                             # the collector's pauses on /perf (2026-09-16): before the boot warm and
+    #                                                           the loops, so the boot's own full collections count (see gc_event)
     # romp holds no API key (credentials.py, 2026-09-08). A retired provider line in service.env, the marker
     # beside it, or a key in this process's environment stops the kernel HERE, before the bundler, the
     # postal bus or the SDK backend spawn anything that could inherit it. RuntimeError: the

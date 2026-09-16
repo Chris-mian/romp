@@ -1775,6 +1775,42 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   evicts nothing, fills nothing and reads no file. A gauge this process
   cannot read (an accessor the runtime lacks, a container the source has not
   got) is `null`, said once on stderr.
+- `gc`: the interpreter's garbage collections, counted and timed (2026-09-16:
+  pusher cycles stalled for 9-33 s and a profile of the process caught a 9.2 s
+  generation-2 collection charged to whichever stage happened to be running,
+  with no counter in the kernel to tie the one to the other; the collector's
+  own stats carry no durations). A `gc.callbacks` hook the kernel installs
+  once at boot times every collection from its start to its stop callback,
+  wall time on whichever thread triggered it. The hook never waits on the
+  kernel's own locks (`gc_event` in `kernel/kernel.py` says why: a collection
+  can run inside a locked region of the very thread that holds the lock).
+  `gen` maps each generation (`"0"`, `"1"`, `"2"`; a full collection is
+  generation 2) to `collections` (how many ran since the counters started),
+  `msSum`, `msMax` and `msLast` (their summed, largest and last pause) and
+  `collectedLast` (the objects the last one freed). `thresholds` and `counts`
+  are `gc.get_threshold()` and `gc.get_count()`, repeated from `heap.gc` so
+  the block reads on its own (how near the next collection is); `frozen`
+  counts the objects moved out of the collector's reach by `gc.freeze`, which
+  it never scans; `errors` counts callback failures (counted, never raised
+  into the collector); `hooked` says whether the kernel's `gc.callbacks` hook
+  is installed, so zeros with `hooked` false mean no hook, not no
+  collections. To read a slow cycle: find its row in `pusher.stageRing` (or
+  `jobs.stageRing`) and read the row's `gc` (`null` when the cycle closed
+  without an opening mark): `n0`, `n1` and `n2`, the collections per
+  generation that ran anywhere in the process while the cycle was open, on
+  whichever thread triggered them (a collection holds the interpreter lock
+  for its whole pause, so the cycle waited on it either way), and `ms2`, the
+  generation-2 milliseconds among them; the young generations' pauses are in
+  `gen.0` and `gen.1` only. A row whose `n2` is 1 and whose `ms2` is most of
+  `s` x 1000 spent its time in the collector, not in the stage that was
+  running, and the stage's own `ms` overstates it by that much. A collection
+  inside overlapping pusher and jobs windows shows in both rings' rows, so
+  neither ring sums to `gen.collections`. `heap.gc` beside it carries the
+  collector's own gauges and its cumulative `stats`; the pauses live only
+  here. A collector accessor this runtime lacks reads `null`, said once on
+  stderr, as in `heap`; the tallies themselves need none. The kernel-samples
+  rows carry the same generation-2 tallies as `gcGen2Collections` and
+  `gcGen2MsSum`, cumulative, to difference per interval beside `rssKb`.
 - `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
   reminder walk, the interrupt tick, the persists, the pause and retry
   family) off the pusher since 2026-09-13, so no browser frame waits on a
@@ -1805,7 +1841,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   since a wake set by another thread or a periodic repost of an unchanged
   frame marks a cycle busy).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
-  split and the newest cycles' splits, each `{s, t, stages}` with, per stage,
+  split and the newest cycles' splits, each `{s, t, stages, gc}` (`gc` is the
+  cycle's own collections, described under `gc` above) with, per stage,
   its wall `ms` (one decimal), the reader's `bytes` off disk and the assembly
   cut's `hydrated` bytes ON THE PUSHER'S THREAD since the previous stage
   boundary (another thread's reads in the window, the judges' first pass or
