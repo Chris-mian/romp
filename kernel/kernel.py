@@ -26700,9 +26700,11 @@ _SESSIONS_LISTING = {"key": None, "rows": None, "json": None, "threads": None, "
 
 
 def _reg_rev():
-    """The SDK registry's revision (kernel/sdk_backend.py REG_REV: every registration write), read through the module the
-    backend was loaded as; 0 before the backend module is loaded (nothing has been written)."""
-    return int(getattr(sys.modules.get("romp_sdk_backend"), "reg_rev", lambda: 0)())
+    """The SDK registry's ROWS revision (kernel/sdk_backend.py REG_ROWS_REV: moved by a write that changes a field the rows
+    read, lastSid, threadOf or alive, never by the per-cycle writes of other fields), read through the module the backend
+    was loaded as; 0 before the backend module is loaded (nothing has been written). Keyed on every write (REG_REV) the
+    listing rebuilt each cycle (the deploy read of 2026-09-15: built 778 in 776 s, 767 misses on the registry)."""
+    return int(getattr(sys.modules.get("romp_sdk_backend"), "reg_rows_rev", lambda: 0)())
 
 
 def _sessions_listing_reset():
@@ -26716,9 +26718,9 @@ def _sessions_listing_key(live_map, names):
     """The exact key of the /sessions rows (rule 2): every field a row carries is a function of these inputs. The live rows
     (sid, state, since, backend: state and backend ride the row, since moves with a turn's edges), the names snapshot
     (name, dir and the two identity colours: a move rewrites the names entry), the working-notes store (the note per sid,
-    keyed by the store's entries' stats), the registry revision (lastSid rides the SDK registry; a write moves it; the
-    revision counts THIS process's writes, so a lastSid the outgoing kernel wrote during a handover reaches the rows when
-    another input moves) and each row's compacting bit (the live row against the cached parse). A field whose input is not
+    keyed by the store's entries' stats), the registry's rows revision (lastSid rides the SDK registry; a write that changes
+    it moves the revision, a write of a field no row reads does not; the revision counts THIS process's writes, so a lastSid
+    the outgoing kernel wrote during a handover reaches the rows when another input moves) and each row's compacting bit (the live row against the cached parse). A field whose input is not
     here cannot be added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
