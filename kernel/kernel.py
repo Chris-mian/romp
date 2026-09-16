@@ -330,7 +330,7 @@ class _PerfStats:
     # below the table itself). test_perf_stats pins it at 1.5x the literal count.
     HTTP_PATHS = 256
     SLOTS = 32
-    JOBS = ("beginCheckpointCycle", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
+    JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
@@ -861,6 +861,9 @@ class _PerfStats:
         memos["ghostDropped"] = dict(_GHOST_DROPPED, restamped=dict(_GHOST_DROPPED["restamped"]))   # the spawned-at ghost
         #   floor's drops: bgTasks and agents (cumulative, once per build), and what a RE-STAMP dropped (2026-09-14)
         memos["convergeDeclined"] = _CONVERGE_DECLINED[0]   # converges that asked no restart because this kernel was leaving
+        memos["sessionsListing"] = {"built": _SESSIONS_LISTING["built"], "served": _SESSIONS_LISTING["served"],
+                                    "requestBuilt": _SESSIONS_LISTING["requestBuilt"], "faultBuilt": _SESSIONS_LISTING["faultBuilt"],
+                                    "missBy": dict(_SESSIONS_LISTING["missBy"])}
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -26074,6 +26077,134 @@ def _supervisor_wait_s(now, rows=None):
     return SUPERVISOR_FAST_PASS_S if fast else SUPERVISOR_PASS_S
 
 
+_SESSIONS_LISTING = {"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None, "fault": None,
+                     "built": 0, "served": 0, "requestBuilt": 0, "faultBuilt": 0, "missBy": {}}   # GET /sessions from the cycle's snapshot
+#                      (plans/sessions-route-from-the-cycle.md): the rows built once per change by the pusher's cycle under an
+#                      exact key, served from memory to every request; `missBy` names the key input that moved
+
+
+def _reg_rev():
+    """The SDK registry's revision (kernel/sdk_backend.py REG_REV: every registration write), read through the module the
+    backend was loaded as; 0 before the backend module is loaded (nothing has been written)."""
+    return int(getattr(sys.modules.get("romp_sdk_backend"), "reg_rev", lambda: 0)())
+
+
+def _sessions_listing_reset():
+    """The kept listing back to empty (a test's setUp; the listing is process-global, so a module that stubs the row builder
+    per test must drop what an earlier build kept)."""
+    _SESSIONS_LISTING.update({"key": None, "rows": None, "json": None, "threads": None, "threadsKey": None, "fault": None,
+                              "built": 0, "served": 0, "requestBuilt": 0, "faultBuilt": 0, "missBy": {}})
+
+
+def _sessions_listing_key(live_map, names):
+    """The exact key of the /sessions rows (rule 2): every field a row carries is a function of these inputs. The live rows
+    (sid, state, since, backend: state and backend ride the row, since moves with a turn's edges), the names snapshot
+    (name, dir and the two identity colours: a move rewrites the names entry), the working-notes store (the note per sid,
+    keyed by the store's entries' stats), the registry revision (lastSid rides the SDK registry; a write moves it; the
+    revision counts THIS process's writes, so a lastSid the outgoing kernel wrote during a handover reaches the rows when
+    another input moves) and each row's compacting bit (the live row against the cached parse). A field whose input is not
+    here cannot be added without adding the input."""
+    try:
+        paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
+    except Exception:                                                   #  transcript the compacting read is disproved against
+        paths = {}
+    rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"),
+                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))))
+                        for sid, m in (live_map or {}).items()))
+    try:
+        with os.scandir(WORKING_DIR) as it:
+            notes = tuple(sorted((e.name, e.stat().st_mtime_ns, e.stat().st_size, e.stat().st_ino) for e in it if e.is_file()))
+    except OSError:                                        # (name, mtime_ns, size, ino): the key _working_notes itself memoizes on
+        notes = ()
+    nm = names if names is not None else {}
+    try:
+        names_key = tuple(sorted((str(k), str(v)) for k, v in nm.items()))
+    except Exception:
+        names_key = (repr(nm),)
+    return (rows, hash(names_key), notes, _reg_rev())
+
+
+def _sessions_listing_miss(prev, cur):
+    """Which key input moved between two keys, for memos.sessionsListing.missBy."""
+    if prev is None:
+        return "first"
+    for name, i in (("rows", 0), ("names", 1), ("notes", 2), ("registry", 3)):
+        if prev[i] != cur[i]:
+            return name
+    return "other"
+
+
+def _sessions_listing_refresh(now, live_map):
+    """The pusher's job (rule 1): the /sessions rows rebuilt once when their key moved, from the cycle's own liveness and
+    names snapshots, and kept with their JSON for every request until the next change."""
+    names = getattr(_live_scope, "names", None)
+    key = _sessions_listing_key(live_map, names)
+    if _SESSIONS_LISTING["key"] == key and _SESSIONS_LISTING["json"] is not None:
+        return
+    why = _sessions_listing_miss(_SESSIONS_LISTING["key"], key)
+    try:
+        rows = _session_rows_from(live_map)
+        body = json.dumps(rows)
+    except Exception:
+        _SESSIONS_LISTING["fault"] = time.time()          # the kept listing is stale from here: requests build for themselves
+        raise                                             #  (below) until a build lands; the job's own try writes the line
+    _SESSIONS_LISTING.update({"key": key, "rows": rows, "json": body, "fault": None, "built": _SESSIONS_LISTING["built"] + 1})
+    _SESSIONS_LISTING["missBy"][why] = _SESSIONS_LISTING["missBy"].get(why, 0) + 1   # the thread rows keep their own key (below)
+
+
+def _sessions_listing_serve(threads=False):
+    """The route's read: the kept JSON (a cycle old at most), or one build when no cycle has run yet (kept under no key, so
+    the first cycle rebuilds it under its own). `threads`: the comment-thread rows appended, kept apart under the registry
+    revision and the parents' comments stores (a thread's editable name lives there)."""
+    L = _SESSIONS_LISTING
+    if L["json"] is None:
+        rows = _session_rows()
+        L.update({"rows": rows, "json": json.dumps(rows), "requestBuilt": L["requestBuilt"] + 1})
+    L["served"] += 1
+    if L["fault"] is not None:                                     # the cycle's build failed since the kept listing: it may be
+        body = json.dumps(_session_rows())                         #  stale, so this request builds for itself, as the base did
+        L["faultBuilt"] += 1
+    else:
+        body = L["json"]
+    if not threads:
+        return body
+    tkey = _thread_rows_key()
+    th = L["threads"] if L["threadsKey"] == tkey else None         # both read under the same test: a refresh between them cannot
+    if th is None:                                                 #  hand a None to the join below
+        th = json.dumps(_thread_rows())
+        L["threads"], L["threadsKey"] = th, tkey
+    if th == "[]":
+        return body
+    return body[:-1] + ("," if body != "[]" else "") + th[1:]
+
+
+def _thread_rows_key():
+    """The thread rows' key: the registry revision (a thread's registration, its parent, its life, and the unreadable-reg
+    bit of its mailbox fields), the session-flags store's stat (postalServiceOff and mailOffWhy read it), and the parents'
+    comments stores' stats (its editable name), with the live state of each thread session."""
+    be = _sdk()
+    try:
+        fst = (jd.STATE / "session-flags.json").stat()
+        flags = (fst.st_mtime_ns, fst.st_size)
+    except OSError:
+        flags = None
+    if not be or not hasattr(be, "thread_sessions"):
+        return ("none", _reg_rev(), flags)
+    parts = [_reg_rev(), flags]
+    try:
+        for tsid, meta in sorted(be.thread_sessions().items()):
+            parent = str(meta.get("threadOf") or "")
+            try:
+                st = _comments_path(parent).stat()
+                cst = (st.st_mtime_ns, st.st_size)
+            except Exception:
+                cst = None
+            parts.append((tsid, meta.get("state"), parent, cst))
+    except Exception:
+        parts.append(("unreadable", time.time()))
+    return tuple(parts)
+
+
 def _session_rows():
     """Every LIVE romp session (every backend) with the fields external tools need: id (sid), name, claude-state,
     working dir, identity bg/fg, the set_working ownership note, and which backend drives it. Served at GET
@@ -26083,23 +26214,19 @@ def _session_rows():
     _tmux_session_list (the user 2026-06-26: every backend behind one session API). Best-effort [] if no backend
     responds. NB: 0-arg, distinct from the picker's _session_list(now, live_map) — they once collided (the user
     2026-06-22); keep the names distinct."""
-    notes = _working_notes()                                # {sid: working-note} (the kernel-side store)
-    # ONE transcript-path sweep for the WHOLE listing: _path_of per row re-ran discover()'s
-    # fingerprint validity check (3 stats × every names entry + a stat per discovered transcript)
-    # for every live session — ~30 rows × ~280 syscalls a request, measured at ~71% of this route's
-    # handler time on a loaded kernel (py-spy 2026-08-31, the /sessions p90-3.3s complaint). Same
-    # hoist idiom as the pusher cycle's _live_map() snapshot (2026-08-10) and the tm= param.
+    return _session_rows_from(Sessions.live())      # the registry read: a build outside a cycle (the pusher builds from its snapshot)
+
+
+def _session_rows_from(live_map):
+    """The /sessions rows over a liveness map already in hand (the pusher's cycle snapshot, or _session_rows' own registry
+    read): the working notes and one transcript sweep, then one row per live session (_session_listing_row)."""
+    notes = _working_notes()
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}
     except Exception:
-        # the hoist runs OUTSIDE the per-row guard below, so it needs its own containment (review
-        # find, 2026-08-31): a discover raise (a names-dir permission fault or remove race) must
-        # degrade to PATHLESS rows — an empty map is exactly _path_of's miss, so every row still
-        # serves complete with compacting=False — never a 500 for the whole route.
-        sys.stderr.write("session-list path sweep failed (rows serve pathless): %s\n"
-                         % traceback.format_exc())
+        sys.stderr.write("session-list path sweep failed (rows serve pathless): %s\n" % traceback.format_exc())
         paths = {}
-    return [_session_listing_row(sid, meta, notes, paths.get(sid)) for sid, meta in Sessions.live().items()]
+    return [_session_listing_row(sid, meta, notes, paths.get(sid)) for sid, meta in (live_map or {}).items()]
 
 
 def _session_listing_row(sid, meta, notes, path):
@@ -31409,7 +31536,7 @@ def _chat_ident(path):
 
 
 def _chat_reg_sig(sid):
-    """Registry content that can change a chat, plus its readable/missing/unreadable state. Host journal
+    """Registry content that can change a chat or feed entry, plus its readable/missing/unreadable state. Host journal
     acknowledgements and log offsets move during ordinary output without changing the payload; keying on
     the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
     ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
@@ -38710,7 +38837,8 @@ _FEED_MEMO_LABELS = ("transcript", "parse", "cut", "states", "names", "captions"
                      "cleared", "row", "ask", "live", "bg", "wait", "postal", "stalls", "nudge", "jauth", "jactive",
                      "hide", "watch", "subagents", "usage", "offer", "auth", "downtime", "debug", "interrupting",
                      "closer", "peers")
-_FEED_MEMO_DEPS = ("usage", "offer", "peers")    # the components evaluated over the PREVIOUS entry's record (see _feed_session_key)
+_FEED_MEMO_DEPS = ("usage", "offer", "peers", "nudge", "stalls")    # components evaluated over the previous entry's read record
+_FEED_NUDGE_FIELDS = ("count", "failed", "failedAt")  # the fields the card reads; pinned by the input census
 _feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
@@ -38900,17 +39028,20 @@ def _cleared_by_sid(cleared):
 
 def _feed_board_facts(ctx, now):
     """The board-wide inputs of every session's key, taken ONCE per build into ctx (the same value for every
-    session: one stat each, not one per living session): the clear set indexed by session, the postal maps indexed
-    by party, the nudge records' identities, usage.json's identity and the login-account window sitting at its cap
+    session: shared reads, not one per living session): the clear set indexed by session, the postal maps indexed
+    by party, a snapshot of displayed nudge fields/history, usage.json's identity and the login-account window sitting at its cap
     with its reset ahead as (window, resetsAt) or None (the `offer` component's payload), the key on hand,
     the host-suspension spans, the debug mode and its rows' identity. Taken before any session's derivation, so
-    every session's read follows its stat (stat-then-read)."""
+    every file read follows its stat and every nudge key and card uses the same snapshot."""
     b = ctx.get("board")
     if b is None:
         dbg = bool(jd._debug_mode())
         b = {"cleared_by_sid": _cleared_by_sid(ctx["cleared"]),   # the clear set indexed by owning session, once per build
              "postal": _postal_maps_indexed(),
-             "nudge": (_chat_ident(jd.STATE / "auto-nudge.json"), _chat_ident(jd.STATE / "nudge-events.jsonl")),
+             "nudge_records": {gid: ({k: rec.get(k) for k in _FEED_NUDGE_FIELDS}
+                                      if isinstance(rec, dict) else rec)
+                               for gid, rec in _auto_nudge_data().get("nudged", {}).items()},
+             "nudge_times": {gid: tuple(times[-8:]) for gid, times in _nudge_times().items()},
              "usage_ident": _chat_ident(jd.STATE / "usage.json"),
              "cap_open": (lambda w: (w["window"], w["resetsAt"]) if w else None)(_usage_cap_open(now)),
              "auth": _auth_key_present(),
@@ -38919,7 +39050,33 @@ def _feed_board_facts(ctx, now):
         ctx["board"] = b
         ctx["usage_ident"] = b["usage_ident"]      # the deps re-evaluation reads these two (see _feed_key_with_deps)
         ctx["cap_open"] = b["cap_open"]
+        ctx["nudge_records"] = b["nudge_records"]
+        ctx["nudge_times"] = b["nudge_times"]
     return b
+
+
+def _feed_nudge_key(ctx, entry):
+    """Only the nudge facts this entry read, from the same snapshot its cards consume. Exact node ids
+    include foreign-owned cards; a session-prefix filter would miss those. History is displayed only
+    when a count is present, and only its last eight timestamps can change the card."""
+    out = []
+    for gid in sorted(set(((entry or {}).get("reads") or {}).get("nudges") or ())):
+        rec = ctx["nudge_records"].get(gid) or {}
+        fields = tuple(rec.get(k) for k in _FEED_NUDGE_FIELDS)
+        times = ctx["nudge_times"].get(gid, ()) if rec.get("count") else ()
+        out.append((gid, fields, times))
+    return tuple(out)
+
+
+def _feed_stalls_key(ctx, entry):
+    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Blocked
+    filing), from the build's own _stalled_goals() snapshot in ctx, keyed by the exact node ids in the
+    entry's `reads`. The body reads a record by exact node id, a foreign-owned id included, so a slice on
+    the session's own id prefix missed those; the board-wide nudge identity covered them until the nudge
+    component was scoped to its read ids (the review, 2026-09-15). A deps component, like nudge: a cold
+    entry gets it from _feed_key_with_deps."""
+    ids = set(((entry or {}).get("reads") or {}).get("nudges") or ())
+    return tuple(sorted((g, v.get("why"), v.get("since")) for g, v in ctx["stalls"].items() if g in ids))
 
 
 def _feed_session_key(s, tm, ctx, prev_entry):
@@ -38931,7 +39088,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     `who_working`, `interrupting`, `store`, `closer`, `hide`), so a build reads each once, hit or miss, and their
     side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
     they did before the memo. `prev_entry` is the session's previous decoded entry (None when cold): its `peers` and
-    `reads` records drive the two dependency components, which _feed_key_with_deps re-evaluates over the NEW entry
+    `reads` records drive the dependency components (_FEED_MEMO_DEPS), which _feed_key_with_deps re-evaluates over the NEW entry
     after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build.
 
     Components, label: what it covers (the reads in the body), how it is taken.
@@ -38964,7 +39121,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
-      reg: (_chat_ident(STATE/sdk/<fsid>.json), _chat_ident(STATE/gone/<fsid>.json)). The launch ledger
+      reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
+        excluding host journal acknowledgements/log offsets, plus the death marker's file identity. The launch ledger
         (_thread_reg → _bg_live_norm), spawnedAt and the death marker (_sdk_spawned_at, jd._cli_epoch), the SDK-human
         flag (_display_sdk_human).
       cleared: the session's own slice of _cleared_ids(), sorted. `nid in cleared` per top, the provisional card's
@@ -38982,10 +39140,13 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         times, asks, reply-requiring sends and returns, the other parties' display names). _peer_answered and
         _peer_answered_at walk those pairs, _session_stamp_read's superseding clock is that walk, _peer_identity's
         remote names are the join; a row between two other sessions moves no key of this one.
-      stalls: the session's slice of _stalled_goals() as (gid, why, since), sorted. The stalled section and the
-        in-flight swirl.
-      nudge: (_chat_ident(STATE/auto-nudge.json), _chat_ident(STATE/nudge-events.jsonl)), board-wide.
-        _auto_nudge_data()["nudged"][nid], _nudge_times()[nid].
+      stalls: the deferral records of _stalled_goals() as (gid, why, since), sorted, for the exact node ids the
+        previous entry read (a foreign-owned id included: the body reads a record by exact node id, so a slice on
+        the session's own id prefix missed a foreign-id node's hold). The stalled section, the in-flight swirl and
+        the Blocked filing. A deps component, re-evaluated over the new entry.
+      nudge: count, failed/failedAt and the last eight displayed history timestamps for the exact node ids
+        the previous entry read. The pre-build snapshot also feeds the body; unrelated ledger writes and
+        other sessions' history do not invalidate this entry. A deps component, populated on a cold build.
       jauth: jd._auth_down_map()[fsid] as sorted items, or None. The judge-auth floor and badge.
       jactive: fsid in {r["fsid"] for r in jd.active_runs()}. The Analyzing swirl's active prong.
       hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
@@ -39031,14 +39192,13 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
-    reg = (_chat_ident(jd.STATE / "sdk" / (fsid + ".json")), _chat_ident(jd.GONEDIR / (fsid + ".json")))
+    reg = (_chat_reg_sig(fsid), _chat_ident(jd.GONEDIR / (fsid + ".json")))
     cl = board["cleared_by_sid"].get(fsid, ())
     row = (tuple(sorted(((k, v) for k, v in tm.items() if k not in ("snapT", "interrupting")), key=lambda kv: kv[0]))
            if tm else None)
     postal = _postal_session_slice(fsid, board["postal"])
-    nudge = board["nudge"]
-    stalls = tuple(sorted((k, v.get("why"), v.get("since")) for k, v in ctx["stalls"].items()
-                          if k.startswith(fsid + ":")))
+    nudge = _feed_nudge_key(ctx, prev_entry)
+    stalls = _feed_stalls_key(ctx, prev_entry)
     jauth = tuple(sorted((ctx["jauth_map"].get(fsid) or {}).items(), key=str)) or None
     jactive = fsid in ctx["jactive"]
     subagents = _subagent_dirs_ident(fsid, str(_subagents_dir(path)))[1] if path else None
@@ -39100,7 +39260,8 @@ _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build'
 
 def _feed_key_with_deps(key, ctx, entry):
     """The key with its dependency components re-evaluated over the entry a derivation just produced: `usage` and
-    `offer` from the entry's `reads`, `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
+    `offer` from the entry's `reads`, `nudge` and `stalls` from its exact read node ids and the build's snapshots,
+    `peers` from the entry's `peers`, each peer's facts the PRE-derivation ones the key
     took when the previous entry already named that peer. A peer this derivation read for the FIRST time has no
     pre-derivation facts, and facts taken now could pair a new key with old content (the peer's store moving while
     the body read it, the order stat-then-read forbids), so the stored key carries _FEED_PEERS_UNSETTLED instead:
@@ -39110,6 +39271,8 @@ def _feed_key_with_deps(key, ctx, entry):
     reads = (entry or {}).get("reads") or {}
     k[_FEED_MEMO_LABELS.index("usage")] = ctx.get("usage_ident") if reads.get("usage") else None
     k[_FEED_MEMO_LABELS.index("offer")] = ctx.get("cap_open") if reads.get("usage") else None
+    k[_FEED_MEMO_LABELS.index("nudge")] = _feed_nudge_key(ctx, entry)
+    k[_FEED_MEMO_LABELS.index("stalls")] = _feed_stalls_key(ctx, entry)
     if entry is None:
         peers = None
     else:
@@ -39135,7 +39298,7 @@ def _feed_session_entry(s, ctx):
       cold          True when the session is living, unparsed and worth warming (_warm_fleet_bg)
       peers         the peer sids this derivation read (origin senders, handoff recipients, stamped and awaited
                     peers): the key's `peers` dependency component re-evaluates them next build
-      reads         {"usage": True} when the derivation read usage.json (an api error's cap offer): the key's `usage`
+      reads         usage=True for a cap offer, nudges=[node ids] for the nudge facts read by this entry
     `ctx` carries the build's cross-session reads (now, live_map, cleared, dbg_rows, wmap, stalls, jauth_map,
     jactive) and the per-session facts the key already computed (ps, who_working, interrupting, store, closer):
     the body reads those from ctx and nothing twice. Every helper this body calls is covered by a component of
@@ -39917,7 +40080,8 @@ def _feed_session_entry(s, ctx):
         # human is the bottleneck now. The floor keeps requiring open to-dos AT DISPLAY TIME (agent_open)
         # so it self-heals the instant the agent crosses the items off; the live api/permission floors
         # still win (the present event).
-        nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
+        reads.setdefault("nudges", []).append(nid)
+        nrec = ctx["nudge_records"].get(nid) or {}
         _stall_rec = _stalls.get(nid)             # romp is holding this card (see "stalled" in the payload)
         # ROUTING (2026-08-13): an in-flight-class hold (jd.WHY_IN_FLIGHT — romp's own review is the
         # wait) presents as the Analyzing… swirl, never the stalled chip; every other hold paints the
@@ -40080,7 +40244,7 @@ def _feed_session_entry(s, ctx):
                                        and _sa_u and _sa_u == nodes[nid].get("summaryAnchor")) else None),
             "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
             "failLog": nodes[nid].get("failLog") or None,   # the summarizer's failed attempts (judge _fail_log): model + literal error per try → the chip's hover history + modal "What was tried" (the user 2026-08-18)
-            "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
+            "nudged": ({"count": int(nrec.get("count", 0)), "times": list(ctx["nudge_times"].get(nid, ()))}
                        if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
             "blocked": ({"state": "apiError",
                          # the OFFER (2026-08-30): login-billed + capped window + a key on hand →
@@ -53442,6 +53606,10 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("checkpoint-cycle: %s\n" % traceback.format_exc())
     _t_push = 0.0
+    try:                                  # GET /sessions rows from this cycle's snapshot (plans/sessions-route-from-the-cycle.md):
+        _job_stage('sessionsListing', lambda: _sessions_listing_refresh(now, live_map))   # its own try, so a fault in the key or
+    except Exception:                     #  the build never skips the parked ops below, and the line names the listing
+        sys.stderr.write("sessions-listing: %s\n" % traceback.format_exc())
     try:                                  # parked ops deliver on the settle EVENT this cycle was woken for
         _job_stage('applyPendingOps', lambda: _apply_pending_ops())              # (_wake_kernel, /tick, a park/cancel/move, the 0.5 s backstop) —
         #                                   the parked-parse refresh runs inside, per sid, after the
@@ -60599,10 +60767,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(_token_analytics(int(time.time()), w)),
                                   "application/json", cache="no-cache")
             if p == "/sessions":                              # unified romp session list (every backend) for external tools (the Obsidian plugin, the postal bus)
-                rows = _session_rows()
-                if (q.get("threads") or [""])[0] == "1":       # opt-in: comment-thread rows for the postal
-                    rows = rows + _thread_rows()               # bus (the user 2026-08-22); every existing
-                return self._send(200, json.dumps(rows), "application/json", cache="no-cache")   # consumer unchanged
+                body = _sessions_listing_serve(threads=(q.get("threads") or [""])[0] == "1")   # the cycle's kept rows (a cycle old at
+                return self._send(200, body, "application/json", cache="no-cache")           #  most); ?threads=1 appends the thread rows
             if p == "/sessions/by-fsid":
                 # ONE live session's (or comment thread's) row by any transcript id it has owned — the postal
                 # bus's self-identity join for a session whose environment still carries a pre-/clear id
