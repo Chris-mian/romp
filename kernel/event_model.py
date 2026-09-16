@@ -4714,7 +4714,8 @@ def _asm_full(key, leaf_path, candidate_files, links, rompuuid, postal_index, sd
     entry = {"ad": ad, "st": st, "atoms": atoms, "kept": kept,
              "landed": ad.landed_text_uuids(),
              "cands": tuple(str(f) for f in candidate_files), "links": dict(links or {}),
-             "recs": dict(ad._src_keys), "n_qatts": len(ad.qatts), "prefix": []}
+             "recs": dict(ad._src_keys), "n_qatts": len(ad.qatts), "prefix": [],
+             "path": str(leaf_path)}   # as handed: the reader's key for the same leaf (asm_whole_entries hands it back)
     with _ASM_LOCK:
         gone = [_ASM_CACHE.pop(key, None)]
         while len(_ASM_CACHE) >= _ASM_CACHE_MAX:
@@ -5865,8 +5866,13 @@ def asm_whole_entries():
     actually did, whatever the sessions' age. The converge pass enumerates its assembly candidates from these (T382: the
     discover window's rows left every idle leaf older than 48 hours out, the very population the step targets)."""
     with _ASM_LOCK:
-        keys = [k for k, e in _ASM_CACHE.items() if e is not None and not e.get("prefix") and not e.get("preTurns")]
-    return [(k[0], k[1], bool(k[2])) for k in keys]
+        rows = [(k, e.get("path")) for k, e in _ASM_CACHE.items() if e is not None and not e.get("prefix") and not e.get("preTurns")]
+    # the leaf path AS THE PARSE WAS HANDED IT, not the cache's resolved key: the reader keys its record entries on the path as
+    # given, and the pass asks it (entry_whole_resident) under the path it enumerates here. Handed the resolved path, a root
+    # that crosses a symlink (a temp root under /var on macOS, a symlinked home or CLAUDE_CONFIG_DIR anywhere) found no record
+    # entry, counted noEntry every cycle and wrote no document, so the next boot paid the whole read (the macOS triage of
+    # v0.16). The document itself is keyed on the resolved path (_asm_ckpt_file), so it lands where the restore looks either way.
+    return [((p or k[0]), k[1], bool(k[2])) for k, p in rows]
 
 
 def asm_whole_entry_for(leaf_path):
@@ -6959,7 +6965,8 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
                  "recs": dict(ad._src_keys), "n_qatts": len(ad.qatts), "prefix": prefix, "preTurns": pre_turns, "index": index,
                  "skipped": {f["path"]: (f["size"], f["mtime"]) for f in doc["files"].values() if f.get("skip")},
                  "docPre": sum((int(f["size"]) if f.get("skip") else int((f.get("cut") or [0])[0])) for f in doc["files"].values()),
-                 "docCutOff": int(((doc["files"].get(Path(leaf_path).stem) or {}).get("cut") or [0])[0])}
+                 "docCutOff": int(((doc["files"].get(Path(leaf_path).stem) or {}).get("cut") or [0])[0]),
+                 "path": str(leaf_path)}                   # as handed: the reader's key for the same leaf
         #        docPre: the pre-cut bytes over the lineage; docCutOff: the leaf's cut offset. The fold's gate demotes this entry
         #        to a whole parse when the tail past the cut reaches the share (tailShare), so the settle rewrites the cut
     except Exception as e:                                     # noqa: BLE001 — a document the code cannot use is a fallback
