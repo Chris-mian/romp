@@ -133,7 +133,9 @@ class Lookup(unittest.TestCase):
         self.assertTrue(b["markdown"].startswith("## tessel")); self.assertTrue(b["source_path"].endswith("notes-api.md"))
         self.assertEqual(km._glossary_lookup(SID, "review tessel")[1]["title"], "tessel", "an alias answers the term")
         self.assertEqual(km._glossary_lookup(SID, "tessel head")[1]["anchor"], "tessel-head", "the multi-word term is its own entry")
-        with mock.patch.dict(os.environ, {"HOME": os.path.realpath(self.td)}):     # the lab root stands in for $HOME, so the tilde has something to abbreviate
+        with mock.patch.dict(os.environ, {"HOME": self.td}):     # the lab root stands in for $HOME, so the tilde has something to abbreviate;
+            #                                                    the paths-tried list this route answers is built from the HANDED paths, so
+            #                                                    HOME stays the unresolved root here (only the refusal log below tildes the real path)
             s, b = km._glossary_lookup(SID, "nonesuch")
         self.assertEqual(s, 404); self.assertTrue(b["tried"][0].startswith("~/") and b["tried"][0].endswith("notes-api.md"), "tilded like the 200's source_path: %r" % b["tried"])
         s, b = km._glossary_lookup(OTHER, "tessel")
