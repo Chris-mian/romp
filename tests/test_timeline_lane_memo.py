@@ -1370,6 +1370,39 @@ class PerfWiring(LaneMemoBase):
         self.assertEqual((blk["hit"], blk["miss"]), (1, 1), "and leave the live counters alone")
 
 
+def _boundary(t, uuid, parent):
+    """A compact_boundary record as Claude Code writes one (parentUuid null, the anchor under logicalParentUuid). It
+    parses into a turn of its own, so a lane with one holds a closed turn made of nothing but the marker."""
+    return {"type": "system", "subtype": "compact_boundary", "uuid": uuid, "parentUuid": None, "logicalParentUuid": parent,
+            "timestamp": _iso(t), "compactMetadata": {"trigger": "auto"}}
+
+
+class _RowIndex:
+    """A stand-in LazyIndex whose rows ARE the atoms: build hands the row back, so a slot's first read is a build and
+    every later one a resident read, the shape a restored lane's closed turns have (em._pre_turns_of)."""
+
+    def build(self, row):
+        return row
+
+    def uuid_of(self, row):
+        return row.get("uuid")
+
+
+class _CountingAtoms(km.em.LazyAtoms):
+    """LazyAtoms that counts every slot read, per list (n) and in all (reads): _at is the one road for indexing, slicing,
+    iteration and membership, and on a restored lane each such read is a lock round trip or a row decode."""
+    reads = 0
+
+    def __init__(self, index, rows):
+        super().__init__(index, rows)
+        self.n = 0
+
+    def _at(self, i):
+        self.n += 1
+        type(self).reads += 1
+        return super()._at(i)
+
+
 class PrefixMemo(LaneMemoBase):
     """The lane PREFIX memo (2026-09-12): a live lane whose transcript moved re-derived every turn of its history each
     build (1.19 million segments re-walked in 25 minutes on the devbox, a third of the pusher's time). The closed
@@ -1415,6 +1448,158 @@ class PrefixMemo(LaneMemoBase):
         tl = self.build()
         self.assertEqual(self._prefix_counts()[0], 1, "a changed captions file is a changed input: the old prefix is not served")
         self.assertEqual(tl["turns"][LIVE_SID][0].get("c"), "Added backoff", "and the first bar carries the new caption")
+
+    # ── the closed turns' compaction markers ride the prefix (2026-09-16) ──
+    def _lazy_closed_turns(self, session):
+        """Every closed turn's atoms as fresh, UNBUILT counting LazyAtoms over the same rows (the turn keys stand: id,
+        ended, atom count, end); the wrapped lists come back so a test can pin their slots, and the read count starts at 0."""
+        out = []
+        for turn in session["turns"][:-1]:
+            turn["atoms"] = _CountingAtoms(_RowIndex(), list(turn["atoms"]))
+            out.append(turn["atoms"])
+        _CountingAtoms.reads = 0
+        return out
+
+    @staticmethod
+    def _slots(lazies):
+        return [list.__getitem__(la, i) is km.em._UNMAT for la in lazies for i in range(len(la))]
+
+    def _boundary_lane(self):
+        """Four turns: the first reply, a compaction marker alone in a turn of its own, two more exchanges. Parsed, with
+        a store minted so the goals object is the kernel's shape (a FrozenStore); the from-scratch markers beside."""
+        self.append_records([_boundary(self.t0 + 50, "cb1", "a1"),
+                             _rec("user", self.t0 + 100, "u2", "cb1", "and cap the delay"),
+                             _rec("assistant", self.t0 + 120, "a2", "u2", "Capped at two minutes."),
+                             _rec("user", self.t0 + 200, "u3", "a2", "and log each retry"),
+                             _rec("assistant", self.t0 + 220, "a3", "u3", "Logged with the delay.")])
+        self.mint_store()
+        session = km._parse(str(self.tpath()), LIVE_SID, self.now)
+        self.assertEqual(len(session["turns"]), 4)
+        want = [{"t": a["t"]} for t in session["turns"] for a in t["atoms"]
+                if a.get("type") == "system" and a.get("subtype") == "compact_boundary"]
+        self.assertEqual(want, [{"t": self.t0 + 50}], "the fixture yields one real marker, inside a closed turn")
+        return session, km.jd.load_goals_shared(LIVE_SID), want
+
+    def test_a_prefix_hit_reads_no_atom_of_the_closed_turns_and_its_compactions_equal_a_whole_derivation(self):
+        """The markers were a comprehension over every atom of every turn, run AFTER the prefix reuse, so a hit still read
+        the whole history for them. With the closed turns as unbuilt LazyAtoms (the kernel's shape for a restored lane),
+        a prefix-hit derivation reads none of their slots, leaves every one unbuilt, and serves the whole derivation's
+        markers. cap_key names a captions key on both calls: a prefix is held under a key only."""
+        session, goals, want = self._boundary_lane()
+        self._lazy_closed_turns(session)
+        whole = km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key="empty")
+        self.assertGreater(_CountingAtoms.reads, 0, "the whole derivation reads the closed turns")
+        self.assertEqual(whole[3], want)
+        lazies = self._lazy_closed_turns(session)                  # fresh unbuilt slots over the same rows
+        hit = km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key="empty")
+        self.assertEqual(self._prefix_counts()[0], 1, "the second derivation was served the prefix")
+        self.assertEqual(_CountingAtoms.reads, 0, "a prefix hit reads no atom of the closed turns")
+        self.assertTrue(all(self._slots(lazies)), "and leaves every closed slot unbuilt: on a restored lane the read IS the cost")
+        self.assertEqual(hit[3], whole[3], "the markers a hit serves are the whole derivation's")
+        self.assertEqual(json.dumps(hit[0]), json.dumps(whole[0]))
+        self.assertEqual((hit[1], hit[2], hit[7]), (whole[1], whole[2], whole[7]))
+
+    def test_a_boundary_in_the_tail_turn_lands_without_re_walking_the_closed_turns(self):
+        """The kernel road, three transcript moves after the prefix first served. A compaction appended after the third
+        exchange is a tail turn of its own: the build that draws it derives the exchange that just closed and the new
+        tail, reads no atom of the two turns the prefix holds, and puts the marker on the wire. Two exchanges later the
+        marker's own turn is held too: its atoms are never read again and the marker still rides the lane, equal to a
+        whole derivation's. Every closed turn is wrapped per derivation; the per-turn read counts tell held from derived."""
+        self.build()
+        self.append_records([_rec("user", self.t0 + 100, "u2", "a1", "and cap the delay"),
+                             _rec("assistant", self.t0 + 120, "a2", "u2", "Capped at two minutes.")])
+        self.build()
+        self.append_records([_rec("user", self.t0 + 200, "u3", "a2", "and log each retry"),
+                             _rec("assistant", self.t0 + 220, "a3", "u3", "Logged with the delay.")])
+        tl3 = self.build()
+        self.assertEqual((self._prefix_counts()[0], self.lane(tl3)["compactions"]), (1, []))
+        real, seen = km._lane_segments, []
+
+        def wrapped(sid, session, *a, **k):                        # the closed turns as unbuilt LazyAtoms for this derivation only
+            plain = [t["atoms"] for t in session["turns"][:-1]]
+            lazies = self._lazy_closed_turns(session)
+            try:
+                return real(sid, session, *a, **k)
+            finally:
+                seen.append(([la.n for la in lazies], [all(self._slots([la])) for la in lazies]))
+                for t, atoms in zip(session["turns"], plain):
+                    t["atoms"] = atoms
+        km._lane_segments = wrapped
+        try:
+            self.append_records([_boundary(self.t0 + 300, "cb1", "a3")])
+            tl4 = self.build()                                     # closed: the three exchanges; held: the first two
+            self.assertEqual(self.lane(tl4)["compactions"], [{"t": self.t0 + 300}], "the tail's marker is on the wire")
+            self.append_records([_rec("user", self.t0 + 400, "u4", "cb1", "and retry on timeouts"),
+                                 _rec("assistant", self.t0 + 420, "a4", "u4", "Timeouts retry too.")])
+            tl5 = self.build()                                     # closed: three exchanges and the marker's turn; held: the exchanges
+            self.append_records([_rec("user", self.t0 + 500, "u5", "a4", "and count the retries"),
+                                 _rec("assistant", self.t0 + 520, "a5", "u5", "Counted per call.")])
+            tl6 = self.build()                                     # the marker's turn is held now
+        finally:
+            km._lane_segments = real
+        self.assertEqual(self._prefix_counts()[0], 4, "every build since the third was served the prefix")
+        self.assertEqual(len(seen), 3, "one derivation per build")
+        reads, unbuilt = zip(*seen)
+        self.assertEqual([r[:2] for r in reads], [[0, 0]] * 3, "the first two exchanges, held since the third build, are never read again")
+        self.assertGreater(reads[0][2], 0, "the exchange that closed at the fourth build is derived once")
+        self.assertEqual(reads[1][:3], [0, 0, 0]); self.assertGreater(reads[1][3], 0, "then held; the marker's turn is derived at the fifth")
+        self.assertEqual(reads[2], [0, 0, 0, 0, reads[2][4]], "at the sixth the marker's turn is held: its atoms are not read")
+        self.assertGreater(reads[2][4], 0)
+        self.assertEqual(list(unbuilt), [[True, True, False], [True, True, True, False], [True, True, True, True, False]],
+                         "a held turn's slots stay unbuilt; the one that just closed is built")
+        self.assertEqual([self.lane(tl)["compactions"] for tl in (tl5, tl6)], [[{"t": self.t0 + 300}]] * 2,
+                         "the marker rides the lane after its turn is held")
+        km._lane_prefix_memo.clear()
+        session = km._parse(str(self.tpath()), LIVE_SID, self.now)
+        whole = km._lane_segments(LIVE_SID, session, km.jd.load_goals_shared(LIVE_SID), km._captions(LIVE_SID), True, None)
+        self.assertEqual(self.lane(tl6)["compactions"], whole[3])
+        self.assertEqual(json.dumps(tl6["turns"][LIVE_SID]), json.dumps(whole[0]))
+
+    def test_a_prefix_miss_still_walks_every_closed_turn_and_the_compactions_equal(self):
+        """The two ways a prefix is not served fall back as before: a changed input (another captions key) and a partial
+        prefix (a closed turn gone from the middle) each re-derive the whole lane, every closed slot built and the
+        markers gathered from scratch. The partial case's fixture drops the marker's own turn, so a prefix that served
+        its held markers blindly would put a marker on a lane that has none."""
+        session, goals, want = self._boundary_lane()
+        self._lazy_closed_turns(session)
+        km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key="empty")
+        lazies = self._lazy_closed_turns(session)
+        miss = km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key=(1, 2, 3))   # a captions stat key: a new input
+        self.assertEqual(self._prefix_counts()[0], 0, "a changed input is not served the held prefix")
+        self.assertFalse(any(self._slots(lazies)), "the whole lane re-derived: every closed slot built")
+        self.assertEqual(miss[3], want)
+        short = dict(session, turns=[session["turns"][0], session["turns"][2], session["turns"][3]])   # the marker's turn gone
+        lazies = self._lazy_closed_turns(short)
+        part = km._lane_segments(LIVE_SID, short, goals, {}, True, None, cap_key=(1, 2, 3))
+        self.assertEqual(self._prefix_counts()[0], 0, "a partial prefix is not served either")
+        self.assertFalse(any(self._slots(lazies)))
+        self.assertEqual(part[3], [], "no marker on a lane whose marker turn is gone")
+        km._lane_prefix_memo.clear()
+        whole = km._lane_segments(LIVE_SID, short, goals, {}, True, None, cap_key=(1, 2, 3))
+        self.assertEqual(json.dumps(part[0]), json.dumps(whole[0]))
+        self.assertEqual(part[3], whole[3])
+
+    def test_a_boundary_inside_an_echo_turn_lands_in_turn_order_on_both_roads(self):
+        """The per-turn gather runs before the echo skip, pinned by setting the echo flag BY HAND on a parsed turn that holds a
+        boundary (the kernel's own echo turns hold only echo atoms, so this shape models no lane the kernel meets): such a
+        turn draws no bar, and the gather's placement is what keeps its marker in turn order on both roads."""
+        self.append_records([_boundary(self.t0 + 50, "cb1", "a1"),
+                             _rec("user", self.t0 + 100, "u2", "cb1", "and cap the delay"),
+                             _rec("assistant", self.t0 + 120, "a2", "u2", "Capped at two minutes."),
+                             _boundary(self.t0 + 250, "cb2", "a2"),
+                             _rec("user", self.t0 + 300, "u3", "cb2", "and log each retry"),
+                             _rec("assistant", self.t0 + 320, "a3", "u3", "Logged with the delay.")])
+        session = km._parse(str(self.tpath()), LIVE_SID, self.now)
+        self.assertEqual(len(session["turns"]), 5)
+        session["turns"][1]["echoTurn"] = True                     # the first marker's turn, flagged as a stale echo's
+        goals = km.jd.load_goals_shared(LIVE_SID)
+        whole = km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key="empty")
+        hit = km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key="empty")
+        self.assertEqual(self._prefix_counts()[0], 1)
+        self.assertEqual(whole[3], [{"t": self.t0 + 50}, {"t": self.t0 + 250}], "both markers, in turn order")
+        self.assertEqual(hit[3], whole[3])
+        self.assertNotIn(self.t0 + 50, [b["start"] for b in whole[0]], "the echo turn draws no bar")
+        self.assertEqual(json.dumps(hit[0]), json.dumps(whole[0]))
 
 
 if __name__ == "__main__":
