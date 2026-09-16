@@ -5,9 +5,12 @@ cannot see is re-fed at EVERY restart, forever: a kernel whose scan read only na
 queued_command attachment a mid-turn feed lands as) and only the last 2 MB of the file re-fed the same texts,
 some days old, at two restarts in one night, one text landing six times. So: a send older than
 REDELIVER_MAX_AGE_S at the restart is not re-fed and not scanned — it takes the flag path (dropped, kept in
-the chat as never-delivered) and ONE notice names the count and the oldest stamp; a send the prompt gate
-REFUSED is flagged dropped + refused at the refusal, so it is never re-fed; both flags ride the registry
-mirror across restarts. The queue proper (sends never fed) is not under the line. SYNTHETIC."""
+the chat as never-delivered) and ONE notice card per session per restart (dropped_sends_card, through the
+backend's post_notice door, plans/notice-cards.md) offers each dropped message back with a Send again button;
+nothing is injected into the session (the user 2026-09-15, who rejected the notice the card replaced). A send
+the prompt gate REFUSED is flagged dropped + refused at the refusal, so it is never re-fed; both flags ride
+the registry mirror across restarts. The queue proper (sends never fed) is not under the line. SYNTHETIC."""
+import inspect
 import json
 import os
 import tempfile
@@ -61,6 +64,15 @@ class Fixture(unittest.TestCase):
             _logs = []
             _problems = []
             _forgotten = []
+            _notices = []                            # every post_notice call, as the kernel's door would see it
+
+            @staticmethod
+            def on_notice(sid, key, title, body="", **kw):
+                """The kernel's door (type(backend).on_notice = staticmethod(post_notice)), captured: the row the
+                kernel would append, with the rev counting the posts under the key."""
+                rev = 1 + sum(1 for n in BE._notices if n["sid"] == sid and n["key"] == key)
+                BE._notices.append(dict(sid=sid, key=key, title=title, body=body, **kw))
+                return {"op": "post", "sid": sid, "key": key, "rev": rev, "title": title}, None
 
             def _log(self, msg, problem=False, **kw):
                 self._logs.append(msg)
@@ -81,7 +93,7 @@ class Fixture(unittest.TestCase):
         self.be = BE()
         import pathlib
         self.be.state_dir = pathlib.Path(self.td)
-        for name in ("_mark_dropped_echoes", "_text_landed", "mark_echo_refused"):
+        for name in ("_mark_dropped_echoes", "_text_landed", "mark_echo_refused", "post_notice"):
             setattr(self.be, name, getattr(sb.SdkBackend, name).__get__(self.be))
         sb.write_reg(self.be.state_dir, SID, {"sid": SID, "alive": True, "cwd": self.cwd,
                                               "lastSid": SID, "queue": []})
@@ -101,35 +113,122 @@ class Fixture(unittest.TestCase):
     def _reg_queue(self):
         return (sb.read_reg(self.be.state_dir, SID) or {}).get("queue") or []
 
+    def _the_card(self):
+        """The ONE notice the arm posted, with the kernel's own rules on its shape checked (the door the stand-in
+        captures validates nothing): the key grammar, the producer, the caps on actions and labels, a /send body
+        that names only text, never a target and never a command."""
+        self.assertEqual(len(self.be._notices), 1, "one card per session per restart: %r" % ([n["title"] for n in self.be._notices],))
+        n = self.be._notices[0]
+        self.assertEqual((n["sid"], n["key"], n["producer"]), (SID, "dropped-sends", "dropped-sends"))
+        self.assertTrue(n["needs_you"], "re-sending the user's own words is their call: needsYou")
+        self.assertTrue(n["dismiss_on_action"], "a Send again spends the card")
+        self.assertIsInstance(n["t"], int); self.assertLessEqual(abs(n["t"] - NOW), 5, "t is the restart, not the send")
+        self.assertLessEqual(len(n["title"]), 200); self.assertLessEqual(len(n["actions"]), 4)
+        for a in n["actions"]:
+            self.assertEqual(set(a), {"label", "route", "body"}); self.assertEqual(a["route"], "/send")
+            self.assertTrue(0 < len(a["label"]) <= 60, a["label"])
+            self.assertEqual(set(a["body"]), {"text"}, "the notice's own session is the target: no id, no name")
+            self.assertTrue(a["body"]["text"].strip() and not a["body"]["text"].lstrip().startswith("/"))
+        for text in [n["title"], n["body"]] + [a["label"] for a in n["actions"]]:
+            for word in ("[romp]", "romp-", "card", "board", "goal", "column", "nudge"):
+                self.assertNotIn(word, text, "the user's terms, no romp vocabulary: %r" % text)
+        return n
+
+    def _no_session_notice(self, *queues):
+        """Nothing romp-authored reached any queue: the session is never told about the drop (the user 2026-09-15)."""
+        for q in queues:
+            for t in q:
+                self.assertNotIn("[romp]", t); self.assertNotIn("romp-injected", t); self.assertNotIn("stale", t)
+
 
 class TheAgeLine(Fixture):
-    def test_a_send_past_the_line_is_not_refed_and_one_notice_names_the_count_and_the_oldest(self):
+    def test_a_send_past_the_line_is_not_refed_and_one_card_offers_it_back(self):
         fresh = self._echo("fresh typed words", FRESH_T)
         stale = self._echo("three day old words", STALE_T)
         self.be._mark_dropped_echoes(SID, [])
         q = self._reg_queue()
-        self.assertEqual(q[0], "fresh typed words", "the fresh send is re-delivered exactly as before")
-        self.assertEqual(len(q), 2, "…followed by ONE notice, and nothing else: %r" % (q,))
-        notice = q[1]
-        self.assertIn("[romp]", notice)
-        self.assertIn("1 queued message from before the restart was dropped as stale", notice)
-        self.assertIn(time.strftime("%Y-%m-%d %H:%M", time.localtime(STALE_T)), notice,
-                      "the notice names the oldest dropped send's stamp")
+        self.assertEqual(q, ["fresh typed words"], "the fresh send is re-delivered exactly as before, and NOTHING else is queued")
+        self._no_session_notice(q)
+        n = self._the_card()
+        self.assertEqual(n["title"], "1 message you typed before the restart was not re-sent", "no name on the registry row: none in the title")
+        self.assertIn(time.strftime("%Y-%m-%d %H:%M", time.localtime(STALE_T)), n["body"], "the body names the dropped send's stamp")
+        self.assertIn("three day old words", n["body"]); self.assertIn("older than 30 min", n["body"], "…and the age line")
+        self.assertNotIn("fresh typed words", n["body"], "a re-delivered send is not on the card")
+        self.assertEqual(n["actions"], [{"label": "Send again", "route": "/send", "body": {"text": "three day old words"}}])
         self.assertNotIn("three day old words", q, "the stale send never re-enters the queue")
-        self.assertTrue(stale.get("dropped") and stale.get("stale"),
-                        "the stale send takes the flag path and says why")
+        self.assertTrue(stale.get("dropped") and stale.get("stale"), "the stale send takes the flag path and says why")
         self.assertNotIn("dropped", fresh, "the fresh send is queued, not lost")
-        self.assertEqual(len([p for p in self.be._problems if "age line" in p]), 1,
-                         "one problem row for the whole drop, not one per send")
+        rows = [p for p in self.be._problems if "age line" in p]
+        self.assertEqual(len(rows), 1, "one problem row for the whole drop, not one per send")
+        self.assertIn("offered back on a card (key=dropped-sends rev=1)", rows[0], "the post's row is logged")
 
-    def test_two_stale_sends_make_one_notice_with_the_oldest_stamp(self):
-        self._echo("older stale words", STALE_T - 3600)
+    def test_two_or_three_stale_sends_get_a_button_each_and_send_all_again(self):
         self._echo("newer stale words", STALE_T)
+        self._echo("older stale words", STALE_T - 3600)
         self.be._mark_dropped_echoes(SID, [])
-        q = self._reg_queue()
-        self.assertEqual(len(q), 1, "one notice, no re-delivery: %r" % (q,))
-        self.assertIn("2 queued messages from before the restart were dropped as stale", q[0])
-        self.assertIn(time.strftime("%Y-%m-%d %H:%M", time.localtime(STALE_T - 3600)), q[0])
+        self.assertEqual(self._reg_queue(), [], "no re-delivery, no notice: the queue is untouched")
+        n = self._the_card()
+        self.assertEqual(n["title"], "2 messages you typed before the restart were not re-sent")
+        body = n["body"]
+        self.assertLess(body.index("older stale words"), body.index("newer stale words"), "listed in send order")
+        self.assertIn(time.strftime("%Y-%m-%d %H:%M", time.localtime(STALE_T - 3600)), body)
+        self.assertIn(time.strftime("%Y-%m-%d %H:%M", time.localtime(STALE_T)), body)
+        self.assertEqual([a["label"] for a in n["actions"]], ["Send again: older stale words", "Send again: newer stale words", "Send all again"])
+        self.assertEqual([a["body"]["text"] for a in n["actions"]],
+                         ["older stale words", "newer stale words", "older stale words\n\nnewer stale words"],
+                         "Send all again carries them as one message, in send order")
+        self.assertIn("Send all again re-sends them as one message, in order", body)
+
+    def test_four_or_more_stale_sends_get_send_all_again_alone(self):
+        texts = ["stale words %d" % i for i in range(4)]
+        for i, t in enumerate(texts):
+            self._echo(t, STALE_T + i)
+        self.be._mark_dropped_echoes(SID, [])
+        n = self._the_card()
+        self.assertEqual(n["title"], "4 messages you typed before the restart were not re-sent")
+        self.assertEqual([a["label"] for a in n["actions"]], ["Send all again"], "five buttons would be refused; one for all of them")
+        self.assertEqual(n["actions"][0]["body"]["text"], "\n\n".join(texts))
+        self.assertIn("restore it from the chat", n["body"], "the way to re-send one alone is named")
+        for t in texts:
+            self.assertIn(t, n["body"])
+
+    def test_a_typed_command_gets_no_button_and_the_body_says_to_type_it_again(self):
+        self._echo("/clear", STALE_T)
+        self._echo("real typed words", STALE_T + 60)
+        self.be._mark_dropped_echoes(SID, [])
+        n = self._the_card()
+        self.assertEqual(n["actions"], [{"label": "Send again", "route": "/send", "body": {"text": "real typed words"}}],
+                         "a stored action may never begin with a slash: the command gets no button")
+        self.assertIn("/clear", n["body"]); self.assertIn("type it again", n["body"])
+        self.be._notices.clear(); self.be._live.clear()
+        self._echo("  /model opus", STALE_T)
+        self.be._mark_dropped_echoes(SID, [])
+        n = self._the_card()
+        self.assertEqual(n["actions"], [], "a lone command: the card stands with no button")
+
+    def test_the_card_names_the_session_from_its_registry_row(self):
+        sb.write_reg(self.be.state_dir, SID, {"sid": SID, "name": "web", "alive": True, "cwd": self.cwd, "lastSid": SID, "queue": []})
+        self._echo("three day old words", STALE_T)
+        self.be._mark_dropped_echoes(SID, [])
+        self.assertEqual(self._the_card()["title"], "1 message you typed to web before the restart was not re-sent")
+
+    def test_the_builder_bounds_the_body_and_the_labels(self):
+        long = "a very long typed message " * 20
+        stale = [{"_echo_text": long, "t": STALE_T}, {"_echo_text": "short one", "t": STALE_T + 1}]
+        title, body, acts = sb.dropped_sends_card("api", stale, NOW, 1800)
+        self.assertEqual(title, "2 messages you typed to api before the restart were not re-sent")
+        self.assertEqual(len(acts[0]["label"]), 60); self.assertTrue(acts[0]["label"].startswith("Send again: a very long"))
+        self.assertTrue(acts[0]["label"].endswith("\u2026")); self.assertEqual(acts[0]["body"]["text"], long, "the label is cut, the text never is")
+        line = next(l for l in body.splitlines() if "a very long typed message" in l)
+        prefix = "- %s: " % time.strftime("%Y-%m-%d %H:%M", time.localtime(STALE_T))
+        self.assertTrue(line.startswith(prefix), line[:40])
+        self.assertEqual(len(line), len(prefix) + sb.DROPPED_SENDS_LINE_CHARS, "each listed message is one bounded line")
+        self.assertTrue(line.endswith("\u2026"))
+        many = [{"_echo_text": "m%d" % i, "t": STALE_T + i} for i in range(sb.DROPPED_SENDS_LIST_MAX + 3)]
+        _, body, acts = sb.dropped_sends_card("", many, NOW, 1800)
+        self.assertIn("- and 3 more, in the chat", body); self.assertEqual(body.count("\n- "), sb.DROPPED_SENDS_LIST_MAX + 1)
+        self.assertEqual([a["label"] for a in acts], ["Send all again"])
+        self.assertIn(time.strftime("%Y-%m-%d %H:%M", time.localtime(NOW)), body, "the restart time opens the body")
 
     def test_a_stale_send_is_not_scanned(self):
         # the scan is the expensive step (a mark-less echo streams the whole transcript); the line runs first
@@ -145,16 +244,17 @@ class TheAgeLine(Fixture):
         inside = self._echo("inside the line", NOW - int(sb.REDELIVER_MAX_AGE_S) + 120)
         outside = self._echo("outside the line", NOW - int(sb.REDELIVER_MAX_AGE_S) - 120)
         self.be._mark_dropped_echoes(SID, [])
-        self.assertIn("inside the line", self._reg_queue())
-        self.assertNotIn("outside the line", self._reg_queue())
+        self.assertEqual(self._reg_queue(), ["inside the line"])
         self.assertTrue(outside.get("stale"))
         self.assertNotIn("dropped", inside)
+        self.assertEqual([a["body"]["text"] for a in self._the_card()["actions"]], ["outside the line"])
 
     def test_the_line_can_be_switched_off(self):
         sb.REDELIVER_MAX_AGE_S = 0
         self._echo("three day old words", STALE_T)
         self.be._mark_dropped_echoes(SID, [])
         self.assertEqual(self._reg_queue(), ["three day old words"], "0 restores the unbounded re-feed")
+        self.assertEqual(self.be._notices, [], "nothing dropped, no card")
 
     def test_the_line_never_touches_the_queue_proper(self):
         # a send still in reg['queue'] (never fed) is the person's words waiting their turn: it stays, whatever its age
@@ -164,15 +264,31 @@ class TheAgeLine(Fixture):
         self.be._mark_dropped_echoes(SID, ["waiting its turn"])
         self.assertEqual(self._reg_queue(), ["waiting its turn"])
         self.assertFalse(any(a.get("dropped") for a in self.be._live[SID].values()))
+        self.assertEqual(self.be._notices, [])
 
-    def test_a_stale_romp_authored_echo_makes_no_notice(self):
+    def test_a_stale_romp_authored_echo_makes_no_card(self):
         self._echo("an old nudge body", STALE_T, author="romp")
         self.be._mark_dropped_echoes(SID, [])
         self.assertEqual(self._reg_queue(), [], "a nudge was never re-fed; nothing to announce")
         self.assertTrue(all(a.get("dropped") for a in self.be._live[SID].values()))
+        self.assertEqual(self.be._notices, [], "regenerable machinery, not the user's words: no card")
 
-    def test_a_live_session_gets_the_notice_through_its_own_queue(self):
+    def test_a_second_call_in_the_same_boot_posts_nothing(self):
+        # the boot reseed and the fresh spawn both run the arm for one session; the flags the first call wrote take the
+        # same sends out of the second call's selection, so the card is posted once (plans/notice-cards.md: dedupe within
+        # one boot); a later restart that drops MORE is a new revision, new information
+        self._echo("three day old words", STALE_T)
+        self.be._mark_dropped_echoes(SID, [])
+        self.be._mark_dropped_echoes(SID, [])
+        self._the_card()
+        self._echo("other old words", STALE_T + 5)
+        self.be._mark_dropped_echoes(SID, [])
+        self.assertEqual([n["title"] for n in self.be._notices][1], "1 message you typed before the restart was not re-sent")
+        self.assertEqual(self.be._problems[-1].count("rev=2"), 1, "the second post is the key's second revision")
+
+    def test_a_live_session_is_told_nothing_and_the_card_wears_its_name(self):
         class S:
+            name = "api"
             def __init__(self):
                 self.q = []
             def pending(self):
@@ -185,10 +301,45 @@ class TheAgeLine(Fixture):
         self._echo("fresh typed words", FRESH_T)
         self._echo("three day old words", STALE_T)
         self.be._mark_dropped_echoes(SID, [])
-        self.assertEqual(s.q[0], "fresh typed words")
-        self.assertEqual(len(s.q), 2)
-        self.assertIn("dropped as stale", s.q[1])
+        self.assertEqual(s.q, ["fresh typed words"], "the re-delivered send, and NO notice behind it")
+        self._no_session_notice(s.q, self._reg_queue())
         self.assertEqual(self._reg_queue(), [], "the live session's queue is authoritative; the reg is not written")
+        self.assertEqual(self._the_card()["title"], "1 message you typed to api before the restart was not re-sent")
+
+    def test_a_refused_post_is_said_in_the_problem_row_and_never_becomes_a_session_notice(self):
+        # the kernel's door answers (None, why) for a refusal (an unknown session, a bad key): loud in the error centre,
+        # nothing queued to the session, the drop itself unchanged
+        type(self.be).on_notice = staticmethod(lambda sid, key, title, body="", **kw: (None, 'no session answers to "%s"' % sid))
+        stale = self._echo("three day old words", STALE_T)
+        self._echo("fresh typed words", FRESH_T)
+        self.be._mark_dropped_echoes(SID, [])
+        self.assertEqual(self._reg_queue(), ["fresh typed words"])
+        self._no_session_notice(self._reg_queue())
+        self.assertTrue(stale.get("dropped") and stale.get("stale"), "the drop stands whatever the card did")
+        rows = [p for p in self.be._problems if "age line" in p]
+        self.assertEqual(len(rows), 1); self.assertIn("could not be posted: no session answers to", rows[0])
+        # a door that RAISES is caught by the backend's post_notice, never the arm's death
+        self.be._live.clear(); self.be._problems.clear()
+        def boom(*a, **k):
+            raise RuntimeError("the store is read-only")
+        type(self.be).on_notice = staticmethod(boom)
+        self._echo("three day old words", STALE_T)
+        self.be._mark_dropped_echoes(SID, [])
+        self.assertIn("could not be posted: the notice could not be posted (the store is read-only)", self.be._problems[-1])
+        # a stand-in with no door at all: the same loud row
+        self.be._live.clear(); self.be._problems.clear()
+        del self.be.post_notice
+        self._echo("three day old words", STALE_T)
+        self.be._mark_dropped_echoes(SID, [])
+        self.assertIn("could not be posted: no notice door on this backend", self.be._problems[-1])
+
+    def test_the_session_notice_is_gone_from_the_source(self):
+        # the pin: no builder for an injected line remains, and the arm enqueues nothing but re-delivered sends
+        self.assertFalse(hasattr(sb, "stale_redelivery_notice"))
+        src = inspect.getsource(sb.SdkBackend._mark_dropped_echoes)
+        self.assertNotIn("s.enqueue(notice", src); self.assertNotIn("add.append(notice", src)
+        self.assertIn("post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True", src)
+        self.assertNotIn("[romp]", inspect.getsource(sb.dropped_sends_card))
 
 
 class TheRefusedFlag(Fixture):

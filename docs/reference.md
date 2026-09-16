@@ -1728,8 +1728,15 @@ variables bound this:
 - `ROMP_REDELIVER_MAX_AGE_S=<seconds>` is the age line on that re-delivery;
   the default is `1800`, thirty minutes. A message older than this at the
   restart is not re-fed: it is kept in the chat marked never delivered, where
-  it can be restored or dismissed, and the session is told once, in one line
-  naming how many were dropped and the time of the oldest. The line exists
+  it can be restored or dismissed, and a notice card (the section above) is
+  posted for the session, under Blocked, one per session per restart, naming
+  how many messages were dropped and, for each, its time and its text. The
+  card offers **Send again** for each message (up to three; with two or more
+  there is also **Send all again**, which re-sends them as one message in
+  order, and with four or more that is the only button), and one click spends
+  the card, so a message not re-sent from it is restored from the chat
+  instead; a typed command gets no button. Clearing the card lets them go.
+  The session itself is not told anything. The line exists
   because a landing the kernel's transcript scan cannot see would otherwise be
   re-fed at every restart, for days (measured 2026-09-12: the same texts re-fed
   at two restarts in one night, one of them landing six times). It applies

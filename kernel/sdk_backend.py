@@ -3279,23 +3279,77 @@ BOOT_RESUME_SLOT_S = float(os.environ.get("ROMP_BOOT_RESUME_SLOT_S", "180"))
 # the file re-fed 194 sends across 13 sessions at one restart and 264 at the next, the same texts each time,
 # some three days old, one text landing six times (measured 2026-09-12). A send older than this at the restart
 # is not re-fed and not scanned (a mark-less echo streams the whole transcript): it takes the flag path
-# (dropped, kept in the chat as never-delivered) and ONE notice names the count and the oldest stamp, so nothing
-# drops silently. The queue proper (reg['queue'], sends never fed) is NOT under this line: those are the
-# person's words waiting their turn, however long the kernel was down. Seconds; 0 switches the line off.
+# (dropped, kept in the chat as never-delivered) and ONE notice card per session per restart (dropped_sends_card,
+# plans/notice-cards.md) names each dropped message with a Send again button, so nothing drops silently and the
+# session itself is never told (the user 2026-09-15, who wanted the drop on the feed, not injected into the
+# session). The queue proper (reg['queue'], sends never fed) is NOT under this line: those are the person's
+# words waiting their turn, however long the kernel was down. Seconds; 0 switches the line off.
 REDELIVER_MAX_AGE_S = float(os.environ.get("ROMP_REDELIVER_MAX_AGE_S", "1800"))
 
 
-def stale_redelivery_notice(n: int, oldest_t: float, max_age_s: float) -> str:
-    """The ONE line a session reads when the restart's re-delivery dropped `n` sends as stale (REDELIVER_MAX_AGE_S).
-    Same sanctioned [romp] mechanics family as the restart notice: it is about the restart's own bookkeeping."""
-    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest_t))
+DROPPED_SENDS_KEY = "dropped-sends"      # the card's key AND its producer label (plans/notice-cards.md, the first consumer)
+DROPPED_SENDS_ACTIONS_MAX = 4            # the kernel's cap on one notice's actions (NOTICE_ACTIONS_MAX): a fifth is a refusal
+DROPPED_SENDS_LABEL_MAX = 60             # the kernel's cap on an action label (NOTICE_ACTION_LABEL_MAX)
+DROPPED_SENDS_LINE_CHARS = 240           # each listed message's text, collapsed to one line of at most this many characters
+DROPPED_SENDS_LIST_MAX = 40              # messages listed in the body one by one; past it the rest are counted
+
+
+def _one_line(text, n: int) -> str:
+    """`text` with its whitespace collapsed, cut to `n` characters with an ellipsis: a message quoted inside a list item."""
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= n else t[: max(1, n - 1)].rstrip() + "\u2026"
+
+
+def dropped_sends_card(name: str, stale: list, now: float, max_age_s: float):
+    """The NOTICE CARD (plans/notice-cards.md, the first consumer) for the typed sends the restart's re-delivery arm
+    dropped as past the age line: (title, body, actions) for SdkBackend.post_notice. In the user's terms throughout:
+    what was dropped, how old, why, and the way back; the user sees this on the feed, the session never does (the
+    user 2026-09-15, who rejected the notice this replaced). `stale` is the dropped atoms in send order (_echo_text, t).
+    The actions fit the kernel's cap of four and its one-shot mark (a card that dismisses on its action runs ONE
+    action, whichever button): one message gets Send again; two or three get one button each plus Send all again,
+    which re-sends them as one message in send order; more get Send all again alone, and each message is still
+    restorable from the chat, where it stands marked never delivered. A typed command (a leading slash) gets no
+    button, because the kernel refuses a stored action whose text begins with one: the body says to type it again."""
+    when = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(int(t or 0)))
+    n = len(stale)
     one = n == 1
-    return ("<!-- romp-injected --><!-- romp-system -->[romp] %d queued message%s from before the restart %s "
-            "dropped as stale (older than %s); the oldest was from %s. None of them was re-delivered; anything "
-            "that still matters has to be sent again."
-            "<!-- romp-gist: %d stale message%s dropped at the restart -->"
-            % (n, "" if one else "s", "was" if one else "were", _gap_text(int(max_age_s)), when,
-               n, "" if one else "s"))
+    to = (" to %s" % name) if name else ""
+    title = "%d message%s you typed%s before the restart %s not re-sent" % (n, "" if one else "s", to, "was" if one else "were")
+    texts = [str(a.get("_echo_text") or "") for a in stale]
+    cmds = [t for t in texts if t.lstrip().startswith("/")]
+    resend = [t for t in texts if not t.lstrip().startswith("/")]
+    lines = ["The restart on %s found %s already older than %s, the age past which nothing is re-sent on its own (a "
+             "message that old is often no longer wanted). %s in the chat marked never delivered."
+             % (when(now), "this message" if one else "these messages", _gap_text(int(max_age_s)),
+                "It stays" if one else "Each stays"), ""]
+    for a in stale[:DROPPED_SENDS_LIST_MAX]:
+        lines.append("- %s: %s" % (when(a.get("t")), _one_line(a.get("_echo_text"), DROPPED_SENDS_LINE_CHARS)))
+    if n > DROPPED_SENDS_LIST_MAX:
+        lines.append("- and %d more, in the chat" % (n - DROPPED_SENDS_LIST_MAX))
+    tail = []
+    if len(resend) == 1:
+        tail.append("Send again re-sends %s as you typed it." % ("it" if one else "that one"))
+    elif len(resend) > 1:
+        tail.append("Send again re-sends one message as you typed it; Send all again re-sends them as one message, in order."
+                    if len(resend) + 1 <= DROPPED_SENDS_ACTIONS_MAX else
+                    "Send all again re-sends them as one message, in order; to re-send one alone, restore it from the chat.")
+    if cmds:
+        tail.append("A typed command is not re-sent from here; type it again if you still want it.")
+    if tail:
+        lines += ["", " ".join(tail)]
+    body = "\n".join(lines)
+    actions = []
+    if len(resend) == 1:
+        actions.append({"label": "Send again", "route": "/send", "body": {"text": resend[0]}})
+    elif len(resend) > 1:
+        if len(resend) + 1 <= DROPPED_SENDS_ACTIONS_MAX:
+            for t in resend:
+                actions.append({"label": _one_line("Send again: " + t, DROPPED_SENDS_LABEL_MAX), "route": "/send",
+                                "body": {"text": t}})
+        actions.append({"label": "Send all again", "route": "/send", "body": {"text": "\n\n".join(resend)}})
+    return title, body, actions
+
+
 # The UserPromptSubmit hook's WALL-TIME CAP (2026-09-12). The SDK runs SdkSession._prompt_submit_hook
 # for every prompt a session receives and REFUSES the prompt when the hook misses the CLI's own hook
 # deadline (about 30 s), instead of failing open — under a host load of 100 to 300 on 64 cores the
@@ -13046,8 +13100,9 @@ class SdkBackend:
         a two-day-old lost send kept resurfacing mid-chat, hopping turns as new ones landed, posing as
         history). Keyed on the spawn/boot that orphaned the send, and since 2026-09-12 on the send's AGE
         at that event (REDELIVER_MAX_AGE_S, thirty minutes by default): a human send inside the line is
-        re-delivered below; one older than it is marked never delivered and the session told once, and
-        it will be offered back to the user through a card the kernel makes. Self-correcting: an echo
+        re-delivered below; one older than it is marked never delivered and offered back to the user on a
+        notice card with a Send again button (dropped_sends_card, plans/notice-cards.md); the session is
+        never told (the user 2026-09-15, who wanted the drop on the feed). Self-correcting: an echo
         whose text actually LANDED still prunes by text on the next build, so a premature flag can never
         stick to a delivered message; and one the transcript scan below FINDS is not flagged in the
         first place (2026-09-06). The flag rides the registry mirror (_persist_echoes), so it survives
@@ -13094,8 +13149,8 @@ class SdkBackend:
         # who wanted a typed prompt queued at 11:20 and silently discarded by the 11:25 restart to have
         # survived it; and 2026-09-13, reviewing the line, who accepted thirty minutes as the bound and
         # wants what falls past it offered back through a card the kernel makes). The rule since then:
-        # typed input inside the line is re-fed; past it, it is marked never delivered, said once, and
-        # comes back through that card, so nothing a restart held goes unsaid. A HUMAN send inside the
+        # typed input inside the line is re-fed; past it, it is marked never delivered and comes back
+        # through that card (the `if stale:` block below), so nothing a restart held goes unsaid. A HUMAN send inside the
         # line whose loss is proven — and whose text a direct transcript scan (_text_landed) confirms never landed, as a
         # user record or as the queued_command attachment of a mid-turn splice — goes back into the
         # queue in send order, exactly like the surviving queue, recreating the pre-restart state:
@@ -13145,9 +13200,7 @@ class SdkBackend:
                     landed.add(a["_echo_text"])
                     with self._live_lock:
                         self._touch_live(sid)              # a flag write outside the lock: still a change to the tail
-        notice = (stale_redelivery_notice(len(stale), min(int(a.get("t") or 0) for a in stale), REDELIVER_MAX_AGE_S)
-                  if stale else None)
-        if redeliver or notice:
+        if redeliver:
             # The LIVE-session caller (a fresh spawn's _run) must deliver through the session's
             # own queue: there the in-memory _pending is authoritative and its very next
             # _persist_queue snapshot rewrites reg['queue'] — a reg-only write sat in limbo (echo
@@ -13171,8 +13224,6 @@ class SdkBackend:
                     _enqueue_with_id(s, a["_echo_text"], a.get("uuid"), a.get("t"))   # under the echo's own id (T252c)
                     self._log("%s: re-delivering a typed send the dead CLI was holding: %.80r"
                               % (sid[:8], a["_echo_text"]))
-                if notice and notice not in have:
-                    s.enqueue(notice)                      # one line, behind the re-delivered sends, no identity
             else:
                 with self._reg_lock:
                     reg = read_reg(self.state_dir, sid)
@@ -13183,8 +13234,6 @@ class SdkBackend:
                         _have = [{"md": t, "qid": (m or {}).get("qid")} for t, m in zip(have, queue_meta_from_reg(reg))]
                         adds = [a for a in redeliver if not _echo_queued_in(a, _have)]
                         add = [a["_echo_text"] for a in adds]
-                        if notice and notice not in have:
-                            add.append(notice)             # one line, behind the re-delivered sends, no identity
                         if add:
                             reg["queue"] = have + add      # behind the surviving queue: original send order
                             # each re-delivered copy keeps the echo's uuid as its id (T252c): the seed restores it
@@ -13204,7 +13253,7 @@ class SdkBackend:
                 continue                                   # landed, un-pruned → the next build's prune_live
             a["dropped"] = True
             if id(a) in stale_ids:
-                a["stale"] = True                          # past the age line at the restart: the notice says so
+                a["stale"] = True                          # past the age line at the restart: the card says so
             if hasattr(self, "forget_fed"):
                 self.forget_fed(sid, a.get("uuid"))   # its landing will never come (T252c)
             with self._live_lock:
@@ -13219,11 +13268,36 @@ class SdkBackend:
                 self._log("%s: a send never reached its CLI (the process died holding it) — kept in the chat "
                           "as never-delivered: %.80r" % (sid[:8], a["_echo_text"]), problem=True)
         if stale:
+            # The NOTICE CARD (plans/notice-cards.md, the first consumer): one per session per restart or spawn, under one
+            # key, so a later restart that drops more is a new revision (new information) and a second call in this boot
+            # posts nothing (the flags above take the same sends out of `newly`). needsYou: re-sending the user's own words
+            # is their call. The session is NOT told (the user 2026-09-15, who rejected the injected notice this replaces):
+            # the card is the surface, the problem row below is the error centre's. A failed post is said there, never
+            # swallowed and never turned back into a session notice.
             oldest = min(int(a.get("t") or 0) for a in stale)
+            sess_map = getattr(self, "sessions", None)   # getattr: bound-method test doubles skip __init__
+            live = None
+            if sess_map is not None:
+                with self._lock:
+                    live = sess_map.get(sid)
+            name = str(getattr(live, "name", "") or "")
+            if not name:
+                with self._reg_lock:
+                    reg = read_reg(self.state_dir, sid)
+                name = str((reg or {}).get("name") or "")
+            title, body, acts = dropped_sends_card(name, stale, now, REDELIVER_MAX_AGE_S)
+            post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
+            if callable(post):
+                row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
+                                actions=acts, dismiss_on_action=True, t=int(now))
+            else:
+                row, err = None, "no notice door on this backend"
             self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
-                      "oldest was from %s — kept in the chat as never-delivered, one notice queued"
+                      "oldest was from %s; kept in the chat as never-delivered and %s"
                       % (sid[:8], len(stale), _gap_text(int(REDELIVER_MAX_AGE_S)),
-                         time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest))), problem=True)
+                         time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
+                         ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
+                         ("the card offering them back could not be posted: %s" % err)), problem=True)
         self._persist_echoes(sid)
         self._wake_push()
 
