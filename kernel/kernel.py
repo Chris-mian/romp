@@ -21,6 +21,7 @@ import contextlib, json, os, queue, random, re, signal, socket, sys, time, threa
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
 from urllib.parse import urlparse, parse_qs, quote, unquote, urlencode
 
 
@@ -66761,6 +66762,20 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
         os._exit(0)
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    """The kernel's server, whose bind does NOT reverse-resolve its own address. HTTPServer.server_bind runs
+    socket.getfqdn(host) after bind() and before listen(), and a host whose resolver cannot reverse-resolve
+    loopback quickly holds the whole server there: GitHub's macOS 15 and 16 images block about 36 seconds per
+    server on it (measured 2026-09-16 on the bats leg, where every Python stub and the postal bus paid it once),
+    and a Mac with a stale resolver would keep this kernel from answering for as long. server_name feeds
+    nothing this kernel reads (the CGI handler's environment, never used here), so it is the bind address."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)     # the bind, with allow_reuse_address as HTTPServer sets it
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def main():
     # Export the kernel's claude resolution for every judge call (in-process tiers AND `romp-judge
     # --once` subprocesses): judges exec the binary directly, and a kernel started over non-login ssh
@@ -66825,7 +66840,7 @@ def main():
     threading.Thread(target=_update_check_loop, daemon=True).start()   # newer release? boot + every 6h (mode-gated inside)
     threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
-    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    srv = _LoopbackServer((BIND, PORT), Handler)      # no reverse lookup at the bind (the class's docstring)
     _persist_serve_port(srv.server_address[1])     # the port record the Obsidian panel posts to, written
     #                                                once the bind SUCCEEDED (a failed bind leaves no lie)
     url = "http://127.0.0.1:%d" % PORT
