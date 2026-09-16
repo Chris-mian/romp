@@ -2364,7 +2364,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   through the shared store cache and show under `memos.shared`, not here. A
   save that would rewrite identical bytes is a save without a write.
 - `memos`: the identity memos on the goal-store path. `pass` is the
-  judge pass's stat-keyed store memo (`hit`, `miss`, `fail`, `evict`, `punch`,
+  judge pass's stat-keyed store memo (`hit`, `miss`, `compare_miss` for a
+  store whose bytes moved under an unchanged stat, `fail`, `evict`, `punch`,
   `skip` for the files a pass stepped over because the compaction sweep ruled
   their store unowned, its occupancy `entries`, `bytes`, and `unowned`, the
   stores currently ruled out, a gauge); `shared` is the pusher's shared

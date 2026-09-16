@@ -71,9 +71,10 @@ WIRED_BOUNDARY = {"_feed_session_entry": 1, "_feed_peer_facts": 1, "build_sessio
 # the same boundary around the writer's loader); the decision body (_lift_decisions) loads nothing and
 # writes nothing.
 TWO_PHASE = {"_lift_spent_awaiting": (1, 1)}
-# NOT wired, on purpose: the feed's pass snapshot has its own memo (_feed_goals stays on the writer's
-# loader, bare or behind load_goals_or_fault).
-UNWIRED = ("_feed_goals",)
+# NOT wired, on purpose: the feed's pass snapshot has its own memo (_feed_goals_keyed, the feed's store read that
+# also reports the snapshot key it served from, stays on the writer's loader, bare or behind load_goals_or_fault;
+# _feed_goals is that read without the key).
+UNWIRED = ("_feed_goals_keyed",)
 
 
 class WiringPins(unittest.TestCase):
