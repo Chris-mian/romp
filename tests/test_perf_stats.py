@@ -125,7 +125,7 @@ class Collector(unittest.TestCase):
         self.assertIn("cpu_ms_workers", snap["judge"])
         self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes"}, "read through jd.goal_io_stats")
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
-        self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "convergeDeclined", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip", "ghostDropped",
+        self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "convergeDeclined", "sessionsListing", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip", "ghostDropped",
                                               "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks",   # the chat build's fixed-cost memos (2026-09-09)
                                               "outlineProvisional"})   # the Outline's provisional-row ledger memo, parse-free (plans/outline-pane-provisional-row.md, 2026-09-15)
@@ -195,7 +195,9 @@ class Collector(unittest.TestCase):
         the gauge was documented on /perf but never exposed)."""
         st = km.em.asm_index_stats()
         self.assertEqual(set(st), {"cap", "evictions", "materialized", "materializedBy", "materializedByStage", "resident", "restoredTurns",
-                                   "rowDecodes", "userFacts"})
+                                   "rowDecodes", "userFacts", "released", "expired"})   # released, expired: the LRU's weak ownership
+        #                                                                                   (measured 2026-09-15: superseded generations
+        #                                                                                   sat resident at the cap)
         self.assertIsInstance(st["userFacts"], int); self.assertGreaterEqual(st["userFacts"], 0)
 
     def test_the_feed_build_block_carries_the_per_session_card_memo(self):
