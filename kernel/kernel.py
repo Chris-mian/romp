@@ -1099,6 +1099,7 @@ class _PerfStats:
                           ("tickSeen", _tick_seen_report),
                           ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
+                          ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
                           ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
@@ -44923,12 +44924,34 @@ def _js_num(v):
     return str(v)
 
 
+_judging_compact_memo = None   # {id(entry): (entry, compact)} from the LAST _compact_judging call, ONE dict rebound
+#                                whole (never refilled in place): a connect push builds the timeline outside the
+#                                pusher's lock, so two calls can overlap; each reads one snapshot, the last writer's
+#                                memo stands and the other's entries miss once, never a wrong compact (2026-09-16)
+
+
 def _compact_judging(entries):
     """{lane sid: [compact entries]} from the builder's list of {judge, sid, t, t1, kind, text, ms, in, out, sent,
-    recv, open}. Pure. An entry without a sid lands under the empty lane key. The federation code carries a twin
-    (judgingToWire in ui/webview/federation.ts) for an older kernel's flat list; the fixture pins both."""
-    out = {}
+    recv, open}. The same input gives the same output; an entry without a sid lands under the empty lane key. The
+    federation code carries a twin (judgingToWire in ui/webview/federation.ts) for an older kernel's flat list; the
+    fixture pins both. Identity-memoized on the entry OBJECT (2026-09-16): an entry _run_judging handed back unchanged
+    takes the compact dict of the previous call, itself, so the bars fill's identity memo (_delta_split) sees the
+    object it encoded last build and re-encodes nothing; a new entry mints one compact dict and one memo tuple, and
+    a hit hands the previous tuple back (a tuple holding a dict is tracked by the collector for life, so a fresh one
+    per entry per build is the very stream this memo removes). Exact because an entry is a pure function of its
+    row and gloss and is never mutated after it is minted: the band memo holds it across builds, so a writer that
+    mutated one would change every later frame in place. Do not mutate an entry or a compact dict."""
+    global _judging_compact_memo
+    t_start = time.perf_counter()
+    prev = _judging_compact_memo or {}                 # ONE read of the slot (the header comment)
+    cur, out, reused, minted = {}, {}, 0, 0
     for e in entries or []:
+        hit = prev.get(id(e))
+        if hit is not None and hit[0] is e:            # the identity is checked, never an id alone
+            cur[id(e)] = hit
+            out.setdefault(str(e.get("sid") or ""), []).append(hit[1])
+            reused += 1
+            continue
         # the key is (t, judge), not (t, judge, t1): an in-flight run's t1 is the build clock, so a key carrying it
         # changed every build and the run crossed as a delete plus a set per frame; with a stable key it is one
         # changed entry. Two runs of one judge sent at the same instant would collide and take positional keys,
@@ -44951,7 +44974,13 @@ def _compact_judging(entries):
             c["r"] = e["recv"]
         if e.get("open"):
             c["u"] = True
+        cur[id(e)] = (e, c)
+        minted += 1
         out.setdefault(str(e.get("sid") or ""), []).append(c)
+    _judging_compact_memo = cur
+    st = _JUDGING_BAND_STATS
+    st["compact_reused"] += reused; st["compact_minted"] += minted
+    st["compact_ms"] += (time.perf_counter() - t_start) * 1000
     return out
 
 
@@ -45834,9 +45863,16 @@ def _session_tokens(path, t0):
 # user 2026-08-13, who watched the cost modal sit on "loading…"). One shared incremental reader now:
 # rows parse ONCE, appends parse from the last byte offset, and rows older than the widest consumer
 # window (30 days, plus a day of slack) are pruned so memory stays bounded. A shrunken file (rotation,
-# a fresh install) resets cleanly.
+# a fresh install) resets cleanly. `pruned` counts the rows the left prune has dropped over the cache's life:
+# the judging band's horizon cursor is an index into `rows`, and a prune moves every index by the count
+# dropped, so the band shifts its cursor by the count pruned since its last build instead of rescanning
+# (2026-09-16: the live log spans the window, so most appends prune, and an identity-only cursor would
+# have re-verified every retained row on about a third of builds). The cursor relies on this list being
+# touched in three ways only: rebound to a new list object, appended at the right, or left-pruned in
+# place with `pruned` incremented by the count; anything else (a middle deletion, a clear-and-refill, a
+# replaced row) must rebind the list instead, or the cursor's premise breaks silently.
 _JUDGE_USAGE_RETAIN = 31 * 86400
-_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": []}
+_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": [], "pruned": 0}
 
 
 def _judge_usage_rows():
@@ -45887,6 +45923,7 @@ def _judge_usage_rows():
         while i < len(c["rows"]) and (c["rows"][i].get("t") or 0) < floor:
             i += 1
         del c["rows"][:i]
+        c["pruned"] = c.get("pruned", 0) + i        # the band's cursor shifts by this (the header comment)
     return c["rows"]
 
 
@@ -46146,6 +46183,42 @@ def _bars_complain(who, stage, e):
 _JUDGING_ROW_CAP = 20000     # judging marks per bars frame — far above any legible band density,
                              # far below the 147k-mark storm frame that starved bars (2026-08-18)
 _JUDGING_TRIMMED = {}        # transition latch for the trim log line (order-of-magnitude keyed)
+# The band's memo from the LAST _run_judging call: (rows, skip, skip_row, pruned, t0, entries). ONE tuple in one
+# slot, read once at the start of a call and rebound whole at its end (the _skel_wire pattern): a connect push
+# builds the timeline outside the pusher's lock, so two calls can overlap, and a memo read field by field could
+# pair one call's cursor with another's horizon and skip rows verified under a horizon larger than the reader's
+# own; a whole snapshot is exact by the argument in _run_judging, and the last writer's memo stands while the
+# other's entries miss once (2026-09-16). `entries` is {id(row): (row, kind, text, entry)}, bounded by the band's
+# wire cap: the trim drops the oldest entries from the frame every build, so their tuples leave the memo with them
+# (holding them would buy no reuse and, in a storm like 2026-08-18's 147k-row frame, would hold ~90 MB for entries
+# no client sees); entries <= _JUDGING_ROW_CAP, and `rows` is the reader's own retained list (its 31-day retention,
+# no copy of it here). `skip_row` is the boundary OBJECT
+# the scan verified, never an index into the live list. `rows` is held so the list identity and `skip_row` can be
+# checked against live objects (an id alone could be recycled), at the cost of one transient: after a log rotation
+# the previous list's rows (tens of MB for a full 31-day window) stay alive for one build, until this call rebinds
+# the slot.
+_judging_band = None
+_JUDGING_BAND_STATS = {"builds": 0, "ms": 0.0, "rows_skipped": 0, "rows_visited": 0, "entries_reused": 0, "entries_minted": 0,
+                       "resets": 0, "compact_reused": 0, "compact_minted": 0, "compact_ms": 0.0}
+
+
+def _judging_band_report():
+    """The band memo's counters plus its occupancy, for /perf (memos.judgingBand): builds and their wall ms, the rows
+    the cursor skipped and the rows each build visited, entries reused by identity and minted, the cursor resets
+    (a rotation, a prune the reader did not count, a horizon moved back), _compact_judging's reuse and ms; then the
+    gauges: `entries` and `compact` (the two memos' held entries), `bytes` (their containers' estimated size: the memo
+    tuples and the entry and compact dicts, not the rows and strings they share with the reader and the marks) and
+    `bound` (the band's wire cap, which bounds both memos: only entries that reach the frame are held). The effect of
+    the memo is read here after a rollout, not inferred from a probe. The counters are plain increments from whichever
+    thread built the band (the pusher, or a cold connect push when their builds overlap), so under overlap they can
+    under-count; the memos themselves are exact (one read, one whole rebind)."""
+    out = dict(_JUDGING_BAND_STATS)
+    mb, cm = _judging_band, _judging_compact_memo          # one read each: rebound whole and never mutated, so safe to walk
+    ents, cms = (mb[5] if mb is not None else {}), (cm or {})
+    out["entries"], out["compact"], out["bound"] = len(ents), len(cms), _JUDGING_ROW_CAP
+    out["bytes"] = (sum(sys.getsizeof(t) + sys.getsizeof(t[3]) for t in ents.values())
+                    + sum(sys.getsizeof(t) + sys.getsizeof(t[1]) for t in cms.values()))
+    return out
 
 
 def _run_judging(t0, alive_sids, semantic):
@@ -46156,12 +46229,46 @@ def _run_judging(t0, alive_sids, semantic):
     sits at the old completion, off the live edge), and a COORDINATING courier classification (which plants
     no node, so it had no mark at all). Each call borrows its gloss text/kind best-effort from the nearest
     `semantic` artifact mark of the same (sid, judge) — the usage log records timing + tokens but not the
-    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t."""
-    by = {}
+    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t.
+
+    Incremental since 2026-09-16. Every completed entry is a pure function of ONE usage row (its fsid, judge, sent,
+    recv, t, ms, in, out; the shared reader parses a row once and never mutates it), the static _JUDGE_FAMILY map
+    and the (kind, text) of the gloss it borrows; alive_sids and t0 only decide whether the row yields an entry at
+    all. So a memo keyed on the row object and validated on the gloss by value hands back the SAME entry dict for
+    an unchanged row with an unchanged gloss, and the bars fill's identity memo then re-encodes only the entries
+    that changed (before: every retained row was rescanned and every entry was a fresh dict, so the ~8.7k entries
+    of a live band were re-encoded on every build). The scan covers the horizon rather than every retained row: t0
+    is the build's now minus the horizon and moves forward across builds, so a leading row that failed on its times
+    alone (non-numeric, or ended before t0) fails under every later t0 too, and the cursor advances over the rows
+    it has individually verified, with no ordering assumption on the log. It is dropped when its premise is: another
+    list object (a rotation), a horizon that moved back, or the object at the cursor no longer there (the reader's
+    left prune moves every index; the cursor shifts by the count the reader pruned since the memo's build, and the
+    object check remains the backstop). The memo's validation is by value, so every visited row needs its gloss on
+    every build (a hit is known only once kind and text are in hand): the gloss is found by bisect over the same
+    t-sorted lists the comprehension scanned, so it stays O(log n) on the warm path. The scan walks a slice snapshot
+    of the list: the reader's left prune runs on whichever thread reads the log and can shrink the list under a scan
+    (an index loop over a length taken before it raised IndexError then, and the caller's guard blanked the band for
+    a frame), and the memo records the boundary object the scan verified rather than an index into the live list, so
+    a prune the scan did not see fails the object check next build, a reset. Open runs (t1 = the build clock) are
+    minted per build by design."""
+    global _judging_band
+    t_start = time.perf_counter()
+    by, byts = {}, {}
     for mk in semantic:
         by.setdefault((mk["sid"], mk["judge"]), []).append(mk)
-    for v in by.values():
+    for k, v in by.items():
         v.sort(key=lambda m: m["t"])
+        byts[k] = [m["t"] for m in v]
+
+    def gloss(sid, judge, upto):
+        # the newest same-judge mark at or before `upto`: the list is sorted by t, so the marks with t <= upto are a
+        # prefix and bisect_right's insertion point ends it; the element before it is the one the comprehension this
+        # replaced picked ([m for m in v if m["t"] <= upto][-1]), equal times included (2026-09-16)
+        v = by.get((sid, judge))
+        if not v:
+            return None
+        i = bisect.bisect_right(byts[(sid, judge)], upto)
+        return v[i - 1] if i else None
     out = []
     # The SHARED incremental reader, not a per-build full read: this used to read_text + json.loads
     # the whole of judge-usage.jsonl on EVERY bars build (measured 2026-08-18 during the captioner
@@ -46170,26 +46277,55 @@ def _run_judging(t0, alive_sids, semantic):
     # working sessions painted lanes with no bars. _judge_usage_rows already existed for exactly
     # this (the 2026-08-13 analytics freeze); the band just never adopted it.
     rows = _judge_usage_rows()
+    pruned = _JUDGE_USAGE_CACHE.get("pruned", 0)
+    mb = _judging_band                                # ONE read of the slot: every check below is against one snapshot
+    prev = mb[5] if mb is not None else {}
+    skip = 0
+    if mb is not None:
+        if rows is mb[0] and t0 >= mb[4]:
+            k = mb[1] - (pruned - mb[3])              # the reader's prunes since the memo's build moved every index by that many
+            try:
+                skip = k if 0 < k and rows[k - 1] is mb[2] else 0   # the same object at the cursor: the rows before it are
+            except IndexError:                        #  the ones verified; a list shrunk under another thread is a reset
+                skip = 0
+        if mb[1] and not skip:
+            _JUDGING_BAND_STATS["resets"] += 1
+    scan = rows[skip:]                                # a snapshot (~8.7k references on a live band): the reader's left prune runs
+    #                                                   on whichever thread reads the log and can shrink the list under this scan
+    skip0, num, fam = skip, (int, float), _JUDGE_FAMILY
+    cur, reused, minted = {}, 0, 0
+    advancing = True                                  # still inside the leading run of rows that fail on their times alone
     done = set()                                      # (sid, judge, sent) of completed runs — to dedup live ones
-    for o in rows:
+    for i, o in enumerate(scan, skip):
+        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
+        start = sent if isinstance(sent, num) else lt
+        end = recv if isinstance(recv, num) else start
+        if not isinstance(start, num) or not isinstance(end, num) or end < t0:
+            if advancing:
+                skip = i + 1                          # verified on its times alone: it fails under every later t0 as well
+            continue
+        advancing = False                             # a row that passes on its times ends the run, whatever the sid test says
         sid, judge = o.get("fsid"), o.get("judge")
-        judge = _JUDGE_FAMILY.get(judge, judge)
+        judge = fam.get(judge, judge)
         if sid not in alive_sids:
             continue
-        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
-        start = sent if isinstance(sent, (int, float)) else lt
-        end = recv if isinstance(recv, (int, float)) else start
-        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end < t0:
-            continue
-        if isinstance(sent, (int, float)):
+        if isinstance(sent, num):
             done.add((sid, judge, sent))
         # gloss = the most recent same-judge artifact mark that finished by this call's run time
-        cands = [m for m in by.get((sid, judge), []) if m["t"] <= end + 1]
-        src = cands[-1] if cands else None
-        out.append({"judge": judge, "sid": sid, "t": start, "t1": end,
-                    "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
-                    "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
-                    "sent": sent, "recv": recv})
+        src = gloss(sid, judge, end + 1)
+        kind, text = (src or {}).get("kind", "run"), (src or {}).get("text", "")
+        hit = prev.get(id(o))
+        if hit is not None and hit[0] is o and hit[1] == kind and hit[2] == text:
+            e = hit[3]                                # the same row, the same gloss: the same entry object, and the memo's
+            cur[id(o)] = hit                          #  own tuple back (no fresh container per row per build)
+            reused += 1
+        else:
+            e = {"judge": judge, "sid": sid, "t": start, "t1": end, "kind": kind, "text": text,
+                 "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
+                 "sent": sent, "recv": recv}
+            cur[id(o)] = (o, kind, text, e)
+            minted += 1
+        out.append(e)
     # LIVE in-flight runs: a call still running has no usage line yet (that's written on completion), so its
     # bar would only appear — back-dated — once it ends. Draw it NOW as a span growing to the live edge
     # (open:True → the view extends it to nowS) so a judge bar appears WHEN it starts (the user 2026-06-23).
@@ -46217,11 +46353,21 @@ def _run_judging(t0, alive_sids, semantic):
         out.sort(key=lambda m: m["t"])
         cut = len(out) - _JUDGING_ROW_CAP
         del out[:cut]
+        kept = {id(e) for e in out}                   # the trimmed entries leave the memo with the frame: the oldest are trimmed
+        cur = {k: v for k, v in cur.items() if id(v[3]) in kept}   #  again next build, so holding them buys no reuse (the slot's comment)
         if _JUDGING_TRIMMED.get("mag") != cut // 10000:
             _JUDGING_TRIMMED["mag"] = cut // 10000
             sys.stderr.write("timeline judging band: %d oldest marks trimmed from the frame "
                              "(cap %d; a judge storm is the usual cause — see judge-usage.jsonl)\n"
                              % (cut, _JUDGING_ROW_CAP))
+    # the boundary object: the last row this scan verified when the cursor advanced, else the one the head check found
+    # in place (never rows[skip - 1] of the live list, which a prune under the scan may have shifted or shortened)
+    skip_row = scan[skip - skip0 - 1] if skip > skip0 else (mb[2] if skip else None)
+    _judging_band = (rows, skip, skip_row, pruned, t0, cur)   # rebound whole (the slot's comment)
+    st = _JUDGING_BAND_STATS
+    st["builds"] += 1; st["rows_skipped"] += skip0; st["rows_visited"] += len(scan)
+    st["entries_reused"] += reused; st["entries_minted"] += minted
+    st["ms"] += (time.perf_counter() - t_start) * 1000
     return out
 
 
