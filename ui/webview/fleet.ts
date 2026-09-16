@@ -22,6 +22,8 @@ import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, installPrLinkOpener } from "./pr-links";
 import { listenForFrames } from "./frame-listener";
 import { openGear } from "./gear-host";
+import { openContextMenu, openConfirmBox } from "./ctx-menu";
+import { openTopTitles, endConfirmDetail } from "./clear-confirm";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -431,6 +433,8 @@ function hostLoadStrip(): HTMLElement {
 // on the same events, and nothing until the observer has spoken.
 let paneVisible: boolean | null = null;   // the observer's last word; null until it speaks (the gate reads null as on screen; nothing is published for it)
 let paneDirty = false;
+let renameHold = false;    // an in-place rename is open on a row: render() waits (renameDirty remembers a push that arrived meanwhile); declared
+let renameDirty = false;   //  beside the paint gate's state, inside the slice outline-visibility.test.ts lifts, so that harness needs no stub
 function watchPaneVisibility(list: HTMLElement): void {
   if (typeof IntersectionObserver === "undefined") return;   // no observer → the tab's visibility alone gates
   new IntersectionObserver((entries) => {
@@ -458,6 +462,7 @@ function render() {
   // shows the list at once rather than the pane loader fading out over an empty pane (an empty list IS the
   // loader-up state; one hidden render buys an instant reveal).
   if (paintHeld(document.hidden, paneVisible, list.childElementCount > 0)) { paneDirty = true; return; }
+  if (renameHold) { renameDirty = true; return; }   // a name is being edited in place: the push waits for Enter or Escape (the strip freezes the same way)
   list.replaceChildren();
   // BEFORE the first payload: leave the list EMPTY so the page's romp loader (_pane_spin over #fleet-list)
   // stays up — no child means it never hides — instead of flashing a false "no work" message (the user
@@ -624,6 +629,7 @@ function render() {
       }
       head.title = s.provisional ? "Open this session: its transcript has not been loaded since the restart, so its goals are read from the store and their jumps wait for the tab" : "Open this session";
       head.dataset.act = "open"; head.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
+      head.tabIndex = 0; head.setAttribute("role", "button");   // focusable: Enter opens, the menu key or Shift+F10 opens the row's menu (2026-09-16)
       sec.appendChild(head);
 
       const treeBox = el("div", "ledger-tree");
@@ -645,6 +651,7 @@ function render() {
       const nm = el("span", "fl-name"); nm.textContent = p.name; if (p.color?.bg) nm.style.color = p.color.bg;
       head.appendChild(nm);
       head.title = "Open this session"; head.dataset.act = "open"; head.dataset.sid = p.sid;
+      head.tabIndex = 0; head.setAttribute("role", "button");   // the same reach as a session with a tree
       sec.appendChild(head);
       const treeBox = el("div", "ledger-tree"); treeBox.appendChild(makeProvRow(p, false)); sec.appendChild(treeBox);
       list.appendChild(sec);
@@ -816,6 +823,93 @@ applyTheme(document, loadSettings());   // the persisted theme applies at boot (
 // which onExternalSettingsChange below already handles in the browser too)
 installSettingsSync();
 onExternalSettingsChange((s) => { applyTheme(document, s); render(); });
+
+// THE ROW'S MENU (the user 2026-09-16, who wanted to right-click a session's name here to rename or delete it):
+// a right-click on a session's head, or the ContextMenu key or Shift+F10 on the focused head, opens Rename and Delete
+// through the shared builder (ctx-menu.ts: the chat's menu dress through the theme tokens, dismissal, keyboard reach).
+// Both verbs take the tab strip's own roads, never a second one: Rename edits the name in place (the strip's
+// startTabRename shape: Enter commits, Escape cancels, a blur commits) and posts renameSession, nothing renamed locally
+// ahead of the kernel, whose push brings the new name to every surface; Delete is the strip's close button: the End
+// confirm (its title, the open goals named in the detail, its buttons) and then endSession and closeTab in its order.
+// The row leaves on the kernel's push (the kill is the event), never locally ahead of it. plans/sessions-pane-session-menu.md.
+function sessionRow(sid: string): FleetSession | undefined { return sessions.find((s) => s.sid === sid); }
+
+function showSessionMenu(x: number, y: number, head: HTMLElement, viaKeyboard: boolean): void {
+  const sid = head.dataset.sid || "";
+  if (!sid) return;
+  const s = sessionRow(sid);
+  const name = s?.name || (head.querySelector(".fl-name") as HTMLElement | null)?.textContent || "";
+  openContextMenu(x, y, [
+    { label: "Rename", sub: "the name is a label: mail, goals and history follow the session", pick: () => startRowRename(head, sid, name) },
+    { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid, name, s) },
+  ], { className: "fl-sess-menu", viaKeyboard });
+}
+
+function startRowRename(head: HTMLElement, sid: string, base: string): void {
+  const nm = head.querySelector(".fl-name") as HTMLElement | null;
+  if (!nm || renameHold) return;
+  const input = document.createElement("input");
+  input.className = "fl-rename";
+  input.value = base;
+  input.spellcheck = false;
+  input.size = Math.max(base.length, 4);
+  let settled = false;
+  const finish = (commit: boolean) => {
+    if (settled) return;
+    settled = true;
+    const v = input.value.trim();
+    input.replaceWith(nm);
+    renameHold = false;
+    if (renameDirty) { renameDirty = false; render(); }
+    if (commit && v && v !== base) vscodeApi?.postMessage({ type: "renameSession", id: sid, name: v });   // the strip's message; the kernel's push renames the row
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();   // the list's keys (Enter opens, the menu key) are not the input's
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  for (const ev of ["click", "mousedown", "dblclick", "contextmenu"]) input.addEventListener(ev, (e) => e.stopPropagation());   // never the head's open
+  renameHold = true;
+  nm.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function confirmEndSession(sid: string, name: string, s: FleetSession | undefined): void {
+  const titles = openTopTitles((s?.ledger?.tree || []) as any);
+  openConfirmBox("End \u201c" + name + "\u201d?",
+    endConfirmDetail(titles, "The session shuts down. Its history stays on disk; revive it any time from the picker or the timeline."),
+    [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+    (v) => {
+      if (v !== "end") return;   // Cancel, Escape, the backdrop: nothing
+      vscodeApi?.postMessage({ type: "endSession", id: sid });   // the strip's two messages, in its order
+      vscodeApi?.postMessage({ type: "closeTab", id: sid });
+    });
+}
+
+(() => {
+  const list = document.getElementById("fleet-list");
+  if (!list) return;
+  list.addEventListener("contextmenu", (e) => {
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    if (!head || !head.dataset.sid) return;   // the goal rows below keep their own clicks; a right-click there does nothing new
+    e.preventDefault(); e.stopPropagation();
+    showSessionMenu(e.clientX, e.clientY, head, false);
+  });
+  list.addEventListener("keydown", (e) => {
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    if (!head || !head.dataset.sid || e.target !== head) return;
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      const r = head.getBoundingClientRect();
+      showSessionMenu(r.left + 12, r.bottom, head, true);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openSession(head.dataset.sid);
+    }
+  });
+})();
 
 // Fleet-list clicks are DELEGATED to the stable #fleet-list (installed once). render() does
 // `#fleet-list`.replaceChildren() on every feed push, so a handler hung on a rebuilt row/header/caret is
