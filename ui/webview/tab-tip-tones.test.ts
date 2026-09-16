@@ -57,7 +57,7 @@ const PRELUDE = `
 const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 const prettyMode = (m) => m; const backendLabel = (b) => b; const authFellTo = () => ""; const ctxBar = () => el("div"); const setCtxBar = () => {};
 const ledgers = new Map(); let draggedId = null; let tabTipEl = null; const sessions = new Map();
-const setTip = () => {}; const toggleMetaMenu = () => {}; const modeIconSvg = () => ""; const riskyMode = () => false;
+const setTip = (a: any, text: string) => { a._tipText = text; }; const toggleMetaMenu = () => {}; const modeIconSvg = () => ""; const riskyMode = () => false;
 const prettyFast = (f) => f; const metaCurrent = (kind, st) => kind === "model" ? st.model : st.effort; const fastAvailable = () => false;
 const metaDots = () => el("span", "meta-dots"); const isMetaPending = () => false;
 `;
@@ -122,18 +122,43 @@ test("a status without colours (an older kernel) leaves the values plain, as the
   const bare = { ...status, modelColor: undefined, effortColor: undefined, modelTone: undefined, effortTone: undefined };
   mod.showTabTip(new El("div"), { ...session, status: bare });
   const tip = body.children[body.children.length - 1];
-  for (const r of tip.children) if (r.className === "tab-tip-row") assert.equal(r.children[1].style.color ?? "", "", r.children[0].textContent);
+  for (const r of tip.children) if (r.className === "tab-tip-row" && r.children[0].textContent !== "Mail") assert.equal(r.children[1].style.color ?? "", "", r.children[0].textContent);   // the Mail check wears the accent by design (2026-09-16), not a footer tone
   const meta = new El("div"); mod.syncMetaControls(meta, bare, null, {});
   for (const b of meta.querySelectorAll(".meta-btn")) assert.equal(b.querySelector(".meta-label")!.style.color ?? "", "");
 });
 
 test("at source: the rows carry the colour as a third member, the value span takes it inline, and metaColor is the footer's helper", () => {
   const stt = RENDER.slice(RENDER.indexOf("function showTabTip("), RENDER.indexOf("\n}\n", RENDER.indexOf("function showTabTip(")));
-  assert.match(stt, /const rows: Array<\[string, string, string\?\]> = \[\];/);
+  assert.match(stt, /const rows: Array<\[string, string, string\?, string\?\]> = \[\];/);   // the fourth member is the value's hover tip (the Mail row, 2026-09-16)
   assert.match(stt, /rows\.push\(\["Model", s\.status\.model, metaColor\("model", s\.status\)\]\);/);
   assert.match(stt, /rows\.push\(\["Effort", s\.status\.effort, metaColor\("effort", s\.status\)\]\);/);
   assert.match(stt, /if \(color\) ve\.style\.color = color;/);
   assert.doesNotMatch(stt, /addEventListener\("(resize|keydown|mousedown)"/, "no window listener inside the lifted slice");
   const sync = MODULE.slice(MODULE.indexOf("function syncMetaControls("), MODULE.indexOf("\n}\n", MODULE.indexOf("function syncMetaControls(")));
   assert.match(sync, /label\.style\.color = showDots \? "" : metaColor\(kind, st\);/, "the footer tints through the same helper");
+});
+
+test("the Mail row is a glance: an accent check mark when mail is on, the bare word off or held when not, the reason in the value's tip", () => {
+  // the user 2026-09-16, with the session info rows in view: the row read "off: this session neither sends nor receives
+  // peer mail" inline; now the state alone, the why one hover away through the shared tip dress
+  const values = (extra: any) => {
+    mod.showTabTip(new El("div"), { ...session, ...extra });
+    const tip = body.children[body.children.length - 1];
+    const byLabel: Record<string, El> = {};
+    for (const r of tip.children) if (r.className === "tab-tip-row") byLabel[r.children[0].textContent] = r.children[1];
+    return byLabel;
+  };
+  const on = values({ postalServiceOff: false, mailOffWhy: "" })["Mail"];
+  assert.equal(on.textContent, "\u2713", "on: the check mark alone");
+  assert.equal(on.style.color, "var(--accent)", "on the accent");
+  assert.match((on as any)._tipText, /^on: peers can see and mail this session/);
+  const off = values({ postalServiceOff: true, mailOffWhy: "" })["Mail"];
+  assert.equal(off.textContent, "off"); assert.equal(off.style.color ?? "", "", "the word, untinted");
+  assert.equal((off as any)._tipText, "off: this session neither sends nor receives peer mail");
+  const held = values({ postalServiceOff: true, mailOffWhy: "flags" })["Mail"];
+  assert.equal(held.textContent, "held", "held reads at a glance");
+  assert.match((held as any)._tipText, /^held: the session settings file cannot be read/);
+  assert.equal(values({ postalServiceOff: true, mailOffWhy: "unreadable" })["Mail"].textContent, "held");
+  const thread = values({ postalServiceOff: true, mailOffWhy: "thread" })["Mail"];
+  assert.equal(thread.textContent, "off"); assert.equal((thread as any)._tipText, "off until the thread is broken out");
 });

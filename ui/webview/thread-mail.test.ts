@@ -34,8 +34,14 @@ test("the popover says the thread's mail is off, and the promoted view says it i
 });
 
 test("the tab hover and the Sessions pane show a session's mail state", () => {
-  assert.match(RENDER, /rows\.push\(\["Mail", !s\.postalServiceOff \? "on"\s*\n\s*: s\.mailOffWhy === "unreadable" \? "held: this session's record cannot be read, so mail waits until it is repaired"\s*\n\s*: s\.mailOffWhy === "flags" \? "held: the session settings file cannot be read, so mail waits until it is written again"\s*\n\s*: s\.mailOffWhy === "thread" \? "off until the thread is broken out"\s*\n\s*: "off: this session neither sends nor receives peer mail"\]\);/,
-               "the tab hover says which door is closed");
+  // the value is a glance since 2026-09-16: a check mark on the accent when mail is on, the bare word off or held when it
+  // is not; the reasons ride the value's hover tip (setTip, the shared dress), out of the row
+  assert.match(RENDER, /const mailWhy = !s\.postalServiceOff \? "on: peers can see and mail this session, and its own sends go out"\s*\n\s*: s\.mailOffWhy === "unreadable" \? "held: this session's record cannot be read, so mail waits until it is repaired"\s*\n\s*: s\.mailOffWhy === "flags" \? "held: the session settings file cannot be read, so mail waits until it is written again"\s*\n\s*: s\.mailOffWhy === "thread" \? "off until the thread is broken out"\s*\n\s*: "off: this session neither sends nor receives peer mail";/,
+               "the reasons, every door named, in the tip");
+  assert.match(RENDER, /rows\.push\(\["Mail", !s\.postalServiceOff \? "\\u2713" : \(s\.mailOffWhy === "unreadable" \|\| s\.mailOffWhy === "flags"\) \? "held" : "off",\s*\n\s*!s\.postalServiceOff \? "var\(--accent\)" : undefined, mailWhy\]\);/,
+               "the row's value: the accent check, or off, or held, bare");
+  assert.match(RENDER, /for \(const \[k, v, color, why\] of rows\) \{[\s\S]{0,400}?if \(why\) setTip\(ve, why\);/, "the tip rides the value cell");
+  assert.doesNotMatch(RENDER, /rows\.push\(\["Mail", !s\.postalServiceOff \? "on"/, "no explanation inline");
   assert.match(RENDER, /mailOffWhy: \("mailOffWhy" in msg\) \? String\(msg\.mailOffWhy \|\| ""\) : \(prev \? prev\.mailOffWhy : undefined\),/, "the reason rides the session frame");
   assert.match(FLEET, /mo\.textContent = \(s\.mailOffWhy === "unreadable" \|\| s\.mailOffWhy === "flags"\) \? "mail held" : "mail off";/, "the Sessions pane tag says held for an unreadable record and for the unreadable settings file");
   assert.match(FLEET, /postalServiceOff\?: boolean;/, "the Sessions pane row type carries it");
