@@ -45386,12 +45386,13 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
                 if k == len(held[1]):                       # the whole held prefix stands: reuse its objects
                     bars = list(held[2]); seg_ends = dict(held[3]); prompts_held = held[4]; last_t = held[5]; nsegs_held = held[6]
                     complained = held[7]; compactions = list(held[8])
-                else:                                       # a shorter common prefix: keep the bars of the turns that stand
+                else:                                       # a shorter common prefix: a changed middle turn re-derives all
                     nsegs_held = 0; prompts_held = {}
-                    keep_ids = set()
-                    for t in st_turns[:k]:
-                        keep_ids.update(x.get("id") for x in (t.get("atoms") or ()) if False)   # (bars carry seg ids, below)
-                    k = 0                                   # partial reuse is not attempted: a changed middle turn re-derives all
+                    # partial reuse is not attempted. A leftover from the design that did attempt it walked every atom of
+                    # the k standing turns here into a set nobody read (a generator whose filter was a constant False still
+                    # binds each element): on a restored lane that is one lock round trip or row decode per atom, paid
+                    # right before the whole derivation below reads the same turns again (2026-09-16).
+                    k = 0
                 if k > 0:
                     full_prompts.update(prompts_held)
                     start_k = k
