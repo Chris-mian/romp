@@ -46257,6 +46257,11 @@ def build_timeline(now, live_map=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            # which backend the lane is (the tab meta's field, _session_backend): the lane's model/effort pickers speak
+            # that backend's vocabulary and a live Codex lane draws its effort picker before any level is picked
+            # (2026-09-16: the row carried no backend, so the lane read every session as Claude's and a Codex lane
+            # with no level had no picker at all)
+            "backend": _session_backend(sid, tm),
             "modelPending": _model_pending_now(sid, tm),   # switching-dots until the /model pick lands, from EITHER surface (the user 2026-07-03)
             # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
