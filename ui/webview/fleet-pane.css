@@ -110,3 +110,6 @@ body.theme-light .fl-back:hover{background:#EBD2C2;color:#6E2D0A}
 animation:fask-swirl-spin 2.4s linear infinite}
 @keyframes fask-swirl-spin{to{transform:rotate(-360deg)}}
 @media (prefers-reduced-motion: reduce){.fask-awaiting-swirl{animation:none}}
+
+/* the in-place rename on a session's head (the row's menu, 2026-09-16): the strip's .tab-rename shape, in the pane's type */
+.fl-rename { font: inherit; color: inherit; background: var(--vscode-input-background, rgba(255,255,255,0.06)); border: 1px solid var(--box-border, rgba(255,255,255,0.18)); border-radius: 3px; padding: 0 4px; min-width: 4ch; }

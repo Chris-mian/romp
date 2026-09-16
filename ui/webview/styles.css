@@ -799,6 +799,7 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ctx-tag-input:focus { outline: none; border-color: var(--accent); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
+.ctx-item-danger .ctx-item-label { color: var(--vscode-errorForeground, #f48771); }   /* a destructive row wears the confirm button's danger colour (the Sessions pane's Delete) */
 /* identity-color swatches (the user 2026-06-29): the romp palette as circles, the current one ringed. A grid
    so 9 colors wrap to a tidy block instead of one long row. */
 /* Billing submenu (the user 2026-08-09: the login/API-key switch lives here now, not the statusline).
