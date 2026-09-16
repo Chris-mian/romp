@@ -954,7 +954,7 @@ class Recorders(unittest.TestCase):
         self.addCleanup(setattr, threading.Thread, "start", saved_start)
         self.state = tempfile.mkdtemp(prefix="perf-bench-recorders-")
         self.addCleanup(shutil.rmtree, self.state, ignore_errors=True)
-        self.shadow_root = tempfile.mkdtemp(prefix="perf-bench-recorders-shadow-")
+        self.shadow_root = os.path.realpath(tempfile.mkdtemp(prefix="perf-bench-recorders-shadow-"))   # target() answers a resolved path (a symlinked temp root on macOS)
         self.addCleanup(shutil.rmtree, self.shadow_root, ignore_errors=True)
         self.writes = []
 
