@@ -175,6 +175,7 @@ test("every chat-directed shell command lands in the column last worked in", () 
   const mv = MAIN.slice(MAIN.indexOf("function moveActiveSession("), MAIN.indexOf('registerCommand({ id: "chat.moveToNextColumn"'));
   assert.match(mv, /const f = chatPane\(\);/);
   assert.match(mv, /if \(!sid\) \{ columnNotice\("No session is open in this column to move\."\); return; \}/, "nothing to move says so");
+  assert.match(mv, /if \(i < 0\) \{ columnNotice\("This session is in a bottom pane; move it up out of the split first, then between columns\."\); return; \}/, "a bottom pane is not a column: say so rather than no-op silently");
   assert.match(mv, /if \(i === 0\) \{ columnNotice\("This session is in the first column already\."\); return; \}/, "a move left from the first column says so");
   assert.match(mv, /w\.__rompMoveTab\(sid, i === frames\.length - 1 \? "new" : colOf\(frames\[i \+ 1\]\)\)/, "past the last column: a new one (the shell checks the cap)");
 });

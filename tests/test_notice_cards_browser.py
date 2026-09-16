@@ -81,8 +81,15 @@ const r2 = await post({ id: cfg.sid, key: "dropped-sends", title: "1 message you
 const id2 = "notice:" + cfg.sid + ":dropped-sends:" + (r2.notice || {}).rev;
 await page.waitForSelector(sel(id2), { timeout: 60000 }).catch(() => {});
 const second = { card: await cardFacts(id2) };
-await page.click(sel(id2) + " .fask-nactions button", { timeout: 5000 }).catch(() => {});
-const latched = await cardFacts(id2);
+// Capture the synchronous click latch before returning to Playwright (2026-09-16). A kernel reply or an ordinary
+// feed push can already re-arm the button between page.click and a later page.evaluate; waiting for that transient
+// state would miss it too. The real action still goes to the kernel, whose reply and re-arm are checked below.
+const latched = await page.evaluate((s) => {
+  const c = document.querySelector(s), b = c && c.querySelector(".fask-nactions button");
+  if (!b) throw new Error("notice action button is absent");
+  b.click();
+  return { actions: Array.from(c.querySelectorAll(".fask-nactions button")).map((a) => ({ label: a.textContent, disabled: a.disabled })) };
+}, sel(id2));
 await page.waitForFunction((id) => (window.__nad || []).some((m) => m.itemId === id), id2, { timeout: 30000 }).catch(() => {});
 const done2 = await page.evaluate((id) => (window.__nad || []).filter((m) => m.itemId === id), id2);
 await page.waitForFunction((s) => { const b = document.querySelector(s + " .fask-nactions button"); return b && !b.disabled; }, sel(id2), { timeout: 15000 }).catch(() => {});

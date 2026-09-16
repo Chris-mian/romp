@@ -1099,6 +1099,7 @@ class _PerfStats:
                           ("tickSeen", _tick_seen_report),
                           ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
+                          ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
                           ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
@@ -32172,6 +32173,16 @@ _judge_gen = [0]                                 # bumped when a producer pass C
 # point: a lazy snapshot could capture the planner's mid-pass "blocked" and freeze on THAT.
 _goals_snap = [None]                             # {sid: store} while a judge pass is mid-flight, else None
 _goals_snap_at = [0.0]                           # when that snapshot's file reads STARTED (see _feed_goals)
+_goals_snap_key = [{}]                           # sid → the version its snapshot entry renders: the (ino, mtime_ns, size)
+#                                                  it was decoded from and the pass memo's count of byte changes the stat
+#                                                  did not show for that store (carried on the memo entry). The feed's
+#                                                  memo key names this in place of the pass's clock stamp, which moved
+#                                                  every snapshotted session's key at every pass begin and end although
+#                                                  the store rendered was the same object or the same version
+#                                                  (2026-09-16). {} between passes. A snapshot must be installed through
+#                                                  _begin_goals_pass (or its key set beside it): the feed memo keys a
+#                                                  sid whose snapshot entry has no key as the live file, and serves the
+#                                                  live entry for it.
 _goals_snap_done = {}                            # sid → the user-write mark already punched onto THIS snapshot
 _goals_snap_owned = set()                        # sids whose snapshot entry is THIS pass's private copy (copy-on-punch;
 #                                                  the punch counter's once-per-pass guard, not the copy's: see _feed_goals)
@@ -32180,8 +32191,9 @@ _goals_snap_lock = threading.Lock()
 # start of every pass — on one busy kernel 72 files of up to 1.3 MB, about 3% of its interpreter time
 # and most of the producer thread's cost — although a pass changes only a few of them. Every writer
 # publishes by rename (save_goals), so the bytes under an inode never change once it is at its path. The
-# memo keeps the parsed object per path under (st_ino, st_mtime_ns, st_size); a pass stats every file,
-# decodes only the ones whose key moved, and builds the snapshot from memo REFERENCES. Consequence: a
+# memo keeps the parsed object per path under (st_ino, st_mtime_ns, st_size), with the bytes it was decoded
+# from beside it; a pass reads every file's bytes (a page-cache read and a compare, a small fraction of a
+# decode), decodes only the ones whose key or bytes moved, and builds the snapshot from memo REFERENCES. Consequence: a
 # snapshot entry is shared with later passes, so nothing may mutate it — _feed_goals copies an entry
 # before punching a user gesture onto it (the _apply_rewind_hold idiom), and build_feed only reads. A
 # version that fails to decode is remembered under its key too, so a corrupt store is decoded (and
@@ -32209,15 +32221,18 @@ _goals_snap_lock = threading.Lock()
 # version can sit on the first's inode), and equal sizes are common (a digit bump, a same-length
 # status word). On Linux 6.13+ (multigrain timestamps) the move is guaranteed: the pass's own stat
 # marks the inode as queried, so the next publish gets a fine-grained stamp. On a coarse-timestamp
-# kernel, two equal-size publishes of one store inside one clock tick after the pass's stat reproduce
-# the memoized key and pin the earlier parse until the store's next publish — a known blind spot. A byte
-# compare on a stat hit closes it; this memo does not carry one, so the cost is one pass serving the
-# earlier parse (a stale card until the store's next publish, never a wrong write).
-_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD)
+# kernel, two equal-size publishes of one store inside one clock tick after the pass's read reproduce
+# the memoized key. THE BYTE COMPARE ON A STAT HIT CLOSES THAT (2026-09-16): the memoized text is kept
+# beside the parse and a hit serves the parse only when the bytes read are that text, as the writer
+# loader's parse memo (_RAW_STORE) and the shared view (_SHARED) do; other bytes under an unchanged stat
+# decode afresh (memos.pass compare_miss). Before it the pass served the earlier parse until the store's
+# next publish: a stale card, never a wrong write, and one the feed's own memo would go on serving.
+_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD, bytes,
+#                                                  the path's count of byte changes no stat showed: the feed key's tie-breaker)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
 # Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
-_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
+_goals_memo_stats = {"hit": 0, "miss": 0, "compare_miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
 # The sweep's skip list (the memo note above): the sids _goals_memo_evict_unowned ruled unowned whose stores are
 # still in the directory. That function rebuilds it whole on the producer thread, the memo's one writer, and
 # rebinds the name (a swap, never a mutation, as the memo); _begin_goals_pass reads it on the same thread, and
@@ -32234,11 +32249,12 @@ def _goals_memo_decode(data):
 
 def _goals_memo_report():
     """The memo's counters plus its current occupancy: `entries` memoized paths and `bytes` their summed
-    on-disk size (a proxy for the parsed objects' footprint). GET /perf reports it as memos.pass."""
+    on-disk size (the text each entry holds beside its parse for the byte compare, and a proxy for the parsed
+    objects' footprint). GET /perf reports it as memos.pass."""
     memo = _goals_memo[0]
     out = dict(_goals_memo_stats)
     out["entries"] = len(memo)
-    out["bytes"] = sum(k[2] for k, v in memo.values() if v is not _GOALS_MEMO_BAD)
+    out["bytes"] = sum(ent[0][2] for ent in memo.values())   # every entry holds its text, a remembered decode failure included
     out["unowned"] = len(_goals_memo_unowned)          # the stores the next pass steps over (the sweep's ruling)
     return out
 
@@ -32302,14 +32318,14 @@ def _note_user_goal_write(sid):
 def _begin_goals_pass():
     """Capture the PRE-pass goal stores so build_feed serves a pass-boundary-consistent view for the pass.
 
-    Stat-keyed (see the memo note above): each store is decoded only when its (ino, mtime_ns, size)
-    moved since the last pass; an unchanged one is served as the memoized object. The key is taken by
-    fstat on the fd the bytes are read from, so key and content are the same file version: a rename
-    landing between the listing's stat and the open is read whole from the new inode and keyed as
-    such. Any race the other way (content newer than its key) only costs one extra decode next pass;
-    it can never pin a stale parse, because the next stat sees a moved key. The one way a stale parse
-    CAN pin is the coarse-timestamp blind spot in the memo note above (equal size, recycled inode, same
-    clock tick); on a multigrain-timestamp kernel it does not occur.
+    Stat-keyed (see the memo note above): each store's bytes are read every pass and decoded only when
+    its (ino, mtime_ns, size) or its bytes moved since the last pass; an unchanged one is served as the
+    memoized object. The key is taken by fstat on the fd the bytes are read from, so key and content are
+    the same file version: a rename landing between the listing and the open is read whole from the new
+    inode and keyed as such. Any race the other way (content newer than its key) only costs one extra
+    decode next pass; it can never pin a stale parse, because the next read sees a moved key, and a
+    version the stat does not show (the coarse-timestamp alias in the memo note above: equal size,
+    recycled inode, same clock tick) is seen by the byte compare (2026-09-16).
 
     A store the compaction sweep ruled unowned (_goals_memo_unowned: no discovered and no live session
     holds it, and its file is still here) is stepped over before its stat, so it gets neither a memo entry nor a snapshot
@@ -32319,10 +32335,11 @@ def _begin_goals_pass():
     # ui/webview/feed-move-ack.test.ts pins the next line's comment text ("stamped BEFORE the reads").
     at = time.time()          # stamped BEFORE the reads and the stats that gate them: a write racing this loop
     snap = {}                 # must count as AFTER them, so it is replayed onto the snapshot, not lost to the read order
+    keys = {}                 # sid → the version its snapshot entry renders (_goals_snap_key)
     prev = _goals_memo[0]
     unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
-    hit = miss = fail = skip = 0
+    hit = miss = compare_miss = fail = skip = 0
     try:
         entries = [e for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()]
     except OSError:
@@ -32330,22 +32347,26 @@ def _begin_goals_pass():
     for ent in entries:
         path, sid = ent.path, ent.name[:-5]
         if sid in unowned:
-            skip += 1                                  # ruled unowned by the last sweep: no stat, no open, no
-            continue                                   # entry; the feed reads it live if asked (_feed_goals)
+            skip += 1                                  # ruled unowned by the last sweep: no open, no entry;
+            continue                                   # the feed reads it live if asked (_feed_goals)
         try:
-            st = ent.stat()
-            key = (st.st_ino, st.st_mtime_ns, st.st_size)
-            old = prev.get(path)
-            if old is not None and old[0] == key:
-                hit += 1                                   # same file version → the memoized parse (or its
-                memo[path] = old                           # remembered decode failure) stands
-                if old[1] is not _GOALS_MEMO_BAD:
-                    snap[sid] = old[1]
-                continue
             with open(path, "rb") as fh:
                 st = os.fstat(fh.fileno())
                 key = (st.st_ino, st.st_mtime_ns, st.st_size)
                 data = fh.read()
+            old = prev.get(path)
+            same = old is not None and old[0] == key
+            if same and old[2] == data:
+                hit += 1                                   # same file version, same bytes → the memoized parse
+                memo[path] = old                           # (or its remembered decode failure) stands
+                if old[1] is not _GOALS_MEMO_BAD:
+                    snap[sid] = old[1]
+                    keys[sid] = (key, old[3])              # the same version: the feed's key sees no move at the pass
+                continue                                   # boundary (2026-09-16); a remembered failure has no key
+            # The path's count of byte changes no stat showed, carried across versions: a compare miss decodes under
+            # the SAME (ino, mtime_ns, size), and this count is what tells the feed's memo key that decode from the
+            # last (2026-09-16); a version move carries it unchanged so the key stands across the publish.
+            alias = (old[3] if old is not None else 0) + (1 if same else 0)
             store = _goals_memo_decode(data)
         except FileNotFoundError:
             continue                                       # gone between the listing and the read: no store
@@ -32356,21 +32377,27 @@ def _begin_goals_pass():
             continue
         except Exception as e:                             # undecodable: out of the snapshot (the feed reads it
             fail += 1                                      # live, as before), said once per version
-            memo[path] = (key, _GOALS_MEMO_BAD)
+            memo[path] = (key, _GOALS_MEMO_BAD, data, alias)
             sys.stderr.write("goals-pass: %s: %s: %s (not in the pass snapshot; served live until the file changes)\n"
                              % (ent.name, type(e).__name__, e))
             continue
-        miss += 1
-        memo[path] = (key, store)
+        if same:
+            compare_miss += 1                              # same stat, other bytes: the coarse-timestamp alias is a
+        else:                                              # new version to the reader whatever the stat says (2026-09-16)
+            miss += 1
+        memo[path] = (key, store, data, alias)
         snap[sid] = store
+        keys[sid] = (key, alias)                           # the version this entry renders (fstat on the fd the bytes came from)
     _goals_memo[0] = memo
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
+    _goals_memo_stats["compare_miss"] += compare_miss
     _goals_memo_stats["fail"] += fail
     _goals_memo_stats["skip"] += skip
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
     with _goals_snap_lock:
         _goals_snap[0] = snap
+        _goals_snap_key[0] = keys
         _goals_snap_at[0] = at
         _goals_snap_done.clear()
         _goals_snap_owned.clear()
@@ -32380,12 +32407,15 @@ def _end_goals_pass():
     The memo keeps its parsed stores: they are the next pass's cache hits."""
     with _goals_snap_lock:
         _goals_snap[0] = None
+        _goals_snap_key[0] = {}
         _goals_snap_done.clear()
         _goals_snap_owned.clear()
 
-def _feed_goals(sid):
-    """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
-    never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
+def _feed_goals_keyed(sid):
+    """(the goal store for the FEED, the key of the snapshot entry it came from): the store frozen at the pre-pass
+    snapshot while a judge pass is mid-flight (so a card never shows a half-applied intermediate), else a live
+    read, keyed None. The key is read under the same lock hold as the entry, so the feed's memo key names exactly
+    the version this read rendered (2026-09-16); _feed_goals is this read without the key. A sid minted DURING the pass isn't in the
     snapshot → live (it has no prior state to flicker from); so is a sid the pass stepped over because the
     compaction sweep ruled its store unowned (no discovered and no live session held it at the sweep: the
     pass took no copy, and a consumer that asks anyway gets the live store, 2026-09-15). See the _goals_snap note above.
@@ -32402,6 +32432,7 @@ def _feed_goals(sid):
         snap = _goals_snap[0]
         if snap is not None and sid in snap:
             store, mark = snap[sid], _user_goal_write.get(str(sid), 0.0)
+            snap_key = _goals_snap_key[0].get(sid)     # the version this entry renders (None: installed by hand, unkeyed)
             if mark >= _goals_snap_at[0] and _goals_snap_done.get(sid) != mark:
                 # COPY-ON-PUNCH, a fresh copy per gesture: the entry is the memo's object, shared with
                 # every later pass that finds the file unchanged, so the replay and rollup below land on
@@ -32422,14 +32453,19 @@ def _feed_goals(sid):
                     #                                    card for the whole pass (the user 2026-07-23)
                 except Exception:
                     sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
-            return _apply_rewind_hold(sid, store)      # a pending rewind's cards are hidden NOW (latched
-            #                                            at the gesture; archive lands at the branch-take)
+            return _apply_rewind_hold(sid, store), snap_key   # a pending rewind's cards are hidden NOW (latched
+            #                                                   at the gesture; archive lands at the branch-take)
     store, fault = jd.load_goals_or_fault(sid)     # no pass in flight → live read, outside the lock
     if fault is not None:
-        return None                                    # the read FAULTED (the pre-pass snapshot skips such a file
+        return None, None                              # the read FAULTED (the pre-pass snapshot skips such a file
     #                                                    too): the row is filed once per episode, and build_feed
     #                                                    renders this one session without goal-derived content
-    return _apply_rewind_hold(sid, store)
+    return _apply_rewind_hold(sid, store), None
+
+
+def _feed_goals(sid):
+    """The FEED's goal store alone: _feed_goals_keyed without the key it was served under."""
+    return _feed_goals_keyed(sid)[0]
 
 # Delta-send (the user 2026-06-25, who wanted to stop re-sending what didn't change): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
@@ -40390,12 +40426,17 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         colour (_name_color); the snapshot's CONTENT, not the file, since the body reads the cycle's snapshot.
       captions: _chat_ident(CAPDIR/<fsid>.jsonl). The placeholders' gist (_provisional_card / _blocked_placeholder →
         _seg_caption(_captions(fsid))).
-      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the judge-pass
-        snapshot's stamp when this sid is in it (_goals_snap_at[0], else None: _feed_goals serves the pre-pass
-        snapshot while a pass is mid-flight), the user-gesture mark _user_goal_write[fsid], the punch record
-        _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an EIO or a
-        permissions fault moves no stat)). _feed_goals, jd.load_goals_shared inside _bg_placed_tops and
-        _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
+      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the store
+        VERSION the body's read rendered (the key of the pass-snapshot entry _feed_goals_keyed served it from while a
+        pass is mid-flight, since the feed serves the pre-pass snapshot then; else the live file's identity beside
+        the pass memo's count of byte changes the stat did not show for that store, taken before the read like the
+        stat), whether the override journal is replayed onto that version (the live loader replays it, the raw
+        snapshot does not until a punch; None with no journal), the user-gesture mark _user_goal_write[fsid], the
+        punch record _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an
+        EIO or a permissions fault moves no stat)). _feed_goals_keyed, jd.load_goals_shared inside _bg_placed_tops
+        and _session_stamp_read, jd.review_boundary, jd._done_since and every node read. The pass's clock stamp is
+        not a component (2026-09-16): a new snapshot that decodes the same versions is not new information, and the
+        stamp moved every snapshotted session's key twice per pass.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
       reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
@@ -40464,10 +40505,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                    for k in dict.fromkeys([fsid, str(s.get("anchor") or "")]) if k)
     names = (s.get("name"), tuple(_names_parts(fsid) or ()))
     captions = _chat_ident(jd.CAPDIR / (fsid + ".jsonl"))
-    sident = jd._store_identity(fsid)[1:]
-    with _goals_snap_lock:
-        _snap = _goals_snap[0]
-        snap_at = _goals_snap_at[0] if (_snap is not None and fsid in _snap) else None
+    sidentity = jd._store_identity(fsid)             # (the store's path, its identity, the journal's, the archive's)
+    path_s, sident = sidentity[0], sidentity[1:]
+    _ent = _goals_memo[0].get(path_s)                # the pass memo's entry for the store, taken BEFORE the read like
+    alias = _ent[3] if _ent is not None else 0       # the stat: its count of byte changes the stat did not show
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
@@ -40505,7 +40546,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     wait = tuple(sorted((ctx["wmap"].get(fsid) or {}).items(), key=str)) or None
     # ── the per-session facts the body reads through ctx, once per build (a hidden session reads none of them,
     #    exactly as the loop's `continue` skipped them) ──
-    ps, st, who_working, interrupting, closer = None, None, False, False, False
+    ps, st, who_working, interrupting, closer, snap_key = None, None, False, False, False, None
     if not hide:
         ps = _parse_cached(s["path"]) if path else None   # CACHE-ONLY: the cards paint at once on a cold kernel (the user 2026-06-26)
         if ps is not None:
@@ -40516,14 +40557,26 @@ def _feed_session_key(s, tm, ctx, prev_entry):
             who_working = False
         sess_interrupting = _interrupting(fsid, ps or {}, now, tm)   # pops its stamp on the settled path, once per build
         interrupting = sess_interrupting
-        st = _feed_goals(fsid)                       # the store the body renders (None: the read faulted)
+        st, snap_key = _feed_goals_keyed(fsid)       # the store the body renders (None: the read faulted) and the
+        #                                              snapshot key it was served from (None: the live file)
         closer = bool(live and ps and not who_working and not jactive
                       and _closer_pending(fsid, path, now, st if st is not None else {"nodes": {}, "status": {}}))
     ctx.update(ps=ps, who_working=who_working, interrupting=interrupting, store=st, closer=closer, hide=hide)
     # the store component closes on the READ's outcome (st is None: the read faulted, jd.load_goals_or_fault filed it):
     # an EIO or a permissions fault moves no stat, so without the bit a faulted derivation (no cards) would serve
     # on after the fault cleared, and a pre-fault entry would serve through it (tests/test_goal_store_fault_boundary)
-    store = (sident, snap_at, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
+    # The store VERSION the body's read rendered, and whether the override journal is replayed onto it (2026-09-16):
+    # the snapshot entry's key when the read served the pass snapshot, else the live file's identity beside the pass
+    # memo's count of byte changes the stat did not show for this path (a rewrite the pass memo's byte compare caught
+    # moves the key once; the same count on both sides keeps it still); the live loader replays the journal, the raw
+    # snapshot does not (a punch does, and is keyed by its own record below). The mode comes from the read itself, so
+    # a pass boundary between the stat above and the read cannot pair one mode's key with the other's rendering. The
+    # pass's clock stamp stood here before, and it moved every snapshotted session's key at every pass begin and end
+    # although the store rendered was the same object or the same file version: a whole-board re-derivation per pass
+    # boundary, most of a busy board's derivations when short passes run back to back.
+    rendered = snap_key if snap_key is not None else (sident[0], alias)
+    replayed = (snap_key is None) if sident[1] is not None else None
+    store = (sident, rendered, replayed, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
              st is None and not hide)                # a hidden session's skipped read is not a fault
     bg = (tuple((r.get("tid"), r.get("desc"), r.get("t"), r.get("type"), r.get("deadline"), r.get("agentId"))
                 for r in _bg_live_norm(fsid, path)) if (ps is not None and path) else None)
@@ -44871,12 +44924,34 @@ def _js_num(v):
     return str(v)
 
 
+_judging_compact_memo = None   # {id(entry): (entry, compact)} from the LAST _compact_judging call, ONE dict rebound
+#                                whole (never refilled in place): a connect push builds the timeline outside the
+#                                pusher's lock, so two calls can overlap; each reads one snapshot, the last writer's
+#                                memo stands and the other's entries miss once, never a wrong compact (2026-09-16)
+
+
 def _compact_judging(entries):
     """{lane sid: [compact entries]} from the builder's list of {judge, sid, t, t1, kind, text, ms, in, out, sent,
-    recv, open}. Pure. An entry without a sid lands under the empty lane key. The federation code carries a twin
-    (judgingToWire in ui/webview/federation.ts) for an older kernel's flat list; the fixture pins both."""
-    out = {}
+    recv, open}. The same input gives the same output; an entry without a sid lands under the empty lane key. The
+    federation code carries a twin (judgingToWire in ui/webview/federation.ts) for an older kernel's flat list; the
+    fixture pins both. Identity-memoized on the entry OBJECT (2026-09-16): an entry _run_judging handed back unchanged
+    takes the compact dict of the previous call, itself, so the bars fill's identity memo (_delta_split) sees the
+    object it encoded last build and re-encodes nothing; a new entry mints one compact dict and one memo tuple, and
+    a hit hands the previous tuple back (a tuple holding a dict is tracked by the collector for life, so a fresh one
+    per entry per build is the very stream this memo removes). Exact because an entry is a pure function of its
+    row and gloss and is never mutated after it is minted: the band memo holds it across builds, so a writer that
+    mutated one would change every later frame in place. Do not mutate an entry or a compact dict."""
+    global _judging_compact_memo
+    t_start = time.perf_counter()
+    prev = _judging_compact_memo or {}                 # ONE read of the slot (the header comment)
+    cur, out, reused, minted = {}, {}, 0, 0
     for e in entries or []:
+        hit = prev.get(id(e))
+        if hit is not None and hit[0] is e:            # the identity is checked, never an id alone
+            cur[id(e)] = hit
+            out.setdefault(str(e.get("sid") or ""), []).append(hit[1])
+            reused += 1
+            continue
         # the key is (t, judge), not (t, judge, t1): an in-flight run's t1 is the build clock, so a key carrying it
         # changed every build and the run crossed as a delete plus a set per frame; with a stable key it is one
         # changed entry. Two runs of one judge sent at the same instant would collide and take positional keys,
@@ -44899,7 +44974,13 @@ def _compact_judging(entries):
             c["r"] = e["recv"]
         if e.get("open"):
             c["u"] = True
+        cur[id(e)] = (e, c)
+        minted += 1
         out.setdefault(str(e.get("sid") or ""), []).append(c)
+    _judging_compact_memo = cur
+    st = _JUDGING_BAND_STATS
+    st["compact_reused"] += reused; st["compact_minted"] += minted
+    st["compact_ms"] += (time.perf_counter() - t_start) * 1000
     return out
 
 
@@ -45334,12 +45415,13 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
                 if k == len(held[1]):                       # the whole held prefix stands: reuse its objects
                     bars = list(held[2]); seg_ends = dict(held[3]); prompts_held = held[4]; last_t = held[5]; nsegs_held = held[6]
                     complained = held[7]; compactions = list(held[8])
-                else:                                       # a shorter common prefix: keep the bars of the turns that stand
+                else:                                       # a shorter common prefix: a changed middle turn re-derives all
                     nsegs_held = 0; prompts_held = {}
-                    keep_ids = set()
-                    for t in st_turns[:k]:
-                        keep_ids.update(x.get("id") for x in (t.get("atoms") or ()) if False)   # (bars carry seg ids, below)
-                    k = 0                                   # partial reuse is not attempted: a changed middle turn re-derives all
+                    # partial reuse is not attempted. A leftover from the design that did attempt it walked every atom of
+                    # the k standing turns here into a set nobody read (a generator whose filter was a constant False still
+                    # binds each element): on a restored lane that is one lock round trip or row decode per atom, paid
+                    # right before the whole derivation below reads the same turns again (2026-09-16).
+                    k = 0
                 if k > 0:
                     full_prompts.update(prompts_held)
                     start_k = k
@@ -45781,9 +45863,16 @@ def _session_tokens(path, t0):
 # user 2026-08-13, who watched the cost modal sit on "loading…"). One shared incremental reader now:
 # rows parse ONCE, appends parse from the last byte offset, and rows older than the widest consumer
 # window (30 days, plus a day of slack) are pruned so memory stays bounded. A shrunken file (rotation,
-# a fresh install) resets cleanly.
+# a fresh install) resets cleanly. `pruned` counts the rows the left prune has dropped over the cache's life:
+# the judging band's horizon cursor is an index into `rows`, and a prune moves every index by the count
+# dropped, so the band shifts its cursor by the count pruned since its last build instead of rescanning
+# (2026-09-16: the live log spans the window, so most appends prune, and an identity-only cursor would
+# have re-verified every retained row on about a third of builds). The cursor relies on this list being
+# touched in three ways only: rebound to a new list object, appended at the right, or left-pruned in
+# place with `pruned` incremented by the count; anything else (a middle deletion, a clear-and-refill, a
+# replaced row) must rebind the list instead, or the cursor's premise breaks silently.
 _JUDGE_USAGE_RETAIN = 31 * 86400
-_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": []}
+_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": [], "pruned": 0}
 
 
 def _judge_usage_rows():
@@ -45834,6 +45923,7 @@ def _judge_usage_rows():
         while i < len(c["rows"]) and (c["rows"][i].get("t") or 0) < floor:
             i += 1
         del c["rows"][:i]
+        c["pruned"] = c.get("pruned", 0) + i        # the band's cursor shifts by this (the header comment)
     return c["rows"]
 
 
@@ -46093,6 +46183,42 @@ def _bars_complain(who, stage, e):
 _JUDGING_ROW_CAP = 20000     # judging marks per bars frame — far above any legible band density,
                              # far below the 147k-mark storm frame that starved bars (2026-08-18)
 _JUDGING_TRIMMED = {}        # transition latch for the trim log line (order-of-magnitude keyed)
+# The band's memo from the LAST _run_judging call: (rows, skip, skip_row, pruned, t0, entries). ONE tuple in one
+# slot, read once at the start of a call and rebound whole at its end (the _skel_wire pattern): a connect push
+# builds the timeline outside the pusher's lock, so two calls can overlap, and a memo read field by field could
+# pair one call's cursor with another's horizon and skip rows verified under a horizon larger than the reader's
+# own; a whole snapshot is exact by the argument in _run_judging, and the last writer's memo stands while the
+# other's entries miss once (2026-09-16). `entries` is {id(row): (row, kind, text, entry)}, bounded by the band's
+# wire cap: the trim drops the oldest entries from the frame every build, so their tuples leave the memo with them
+# (holding them would buy no reuse and, in a storm like 2026-08-18's 147k-row frame, would hold ~90 MB for entries
+# no client sees); entries <= _JUDGING_ROW_CAP, and `rows` is the reader's own retained list (its 31-day retention,
+# no copy of it here). `skip_row` is the boundary OBJECT
+# the scan verified, never an index into the live list. `rows` is held so the list identity and `skip_row` can be
+# checked against live objects (an id alone could be recycled), at the cost of one transient: after a log rotation
+# the previous list's rows (tens of MB for a full 31-day window) stay alive for one build, until this call rebinds
+# the slot.
+_judging_band = None
+_JUDGING_BAND_STATS = {"builds": 0, "ms": 0.0, "rows_skipped": 0, "rows_visited": 0, "entries_reused": 0, "entries_minted": 0,
+                       "resets": 0, "compact_reused": 0, "compact_minted": 0, "compact_ms": 0.0}
+
+
+def _judging_band_report():
+    """The band memo's counters plus its occupancy, for /perf (memos.judgingBand): builds and their wall ms, the rows
+    the cursor skipped and the rows each build visited, entries reused by identity and minted, the cursor resets
+    (a rotation, a prune the reader did not count, a horizon moved back), _compact_judging's reuse and ms; then the
+    gauges: `entries` and `compact` (the two memos' held entries), `bytes` (their containers' estimated size: the memo
+    tuples and the entry and compact dicts, not the rows and strings they share with the reader and the marks) and
+    `bound` (the band's wire cap, which bounds both memos: only entries that reach the frame are held). The effect of
+    the memo is read here after a rollout, not inferred from a probe. The counters are plain increments from whichever
+    thread built the band (the pusher, or a cold connect push when their builds overlap), so under overlap they can
+    under-count; the memos themselves are exact (one read, one whole rebind)."""
+    out = dict(_JUDGING_BAND_STATS)
+    mb, cm = _judging_band, _judging_compact_memo          # one read each: rebound whole and never mutated, so safe to walk
+    ents, cms = (mb[5] if mb is not None else {}), (cm or {})
+    out["entries"], out["compact"], out["bound"] = len(ents), len(cms), _JUDGING_ROW_CAP
+    out["bytes"] = (sum(sys.getsizeof(t) + sys.getsizeof(t[3]) for t in ents.values())
+                    + sum(sys.getsizeof(t) + sys.getsizeof(t[1]) for t in cms.values()))
+    return out
 
 
 def _run_judging(t0, alive_sids, semantic):
@@ -46103,12 +46229,46 @@ def _run_judging(t0, alive_sids, semantic):
     sits at the old completion, off the live edge), and a COORDINATING courier classification (which plants
     no node, so it had no mark at all). Each call borrows its gloss text/kind best-effort from the nearest
     `semantic` artifact mark of the same (sid, judge) — the usage log records timing + tokens but not the
-    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t."""
-    by = {}
+    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t.
+
+    Incremental since 2026-09-16. Every completed entry is a pure function of ONE usage row (its fsid, judge, sent,
+    recv, t, ms, in, out; the shared reader parses a row once and never mutates it), the static _JUDGE_FAMILY map
+    and the (kind, text) of the gloss it borrows; alive_sids and t0 only decide whether the row yields an entry at
+    all. So a memo keyed on the row object and validated on the gloss by value hands back the SAME entry dict for
+    an unchanged row with an unchanged gloss, and the bars fill's identity memo then re-encodes only the entries
+    that changed (before: every retained row was rescanned and every entry was a fresh dict, so the ~8.7k entries
+    of a live band were re-encoded on every build). The scan covers the horizon rather than every retained row: t0
+    is the build's now minus the horizon and moves forward across builds, so a leading row that failed on its times
+    alone (non-numeric, or ended before t0) fails under every later t0 too, and the cursor advances over the rows
+    it has individually verified, with no ordering assumption on the log. It is dropped when its premise is: another
+    list object (a rotation), a horizon that moved back, or the object at the cursor no longer there (the reader's
+    left prune moves every index; the cursor shifts by the count the reader pruned since the memo's build, and the
+    object check remains the backstop). The memo's validation is by value, so every visited row needs its gloss on
+    every build (a hit is known only once kind and text are in hand): the gloss is found by bisect over the same
+    t-sorted lists the comprehension scanned, so it stays O(log n) on the warm path. The scan walks a slice snapshot
+    of the list: the reader's left prune runs on whichever thread reads the log and can shrink the list under a scan
+    (an index loop over a length taken before it raised IndexError then, and the caller's guard blanked the band for
+    a frame), and the memo records the boundary object the scan verified rather than an index into the live list, so
+    a prune the scan did not see fails the object check next build, a reset. Open runs (t1 = the build clock) are
+    minted per build by design."""
+    global _judging_band
+    t_start = time.perf_counter()
+    by, byts = {}, {}
     for mk in semantic:
         by.setdefault((mk["sid"], mk["judge"]), []).append(mk)
-    for v in by.values():
+    for k, v in by.items():
         v.sort(key=lambda m: m["t"])
+        byts[k] = [m["t"] for m in v]
+
+    def gloss(sid, judge, upto):
+        # the newest same-judge mark at or before `upto`: the list is sorted by t, so the marks with t <= upto are a
+        # prefix and bisect_right's insertion point ends it; the element before it is the one the comprehension this
+        # replaced picked ([m for m in v if m["t"] <= upto][-1]), equal times included (2026-09-16)
+        v = by.get((sid, judge))
+        if not v:
+            return None
+        i = bisect.bisect_right(byts[(sid, judge)], upto)
+        return v[i - 1] if i else None
     out = []
     # The SHARED incremental reader, not a per-build full read: this used to read_text + json.loads
     # the whole of judge-usage.jsonl on EVERY bars build (measured 2026-08-18 during the captioner
@@ -46117,26 +46277,55 @@ def _run_judging(t0, alive_sids, semantic):
     # working sessions painted lanes with no bars. _judge_usage_rows already existed for exactly
     # this (the 2026-08-13 analytics freeze); the band just never adopted it.
     rows = _judge_usage_rows()
+    pruned = _JUDGE_USAGE_CACHE.get("pruned", 0)
+    mb = _judging_band                                # ONE read of the slot: every check below is against one snapshot
+    prev = mb[5] if mb is not None else {}
+    skip = 0
+    if mb is not None:
+        if rows is mb[0] and t0 >= mb[4]:
+            k = mb[1] - (pruned - mb[3])              # the reader's prunes since the memo's build moved every index by that many
+            try:
+                skip = k if 0 < k and rows[k - 1] is mb[2] else 0   # the same object at the cursor: the rows before it are
+            except IndexError:                        #  the ones verified; a list shrunk under another thread is a reset
+                skip = 0
+        if mb[1] and not skip:
+            _JUDGING_BAND_STATS["resets"] += 1
+    scan = rows[skip:]                                # a snapshot (~8.7k references on a live band): the reader's left prune runs
+    #                                                   on whichever thread reads the log and can shrink the list under this scan
+    skip0, num, fam = skip, (int, float), _JUDGE_FAMILY
+    cur, reused, minted = {}, 0, 0
+    advancing = True                                  # still inside the leading run of rows that fail on their times alone
     done = set()                                      # (sid, judge, sent) of completed runs — to dedup live ones
-    for o in rows:
+    for i, o in enumerate(scan, skip):
+        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
+        start = sent if isinstance(sent, num) else lt
+        end = recv if isinstance(recv, num) else start
+        if not isinstance(start, num) or not isinstance(end, num) or end < t0:
+            if advancing:
+                skip = i + 1                          # verified on its times alone: it fails under every later t0 as well
+            continue
+        advancing = False                             # a row that passes on its times ends the run, whatever the sid test says
         sid, judge = o.get("fsid"), o.get("judge")
-        judge = _JUDGE_FAMILY.get(judge, judge)
+        judge = fam.get(judge, judge)
         if sid not in alive_sids:
             continue
-        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
-        start = sent if isinstance(sent, (int, float)) else lt
-        end = recv if isinstance(recv, (int, float)) else start
-        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end < t0:
-            continue
-        if isinstance(sent, (int, float)):
+        if isinstance(sent, num):
             done.add((sid, judge, sent))
         # gloss = the most recent same-judge artifact mark that finished by this call's run time
-        cands = [m for m in by.get((sid, judge), []) if m["t"] <= end + 1]
-        src = cands[-1] if cands else None
-        out.append({"judge": judge, "sid": sid, "t": start, "t1": end,
-                    "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
-                    "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
-                    "sent": sent, "recv": recv})
+        src = gloss(sid, judge, end + 1)
+        kind, text = (src or {}).get("kind", "run"), (src or {}).get("text", "")
+        hit = prev.get(id(o))
+        if hit is not None and hit[0] is o and hit[1] == kind and hit[2] == text:
+            e = hit[3]                                # the same row, the same gloss: the same entry object, and the memo's
+            cur[id(o)] = hit                          #  own tuple back (no fresh container per row per build)
+            reused += 1
+        else:
+            e = {"judge": judge, "sid": sid, "t": start, "t1": end, "kind": kind, "text": text,
+                 "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
+                 "sent": sent, "recv": recv}
+            cur[id(o)] = (o, kind, text, e)
+            minted += 1
+        out.append(e)
     # LIVE in-flight runs: a call still running has no usage line yet (that's written on completion), so its
     # bar would only appear — back-dated — once it ends. Draw it NOW as a span growing to the live edge
     # (open:True → the view extends it to nowS) so a judge bar appears WHEN it starts (the user 2026-06-23).
@@ -46164,11 +46353,21 @@ def _run_judging(t0, alive_sids, semantic):
         out.sort(key=lambda m: m["t"])
         cut = len(out) - _JUDGING_ROW_CAP
         del out[:cut]
+        kept = {id(e) for e in out}                   # the trimmed entries leave the memo with the frame: the oldest are trimmed
+        cur = {k: v for k, v in cur.items() if id(v[3]) in kept}   #  again next build, so holding them buys no reuse (the slot's comment)
         if _JUDGING_TRIMMED.get("mag") != cut // 10000:
             _JUDGING_TRIMMED["mag"] = cut // 10000
             sys.stderr.write("timeline judging band: %d oldest marks trimmed from the frame "
                              "(cap %d; a judge storm is the usual cause — see judge-usage.jsonl)\n"
                              % (cut, _JUDGING_ROW_CAP))
+    # the boundary object: the last row this scan verified when the cursor advanced, else the one the head check found
+    # in place (never rows[skip - 1] of the live list, which a prune under the scan may have shifted or shortened)
+    skip_row = scan[skip - skip0 - 1] if skip > skip0 else (mb[2] if skip else None)
+    _judging_band = (rows, skip, skip_row, pruned, t0, cur)   # rebound whole (the slot's comment)
+    st = _JUDGING_BAND_STATS
+    st["builds"] += 1; st["rows_skipped"] += skip0; st["rows_visited"] += len(scan)
+    st["entries_reused"] += reused; st["entries_minted"] += minted
+    st["ms"] += (time.perf_counter() - t_start) * 1000
     return out
 
 
@@ -57109,14 +57308,20 @@ try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*')
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
 var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*');}catch(x){}});
 function moveFocus(dir){
-  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
-    if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
+  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it, to the last chat pane worked in (a bottom pane too), else the last column
+    if(dir==='up'){var c=paneVisible(lastChat)?lastChat:(paneVisible(lastCol)?lastCol:(visCols()[0]||null));if(c)focusPane(c,dir);}
     return;
   }
-  var cols=visCols(), i=cols.indexOf(curFocus);
+  // the VERTICAL axis inside a split column: Down from the TOP pane goes to the BOTTOM pane, Down from the BOTTOM enters
+  // the timeline; Up from the BOTTOM returns to the TOP (Up from a column top is a no-op, the top row already)
+  var below=window.__rompBelowFrameOf&&window.__rompBelowFrameOf(curFocus);
+  var top=window.__rompTopFrameOf&&window.__rompTopFrameOf(curFocus);   // set only when curFocus IS a bottom pane
+  if(dir==='up'){if(top&&document.getElementById(top))focusPane(top,dir);return;}
+  if(dir==='down'){if(below&&document.getElementById(below)){focusPane(below,dir);return;}if(paneVisible(TL))focusPane(TL,dir);return;}
+  // left/right along the COLUMNS; a bottom pane moves relative to its parent column
+  var cols=visCols(), cur=top||curFocus, i=cols.indexOf(cur);
   if(dir==='left'){if(i>0)focusPane(cols[i-1],dir);}
   else if(dir==='right'){if(i>=0&&i<cols.length-1)focusPane(cols[i+1],dir);}
-  else if(dir==='down'){if(paneVisible(TL))focusPane(TL,dir);}   // up from a column = already the top row, no-op
 }
 function editable(t){if(!t)return false;var tag=(t.tagName||'').toLowerCase();
 return tag==='textarea'||tag==='input'||tag==='select'||t.isContentEditable;}
@@ -60322,6 +60527,7 @@ function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s
 function ownerOf(sid){for(var i=0;i<cols.length;i++){if(cols[i].ids.indexOf(sid)>=0)return cols[i].n;}return 1;}
 function sets(){var out={},seen={};cols.forEach(function(c){out[String(c.n)]=c.ids.filter(function(id){if(seen[id])return false;seen[id]=true;return true;});});return out;}
 function nextNumber(){var n=2;while(entry(n))n++;return n;}
+function colSize(n){if(n!==1){var e=entry(n);return e?e.ids.length:0;}var f=document.getElementById('f-chat');try{return f.contentDocument.querySelectorAll('#tabs .tab[data-id]').length;}catch(e){return 0;}}   // a column's held sessions; the FIRST column's are its page's own tabs (the shell tracks only later columns, sets()), 0 on a read fault, which the ===1 lone checks read as "not lone" so a fault never blocks a split
 function activeIn(f){try{var t=f.contentDocument&&f.contentDocument.querySelector('#tabs .tab.active[data-id]');return t?String(t.getAttribute('data-id')||''):'';}catch(e){return '';}}   // the palette's "move this session": the focused column's own tab
 function focused(){var id=(window.__rompFocusedChatId&&window.__rompFocusedChatId())||'f-chat';return document.getElementById(id)||document.getElementById('f-chat');}
 // Which column a session-focus belongs to: the column that HOLDS the session (one lookup, never a read of the
@@ -60369,12 +60575,12 @@ h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.get
 document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
 function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
 function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
-var ce=entry(colN);if(ce){ce.ratio=Math.max(0.05,Math.min(0.95,nT/sum));save();}}   // persist the ON-SCREEN top ratio (nT/sum after the pixel-clamped drag); a reload restores exactly this, no divider jump
+var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio: mv() already pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
 function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
 var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
 var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
-var r=(ce.ratio>=0.05&&ce.ratio<=0.95)?ce.ratio:0.5;   // accept the same range the drag persists, so the restore matches the screen
+var r=(ce.ratio>0&&ce.ratio<1)?ce.ratio:0.5;   // accept any proper fraction (the pixel minimum lives in mv()'s clamp, not here), so a legitimately small dragged ratio is not reset to 0.5
 pp.classList.add('split-v');topf.style.flex=r+' 1 0';
 var g=document.createElement('div');g.className='gh gh-chat';g.id='gh-chat-'+ce.n;
 var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-'+ce.n;sub.style.flex=(1-r)+' 1 0';
@@ -60416,7 +60622,7 @@ function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexO
 // closed); the target adopts the drafts and shows the session; the ring moves there. Returns the target's iframe,
 // null when refused. A session already alone in a later column has nowhere new to go: a new column would be a twin
 // of the origin and the origin would close, so that is refused with a line rather than done for nothing.
-function moveTab(sid,to){if(typeof sid!=='string'||!sid)return null;
+function moveTab(sid,to,dt){if(typeof sid!=='string'||!sid)return null;   // dt: for to==='down', the target column the drag landed on (else the source column, the keyboard)
 var from=ownerOf(sid),src=frameOfCol(from);
 var why=refusal(src,sid);if(why==='locked')return notify(LOCKED);if(why||!movable(src,sid))return notify('Only an open session can be moved between columns.');
 if(to==='new'){var se=entry(from);if(se&&se.ids.length===1)return notify('This session is already alone in its column.');
@@ -60426,13 +60632,15 @@ var state=take(src,sid),n=nextNumber();
 if(window.__rompSplitGrow)window.__rompSplitGrow(lastPane(),'chat'+n);   // the rightmost column and the new one each take half its width
 unlist(sid);cols.push({n:n,ids:[sid]});save();
 var nf=make(n,sid,state);try{nf.contentWindow.focus();}catch(e){}return nf;}
-if(to==='down'){var pc=from;   // split THIS session's own column (or the first) into a top and a bottom pane
-if(isBelow(entry(pc)))return notify('A split pane cannot split again.');   // sid already sits in a bottom pane: at most two rows deep
+if(to==='down'){var pc=(typeof dt==='number'&&(dt===1||(entry(dt)&&!isBelow(entry(dt)))))?dt:from;   // the pane the drop landed on (the drag), else the source column (the keyboard)
+if(isBelow(entry(from)))return notify('A split pane cannot split again.');   // the tab already sits in a bottom pane: at most two rows deep
 if(belowOf(pc))return notify('This column is already split top and bottom.');
-var seD=entry(pc);if(seD&&seD.ids.length===1)return notify('This session is already alone in its column.');   // parity with the "new" path: a lone session has nothing to split off
+if(pc===from&&colSize(pc)===1)return notify('This session is already alone in its column.');   // splitting your OWN lone column has nothing to split off; colSize covers the first column (entry(1) is null) by its page's tabs
+if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&busy(src))return notify(BUSY);}   // a cross-column split-down that empties a lone BUSY source refuses here (else close() below refuses on its busy gate and leaves an open EMPTY column), parity with the sideways move
 if(!canSplit())return refusePane();
-var stD=take(src,sid),nD=nextNumber();unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
-var bf=make(nD,sid,stD);try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
+var stD=take(src,sid),nD=nextNumber(),emptiedD=unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
+var bf=make(nD,sid,stD);if(emptiedD&&emptiedD!==pc)close(emptiedD);   // the SOURCE side column emptied by a cross-column split-down closes (never the target)
+try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
 var tf=frameOfCol(tn);if(!tf)return null;
 if(tn===from)return tf;   // already there: nothing moves
@@ -60452,7 +60660,7 @@ if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with 
 var kid=belowOf(n);   // a bottom pane nested in this column closes WITH it: its sessions rejoin the first column too
 if(!keep&&kid){var kf0=document.getElementById(frameId(kid.n));if(kf0&&busy(kf0)){notify(BUSY);return;}}
 if(f&&home)cols[i].ids.forEach(function(sid){adopt(home,sid,take(f,sid));});
-if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice
+if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);delete deferred[kid.n];if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice; the kid's deferral goes with it (else a reused number's idle fires an unasked reconcile)
 var sideL=sideCols(),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
 var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';
 cols.splice(i,1);delete deferred[n];if(!keep)save();   // delete deferred[n] (#1774): a deferred close is moot once the column is gone by any road
@@ -60491,7 +60699,8 @@ window.__rompClaimSession=function(sid,col){var n=Number(col),e=entry(n);if(type
 window.__rompChatFrames=frames;window.__rompChatFrameIds=function(){return frames().map(function(f){return f.id;});};
 window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};   // columns only: the horizontal focus nav and column-cycling skip a bottom pane (a vertical child)
 window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column; the CALLER (setFocus) adds .focus-top/.focus-bottom so each half shows its own ring
-window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top)
+window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top, and the VERTICAL focus axis to step up out of a bottom pane)
+window.__rompBelowFrameOf=function(fid){var n=fid==='f-chat'?1:(String(fid).indexOf('f-chat-')===0?Number(String(fid).slice(7)):0);if(!n)return null;var b=belowOf(n);return b?frameId(b.n):null;};   // the VERTICAL focus axis (moveFocus): a column's bottom pane frame when it is split
 window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOfWin=frameOfWin;window.__rompChatTarget=target;
 // THE DRAG (the user 2026-09-11, who asked for a tab dragged to the right edge to make a column and onto another column
 // to move it). The page posts {romp:'tabDrag',on:true,sid,name,stripH} at its dragstart and {on:false} at dragend
@@ -60512,12 +60721,14 @@ window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOf
 // tab is simply gone there.
 var drag=null,zones=[],ghost=document.getElementById('col-ghost');   // drag: {sid,name,from,stripH} while a tab drags, else null
 function edgeWidth(w){return Math.max(72,Math.min(180,0.2*w));}   // the edge zone's width for a pane w px wide
-function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}   // the right half of the rightmost pane, the row's height: what the drop produces
+function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}   // the right half of the rightmost pane, the row's height: what a NEW-column drop produces
+function ghostRectBottom(pane){return {top:pane.top+pane.height/2,height:pane.height/2,left:pane.left,width:pane.width};}   // the BOTTOM half of the pane: what a split-down drop produces
 function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on','refused');ghost.textContent='';return;}
-var r=ghostRect(z.parentElement.getBoundingClientRect(),row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
+var pr=z.parentElement.getBoundingClientRect(),bottom=z.classList.contains('col-drop-bottom');
+var r=bottom?ghostRectBottom(pr):ghostRect(pr,row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
 ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
-function cue(z,on){if(z.classList.contains('col-drop-edge'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge, .over on a column zone itself
+function cue(z,on){if(z.classList.contains('col-drop-edge')||z.classList.contains('col-drop-bottom'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge/bottom, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
 z.addEventListener('dragenter',function(ev){ev.preventDefault();cue(z,true);});
@@ -60526,11 +60737,13 @@ z.addEventListener('dragleave',function(ev){if(ev.relatedTarget&&z.contains(ev.r
 z.addEventListener('drop',function(ev){ev.preventDefault();var d=drag;unmountZones();drag=null;if(d)onDrop(d.sid);});
 p.appendChild(z);zones.push(z);return z;}
 function mountZones(){unmountZones();if(!drag||mobile())return;
-var from=drag.from,last=lastPane(),se=from===1?null:entry(from),alone=!!(se&&se.ids.length===1&&se.ids[0]===drag.sid);
+var from=drag.from,last=lastPane(),se=from===1?null:entry(from),alone=!!(se&&se.ids.length===1&&se.ids[0]===drag.sid),fromBelow=isBelow(entry(from));   // fromBelow: the source tab is in a bottom pane, so moveTab(down) refuses everywhere ("A split pane cannot split again")
 [{n:1,pid:'chat-pane'}].concat(cols.map(function(c){return {n:c.n,pid:paneId(c.n)};})).forEach(function(c){var p=document.getElementById(c.pid);if(!p)return;
 if(c.n!==from)zone(p,'',c.n,function(sid){moveTab(sid,c.n);});   // the column zone: a drop anywhere in the pane moves the session here
 if(c.pid===last&&!alone){var e=zone(p,'col-drop-edge',null,function(sid){if(e.getAttribute('data-refused'))refuse();else moveTab(sid,'new');});   // the edge zone: a new column at the right
-e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}});}
+e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}
+if(!belowOf(c.n)&&!fromBelow&&!(c.n===from&&colSize(from)===1)){var bz=zone(p,'col-drop-bottom',c.n,function(sid){if(bz.getAttribute('data-refused'))refusePane();else moveTab(sid,'down',c.n);});   // the bottom zone: split THIS column, the dragged tab to the new bottom pane. Suppressed where moveTab would refuse the drop: a target already split (belowOf), a bottom-pane source (fromBelow), or the source's OWN lone column (nothing to split off), matching the edge's !alone. A split adds a PANE, so a refused (capped) drop says refusePane
+bz.style.height=edgeWidth(p.getBoundingClientRect().height)+'px';if(!canSplit())bz.setAttribute('data-refused','1');}});}
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m)return;
 if(m.romp==='tabDrag'){if(!m.on){drag=null;unmountZones();return;}   // the page's dragend: the zones go, whatever ended the drag
 if(!frameOfWin(e.source)||mobile()||typeof m.sid!=='string'||!m.sid)return;   // a chat column's dragstart, on the desktop
@@ -60568,13 +60781,15 @@ function read(){var raw=null;try{raw=JSON.parse(localStorage.getItem(CK)||'null'
 var out=[],seen={},migrated=false;
 function add(n,ids,place,parent,ratio){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
 var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(!keep.length)return;
-var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>=0.05&&r<=0.95)?r:0.5;}out.push(e);}
+var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>0&&r<1)?r:0.5;}out.push(e);}
 if(Array.isArray(raw)){migrated=true;raw.forEach(function(n){var st=null;try{st=JSON.parse(localStorage.getItem(BK+Number(n))||'null');}catch(e){}add(n,[st&&typeof st.activeId==='string'?st.activeId:'']);});}
 else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[],c.place,c.parent,c.ratio);});
-// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, degrades to a side
-// column (never orphaned, never two-deep). One bottom pane per parent.
-var kidPar={};out.forEach(function(c){if(c.place!=='below')return;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
-if(!ok||kidPar[c.parent]){delete c.place;delete c.parent;delete c.ratio;return;}kidPar[c.parent]=true;});
+// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, is DROPPED here
+// (never orphaned, never two-deep): its sessions re-home to the first column (ownerOf defaults to 1). Dropping, not
+// degrading to a side column: a degraded entry whose bottom iframe still exists (a busy kid deferred by reconcile) is
+// skipped by make()'s frame-exists guard, so its paneId names a .pane that was never created and lastPane() breaks.
+var kidPar={};out=out.filter(function(c){if(c.place!=='below')return true;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
+if(!ok||kidPar[c.parent])return false;kidPar[c.parent]=true;return true;});
 return {cols:out,migrated:migrated};}
 // another dashboard tab's write (this window never hears its own): its arrangement is the truth — close what it
 // dropped, make what it added (seeded like a restore), take its sets, and nothing is written back. One close is
@@ -61574,7 +61789,8 @@ def _landing():
             # from the focus ring's 0.55-alpha ring with no wash). At the cap the rectangle is .refused: no wash, a 1 px ring, its
             # line saying so.
             ".col-drop{position:absolute;inset:0;z-index:8}"
-            ".col-drop.col-drop-edge{left:auto;z-index:9}"
+            ".col-drop.col-drop-edge{left:auto;z-index:10}"   # above the bottom band (z 9): the edge (new column) owns the bottom-right corner where the two overlap
+            ".col-drop.col-drop-bottom{top:auto;z-index:9}"   # the bottom band (a split-down zone): pinned to the pane's bottom, its height set inline
             ".col-drop.over,#col-ghost{background:rgba(156,210,255,0.12);box-shadow:inset 0 0 0 2px var(--accent,#9cd2ff)}"
             "#col-ghost{display:none;position:fixed;pointer-events:none;z-index:40;align-items:center;justify-content:center;"
             "font:600 11px 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#8a8a8a;letter-spacing:.04em}"
@@ -61590,7 +61806,7 @@ def _landing():
             ".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}"
             # the TOP sub of a split column is the parent's own iframe, kept in place (never reparented, moving an
             # iframe reloads it): under .split-v it stops absolute-filling and flexes by its stored ratio instead
-            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0}"
+            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0;min-height:0}"
             # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
             # The focused pane gets a thin inset border (drawn as an inset box-shadow over the iframe edges);
             # the others get nothing, so the only lines on screen are the splitters + this focus ring. The ring
