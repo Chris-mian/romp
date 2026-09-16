@@ -45,6 +45,7 @@ SID_WEB = "aaaaaaaa-5000-2222-3333-777777777777"
 SID_API = "aaaaaaaa-5000-2222-3333-888888888888"
 SID_TESTS = "aaaaaaaa-5000-2222-3333-999999999999"
 OPEN_TOP = "index the notes"
+WEB_TOP = "restyle the landing page"
 
 
 def _free_port():
@@ -240,12 +241,15 @@ out.roads.remoteErrors = out.errors.slice();
 await page.waitForFunction((sel) => !!document.getElementById("f-fleet").contentDocument.querySelector(sel), headSel(remote), { timeout: 5000 }).catch(() => null);
 out.roads.remoteRow = await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const n = d.querySelector(sel + " .fl-name"); return n ? n.textContent : null; }, headSel(remote));
 if (await rightClick(remote) && await pickRow("Rename")) {
-  out.roads.remoteInput = await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const i = d.querySelector(sel + " .fl-rename"); return i ? i.value : null; }, headSel(remote));
+  // the input holds the bare name; the host prefix stands beside it as the row's own span renders it (round three, low)
+  out.roads.remoteInput = await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const h = d.querySelector(sel); const i = h && h.querySelector(".fl-rename");
+    const fx = i && i.previousElementSibling; return i ? { value: i.value, prefix: fx && fx.classList.contains("host-prefix") ? fx.textContent : null, nameSpans: h.querySelectorAll(".fl-name").length } : null; }, headSel(remote));
   await page.keyboard.type("notes2");   // the seeded name is selected: the typing replaces it
   await page.keyboard.press("Enter");
 } else out.roads.remoteInput = null;
 await page.waitForTimeout(150);
 out.roads.remotePosted = (await posted("renameSession")).map((m) => [m.id, m.name]);
+out.roads.remoteAfter = await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const h = d.querySelector(sel); return h ? { prefixes: h.querySelectorAll(".host-prefix").length, input: !!h.querySelector(".fl-rename") } : null; }, headSel(remote));
 // the kernel pushes only on a change: rename tests once more so a real frame replaces the synthetic rows
 await postFromPane({ type: "renameSession", id: cfg.tests, name: "tests-four" });
 out.roads.realRowsBack = await page.waitForFunction((sel) => !!document.getElementById("f-fleet").contentDocument.querySelector(sel), headSel(cfg.web), { timeout: 8000 }).then(() => true).catch(() => false);
@@ -261,6 +265,33 @@ const opened7b = await openByKeys(cfg.web);
 await page.keyboard.press("Tab");
 await page.waitForTimeout(80);
 out.roads.tabCloses = { menu: (await menuState()).open, focused: await focusedHead(), opened: opened7b, active: await activeDesc() };
+// 8. a push never pulls the focus into the pane (round three): the restore is bounded to the rebuild that removed the head holding the focus
+// (a) a head holding the focus through a push: the same session's new head holds it after
+await clearPosted();
+await page.evaluate((sel) => { const d = document.getElementById("f-fleet").contentDocument; const h = d.querySelector(sel); if (h) h.focus(); }, headSel(cfg.web));
+const paneHasFocus = () => page.evaluate(() => document.getElementById("f-fleet").contentDocument.hasFocus());
+const testsNamed = (name) => page.waitForFunction((a) => { const d = document.getElementById("f-fleet").contentDocument; const n = d.querySelector('.fl-head[data-sid="' + a.sid + '"] .fl-name'); return !!n && n.textContent === a.name; }, { sid: cfg.tests, name }, { timeout: 8000 }).then(() => true).catch(() => false);
+out.roads.focusHeld = { before: await focusedHead(), paneHasFocus: await paneHasFocus() };
+await postFromPane({ type: "renameSession", id: cfg.tests, name: "tests-five" });
+out.roads.focusHeld.rebuilt = await testsNamed("tests-five");
+await page.waitForTimeout(120);
+out.roads.focusHeld.after = await focusedHead();
+// (b) the head is left for a goal row, then for a stand-in composer in the chat frame; a push; the typing stays in the composer
+const goalClicked = await fr.locator(".fl-session", { has: fr.locator(headSel(cfg.web)) }).locator(".ledger-tnode").first().click({ timeout: 2500 }).then(() => true).catch(() => false);
+await page.waitForTimeout(80);
+out.roads.leftForGoal = { clicked: goalClicked, focused: await focusedHead(), active: await activeDesc() };
+const composer = await page.evaluate(() => { const cd = document.getElementById("f-chat").contentDocument; let i = cd.getElementById("lab-composer");
+  if (!i) { i = cd.createElement("input"); i.id = "lab-composer"; cd.body.appendChild(i); } i.focus();
+  return { focused: cd.activeElement === i, hasFocus: cd.hasFocus(), paneHasFocus: document.getElementById("f-fleet").contentDocument.hasFocus() }; });
+await clearPosted();
+await page.keyboard.type("the rest ");
+await postFromPane({ type: "renameSession", id: cfg.tests, name: "tests-six" });
+const rebuilt8 = await testsNamed("tests-six");
+await page.waitForTimeout(120);
+await page.keyboard.type("of the sentence");
+out.roads.typedThrough = { composer, rebuilt: rebuilt8, value: await page.evaluate(() => document.getElementById("f-chat").contentDocument.getElementById("lab-composer").value),
+  composerFocused: await page.evaluate(() => { const cd = document.getElementById("f-chat").contentDocument; return cd.activeElement === cd.getElementById("lab-composer"); }),
+  paneFocused: await focusedHead(), paneActive: await activeDesc(), postedTypes: await page.evaluate(() => (document.getElementById("f-fleet").contentWindow.__posted || []).map((m) => m && m.type)) };
 await finish();
 """
 
@@ -297,6 +328,10 @@ class SessionsMenuServed(unittest.TestCase):
         Path(state, "goals", SID_API + ".json").write_text(json.dumps(
             {"rompUuid": SID_API, "seq": 1, "placementsV": 1, "status": {}, "lastNode": "g1",
              "nodes": {"g1": {"text": OPEN_TOP, "t": 1781100000, "mt": 1781100000, "parentId": None}}}))
+        # web's too: road 8 leaves the head for a goal row, so the row needs one
+        Path(state, "goals", SID_WEB + ".json").write_text(json.dumps(
+            {"rompUuid": SID_WEB, "seq": 1, "placementsV": 1, "status": {}, "lastNode": "w1",
+             "nodes": {"w1": {"text": WEB_TOP, "t": 1781100000, "mt": 1781100000, "parentId": None}}}))
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 100}, "seven_day": {"pct": 10}}))   # park sends
         cls.port = _free_port()
         cls.token = "testtok-sessmenu"
@@ -423,7 +458,9 @@ class SessionsMenuServed(unittest.TestCase):
     def test_6_a_federated_rows_rename_edits_and_posts_the_bare_name(self):
         r = self.result["roads"]
         self.assertEqual(r["remoteRow"], "TESTHOST:notes", "the frame's host-prefixed row rendered: %r" % r["remoteRow"])
-        self.assertEqual(r["remoteInput"], "notes", "the input holds the bare name (the round-two medium): %r" % r["remoteInput"])
+        self.assertEqual(r["remoteInput"], {"value": "notes", "prefix": "TESTHOST:", "nameSpans": 0},
+                         "the input holds the bare name (the round-two medium) with the host prefix fixed beside it (the round-three low): %r" % r["remoteInput"])
+        self.assertEqual(r["remoteAfter"], {"prefixes": 1, "input": False}, "the edit's end puts the row's own name back: one prefix, no input: %r" % r["remoteAfter"])
         self.assertEqual(r["remotePosted"], [["TESTHOST:aaaaaaaa-5000-2222-3333-000000000101", "notes2"]], "the post carries the prefixed id and the BARE name: %r" % r["remotePosted"])
 
     def test_7_focus_returns_to_the_row_when_the_menu_closes_and_tab_closes_it(self):
@@ -433,6 +470,19 @@ class SessionsMenuServed(unittest.TestCase):
         self.assertEqual((fb["opened"], fb["menu"], fb["focused"]), (True, False, SID_WEB), "the menu opened; Escape closed it and the row's head has focus again: %r" % fb)
         tc = r["tabCloses"]
         self.assertEqual((tc["opened"], tc["menu"], tc["focused"]), (True, False, SID_WEB), "the menu opened; Tab closed it, focus back on the head: %r" % tc)
+
+    def test_8_a_push_keeps_the_focus_where_the_user_put_it(self):
+        r = self.result["roads"]
+        fh = r["focusHeld"]
+        self.assertEqual((fh["before"], fh["paneHasFocus"], fh["rebuilt"], fh["after"]), (SID_WEB, True, True, SID_WEB),
+                         "a head holding the focus through a push: the same session's new head holds it after: %r" % fh)
+        lg = r["leftForGoal"]
+        self.assertEqual((lg["clicked"], lg["focused"]), (True, None), "a click on a goal row takes the focus off the head: %r" % lg)
+        tt = r["typedThrough"]
+        self.assertEqual(tt["composer"], {"focused": True, "hasFocus": True, "paneHasFocus": False}, "the stand-in composer in the chat frame took the focus: %r" % tt["composer"])
+        self.assertTrue(tt["rebuilt"], "the kernel's push rebuilt the list meanwhile")
+        self.assertEqual((tt["value"], tt["composerFocused"], tt["paneFocused"], tt["postedTypes"]), ("the rest of the sentence", True, None, []),
+                         "the whole sentence reached the composer; the pane took no focus and posted nothing (the round-three high): %r" % tt)
 
 
 if __name__ == "__main__":
