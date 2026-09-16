@@ -83,6 +83,7 @@ function world(o: { col?: string; sets?: ColSets | null; tabOrderSeen?: boolean;
     const peekId = null; const chatVisible = () => true;
     const setTimeout = (f) => { HOOKS.timers.push(f); return HOOKS.timers.length; };
     const setActive = (id) => { HOOKS.activated.push(id); activeId = id; };
+    const silentActivate = (id) => { HOOKS.activated.push(id); activeId = id; };   // the shown-tab fallback activates SILENTLY (no shell focus hop); this exec tests WHEN it fires
     const drafts = new Map(), composerCitations = new Map(), composerFiles = new Map(); const stagedMsgs = new StagedStack();
     const persistDrafts = () => { HOOKS.persisted++; }; const loadComposerFor = (sid) => { HOOKS.loaded.push(sid); };
   `;
