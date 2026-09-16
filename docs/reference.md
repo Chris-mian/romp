@@ -1144,22 +1144,49 @@ in that session's scope and keeps running. Either way the next kernel boot runs
 
 ### What survives a restart
 
-A kernel restart ends every session's CLI. On `romp refresh`, the manager's
-restart-all, `romp down` or a service stop, the kernel receives SIGTERM and drains: it
-closes each CLI, and a CLI still running when the drain's bound expires gets
-SIGTERM, then SIGKILL. The manager does the same to the kernel: one still
+A kernel restart does not end a hosted session's CLI. By default every session's
+CLI runs under a per-session host process (the section on hosts below): on `romp
+refresh`, the manager's restart-all, `romp down` or a service stop, the kernel
+receives SIGTERM and drains by detaching from every host. The host keeps the CLI
+and its turn, journals what it says and parks what it asks, and the next kernel
+attaches by the lease and replays what it missed, so the turn is never cut and
+the session is told nothing. A session running as a plain kernel child (the
+`session-hosts` setting written `off`, or a session from before hosts that has
+not respawned since) is closed by the drain as before: a CLI still running when
+the drain's bound expires gets SIGTERM, then SIGKILL, and that session resumes
+with its history and is told what was cut: its in-flight turn, if it had one, and
+each background task, with a request to check whether each is still running
+before relaunching it. The manager does the same to the kernel: one still
 running five seconds after the manager's SIGTERM, on a restart as on a stop,
-gets SIGKILL, so no kernel outlives the stop that was meant for it. A crash respawn has no drain: the kernel died without
-running one, its CLIs are orphaned, and the next kernel's boot reaper
-terminates them (see below). The CLI's harness background tasks do not all end
-with it. Its timers and monitors live inside the CLI process and end when it
-does. A background shell is a separate process the CLI started, and a CLI
-killed by SIGKILL runs no cleanup, so its shells are re-parented and may keep
-running. The session resumes with its history and is told what was cut: its
-in-flight turn, if it had one, and each background task, with a request to
-check whether each is still running before relaunching it. A kernel restart has
-never touched work a session deliberately detached: a tmux server it started
-itself, `setsid` children and other processes that outlive their shell.
+gets SIGKILL, so no kernel outlives the stop that was meant for it. A crash
+respawn has no drain: the kernel died without running one; a hosted CLI keeps
+running under its host and is attached at the next boot, a plain child is
+orphaned and the next kernel's boot reaper terminates it (see below). The CLI's
+harness background tasks do not all end with a plain child. Its timers and
+monitors live inside the CLI process and end when it does. A background shell is
+a separate process the CLI started, and a CLI killed by SIGKILL runs no cleanup,
+so its shells are re-parented and may keep running. A kernel restart has never
+touched work a session deliberately detached: a tmux server it started itself,
+`setsid` children and other processes that outlive their shell.
+
+The dashboard page stays on screen across a restart. Its panes reconnect as they
+do after a dropped socket (the watched tab rebuilt whole, the other tabs as
+skeletons that fill on demand), and a restart onto the same build is invisible
+beyond that: no reload, no line. When the kernel serves a newer build than the
+page loaded (a restart onto a new build, or a converge in place), the page offers
+a reload rather than taking one: one line near the top of the window, "A newer
+romp build is ready.", with **Reload** and **Not now**. Reload keeps drafts, scroll
+position, the active tab and the notification center, and lands the fresh page on
+the chat diet; Not now is kept per build, so the same build never asks again and a
+later one does. The old page keeps working against the new kernel meanwhile: the
+chat wire is negotiated per version, an action the new kernel does not know in the
+old page's form falls back to the older path, and when that happens the line says
+the page is behind the kernel. The rail's restart button follows the same rule
+(an unchanged build reloads nothing, a changed one is offered); the update
+banner's **Update** click, which asked for the update, still reloads once the new
+kernel is up. A kernel that must force a reload for correctness can send the page
+`reloadRequired`, honoured through the same holds a reload always waits on (a
+held pointer, a draft, an upload in flight); nothing sends it today.
 
 A terminal session from before 2026-09-11, when Romp's terminal (tmux) backend
 was removed, is detached work of that kind from then on. One still running when

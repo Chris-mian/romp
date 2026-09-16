@@ -54400,47 +54400,81 @@ html,body{background:var(--vscode-editor-background);}
 body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-foreground);margin:0;padding:0;}"""
 
 # The WS bridge shim (ported verbatim from chat-view server.ts shimJs — same protocol).
-# ── the dashboard reloads ITSELF on a kernel restart and on a newer served bundle (T265) ──────────────────────
-# The user's ruling of 2026-09-08 supersedes their 2026-07-13 preference for a banner the
-# reader clicks: any restart of the kernel SERVING the page, and any bundle newer than the one the page loaded
-# with, reload the page by themselves. Two signals, both exact events, never a timer:
-#   (1) kernel restart — a socket REOPEN whose /version answers with a boot id other than the one baked into the
-#       page (checkBoot: the shell asks on its own socket's reopen; a standalone pane asks on its shim's
-#       reconnect); the 30 s /version poll the stale banner already ran is the backstop for a page whose socket
-#       never dropped (noteVersion, the same reading).
-#   (2) build drift — a `dv` on a keepalive, or /version's dist_ver, above the page's baked LOADEDV (noteDv).
-# Never mid-gesture: a pointer button held, a touch pan (pointercancel converts a held pointer into a pan hold
-# that touchend/touchcancel/scrollend release — the finger is still on the glass), a drag in flight, a text
-# selection being made in the FOCUSED document (a highlight left in another pane is not a gesture), any focused
-# editable with text (the composer, the picker's inputs, the feed modal's follow-up box — a generic "typing"
-# hold), or a pane's sends still queued for its socket's reopen (the shim's window.__rompPaneBusy: a prompt typed
-# while the kernel was down must flush before the page goes) ARMS the reload, and the ending event fires it —
-# pointerup, touchend/touchcancel/scrollend, dragend/drop, selectionchange, input, focusout, the pane's own flush;
-# a window blur releases every hold. The fire is deferred one tick past the ending event so the click the same
-# press produces lands on its control first. The shell composes gesture state across its same-origin panes, and a
-# pane forwards its request to the shell when one is there, so ONE decision reloads the top document; a standalone
-# pane page decides for itself, and so does a pane under a foreign parent (an iframe in another app can reload
-# itself). Before reloading: every pane persists what a reload loses (window.__rompPersistForReload — the chat
-# pane's scroll position + follow mode, per tab in sessionStorage; the draft and the active tab are persisted
-# already); once location.reload has been accepted the shell's lifted modals close (settings/picker) and a marker
-# rides sessionStorage, stamped with the page's path, so the fresh LANDING leaves ONE notification-center line
-# ("Reloaded onto build N: the kernel restarted / a newer romp build was served") and a standalone pane's marker
-# is consumed by nobody else. The marker is removed only by the page whose path it names (T272, 2026-09-08):
-# sessionStorage is shared across the shell and its same-origin panes, and a pane's shim, running before the
-# shell's own core existed (it reads as standalone then), consumed the shell's marker while checking the path
-# only afterwards — the notification-center line was lost on every reload the pane won that race. If location.reload throws (a host that forbids it) the old banner is the fallback
-# (the `refused` hook) and the refusal LATCHES for that build/boot: no re-attempt on every gesture end or poll,
-# only a strictly newer dv or boot re-arms. A reload HELD by a pane's reason wears a face (the `held` hook, fired once
-# per owed request and reason: the shell's notification center, a standalone pane's bar — T272 follow-up, the
-# manager's review 2026-09-08: nothing displayed `waiting`, and a hold could outlive the upload it protected),
-# The VS Code webview never runs this: the extension loads its bundle from the installed VSIX
-# and a webview reload cannot fix bundled-code drift, so its own reload prompt stays (vscode-extension/src/
-# extension.ts). Federated relay: a REMOTE kernel's restart must not reload the page — and cannot: the core reads
-# only THIS page's own socket and /version (federation.ts drops remote `ka` frames, so they never reach the shim's
-# dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
-# this code in node with fakes and pins the wiring.
+# ── the dashboard OFFERS a reload on a newer build; a restart of the same build is invisible (T265, then 2026-09-16) ──
+# Three rulings, each superseding the one before it, recorded here by date:
+#   * 2026-07-13: a banner the reader clicks (build drift prompts, never reloads).
+#   * 2026-09-08 (T265) supersedes 2026-07-13: the page reloads ITSELF on any restart of the kernel serving it and on any
+#     bundle newer than the one it loaded with, never mid-gesture.
+#   * 2026-09-16 supersedes 2026-09-08 (the user, after the stage-zero design in plans/process-split.md): the page never
+#     reloads itself.
+#       (1) A restart with the SAME build is invisible. A boot id other than the page's (noteVersion) is counted and
+#           re-latched and owes nothing; the shim redials as it does for a socket blip (armStale, reconnect=1, the
+#           kernel's skeleton diet) and no line is written anywhere.
+#       (2) A NEWER build is an OFFER. A `dv` above the page's LOADEDV, or a code identity other than the page's, PROPOSES
+#           a reload (propose), and the page shows one persistent, non-modal line ("A newer romp build is ready.") with
+#           Reload and Not now: the shell's #rstale banner (the R.offer hook, installed by _STALE_JS) or a standalone
+#           pane's own bar (the shim's selfBar, kind "offer"). Reload (accept) runs the same persist() then
+#           location.reload() path through the same idle holds, so drafts, scroll, tab and notices are restored as before.
+#           Not now (dismiss) is kept per build in localStorage (romp:reloadNotNow: the dv and the code identity
+#           declined); a strictly newer dv or another identity is new information and re-offers.
+#       (3) An old page on a new kernel stays usable. The chat wire is version-negotiated (the caps frame, the unknownOp
+#           refusal at _note_unknown_op), and an unknownOp arriving on THIS page's socket while an offer stands (behind)
+#           upgrades the offer's wording with the reason. No timer and no poll was added: the offer rides the /version
+#           readings and the `dv` keepalives the core already receives.
+#       (4) Explicit gestures keep their reload. The #rupd Update click (the user asked for the update) reloads when the
+#           new boot is up, as before; the rail's ↻ (window.__rompRestart) hands the new kernel's answer to checkBoot, so
+#           an unchanged build reloads nothing and a changed one is offered; the #rstale and pane Reload buttons are clicks.
+#       (5) The safety valve. A kernel that must force a reload for correctness sends {type:"reloadRequired", why}; the
+#           shim and the shell socket hand it to require(), the forced request() path, honoured through the same holds.
+#           Nothing sends it today.
+#   The VS Code webview never runs this (vscode-extension/src/extension.ts names the rulings): its bundle comes from the
+#   installed VSIX, so a reload is the user's click there under every ruling.
+# The mechanics are the 2026-09-08 core's, kept. Two signals, both exact events, never a timer:
+#   (1) kernel restart: a socket REOPEN whose /version answers with a boot id other than the one baked into the page
+#       (checkBoot: the shell asks on its own socket's reopen; a standalone pane asks on its shim's reconnect); the 30 s
+#       /version poll the stale banner already ran is the backstop for a page whose socket never dropped (noteVersion,
+#       the same reading). Since 2026-09-16 the restart itself only counts; the reading's dist_ver and code_ident decide.
+#   (2) build drift: a `dv` on a keepalive, or /version's dist_ver, above the page's baked LOADEDV (noteDv), or a
+#       code_ident other than the page's (noteVersion). Since 2026-09-16 either PROPOSES; only accept() owes a reload.
+# Never mid-gesture, once a reload IS owed (accept, or the forced request): a pointer button held, a touch pan
+# (pointercancel converts a held pointer into a pan hold that touchend/touchcancel/scrollend release, the finger is still
+# on the glass), a drag in flight, a text selection being made in the FOCUSED document (a highlight left in another pane
+# is not a gesture), any focused editable with text (the composer, the picker's inputs, the feed modal's follow-up box, a
+# generic "typing" hold), or a pane's sends still queued for its socket's reopen (the shim's window.__rompPaneBusy: a
+# prompt typed while the kernel was down must flush before the page goes) ARMS the reload, and the ending event fires it:
+# pointerup, touchend/touchcancel/scrollend, dragend/drop, selectionchange, input, focusout, the pane's own flush; a
+# window blur releases every hold. The fire is deferred one tick past the ending event so the click the same press
+# produces lands on its control first. The shell composes gesture state across its same-origin panes, and a pane forwards
+# its proposal, its accept and its dismiss to the shell when one is there, so ONE decision and ONE offer stand for the top
+# document; a standalone pane page decides for itself, and so does a pane under a foreign parent (an iframe in another app
+# can reload itself). Before reloading: every pane persists what a reload loses (window.__rompPersistForReload: the chat
+# pane's scroll position + follow mode, per tab in sessionStorage; the draft and the active tab are persisted already);
+# once location.reload has been accepted the shell's lifted modals close (settings/picker) and a marker rides
+# sessionStorage, stamped with the page's path, so the fresh LANDING leaves ONE notification-center line ("Reloaded onto
+# build N: a newer romp build was served") and a standalone pane's marker is consumed by nobody else. The marker is
+# removed only by the page whose path it names (T272, 2026-09-08): sessionStorage is shared across the shell and its
+# same-origin panes, and a pane's shim, running before the shell's own core existed (it reads as standalone then),
+# consumed the shell's marker while checking the path only afterwards. If location.reload throws (a page whose parent
+# forbids it) the accepted offer is put back (the line returns with its Reload; the user may try again or reload by hand)
+# and, for a forced request, the refusal LATCHES for that reason and detail (the `refused` hook): no re-attempt on every
+# gesture end or poll, only a strictly newer request re-arms. A reload HELD by a pane's reason wears a face (the `held`
+# hook, fired once per owed request and reason: the shell's notification center, a standalone pane's bar; T272 follow-up,
+# the manager's review 2026-09-08). Federated relay: a REMOTE kernel's restart or bundle must not reach the page's offer,
+# and cannot: the core reads only THIS page's own socket and /version (federation.ts drops remote `ka` frames, so they
+# never reach the shim's dv check, and the relay never forwards a remote kernel's boot id or its unknownOp refusals).
+# tests/test_dashboard_auto_reload.py runs this code in node with fakes and pins the wiring;
+# tests/test_dashboard_reload_served.py drives the served page in a real browser.
+# The offer's one sentence, read by the shell's #rstale banner and by a standalone pane's bar (the user 2026-09-16: one line,
+# Reload and Not now); the second wording is the same offer once an unknownOp refusal has shown this page to be behind the
+# kernel (design point 3 above); baked into the core (WORDS) by _reload_core, so every surface reads one source. Plain words, no em dash, no romp nouns beyond the build.
+RELOAD_OFFER_MSG = "A newer romp build is ready."
+RELOAD_OFFER_BEHIND_MSG = ("A newer romp build is ready; this page is behind the kernel and some actions fall back to older "
+                           "paths until you reload.")
+
+
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,holdTimer=null,holdDue=0,holdStart=0,holdDiag=false,freshSince=0,lastStamps=[],ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,CODE=__ROMP_CODE__,FRESH_HOLD_MS=60000,NOTNOW_KEY='romp:reloadNotNow',holdTimer=null,holdDue=0,holdStart=0,holdDiag=false,freshSince=0,lastStamps=[],ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
+var WORDS={offer:__OFFER_MSG__,behind:__OFFER_BEHIND__},seen={dv:0,code:''},offered=null,behindSeen=false,notNow=null;   /* 2026-09-16: WORDS is the offer's one sentence and its sharpened form (RELOAD_OFFER_MSG, RELOAD_OFFER_BEHIND_MSG), read by every surface through the offer state's text; seen is the newest served build this page has met (a dv above its own, a code identity other than its own); offered is the standing offer; behindSeen latches an unknownOp refusal on this page's socket; notNow is the build the user declined, read once from storage */
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
@@ -54490,7 +54524,7 @@ function persist(){try{if(window.__rompPersistForReload)window.__rompPersistForR
 var ps=panes();for(var i=0;i<ps.length;i++){try{if(ps[i].__rompPersistForReload)ps[i].__rompPersistForReload();}catch(e){}try{if(ps[i].__rompShimPersist)ps[i].__rompShimPersist();}catch(e){}}}   /* the shim's own hook: what its queue still holds at this moment is lost with the page, and it says so */
 function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
-try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
+try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);if(owed.reason==='build'){offered={dv:seen.dv,code:seen.code};owed=null;render();}return;}   /* a refused reload of an ACCEPTED offer puts the offer back: the line returns with its Reload, and the user may try again or reload by hand; a forced request keeps the latch */
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
 try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}));}catch(e){}   /* kept for the chat pane's first dial (the diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces; the path says which document reloaded, so a standalone feed page's reload never steers the next chat document's dial */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
@@ -54501,16 +54535,32 @@ if(!holdStart)holdStart=Date.now();armBackstop();
 return;}R.waiting='';holdDiag=false;holdStart=0;fire();}
 function request(reason,detail){var s=shell();if(s){s.request(reason,detail);return;}if(fired)return;
 var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;holdDiag=false;}
-if(!owed){owed=next;holdDiag=false;}else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* the breadcrumb latch clears only when owed itself changes: a restart arriving while a build reload is held is the same wait */   /* a second restart inside one hold: the record names the boot the page lands on, the latest */
-function noteDv(dv){if(LOADED&&dv&&dv>LOADED)request('build',String(dv));}
-function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT){restarted++;BOOT=v.boot;if(!(CODE&&v.code_ident&&v.code_ident===CODE))request('restart',String(v.boot));}   /* BOOT re-latches: restarted() counts restarts, not the polls that follow one */if(v.dist_ver)noteDv(v.dist_ver);
+if(!owed){owed=next;holdDiag=false;}else if(owed.reason===next.reason)owed.detail=next.detail;tryFire();}   /* the FORCED path (2026-09-16): accept() and require() alone reach it; the breadcrumb latch clears only when owed itself changes: a second request inside one hold is the same wait, and moves the detail */
+/* 2026-09-16: a newer build is PROPOSED, never requested. propose() records the newest served build this page has met and stands ONE offer for it; accept() is the Reload click, dismiss() the Not now, behind() the unknownOp refusal that sharpens the wording; a pane forwards each to the shell, as request() does */
+function offerKey(o){return o?String(o.dv||0)+':'+(o.code||''):'';}
+function readNotNow(){if(notNow!==null)return notNow;notNow=false;try{var raw=localStorage.getItem(NOTNOW_KEY);var d=raw?JSON.parse(raw):null;if(d&&typeof d==='object')notNow={dv:Number(d.dv)||0,code:String(d.code||'')};}catch(e){}return notNow;}
+function declined(){var d=readNotNow();if(!d)return false;return (!seen.dv||seen.dv<=d.dv)&&(!seen.code||seen.code===d.code);}   /* the declined build covers what is served now: a strictly newer dv or another code identity is new information and re-offers */
+function offerState(){return offered?{dv:offered.dv,code:offered.code,behind:behindSeen,text:behindSeen?WORDS.behind:WORDS.offer}:null;}
+function render(){if(!R.offer)return;try{R.offer(offerState());}catch(e){}}
+function propose(dv,code){var s=shell();if(s){s.propose(dv,code);return;}   /* a pane hands the shell what it saw: ONE offer for the top document */
+var moved=false;dv=Number(dv)||0;code=code?String(code):'';if(dv&&dv>seen.dv){seen.dv=dv;moved=true;}if(code&&code!==seen.code){seen.code=code;moved=true;}
+if(!moved||fired||declined())return;var next={dv:seen.dv,code:seen.code};if(offered&&offerKey(offered)===offerKey(next))return;offered=next;render();}
+function accept(){var s=shell();if(s){s.accept();return;}if(!offered||fired)return;
+owed={reason:'build',detail:String(offered.dv||offered.code)};offered=null;refusedFor=null;holdDiag=false;render();tryFire();}   /* the Reload click: the reload the 2026-09-08 core fired by itself, now on the user's word, through the same holds */
+function dismiss(){var s=shell();if(s){s.dismiss();return;}if(!offered)return;
+notNow={dv:seen.dv,code:seen.code};try{localStorage.setItem(NOTNOW_KEY,JSON.stringify(notNow));}catch(e){}offered=null;render();}   /* Not now: kept per build across this browser's pages */
+function behind(){var s=shell();if(s){s.behind();return;}if(behindSeen)return;behindSeen=true;if(offered)render();}   /* an unknownOp refusal on this page's socket: the standing offer's wording gains the reason; latched, so an offer that comes later wears it too */
+function demand(why){request('required',String(why||''));}   /* the safety valve: {type:"reloadRequired", why} from a kernel that must force a reload for correctness, through the same holds; nothing sends it today */
+function noteDv(dv){if(LOADED&&dv&&dv>LOADED)propose(dv,'');}
+function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT){restarted++;BOOT=v.boot;}   /* a restart is counted and BOOT re-latched (restarted() counts restarts, not the polls that follow one); by itself it owes nothing (2026-09-16) */
+if(CODE&&v.code_ident&&v.code_ident!==CODE)propose(0,String(v.code_ident));if(v.dist_ver)noteDv(v.dist_ver);   /* a code identity other than the page's is a changed build; an answer without one decides nothing (the dist_ver stands alone) */
 if(typeof v.taskTracking==='boolean'){window.__rompTaskTracking=v.taskTracking;if(window.__rompApplyPanes)window.__rompApplyPanes();}}   // the Task tracking switch (T404): the shell's rail follows the kernel
 function checkBoot(){try{fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(noteVersion)['catch'](function(){});}catch(e){}}   // a non-ok answer is not a version: noteVersion's latches (BOOT, LOADED) never see it
 function announce(notify){var raw=null;try{raw=sessionStorage.getItem('romp:reloaded');}catch(e){}
 if(!raw)return null;var d=null;try{d=JSON.parse(raw);}catch(e){try{sessionStorage.removeItem('romp:reloaded');}catch(e2){}return null;}if(!d)return null;
 if(d.path&&d.path!==location.pathname)return null;
 try{sessionStorage.removeItem('romp:reloaded');}catch(e){}
-var why=d.reason==='restart'?'the kernel restarted':'a newer romp build was served';
+var why=d.reason==='required'?'the kernel asked for a reload'+(d.detail?' ('+d.detail+')':''):d.reason==='restart'?'the kernel restarted':'a newer romp build was served';   /* 'restart': a record a core from before 2026-09-16 wrote, at the upgrade onto this build */
 var txt='Reloaded onto build '+LOADED+': '+why+'.';try{if(notify)notify('reload',txt);}catch(e){}return txt;}
 document.addEventListener('pointerdown',function(){ptr++;},true);
 document.addEventListener('pointerup',function(){ptr=Math.max(0,ptr-1);},true);
@@ -54525,8 +54575,8 @@ var END=['pointerup','touchend','touchcancel','scrollend','dragend','drop','sele
 function ended(){setTimeout(function(){var s=shell();if(s)s.tryFire();else tryFire();},0);}
 for(var k=0;k<END.length;k++)document.addEventListener(END[k],ended,true);
 window.addEventListener('blur',function(){ptr=0;pan=false;drag=false;ended();});
-var R={request:request,tryFire:tryFire,ended:ended,busyHere:busyHere,busy:busy,noteDv:noteDv,noteVersion:noteVersion,checkBoot:checkBoot,announce:announce,restarted:function(){return restarted;},
-inShell:function(){return !!shell();},owed:function(){return owed;},fired:function(){return fired;},refusedFor:function(){return refusedFor;},refused:null,held:null,waiting:'',loaded:LOADED,boot:BOOT};
+var R={request:request,propose:propose,accept:accept,dismiss:dismiss,behind:behind,require:demand,tryFire:tryFire,ended:ended,busyHere:busyHere,busy:busy,noteDv:noteDv,noteVersion:noteVersion,checkBoot:checkBoot,announce:announce,restarted:function(){return restarted;},offered:offerState,seen:function(){return seen;},words:WORDS,
+inShell:function(){return !!shell();},owed:function(){return owed;},fired:function(){return fired;},refusedFor:function(){return refusedFor;},refused:null,held:null,offer:null,waiting:'',loaded:LOADED,boot:BOOT};
 window.__rompReload=R;})();/*end-reload-core*/"""
 
 
@@ -54534,7 +54584,8 @@ def _reload_core(v=0):
     """The reload core with this page's build token and this kernel's boot id baked in (see _RELOAD_CORE_JS).
     Embedded by _shim (every pane page) and _stale_block (the dashboard landing)."""
     return (_RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace("__ROMP_BOOT__", json.dumps(_BOOT_ID))
-            .replace("__ROMP_CODE__", json.dumps(_code_ident() or "")))
+            .replace("__ROMP_CODE__", json.dumps(_code_ident() or ""))
+            .replace("__OFFER_MSG__", json.dumps(RELOAD_OFFER_MSG)).replace("__OFFER_BEHIND__", json.dumps(RELOAD_OFFER_BEHIND_MSG)))
 
 
 def _reload_core_js(v=0, boot=None, code=None):
@@ -54543,7 +54594,8 @@ def _reload_core_js(v=0, boot=None, code=None):
     (test_dashboard_auto_reload.py). Fails loudly if the anchors ever go missing."""
     js = _RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace(
         "__ROMP_BOOT__", json.dumps(_BOOT_ID if boot is None else boot)).replace(
-        "__ROMP_CODE__", json.dumps((_code_ident() or "") if code is None else code))
+        "__ROMP_CODE__", json.dumps((_code_ident() or "") if code is None else code)).replace(
+        "__OFFER_MSG__", json.dumps(RELOAD_OFFER_MSG)).replace("__OFFER_BEHIND__", json.dumps(RELOAD_OFFER_BEHIND_MSG))
     a, b = "/*reload-core*/", "/*end-reload-core*/"
     i, j = js.find(a), js.find(b)
     if i < 0 or j < i:
@@ -54553,11 +54605,11 @@ def _reload_core_js(v=0, boot=None, code=None):
 
 def _shim(app, v=0, no_stale=False):
     # `v` = the dist build token this page was served with (its ?v= urls). The shim compares it against the
-    # `dv` riding every keepalive and, on drift, asks the reload core it embeds as the template's first slot
-    # (window.__rompReload, _RELOAD_CORE_JS) to reload the page — never mid-gesture (the user 2026-09-08,
-    # superseding the 2026-07-13 banner; the build bar is only the refused fallback). EVERY kernel-served page
-    # notices, not just the dashboard landing's /version poll (the user 2026-07-13: a standalone pane sat
-    # silent through rebuilds).
+    # `dv` riding every keepalive and, on drift, hands it to the reload core it embeds as the template's first slot
+    # (window.__rompReload, _RELOAD_CORE_JS), which OFFERS a reload (the user 2026-09-16, superseding the 2026-09-08
+    # self-reload, which superseded the 2026-07-13 banner): the shell's banner, or on a standalone page the bar
+    # below (selfBar, kind "offer"), with Reload and Not now. EVERY kernel-served page notices, not just the dashboard
+    # landing's /version poll (the user 2026-07-13: a standalone pane sat silent through rebuilds).
     # `no_stale` = this page receives no pushed view (the Files pane: request/response only), so the
     # "may be stale" prompt is never armed for it and never retired by it (NOSTALE below). The prompt is
     # armed on an unannounced reconnect and retired by the resync frame; a page that gets no resync would
@@ -54590,8 +54642,8 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
 // The RELOAD DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
-// until shown; and restarts are invisible, so the one reload the reload core still fires is a changed build, a fresh page on a kernel that
-// just restarted): a main chat pane whose page the reload core just reloaded, for ANY reason, dials its first socket as a skeleton client,
+// until shown; and restarts are invisible, so the one reload the reload core fires is the one the user accepts when a newer build is
+// offered, a fresh page on a kernel that has the build; 2026-09-16): a main chat pane whose page the reload core just reloaded, for ANY reason, dials its first socket as a skeleton client,
 // the later column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab,
 // and the page's idle prefetch fills the rest. The signal is the reload core's durable record (romp:reloadReason, written in fire() with the
 // reason and the path of the document that reloaded; the announce record is consumed before this shim dials). The chat shim alone reads
@@ -54630,19 +54682,20 @@ document.addEventListener("drop",function(e){if(fileDrag(e))e.preventDefault();}
 // auto-reloading (foisted, jarring) or leaving them staring at stale content. In the dashboard the pane rides
 // in an iframe, so hand it to the shell's ONE #rstale reload banner; a standalone page (feed/timeline opened
 // directly) has no shell, so self-inject a minimal top bar with the same Reload action. Scope since T265 (the
-// user 2026-09-08): this prompt is for a reconnect to the SAME kernel process (a blip) — a reconnect against a
-// NEW process, and a newer bundle, reload the page by themselves (the reload core above); the "build" bar is
-// only the core's refused fallback.
+// user 2026-09-08): this prompt is for a reconnect that never resynced (a blip) — a reconnect against a NEW
+// process of the same build is invisible, and a newer build is OFFERED (the user 2026-09-16: the "offer" bar
+// below, with Reload and Not now, driven by the reload core's offer hook); the "build" bar stands only where
+// the core is absent.
 function selfBar(t,kind){try{var have=document.getElementById("romp-stale-self");
-if(have){if(have.dataset.kind==="warn"&&(kind||"conn")==="conn")have.remove();else return;}   // a warning yields the one slot to the connection bar; nothing else is replaced
+if(have){if((have.dataset.kind==="warn"||have.dataset.kind==="offer")&&(kind||"conn")==="conn")have.remove();else return;}   // a warning or an offer yields the one slot to the connection bar (the offer comes back when it retires: clearStale); nothing else is replaced
 var b=document.createElement("div");b.id="romp-stale-self";b.dataset.kind=kind||"conn";
 b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 var m=document.createElement("span");m.textContent=t;b.appendChild(m);
 var r=document.createElement("button");r.textContent="Reload";
-r.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";
-r.onclick=function(){location.reload();};b.appendChild(r);
-if((kind||"conn")==="warn"){var x=document.createElement("button");x.textContent="Dismiss";x.dataset.act="dismiss";x.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;background:transparent;color:#e6e6e6;border:1px solid #4a4d51";
-x.onclick=function(){b.remove();};b.appendChild(x);}   // a warning is read and dismissed; it must not hold the page's one bar slot for good
+r.style.cssText=(kind==="offer")?"font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#9cd2ff;color:#0c1a2e;border:1px solid transparent":"font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";   // the offer's action wears the romp accent (the resolved value: a standalone page loads no sheet with the token)
+r.onclick=(kind==="offer")?function(){r.disabled=true;r.textContent="Reloading\u2026";try{window.__rompReload.accept();}catch(e){location.reload();}}:function(){location.reload();};b.appendChild(r);   // the offer's Reload is the user's accept: the core's persist() then location.reload(), through its holds
+if((kind||"conn")==="warn"||kind==="offer"){var x=document.createElement("button");x.textContent=(kind==="offer")?"Not now":"Dismiss";x.dataset.act="dismiss";x.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;background:transparent;color:#e6e6e6;border:1px solid #4a4d51";
+x.onclick=(kind==="offer")?function(){try{window.__rompReload.dismiss();}catch(e){}b.remove();}:function(){b.remove();};b.appendChild(x);}   // a warning is read and dismissed, an offer declined for its build (the core keeps the Not now); neither holds the page's one bar slot for good
 (document.body||document.documentElement).appendChild(b);}catch(e){}}
 function selfStale(){selfBar("romp lost the live connection, so what you see may be stale.","conn");}
 // …and RETIRE that prompt the moment the thing it warns about is demonstrably over (the user 2026-08-01,
@@ -54653,7 +54706,7 @@ function selfStale(){selfBar("romp lost the live connection, so what you see may
 function clearStale(){stalePending="";   // armed but never shown → nothing to see
 if(NOSTALE)return;   // a page with no pushed view armed nothing, so it retires nothing: its op replies must not clear a prompt another pane raised
 if(window.parent!==window){try{window.parent.postMessage({romp:"wsFresh"},"*");}catch(e){}}
-else{var b=document.getElementById("romp-stale-self");if(b&&b.dataset.kind==="conn")b.remove();}
+else{var b=document.getElementById("romp-stale-self");if(b&&b.dataset.kind==="conn"){b.remove();try{var RO=window.__rompReload;if(RO&&RO.offer&&RO.offered())RO.offer(RO.offered());}catch(e){}}}   // the offer that yielded its slot to the connection bar comes back with it
 try{window.dispatchEvent(new Event("romp:wsfresh"));}catch(e){}}   // the pane's own reconnecting cue (_pane_spin's corner badge) ends on FRESH DATA, not on the socket opening (the user 2026-09-07: over a slow link the resync ran for seconds with no cue, so the dashboard looked frozen)
 // A pane the user cannot SEE never interrupts them about ITS OWN staleness (the user 2026-08-15: the
 // phone shell shows one pane at a time via display:none, iOS throttles the hidden iframes' JS, and each
@@ -54742,12 +54795,12 @@ var stalePending="",staleKa=0,pendingWhy="",openSock=null,openT=0;
 function armStale(why){if(NOSTALE)return;stalePending=why;staleKa=0;}   // NOSTALE: no pushed view, so no resync could ever retire the arm (the Files pane)
 // BUILD drift: the keepalive carries the kernel's current dist token (dv); a page whose baked LOADEDV is older is
 // running outdated code against newer kernel state. The user 2026-07-13 wanted EVERY kernel-served page to notice
-// (a standalone pane sat silent through rebuilds); the user 2026-09-08 ruled the page RELOADS ITSELF, superseding
-// the 2026-07-13 "prompt, never auto" — the raise asks window.__rompReload (the reload core, embedded above this
-// shim on every kernel-served page), which forwards to the shell when this pane sits in one and otherwise reloads
-// this page in place, never mid-gesture. selfBar is only the refused fallback (a host that forbids location.reload).
-// Latched: one request per page life.
-var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: a reconnect is awaiting its resync frame; restartAnnounced: the kernel's dying frame (T217)
+// (a standalone pane sat silent through rebuilds); the user 2026-09-08 ruled the page RELOADS ITSELF; the user
+// 2026-09-16 ruled it is OFFERED instead: the raise hands the dv to window.__rompReload (the reload core, embedded
+// above this shim on every kernel-served page), which forwards to the shell when this pane sits in one (the shell's
+// #rstale banner shows the offer) and otherwise stands the offer here (the core's offer hook below renders it as the
+// "offer" bar). The core dedupes by build, so every keepalive may hand it in; the no-core bar alone is latched.
+var buildRaised=false,freshPending=false,restartAnnounced=0;   // buildRaised: the no-core bar, once per page life; freshPending: a reconnect is awaiting its resync frame; restartAnnounced: the kernel's dying frame (T217)
 // T265: the reload core asks every pane before firing; a pane whose socket is down with sends queued for its
 // reopen (a prompt typed during a kernel restart) holds the reload — the shell's socket may reopen first, and a
 // reload then would take the queue with it. Diag rows never hold. The flush in ws.onopen is the ending event.
@@ -54773,9 +54826,12 @@ try{if(window.parent===window){var sdk=sessionStorage.getItem(SENDS_DROPPED_KEY)
 if(!sdd||typeof sdd!=="object")sessionStorage.removeItem(SENDS_DROPPED_KEY);   // anything but a record (unparseable, null, a number, a string) is consumed, never kept forever (the 1715 lows, low 2)
 else if(!sdd.path||sdd.path===location.pathname){sessionStorage.removeItem(SENDS_DROPPED_KEY);if(sdd.text)selfBar(String(sdd.text),"warn");}}}}catch(e){}
 try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
-function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
-if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
-else selfBar("A newer romp build is available.","build");}
+// the OFFER on a standalone page (2026-09-16): the reload core's offer hook renders the one bar, kind "offer", Reload and Not now (selfBar);
+// null takes it down (accepted, or declined); a wording change (o.text moved: an unknownOp refusal arrived) is written into the standing bar
+try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.offer=function(o){var have=document.getElementById("romp-stale-self");var mine=have&&have.dataset.kind==="offer";
+if(!o){if(mine)have.remove();return;}if(mine){have.firstChild.textContent=o.text;return;}selfBar(o.text,"offer");};}}catch(e){}
+function raiseBuild(dv){var R=window.__rompReload;if(R){R.noteDv(dv);return;}   // the core decides (an offer, deduped by build; in a shell, the shell's)
+if(buildRaised)return;buildRaised=true;selfBar("A newer romp build is available.","build");}   // no core on this page: the bar, once
 function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // one live attempt at a time — a lost timer + the watchdog can both call in
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
@@ -54783,11 +54839,11 @@ var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(s
 ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":"")+(APP==="fleet"?"&provrows=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after any reload the reload core fired (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
-// replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
-// T265 (the user 2026-09-08, superseding that for restarts): when the reconnect is against a NEW kernel process
-// (its /version boot id differs from this page's) the page reloads itself via the reload core — a standalone page
-// asks here (checkBoot), a pane inside the shell leaves it to the shell's own socket; the prompt stays for a
-// same-process blip.
+// replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Since T265
+// (the user 2026-09-08) a standalone page asks /version here on every reopen (checkBoot; a pane inside the shell
+// leaves it to the shell's own socket) and the reload core reads the answer: since 2026-09-16 a new boot id of the
+// same build is invisible and a newer build is offered, never reloaded; the prompt stays for a blip that never
+// resyncs.
 // A RECONNECT also fires `romp:wsup`, the counterpart to the `romp:wsdown` below: whatever went up when the
 // socket dropped (the pane's romp loader) needs the socket's RETURN as its event to come back down. The
 // first connect deliberately doesn't fire it — nothing is waiting on it, and the loader must stay up until
@@ -54796,13 +54852,15 @@ ws.onopen=function(){lastRecv=Date.now();openT=lastRecv;openSock=this;netState("
 try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}   // T265: the flush is the ending event for the "sends" hold — a reload owed while a prompt sat in the queue goes now
 if(failedConnects){send({type:"clientDiag",surface:"pane-shim",what:"wsconnfail",data:{app:APP,attempts:failedConnects,firstFailMs:Date.now()-firstFailT}});failedConnects=0;firstFailT=0;}   // the redials that never opened since the last open, as ONE row: how many, and how long ago the first failed
 if(wasReconn){var ann=restartAnnounced&&Date.now()-restartAnnounced<30000;restartAnnounced=0;   // one-shot: spent here
-if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.checkBoot();   // T265: a REOPEN is the restart signal — a standalone page asks /version whose kernel answered; inside the shell, the shell asks on its own socket
+if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.checkBoot();   // T265: a REOPEN is the restart signal — a standalone page asks /version whose kernel answered; inside the shell, the shell asks on its own socket (since 2026-09-16 the answer counts the restart and offers a newer build; it reloads nothing)
 if(!ann)armStale(pendingWhy||"reconnect");   // T217: an ANNOUNCED restart's reconnect skips the arm — the resync lands in a beat and the flash was pure noise; a restart that never comes back stays loud through the disconnected state itself, and a SECOND reconnect arms as always
 pendingWhy="";freshPending=true;armFresh();try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}
 enqueue({type:"wsup"});}};   // the flip as a FRAME too: frames of the dead socket may still be draining from the FIFO, and a bundle that scopes "loaded on this socket" must see the flip between them and the new socket's frames, not at onopen (review find 2026-09-07)
 ws.onmessage=function(ev){lastRecv=Date.now();resumeProvisional=0;if(returnAt)returnBytes+=(ev.data&&ev.data.length)||0;var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="caps")readyAcked=true;   // the kernel's answer to a ready it processed: _send_caps, which the ready arm alone sends, after its own pushes. From here a redial may declare itself (the dial term in connect); the frame goes on to the bundle below like any other
-if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();
+if(msg&&msg.type==="reloadRequired"){try{if(window.__rompReload)window.__rompReload.require(msg.why);}catch(e){}return;}   // the safety valve (2026-09-16): a kernel that must force a reload for correctness; the core honours it through its holds; nothing sends it today
+if(msg&&msg.type==="unknownOp"){try{if(window.__rompReload)window.__rompReload.behind();}catch(e){}}   // this page asked for something the kernel does not know (a page from before the kernel's build): the standing offer's wording gains the reason; the frame goes on to the bundle, whose degrade path answers it (render.ts onUnknownOp)
+if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild(msg.dv);
 if(stalePending&&++staleKa>=2){var sw=stalePending;stalePending="";raiseStale(sw);}   // the SECOND keepalive since the arm, no resync between: a full heartbeat period on THIS socket with the kernel alive, talking to it, and not resyncing it — the view IS stale. (One keepalive alone can be a beat queued at accept, ahead of the resync frame.)
 return;}   // keepalive: stamped lastRecv above and confirmed a resumed keep (resumeProvisional=0: any frame does); carries the build token (drift → reload banner); nothing for the bundle to render
 // T217: the kernel announces its own death (one final frame from the dying process). Latch it: the
@@ -54814,7 +54872,7 @@ return;}   // keepalive: stamped lastRecv above and confirmed a resumed keep (re
 if(msg&&msg.type==="restarting"){restartAnnounced=Date.now();staleDiag("restart-announced","");return;}
 // the first REAL frame after a reconnect is the kernel's connect-time push — the resync itself, so the
 // "what you see may be stale" prompt is answered and retires (see clearStale). Keepalives return above.
-if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}   // the resync frame is the ending event for the 'fresh' hold: a build reload owed since the restart goes now, onto a warm kernel
+if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}   // the resync frame is the ending event for the 'fresh' hold: a reload accepted since the restart goes now, onto a warm kernel
 if(returnAt){returnDiag("return-fresh",{ms:Date.now()-returnAt,bytesSince:returnBytes,redialed:returnRedialed});returnAt=0;}   // the first real frame after a return: how long the user waited for current content
 // VIEW DELTAS (2026-09-03): the bars/feed slots arrive as {type:"delta"} frames carrying only the changed
 // entries; reassemble the full message from what this pane holds and hand the bundle exactly what it
@@ -54976,15 +55034,16 @@ returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial s
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
 # ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet for any reload the core fired when the
-# record is an object with the fields whose path names the shell or a chat document (the user's ruling: restarts are invisible, so the
-# one reload left is a changed build, a fresh page on a kernel that just restarted; a scalar or fieldless record diets nothing). A
+# record is an object with the fields whose path names the shell or a chat document (the user's rulings: restarts are invisible, and
+# since 2026-09-16 the one reload the core fires is the one the user accepts when a newer build is offered, a fresh page on a kernel
+# that has the build; a scalar or fieldless record diets nothing). A
 # column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
 _RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');"
                     "rr=raw?JSON.parse(raw):null;}catch(e){}"
                     "RESTART_DIET=!!(rr&&typeof rr==='object'&&typeof rr.reason==='string'&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}")
 # The record is REMOVED before it is parsed (a malformed one is consumed too, as announce() does), and any reload the reload core fired
-# dials the diet (the user's ruling of 2026-09-14: restarts invisible, so the one reload left is a changed build, a fresh page on a kernel
-# that just restarted): the record's presence decides, not its reason. A record written by a standalone feed or timeline page's own
+# dials the diet (the user's rulings: restarts invisible since 2026-09-14, a newer build offered since 2026-09-16, so the one reload left
+# is the one the user accepts, a fresh page on a kernel that has the build): the record's presence decides, not its reason. A record written by a standalone feed or timeline page's own
 # reload names that path and steers nothing (path === undefined only for a record an older core wrote).
 
 
@@ -57480,9 +57539,10 @@ boot.classList.remove('gone');
 try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
 var n=0;(function again(){setTimeout(function(){n++;
 fetch('/healthz',{cache:'no-store'}).then(function(r){var b=(r&&r.ok)?r.headers.get('X-Romp-Boot'):null;
-// the NEW kernel answers: the reload core decides (invisible restarts, 2026-09-14). The same code restarted: no reload, the panes
-// redial and the board updates in place. A changed build: the reload lands once the chat pane has its first frame. A page
-// without the core reloads as before; so does the poll's own backstop.
+// the NEW kernel answers: the reload core decides (invisible restarts, 2026-09-14; the offer, 2026-09-16). The same code restarted: no
+// reload, the panes redial and the board updates in place. A changed build: the core OFFERS the reload (the #rstale line), never
+// takes it. A page without the core reloads as before; so does the poll's own backstop (two minutes with no new kernel answering:
+// the splash must not trap the user).
 if(b&&b!==__ROMP_BOOT__){boot.classList.add('gone');if(window.__rompReload)window.__rompReload.checkBoot();else location.reload();}else if(n<240)again();else location.reload();})
 .catch(function(){if(n<240)again();else location.reload();});},500);})();};
 var rf=document.getElementById('rail-refresh');
@@ -58293,7 +58353,8 @@ ws.onopen=function(){try{ws.send(JSON.stringify({type:'ready'}));}catch(e){}
 shellSock=ws;var q=diagQ;diagQ=[];q.forEach(function(m){try{ws.send(JSON.stringify(m));}catch(e){}});   // the rows that waited for this socket
 if(shellOpened&&window.__rompReload)window.__rompReload.checkBoot();shellOpened=true;};
 ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
-if(m&&m.type==='ka'){if(m.dv&&window.__rompReload)window.__rompReload.noteDv(m.dv);}   // build drift on the shell's own keepalive (T265)
+if(m&&m.type==='ka'){if(m.dv&&window.__rompReload)window.__rompReload.noteDv(m.dv);}   // build drift on the shell's own keepalive (T265; an OFFER since 2026-09-16)
+else if(m&&m.type==='reloadRequired'){if(window.__rompReload)window.__rompReload.require(m.why);}   // the safety valve (2026-09-16): a kernel that must force a reload for correctness; nothing sends it today
 else if(m&&m.type==='reveal'&&m.pane)reveal(m.pane);
 // the app-icon badge: setAppBadge only exists where badging works (installed apps) — everyone
 // else falls through silently, so this needs no capability gymnastics. The count is the feed's needs-you
@@ -58639,6 +58700,11 @@ fromLedger('boot',fromLink('boot'));
 # with Reload + Dismiss — proactive, "near the top of the whole window" (the user 2026-06-16), not
 # buried in the feed pane. Supersedes the gear panel's inline "⚠ reload" hint (the gear now shows
 # version only). Self-contained block (own style + node + script) so it injects at one point.
+# Since 2026-09-16 this box is the RELOAD OFFER's home in the shell (the reload core's offer hook below): one
+# persistent line, "A newer romp build is ready.", with Reload (the core's accept: persist, then reload, through
+# its holds) and Not now (the core's dismiss, kept per build). The connection prompt (a reconnect that never
+# resynced) shares the box and outranks the offer while it stands; the offer returns when it retires. The offer
+# state wears the `offer` class: the action in the romp accent, the dismiss labelled Not now.
 _STALE_CSS = (
     "#rstale{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
     "cursor:grab;touch-action:none;"   # T132: the banner drags out of the way — the box wears grab, buttons keep pointer
@@ -58653,6 +58719,11 @@ _STALE_CSS = (
     "#rstale .rs-reload:hover{background:#62c80a}"
     "#rstale .rs-dismiss{background:none;color:#9aa0a6;border-color:#4a4d51}"
     "#rstale .rs-dismiss:hover{color:#e6e6e6}"
+    # the OFFER (2026-09-16): the action wears the romp accent (ui/CLAUDE.md: var(--accent), defined on the landing's
+    # :root and re-resolved by body.theme-light), a disabled Reload reads as taken
+    "#rstale.offer .rs-reload{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);border-color:transparent}"
+    "#rstale.offer .rs-reload:hover:not(:disabled){filter:brightness(1.06)}"
+    "#rstale button:disabled{opacity:.55;cursor:default}"
     # Narrow screens (the user 2026-08-13): the one-row layout squeezed the message into a cramped,
     # tall left column beside two nowrap buttons. The message takes the FULL row and the buttons drop
     # to their own row beneath, splitting its width for finger-sized targets. Desktop keeps one line.
@@ -58673,26 +58744,34 @@ _STALE_HTML = (
 _STALE_JS = (
     "(function(){var box=document.getElementById('rstale'),msg=box.querySelector('.rs-msg'),"
     "rl=document.getElementById('rstale-reload'),dm=document.getElementById('rstale-dismiss');"
-    "var loaded=__LOADEDVER__,dismissed=0,served=0,connStale=false,buildStale=false;"
+    "var loaded=__LOADEDVER__,dismissed=0,served=0,connStale=false,buildStale=false,offer=null;"
     "var BUILDMSG='A newer romp build is available.',"
     "CONNMSG='romp lost the live connection to the dashboard, so what you see may be stale.';"
     "function show(m){msg.textContent=m;box.classList.add('show');}"
+    # one painter for the box's three claims (2026-09-16): the connection prompt first (the view is frozen NOW),
+    # then the standing offer (its own wording from the core, the accent class, Not now), then the no-core build
+    # bar; nothing to say hides the box
+    "function paint(){if(connStale){box.classList.remove('offer');dm.textContent='Dismiss';show(CONNMSG);}"
+    "else if(offer){box.classList.add('offer');dm.textContent='Not now';show(offer.text);}"
+    "else if(buildStale){box.classList.remove('offer');dm.textContent='Dismiss';show(BUILDMSG);}"
+    "else box.classList.remove('show','offer');}"
     # T265 (the user 2026-09-08): the reload core (window.__rompReload, _RELOAD_CORE_JS) owns build drift and
-    # kernel restarts — the page reloads itself, never mid-gesture. The BUILD banner survives only as the
-    # core's `refused` fallback (a host that forbids location.reload); the poll below hands the core every
-    # /version reading (a restart the socket never showed, a bundle newer than this page's).
+    # kernel restarts; the poll below hands it every /version reading (a restart the socket never showed, a bundle
+    # newer than this page's). Since 2026-09-16 the core OFFERS: its offer hook paints this box (null takes the
+    # offer down: accepted, or declined), Reload is the core's accept and Not now its dismiss. The BUILDMSG bar
+    # stands only where the core is absent.
     "var RL=window.__rompReload;"
-    "if(RL){RL.refused=function(){buildStale=true;show(BUILDMSG);};"
+    "if(RL){RL.offer=function(o){offer=o||null;rl.disabled=false;rl.textContent='Reload';paint();};"
     # a reload HELD by a pane (an upload in flight, a held send, queued sends) says so, once per hold: the notification
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
     "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left, a minute at most.':b==='fresh'?'The dashboard will reload onto the new build once the chat pane has caught up, within a minute of its reconnect.':b==='typing'?'The dashboard will reload onto the new build once the draft is sent or cleared.':b==='selection'?'The dashboard will reload onto the new build once the selected text is released.':(b==='pointer'||b==='pan'||b==='drag'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
-    "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
+    "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});RL.offer(RL.offered());}"   # an offer proposed before this hook was installed paints now
     # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
     "if(v&&v.boot&&window.__rompUpdBoot)window.__rompUpdBoot(v.boot);"   # retire cross-boot update offers (2026-08-15)
     "served=v.dist_ver||0;"
     "if(RL)RL.noteVersion(v);"
-    "if(loaded&&served>loaded&&served!==dismissed){if(!RL)show(BUILDMSG);}"
+    "else if(loaded&&served>loaded&&served!==dismissed){buildStale=true;paint();}"
     "else if(served<=loaded&&!connStale&&!buildStale)box.classList.remove('show');}).catch(function(){});}"
     # A pane whose WebSocket dropped-and-reconnected (or a foregrounded tab that found its socket dead) posts
     # {romp:'wsStale'} — the same shell-coalesced channel as the disconnect banner, but a RELOAD PROMPT rather
@@ -58700,15 +58779,16 @@ _STALE_JS = (
     # long since moved on, with no cue the view was frozen). connStale latches so the /version poll can't clear
     # the prompt out from under it; Dismiss (or a reload) clears it. A pane's BUILD-drift raise used to ride the
     # same channel with build:1 → the BUILDMSG wording (the user 2026-07-13); since T265 (the user 2026-09-08,
-    # superseding that) the shim asks the reload core directly and a build:1 that still arrives is handed to
-    # the core too — the banner shows for it only where the core is absent.
+    # superseding that) the shim hands the reload core its keepalive's dv directly, and a build:1 that still
+    # arrives (an older pane page) asks the core for a /version reading, the authoritative build, which it
+    # offers (2026-09-16); the banner's own wording shows for it only where the core is absent.
     # {romp:'wsFresh'} — the reconnected pane's resync LANDED (its first non-keepalive frame), so the
     # connection prompt is moot and retires itself; the user saw it on nearly every dashboard open, offering
     # a reload for a staleness that had already healed in the background. A latched BUILD prompt survives
     # (and re-asserts its wording): a resync delivers state, never new code, so only a reload answers it.
     "window.addEventListener('message',function(e){var m=e&&e.data;"
-    "if(m&&m.romp==='wsStale'){if(m.build){if(RL)RL.request('build','');else{buildStale=true;show(BUILDMSG);}}else{connStale=true;show(CONNMSG);}}"
-    "else if(m&&m.romp==='wsFresh'){connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');}});"
+    "if(m&&m.romp==='wsStale'){if(m.build){if(RL)RL.checkBoot();else buildStale=true;}else connStale=true;paint();}"
+    "else if(m&&m.romp==='wsFresh'){connStale=false;paint();}});"
     # T132 (the user 2026-08-27): the banner is DRAGGABLE — movable out of the way so it can STAY up
     # (it was covering a tab they needed before accepting the build). Moving never dismisses, mutes, or
     # times it out; Reload keeps working identically after any number of moves (BUTTON targets never
@@ -58730,8 +58810,12 @@ _STALE_JS = (
     "box.addEventListener('pointerup',endDrag);box.addEventListener('pointercancel',endDrag);"
     "window.addEventListener('resize',function(){if(!box.style.left)return;"
     "var p=clampXY(parseFloat(box.style.left),parseFloat(box.style.top));box.style.left=p[0]+'px';box.style.top=p[1]+'px';});"
-    "rl.onclick=function(){location.reload();};"
-    "dm.onclick=function(){dismissed=served;connStale=false;buildStale=false;box.classList.remove('show');};"
+    # Reload: with an offer standing it is the core's accept (persist, then reload, through the core's holds; the
+    # button acknowledges at once and a held reload says why in the notification center), else a plain reload of
+    # the frozen view. Not now / Dismiss: the connection prompt first (the offer then paints), else the core's
+    # dismiss (kept per build), else the no-core bar's own latch.
+    "rl.onclick=function(){if(RL&&offer){rl.disabled=true;rl.textContent='Reloading\u2026';RL.accept();}else location.reload();};"
+    "dm.onclick=function(){if(connStale){dismissed=served;connStale=false;buildStale=false;paint();}else if(RL&&offer)RL.dismiss();else{dismissed=served;buildStale=false;paint();}};"
     "check();setInterval(check,30000);})();")
 
 
