@@ -7,9 +7,10 @@ name: CI
 # LINUX runs on every push and PR — it is free on a public repo, no minute cap.
 # macOS is BILLED even on a public repo (larger runners always are, at ~10x), and
 # the bats suite alone is ~16 macOS-minutes = ~160 billable minutes per run, so
-# it does NOT run automatically. Trigger it by hand from the Actions tab ("Run
-# workflow") when you want a cross-platform check before a release or after
-# touching a platform-sensitive surface (launchd, the folder opener, the CLI scope).
+# it does NOT run on every push. It runs once a week on a schedule (see `on:`) and
+# by hand from the Actions tab ("Run workflow") when you want a cross-platform
+# check before a release or after touching a platform-sensitive surface (launchd,
+# the folder opener, the CLI scope).
 # On a macOS dev box, the pre-push hook runs the same suites locally, so the
 # common macOS-only breakages (a real browser opening, a GNU-only flag)
 # are caught before the push rather than waiting on this manual run.
@@ -23,6 +24,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:   # the manual on-switch for the macOS cells (see above)
+  schedule:
+    # The macOS cells also run ONCE A WEEK on their own (2026-09-16): with the manual switch alone the
+    # release gate was the first macOS run in two weeks, and it found twenty-nine failures that had
+    # accumulated unseen. One run at a quiet hour Pacific (Monday 10:00 UTC is 03:00 Pacific in summer,
+    # 02:00 in winter); the manual dispatch stays for the release day and for a platform-sensitive change.
+    - cron: "0 10 * * 1"   # weekly macOS cells: the scheduled run selects the same matrix a manual dispatch does
 
 # A newer push to a PULL REQUEST cancels the older in-flight run of the same
 # kind: the new head supersedes the old one, and the old verdict is moot. The
@@ -59,9 +66,9 @@ jobs:
       # macOS-only break look identical if the matrix stops at the first.
       fail-fast: false
       matrix:
-        # macOS is in the matrix ONLY on a manual run (workflow_dispatch); a
-        # normal push/PR gets Linux alone. See the billing note in the header.
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+        # macOS is in the matrix ONLY on a manual run (workflow_dispatch) or the weekly
+        # schedule; a normal push/PR gets Linux alone. See the billing note in the header.
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
         python-version: ['3.10', '3.13']
         include:
           - os: ubuntu-latest
@@ -99,8 +106,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS only on a manual run (workflow_dispatch); see the header note.
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+        # macOS only on a manual run (workflow_dispatch) or the weekly schedule; see the header note.
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       # bats comes from the pinned release tarball, NOT apt: an Azure apt-mirror outage hung
