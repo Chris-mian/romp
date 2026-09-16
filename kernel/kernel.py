@@ -57107,14 +57107,20 @@ try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*')
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
 var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*');}catch(x){}});
 function moveFocus(dir){
-  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
-    if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
+  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it, to the last chat pane worked in (a bottom pane too), else the last column
+    if(dir==='up'){var c=paneVisible(lastChat)?lastChat:(paneVisible(lastCol)?lastCol:(visCols()[0]||null));if(c)focusPane(c,dir);}
     return;
   }
-  var cols=visCols(), i=cols.indexOf(curFocus);
+  // the VERTICAL axis inside a split column: Down from the TOP pane goes to the BOTTOM pane, Down from the BOTTOM enters
+  // the timeline; Up from the BOTTOM returns to the TOP (Up from a column top is a no-op, the top row already)
+  var below=window.__rompBelowFrameOf&&window.__rompBelowFrameOf(curFocus);
+  var top=window.__rompTopFrameOf&&window.__rompTopFrameOf(curFocus);   // set only when curFocus IS a bottom pane
+  if(dir==='up'){if(top&&document.getElementById(top))focusPane(top,dir);return;}
+  if(dir==='down'){if(below&&document.getElementById(below)){focusPane(below,dir);return;}if(paneVisible(TL))focusPane(TL,dir);return;}
+  // left/right along the COLUMNS; a bottom pane moves relative to its parent column
+  var cols=visCols(), cur=top||curFocus, i=cols.indexOf(cur);
   if(dir==='left'){if(i>0)focusPane(cols[i-1],dir);}
   else if(dir==='right'){if(i>=0&&i<cols.length-1)focusPane(cols[i+1],dir);}
-  else if(dir==='down'){if(paneVisible(TL))focusPane(TL,dir);}   // up from a column = already the top row, no-op
 }
 function editable(t){if(!t)return false;var tag=(t.tagName||'').toLowerCase();
 return tag==='textarea'||tag==='input'||tag==='select'||t.isContentEditable;}
@@ -60320,6 +60326,7 @@ function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s
 function ownerOf(sid){for(var i=0;i<cols.length;i++){if(cols[i].ids.indexOf(sid)>=0)return cols[i].n;}return 1;}
 function sets(){var out={},seen={};cols.forEach(function(c){out[String(c.n)]=c.ids.filter(function(id){if(seen[id])return false;seen[id]=true;return true;});});return out;}
 function nextNumber(){var n=2;while(entry(n))n++;return n;}
+function colSize(n){if(n!==1){var e=entry(n);return e?e.ids.length:0;}var f=document.getElementById('f-chat');try{return f.contentDocument.querySelectorAll('#tabs .tab[data-id]').length;}catch(e){return 0;}}   // a column's held sessions; the FIRST column's are its page's own tabs (the shell tracks only later columns, sets()), 0 on a read fault, which the ===1 lone checks read as "not lone" so a fault never blocks a split
 function activeIn(f){try{var t=f.contentDocument&&f.contentDocument.querySelector('#tabs .tab.active[data-id]');return t?String(t.getAttribute('data-id')||''):'';}catch(e){return '';}}   // the palette's "move this session": the focused column's own tab
 function focused(){var id=(window.__rompFocusedChatId&&window.__rompFocusedChatId())||'f-chat';return document.getElementById(id)||document.getElementById('f-chat');}
 // Which column a session-focus belongs to: the column that HOLDS the session (one lookup, never a read of the
@@ -60367,12 +60374,12 @@ h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.get
 document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
 function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
 function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
-var ce=entry(colN);if(ce){ce.ratio=Math.max(0.05,Math.min(0.95,nT/sum));save();}}   // persist the ON-SCREEN top ratio (nT/sum after the pixel-clamped drag); a reload restores exactly this, no divider jump
+var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio: mv() already pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
 function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
 var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
 var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
-var r=(ce.ratio>=0.05&&ce.ratio<=0.95)?ce.ratio:0.5;   // accept the same range the drag persists, so the restore matches the screen
+var r=(ce.ratio>0&&ce.ratio<1)?ce.ratio:0.5;   // accept any proper fraction (the pixel minimum lives in mv()'s clamp, not here), so a legitimately small dragged ratio is not reset to 0.5
 pp.classList.add('split-v');topf.style.flex=r+' 1 0';
 var g=document.createElement('div');g.className='gh gh-chat';g.id='gh-chat-'+ce.n;
 var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-'+ce.n;sub.style.flex=(1-r)+' 1 0';
@@ -60414,7 +60421,7 @@ function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexO
 // closed); the target adopts the drafts and shows the session; the ring moves there. Returns the target's iframe,
 // null when refused. A session already alone in a later column has nowhere new to go: a new column would be a twin
 // of the origin and the origin would close, so that is refused with a line rather than done for nothing.
-function moveTab(sid,to){if(typeof sid!=='string'||!sid)return null;
+function moveTab(sid,to,dt){if(typeof sid!=='string'||!sid)return null;   // dt: for to==='down', the target column the drag landed on (else the source column, the keyboard)
 var from=ownerOf(sid),src=frameOfCol(from);
 var why=refusal(src,sid);if(why==='locked')return notify(LOCKED);if(why||!movable(src,sid))return notify('Only an open session can be moved between columns.');
 if(to==='new'){var se=entry(from);if(se&&se.ids.length===1)return notify('This session is already alone in its column.');
@@ -60424,13 +60431,15 @@ var state=take(src,sid),n=nextNumber();
 if(window.__rompSplitGrow)window.__rompSplitGrow(lastPane(),'chat'+n);   // the rightmost column and the new one each take half its width
 unlist(sid);cols.push({n:n,ids:[sid]});save();
 var nf=make(n,sid,state);try{nf.contentWindow.focus();}catch(e){}return nf;}
-if(to==='down'){var pc=from;   // split THIS session's own column (or the first) into a top and a bottom pane
-if(isBelow(entry(pc)))return notify('A split pane cannot split again.');   // sid already sits in a bottom pane: at most two rows deep
+if(to==='down'){var pc=(typeof dt==='number'&&(dt===1||(entry(dt)&&!isBelow(entry(dt)))))?dt:from;   // the pane the drop landed on (the drag), else the source column (the keyboard)
+if(isBelow(entry(from)))return notify('A split pane cannot split again.');   // the tab already sits in a bottom pane: at most two rows deep
 if(belowOf(pc))return notify('This column is already split top and bottom.');
-var seD=entry(pc);if(seD&&seD.ids.length===1)return notify('This session is already alone in its column.');   // parity with the "new" path: a lone session has nothing to split off
+if(pc===from&&colSize(pc)===1)return notify('This session is already alone in its column.');   // splitting your OWN lone column has nothing to split off; colSize covers the first column (entry(1) is null) by its page's tabs
+if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&busy(src))return notify(BUSY);}   // a cross-column split-down that empties a lone BUSY source refuses here (else close() below refuses on its busy gate and leaves an open EMPTY column), parity with the sideways move
 if(!canSplit())return refusePane();
-var stD=take(src,sid),nD=nextNumber();unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
-var bf=make(nD,sid,stD);try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
+var stD=take(src,sid),nD=nextNumber(),emptiedD=unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
+var bf=make(nD,sid,stD);if(emptiedD&&emptiedD!==pc)close(emptiedD);   // the SOURCE side column emptied by a cross-column split-down closes (never the target)
+try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
 var tf=frameOfCol(tn);if(!tf)return null;
 if(tn===from)return tf;   // already there: nothing moves
@@ -60450,7 +60459,7 @@ if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with 
 var kid=belowOf(n);   // a bottom pane nested in this column closes WITH it: its sessions rejoin the first column too
 if(!keep&&kid){var kf0=document.getElementById(frameId(kid.n));if(kf0&&busy(kf0)){notify(BUSY);return;}}
 if(f&&home)cols[i].ids.forEach(function(sid){adopt(home,sid,take(f,sid));});
-if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice
+if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);delete deferred[kid.n];if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice; the kid's deferral goes with it (else a reused number's idle fires an unasked reconcile)
 var sideL=sideCols(),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
 var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';
 cols.splice(i,1);delete deferred[n];if(!keep)save();   // delete deferred[n] (#1774): a deferred close is moot once the column is gone by any road
@@ -60489,7 +60498,8 @@ window.__rompClaimSession=function(sid,col){var n=Number(col),e=entry(n);if(type
 window.__rompChatFrames=frames;window.__rompChatFrameIds=function(){return frames().map(function(f){return f.id;});};
 window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};   // columns only: the horizontal focus nav and column-cycling skip a bottom pane (a vertical child)
 window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column; the CALLER (setFocus) adds .focus-top/.focus-bottom so each half shows its own ring
-window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top)
+window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top, and the VERTICAL focus axis to step up out of a bottom pane)
+window.__rompBelowFrameOf=function(fid){var n=fid==='f-chat'?1:(String(fid).indexOf('f-chat-')===0?Number(String(fid).slice(7)):0);if(!n)return null;var b=belowOf(n);return b?frameId(b.n):null;};   // the VERTICAL focus axis (moveFocus): a column's bottom pane frame when it is split
 window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOfWin=frameOfWin;window.__rompChatTarget=target;
 // THE DRAG (the user 2026-09-11, who asked for a tab dragged to the right edge to make a column and onto another column
 // to move it). The page posts {romp:'tabDrag',on:true,sid,name,stripH} at its dragstart and {on:false} at dragend
@@ -60510,12 +60520,14 @@ window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOf
 // tab is simply gone there.
 var drag=null,zones=[],ghost=document.getElementById('col-ghost');   // drag: {sid,name,from,stripH} while a tab drags, else null
 function edgeWidth(w){return Math.max(72,Math.min(180,0.2*w));}   // the edge zone's width for a pane w px wide
-function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}   // the right half of the rightmost pane, the row's height: what the drop produces
+function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}   // the right half of the rightmost pane, the row's height: what a NEW-column drop produces
+function ghostRectBottom(pane){return {top:pane.top+pane.height/2,height:pane.height/2,left:pane.left,width:pane.width};}   // the BOTTOM half of the pane: what a split-down drop produces
 function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on','refused');ghost.textContent='';return;}
-var r=ghostRect(z.parentElement.getBoundingClientRect(),row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
+var pr=z.parentElement.getBoundingClientRect(),bottom=z.classList.contains('col-drop-bottom');
+var r=bottom?ghostRectBottom(pr):ghostRect(pr,row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
 ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
-function cue(z,on){if(z.classList.contains('col-drop-edge'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge, .over on a column zone itself
+function cue(z,on){if(z.classList.contains('col-drop-edge')||z.classList.contains('col-drop-bottom'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge/bottom, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
 z.addEventListener('dragenter',function(ev){ev.preventDefault();cue(z,true);});
@@ -60524,11 +60536,13 @@ z.addEventListener('dragleave',function(ev){if(ev.relatedTarget&&z.contains(ev.r
 z.addEventListener('drop',function(ev){ev.preventDefault();var d=drag;unmountZones();drag=null;if(d)onDrop(d.sid);});
 p.appendChild(z);zones.push(z);return z;}
 function mountZones(){unmountZones();if(!drag||mobile())return;
-var from=drag.from,last=lastPane(),se=from===1?null:entry(from),alone=!!(se&&se.ids.length===1&&se.ids[0]===drag.sid);
+var from=drag.from,last=lastPane(),se=from===1?null:entry(from),alone=!!(se&&se.ids.length===1&&se.ids[0]===drag.sid),fromBelow=isBelow(entry(from));   // fromBelow: the source tab is in a bottom pane, so moveTab(down) refuses everywhere ("A split pane cannot split again")
 [{n:1,pid:'chat-pane'}].concat(cols.map(function(c){return {n:c.n,pid:paneId(c.n)};})).forEach(function(c){var p=document.getElementById(c.pid);if(!p)return;
 if(c.n!==from)zone(p,'',c.n,function(sid){moveTab(sid,c.n);});   // the column zone: a drop anywhere in the pane moves the session here
 if(c.pid===last&&!alone){var e=zone(p,'col-drop-edge',null,function(sid){if(e.getAttribute('data-refused'))refuse();else moveTab(sid,'new');});   // the edge zone: a new column at the right
-e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}});}
+e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}
+if(!belowOf(c.n)&&!fromBelow&&!(c.n===from&&colSize(from)===1)){var bz=zone(p,'col-drop-bottom',c.n,function(sid){if(bz.getAttribute('data-refused'))refusePane();else moveTab(sid,'down',c.n);});   // the bottom zone: split THIS column, the dragged tab to the new bottom pane. Suppressed where moveTab would refuse the drop: a target already split (belowOf), a bottom-pane source (fromBelow), or the source's OWN lone column (nothing to split off), matching the edge's !alone. A split adds a PANE, so a refused (capped) drop says refusePane
+bz.style.height=edgeWidth(p.getBoundingClientRect().height)+'px';if(!canSplit())bz.setAttribute('data-refused','1');}});}
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m)return;
 if(m.romp==='tabDrag'){if(!m.on){drag=null;unmountZones();return;}   // the page's dragend: the zones go, whatever ended the drag
 if(!frameOfWin(e.source)||mobile()||typeof m.sid!=='string'||!m.sid)return;   // a chat column's dragstart, on the desktop
@@ -60566,13 +60580,15 @@ function read(){var raw=null;try{raw=JSON.parse(localStorage.getItem(CK)||'null'
 var out=[],seen={},migrated=false;
 function add(n,ids,place,parent,ratio){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
 var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(!keep.length)return;
-var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>=0.05&&r<=0.95)?r:0.5;}out.push(e);}
+var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>0&&r<1)?r:0.5;}out.push(e);}
 if(Array.isArray(raw)){migrated=true;raw.forEach(function(n){var st=null;try{st=JSON.parse(localStorage.getItem(BK+Number(n))||'null');}catch(e){}add(n,[st&&typeof st.activeId==='string'?st.activeId:'']);});}
 else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[],c.place,c.parent,c.ratio);});
-// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, degrades to a side
-// column (never orphaned, never two-deep). One bottom pane per parent.
-var kidPar={};out.forEach(function(c){if(c.place!=='below')return;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
-if(!ok||kidPar[c.parent]){delete c.place;delete c.parent;delete c.ratio;return;}kidPar[c.parent]=true;});
+// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, is DROPPED here
+// (never orphaned, never two-deep): its sessions re-home to the first column (ownerOf defaults to 1). Dropping, not
+// degrading to a side column: a degraded entry whose bottom iframe still exists (a busy kid deferred by reconcile) is
+// skipped by make()'s frame-exists guard, so its paneId names a .pane that was never created and lastPane() breaks.
+var kidPar={};out=out.filter(function(c){if(c.place!=='below')return true;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
+if(!ok||kidPar[c.parent])return false;kidPar[c.parent]=true;return true;});
 return {cols:out,migrated:migrated};}
 // another dashboard tab's write (this window never hears its own): its arrangement is the truth — close what it
 // dropped, make what it added (seeded like a restore), take its sets, and nothing is written back. One close is
@@ -61572,7 +61588,8 @@ def _landing():
             # from the focus ring's 0.55-alpha ring with no wash). At the cap the rectangle is .refused: no wash, a 1 px ring, its
             # line saying so.
             ".col-drop{position:absolute;inset:0;z-index:8}"
-            ".col-drop.col-drop-edge{left:auto;z-index:9}"
+            ".col-drop.col-drop-edge{left:auto;z-index:10}"   # above the bottom band (z 9): the edge (new column) owns the bottom-right corner where the two overlap
+            ".col-drop.col-drop-bottom{top:auto;z-index:9}"   # the bottom band (a split-down zone): pinned to the pane's bottom, its height set inline
             ".col-drop.over,#col-ghost{background:rgba(156,210,255,0.12);box-shadow:inset 0 0 0 2px var(--accent,#9cd2ff)}"
             "#col-ghost{display:none;position:fixed;pointer-events:none;z-index:40;align-items:center;justify-content:center;"
             "font:600 11px 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#8a8a8a;letter-spacing:.04em}"
@@ -61588,7 +61605,7 @@ def _landing():
             ".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}"
             # the TOP sub of a split column is the parent's own iframe, kept in place (never reparented, moving an
             # iframe reloads it): under .split-v it stops absolute-filling and flexes by its stored ratio instead
-            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0}"
+            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0;min-height:0}"
             # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
             # The focused pane gets a thin inset border (drawn as an inset box-shadow over the iframe edges);
             # the others get nothing, so the only lines on screen are the splitters + this focus ring. The ring

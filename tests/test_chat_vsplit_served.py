@@ -147,6 +147,13 @@ try {
   await page.waitForTimeout(500);
   out.topReloadFill = await colState("f-chat", cfg.top);
   out.botReloadFill = await colState(botFid2, cfg.bot);
+  // LOW 1: the TOP half must shrink past the iframe's intrinsic ~150px min. Drag the gutter fully UP; gutterV clamps the
+  // top to mn=min(80,sum*0.2), but .pane.split-v>iframe without min-height:0 floors it at the iframe's automatic minimum
+  // (its ~150px default object height), sticking it ~70px above the drag. min-height:0 frees it to reach the clamp.
+  const subIdUp = "chat-sub-" + botFid2.slice(7);
+  const gu = await page.evaluate(() => { const g = document.querySelector(".pane.split-v .gh-chat"); if (!g) return null; const r = g.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  if (gu) { await page.mouse.move(gu.x, gu.y); await page.mouse.down(); await page.mouse.move(gu.x, 8, { steps: 12 }); await page.mouse.up(); await page.waitForTimeout(400); }
+  out.afterUp = await page.evaluate((s) => { const t = document.getElementById("f-chat"), sub = document.getElementById(s); return { topH: Math.round(t.getBoundingClientRect().height), subH: sub ? Math.round(sub.getBoundingClientRect().height) : null }; }, subIdUp);
 } catch (e) {
   out.died = String(e).slice(0, 500);
 }
@@ -155,8 +162,75 @@ await browser.close();
 """
 
 
-class VSplitLocal(unittest.TestCase):
+POINTER_DRIVER = r"""
+import { createRequire } from "node:module";
+import fs from "node:fs";
+const require = createRequire(process.env.EXT_PKG);
+const { chromium } = require("playwright");
+const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));   // {url, top, bot}
+let browser;
+try { browser = await chromium.launch(cfg.launch || {}); }
+catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
+const page = await browser.newPage({ viewport: { width: 1400, height: 820 } });
+page.on("pageerror", () => {});
+await page.addInitScript(() => {
+  try { if (window === window.top && !localStorage.getItem("__vsplit_drag_started")) { localStorage.removeItem("romp-chat-cols"); Object.keys(localStorage).filter((k) => k.indexOf("romp-vscode-state-chat") === 0).forEach((k) => localStorage.removeItem(k)); localStorage.setItem("__vsplit_drag_started", "1"); } } catch (e) {}
+});
+const out = { died: null };
+const frameOf = async (fid) => { const h = await page.$("#" + fid); return h ? await h.contentFrame() : null; };
+const rectIn = async (fid, sel) => { const fr = await frameOf(fid); if (!fr) return null; const h = await fr.$(sel); if (!h) return null; const b = await h.boundingBox(); return b ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; };
+// the fill observable for the bottom pane (the dragged session): scroll #content to the top twice, let the observer
+// fire, read __rompRegions (a run region at lo 0 = filled to turn 0)
+const filled = async (fid) => {
+  const fr = await frameOf(fid); if (!fr) return { missing: true };
+  await fr.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 }).catch(() => {});
+  await fr.evaluate(() => { const c = document.getElementById("content"); if (c) { c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); } });
+  await page.waitForTimeout(300);
+  await fr.evaluate(() => { const c = document.getElementById("content"); if (c) { c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); } });
+  await page.waitForTimeout(1800);
+  return await fr.evaluate((id) => { const regions = (typeof window.__rompRegions === "function") ? window.__rompRegions(id) : null; return { turns: document.querySelectorAll("#content .turn[data-uuid]").length, filled: !!(regions && regions.some((r) => r.kind === "run" && r.lo === 0)), regions }; }, cfg.bot);
+};
+try {
+  await page.goto(cfg.url);
+  await page.waitForFunction((t) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + t + '"]')); }, cfg.top, { timeout: 40000 });
+  // both sessions sit in column 1; show the top one, then wait for the bottom session's tab to be draggable (its manager up, not locked)
+  await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
+  await page.waitForFunction((b) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + b + '"]'); return !!(t && t.draggable); }, cfg.bot, { timeout: 40000 });
+  out.pane = await page.evaluate(() => { const p = document.getElementById("chat-pane"); const r = p.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; });
+  // A REAL pointer drag of the bottom session's tab past the threshold: the page's dragstart mounts the shell's zones
+  const t = await rectIn("f-chat", '#tabs .tab[data-id="' + cfg.bot + '"]');
+  if (!t) throw new Error("no tab for the bottom session");
+  await page.mouse.move(t.x, t.y); await page.mouse.down(); await page.mouse.move(t.x + 24, t.y + 6, { steps: 4 });
+  await page.waitForFunction(() => !!document.querySelector("#chat-pane > .col-drop.col-drop-bottom"), null, { timeout: 20000 });
+  const bz = await page.evaluate(() => { const z = document.querySelector("#chat-pane > .col-drop.col-drop-bottom"); const r = z.getBoundingClientRect(); const p = z.parentElement.getBoundingClientRect(); return { col: z.getAttribute("data-col"), top: Math.round(r.top), height: Math.round(r.height), x: r.left + r.width / 2, y: r.top + r.height / 2, paneTop: Math.round(p.top), paneHeight: Math.round(p.height) }; });
+  out.bottomZone = bz;
+  // move the pointer over the bottom zone: the ghost shows the pane's BOTTOM half with the dragged session's name
+  await page.mouse.move(bz.x, bz.y, { steps: 8 });
+  await page.waitForFunction(() => document.getElementById("col-ghost").classList.contains("on"), null, { timeout: 10000 }).catch(() => {});
+  out.ghost = await page.evaluate(() => { const g = document.getElementById("col-ghost"); const r = g.getBoundingClientRect(); const p = document.getElementById("chat-pane").getBoundingClientRect(); return { cls: g.className, text: g.textContent, left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), paneTop: Math.round(p.top), paneHeight: Math.round(p.height), paneLeft: Math.round(p.left), paneWidth: Math.round(p.width) }; });   // the pane rect AT GHOST TIME (the layout settles as the sessions load)
+  // the drop: the column splits into a top and a bottom pane, a place:'below' entry keyed on parent 1
+  await page.mouse.up();
+  await page.waitForFunction(() => { const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); return (cc.cols || []).some((c) => c.place === "below"); }, null, { timeout: 20000 });
+  await page.waitForTimeout(500);
+  out.afterDrop = await page.evaluate(() => {
+    const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); const be = (cc.cols || []).find((c) => c.place === "below");
+    const g = document.getElementById("col-ghost"); const bot = document.querySelector(".pane.split-v .chat-sub iframe");
+    return { cols: localStorage.getItem("romp-chat-cols"), parent: be ? be.parent : null, botId: bot ? bot.id : null,
+             ghostCls: g.className, zones: document.querySelectorAll(".col-drop").length, paneSplit: !!(bot && bot.closest(".pane") && bot.closest(".pane").classList.contains("split-v")) };
+  });
+  const botFid = out.afterDrop.botId;
+  if (botFid) { await page.waitForFunction((fid) => !!document.getElementById(fid), botFid, { timeout: 20000 }); await page.waitForTimeout(600); out.botFill = await filled(botFid); }
+} catch (e) { out.died = String(e).slice(0, 500); }
+process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
+await browser.close();
+"""
+
+
+class _VSplitLab(unittest.TestCase):
+    """Shared boot for the vertical-split labs: one hermetic kernel, two cut-floor sessions, a browser driver whose
+    text each subclass names in DRIVER_JS (VSplitLocal drives the mutation; VSplitDrag drives the pointer)."""
     maxDiff = None
+    DRIVER_JS = None
     _cache = None
 
     @classmethod
@@ -253,7 +327,7 @@ class VSplitLocal(unittest.TestCase):
                 json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (self.port, self.token),
                            "top": SID_TOP, "bot": SID_BOT}, f)
             driver = os.path.join(self.lab, "driver.mjs")
-            Path(driver).write_text(DRIVER)
+            Path(driver).write_text(type(self).DRIVER_JS)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
                                env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
             if "browser-launch-failed" in p.stderr:
@@ -270,6 +344,13 @@ class VSplitLocal(unittest.TestCase):
     def _filled(colfill):
         after = (colfill or {}).get("after") or {}
         return any(x.get("kind") == "run" and x.get("lo") == 0 for x in (after.get("regions") or []))
+
+
+class VSplitLocal(_VSplitLab):
+    """The split through __rompMoveTab(sid,'down') (the drag's mutation): the geometry, the dial, the fill on both
+    faces, the gutter drag, the unreloaded top and the per-half ring."""
+    DRIVER_JS = DRIVER
+    _cache = None
 
     def test_1_split_stacks_the_bottom_pane_under_the_top_with_a_row_resize_gutter(self):
         g = self._result().get("geom") or {}
@@ -341,6 +422,57 @@ class VSplitLocal(unittest.TestCase):
         bot, top = r.get("ringBottomFocused") or {}, r.get("ringTopFocused") or {}
         self.assertTrue(bot.get("bottom") and not bot.get("top"), "clicking the BOTTOM half rings it alone (.focus-bottom): %r" % bot)
         self.assertTrue(top.get("top") and not top.get("bottom"), "clicking the TOP half moves the ring to it (.focus-top): %r" % top)
+
+    def test_8_the_top_half_shrinks_past_the_iframes_intrinsic_min_when_dragged_fully_up(self):
+        # LOW 1: without min-height:0 on .pane.split-v>iframe the top iframe floors at its ~150px automatic minimum (its
+        # default object height), so a full-up drag (clamped to ~80px) leaves it ~70px too tall; the one declaration frees
+        # it. Threshold 120 cleanly separates the pre-fix ~150px from the post-fix ~80px (robust to the 150-vs-154 border).
+        a = self._result().get("afterUp") or {}
+        self.assertIsNotNone(a.get("topH"), "the top half has a measured height after the up-drag: %r" % a)
+        self.assertLess(a.get("topH", 10 ** 9), 120,
+                        "the TOP half shrank past the iframe's ~150px intrinsic floor toward the ~80px drag clamp: %r" % a)
+
+
+class VSplitDrag(_VSplitLab):
+    """PR2: a REAL pointer drag of a tab to a pane's BOTTOM edge produces the split. The page's dragstart mounts the
+    shell's zones; the split-down zone is a band at the pane's bottom; the ghost shows the pane's bottom half with the
+    dragged session's name; the drop splits the column top and bottom and the new bottom pane fills to turn 0."""
+    DRIVER_JS = POINTER_DRIVER
+    _cache = None
+
+    def test_1_a_drag_to_the_bottom_edge_mounts_a_split_down_band_at_the_pane_bottom(self):
+        r = self._result()
+        bz = r.get("bottomZone") or {}
+        self.assertEqual(bz.get("col"), "", "the first column's split-down zone carries data-col=''")
+        # measured against the pane rect AT ZONE TIME (the layout settles as the sessions load, so a pre-drag rect drifts)
+        self.assertGreater(bz.get("top", 0), bz["paneTop"] + bz["paneHeight"] / 2,
+                           "the zone is a band in the pane's lower half: %r" % bz)
+
+    def test_2_the_ghost_shows_the_panes_bottom_half_with_the_dragged_name(self):
+        r = self._result()
+        g = r.get("ghost") or {}
+        self.assertIn("on", g.get("cls", "").split(), "the rectangle showed over the bottom zone: %r" % g)
+        self.assertEqual(g.get("text"), "web", "the dragged session's name, no verb: %r" % g)
+        # the ghost is the pane's BOTTOM half, measured against the pane rect AT GHOST TIME
+        self.assertAlmostEqual(g.get("top"), round(g["paneTop"] + g["paneHeight"] / 2), delta=2,
+                               msg="the ghost's top is the pane's midline: %r" % g)
+        self.assertAlmostEqual(g.get("height"), round(g["paneHeight"] / 2), delta=2, msg="half the pane's height: %r" % g)
+        self.assertAlmostEqual(g.get("left"), g["paneLeft"], delta=2, msg="the pane's left edge: %r" % g)
+        self.assertAlmostEqual(g.get("width"), g["paneWidth"], delta=2, msg="the full pane width: %r" % g)
+
+    def test_3_the_drop_splits_the_column_into_a_bottom_pane_and_clears_the_zones(self):
+        r = self._result()
+        d = r.get("afterDrop") or {}
+        self.assertEqual(d.get("parent"), 1, "a place:'below' entry keyed on parent 1: %r" % d.get("cols"))
+        self.assertTrue(d.get("botId"), "the bottom pane iframe mounted: %r" % d)
+        self.assertTrue(d.get("paneSplit"), "the parent .pane became .split-v: %r" % d)
+        self.assertEqual(d.get("zones"), 0, "every drag zone unmounted at the drop: %r" % d)
+        self.assertNotIn("on", d.get("ghostCls", "").split(), "the rectangle hidden at the drop: %r" % d.get("ghostCls"))
+
+    def test_4_the_dragged_down_session_fills_its_bottom_pane_to_turn_0(self):
+        r = self._result()
+        self.assertTrue((r.get("botFill") or {}).get("filled"),
+                        "the dragged-down session's bottom pane fills to turn 0 (the wall lesson): %r" % r.get("botFill"))
 
 
 if __name__ == "__main__":
