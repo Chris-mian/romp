@@ -251,29 +251,37 @@ _pyread() {   # $1 the probe file: its bytes into _pyout with NULs dropped; a mi
     [[ $_n -lt 66 ]] || _pycapped=1
     return 0
 }
-_pybound() {   # $@ the probe command, under the 5 s bound with this shell's own watchdog where coreutils timeout is absent:
-               # TERM at the bound, KILL a second later; the command's own exit, or 143 or 137 when the watchdog signalled it. The
-               # watchdog is a plain background child and acts on no trap of this script's (round five's watchdog acted from a TERM
-               # trap under set -e and let a blocking interpreter through); a TERM to this script mid-probe interrupts the wait, the
-               # script's own trap runs, and the orphaned watchdog still ends the probe within the bound. The watchdog's descriptors
-               # are closed, so a shell reading this script's output is not held by it.
-    local _p _w _rc=0
-    "$@" & _p=$!
-    # `sleep 5 || exit 0`: a PATH without sleep (the bare-PATH probe test: bash, cat, rm and little else) cannot time the
-    # bound, and a watchdog whose sleep failed went straight to the TERM and refused a good interpreter as unresponsive
-    # (exit 143) in the same second; without a timer the probe runs unbounded, as it did before, never killed at once
-    ( sleep 5 || exit 0; kill -TERM "$_p" 2>/dev/null; sleep 1 || :; kill -KILL "$_p" 2>/dev/null ) </dev/null >/dev/null 2>&1 3>&- & _w=$!
-    wait "$_p" || _rc=$?
-    { kill "$_w" 2>/dev/null && wait "$_w" 2>/dev/null; } || true      # the probe answered: the watchdog stands down
-    return "$_rc"
+_pybound() {   # $@ the probe command, under the 5 s bound with this shell's own watchdog where coreutils timeout is absent, the
+               # shape coreutils timeout -k 1 5 gives: TERM at the bound, KILL a second later, and the PROCESS GROUP signalled, so a
+               # helper the interpreter started dies with it. Job control (set -m) in a subshell of this function's own makes every
+               # background job here its own process group: the probe is signalled as `kill -- -pid`, and the watchdog's stand-down
+               # takes its sleep child with it (a pid-only kill left a five-second sleep orphan per probe, and a pid-only TERM let a
+               # helper outlive the bound: the 1796 read). The subshell's stderr is dropped, so bash's job-status lines never reach
+               # the log (the launcher's wrapper shape). The watchdog is a plain background child and acts on no trap of this
+               # script's (round five's watchdog acted from a TERM trap under set -e and let a blocking interpreter through); a TERM
+               # to this script mid-probe is acted on when this foreground subshell returns, at the bound at the latest. The exit is
+               # the command's own, or 143 or 137 when the watchdog signalled it.
+    (
+        set -m
+        _p="" _w="" _rc=0
+        "$@" & _p=$!
+        # `sleep 5 || exit 0`: a PATH without sleep (the bare-PATH probe test: bash, cat, rm and little else) cannot time the
+        # bound, and a watchdog whose sleep failed went straight to the TERM and refused a good interpreter as unresponsive
+        # (exit 143) in the same second; without a timer the probe runs unbounded, as it did before, never killed at once
+        ( sleep 5 || exit 0; kill -TERM -- "-$_p" 2>/dev/null; sleep 1 || :; kill -KILL -- "-$_p" 2>/dev/null ) </dev/null >/dev/null 2>&1 3>&- & _w=$!
+        wait "$_p" || _rc=$?
+        kill -TERM -- "-$_w" 2>/dev/null || :      # the probe answered: the watchdog and its sleep stand down together
+        wait "$_w" 2>/dev/null || :
+        exit "$_rc"
+    ) 2>/dev/null
 }
 trap '_pyrm' EXIT
 # a TERM to this script during the probe is acted on when the foreground probe returns (bash runs a trap after the
 # command it interrupted), at the bound at the latest: the exit is 143 then, not at once
 trap '_pyrm; exit 143' TERM INT HUP
-_prc=0 _pybounded="" _pyout=""
+_prc=0 _pybounded="" _pycodes="" _pyout=""
 if command -v timeout >/dev/null 2>&1; then
-    _pybounded=1
+    _pybounded=1 _pycodes="124 or 137"    # timeout's own exits: 124 at the bound, 137 when the KILL reached timeout itself
     if [[ -n "$_pyout_file" ]]; then
         ( timeout -k 1 5 "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null; exit $? ) 2>/dev/null || _prc=$?
         # the shell reads the file itself: a cat here was the script's only external read, and a PATH with timeout
@@ -289,7 +297,8 @@ if command -v timeout >/dev/null 2>&1; then
         _pyout="$( ( timeout -k 1 5 "$PY" -c "$_pyprog" </dev/null 2>/dev/null; exit $? ) 2>/dev/null )" || _prc=$?
     fi
 else
-    _pybounded=1     # bounded by this shell's watchdog (_pybound): the same 5 s, the same refusal
+    _pybounded=1 _pycodes="143 or 137"    # this shell's watchdog: 143 for its TERM at the bound, 137 for the KILL a second later; a
+                                          #  probe that exits 143 of its own accord reads the same HERE only, where the watchdog runs
     if [[ -n "$_pyout_file" ]]; then
         _pybound "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null || _prc=$?
         _pyread "$_pyout_file"
@@ -302,8 +311,10 @@ if [[ -n "${_pycapped:-}" ]]; then
     echo "romp: the version probe of $PY printed more than 64 NUL bytes ahead of its output, so the output was not read (a site customization writing NUL bytes ahead of the program); the kernel is not started on it." >&2
     exit 1
 fi
-if [[ -n "$_pybounded" && ( "$_prc" -eq 124 || "$_prc" -eq 137 || "$_prc" -eq 143 ) ]]; then   # 143: this shell's watchdog TERMed it
-    echo "romp: $PY did not answer its version probe within 5 s, or exited with the bound's own code (exit $_prc): unresponsive (a stalled network mount, a site customization reaching for the network), or an interpreter that exits 124 or 137 of its own accord reads the same; the kernel is not started on it." >&2
+if [[ -n "$_pybounded" && ( "$_prc" -eq 137 || ( "$_pycodes" == 124* && "$_prc" -eq 124 ) || ( "$_pycodes" == 143* && "$_prc" -eq 143 ) ) ]]; then
+    # the bound's own codes are the ROAD's: 124 is timeout's alone, 143 the watchdog's alone (an interpreter that exits 143 of its
+    # own accord on the timeout road, where no watchdog runs, is not refused for it: the 1796 read)
+    echo "romp: $PY did not answer its version probe within 5 s, or exited with the bound's own code (exit $_prc): unresponsive (a stalled network mount, a site customization reaching for the network), or an interpreter that exits $_pycodes of its own accord reads the same; the kernel is not started on it." >&2
     exit 1
 fi
 _pyver=""
