@@ -3101,15 +3101,33 @@ def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     return {} if _reg_absent_for_write(_reg_path(state_dir, sid)) else None
 
 
-REG_REV = [0]   # the registry's revision: advanced by every write and removal of a registration file in this process, so a
-#                 listing keyed on it (the kernel's /sessions rows: lastSid, the comment-thread rows) rebuilds on the event and
-#                 serves from memory otherwise (plans/sessions-route-from-the-cycle.md). One write path (write_reg) carries the
-#                 bump: this backend never unlinks a registration (a dead session's reg stays, alive false), so a write is the
-#                 only way the table moves; tests/test_sessions_listing.py enumerates the writers.
+REG_REV = [0]   # the registry's revision: advanced by every write and removal of a registration file in this process. One write
+#                 path (write_reg) carries the bump: this backend never unlinks a registration (a dead session's reg stays, alive
+#                 false), so a write is the only way the table moves; tests/test_sessions_listing.py enumerates the writers. The
+#                 kernel's /sessions listing is keyed on the ROWS revision below, not this one (plans/sessions-route-from-the-cycle.md).
 
 
 def reg_rev() -> int:
     return REG_REV[0]
+
+
+REG_ROWS_FIELDS = ("lastSid", "threadOf", "alive")   # the registration fields the kernel's /sessions rows read: lastSid on every row
+#                                                       (jd._sdk_last_sid), a comment thread's threadOf and alive (thread_sessions)
+REG_ROWS_REV = [0]   # the registry's ROWS revision: advanced only when one of those fields changes for a registration (or the
+_REG_ROWS_SEEN = {}  #  registration is first written in this process), so the listing keyed on it rebuilds once per change the rows
+#                       can see and never on the per-cycle writes of other fields (2026-09-15: keyed on REG_REV, the listing rebuilt
+#                       every cycle, 778 builds in 776 s of a boot, 767 of them on registry writes no row read).
+
+
+def reg_rows_rev() -> int:
+    return REG_ROWS_REV[0]
+
+
+def _reg_rows_note(sid: str, reg: dict) -> None:
+    t = tuple(repr(reg.get(f)) for f in REG_ROWS_FIELDS)
+    if _REG_ROWS_SEEN.get(sid) != t:
+        _REG_ROWS_SEEN[sid] = t
+        REG_ROWS_REV[0] += 1
 
 
 
@@ -3125,7 +3143,8 @@ def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
         tmp.write_text(json.dumps(reg))
         os.replace(tmp, p)
         REG_REV[0] += 1                                 # the table moved (after the publish, so a reader that took the revision
-        #                                                  before its read misses on its next check)
+        _reg_rows_note(sid, reg)                        #  before its read misses on its next check); the rows revision only on a
+        #                                                  change to a field the rows read
     finally:
         try:                                        # never leave a stray temp on a failed write
             os.unlink(tmp)
