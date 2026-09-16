@@ -174,6 +174,7 @@ def kernel_env(lab, claude, dist, port, token, **seams):
     by name. The kernel the lab starts gets it by process; the driver's relaunch gets relaunch_env() of it, through
     the stanza relaunch_cfg() writes to the lab's cfg.json."""
     env = {k: v for k, v in os.environ.items() if k in KERNEL_ENV_NAMES or k.startswith("XDG_")}
+    env.setdefault("ROMP_CLAUDE_BIN", "/bin/false")   # the conftest floor for a bare run: a lab kernel's judges never reach a real CLI
     env.update(XDG_STATE_HOME=os.path.join(lab, "xdg"), CLAUDE_CONFIG_DIR=claude,
                ROMP_MANAGER_PORT="1", ROMP_KERNEL_NO_OPEN="1",
                ROMP_SERVE_TOKEN=token, ROMP_KERNEL_PORT=str(port),

@@ -45263,7 +45263,19 @@ def _lanes_forget(keep):
 # unshared mutable store disables the prefix for that build (the derivation stays whole). Bounded by the lanes the
 # builds draw (_lanes_forget drops the rest) and by _LANES_MEMO_MAX like the lane memo; the bars it holds are the
 # same objects the lane memo and the wire cache hold. Counted under memos.lanes as prefix_hit and prefix_segs.
-_lane_prefix_memo = {}    # sid -> (inputs, turn_keys, bars, seg_ends, prompts, last_t, nsegs, complained)
+# The closed turns' COMPACTION markers ride the prefix too (2026-09-16): the lane's compactions were a comprehension
+# over every atom of every turn, run after the prefix reuse on every derivation (a live lane whose tail moved derives
+# once per build that draws it, about three lanes a build on the measured board), so a prefix hit still walked the
+# whole history for markers it could have held, and on a restored lane (LazyAtoms, the kernel's closed turns) every
+# one of those atom reads is a lock round trip or a row decode: 20-45 ms per derivation of a 30k-60k record
+# transcript, 60-140 ms of the floor of every build that derives such lanes (the multi-second cycles have other
+# causes). A closed
+# turn's markers are a function of that turn's atoms (type, subtype, t) and the branch clip, already an input, the
+# same premise the held bars rest on, so they are gathered per turn inside the loop (before the echo skip, so an echo
+# turn's markers land in turn order as the one-pass form had them), snapshotted before the tail beside the bars, and
+# held as the ninth field; a hit walks only the tail's atoms. A partial prefix still re-derives the whole lane,
+# markers included.
+_lane_prefix_memo = {}    # sid -> (inputs, turn_keys, bars, seg_ends, prompts, last_t, nsegs, complained, compactions)
 _LANE_PREFIX_LOCK = threading.Lock()
 
 
@@ -45293,17 +45305,17 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
     (the compact shape below, every default omitted); seg_ends maps a segment's start t to its work-END t; last_t
     is the lane's last recorded activity, the newest atom time of its newest bar (its `since` when the liveness
     snapshot has none), never a turn's `end`, which for the tail turn is the parse clock (T324); compactions are the
-    compact_boundary markers; cap_marks and other_marks are this lane's judging marks, unfiltered
-    (_derive_judging_marks); nsegs counts the segments visited (the cost a memo hit saves); complained is True
-    when the seams or the marks stage failed, or a mark carries a time the assembly could not compare, and
-    _bars_complain said so; such a lane is not memoized. No clock is read here. `full_prompts`, when given,
+    compact_boundary markers in turn order, the closed turns' held with the prefix; cap_marks and other_marks are this
+    lane's judging marks, unfiltered (_derive_judging_marks); nsegs counts the segments visited (the cost a memo hit
+    saves); complained is True when the seams or the marks stage failed, or a mark carries a time the assembly could
+    not compare, and _bars_complain said so; such a lane is not memoized. No clock is read here. `full_prompts`, when given,
     receives each segment's WHOLE prompt under its bar id (T278b): the bar carries the wire form (_wire_prompt,
     the first line capped) and _bind_message_execs's sender heuristic reads the whole text through this map; a
     memo that serves the bars serves the map beside them."""
     if full_prompts is None:
         full_prompts = {}
     st_turns = session["turns"]
-    bars, last_t, seg_ends, nsegs, complained = [], None, {}, 0, False   # seg_ends: seg-start t → work-END t (for completion marks)
+    bars, last_t, seg_ends, nsegs, complained, compactions = [], None, {}, 0, False, []   # seg_ends: seg-start t → work-END t (for completion marks)
     # the prefix: the held bars of the closed turns before the last one, reused while their identities and the inputs stand
     inputs = _lane_prefix_inputs(goals, cap_key, live, bft)
     n_last = len(st_turns) - 1
@@ -45321,7 +45333,7 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
             if k > 0:
                 if k == len(held[1]):                       # the whole held prefix stands: reuse its objects
                     bars = list(held[2]); seg_ends = dict(held[3]); prompts_held = held[4]; last_t = held[5]; nsegs_held = held[6]
-                    complained = held[7]
+                    complained = held[7]; compactions = list(held[8])
                 else:                                       # a shorter common prefix: keep the bars of the turns that stand
                     nsegs_held = 0; prompts_held = {}
                     keep_ids = set()
@@ -45337,7 +45349,12 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
     snap = None
     for ti, turn in enumerate(st_turns[start_k:], start=start_k):
         if ti == n_last and turn_keys and snap is None:
-            snap = (list(bars), dict(seg_ends), dict(full_prompts), last_t, nsegs, complained)   # the closed turns' part, before the tail
+            snap = (list(bars), dict(seg_ends), dict(full_prompts), last_t, nsegs, complained, list(compactions))   # the closed turns' part, before the tail
+        # this turn's compaction markers, held with the prefix (2026-09-16, the comment above _lane_prefix_memo); copied
+        # boundaries stay on the parent's lane
+        compactions.extend({"t": a["t"]} for a in turn["atoms"]
+                           if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")
+                           and not (bft and a["t"] <= bft))
         if turn.get("echoTurn"):
             continue        # a stale echo's own turn (T344): a send the transcript never took draws no bar
         turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
@@ -45435,7 +45452,8 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
             _lane_prefix_memo.pop(sid, None)
             while len(_lane_prefix_memo) >= _LANES_MEMO_MAX:
                 _lane_prefix_memo.pop(next(iter(_lane_prefix_memo)))
-            _lane_prefix_memo[sid] = (inputs, turn_keys, snap[0], snap[1], snap[2], snap[3], snap[4] + (nsegs_held if start_k else 0), False)
+            _lane_prefix_memo[sid] = (inputs, turn_keys, snap[0], snap[1], snap[2], snap[3], snap[4] + (nsegs_held if start_k else 0), False,
+                                      snap[6])
     try:
         cap_marks, other_marks = _derive_judging_marks(sid, caps, goals, seg_ends) if goals is not None else ([], [])
         # The horizon comparisons run in _judging_assemble, per build, outside this lane's guard; the one-pass form
@@ -45450,9 +45468,6 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
         _bars_complain(sid, "judging-marks", e)   # this lane loses its marks, the frame ships
         complained = True
         cap_marks, other_marks = [], []
-    compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
-                   if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")
-                   and not (bft and a["t"] <= bft)]           # copied boundaries stay on the parent's lane
     return bars, seg_ends, last_t, compactions, cap_marks, other_marks, nsegs, complained
 
 

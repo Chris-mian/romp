@@ -82,6 +82,14 @@ run_romp() {
     "$ROMP_SCRIPT" "$@" 2>&1
 }
 
+# Helper: an in-place sed that BSD sed reads the same way as GNU sed. `sed -i 's/.../' file` is GNU's shape; BSD sed
+# (macOS) takes the word after -i as the backup suffix and then reads the expression as the file ("invalid command code
+# f", the macOS bats leg's first completion, 2026-09-16). The edit goes through a temp file and back into the file
+# itself, so the mock keeps its mode and its inode. $1 the expression, $2 the file.
+_sed_inplace() {
+    sed "$1" "$2" > "$2.sed-tmp" && cat "$2.sed-tmp" > "$2" && rm -f "$2.sed-tmp"
+}
+
 # Helper — a fake `curl` for the kernel-API paths (`romp new` SDK spawn + `-m` send).
 # Logs every call to MOCK_LOG and answers {"ok": true}; MOCK_CURL_FAIL_SEND=1 makes
 # the /send leg fail the way curl -f does, so per-leg error reporting is testable.
@@ -777,7 +785,7 @@ MOCK
     [[ "$output" != *"applied tags"* ]]
     [[ "$output" != *"WARNING"* ]]
     # …while an inherited tag IS reported
-    sed -i 's/"tags": \[\]/"tags": ["pool"]/' "$MOCK_DIR/curl"
+    _sed_inplace 's/"tags": \[\]/"tags": ["pool"]/' "$MOCK_DIR/curl"
     run run_romp new ideabox
     [[ "$output" == *"applied tags pool"* ]]
 }
@@ -807,7 +815,7 @@ MOCK
     [[ "$output" != *"did not apply --in  pool"* ]]
     [[ "$output" != *"did not apply --in aaaa"* ]]
     # against a kernel with only the `tags` echo (no positional pair) the name match still stands
-    sed -i 's/, "tagsRequested".*"tagError"/, "tagError"/' "$MOCK_DIR/curl"
+    _sed_inplace 's/, "tagsRequested".*"tagError"/, "tagError"/' "$MOCK_DIR/curl"
     run run_romp new --in pool --in twin ideabox
     [[ "$output" == *"did not apply --in twin"* ]]
     [[ "$output" != *"did not apply --in pool"* ]]
@@ -872,13 +880,13 @@ MOCK
     [[ "$output" != *"starts in no tags"* ]]
     [[ "$output" != *"already running"* ]]
     # a refused --in (a null slot) is not "applied": the notice names only what landed
-    sed -i 's/"tagsApplied": \["infra", "qa"\]/"tagsApplied": ["infra", null]/' "$MOCK_DIR/curl"
+    _sed_inplace 's/"tagsApplied": \["infra", "qa"\]/"tagsApplied": ["infra", null]/' "$MOCK_DIR/curl"
     run run_romp new --in infra --in qa ideabox
     [[ "$output" == *"; --in applied: infra"* ]]
     [[ "$output" != *"--in applied: infra, qa"* ]]
     # the name was already running: nothing starts and nothing is inherited (no creation event); the
     # notice says so once, after the "is already running" line, and never "starts"
-    sed -i 's/"dir": "\/tmp\/x", "tags": \["infra", "qa"\], "tagsRequested": \["infra", "qa"\], "tagsApplied": \["infra", null\]/"existing": true, "tags": ["pool"], "tagsRequested": [], "tagsApplied": []/' "$MOCK_DIR/curl"
+    _sed_inplace 's/"dir": "\/tmp\/x", "tags": \["infra", "qa"\], "tagsRequested": \["infra", "qa"\], "tagsApplied": \["infra", null\]/"existing": true, "tags": ["pool"], "tagsRequested": [], "tagsApplied": []/' "$MOCK_DIR/curl"
     run run_romp new ideabox
     [ "$status" -eq 0 ]
     [[ "$output" == *'"ideabox" is already running; see the dashboard (romp)'* ]]

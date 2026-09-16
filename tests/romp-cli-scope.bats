@@ -283,12 +283,14 @@ assert_direct_exec_in_place() {
 }
 
 @test "direct path, ROMP_CLI_SCOPE=0: exec in place, stdout exactly the CLI's, stderr empty" {
+    [ "$(uname -s)" != "Darwin" ] || skip "the direct path's exec-in-place check reads the fake CLI's parent as an intermediate process on macOS bash (the first completed macOS leg, 2026-09-16), and the wrapper is never on the launch path there: cli_scope_supported needs systemd-run"
     assert_direct_exec_in_place ROMP_CLI_SCOPE=0 -- --input-format stream-json "two words" ""
     [ ! -s "$ERR" ]
     [ ! -e "$FAKE_CALLS" ]
 }
 
 @test "direct path, no systemd-run on PATH: exec in place, stdout exactly the CLI's, stderr empty" {
+    [ "$(uname -s)" != "Darwin" ] || skip "the direct path's exec-in-place check reads the fake CLI's parent as an intermediate process on macOS bash (the first completed macOS leg, 2026-09-16), and the wrapper is never on the launch path there: cli_scope_supported needs systemd-run"
     mkdir -p "$TEST_DIR/tools"   # a PATH with nothing on it the wrapper could mistake for systemd-run
     assert_direct_exec_in_place "PATH=$TEST_DIR/tools" -- --input-format stream-json
     [ ! -s "$ERR" ]
@@ -296,12 +298,14 @@ assert_direct_exec_in_place() {
 }
 
 @test "direct path, empty ROMP_SID (a probe): exec in place, stdout exactly the CLI's, stderr empty" {
+    [ "$(uname -s)" != "Darwin" ] || skip "the direct path's exec-in-place check reads the fake CLI's parent as an intermediate process on macOS bash (the first completed macOS leg, 2026-09-16), and the wrapper is never on the launch path there: cli_scope_supported needs systemd-run"
     assert_direct_exec_in_place ROMP_SID= -- -v
     [ ! -s "$ERR" ]
     [ ! -e "$FAKE_CALLS" ]
 }
 
 @test "direct path, a failed pre-flight: exec in place, stdout exactly the CLI's, ONE stderr line" {
+    [ "$(uname -s)" != "Darwin" ] || skip "the direct path's exec-in-place check reads the fake CLI's parent as an intermediate process on macOS bash (the first completed macOS leg, 2026-09-16), and the wrapper is never on the launch path there: cli_scope_supported needs systemd-run"
     cat > "$BIN/systemd-run" <<'SH'
 #!/bin/sh
 echo "$*" >> "$FAKE_CALLS"
@@ -479,6 +483,7 @@ SH
 }
 
 @test "the ignored: line quotes the failure that decided — the second refusal of the properties, not the first" {
+    [ "$(uname -s)" != "Darwin" ] || skip "the scoped path is a systemd feature driven here through a fake systemd-run; on macOS the fake's call count differs from the Linux shape of 4 (the first completed macOS leg, 2026-09-16) and the feature is off there"
     # call 1 (with the properties) fails with a bus fault, call 2 (bare) passes, call 3 (with them
     # again) fails with the real rejection: that third call is what drops the limits, and the line
     # must quote it — quoting the first named a transient fault as the reason a limit was dropped
