@@ -75,7 +75,9 @@ else:
     say("Invalid code. Login error.\\n")
 '''.replace("@@MARKER@@", repr(_MARKER)).replace("@@URL@@", repr(_URL)))
 os.chmod(_MOCK, os.stat(_MOCK).st_mode | stat.S_IEXEC)
-os.environ["ROMP_CLAUDE_BIN"] = _MOCK
+# The mock is installed as the CLI per TEST (LoginFlow.setUp), never at module level: a module-level write executes at
+# collection and holds for every test after it, and this one reached every lab kernel of a whole run (2026-09-16, the
+# conftest floor's comment tells the rest). The driver resolves the binary at each call (_claude_bin), so setUp is early enough.
 
 load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 load_source("romp_judge", os.path.join(BIN, "romp-judge"))
@@ -131,6 +133,8 @@ class LoginURL(unittest.TestCase):
 
 class LoginFlow(unittest.TestCase):
     def setUp(self):
+        self._bin_saved = os.environ.get("ROMP_CLAUDE_BIN")
+        os.environ["ROMP_CLAUDE_BIN"] = _MOCK                 # this test's CLI, restored below (the conftest floor otherwise)
         km._login_cancel()
         try:
             os.unlink(_MARKER)
@@ -139,6 +143,10 @@ class LoginFlow(unittest.TestCase):
 
     def tearDown(self):
         km._login_cancel()
+        if self._bin_saved is None:
+            os.environ.pop("ROMP_CLAUDE_BIN", None)
+        else:
+            os.environ["ROMP_CLAUDE_BIN"] = self._bin_saved
 
     def test_full_flow_url_code_done_and_the_secrecy_pin(self):
         self.assertEqual(km._login_start(), "")
