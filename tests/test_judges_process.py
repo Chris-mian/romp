@@ -516,28 +516,44 @@ class FailureRoads(_Child):
 
     def test_a_boot_sweep_that_cannot_list_the_root_retries_at_the_first_request(self):
         """Round four, medium: the sweep marked itself done before listing the root, so a boot sweep that could not list it
-        never retried and the first-request sweep the reference promises was dead."""
-        import subprocess
+        never retried and the first-request sweep the reference promises was dead. Round five: the fault is PRODUCED through
+        the real road (a regular file where the state root should be, then a root with no permissions), never a stub:
+        Path.glob answered [] to both, so the guard on the listing was unreachable until the listing moved to os.listdir."""
+        import stat, subprocess
         km = self.km
         self._on()
         records = getattr(km, "_judge_child_records", None)
         self.assertIsNotNone(records, "the sweep lists the root through one helper (the base globs inline and marks first)")
-        boom = [0]
-        def failing_once():
-            if boom[0] == 0:
-                boom[0] = 1
-                raise PermissionError(13, "the root could not be listed")
-            return records()
-        km._judge_child_records = failing_once
+        real_root = self.jd.STATE
+        bogus = Path(self.td) / "not-a-dir"
+        bogus.write_text("x")
+        self.jd.STATE = bogus                             # a regular file where the records directory should be
+        try:
+            with self.assertRaises(OSError):
+                records()
+            km._JUDGE_CHILD.sweep_orphans()               # the boot call over the broken root
+            self.assertFalse(km._JUDGE_CHILD.swept, "a failed listing leaves the sweep unmarked")
+        finally:
+            self.jd.STATE = real_root
+        locked = Path(self.td) / "locked"
+        locked.mkdir()
+        os.chmod(locked, 0o000)                           # a root that cannot be read
+        self.jd.STATE = locked
+        try:
+            if os.geteuid() != 0:                         # root lists it regardless; the regular-file road above covers that case
+                with self.assertRaises(OSError):
+                    records()
+                km._JUDGE_CHILD.sweep_orphans()
+                self.assertFalse(km._JUDGE_CHILD.swept, "unmarked over an unreadable root too")
+        finally:
+            self.jd.STATE = real_root
+            os.chmod(locked, stat.S_IRWXU)
         orphan = subprocess.Popen([sys.executable, self.script, "--serve", "romp-judge"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         orphan.stdout.readline()
         gone = subprocess.Popen(["true"]); gone.wait(); dead = gone.pid
         try:
-            km._JUDGE_CHILD.sweep_orphans()               # the boot call, failing to list
-            self.assertEqual(boom[0], 1)
-            self.assertFalse(km._JUDGE_CHILD.swept, "a failed listing leaves the sweep unmarked")
             (self.jd.STATE / ("judge-child.%d.json" % dead)).write_text(json.dumps({"pid": orphan.pid, "parent": dead, "t": 1}))
-            self._pass()                                  # the boot sweep lists this time (the producer's), and so would the first request's
+            self._pass()                                  # the root repaired: the producer's sweep lists, and so would the first request's
             try:
                 orphan.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -546,7 +562,6 @@ class FailureRoads(_Child):
             self.assertEqual(self._judge().get("orphansSwept") or 0, 1)
             self.assertTrue(km._JUDGE_CHILD.swept, "marked once the root was listed")
         finally:
-            km._judge_child_records = records
             if orphan.poll() is None:
                 orphan.kill()
 

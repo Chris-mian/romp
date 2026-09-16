@@ -53466,8 +53466,10 @@ def _judge_child_budgets():
 
 def _judge_child_records():
     """Every pid record under the state root, one per kernel pid. Raises OSError when the root cannot be listed (the sweep
-    then stays unmarked and retries at the first request)."""
-    return sorted(jd.STATE.glob("judge-child*.json"))
+    then stays unmarked and retries at the first request): listed with os.listdir, which raises on an unreadable root or
+    a regular file where the directory should be, where Path.glob answers [] to EACCES, ENOTDIR and ENOENT alike (3.13)."""
+    root = jd.STATE
+    return sorted(root / n for n in os.listdir(root) if n.startswith("judge-child") and n.endswith(".json"))
 
 
 class _JudgeEnd:
@@ -53478,14 +53480,15 @@ class _JudgeEnd:
 
     def finish(self, remaining):
         self.thread.join(max(0.0, float(remaining)))
-        if self.thread.is_alive() or self.proc.poll() is None:
+        if self.proc.poll() is None:                      # still standing past the join: killed outright, and said
             try:
                 self.proc.kill()
                 self.proc.wait(timeout=JUDGE_END_MARGIN_S / 5)   # a SIGKILL lands in milliseconds; a fifth of the margin at most
             except Exception:
                 pass
-            self.owner._drop_pid_record()
             sys.stderr.write("judge child: pid %s killed outright at the exit's end (its waits outran the margin)\n" % self.proc.pid)
+        if self.thread.is_alive():                        # exited on its own inside the reap thread's tail: only the record is owed
+            self.owner._drop_pid_record()
         return self.proc.poll()
 
 
