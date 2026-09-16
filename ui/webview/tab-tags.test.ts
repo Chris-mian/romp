@@ -110,7 +110,7 @@ test("the menu groups by what each item changes: [Rename+colours] / [Tags, Move]
   const renameAt = body.indexOf('l.textContent = "Rename"');
   assert.ok(renameAt > 0, "Rename wears the label span like its siblings");
   assert.match(body.slice(renameAt - 400, renameAt), /ctxIcon\("pencil", false\)/, "…and the pencil icon");
-  assert.match(body, /sb\.textContent = "the name is a label — mail, goals and history follow the session";/,
+  assert.match(body, /sb\.textContent = RENAME_SUBLINE;/,
     "…and a sub-line saying what a rename preserves (uuid-keyed truth)");
   const colorsAt = body.indexOf('el("div", "ctx-colors")');
   const tagsAt = body.indexOf('l.textContent = "Tags"');
