@@ -609,3 +609,5 @@ Moving it onto the notice store is a follow-up, not part of this note.
 - **Posting to a session on another host from this host's command line tool.** `romp card` talks
   to the local kernel, so a notice for a remote session is posted on the host that owns it. The
   federated dashboard then shows it either way.
+- **The archive bound.** The section above (2026-09-16) designs the revision index sidecar, Undo's tail read
+  and the memo bound, and lays out the disk-growth decision; the code follows the design's read.
