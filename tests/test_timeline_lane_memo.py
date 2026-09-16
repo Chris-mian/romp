@@ -1579,6 +1579,27 @@ class PrefixMemo(LaneMemoBase):
         self.assertEqual(json.dumps(part[0]), json.dumps(whole[0]))
         self.assertEqual(part[3], whole[3])
 
+    def test_a_partial_prefix_reads_each_standing_turn_once_not_twice(self):
+        """RED FIRST: the partial-prefix branch (a closed turn changed in the middle) carried a leftover loop that walked every
+        atom of the k standing turns into a set nobody read, right before the whole re-derivation read those turns again;
+        on a restored lane each of those reads is a lock round trip or a row decode. A standing turn's atoms are now read
+        exactly as often as a from-scratch derivation reads them, and no more (2026-09-16)."""
+        session, goals, want = self._boundary_lane()
+        short = dict(session, turns=[session["turns"][0], session["turns"][2], session["turns"][3]])   # the marker's turn gone
+        km._lane_prefix_memo.clear()
+        fresh = self._lazy_closed_turns(short)                          # a from-scratch derivation's read count per standing turn
+        km._lane_segments(LIVE_SID, short, goals, {}, True, None, cap_key=(1, 2, 3))
+        scratch = [la.n for la in fresh]
+        self.assertTrue(all(n > 0 for n in scratch), "the derivation reads every closed turn")
+        km._lane_prefix_memo.clear()
+        self._lazy_closed_turns(session)
+        km._lane_segments(LIVE_SID, session, goals, {}, True, None, cap_key=(1, 2, 3))   # the four-turn prefix is held
+        lazies = self._lazy_closed_turns(short)                         # turn 0 stands, turn 1 differs: the partial branch
+        part = km._lane_segments(LIVE_SID, short, goals, {}, True, None, cap_key=(1, 2, 3))
+        self.assertEqual(self._prefix_counts()[0], 0, "a partial prefix is not served")
+        self.assertEqual([la.n for la in lazies], scratch, "the standing turn is read as a from-scratch derivation reads it, not once more by a dead loop")
+        self.assertEqual(part[3], [], "no marker on a lane whose marker turn is gone")
+
     def test_a_boundary_inside_an_echo_turn_lands_in_turn_order_on_both_roads(self):
         """The per-turn gather runs before the echo skip, pinned by setting the echo flag BY HAND on a parsed turn that holds a
         boundary (the kernel's own echo turns hold only echo atoms, so this shape models no lane the kernel meets): such a
