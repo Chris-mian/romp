@@ -184,6 +184,8 @@ installMenuEcho();
   // chat.split (Mod+\) moves that column's active session to a new column at the right; chat.closeSplit closes
   // that column (the last one when the first column has the focus), its sessions returning to the first column.
   registerCommand({ id: "chat.split", title: "Move this session to a new column", run: () => { if (w.__rompSplitChat) w.__rompSplitChat(); } });
+  // chat.splitDown (Mod+Shift+\) splits this column top and bottom: its active session moves to a new bottom pane
+  registerCommand({ id: "chat.splitDown", title: "Split this column: move the session to a bottom pane", run: () => { if (w.__rompSplitDownChat) w.__rompSplitDownChat(); } });
   registerCommand({ id: "chat.closeSplit", title: "Close this column", run: () => { if (w.__rompCloseSplit) w.__rompCloseSplit(); } });
   // The keyboard path across columns, palette-only and unbound (Alt+Arrow is pane focus and Ctrl+Alt+Arrow an OS
   // binding on some desktops; the palette's rebinding covers anyone who wants a chord): the focused column's
@@ -196,7 +198,7 @@ installMenuEcho();
     const t = f?.contentDocument?.querySelector("#tabs .tab.active[data-id]") as HTMLElement | null;
     const sid = t?.dataset.id || "";
     if (!sid) { columnNotice("No session is open in this column to move."); return; }
-    const frames = ((w.__rompChatFrameIds ? w.__rompChatFrameIds() : ["f-chat"]) as string[]).map(pane).filter((x): x is HTMLIFrameElement => !!x);
+    const frames = ((w.__rompChatColumnIds ? w.__rompChatColumnIds() : ["f-chat"]) as string[]).map(pane).filter((x): x is HTMLIFrameElement => !!x);   // columns only: a bottom pane is a vertical child, not a left/right column
     const i = f ? frames.indexOf(f) : -1;
     if (i < 0) return;
     const colOf = (fr: HTMLIFrameElement): number | "new" => (fr.id === "f-chat" ? 1 : Number(fr.getAttribute("data-col")));
@@ -210,7 +212,7 @@ installMenuEcho();
   // Cycle the focus between chat columns (the user 2026-09-10): unbound by default — the browser owns most
   // tab-cycling chords — and set in Keyboard shortcuts; with one column there is nothing to cycle.
   function cycleSplit(dir: 1 | -1): void {
-    const ids: string[] = w.__rompChatFrameIds ? w.__rompChatFrameIds() : ["f-chat"];
+    const ids: string[] = w.__rompChatColumnIds ? w.__rompChatColumnIds() : ["f-chat"];   // cycle focus between COLUMNS only
     if (ids.length < 2) return;
     try { if (w.__rompPaneToggle) w.__rompPaneToggle("chat", true); } catch (e) { /* rail not booted yet */ }   // a hidden chat pane shows itself: the focus has to land somewhere visible
     const cur = (w.__rompFocusedChatId && w.__rompFocusedChatId()) || "f-chat";

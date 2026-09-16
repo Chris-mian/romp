@@ -56674,7 +56674,7 @@ var curFocus='f-chat', lastCol='f-chat';   // for Shift-Up out of the timeline: 
 // pointerdown / focusin / window-focus — event-based, no polling. Exactly one pane is ringed at a time.
 var lastChat='f-chat';   // the chat column the user last worked in (split screen 2026-09-08): where shell relays land
 function paneOf(id){return PANE[id]||(window.__rompChatPaneOf?window.__rompChatPaneOf(id):null);}   // split columns are made after this map
-function allCols(){var c=window.__rompChatFrameIds?window.__rompChatFrameIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat column, then Outline, Feed
+function allCols(){var c=window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat COLUMN (not a bottom pane, which is a vertical child), then Outline, Feed
 function setFocus(id){var pid=paneOf(id);if(!pid)return;curFocus=id;if(allCols().indexOf(id)>=0)lastCol=id;if(pid.indexOf('chat-pane')===0)lastChat=id;
 Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){el.classList.toggle('pane-focused',el.id===pid);});}
 window.__rompFocusedChatId=function(){return document.getElementById(lastChat)?lastChat:'f-chat';};
@@ -59896,11 +59896,14 @@ var BK='romp-vscode-state-chat:';   // a column's state blob (the shim's SK for 
 var row=document.querySelector('.row'),gva=document.getElementById('gv-a');
 if(!row||!gva)return;
 function mobile(){var b=document.getElementById('mtabs');try{return !!b&&getComputedStyle(b).display!=='none';}catch(e){return false;}}
-function save(){try{localStorage.setItem(CK,JSON.stringify({v:2,cols:cols.map(function(c){return {n:c.n,ids:c.ids.slice()};})}));}catch(e){}}
+function save(){try{localStorage.setItem(CK,JSON.stringify({v:2,cols:cols.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;})}));}catch(e){}}
 function paneId(n){return 'chat-pane-'+n;}function frameId(n){return 'f-chat-'+n;}
 function idx(n){for(var i=0;i<cols.length;i++){if(cols[i].n===n)return i;}return -1;}
 function entry(n){var i=idx(n);return i<0?null:cols[i];}
 function frames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}
+function isBelow(c){return !!(c&&c.place==='below');}   // a cols entry that is a bottom pane (nested under parent), not a side column
+function belowOf(n){for(var i=0;i<cols.length;i++){if(isBelow(cols[i])&&cols[i].parent===n)return cols[i];}return null;}   // the bottom pane under column n, if any
+function columnFrames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){if(!isBelow(c))out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}   // the horizontal columns only: a bottom pane is a vertical child, not a column
 function frameOfWin(win){if(!win)return null;var fs=frames();for(var i=0;i<fs.length;i++){try{if(fs[i].contentWindow===win)return fs[i];}catch(e){}}return null;}
 function colOf(win){var f=frameOfWin(win);return f?String(f.getAttribute('data-col')||''):'';}
 function frameOfCol(n){return document.getElementById(n===1?'f-chat':frameId(n));}
@@ -59949,7 +59952,35 @@ function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__ro
 var BUSY='A session is still being created in this column.';
 var LOCKED='The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session.';
 var deferred={};   // column numbers a peer dashboard's write dropped while their page had a create in flight: closed on the page's idle signal (colBusy below), never under the create
+// A VERTICAL split (drag a tab to a pane's bottom edge): a bottom pane nested inside its PARENT column's pane. The
+// parent's own iframe is kept IN PLACE (an iframe reparented in the DOM reloads, so the top pane is never moved): the
+// .pane becomes .split-v, the parent iframe stops absolute-filling and flexes by the top ratio, and a .gh.gh-chat
+// row-resize gutter plus a .chat-sub holding the bottom iframe follow it. The bottom iframe dials /chat?col=<n>&skeleton=1
+// like any column, seeded on its session; to the kernel it is one more col client.
+function gutterV(gid,topId,botId,colN){var h=document.getElementById(gid);if(!h)return;
+h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.getElementById(topId),B=document.getElementById(botId);if(!T||!B)return;
+document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
+function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
+function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
+var ce=entry(colN);if(ce){ce.ratio=Math.max(0.15,Math.min(0.85,nT/sum));save();}}   // the top ratio persists in the entry, read back at a restore
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
+var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
+var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
+var r=(ce.ratio>=0.15&&ce.ratio<=0.85)?ce.ratio:0.5;
+pp.classList.add('split-v');topf.style.flex=r+' 1 0';
+var g=document.createElement('div');g.className='gh gh-chat';g.id='gh-chat-'+ce.n;
+var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-'+ce.n;sub.style.flex=(1-r)+' 1 0';
+var f=document.createElement('iframe');f.id=frameId(ce.n);f.className='chat-col';f.setAttribute('data-col',String(ce.n));
+seed(ce.n,sid);f.src='/chat?col='+ce.n+'&skeleton=1';
+if(state)f.addEventListener('load',function(){adopt(f,sid,state);state=null;});
+sub.appendChild(f);var xb=pp.querySelector('.col-x');if(xb){pp.insertBefore(g,xb);pp.insertBefore(sub,xb);}else{pp.appendChild(g);pp.appendChild(sub);}
+gutterV(g.id,topId,f.id,ce.n);
+if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
+try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:ce.n,open:true}}));}catch(e){}
+return f;}
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
+var ce0=entry(n);if(ce0&&ce0.place==='below')return makeBelow(ce0,sid,state);   // a bottom pane nests, it is not a new column in the row
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
 p.style.flex='var(--g-chat'+n+',60) 1 0';
@@ -59987,6 +60018,13 @@ var state=take(src,sid),n=nextNumber();
 if(window.__rompSplitGrow)window.__rompSplitGrow(lastPane(),'chat'+n);   // the rightmost column and the new one each take half its width
 unlist(sid);cols.push({n:n,ids:[sid]});save();
 var nf=make(n,sid,state);try{nf.contentWindow.focus();}catch(e){}return nf;}
+if(to==='down'){var pc=from;   // split THIS session's own column (or the first) into a top and a bottom pane
+if(isBelow(entry(pc)))return notify('A split pane cannot split again.');   // sid already sits in a bottom pane: at most two rows deep
+if(belowOf(pc))return notify('This column is already split top and bottom.');
+var seD=entry(pc);if(seD&&seD.ids.length===1)return notify('This session is already alone in its column.');   // parity with the "new" path: a lone session has nothing to split off
+if(!canSplit())return refuse();
+var stD=take(src,sid),nD=nextNumber();unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
+var bf=make(nD,sid,stD);try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
 var tf=frameOfCol(tn);if(!tf)return null;
 if(tn===from)return tf;   // already there: nothing moves
@@ -60000,22 +60038,42 @@ try{tf.contentWindow.focus();}catch(e){}return tf;}
 // and its grow go; the Log drops its connection state; the ring moves to the column on its left. `keep` skips the
 // store write (a reconcile of another dashboard tab's write, which is already the truth).
 function close(n,keep){var i=idx(n);if(i<0)return;
+if(isBelow(cols[i]))return closeBelow(i,keep);   // a bottom pane un-nests, it is not a column in the row
 var f=document.getElementById(frameId(n)),home=document.getElementById('f-chat');
 if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with the document (its queued text with it)
+var kid=belowOf(n);   // a bottom pane nested in this column closes WITH it: its sessions rejoin the first column too
+if(!keep&&kid){var kf0=document.getElementById(frameId(kid.n));if(kf0&&busy(kf0)){notify(BUSY);return;}}
 if(f&&home)cols[i].ids.forEach(function(sid){adopt(home,sid,take(f,sid));});
-var left=i>0?paneId(cols[i-1].n):'chat-pane';   // the column on its left: takes the ring below, and the width first
-cols.splice(i,1);delete deferred[n];if(!keep)save();   // a deferred close is moot once the column is gone by any road
+if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice
+var sideL=cols.filter(function(c){return !isBelow(c);}),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
+var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';
+cols.splice(i,1);delete deferred[n];if(!keep)save();   // delete deferred[n] (#1774): a deferred close is moot once the column is gone by any road
 var p=document.getElementById(paneId(n)),g=document.getElementById('gv-chat-'+n);
-if(window.__rompSplitShrink)window.__rompSplitShrink(left,paneId(n));   // its pixels go to the column on its left (the halving's twin), while the pane is still in the row
+if(window.__rompSplitShrink)window.__rompSplitShrink(leftPane,paneId(n));   // its pixels go to the column on its left (the halving's twin), while the pane is still in the row
 if(window.__rompUnregisterPane)window.__rompUnregisterPane(paneId(n));
-if(p)p.remove();if(g)g.remove();
+if(p)p.remove();if(g)g.remove();   // the nested bottom pane's DOM goes with the parent .pane
 if(window.__rompColGone)window.__rompColGone(String(n));
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:n,open:false}}));}catch(e){}
-var pf=document.getElementById(i>0?frameId(cols[i-1].n):'f-chat');   // the ring moves to the column before it
+var pf=document.getElementById(leftFrame);   // the ring moves to the column before it
 try{pf&&pf.contentWindow.focus();}catch(e){}}
+// UN-NEST a bottom pane: its sessions rejoin its PARENT column's top pane, the bottom iframe and the gutter go, and the
+// parent returns from a two-pane split to a single iframe. Reached when a bottom pane empties (colEmpty -> close) or a
+// close targets it directly.
+function closeBelow(i,keep){var ce=cols[i];var topId=ce.parent===1?'f-chat':frameId(ce.parent),pid=ce.parent===1?'chat-pane':paneId(ce.parent);
+var bf=document.getElementById(frameId(ce.n)),home=document.getElementById(topId);
+if(!keep&&busy(bf)){notify(BUSY);return;}
+if(bf&&home)ce.ids.forEach(function(sid){adopt(home,sid,take(bf,sid));});
+if(ce.parent!==1){var pe=entry(ce.parent);if(pe)ce.ids.forEach(function(sid){if(pe.ids.indexOf(sid)<0)pe.ids.push(sid);});}   // a side-column parent LISTS them; the first column derives them from the rest
+cols.splice(i,1);if(!keep)save();
+var g=document.getElementById('gh-chat-'+ce.n),sub=document.getElementById('chat-sub-'+ce.n);if(g)g.remove();if(sub)sub.remove();
+var pp=document.getElementById(pid),topf=document.getElementById(topId);if(pp)pp.classList.remove('split-v');if(topf)topf.style.flex='';   // the top pane returns to absolute-fill
+if(window.__rompColGone)window.__rompColGone(String(ce.n));
+try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:ce.n,open:false}}));}catch(e){}
+try{home&&home.contentWindow.focus();}catch(e){}}
 function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';if(!c&&cols.length)c=String(cols[cols.length-1].n);if(c)close(Number(c));}
 // the palette's Move this session to a new column: the focused column's active tab (the one DOM read kept, for this)
 window.__rompSplitChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to move.');return moveTab(id,'new');};
+window.__rompSplitDownChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to split.');return moveTab(id,'down');};   // the vertical split: the focused column's active tab to a new bottom pane
 window.__rompCanSplit=canSplit;window.__rompMoveTab=moveTab;
 window.__rompCloseSplit=function(n){if(n===undefined)closeFocused();else close(Number(n));};
 window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the phone: the one chat shows everything
@@ -60023,7 +60081,8 @@ window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the
 // provisional resolves; a session an entry already lists is never stolen
 window.__rompClaimSession=function(sid,col){var n=Number(col),e=entry(n);if(typeof sid!=='string'||!sid||!e||ownerOf(sid)!==1)return false;e.ids.push(sid);save();return true;};
 window.__rompChatFrames=frames;window.__rompChatFrameIds=function(){return frames().map(function(f){return f.id;});};
-window.__rompChatPaneOf=function(fid){return fid==='f-chat'?'chat-pane':(String(fid).indexOf('f-chat-')===0?paneId(String(fid).slice(7)):null);};
+window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};   // columns only: the horizontal focus nav and column-cycling skip a bottom pane (a vertical child)
+window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column (one ring per column)
 window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOfWin=frameOfWin;window.__rompChatTarget=target;
 // THE DRAG (the user 2026-09-11, who asked for a tab dragged to the right edge to make a column and onto another column
 // to move it). The page posts {romp:'tabDrag',on:true,sid,name,stripH} at its dragstart and {on:false} at dragend
@@ -60098,28 +60157,37 @@ if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source));if(!deferr
 // in one entry; no empty entry; at most MAX-1 entries.
 function read(){var raw=null;try{raw=JSON.parse(localStorage.getItem(CK)||'null');}catch(e){}
 var out=[],seen={},migrated=false;
-function add(n,ids){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
-var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(keep.length)out.push({n:n,ids:keep});}
+function add(n,ids,place,parent,ratio){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
+var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(!keep.length)return;
+var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>=0.15&&r<=0.85)?r:0.5;}out.push(e);}
 if(Array.isArray(raw)){migrated=true;raw.forEach(function(n){var st=null;try{st=JSON.parse(localStorage.getItem(BK+Number(n))||'null');}catch(e){}add(n,[st&&typeof st.activeId==='string'?st.activeId:'']);});}
-else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[]);});
+else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[],c.place,c.parent,c.ratio);});
+// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, degrades to a side
+// column (never orphaned, never two-deep). One bottom pane per parent.
+var kidPar={};out.forEach(function(c){if(c.place!=='below')return;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
+if(!ok||kidPar[c.parent]){delete c.place;delete c.parent;delete c.ratio;return;}kidPar[c.parent]=true;});
 return {cols:out,migrated:migrated};}
 // another dashboard tab's write (this window never hears its own): its arrangement is the truth — close what it
-// dropped, make what it added (seeded like a restore), take its sets — and nothing is written back. One close is
-// DEFERRED, never skipped: a dropped column whose page has a create in flight (busy). `keep` passes close()'s busy gate,
-// so this tore the column down over the create and its queued text died with the document. The entry stays in cols at
-// its place, so every reader still knows the column, and its number waits in `deferred` for the page's idle signal (the
-// colBusy handler above), which re-reads the store and closes it only if the store still lacks it. A dropped column the
-// store lists again clears its mark: the store speaks for it once more.
+// dropped, make what it added (seeded like a restore), take its sets, and nothing is written back. One close is
+// DEFERRED, never skipped (#1774): a dropped column whose page has a create in flight (busy). `keep` passes close()'s
+// busy gate, so this tore the column down over the create and its queued text died with the document. The entry stays
+// in cols at its place, its number waits in `deferred` for the page's idle signal (the colBusy handler above), which
+// re-reads the store and closes it only if the store still lacks it. A bottom pane is deferred the same way
+// (frameOfCol resolves it; close dispatches it to closeBelow) and re-inserted with its placement.
 function reconcile(next){var kept=[];
 cols.slice().forEach(function(c,i){if(next.some(function(d){return d.n===c.n;})){delete deferred[c.n];return;}
 if(busy(frameOfCol(c.n))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});
-cols=next.map(function(c){return {n:c.n,ids:c.ids.slice()};});
-kept.forEach(function(k){cols.splice(Math.min(k[0],cols.length),0,{n:k[1].n,ids:k[1].ids.slice()});});   // the busy column, where it was
-cols.forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});}
+cols=next.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;});
+kept.forEach(function(k){var e=k[1],o={n:e.n,ids:e.ids.slice()};if(e.place==='below'){o.place='below';o.parent=e.parent;o.ratio=e.ratio;}cols.splice(Math.min(k[0],cols.length),0,o);});   // the busy column or bottom pane, where it was, with its placement
+cols.filter(function(c){return !isBelow(c);}).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});   // columns first, then their bottom panes (a bottom pane nests into a parent that must already be up)
+cols.filter(isBelow).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});}
 window.addEventListener('storage',function(e){if(!e||e.key!==CK||mobile())return;var r=read();if(!r.migrated)reconcile(r.cols);});
 // the columns this browser had open come back, each on a member of its own (the phone restores nothing: the
 // arrangement stays in the store for the desktop); a v1 store is written back in the new shape, once
-try{if(!mobile()){var r0=read();cols=r0.cols;cols.forEach(function(c){make(c.n,seedFor(c),null);});if(r0.migrated)save();}}catch(e){}
+try{if(!mobile()){var r0=read();cols=r0.cols;
+cols.filter(function(c){return !isBelow(c);}).forEach(function(c){make(c.n,seedFor(c),null);});   // columns first
+cols.filter(isBelow).forEach(function(c){if(!make(c.n,seedFor(c),null)){var bi=idx(c.n);if(bi>=0)cols.splice(bi,1);}});   // then bottom panes; a parent that never came up drops the entry to the first column's rest
+if(r0.migrated)save();}}catch(e){}
 })();
 """
 
@@ -61104,6 +61172,16 @@ def _landing():
             "#col-ghost.on{display:flex}"
             "#col-ghost.refused{background:transparent;box-shadow:inset 0 0 0 1px var(--accent,#9cd2ff)}"
             ".pane>iframe{position:absolute;inset:0;width:100%;height:100%}"
+            # a VERTICALLY split chat column (the chat vertical split, drag a tab to a pane's bottom edge): the .pane
+            # becomes a column flexbox of two .chat-sub wrappers with a .gh.gh-chat row-resize gutter between. Each sub
+            # wraps its OWN iframe, so the .pane>iframe absolute-fill above does not apply: the subs flex by the stored
+            # ratio and their iframes fill the sub instead. The gutter reuses .gh (the band gutter's row-resize dress).
+            ".pane.split-v{display:flex;flex-direction:column}"
+            ".chat-sub{position:relative;flex:1 1 0;min-width:0;min-height:0;overflow:hidden}"
+            ".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}"
+            # the TOP sub of a split column is the parent's own iframe, kept in place (never reparented, moving an
+            # iframe reloads it): under .split-v it stops absolute-filling and flexes by its stored ratio instead
+            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0}"
             # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
             # The focused pane gets a thin inset border (drawn as an inset box-shadow over the iframe edges);
             # the others get nothing, so the only lines on screen are the splitters + this focus ring. The ring
