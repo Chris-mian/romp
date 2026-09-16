@@ -1807,6 +1807,89 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `process`: `rss_kb` (resident set size in KB: the current size on Linux,
   read from `/proc`; the peak, `ru_maxrss`, on macOS, which has no `/proc`),
   `threads`, `cpu_s`, `pid`.
+- `heap`: where that resident size sits at the moment of the read, so a
+  large `process.rss_kb` can be attributed live, without a restart or a
+  debugger (the lag investigation, 2026-09-15, had to attribute a 5-6 GiB
+  resident size from cumulative byte counters and lab runs). Every value is
+  a GAUGE, the occupancy at the read and not a count since boot, with one
+  exception named below. `allocatedBlocks` is the number of memory blocks
+  the interpreter's object allocator holds at the read, of any size
+  (`sys.getallocatedblocks`; 0 on a build that cannot count them); `gc` is
+  the collector's `enabled`, its `counts` (the young generation's
+  allocations since its last collection, then how many times each younger
+  generation was collected since the older's last) and `thresholds` as
+  lists, and `stats` (per generation: `collections`, `collected`,
+  `uncollectable`), which is cumulative by nature; `tracing` says whether a tracemalloc tracer runs in
+  this process. Then the caches that hold session content: `hydrated` (the
+  lazy bodies read on demand: `entries`, and `bytes`, the records' length on
+  disk, which `capBytes` bounds, a proxy that locates the holder without
+  sizing it: decoded bodies usually weigh more, but escaped text can make the
+  disk bytes exceed the decoded storage),
+  `assemblyEntries` (the assembly cache's entries), `parseSlots` (the one
+  parse store's slots, one per session, cut and leaf), `lazyIndexes` (the
+  lazy indexes alive, a weak count), `materializedLruSlots` (the
+  materialized-atom LRU's slots, not the atoms: on a kernel whose LRU holds
+  its atom lists weakly a collected list's slots stay until they expire, so
+  this is an upper bound on the live materialized atoms; where the LRU holds
+  the lists strongly the two are equal; it is the same read as
+  `asmIndex.resident`, repeated here so the holders sit together),
+  `judgeUsageRows` (the judge-usage reader's rows in memory), `builtChat`
+  (`tabs` cached, their `events`, the cached payloads' event counts, a count
+  and not bytes, the occupancy measure of that cache, and `serializedBytes`, the sum over the
+  cached JSON strings, which only the index wire, a proto-1 client, stores,
+  so under the shipped wire it reads 0), `imgCache` (`entries` and `bytes`
+  of the preview data URLs; the cache has no cap, so this gauge is
+  O(entries) over whatever it holds, a refused file counting as an entry of
+  zero bytes). These occupancy gauges attribute a resident size to its
+  holders; they do not sum to it. The transcript record cache, the largest
+  resident holder when the kernel is large, is not among them: its occupancy
+  already rides this response under `recordCache` (`entries` and `bytes`
+  against `budgetBytes`), so a resident size these gauges leave unaccounted
+  for is read there first. The block reads a length or a counter per
+  cache, under the cache's own lock where its readers take one and over a
+  copied value list otherwise; it walks no object graph, collects nothing,
+  evicts nothing, fills nothing and reads no file. A gauge this process
+  cannot read (an accessor the runtime lacks, a container the source has not
+  got, a cached entry of a shape the gauge does not know) is `null`, said
+  once on stderr.
+- `gc`: the interpreter's garbage collections, counted and timed (2026-09-16:
+  pusher cycles stalled for 9-33 s and a profile of the process caught a 9.2 s
+  generation-2 collection charged to whichever stage happened to be running,
+  with no counter in the kernel to tie the one to the other; the collector's
+  own stats carry no durations). A `gc.callbacks` hook the kernel installs
+  once at boot times every collection from its start to its stop callback,
+  wall time on whichever thread triggered it. The hook never waits on the
+  kernel's own locks (`gc_event` in `kernel/kernel.py` says why: a collection
+  can run inside a locked region of the very thread that holds the lock).
+  `gen` maps each generation (`"0"`, `"1"`, `"2"`; a full collection is
+  generation 2) to `collections` (how many ran since the counters started),
+  `msSum`, `msMax` and `msLast` (their summed, largest and last pause) and
+  `collectedLast` (the objects the last one freed). `thresholds` and `counts`
+  are `gc.get_threshold()` and `gc.get_count()`, repeated from `heap.gc` so
+  the block reads on its own (how near the next collection is); `frozen`
+  counts the objects moved out of the collector's reach by `gc.freeze`, which
+  it never scans; `errors` counts callback failures (counted, never raised
+  into the collector; the first in the process is said once on stderr, a
+  line prefixed `perf: gc hook:`, the rest counted only); `hooked` says
+  whether the kernel's `gc.callbacks` hook is installed, so zeros with
+  `hooked` false mean no hook, not no collections. To read a slow cycle: find
+  its row in `pusher.stageRing` (or `jobs.stageRing`) and read the row's `gc`
+  (`null` when the cycle closed without an opening mark): `n0`, `n1` and
+  `n2`, the collections per generation that ran anywhere in the process
+  while the cycle was open, on whichever thread triggered them (a collection
+  holds the interpreter lock for its whole pause, so the cycle waited on it
+  either way), and `ms2`, the generation-2 milliseconds among them; the
+  young generations' pauses are in `gen.0` and `gen.1` only. A row whose
+  `n2` is 1 and whose `ms2` is most of
+  `s` x 1000 spent its time in the collector, not in the stage that was
+  running, and the stage's own `ms` overstates it by that much. A collection
+  inside overlapping pusher and jobs windows shows in both rings' rows, so
+  neither ring sums to `gen.collections`. `heap.gc` beside it carries the
+  collector's own gauges and its cumulative `stats`; the pauses live only
+  here. A collector accessor this runtime lacks reads `null`, said once on
+  stderr, as in `heap`; the tallies themselves need none. The kernel-samples
+  rows carry the same generation-2 tallies as `gcGen2Collections` and
+  `gcGen2MsSum`, cumulative, to difference per interval beside `rssKb`.
 - `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
   reminder walk, the interrupt tick, the persists, the pause and retry
   family) off the pusher since 2026-09-13, so no browser frame waits on a
@@ -1837,7 +1920,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   since a wake set by another thread or a periodic repost of an unchanged
   frame marks a cycle busy).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
-  split and the newest cycles' splits, each `{s, t, stages}` with, per stage,
+  split and the newest cycles' splits, each `{s, t, stages, gc}` (`gc` is the
+  cycle's own collections, described under `gc` above) with, per stage,
   its wall `ms` (one decimal), the reader's `bytes` off disk and the assembly
   cut's `hydrated` bytes ON THE PUSHER'S THREAD since the previous stage
   boundary (another thread's reads in the window, the judges' first pass or
@@ -1875,7 +1959,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   finishes its first LAST, so `stages` carries both splits (a key both own,
   `jobs.other`, is summed); a jobs pass still open ten minutes after the
   pusher's first cycle closed has the row written without it, marked
-  `jobsFirstPassPending`. The row also carries `parse`, the assembly's road counters at
+  `jobsFirstPassPending`. The row's `gc` carries each first split's collector
+  delta on its own, `firstCycle` and `firstPass` (each the split row's `gc`,
+  the shape the `stageRing` rows carry, or `null`), never summed: the tallies
+  are process-wide, so a collection inside both windows is in both deltas and
+  a sum would count it twice; the key is absent when neither split has one.
+  The row also carries `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
