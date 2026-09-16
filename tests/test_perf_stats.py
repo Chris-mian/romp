@@ -128,6 +128,7 @@ class Collector(unittest.TestCase):
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "convergeDeclined", "sessionsListing", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip", "ghostDropped",
                                               "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
+                                              "judgingBand",   # the judging band's per-row memo and horizon cursor (2026-09-16)
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks",   # the chat build's fixed-cost memos (2026-09-09)
                                               "outlineProvisional",   # the Outline's provisional-row ledger memo, parse-free (plans/outline-pane-provisional-row.md, 2026-09-15)
                                               "notices"})   # the notice files' parsed rows (T370, plans/notice-cards.md): bytes against their bound
