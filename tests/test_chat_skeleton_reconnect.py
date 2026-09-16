@@ -849,6 +849,7 @@ class SkeletonReconnect(unittest.TestCase):
 
 
 
+
 class RestartDiet(unittest.TestCase):
     """The user's ruling (2026-09-14): after a reload the selected tab builds first, the strip's other tabs spread over later refreshes,
     hidden tabs not until shown; and restarts are invisible, so the one reload the reload core still fires is a changed build, a fresh
