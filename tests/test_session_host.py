@@ -333,6 +333,19 @@ class HostProcess(unittest.TestCase):
     def _user(self, text):
         return json.dumps({"type": "user", "message": {"role": "user", "content": text}})
 
+    def _journal_landed(self, n, timeout=15):
+        """The journal once the writer has landed `n` records: the host forwards a record to the kernel at once and
+        journals it on its own writer task, so a frame on the socket says nothing about the disk yet (the writer may
+        lag by design, and a slow runner's disk shows it: the macOS cell read three records where the socket had four,
+        2026-09-16). The event waited on is the n-th record on disk, never a fixed pause."""
+        d = os.path.join(self.state, "hosts", SID)
+        deadline = time.time() + timeout
+        journal = list(sh.read_journal_dir(d))
+        while time.time() < deadline and len(journal) < n:                # loop-ok: the event is the writer's n-th record on disk
+            time.sleep(0.005)
+            journal = list(sh.read_journal_dir(d))
+        return journal
+
     def test_the_lease_and_the_hello_carry_the_clis_spawn_time_once_and_the_specs_login(self):
         """The host is the authority for when ITS CLI spawned: the lease's spawnedAt is stamped once at the spawn and stands
         across the beats (before 2026-09-14 every beat rewrote it with the beat's time, so a kernel copying it would have
@@ -368,8 +381,8 @@ class HostProcess(unittest.TestCase):
         self.assertEqual(offsets, list(range(len(offsets))), "offsets are ordinals from zero")
         kinds = [f["data"]["type"] for f in k.outs()]
         self.assertEqual(kinds, ["control_response", "system", "assistant", "result"])
-        journal = list(sh.read_journal_dir(os.path.join(self.state, "hosts", SID)))
-        self.assertEqual([r["type"] for _, r in journal], kinds, "the journal holds every record the CLI emitted")
+        journal = self._journal_landed(len(kinds))                        # the writer lands them behind the socket, by design
+        self.assertEqual([r["type"] for _, r in journal], kinds, "the journal holds every record the CLI emitted, in order")
         self.assertEqual(self._lease()["fsid"], FSID, "the lease's conversation id follows the init (it started as the romp sid)")
         k.send({"t": "ack", "offset": res["offset"]})
         # secrets: the canary environment value appears nowhere the host writes or sends
@@ -377,6 +390,25 @@ class HostProcess(unittest.TestCase):
         blob = json.dumps(self._hostlog()) + json.dumps([r for _, r in journal]) + json.dumps(k.frames)
         self.assertNotIn(canary, blob, "no environment value in host.log, the journal or a frame")
         self.assertNotIn("FAKE_CLI_LOG", json.dumps(self._hostlog()), "no spec content in host.log")
+        k.close()
+
+    def test_the_journal_lands_every_record_behind_the_socket_when_the_writer_lags(self):
+        """The reorder forced through the host's own seam: a writer that lands each record 0.4 s late. The socket
+        delivers the whole turn first (the host never pauses the reader for the disk); a journal read at that instant
+        holds fewer records than the socket did (the macOS cell's failure, 2026-09-16, with no seam: a slower disk), and
+        the journal holds them all, in order, once the writer has landed them. The test reads the journal at the frame
+        and again at the event, so the ordering the host promises (every record, in order, eventually) is what is pinned,
+        never the instant the disk catches up."""
+        host, sock, spec = self._start(_test_journal_delay_s=0.4)
+        k, _ = self._attach(sock)
+        k.send({"t": "in", "data": self._user("hello sleep=0")})
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        kinds = [f["data"]["type"] for f in k.outs()]
+        self.assertEqual(kinds[-1], "result")
+        at_the_frame = list(sh.read_journal_dir(os.path.join(self.state, "hosts", SID)))
+        self.assertLess(len(at_the_frame), len(kinds), "with the writer lagging, the disk trails the socket at the frame (the shape the assertion must not read)")
+        journal = self._journal_landed(len(kinds), timeout=20)
+        self.assertEqual([r["type"] for _, r in journal], kinds, "and holds every record, in the socket's order, once the writer landed them")
         k.close()
 
     def test_a_detached_kernel_reattaches_and_replays_from_its_ack_while_the_turn_kept_running(self):
