@@ -46688,7 +46688,13 @@ def _delta_split(kind, value, memo_key=None):
     as one the previous split of that collection encoded takes its string from that split (the identity is
     checked, never an id alone); the memo is rebuilt from this split's entries, so it never outgrows one
     build (2026-09-08: the bars frame re-encoded every bar of every lane on every build, ~15 MB a cycle,
-    when only the live lanes' bars were new objects)."""
+    when only the live lanes' bars were new objects). A hit hands back the previous split's (object, json)
+    pair itself and a miss mints one pair for the memo and the entries both, so a repeat split of unchanged
+    entries allocates no per-entry containers: a tuple that holds a dict is a container the collector tracks for life
+    (CPython never untracks it, unlike a tuple of scalars), and a split's pairs live until the next build,
+    long enough to be promoted to the oldest generation, whose collection walks every tracked object the
+    kernel holds (2026-09-16: two fresh pairs per bar per build, ~35k a build at ~1,000 builds an hour, were
+    the largest single stream feeding those collections; with the memo the encode was saved, the tuples were not)."""
     ents, order = {}, []
     enc = json.JSONEncoder(default=_wire_default_in("_delta_split")).encode   # one encoder for the thousand entries, not one each
     key = _delta_keyer(kind)                            # …and the kind parsed once, not per item
@@ -46703,10 +46709,10 @@ def _delta_split(kind, value, memo_key=None):
                     break
                 n += 1
         hit = prev.get(id(v)) if prev else None
-        js = hit[1] if (hit is not None and hit[0] is v) else enc(v)
-        if cur is not None:
-            cur[id(v)] = (v, js)
-        ents[kk] = (v, js); order.append(kk)
+        pair = hit if (hit is not None and hit[0] is v) else (v, enc(v))   # a hit hands back the LAST split's own pair: no new
+        if cur is not None:                                                 #  tuple; a miss mints ONE, shared by the memo and the
+            cur[id(v)] = pair                                               #  entries (2026-09-16: two fresh (object, json) tuples
+        ents[kk] = pair; order.append(kk)                                   #  per bar per build, both tracked for life, see the docstring)
     if kind == "dict" and isinstance(value, dict):
         for kk, v in value.items():
             put(str(kk), v)
