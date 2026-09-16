@@ -121,6 +121,53 @@ class FleetCacheTest(unittest.TestCase):
         self.assertNotIn("_views_dirty[0] > ", src, "no strict compare against the mark survives")
         self.assertNotIn("_views_dirty[0] <= ", src)
 
+    def test_the_pure_feed_rebuilds_at_an_equal_tick(self):
+        """GET /feed.json's own copy (_PURE_FEED) asks the same rule: a mark in its build's tick busts it (round two: driven,
+        not only pinned). The pusher has no audience, the signature stands and the clock is inside the rebuild floor, so the
+        dirty rule is the only thing that can bust the copy."""
+        T = 1789500001.25
+        stale = {"type": "feed", "cards": ["stale"]}
+        saved = (km._PURE_FEED, km._views_dirty[0], km._pusher_has_feed_audience, km._fleet_view_sig, km.build_feed, km._task_tracking_on)
+        try:
+            km._pusher_has_feed_audience = lambda: False
+            km._fleet_view_sig = lambda now, live_map: ("SIG",)
+            km.build_feed = lambda now, live_map=None: {"type": "feed", "cards": []}
+            km._task_tracking_on = lambda: True
+            with mock.patch.object(km.time, "time", return_value=T):
+                km._PURE_FEED = (stale, km.time.time(), km.time.time(), ("SIG",))     # a copy built and finished at T
+                km._views_dirty[0] = km.time.time()                                   # the mutation lands at T
+                got = km._pure_feed(int(T), {})
+            self.assertIsNot(got, stale, "the GET copy built in the mark's tick is rebuilt, never served (the base served it)")
+            self.assertEqual(got.get("cards"), [])
+        finally:
+            (km._PURE_FEED, km._views_dirty[0], km._pusher_has_feed_audience, km._fleet_view_sig, km.build_feed, km._task_tracking_on) = saved
+
+    def test_the_thread_cache_misses_at_an_equal_tick(self):
+        """The comment-thread cache (_built_thread) asks the same rule (round two: driven). Its key is stubbed to a constant so
+        the only question left is the mark against the entry's start stamp; a miss rebuilds through build_session (stubbed)."""
+        T = 1789500002.5
+        tsid = "77777777-2222-4333-8444-000000000777"
+        saved = (dict(km._built_thread), km._views_dirty[0], km._thread_reg, km._sdk_sess, km._chat_build_sig, km._chat_sig_ok,
+                 km.build_session, km._comment_thread_row_created)
+        try:
+            km._thread_reg = lambda t: {}
+            km._sdk_sess = lambda t, now: object()
+            km._chat_build_sig = lambda *a, **k: ("SIG",)
+            km._chat_sig_ok = lambda t: None
+            km.build_session = lambda t, now, live_map=None: {"events": [{"uuid": "fresh"}]}
+            km._comment_thread_row_created = lambda t: 0
+            key = ("SIG", None)                                                     # the stubbed signature plus no states row
+            with mock.patch.object(km.time, "time", return_value=T):
+                km._built_thread[tsid] = (key, None, [{"uuid": "stale"}], km.time.time())   # an entry whose build started at T
+                km._views_dirty[0] = km.time.time()                                        # the mutation lands at T
+                got = km._thread_events(tsid, None, int(T), {})
+            self.assertEqual(got, [{"uuid": "fresh"}], "an entry built in the mark's tick is a miss, rebuilt (the base served the stale events)")
+            km._views_dirty[0] = T - 1e-6
+            self.assertEqual(km._thread_events(tsid, None, int(T), {}), [{"uuid": "fresh"}], "a mark older than the start serves the (now fresh) entry")
+        finally:
+            km._built_thread.clear(); km._built_thread.update(saved[0])
+            (km._views_dirty[0], km._thread_reg, km._sdk_sess, km._chat_build_sig, km._chat_sig_ok, km.build_session, km._comment_thread_row_created) = saved[1:]
+
     def test_a_mutation_landing_mid_build_is_not_swallowed_by_that_build(self):
         """A build takes ~1-1.6s and reads the stores one session at a time, so a mutation landing
         MID-build may or may not have been read — its payload can predate the gesture while its finish
