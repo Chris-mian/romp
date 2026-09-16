@@ -8380,7 +8380,7 @@ function staleActiveFallback(ids: readonly string[], visibleIds: readonly string
   if (wantActive && heldHere(wantActive)) return;   // awaited by this column, listed or not: T357's restore takes it when it comes
   // a wanted tab another column holds is nobody's to await here (dragged away before the reload): retired, the first visible member takes the box
   const first = visibleIds[0];
-  setTimeout(() => { if (!activeId && !provisionalId && tabInView(first)) { wantActive = null; silentActivate(first); } }, 0);   // SILENT: a shown column adopts its tab without a focus hop, so a non-focused split column keeps its tab out of the no-active diet (2026-09-15)
+  setTimeout(() => { if (!activeId && !vanishedId && !provisionalId && tabInView(first)) { wantActive = null; silentActivate(first); } }, 0);   // SILENT: a shown column adopts its tab without a focus hop (2026-09-15). !vanishedId matches the schedule-time guard above: a teardown between the schedule and this timer must not let a silent activate sit beside a stale vanished record for applyTabOrder's restore (back = vanishedId || wantActive) to act on (round three, low a)
 }
 
 // Full-screen bridge (the user 2026-07-05): the picker is rendered inside the /chat iframe, so its
@@ -12656,7 +12656,7 @@ function notifyActive() {
 // (re)open (romp:hostRelayUp / romp:wsup) must carry the tab THIS column shows, from the column's own state, not the
 // page-level focus. A SPLIT column that is not the focused one has activeId unset (focus is arbitrated across
 // columns, setActive forwards a non-held id and returns), so activeTabToReannounce(activeId) read nothing and the
-// column's relay stayed no-active — its shown tab skeletoned by the no-active diet with nothing to re-announce it
+// column's relay stayed no-active, its shown tab skeletoned by the no-active diet with nothing to re-announce it
 // (the user's board, 2026-09-15: the focused column held one thread, a second column showed a long session that came
 // back a skeleton after a relay reopen). This posts activeTab for the column's shown tab WITHOUT the shell hop, so a
 // non-focused column re-arms its own relay without claiming focus. (relay-active.ts decides IF; this is the send.)
@@ -12688,6 +12688,10 @@ function silentActivate(id: string): void {
   loadComposerFor(id, true);   // the tab's own draft
   persistActive(id);           // the column's blob, so the next dial carries the shown tab
   renderTabs();                // mark the shown tab active in this column's strip
+  // deliberately NO unfoldSectionOf (unlike setActive, which unfolds a collapsed tab it activates): silentActivate is
+  // a SILENT non-gesture adoption, so it leaves any fold to the user. A folded active tab is a designed state (its
+  // section header stands in and showActive renders the section snapshot, tabInView admits a folded tab), and the
+  // persist + relay re-arm carry the tab to the kernel regardless of the strip fold (round three, low d)
   showActive();                // reveal the transcript on its own, and re-arm the relay via notifyActive; NO focus
   //                              hop (no focusActiveTab), no nav/anchor/landing (round two, medium 1)
 }
@@ -16174,7 +16178,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   // relay-active.ts.
   const st = shownTabForRelay(); if (st && activeTabToReannounce(st, h)) announceActiveToRelay(st);   // this column's OWN shown tab, focused or not
   // …and the shown-tab silent activation keyed on THIS event too (2026-09-15): the host was OFFLINE at reload (no strip,
-  // !tabOrderSeen), so the one-shot fallback was blocked; the relay reopening is a show-tab event — re-run the strip
+  // !tabOrderSeen), so the one-shot fallback was blocked; the relay reopening is a show-tab event, re-run the strip
   // render, which re-fires staleActiveFallback → silentActivate for a shown column that still has no active.
   if (!activeId && !provisionalId) renderTabs();
 });
