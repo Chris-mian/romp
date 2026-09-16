@@ -100,6 +100,7 @@ try {
   // show the top session, then split the bottom one DOWN
   await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
   await page.waitForTimeout(400);
+  out.topDialsBefore = await dialsOf("f-chat");   // the top frame's dial BEFORE the split, to prove it is not reloaded (LOW a)
   out.split = await page.evaluate((bot) => { const f = window.__rompMoveTab(bot, "down"); return { frameId: f && f.id, cols: localStorage.getItem("romp-chat-cols") }; }, cfg.bot);
   const botFid = out.split.frameId;
   out.botFid = botFid;
@@ -117,6 +118,22 @@ try {
   // DIAL: the bottom frame dialed /chat?col=<n>&skeleton=1 with an iid distinct from the top pane's
   out.topDials = await dialsOf("f-chat");
   out.botDials = await dialsOf(botFid);
+  // LOW a: the top frame did NOT reload across the split (its dial list is unchanged, same iid)
+  out.topDialsAfter = await dialsOf("f-chat");
+  // LOW c: the per-half focus ring. The split focuses the new BOTTOM half; then focus the TOP half and re-check.
+  await frameOf(botFid).then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.bot + '"]').first().click().catch(() => {}));
+  await page.waitForTimeout(300);
+  out.ringBottomFocused = await page.evaluate(() => { const p = document.getElementById("chat-pane"); return { top: p.classList.contains("focus-top"), bottom: p.classList.contains("focus-bottom") }; });
+  await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
+  await page.waitForTimeout(300);
+  out.ringTopFocused = await page.evaluate(() => { const p = document.getElementById("chat-pane"); return { top: p.classList.contains("focus-top"), bottom: p.classList.contains("focus-bottom") }; });
+  // HIGH: DRAG the gutter down; both halves must move and the persisted ratio must match the screen (a cursor is not a behaviour)
+  const subId = "chat-sub-" + botFid.slice(7);
+  const heights = () => page.evaluate((s) => { const t = document.getElementById("f-chat"), sub = document.getElementById(s); const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); const be = (cc.cols || []).find((c) => c.place === "below"); const th = t.getBoundingClientRect().height, sh = sub ? sub.getBoundingClientRect().height : null; return { topH: Math.round(th), subH: sh === null ? null : Math.round(sh), ratio: be ? be.ratio : null, onScreen: (th && sh) ? th / (th + sh) : null }; }, subId);
+  out.beforeDrag = await heights();
+  const gr = await page.evaluate(() => { const g = document.querySelector(".pane.split-v .gh-chat"); if (!g) return null; const r = g.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  if (gr) { await page.mouse.move(gr.x, gr.y); await page.mouse.down(); await page.mouse.move(gr.x, gr.y + 140, { steps: 10 }); await page.mouse.up(); await page.waitForTimeout(400); }
+  out.afterDrag = await heights();
   // FILL at creation (both panes): the bottom is focused now, the top is non-focused
   out.topFill = await colState("f-chat", cfg.top);
   out.botFill = await colState(botFid, cfg.bot);
@@ -124,8 +141,7 @@ try {
   await page.reload();
   await page.waitForFunction((t) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + t + '"]')); }, cfg.top, { timeout: 40000 });
   await page.waitForTimeout(400);
-  out.afterReload = await page.evaluate(() => ({ cols: localStorage.getItem("romp-chat-cols"), botExists: !!document.querySelector('iframe[id^="f-chat-"]'),
-    botId: (document.querySelector(".pane.split-v .chat-sub iframe") || {}).id || null }));
+  out.afterReload = await page.evaluate(() => { const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); const be = (cc.cols || []).find((c) => c.place === "below"); return { cols: localStorage.getItem("romp-chat-cols"), botExists: !!document.querySelector('iframe[id^="f-chat-"]'), botId: (document.querySelector(".pane.split-v .chat-sub iframe") || {}).id || null, belowRatio: be ? be.ratio : null }; });
   const botFid2 = out.afterReload.botId || botFid;
   await page.waitForFunction((fid) => !!document.getElementById(fid), botFid2, { timeout: 20000 });
   await page.waitForTimeout(500);
@@ -290,6 +306,41 @@ class VSplitLocal(unittest.TestCase):
         self.assertIn('"parent":1', cols, "the bottom pane records its parent column (1): %r" % cols)
         self.assertTrue(self._filled(r.get("topReloadFill")), "the top pane fills to turn 0 after a reload: %r" % r.get("topReloadFill"))
         self.assertTrue(self._filled(r.get("botReloadFill")), "the NON-FOCUSED bottom pane fills to turn 0 after a reload (the wall guard): %r" % r.get("botReloadFill"))
+
+    def test_5_dragging_the_gutter_moves_both_halves_and_persists_the_ratio(self):
+        r = self._result()
+        b, a = r.get("beforeDrag") or {}, r.get("afterDrag") or {}
+        self.assertIsNotNone(a.get("subH"), "the bottom .chat-sub is a real element with a height: %r" % a)
+        # dragging the gutter DOWN grows the top and shrinks the bottom; the HIGH bug wired flex to the absolute iframe
+        # (inert), so the .chat-sub kept its creation flex and a drag collapsed it
+        self.assertGreater(a.get("topH", 0), b.get("topH", 0) + 20, "the TOP half grew when the gutter was dragged down: before=%r after=%r" % (b, a))
+        self.assertLess(a.get("subH", 1e9), b.get("subH", 0) - 20, "the BOTTOM half shrank, not collapsed: before=%r after=%r" % (b, a))
+        self.assertGreater(a.get("subH", 0), 40, "the bottom half did not collapse to a sliver: after=%r" % a)
+        self.assertAlmostEqual(a.get("ratio") or 0, a.get("onScreen") or 0, delta=0.05,
+                               msg="the persisted ratio matches the on-screen top fraction: after=%r" % a)
+        self.assertAlmostEqual((r.get("afterReload") or {}).get("belowRatio") or 0, a.get("ratio") or 0, delta=0.03,
+                               msg="a reload restores the dragged ratio: reload=%r drag=%r" % (r.get("afterReload"), a))
+
+    def test_6_the_top_iframe_is_not_reloaded_across_the_split(self):
+        import re as _re
+        r = self._result()
+        def iid(us):
+            for u in (us or []):
+                if "/ws" not in u:
+                    continue
+                m = _re.search(r"[?&]iid=([^&]+)", u)
+                if m:
+                    return m.group(1)
+            return None
+        before, after = iid(r.get("topDialsBefore")), iid(r.get("topDialsAfter"))
+        self.assertTrue(before, "the top frame dialed before the split: %r" % r.get("topDialsBefore"))
+        self.assertEqual(before, after, "the top frame keeps its iid across the split (kept in place, not reparented or reloaded): before=%r after=%r" % (before, after))
+
+    def test_7_the_focused_half_of_a_split_column_shows_its_own_ring(self):
+        r = self._result()
+        bot, top = r.get("ringBottomFocused") or {}, r.get("ringTopFocused") or {}
+        self.assertTrue(bot.get("bottom") and not bot.get("top"), "clicking the BOTTOM half rings it alone (.focus-bottom): %r" % bot)
+        self.assertTrue(top.get("top") and not top.get("bottom"), "clicking the TOP half moves the ring to it (.focus-top): %r" % top)
 
 
 if __name__ == "__main__":

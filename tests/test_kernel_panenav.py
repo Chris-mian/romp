@@ -50,6 +50,9 @@ class PaneNav(unittest.TestCase):
     def test_focus_goes_through_the_parent_and_notifies_the_pane(self):
         # the shell focuses the target iframe (siblings can't) + rings it + tells it to arm intra-pane nav
         self.assertIn("f.contentWindow.focus();", JS)
+        # a split column marks WHICH half holds focus so each half can wear its own ring (the top iframe or the .chat-sub)
+        self.assertIn("var isBottom=!!(window.__rompTopFrameOf&&window.__rompTopFrameOf(id));", JS)
+        self.assertIn("el.classList.toggle('focus-bottom',on&&isBottom);el.classList.toggle('focus-top',on&&!isBottom&&el.classList.contains('split-v'));", JS)
         self.assertIn("f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');", JS)
         # the handler is wired on each iframe's document in CAPTURE so it beats the pane's own key handlers
         self.assertIn("d.addEventListener('keydown',onKey,true);", JS)

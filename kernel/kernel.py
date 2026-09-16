@@ -56676,7 +56676,8 @@ var lastChat='f-chat';   // the chat column the user last worked in (split scree
 function paneOf(id){return PANE[id]||(window.__rompChatPaneOf?window.__rompChatPaneOf(id):null);}   // split columns are made after this map
 function allCols(){var c=window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat COLUMN (not a bottom pane, which is a vertical child), then Outline, Feed
 function setFocus(id){var pid=paneOf(id);if(!pid)return;curFocus=id;if(allCols().indexOf(id)>=0)lastCol=id;if(pid.indexOf('chat-pane')===0)lastChat=id;
-Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){el.classList.toggle('pane-focused',el.id===pid);});}
+var isBottom=!!(window.__rompTopFrameOf&&window.__rompTopFrameOf(id));   // id is the BOTTOM half of a split column (its top frame exists)
+Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){var on=el.id===pid;el.classList.toggle('pane-focused',on);el.classList.toggle('focus-bottom',on&&isBottom);el.classList.toggle('focus-top',on&&!isBottom&&el.classList.contains('split-v'));});}
 window.__rompFocusedChatId=function(){return document.getElementById(lastChat)?lastChat:'f-chat';};
 // A FILE dragged onto the shell's own chrome (a gutter, the bar between panes) must not navigate the page to the file —
 // the browser's default for an unhandled drop (the user 2026-09-12). The chat columns take a drop anywhere in their
@@ -59907,7 +59908,7 @@ function columnFrames(){var out=[document.getElementById('f-chat')];cols.forEach
 function frameOfWin(win){if(!win)return null;var fs=frames();for(var i=0;i<fs.length;i++){try{if(fs[i].contentWindow===win)return fs[i];}catch(e){}}return null;}
 function colOf(win){var f=frameOfWin(win);return f?String(f.getAttribute('data-col')||''):'';}
 function frameOfCol(n){return document.getElementById(n===1?'f-chat':frameId(n));}
-function lastPane(){return cols.length?paneId(cols[cols.length-1].n):'chat-pane';}
+function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s.length?paneId(s[s.length-1].n):'chat-pane';}   // the rightmost SIDE column's pane; a bottom pane has no chat-pane-<n> element, so it must not be the rightmost (else mountZones' edge zone, the gv-a/b/c gutters and __rompSplitGrow all get a missing id)
 // THE PARTITION, three pure readers of cols: the column holding a session (1, the first, when no entry lists it);
 // the sets every column page filters by (an id listed twice — a store another dashboard wrote — belongs to the
 // first entry in row order, so no two columns show it); the lowest free number (a reused number's blob and grow
@@ -59974,8 +59975,8 @@ var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-
 var f=document.createElement('iframe');f.id=frameId(ce.n);f.className='chat-col';f.setAttribute('data-col',String(ce.n));
 seed(ce.n,sid);f.src='/chat?col='+ce.n+'&skeleton=1';
 if(state)f.addEventListener('load',function(){adopt(f,sid,state);state=null;});
-sub.appendChild(f);var xb=pp.querySelector('.col-x');if(xb){pp.insertBefore(g,xb);pp.insertBefore(sub,xb);}else{pp.appendChild(g);pp.appendChild(sub);}
-gutterV(g.id,topId,f.id,ce.n);
+sub.appendChild(f);pp.appendChild(g);pp.appendChild(sub);   // .col-x is position:absolute (out of the flex flow), so appending the gutter and the bottom sub after it keeps the flex order top / gutter / bottom
+gutterV(g.id,topId,sub.id,ce.n);   // the two FLEX children: the top iframe (a direct .pane child) and the .chat-sub wrapper; never the bottom iframe (position:absolute in the sub, its flex inert)
 if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:ce.n,open:true}}));}catch(e){}
 return f;}
@@ -60001,6 +60002,7 @@ function canSplit(){return !mobile()&&cols.length+1<MAX;}
 // a refused move says why (the click-acknowledgement rule): the cap, the phone's one-pane layout, or nothing to do
 function notify(why){try{if(window.__rompNotify)window.__rompNotify('warn',why);}catch(e){}return null;}
 function refuse(){return notify(mobile()?'The phone shows one pane at a time — no split here.':'Four chat columns at most — close one to open another.');}
+function refusePane(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one to split.');}   // the vertical split adds a PANE, not a column: the cap message counts panes
 function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexOf(sid);if(j>=0){c.ids.splice(j,1);return c.ids.length?0:c.n;}}return 0;}   // the number of an entry the removal emptied, else 0
 // THE ONE MUTATION of the sets. `to` is a column number (1 = the first, which derives and takes no entry) or "new":
 // a column of its own to the right of the rightmost, half that column's width. Steps: the source page hands over
@@ -60022,7 +60024,7 @@ if(to==='down'){var pc=from;   // split THIS session's own column (or the first)
 if(isBelow(entry(pc)))return notify('A split pane cannot split again.');   // sid already sits in a bottom pane: at most two rows deep
 if(belowOf(pc))return notify('This column is already split top and bottom.');
 var seD=entry(pc);if(seD&&seD.ids.length===1)return notify('This session is already alone in its column.');   // parity with the "new" path: a lone session has nothing to split off
-if(!canSplit())return refuse();
+if(!canSplit())return refusePane();
 var stD=take(src,sid),nD=nextNumber();unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
 var bf=make(nD,sid,stD);try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
@@ -60082,7 +60084,8 @@ window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the
 window.__rompClaimSession=function(sid,col){var n=Number(col),e=entry(n);if(typeof sid!=='string'||!sid||!e||ownerOf(sid)!==1)return false;e.ids.push(sid);save();return true;};
 window.__rompChatFrames=frames;window.__rompChatFrameIds=function(){return frames().map(function(f){return f.id;});};
 window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};   // columns only: the horizontal focus nav and column-cycling skip a bottom pane (a vertical child)
-window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column (one ring per column)
+window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column; the CALLER (setFocus) adds .focus-top/.focus-bottom so each half shows its own ring
+window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top)
 window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOfWin=frameOfWin;window.__rompChatTarget=target;
 // THE DRAG (the user 2026-09-11, who asked for a tab dragged to the right edge to make a column and onto another column
 // to move it). The page posts {romp:'tabDrag',on:true,sid,name,stripH} at its dragstart and {on:false} at dragend
@@ -61188,6 +61191,10 @@ def _landing():
             # is pointer-events:none (never blocks) and z below the timeline collapse handle (z-30).
             ".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;"
             "box-shadow:inset 0 0 0 2px rgba(156,210,255,0.55)}"   # the romp accent — focus cues wear it (CLAUDE.md)
+            # a SPLIT column rings the focused HALF, not the whole column: the whole-pane ring is dropped and the top
+            # iframe or the bottom .chat-sub wears the accent instead, so the user sees which half takes the paste or command
+            ".pane.pane-focused.split-v::after{display:none}"
+            ".pane.pane-focused.split-v.focus-top>iframe,.pane.pane-focused.split-v.focus-bottom>.chat-sub{outline:2px solid rgba(156,210,255,0.55);outline-offset:-2px}"
             "#mtabs{display:none}"
             # narrow OR a touch device up to 1024px → one pane + bottom tabs; mouse desktops keep the grid
             # (_MOBILE_MQ: the same query the mobile script's __rompMobileOn probe answers by)

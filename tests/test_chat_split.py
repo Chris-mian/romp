@@ -352,6 +352,20 @@ class SplitSourcePins(unittest.TestCase):
         self.assertIn(".chat-sub{position:relative;flex:1 1 0;min-width:0;min-height:0;overflow:hidden}", self.html)
         self.assertIn(".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}", self.html)
         self.assertIn(".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0}", self.html)
+        # round two: the gutter resizes the two FLEX children (the top iframe and the .chat-sub), NEVER the bottom
+        # iframe (position:absolute, its flex inert), else a drag collapses the pane
+        self.assertIn("gutterV(g.id,topId,sub.id,ce.n);", split)
+        self.assertNotIn("gutterV(g.id,topId,f.id,ce.n)", split, "the gutter is not wired to the absolute bottom iframe")
+        # lastPane skips bottom panes (a bottom pane has no chat-pane-<n>; else the edge zone/gutters/splitGrow get a missing id)
+        self.assertIn("function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s.length?paneId(s[s.length-1].n):'chat-pane';}", split)
+        # the vertical cap refusal counts PANES, not columns
+        self.assertIn("function refusePane(){", split)
+        self.assertIn("Four panes at most, close one to split.", split)
+        self.assertIn("if(!canSplit())return refusePane();", split)
+        # the per-half focus ring: __rompTopFrameOf tells a bottom frame from a top, and the CSS rings the focused half
+        self.assertIn("window.__rompTopFrameOf=function(fid){", split)
+        self.assertIn(".pane.pane-focused.split-v::after{display:none}", self.html)
+        self.assertIn(".pane.pane-focused.split-v.focus-top>iframe,.pane.pane-focused.split-v.focus-bottom>.chat-sub{outline:2px solid rgba(156,210,255,0.55);outline-offset:-2px}", self.html)
 
     def test_the_parked_push_tap_reveal_is_addressed_to_the_client_that_consumes_it_and_forwarded_by_the_page(self):
         # one chat client consumes the parked tap (_consume_pending_reveal), so it rides `own`; under the partition the
@@ -1187,6 +1201,14 @@ boot({}, false); rects();
 msg({ romp: 'tabDrag', on: true, sid: WEB, name: 'web', stripH: 38 });
 out.unknown = { zones: zonesOf('chat-pane') };
 on('', 'web', 'f-chat'); out.unknown.noSid = zonesOf('chat-pane');
+// J) a DOWN split of a later column leaves the right-edge zone mounted: lastPane must skip the bottom pane (which has
+// no chat-pane-<n> element), else mountZones' if(!p)return short-circuits before the edge zone
+boot({}, false);
+window.__rompMoveTab(API, 'new'); window.__rompMoveTab(TESTS, 2); rects();   // col 2 = [API, TESTS]
+window.__rompMoveTab(TESTS, 'down'); rects();                                 // split col 2: TESTS to col 2's bottom pane
+on(WEB, 'web', 'f-chat');                                                     // drag from col 1
+out.downSplitLast = { edgeOn2: !!zoneIn('chat-pane-2', true), stored: cols(), zones: allZones() };
+off();
 console.log(JSON.stringify(out));
 """
 
@@ -1318,6 +1340,13 @@ class DragZonesExecute(unittest.TestCase):
     def test_the_phone_and_a_message_from_no_chat_column_mount_nothing(self):
         self.assertEqual(self.out["phone"], {"zones": [], "body": ["po-chat", "po-feed", "po-timeline"]}, "no zone, and no body class for the gesture (nothing read one; review find 2026-09-11)")
         self.assertEqual(self.out["unknown"], {"zones": [], "noSid": []})
+
+    def test_a_down_split_of_the_last_column_leaves_the_right_edge_zone_mounted(self):
+        o = self.out["downSplitLast"]
+        # lastPane() must skip the bottom pane (no chat-pane-<n> element): the edge zone stays on the last SIDE column
+        self.assertTrue(any(isinstance(c, dict) and c.get("place") == "below" and c.get("parent") == 2 for c in o["stored"]["cols"]),
+                        "col 2 is split down (a place:'below' entry with parent 2): %r" % o["stored"])
+        self.assertTrue(o["edgeOn2"], "the right-edge (new-column) zone is still mounted on the last side column after a down split: %r" % o["zones"])
 
 
 if __name__ == "__main__":
