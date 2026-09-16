@@ -31811,8 +31811,9 @@ _goals_snap_lock = threading.Lock()
 # start of every pass — on one busy kernel 72 files of up to 1.3 MB, about 3% of its interpreter time
 # and most of the producer thread's cost — although a pass changes only a few of them. Every writer
 # publishes by rename (save_goals), so the bytes under an inode never change once it is at its path. The
-# memo keeps the parsed object per path under (st_ino, st_mtime_ns, st_size); a pass stats every file,
-# decodes only the ones whose key moved, and builds the snapshot from memo REFERENCES. Consequence: a
+# memo keeps the parsed object per path under (st_ino, st_mtime_ns, st_size), with the bytes it was decoded
+# from beside it; a pass reads every file's bytes (a page-cache read and a compare, a small fraction of a
+# decode), decodes only the ones whose key or bytes moved, and builds the snapshot from memo REFERENCES. Consequence: a
 # snapshot entry is shared with later passes, so nothing may mutate it — _feed_goals copies an entry
 # before punching a user gesture onto it (the _apply_rewind_hold idiom), and build_feed only reads. A
 # version that fails to decode is remembered under its key too, so a corrupt store is decoded (and
@@ -31840,15 +31841,17 @@ _goals_snap_lock = threading.Lock()
 # version can sit on the first's inode), and equal sizes are common (a digit bump, a same-length
 # status word). On Linux 6.13+ (multigrain timestamps) the move is guaranteed: the pass's own stat
 # marks the inode as queried, so the next publish gets a fine-grained stamp. On a coarse-timestamp
-# kernel, two equal-size publishes of one store inside one clock tick after the pass's stat reproduce
-# the memoized key and pin the earlier parse until the store's next publish — a known blind spot. A byte
-# compare on a stat hit closes it; this memo does not carry one, so the cost is one pass serving the
-# earlier parse (a stale card until the store's next publish, never a wrong write).
-_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD)
+# kernel, two equal-size publishes of one store inside one clock tick after the pass's read reproduce
+# the memoized key. THE BYTE COMPARE ON A STAT HIT CLOSES THAT (2026-09-16): the memoized text is kept
+# beside the parse and a hit serves the parse only when the bytes read are that text, as the writer
+# loader's parse memo (_RAW_STORE) and the shared view (_SHARED) do; other bytes under an unchanged stat
+# decode afresh (memos.pass compare_miss). Before it the pass served the earlier parse until the store's
+# next publish: a stale card, never a wrong write, and one the feed's own memo would go on serving.
+_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD, bytes)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
 # Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
-_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
+_goals_memo_stats = {"hit": 0, "miss": 0, "compare_miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
 # The sweep's skip list (the memo note above): the sids _goals_memo_evict_unowned ruled unowned whose stores are
 # still in the directory. That function rebuilds it whole on the producer thread, the memo's one writer, and
 # rebinds the name (a swap, never a mutation, as the memo); _begin_goals_pass reads it on the same thread, and
@@ -31865,11 +31868,12 @@ def _goals_memo_decode(data):
 
 def _goals_memo_report():
     """The memo's counters plus its current occupancy: `entries` memoized paths and `bytes` their summed
-    on-disk size (a proxy for the parsed objects' footprint). GET /perf reports it as memos.pass."""
+    on-disk size (the text each entry holds beside its parse for the byte compare, and a proxy for the parsed
+    objects' footprint). GET /perf reports it as memos.pass."""
     memo = _goals_memo[0]
     out = dict(_goals_memo_stats)
     out["entries"] = len(memo)
-    out["bytes"] = sum(k[2] for k, v in memo.values() if v is not _GOALS_MEMO_BAD)
+    out["bytes"] = sum(ent[0][2] for ent in memo.values())   # every entry holds its text, a remembered decode failure included
     out["unowned"] = len(_goals_memo_unowned)          # the stores the next pass steps over (the sweep's ruling)
     return out
 
@@ -31933,14 +31937,14 @@ def _note_user_goal_write(sid):
 def _begin_goals_pass():
     """Capture the PRE-pass goal stores so build_feed serves a pass-boundary-consistent view for the pass.
 
-    Stat-keyed (see the memo note above): each store is decoded only when its (ino, mtime_ns, size)
-    moved since the last pass; an unchanged one is served as the memoized object. The key is taken by
-    fstat on the fd the bytes are read from, so key and content are the same file version: a rename
-    landing between the listing's stat and the open is read whole from the new inode and keyed as
-    such. Any race the other way (content newer than its key) only costs one extra decode next pass;
-    it can never pin a stale parse, because the next stat sees a moved key. The one way a stale parse
-    CAN pin is the coarse-timestamp blind spot in the memo note above (equal size, recycled inode, same
-    clock tick); on a multigrain-timestamp kernel it does not occur.
+    Stat-keyed (see the memo note above): each store's bytes are read every pass and decoded only when
+    its (ino, mtime_ns, size) or its bytes moved since the last pass; an unchanged one is served as the
+    memoized object. The key is taken by fstat on the fd the bytes are read from, so key and content are
+    the same file version: a rename landing between the listing and the open is read whole from the new
+    inode and keyed as such. Any race the other way (content newer than its key) only costs one extra
+    decode next pass; it can never pin a stale parse, because the next read sees a moved key, and a
+    version the stat does not show (the coarse-timestamp alias in the memo note above: equal size,
+    recycled inode, same clock tick) is seen by the byte compare (2026-09-16).
 
     A store the compaction sweep ruled unowned (_goals_memo_unowned: no discovered and no live session
     holds it, and its file is still here) is stepped over before its stat, so it gets neither a memo entry nor a snapshot
@@ -31953,7 +31957,7 @@ def _begin_goals_pass():
     prev = _goals_memo[0]
     unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
-    hit = miss = fail = skip = 0
+    hit = miss = compare_miss = fail = skip = 0
     try:
         entries = [e for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()]
     except OSError:
@@ -31961,22 +31965,21 @@ def _begin_goals_pass():
     for ent in entries:
         path, sid = ent.path, ent.name[:-5]
         if sid in unowned:
-            skip += 1                                  # ruled unowned by the last sweep: no stat, no open, no
-            continue                                   # entry; the feed reads it live if asked (_feed_goals)
+            skip += 1                                  # ruled unowned by the last sweep: no open, no entry;
+            continue                                   # the feed reads it live if asked (_feed_goals)
         try:
-            st = ent.stat()
-            key = (st.st_ino, st.st_mtime_ns, st.st_size)
-            old = prev.get(path)
-            if old is not None and old[0] == key:
-                hit += 1                                   # same file version → the memoized parse (or its
-                memo[path] = old                           # remembered decode failure) stands
-                if old[1] is not _GOALS_MEMO_BAD:
-                    snap[sid] = old[1]
-                continue
             with open(path, "rb") as fh:
                 st = os.fstat(fh.fileno())
                 key = (st.st_ino, st.st_mtime_ns, st.st_size)
                 data = fh.read()
+            old = prev.get(path)
+            same = old is not None and old[0] == key
+            if same and old[2] == data:
+                hit += 1                                   # same file version, same bytes → the memoized parse
+                memo[path] = old                           # (or its remembered decode failure) stands
+                if old[1] is not _GOALS_MEMO_BAD:
+                    snap[sid] = old[1]
+                continue
             store = _goals_memo_decode(data)
         except FileNotFoundError:
             continue                                       # gone between the listing and the read: no store
@@ -31987,16 +31990,20 @@ def _begin_goals_pass():
             continue
         except Exception as e:                             # undecodable: out of the snapshot (the feed reads it
             fail += 1                                      # live, as before), said once per version
-            memo[path] = (key, _GOALS_MEMO_BAD)
+            memo[path] = (key, _GOALS_MEMO_BAD, data)
             sys.stderr.write("goals-pass: %s: %s: %s (not in the pass snapshot; served live until the file changes)\n"
                              % (ent.name, type(e).__name__, e))
             continue
-        miss += 1
-        memo[path] = (key, store)
+        if same:
+            compare_miss += 1                              # same stat, other bytes: the coarse-timestamp alias is a
+        else:                                              # new version to the reader whatever the stat says (2026-09-16)
+            miss += 1
+        memo[path] = (key, store, data)
         snap[sid] = store
     _goals_memo[0] = memo
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
+    _goals_memo_stats["compare_miss"] += compare_miss
     _goals_memo_stats["fail"] += fail
     _goals_memo_stats["skip"] += skip
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
