@@ -201,6 +201,68 @@ OLD
     [[ "$output" != *"PORT="* ]]
 }
 
+# Helper: this PATH with the named tools hidden. A directory that holds one of them is replaced by a farm of symlinks to
+# everything else in it, so `command -v timeout` finds nothing while bash, sleep, mktemp and the rest stay reachable: the
+# shape of a stock mac (no coreutils) on a Linux box. $@ the tool names.
+_path_without() {
+    local out="" n=0 d f name farm
+    local -a dirs; IFS=: read -r -a dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        local hide=0; for name in "$@"; do [ -e "$d/$name" ] && hide=1; done
+        if [ "$hide" -eq 0 ]; then out="${out:+$out:}$d"; continue; fi
+        n=$((n + 1)); farm="$TEST_DIR/nopath$n"; mkdir -p "$farm"
+        for f in "$d"/*; do
+            for name in "$@"; do [ "${f##*/}" = "$name" ] && continue 2; done
+            ln -s "$f" "$farm/${f##*/}" 2>/dev/null || true
+        done
+        out="${out:+$out:}$farm"
+    done
+    printf '%s' "$out"
+}
+
+@test "romp-serve: with no timeout on PATH (a stock mac), a blocking interpreter is still refused as unresponsive at the bound" {
+    # the macOS bats leg's first completion (2026-09-16) reached the no-timeout road and found it unbounded: the blocking
+    # interpreter was run for its whole life and never refused. The probe bounds itself there now (_pybound: a watchdog
+    # beside the probe, TERM at 5 s, KILL a second later), the same refusal, the same words.
+    cat > "$TEST_DIR/blocking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) sleep 20 ;;      # blocks on any -c probe; short enough that the unbounded base still ends inside this test's own bound
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/blocking-python"
+    local nopath; nopath="$(_path_without timeout gtimeout)"
+    [ -z "$(PATH="$nopath" command -v timeout || true)" ]            # the tool really is hidden
+    local t0=$SECONDS
+    PATH="$nopath" ROMP_PYTHON="$TEST_DIR/blocking-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [[ "$output" == *"blocking-python"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]                             # the bound plus the kill, not the interpreter's 20 s
+    [[ "$output" != *"PORT="* ]]
+}
+
+@test "romp-serve: with no timeout on PATH, an interpreter that ignores TERM is killed a second after the bound and refused" {
+    # the -k of the shell's own watchdog: a TERM-deaf interpreter dies to the KILL a second after the bound, and the
+    # refusal is the same; nothing of it is left running (it became its sleep)
+    cat > "$TEST_DIR/deaf-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) trap '' TERM; exec sleep 20 ;;
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/deaf-python"
+    local nopath; nopath="$(_path_without timeout gtimeout)"
+    local t0=$SECONDS
+    PATH="$nopath" ROMP_PYTHON="$TEST_DIR/deaf-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]                             # the KILL a second after the ignored TERM, not the interpreter's 20 s
+}
+
 @test "romp-serve: an interpreter that ignores TERM is killed a second after the bound (-k) and refused; no watchdog, no clock" {
     # round four of issue 1600: timeout carried no -k, so a TERM-ignoring interpreter hung past the bound. Round five dropped
     # the watchdog that stood in for timeout where there is none (its TERM trap ran under set -e and let a blocking

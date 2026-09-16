@@ -58,10 +58,10 @@ const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.cla
 const prettyMode = (m) => m; const backendLabel = (b) => b; const authFellTo = () => ""; const ctxBar = () => el("div"); const setCtxBar = () => {};
 const ledgers = new Map(); let draggedId = null; let tabTipEl = null; const sessions = new Map();
 const setTip = (a: any, text: string) => { a._tipText = text; }; const toggleMetaMenu = () => {}; const modeIconSvg = () => ""; const riskyMode = () => false;
-const prettyFast = (f) => f; const metaCurrent = (kind, st) => kind === "model" ? st.model : st.effort; const fastAvailable = () => false;
+const prettyFast = (f) => f; const metaCurrent = (kind, st) => kind === "model" ? st.model : effortBadgeText(st); const fastAvailable = () => false;   // effortBadgeText is lifted from the module below (2026-09-16)
 const metaDots = () => el("span", "meta-dots"); const isMetaPending = () => false;
 `;
-const SRC = PRELUDE + liftMod("metaColor") + lift("showTabTip") + liftMod("metaButton") + liftMod("syncMetaControls")
+const SRC = PRELUDE + liftMod("metaColor") + liftMod("effortBadgeText") + lift("showTabTip") + liftMod("metaButton") + liftMod("syncMetaControls")
   + "\nreturn { showTabTip, metaButton, metaColor, syncMetaControls };";
 const js = esbuild.transformSync(SRC, { loader: "ts", format: "cjs", target: "es2020" }).code;
 const mod = new Function("pickTone", "readableRgb", "document", "window", js)(pickTone, readableRgb, (globalThis as any).document, (globalThis as any).window);

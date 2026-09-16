@@ -29,6 +29,16 @@ sb = load_source("romp_sdk_backend_redeliver2", os.path.join(HERE, "..", "kernel
 SID = "11111111-2222-3333-4444-555555555555"
 
 
+def _recent(offset=0):
+    """A send stamp ten minutes before NOW, taken when the test RUNS, never at import (2026-09-16). Re-delivery has an age
+    line (REDELIVER_MAX_AGE_S, thirty minutes): a stamp of 100 (1970) would read as a stale send and take the flag path
+    instead of the re-feed under test, and a module-level stamp did the same under a whole suite, which collects every
+    module first and reaches this one past the twenty-minute mark, so the import-time stamp had aged past the line (four
+    reds on the devbox under two suites at once, green alone and on CI's faster legs). tests/test_restart_redelivery_order.py
+    runs this module the way the suite does, imported and then run with the clock ahead, and pins the fix."""
+    return int(__import__("time").time()) - 600 + offset
+
+
 class Redelivery(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.mkdtemp()
@@ -70,9 +80,9 @@ class Redelivery(unittest.TestCase):
         sb.write_reg(self.be.state_dir, SID, {"sid": SID, "alive": True, "cwd": self.cwd,
                                               "lastSid": SID, "queue": []})
 
-    def _echo(self, text, author="human", t=100):
+    def _echo(self, text, author="human", t=None):
         self.be._live.setdefault(SID, {})["echo:" + text[:8]] = {
-            "_echo_text": text, "author": author, "t": t}
+            "_echo_text": text, "author": author, "t": _recent() if t is None else t}
 
     def _reg_queue(self):
         return (sb.read_reg(self.be.state_dir, SID) or {}).get("queue") or []
@@ -82,8 +92,8 @@ class Redelivery(unittest.TestCase):
         os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
     def test_lost_human_send_re_enters_the_queue_in_send_order(self):
-        self._echo("first typed message", t=100)
-        self._echo("second typed message", t=200)
+        self._echo("first typed message")
+        self._echo("second typed message", t=_recent(100))
         self.be._mark_dropped_echoes(SID, [])
         self.assertEqual(self._reg_queue(), ["first typed message", "second typed message"])
         for a in self.be._live[SID].values():
@@ -108,7 +118,7 @@ class Redelivery(unittest.TestCase):
 
     def test_surviving_queue_texts_stay_ahead_and_undropped(self):
         self._echo("still queued text")
-        self._echo("lost text", t=300)
+        self._echo("lost text", t=_recent(200))
         sb.write_reg(self.be.state_dir, SID, {"sid": SID, "alive": True, "cwd": self.cwd,
                                               "lastSid": SID, "queue": ["still queued text"]})
         self.be._mark_dropped_echoes(SID, ["still queued text"])
@@ -166,7 +176,7 @@ class BootDeliversARefedSend(unittest.TestCase):
         return (sb.read_reg(self.state, SID) or {}).get("queue") or []
 
     def test_a_re_queued_send_earns_the_resume_the_same_boot(self):
-        ensured = self._boot([{"t": 100, "text": "typed just before the restart", "author": "human"}])
+        ensured = self._boot([{"t": _recent(), "text": "typed just before the restart", "author": "human"}])
         self.assertEqual(self._reg_queue(), ["typed just before the restart"],
                          "the reseed re-queued the lost send (the half that already worked)")
         self.assertEqual(ensured, [SID], "…and the same boot's sweep resumes the session to deliver it")
@@ -174,7 +184,7 @@ class BootDeliversARefedSend(unittest.TestCase):
     def test_a_dormant_threads_re_queued_reply_earns_the_resume_too(self):
         # a comment thread is never auto-resumed at boot EXCEPT for a queued reply of the user's own
         # — and a re-queued reply is exactly that
-        ensured = self._boot([{"t": 100, "text": "a reply the thread never started", "author": "human"}],
+        ensured = self._boot([{"t": _recent(), "text": "a reply the thread never started", "author": "human"}],
                              threadOf="11111111-2222-3333-4444-000000000000")
         self.assertEqual(self._reg_queue(), ["a reply the thread never started"])
         self.assertEqual(ensured, [SID])

@@ -13,12 +13,15 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
 import collections
 import copy
+import gc
 import math
+import tracemalloc
 import zlib
 import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util, select
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
 from urllib.parse import urlparse, parse_qs, quote, unquote, urlencode
 
 
@@ -193,6 +196,125 @@ def _process_stats():
             "pid": os.getpid()}
 
 
+_HEAP_SAID = set()   # the heap gauges whose read failed and said so on stderr, once each: a source without that container (an
+#                      older event model beside this kernel), a test's stub module, an accessor this runtime lacks. /perf is
+#                      polled, so a line per snapshot would be the very noise the block exists to attribute.
+
+
+def _heap_read(key, fn, block="heap", said=_HEAP_SAID):
+    """fn() for one heap gauge, or None when the process cannot read it, the failure said once per key. A gauge that is
+    missing must never fail the snapshot: the rest of the block is what the reader came for. The gc block beside it reads
+    its collector accessors through the same guard under its own block name and said-set (_gc_read, 2026-09-16), so a
+    runtime lacking gc.get_freeze_count answers None for that key alone and the two blocks' `gc.*` keys never share a line."""
+    try:
+        return fn()
+    except Exception as e:
+        if key not in said:
+            said.add(key)
+            sys.stderr.write("perf: %s.%s unavailable: %s: %s\n" % (block, key, type(e).__name__, e))
+        return None
+
+
+_GC_SAID = set()   # the gc block's collector accessors whose read failed and said so once (the heap block's _HEAP_SAID, for the block beside it)
+_gc_read = functools.partial(_heap_read, block="gc", said=_GC_SAID)
+_GC_HOOK_SAID = [False]   # whether a failure inside the gc.callbacks hook has been said on stderr: once per process (gc_event), the
+#                           rest counted only, since the hook runs at every collection and a line per failure would be the noise
+
+
+def _heap_stats():
+    """Where the kernel's resident memory sits at the moment of the read, the snapshot's `heap` block (the lag investigation,
+    2026-09-15). The snapshot carried VmRSS and cumulative counters (bytes read, atoms built, bodies hydrated since boot), so a
+    5-6 GiB resident size had to be attributed from source-side byte counters and lab tracemalloc runs, never from the live
+    process; this gathers, in one place beside the allocator's and the collector's own gauges, the occupancy of the caches
+    named below (the snapshot already carried some occupancy gauges, asmIndex.resident and the two document memos among
+    them, but none stood beside the process's own numbers), so one GET names the holder without a restart or a debugger.
+
+    Every value is a GAUGE, what is held at the read, except gc.stats, the collector's tally since the process began, which
+    is cumulative by nature. Each container is read the way its own readers read it: a length under the owner's lock where
+    they take one (_HYDRATED under _ASM_CKPT_LOCK, _ASM_CACHE under _ASM_LOCK, _MAT_LRU under _MAT_LOCK, the parse store under
+    _PARSE_CACHE_LOCK), a plain len() or a list() of the values where they do not (the pusher's built-chat and image caches,
+    the judge-usage rows, the WeakSet of live indexes: a dict's value list is one C-level step under the GIL, so the pusher
+    mutating beside it cannot raise). Never two container locks at once, and never under the perf lock: snapshot() assembles
+    outside it, and every holder of those four locks does dict work and thread-local stage marks only (none reaches the perf
+    stats), so there is no lock order with the perf lock to get wrong. materializedLruSlots counts the LRU's SLOTS: a kernel
+    whose LRU holds its atom lists weakly keeps a collected list's slots until they expire, so the number is an upper bound on
+    the live materialized atoms; where the LRU holds the lists strongly the two are equal; it is the same read
+    asmIndex.resident publishes, repeated here so the holders sit together. hydrated.bytes is the records' length on disk,
+    what capBytes bounds: a proxy for the memo's share that locates the holder without sizing it (decoded bodies usually
+    weigh more, but escaped text can make disk bytes exceed the decoded storage: a record of 10,000 escaped non-ASCII
+    characters is 60 KB on disk and 21 KB decoded, measured). builtChat.events counts
+    the cached payloads' events, a count and not bytes, the occupancy measure of that cache; serializedBytes sums the cached
+    JSON strings, which only the index wire (a proto-1 client) stores, so under the shipped wire it reads 0. These gauges
+    attribute a resident size to its holders; they do not sum to it.
+
+    What it never does: walk an object graph, collect, evict, fill a cache, read a file, build anything. Each gauge is O(1)
+    or O(entries) over a copied value list: the built tabs (bounded by the open tabs) and the image entries, whose cache has
+    no cap, so that gauge is O(entries) over whatever it has grown to, a refused file counting as an entry of zero bytes
+    (166 microseconds median over 100,000 hydrated entries, 10,000 LRU slots, 50,000 usage rows, 1,000 images and 50 tabs of
+    100 KB in the lab). A gauge the process cannot read is None, said once (_heap_read)."""
+    def hydrated():
+        with em._ASM_CKPT_LOCK:
+            return {"entries": len(em._HYDRATED), "bytes": int(em._HYDRATED_BYTES[0]), "capBytes": int(em._HYDRATED_CAP)}
+
+    def assembly_entries():
+        with em._ASM_LOCK:
+            return len(em._ASM_CACHE)
+
+    def parse_slots():
+        with jd._PARSE_CACHE_LOCK:
+            return len(jd._PARSE_CACHE)
+
+    def materialized_slots():
+        with em._MAT_LOCK:
+            return len(em._MAT_LRU)
+
+    def built_chat():
+        vals = list(_built_chat.values())                 # sid -> (sig, payload, serialized, deps): the copy is the snapshot
+        n = events = 0
+        for e in vals:
+            # an entry of another shape RAISES, so _heap_read turns the gauge None and says the key once, as every other gauge
+            # does on a failed read; a first cut skipped it and read the fields by position with a fallback, so a later change
+            # to what the pusher caches would have under-counted in silence (review round). The happy path counts as before.
+            if not isinstance(e, tuple) or len(e) != 4:
+                raise ValueError("built-chat entry is a %s%s, not the (sig, payload, serialized, deps) tuple"
+                                 % (type(e).__name__, " of length %d" % len(e) if hasattr(e, "__len__") else ""))
+            payload, s = e[1], e[2]
+            if not isinstance(payload, dict):
+                raise ValueError("built-chat payload is a %s, not a dict" % type(payload).__name__)
+            ev = payload.get("events")                    # read as the pusher reads it: an absent events list is empty,
+            if ev is None:                                #  and only an ABSENT one (a falsy non-list is a shape, below)
+                ev = []
+            if not isinstance(ev, (list, tuple)):
+                raise ValueError("built-chat events is a %s, not a list" % type(ev).__name__)
+            events += len(ev)                             # the resident measure: what every cached tab holds
+            if s is not None:
+                if not isinstance(s, (str, bytes)):
+                    raise ValueError("built-chat serialized is a %s, not a string or None" % type(s).__name__)
+                n += len(s)                               # the index wire's cached JSON; the shipped wire stores none
+        return {"tabs": len(vals), "events": events, "serializedBytes": n}
+
+    def img_cache():
+        vals = list(_img_cache.values())                  # "path:mtime:size" -> data URL or None (a refused file)
+        return {"entries": len(vals), "bytes": sum(len(v) for v in vals if isinstance(v, (str, bytes)))}
+
+    # every accessor is looked up INSIDE its lambda: a bare attribute argument is evaluated before _heap_read runs, so a
+    # runtime lacking it would raise past the per-key guard and fail the whole snapshot (review find, 2026-09-15)
+    return {"allocatedBlocks": _heap_read("allocatedBlocks", lambda: sys.getallocatedblocks()),
+            "gc": {"enabled": _heap_read("gc.enabled", lambda: gc.isenabled()),
+                   "counts": _heap_read("gc.counts", lambda: list(gc.get_count())),
+                   "thresholds": _heap_read("gc.thresholds", lambda: list(gc.get_threshold())),
+                   "stats": _heap_read("gc.stats", lambda: [dict(s) for s in gc.get_stats()])},
+            "tracing": _heap_read("tracing", lambda: tracemalloc.is_tracing()),
+            "hydrated": _heap_read("hydrated", hydrated),
+            "assemblyEntries": _heap_read("assemblyEntries", assembly_entries),
+            "parseSlots": _heap_read("parseSlots", parse_slots),
+            "lazyIndexes": _heap_read("lazyIndexes", lambda: len(em._LIVE_INDEXES)),
+            "materializedLruSlots": _heap_read("materializedLruSlots", materialized_slots),
+            "judgeUsageRows": _heap_read("judgeUsageRows", lambda: len(_JUDGE_USAGE_CACHE["rows"])),
+            "builtChat": _heap_read("builtChat", built_chat),
+            "imgCache": _heap_read("imgCache", img_cache)}
+
+
 # The chat-build signature's components, in the order _chat_build_sig appends them. One label per position:
 # the signature is a flat tuple of exactly this length, so a miss is attributed by comparing positions
 # (_chat_sig_miss) and /perf's builds.chat.bg_miss carries one counter per label. The last three
@@ -249,6 +371,20 @@ class _PerfStats:
       process                      rss_kb (the CURRENT resident size on Linux, from /proc; the PEAK,
                                    ru_maxrss, on macOS: _process_stats), threads, cpu_s
                                    (time.process_time), pid
+      heap                         where that resident size sits at the read (_heap_stats): the allocator's
+                                   live blocks, the collector's gauges, and the occupancy of every cache that
+                                   holds session content (hydrated bodies, assembly entries, parse slots, live
+                                   indexes, materialized-atom LRU slots, judge-usage rows, built chat tabs and
+                                   their serialized bytes, preview images); gauges, not counters
+      gc                           the collector's collections and their pauses (gc_event, a gc.callbacks hook
+                                   main installs once): per generation, collections, msSum / msMax / msLast
+                                   (wall on the collecting thread) and collectedLast; thresholds and counts
+                                   (gc.get_threshold / gc.get_count, repeated from heap.gc so the block reads
+                                   on its own), frozen (gc.get_freeze_count), errors (callback failures,
+                                   counted, never raised) and hooked (whether this collector's hook is in
+                                   gc.callbacks). Each split row on the rings carries the cycle's own delta
+                                   as `gc` (n0, n1, n2 collections per generation and ms2), so a slow cycle
+                                   names the full collection it paid for
       pusher                       cycles (one per _pusher_cycle), wakes (every _pusher_wake.set()
                                    call; a burst coalesces into one cycle), wakes_event /
                                    wakes_backstop (how the loop's wait ended: flag set, or the 0.5 s
@@ -349,6 +485,7 @@ class _PerfStats:
 
     def __init__(self):
         self.lock = threading.Lock()
+        self._gc_t0 = None                        # perf_counter at the collector's "start" callback, read at its "stop" (gc_event)
         self.reset()
 
     def reset(self):
@@ -378,7 +515,13 @@ class _PerfStats:
             self.first_pass = None
             self.pass_ring = None
             self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
-            self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
+            self._cycle_state = {k: {"stages": {}, "mark": None, "gc": None} for k in self.OWNERS}   # per owner: the open split, the byte
+            #                                                                                            mark, the gc tallies at cycle_begin
+            # The collector's collections and pauses (2026-09-16), per generation: ONE immutable tuple (collections, msSum, msMax,
+            # msLast, collectedLast) that gc_event replaces in a single store, never under self.lock: see gc_event for why the
+            # callback cannot take it. A reset replaces the dict; a collection landing in that instant counts into the old one.
+            self.gc = {g: self._GC_ZERO for g in range(3)}
+            self.gc_errors = 0                        # gc_event bodies that raised: counted, never propagated into the collector
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
@@ -473,6 +616,7 @@ class _PerfStats:
         a wake another thread sets during the cycle, or the periodic repost of an unchanged frame past the
         dedup window, marks that cycle busy though the cycle itself changed nothing."""
         ms = dt * 1000.0
+        gc_now = self._gc_mark()                          # the collector's tallies at the close: the split's gc delta (2026-09-16)
         with self.lock:
             p = self.pusher
             p["cycles"] += 1
@@ -488,7 +632,7 @@ class _PerfStats:
             self.ring.append(ms)
             st = self._cycle_state["pusher"]
             try:                                          # the split's bookkeeping never ends the pusher thread (it runs in
-                split = self._split(dt, st)               #  the cycle's finally, caught nowhere): a failure is counted
+                split = self._split(dt, st, gc_now)       #  the cycle's finally, caught nowhere): a failure is counted
                 if self.first_cycle is None:
                     self.first_cycle = split
                 if self.stage_ring is None:
@@ -498,18 +642,31 @@ class _PerfStats:
                 p["splitFailed"] = p.get("splitFailed", 0) + 1
             st["stages"] = {}
             st["mark"] = None
+            st["gc"] = None
 
     @staticmethod
-    def _split(dt, st):
+    def _split(dt, st, gc_now=None):
+        # the collections the cycle waited on (2026-09-16): the process-wide tallies at the close less the mark cycle_begin took,
+        # whichever thread triggered them, so a slow row names the full collection it paid for (n2, ms2: generation 2 alone
+        # carries milliseconds here; the young generations' pauses live in gc.gen.0/1.msSum) rather than the stage the collector
+        # happened to interrupt; None when the cycle closed without an opening mark (a caller that never began it), since a
+        # delta with no base is not one
+        mark = st.get("gc")
+        gc_row = None
+        if mark is not None and gc_now is not None:
+            gc_row = {"n0": gc_now[0] - mark[0], "n1": gc_now[1] - mark[1], "n2": gc_now[2] - mark[2],
+                      "ms2": round(gc_now[3] - mark[3], 1)}
         return {"s": round(dt, 3), "t": time.time(),
                 "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
-                           for k, v in st["stages"].items()}}
+                           for k, v in st["stages"].items()},
+                "gc": gc_row}
 
     def jobs_pass(self, dt, cpu_dt=0.0):
         """One pass of the jobs thread (the housekeeping loop split off the pusher, 2026-09-13): its wall and its own CPU
         seconds, the boot's FIRST pass's split kept for the process (the boot arc reads it beside the pusher's first cycle),
         and every pass's split on a ring of the same length as the pusher's."""
         ms = dt * 1000.0
+        gc_now = self._gc_mark()                          # as in cycle(): the pass's own gc delta
         with self.lock:
             j = self.jobs
             j["passes"] += 1
@@ -521,7 +678,7 @@ class _PerfStats:
             self.jobs_ring.append(ms)
             st = self._cycle_state["jobs"]
             try:
-                split = self._split(dt, st)
+                split = self._split(dt, st, gc_now)
                 if self.first_pass is None:
                     self.first_pass = split
                 if self.pass_ring is None:
@@ -531,6 +688,7 @@ class _PerfStats:
                 j["splitFailed"] = j.get("splitFailed", 0) + 1
             st["stages"] = {}
             st["mark"] = None
+            st["gc"] = None
 
     def pass_failed(self):
         """A jobs pass that raised out of its loop and was skipped (the loop's guard), the jobs thread's cycleFailed."""
@@ -605,12 +763,77 @@ class _PerfStats:
         that owner's split records, the split emptied (a push in the gap between cycles, on any thread, lands in no cycle),
         and the first byte mark the stages are measured from."""
         marks = self._byte_marks()
+        gc_mark = self._gc_mark()                      # the collector's tallies as the cycle opens: its split's gc delta's base
         tid = threading.get_ident()
         with self.lock:
             for k in [k for k, ident in self._owners.items() if ident == tid and k != kind]:
                 del self._owners[k]                    # a thread owns one cycle kind at a time (a test drives both loops on one)
             self._owners[kind] = tid
-            self._cycle_state[kind] = {"stages": {}, "mark": marks}
+            self._cycle_state[kind] = {"stages": {}, "mark": marks, "gc": gc_mark}
+
+    _GC_ZERO = (0, 0.0, 0.0, 0.0, 0)          # a generation's tally before its first collection: (collections, msSum, msMax, msLast, collectedLast)
+
+    def gc_event(self, phase, info):
+        """The gc.callbacks hook (2026-09-16): times each collection from its "start" to its "stop" callback on the collecting
+        thread and folds it into self.gc[generation] as one immutable tuple, replaced in a single store. Pusher cycles stalled
+        for 9-33 s and a native profile caught a 9.2 s generation-2 collection charged to whichever stage was running; nothing
+        in the kernel counted collections or their pauses, and the collector's own stats carry no durations.
+
+        NEVER takes self.lock, or any lock a writer may hold. CPython runs an automatic collection on the thread whose
+        allocation crossed the threshold, at that thread's next eval-breaker check, which can be INSIDE one of this class's
+        own `with self.lock:` regions; a first draft that took the lock here waited on its own thread forever (found in
+        review), and because the collector's `collecting` flag stays set through the callbacks, every later collection in
+        the process was skipped as well (reproduced in the lab: an explicit gc.collect() returned 0 for good). That same
+        flag serialises collections, so one start slot per collector is enough. The body never raises into the collector:
+        a failure is counted under gc_errors, the first one in the process said once on stderr (a count nobody reads left a
+        broken hook silent; review round) and the next collection is timed as before. The stderr write sits inside its own
+        guard: a failing stderr must not reach the collector either."""
+        try:
+            if phase == "start":
+                self._gc_t0 = time.perf_counter()
+                return
+            t0 = self._gc_t0
+            self._gc_t0 = None
+            dt = (time.perf_counter() - t0) * 1000.0 if t0 is not None else 0.0   # a stop with no start: a collection of no known pause
+            g = info["generation"]
+            d = self.gc                                    # loaded once: a reset that swaps the dict mid-body keeps this
+            n, ms_sum, ms_max, _last, _collected = d.get(g, self._GC_ZERO)   #  collection in the dict it read (review find)
+            d[g] = (n + 1, ms_sum + dt, dt if dt > ms_max else ms_max, dt, int(info.get("collected", 0)))
+        except Exception as e:
+            self.gc_errors += 1
+            if not _GC_HOOK_SAID[0]:                       # said once per process; every later failure is the count alone
+                _GC_HOOK_SAID[0] = True
+                try:
+                    sys.stderr.write("perf: gc hook: %s: %s (further failures counted only)\n" % (type(e).__name__, e))
+                except Exception:
+                    pass                                   # a failing stderr is no reason to raise into the collector
+
+    def install_gc_hook(self):
+        """gc_event into gc.callbacks, once: main calls this at boot; a test calls it on its own collector. A second call
+        adds no second entry (a hook counted twice would double every tally)."""
+        self._gc_t0 = None                            # a start can only pair with a stop of the same hooked span
+        if self.gc_event not in gc.callbacks:
+            gc.callbacks.append(self.gc_event)
+
+    def remove_gc_hook(self):
+        """gc_event out of gc.callbacks; a no-op when it is not there."""
+        try:
+            gc.callbacks.remove(self.gc_event)
+        except ValueError:
+            pass
+        self._gc_t0 = None                            # a stale start from a span the hook left must not pair with a later stop
+
+    def _gc_mark(self):
+        """(gen-0 collections, gen-1, gen-2, gen-2 ms) so far: what a cycle's split is differenced against (cycle_begin takes
+        the mark, cycle and jobs_pass the reading). The tallies are the whole process's: a row's delta counts every collection
+        that ran on ANY thread while the cycle was open (the collector holds the interpreter lock for its pause, so the cycle
+        waited on it whichever thread triggered it), and a collection inside overlapping pusher and jobs windows shows in both
+        rows, so the rings never sum to gen.collections. Read without the lock: each tuple is replaced whole, so a read sees one
+        collection or the next, never a half, per generation; the three reads are not one instant, so a collection landing
+        between them shows in the next row instead."""
+        d = self.gc
+        r0, r1, r2 = d.get(0, self._GC_ZERO), d.get(1, self._GC_ZERO), d.get(2, self._GC_ZERO)
+        return (r0[0], r1[0], r2[0], r2[1])
 
     def first_cycle_split(self):
         with self.lock:
@@ -831,6 +1054,8 @@ class _PerfStats:
             file_slice = dict(self.file_slice_stats)
             glossary_stats = dict(self.glossary_stats)
             since = self.since
+            gc_rows = dict(self.gc)                        # the collector's tallies (gc_event writes them without this lock, so the
+            gc_errors = self.gc_errors                     #  read never waits on a collection and a collection never waits on us)
         try:                                           # the feed's per-session card memo (T368): its own lock, a copy per read
             builds["feed"]["memo"] = _feed_memo_report()
         except Exception:
@@ -874,7 +1099,9 @@ class _PerfStats:
                           ("tickSeen", _tick_seen_report),
                           ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
+                          ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
+                          ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
@@ -896,13 +1123,29 @@ class _PerfStats:
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
+        # the collector's collections and pauses (2026-09-16): the hook's tallies per generation, and beside them the collector's
+        # own thresholds and counts (repeated from heap.gc so the block reads on its own: how near the next collection is), the
+        # frozen count, the callback failures, and whether this collector's hook is installed at all (zeros with hooked false
+        # say "no hook", not "no collections")
+        gc_block = {"gen": {str(g): {"collections": n, "msSum": round(s, 1), "msMax": round(mx, 1), "msLast": round(last, 1),
+                                     "collectedLast": col}                # rounded like every ms on the snapshot; the tallies stay exact
+                            for g, (n, s, mx, last, col) in sorted(gc_rows.items())},
+                    # the accessors inside lambdas, through the per-key guard: a runtime lacking one answers None for that key
+                    # and the block still serves (the heap block's review find, 2026-09-15, applied here)
+                    "thresholds": _gc_read("thresholds", lambda: list(gc.get_threshold())),
+                    "counts": _gc_read("counts", lambda: list(gc.get_count())),
+                    "frozen": _gc_read("frozen", lambda: gc.get_freeze_count()),
+                    "errors": gc_errors,
+                    "hooked": _gc_read("hooked", lambda: self.gc_event in gc.callbacks)}
         now = time.time()
         stacks = _thread_stacks() if os.environ.get("ROMP_PERF_STACKS") else None   # every thread's frames, named and staged: under
         #                                                                              the switch here (T358's aid for a served test
         #                                                                              on a runner nobody can log into), on demand
         #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
-                "process": _process_stats(), "pusher": pusher, "jobs": jobs, "stages_ms": stages,
+                "process": _process_stats(), "heap": _heap_stats(),   # heap: where the resident size sits, now (2026-09-15)
+                "gc": gc_block,                                       # gc: the collector's collections and pauses (2026-09-16)
+                "pusher": pusher, "jobs": jobs, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
                 "fileSlice": file_slice,                   # T351: the preview popover's slice cache (hit / miss / bytes / warm)
                 "glossary": glossary_stats,                # T351 stage 2: files parsed, frames / terms / bytes BUILT per cycle, entries cut, files refused
@@ -12022,6 +12265,7 @@ def _interrupt_block_tick(now, live_map):
     alive_sids = {s["sid"] for s in alive}              # a sid that left the alive set is the event that retires
     _intr_marks_forget(alive_sids)                      # its interrupt-marks entries and its states-overlay fold
     _states_overlay_forget(alive_sids)                  # entry alike
+    _subagent_trees_forget(alive)                       # ...and the subagents walk memo's root, by the row's path (2026-09-16)
     # a flip's writer marked the views dirty and woke the pusher: the next cycle carries it (docstring)
 
 
@@ -16833,7 +17077,7 @@ def _thread_events(tsid, cut_uuid, now, live_map):
         #                                         thread and the frame never hands one here, so no entry is shared.
         key = None                              # an input we cannot key → build, never cache
     hit = _built_thread.get(tsid)
-    if key is not None and hit is not None and hit[0] == key and hit[1] == cut_uuid and _views_dirty[0] <= hit[3]:
+    if key is not None and hit is not None and hit[0] == key and hit[1] == cut_uuid and not _dirty_since(hit[3]):
         _PERF_STATS.build("thread", True)
         return list(hit[2])
     started = time.time()
@@ -23617,22 +23861,16 @@ def _notice_rows(sid):
     with _notice_lock:
         _NOTICE_MEMO_STATS["miss"] += 1
         _NOTICE_MEMO[sid] = [st, rows, size, time.time()]
-        total = sum(e[2] for e in _NOTICE_MEMO.values())
-        if total > NOTICE_MEMO_BYTES:                          # shed the deficit, largest first, this entry included
-            for k in sorted(_NOTICE_MEMO, key=lambda k: -_NOTICE_MEMO[k][2]):
-                if total <= NOTICE_MEMO_BYTES:
-                    break
-                total -= _NOTICE_MEMO[k][2]
-                del _NOTICE_MEMO[k]
-                _NOTICE_MEMO_STATS["evicted"] += 1
+        _notice_memo_shed_unlocked()                           # the deficit, largest first, this entry included, the revision indexes counted too
     return rows
 
 
 def _notice_memo_report():
     """GET /perf memos.notices: entries, their bytes and the bound they are held under, so a bound that binds is visible."""
     with _notice_lock:
-        return {"entries": len(_NOTICE_MEMO), "bytes": sum(e[2] for e in _NOTICE_MEMO.values()), "bound": NOTICE_MEMO_BYTES,
-                **_NOTICE_MEMO_STATS}
+        return {"entries": len(_NOTICE_MEMO) + len(_NOTICE_ARCH_REVS),   # the parsed rows and the revision indexes, one bound
+                "bytes": sum(e[2] for e in _NOTICE_MEMO.values()) + sum(e[2] for e in _NOTICE_ARCH_REVS.values()),
+                "bound": NOTICE_MEMO_BYTES, **_NOTICE_MEMO_STATS}
 
 
 def _notice_session_known(sid):
@@ -23994,11 +24232,26 @@ def _compact_notices(now=None):
                         or k in capped)
                 (arch if gone else keep).append(r)
             if arch:
+                # the revision index first (the archive bound): the high-water mark of every post row leaving the live file,
+                # so a repost never mints a revision the cleared ledger may hold without any reader opening the archive; an
+                # index that cannot be read or written holds this session's pass (the rows stay live, nothing is lost)
+                revs, ierr = _notice_revs_index_unlocked(sid)
+                apath = _notice_archive_dir() / (sid + ".jsonl")
+                if not ierr:
+                    revs = dict(revs)
+                    for r in arch:
+                        if r.get("op") == "post" and int(r.get("rev") or 0) > revs.get(r.get("key"), 0):
+                            revs[r.get("key")] = int(r.get("rev") or 0)
+                    ast_, ierr = _notice_file_stat(apath, "the notice archive")
+                    ierr = ierr or _notice_revs_write_unlocked(sid, revs, ast_)   # the mark durable before the rows leave: this write describes the archive as it is now, so a death before the second write leaves an index the next post rebuilds
+                if ierr:
+                    sys.stderr.write("notice: the archive pass held %s's rows (%s)\n" % (sid[:8], ierr))
+                    continue
                 try:
                     _notice_archive_dir().mkdir(parents=True, exist_ok=True)
-                    with open(_notice_archive_dir() / (sid + ".jsonl"), "a") as f:
+                    with open(apath, "a") as f:
                         for r in arch:
-                            f.write(json.dumps(r) + "\n")
+                            f.write(json.dumps(dict(r, archivedAt=now)) + "\n")   # the pass's stamp: one block a pass, the restore's tail read stops at its edge
                     tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
                     tmp.write_text("".join(json.dumps(r) + "\n" for r in keep))
                     os.replace(tmp, p)
@@ -24006,49 +24259,242 @@ def _compact_notices(now=None):
                 except OSError as e:
                     sys.stderr.write("notice: the archive pass could not move %s's rows (%s)\n" % (sid[:8], e))
                     continue
+                ast_, werr = _notice_file_stat(apath, "the notice archive")   # the index now describes the archive it counts; a fault here costs one rebuild at the next post
+                werr = werr or _notice_revs_write_unlocked(sid, revs, ast_)
+                if werr:
+                    sys.stderr.write("notice: %s's revision index describes an older archive (%s); the next post rebuilds it\n" % (sid[:8], werr))
             _NOTICE_SWEPT[sid] = (_stat_key(p), ledger_st)
     return moved
 
 
 _NOTICE_SWEPT = {}                         # sid -> (the file's stat key, the cleared ledger's) the sweep last saw: unmoved, skipped
-_NOTICE_ARCH_REVS = {}                     # sid -> (the archive file's stat key, {key: its highest archived rev}); read under _notice_lock
+_NOTICE_ARCH_REVS = {}                     # sid -> [the index's stat key, {key: its highest archived rev}, bytes, the archive description it read]; under _notice_lock
+NOTICE_ARCHIVE_READ_BLOCK = 64 * 1024      # the restore reads the archive backwards, this many bytes a block (plans/notice-cards.md, the archive bound)
+_NOTICE_ARCH_READ = {"rows": 0, "bytes": 0}   # what the restore's tail read parsed and read, for the tests
+
+
+def _notice_revs_path(sid):
+    return _notice_archive_dir() / (str(sid) + ".revs.json")
+
+
+def _notice_file_stat(path, what):
+    """(stat key, error): an absent file is (None, ""); a stat that FAILS (the directory unreadable) is the refusal's prose,
+    never absence (_stat_key folds both into None, under which a repost once minted rev 1 blind)."""
+    try:
+        so = path.stat()
+    except FileNotFoundError:
+        return None, ""
+    except OSError as e:
+        return None, "%s could not be read (%s)" % (what, e)
+    return (so.st_mtime_ns, so.st_size, so.st_ino, so.st_ctime_ns), ""
+
+
+def _notice_memo_shed_unlocked():
+    """Both memos, the parsed rows and the revision indexes, sit under NOTICE_MEMO_BYTES together: over it the largest
+    entries go first, whichever memo holds them, and only the deficit is shed. The caller holds _notice_lock."""
+    total = sum(e[2] for e in _NOTICE_MEMO.values()) + sum(e[2] for e in _NOTICE_ARCH_REVS.values())
+    if total <= NOTICE_MEMO_BYTES:
+        return
+    ents = [(_NOTICE_MEMO[k][2], "rows", k) for k in _NOTICE_MEMO] + [(_NOTICE_ARCH_REVS[k][2], "revs", k) for k in _NOTICE_ARCH_REVS]
+    for size, kind, k in sorted(ents, reverse=True):
+        if total <= NOTICE_MEMO_BYTES:
+            break
+        (_NOTICE_MEMO if kind == "rows" else _NOTICE_ARCH_REVS).pop(k, None)
+        total -= size
+        _NOTICE_MEMO_STATS["evicted"] += 1
+
+
+_NOTICE_ARCH_REBUILDS = {"count": 0}      # whole reads of an archive to rebuild its index, for the tests
+
+
+def _notice_archive_desc(st):
+    """The archive as the index records it: its size and mtime, or None for no archive (round two, low 1: an index left
+    BEHIND the archive by a rollback to a kernel that archives and writes no index must not be trusted)."""
+    return None if st is None else {"size": st[1], "mtimeNs": st[0]}
+
+
+def _notice_revs_write_unlocked(sid, revs, arch_st):
+    """The index written whole (a temp file and a rename) as {"revs": {key: rev}, "archive": {size, mtimeNs} | None}, the
+    archive's stat it describes beside the map: "" or the fault's prose. The caller holds _notice_lock."""
+    ip = _notice_revs_path(sid)
+    try:
+        _notice_archive_dir().mkdir(parents=True, exist_ok=True)
+        tmp = ip.with_name(ip.name + ".tmp.%d" % os.getpid())
+        tmp.write_text(json.dumps({"revs": revs, "archive": _notice_archive_desc(arch_st)}, sort_keys=True))
+        os.replace(tmp, ip)
+        return ""
+    except OSError as e:
+        return "the notice archive's revision index could not be written (%s)" % e
+
+
+def _notice_revs_read_unlocked(sid):
+    """The index file as it stands: (revs, archive description, bytes, error). An absent file is (None, None, 0, ""); a file
+    of the first shape (a bare map, no archive description) reads as a map behind an unknown archive, so the caller rebuilds.
+    The caller holds _notice_lock."""
+    ip = _notice_revs_path(sid)
+    try:
+        raw = ip.read_text()
+    except FileNotFoundError:
+        return None, None, 0, ""
+    except OSError as e:
+        return None, None, 0, "the notice archive's revision index could not be read (%s)" % e
+    try:
+        o = json.loads(raw)
+        if isinstance(o, dict) and isinstance(o.get("revs"), dict):
+            return {str(k): int(v) for k, v in o["revs"].items()}, o.get("archive"), len(raw), ""
+        return {str(k): int(v) for k, v in o.items()}, "behind", len(raw), ""
+    except (ValueError, AttributeError, TypeError) as e:
+        return None, None, 0, "the notice archive's revision index could not be read (%s)" % e
+
+
+def _notice_revs_rebuild_unlocked(sid, ap, arch_st, standing=None):
+    """One whole read of the archive into {key: rev}, merged over the STANDING marks (a high-water mark never lowers: an
+    archive that shrank under its index, or came back older, must not hand a dismissed key its old revision; round three),
+    written as the index over the archive's stat: (revs, error). A write that fails is said on stderr and the map returned
+    uncached, so the next post rebuilds again (round two, low 2: the true map was in hand and the post was refused); only
+    an archive that cannot be read refuses. The caller holds _notice_lock."""
+    try:
+        raw = ap.read_text()
+    except OSError as e:
+        return None, "the notice archive could not be read (%s)" % e
+    _NOTICE_ARCH_REBUILDS["count"] += 1
+    revs = dict(standing or {})
+    for line in raw.splitlines():
+        try:
+            o = json.loads(line)
+            k, rv = o.get("key"), int(o.get("rev") or 0)
+        except Exception:
+            continue
+        if k and rv > revs.get(k, 0):
+            revs[k] = rv
+    werr = _notice_revs_write_unlocked(sid, revs, arch_st)
+    if werr:
+        sys.stderr.write("notice: %s's revision index was rebuilt but not written (%s); the next post rebuilds again\n" % (sid[:8], werr))
+    return revs, ""
+
+
+def _notice_revs_index_unlocked(sid):
+    """The revision index of `sid`, {key: the highest revision the pass has archived}, as (revs, error): the sidecar
+    notices-archive/<sid>.revs.json, a high-water mark the pass writes before it archives and an Undo never lowers, read
+    in the archive's place (the archive bound, plans/notice-cards.md: the archive grows without bound and every poster
+    read it whole under the lock). The index records the archive's size and mtime it describes; when the archive's
+    current stat differs (a kernel that archived and wrote no index, a pass whose second write failed, a restore's
+    rewrite), or the index is absent over an archive, it is rebuilt from one whole read and written: a cache with a
+    rebuild path, never a second source of truth. Absent over no archive, {}. Memoized on the index's stat under the
+    rows memo's byte bound; a stat-match is a hit and a file read a miss in memos.notices, as the rows memo counts. A
+    refusal's prose when the index or the archive cannot be read: no revision is minted blind. The caller holds
+    _notice_lock."""
+    sid = str(sid)
+    ip = _notice_revs_path(sid)
+    ap = _notice_archive_dir() / (sid + ".jsonl")
+    ist, err = _notice_file_stat(ip, "the notice archive's revision index")
+    if err:
+        return None, err
+    ast_, err = _notice_file_stat(ap, "the notice archive")
+    if err:
+        return None, err
+    want = _notice_archive_desc(ast_)
+    if ist is None:
+        _NOTICE_ARCH_REVS.pop(sid, None)
+        if ast_ is None:
+            return {}, ""
+        return _notice_revs_rebuild_unlocked(sid, ap, ast_)
+    ent = _NOTICE_ARCH_REVS.get(sid)
+    if ent is not None and ent[0] == ist:
+        _NOTICE_MEMO_STATS["hit"] += 1
+        standing, arch = ent[1], ent[3]
+        if arch == want:
+            return standing, ""
+        _NOTICE_ARCH_REVS.pop(sid, None)                # the archive moved under a standing index: behind
+    else:
+        standing, arch, size, err = _notice_revs_read_unlocked(sid)
+        if err:
+            return None, err
+        _NOTICE_MEMO_STATS["miss"] += 1
+        if standing is None:                            # gone between the two stats: as an absent index
+            _NOTICE_ARCH_REVS.pop(sid, None)
+            return _notice_revs_rebuild_unlocked(sid, ap, ast_) if ast_ is not None else ({}, "")
+        if arch == want:
+            _NOTICE_ARCH_REVS[sid] = [ist, standing, size, arch]
+            _notice_memo_shed_unlocked()
+            return standing, ""
+        _NOTICE_ARCH_REVS.pop(sid, None)
+    if ast_ is None:
+        # the archive VANISHED under a standing index: the marks stand (a dismissed key must not take its old revision
+        # again, the reference's promise; round three, low), and the index says it describes no archive
+        werr = _notice_revs_write_unlocked(sid, standing, None)
+        if werr:
+            sys.stderr.write("notice: %s's revision index could not be re-described over the vanished archive (%s)\n" % (sid[:8], werr))
+        return standing, ""
+    return _notice_revs_rebuild_unlocked(sid, ap, ast_, standing)   # behind, or a bare map: one whole read, the marks merged
 
 
 def _notice_archive_rev_unlocked(sid, key):
-    """The highest revision of `key` the sweep has archived for `sid`, as (rev, error): 0 when nothing is archived, and a
-    refusal's prose when the archive cannot be read, so a post never mints a revision blind (round six, medium: the count
-    read the live file alone, a repost under a dismissed key took rev 1 again once the pass had moved the first post, its id
-    still stood in the cleared ledger, and the producer was told the card was up while nothing showed). The archive is read
-    whole once per file state (its stat, taken before the read) and kept as {key: rev}, a few bytes a key; it moves at a
-    sweep or an Undo. The caller holds _notice_lock."""
-    sid = str(sid)
-    ap = _notice_archive_dir() / (sid + ".jsonl")
-    try:
-        so = ap.stat()                             # explicit: an absent file is absence, a stat that FAILS (the directory
-    except FileNotFoundError:                      # unreadable) is a refusal, never absence (_stat_key folds both into None,
-        _NOTICE_ARCH_REVS.pop(sid, None)           # under which a repost minted rev 1 blind; round six, low)
-        return 0, ""
-    except OSError as e:
-        return 0, "the notice archive could not be read (%s), so no revision was assigned" % e
-    st = (so.st_mtime_ns, so.st_size, so.st_ino, so.st_ctime_ns)
-    ent = _NOTICE_ARCH_REVS.get(sid)
-    if ent is None or ent[0] != st:
-        try:
-            raw = ap.read_text()
-        except OSError as e:
-            return 0, "the notice archive could not be read (%s), so no revision was assigned" % e
-        revs = {}
-        for line in raw.splitlines():
-            try:
-                o = json.loads(line)
-                k, rv = o.get("key"), int(o.get("rev") or 0)
-            except Exception:
-                continue
-            if k and rv > revs.get(k, 0):
-                revs[k] = rv
-        ent = (st, revs)
-        _NOTICE_ARCH_REVS[sid] = ent
-    return ent[1].get(key, 0), ""
+    """The highest revision of `key` the pass has archived for `sid`, as (rev, error): read from the revision index, never
+    the archive, so a revision never recycles an id the cleared ledger holds (round six, medium) and a post pays a small
+    file, not the archive's size; an index or archive that cannot be read refuses the post with its reason. The caller
+    holds _notice_lock."""
+    revs, err = _notice_revs_index_unlocked(sid)
+    if err:
+        return 0, err + ", so no revision was assigned"
+    return revs.get(str(key), 0), ""
+
+
+def _notice_archive_tail_read_unlocked(ap, wants):
+    """The archive read BACKWARDS in NOTICE_ARCHIVE_READ_BLOCK blocks for the rows of the wanted (key, rev) pairs. The pass
+    appends a session's archived rows in one write and stamps them with its time (archivedAt), so one pass is one contiguous
+    block and every row of a revision sits in one pass; once every wanted pair has a row, the read goes on only to the first
+    row whose stamp differs (an older pass) and stops there. Rows without a stamp (archived before it existed) read as one
+    block to the file's start. Returns (cut, kept, back): the byte offset where the parsed region begins (the head before it
+    is unread and copied byte for byte by the caller), the parsed region's other lines in file order (bytes), and the wanted
+    rows in file order (dicts). Raises OSError as the file does. The caller holds _notice_lock."""
+    size = ap.stat().st_size
+    kept, back, found = [], [], set()
+    stamp, stop, cut, rem = None, False, 0, b""
+    with open(ap, "rb") as f:
+        pos = size
+        while pos > 0 and not stop:
+            step = min(NOTICE_ARCHIVE_READ_BLOCK, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + rem
+            _NOTICE_ARCH_READ["bytes"] += step
+            if pos > 0:
+                nl = buf.find(b"\n")
+                if nl < 0:                         # a line longer than the block: its start lies further up
+                    rem, body = buf, b""
+                else:
+                    rem, body = buf[:nl + 1], buf[nl + 1:]
+            else:
+                rem, body = b"", buf
+            lines = body.split(b"\n")
+            if lines and lines[-1] == b"":
+                lines.pop()
+            region = pos + len(rem)
+            for i in range(len(lines) - 1, -1, -1):
+                line = lines[i]
+                _NOTICE_ARCH_READ["rows"] += 1
+                try:
+                    o = json.loads(line)
+                    pair = (o.get("key"), int(o.get("rev") or 0))
+                    at = o.get("archivedAt")
+                except Exception:
+                    o, pair, at = None, None, None
+                if found >= wants and stamp is not None and at != stamp:
+                    cut = region + sum(len(l) + 1 for l in lines[:i + 1])   # this row and everything before it stay unread
+                    stop = True
+                    break
+                if pair in wants:
+                    back.append(o)
+                    found.add(pair)
+                    stamp = at
+                else:
+                    kept.append(line)
+            else:
+                cut = region
+    kept.reverse()
+    back.reverse()
+    return cut, kept, back
 
 
 def _restore_notice_archive(item_ids):
@@ -24075,35 +24521,48 @@ def _restore_notice_archive(item_ids):
         ap = _notice_archive_dir() / (sid + ".jsonl")
         with _notice_lock:
             try:
-                raw = ap.read_text()
+                cut, kept, back = _notice_archive_tail_read_unlocked(ap, wants)   # from the tail, as far as the batch's pass
             except FileNotFoundError:
                 continue
             except OSError as e:
                 faults[sid] = "the notice archive could not be read (%s)" % e
                 continue
-            keep, back = [], []
-            for line in raw.splitlines():
-                try:
-                    o = json.loads(line)
-                    hit = (o.get("key"), int(o.get("rev") or 0)) in wants
-                except Exception:
-                    hit = False
-                (back if hit else keep).append(line)
             if not back:
                 continue
+            pre_st, pre_err = _notice_file_stat(ap, "the notice archive")   # the archive as the index may describe it, before the rewrite
             try:
                 _notice_dir().mkdir(parents=True, exist_ok=True)
                 with open(_notice_path(sid), "a") as f:
-                    f.write("".join(l + "\n" for l in back))
+                    for o in back:
+                        f.write(json.dumps({k: v for k, v in o.items() if k != "archivedAt"}) + "\n")   # the pass's stamp stays in the archive
             except OSError as e:
                 faults[sid] = "the notice could not be restored (%s)" % e
                 continue
             try:
                 tmp = ap.with_name(ap.name + ".tmp.%d" % os.getpid())
-                tmp.write_text("".join(l + "\n" for l in keep))
+                with open(ap, "rb") as src, open(tmp, "wb") as dst:
+                    left = cut                         # the unread head, byte for byte, never parsed
+                    while left > 0:
+                        chunk = src.read(min(1 << 20, left))
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        left -= len(chunk)
+                    for l in kept:
+                        dst.write(l + b"\n")
                 os.replace(tmp, ap)
             except OSError as e:                     # live already: a row in both files is history twice, never a loss
                 sys.stderr.write("notice: the archive could not be shrunk after %s's restore (%s)\n" % (sid[:8], e))
+            # the index keeps its marks and, ONLY when it described the archive as it stood before this rewrite, is re-described
+            # over the rewritten one, so the next post rebuilds nothing; an index that was already behind stays behind (round
+            # three, medium: re-describing the standing map blessed an index a rollback had left behind, and the next post
+            # minted a revision the cleared ledger holds), and the next post pays its one rebuild
+            revs, arch, _size, rerr = _notice_revs_read_unlocked(sid)
+            if not rerr and revs is not None and not pre_err and arch == _notice_archive_desc(pre_st):
+                ast_, rerr = _notice_file_stat(ap, "the notice archive")
+                rerr = rerr or _notice_revs_write_unlocked(sid, revs, ast_)
+            if rerr:
+                sys.stderr.write("notice: %s's revision index describes an older archive after the restore (%s); the next post rebuilds it\n" % (sid[:8], rerr))
             _NOTICE_SWEPT.pop(sid, None)             # the pass looks again: the row is live and, once the ledger reads, undismissed
             moved += len(back)
     if moved:
@@ -25655,8 +26114,9 @@ def _kernel_sample_due(uptime_s):
 
 def _kernel_sample_tick(now=None):
     """The pusher's tick: at 5, 30 and 60 minutes of uptime and every hour after, one row in kernel-samples.jsonl with
-    the kernel's resident size, processor seconds, thread count and the record cache's held bytes (when the event model
-    reports them), so the kernel's growth within a life is a series beside the restart ledger's two bookends and a
+    the kernel's resident size, processor seconds, thread count, the record cache's held bytes (when the event model
+    reports them) and the collector's full collections and their milliseconds so far (cumulative, like cpuS: two rows
+    differenced give the interval's), so the kernel's growth within a life is a series beside the restart ledger's two bookends and a
     change that lets it climb again shows in the file, not in the machine's swap. Best-effort; never raises."""
     try:
         now = time.time() if now is None else now
@@ -25678,6 +26138,12 @@ def _kernel_sample_tick(now=None):
                 row["recordCacheBytes"] = int(st.get("bytes") or 0); row["recordCacheEntries"] = int(st.get("entries") or 0)
             except Exception:
                 pass
+        try:                                              # the collector's full collections and their pauses so far (2026-09-16),
+            g2 = _PERF_STATS.gc.get(2)                    #  cumulative like cpuS: two rows differenced give the interval's, beside
+            if g2 is not None:                            #  rssKb's growth over the same hour
+                row["gcGen2Collections"] = int(g2[0]); row["gcGen2MsSum"] = round(float(g2[1]), 1)
+        except Exception:
+            pass
         with open(KERNEL_SAMPLES_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
         return True
@@ -25962,15 +26428,23 @@ def _boot_health_row(pending=False):
         row["jobsSlow"] = pas > BOOT_FIRST_CYCLE_BOUND_S
     if pending:
         row["jobsFirstPassPending"] = True                 # the backstop wrote the row: the jobs pass had not ended
+    cyc_split, pas_split = _PERF_STATS.first_cycle_split(), _PERF_STATS.first_pass_split()
     stages = {}
-    for split in (_PERF_STATS.first_cycle_split(), _PERF_STATS.first_pass_split()):   # T397: both splits ride the row (the
-        for k, v in ((split or {}).get("stages") or {}).items():                       #  ledger reader sees which stage a slow
-            if k in stages:                                                            #  boot spent its time in without the
-                stages[k] = {f: stages[k][f] + v[f] for f in ("ms", "bytes", "hydrated")}   # kernel); a key both threads own
-            else:                                                                      #  (jobs.other, the glue) is summed
+    for split in (cyc_split, pas_split):                    # T397: both splits ride the row (the ledger reader sees which stage
+        for k, v in ((split or {}).get("stages") or {}).items():   #  a slow boot spent its time in without the kernel); a key
+            if k in stages:                                        #  both threads own (jobs.other, the glue) is summed
+                stages[k] = {f: stages[k][f] + v[f] for f in ("ms", "bytes", "hydrated")}
+            else:
                 stages[k] = dict(v)
     if stages:
         row["stages"] = stages
+    # each split's gc delta on its own, never summed: the collector's tallies are process-wide, so a collection inside both
+    # windows is in both deltas and their sum would count it twice (review round); absent when neither split carries one (a
+    # split closed without an opening mark reads None)
+    gc_first = {name: dict(g) if g is not None else None
+                for name, g in (("firstCycle", (cyc_split or {}).get("gc")), ("firstPass", (pas_split or {}).get("gc")))}
+    if gc_first["firstCycle"] is not None or gc_first["firstPass"] is not None:
+        row["gc"] = gc_first
     try:
         row["parse"] = em.asm_checkpoint_stats().get("parse")   # T398: the parse's roads at the first cycle's end (serve, fold,
     except Exception:                                           #  restore, full with its reason, bypass, the g:<reason> demotions)
@@ -29661,6 +30135,17 @@ _AGENT_LAUNCH_CACHE = {}        # parent jsonl path -> em.fold_records entry (fo
 _SUBAGENT_FRAMES = {}           # (sid, agentId) -> (change key, frame, serialized) — shared by every client with it open
 SUBAGENT_EVENT_CAP = 300        # events shipped per viewer frame — a bounded TAIL, honest about the cut (the episode fold's rule)
 SUBAGENT_STEPS_CAP = 200        # tool calls shipped on the Agent head (agentSteps) — the newest; stepsTotal says the true count
+# THE WALK MEMO (2026-09-16): subagents root -> (its directories in walk order, their identities), one entry per root, shared by
+# every reader of the tree (_subagent_dirs, _subagent_meta_map, _find_agent_file, the feed key's _subagent_dirs_ident). Before
+# it every call ran os.walk over the tree (up to 330 directories, 3,600 files on the measured box), several calls per session
+# per build from the feed, timeline and chat builds and the nudge walk, and a pusher stack sample put a tenth of its push-stage
+# samples inside that walk. Bounded by ownership, not by a count: _subagent_trees_forget drops every root no alive session's
+# transcript names, on every jobs pass (_interrupt_block_tick, audience-independent) and, as a belt, after each feed build
+# and from the tracking-off frame.
+_SUBAGENT_TREES = {}
+_SUBAGENT_TREE_STATS = {"hit": 0, "miss": 0, "evict": 0, "dirStats": 0, "walkMs": 0.0, "validateMs": 0.0}   # /perf memos.subagentTree;
+#                          advisory tallies, incremented without a lock as the neighbouring memos' are (a lost count under a race
+#                          is tolerated; the memo's own writes are single dict stores of immutable tuples)
 
 
 def _subagents_dir(path):
@@ -29668,16 +30153,157 @@ def _subagents_dir(path):
     return Path(str(path)).with_suffix("") / "subagents"
 
 
+def _stat_ident(st):
+    """(ino, mtime_ns, size, ctime_ns) of a stat result, None for None (nothing at the path): the identity _chat_ident folds
+    for a file it names by path, and the one the walk memo holds per directory. ctime is load-bearing for a directory too
+    (2026-09-16): utime back-dating (rsync -a, cp -a, tar) can restore a directory's mtime after an entry change but cannot
+    set its ctime, so a same-inode same-mtime entry change is still a moved identity."""
+    return None if st is None else (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+
+
+def _lstat_or_none(p):
+    """os.lstat, or None when the path is not there (or cannot be reached)."""
+    try:
+        return os.lstat(p)
+    except OSError:
+        return None
+
+
+def _subagent_tree_charge(kind, t0):
+    """Add the milliseconds since t0 to the memo's `kind` tally (walkMs or validateMs) for /perf."""
+    _SUBAGENT_TREE_STATS[kind] += (time.monotonic() - t0) * 1000.0
+
+
+def _subagent_tree(d):
+    """The subagents root `d` and every directory under it (Claude Code 2.1.261 writes a Workflow agent's file and sidecar
+    one level down, workflows/wf_<id>/) in os.walk's top-down sorted order, no symlink followed, as (directories, their
+    stat results), each directory's lstat taken BEFORE it was listed (the _subagent_file rule: a stamp taken after the
+    listing could pair an older listing with a newer mtime). ((), ()) when nothing is at `d`; ((), (the lstat,)) when what
+    is there is not a directory (a symlink, a file in its place: not this session's tree, never listed).
+
+    Memoized per root in _SUBAGENT_TREES on the identities (_stat_ident: ino, mtime_ns, size, ctime_ns) of every directory
+    it listed, the root included. Exact because the directory list changes only by the creation, removal or renaming of a
+    directory entry, and POSIX moves the PARENT directory's mtime and ctime on every one of those; every parent is itself
+    in the list, and the root is taken by lstat (a symlink placed at the root is its own inode, never the target's). So the
+    known identities standing means the tree stands, and a call costs one lstat per known directory and lists nothing; any
+    identity moved, a directory gone (its ident None against a stored tuple), or the root missing or replaced re-walks.
+    Not vouched for on a filesystem that does not stamp a directory on entry changes (some network and FUSE mounts), the
+    assumption _subagent_transcripts and _subagent_meta_map already make.
+
+    Three refinements the identities alone do not give. The racy mask (_SUBAGENT_DIR_RACY_NS, git's rule as
+    _subagent_transcripts applies it), on BOTH stamps: a directory whose mtime or ctime is within the window of the walk is
+    stored with identity None, so its tree never hits and is re-walked (today's cost) until it has been quiet, because a
+    filesystem stamps with a coarser clock than the wall clock (a jiffy before Linux 6.13, a second on some filesystems)
+    and an entry created in the same tick right after its parent was stat'd would carry the memoized stamp; ctime is in
+    the mask because it is the component that catches a back-dated mtime, and a ctime inside the racy tick could be
+    equalled by a later change in the same tick. A failed listing is never vouched (the design review's finding,
+    2026-09-16): when scandir on a directory raises, or an entry's type or a child's lstat cannot be taken, that directory
+    is stored with identity None too, since the failure moved no stamp; a transient EMFILE or EIO would otherwise memoize
+    a truncated list under standing identities and serve it as a hit until an entry landed in that directory (os.walk
+    dropped the subtree for the one call and the next call recovered; _subagent_transcripts declines to memoize a failed
+    listing for the same reason). And the vanished-directory case on the hit path: a fresh None can equal a stored None
+    only for a directory that was unvouched at the walk and is gone now, whose PARENT then has a fresh, real identity (it
+    exists) that mismatches whatever was stored for it, real or None, up to the root; so by induction a
+    fresh-None-equals-stored-None never serves a stale tree. One difference from os.walk, stated: a directory that exists
+    but cannot be listed (EACCES) stays in the list, where os.walk dropped it, unvouched, so the tree is walked on every
+    call until it can be listed (today's cost, and the chmod that opens it is seen at once); no consumer's output changes
+    (_subagent_meta_map's listing of it fails and is skipped, _find_agent_file finds no file in it, the feed key folds one
+    more identity)."""
+    d = str(d)
+    try:
+        st = os.lstat(d)
+    except OSError:                                       # nothing at the root: [] as ever, and the entry is forgotten
+        _SUBAGENT_TREES.pop(d, None)
+        return (), ()
+    if not stat.S_ISDIR(st.st_mode):                      # a symlink (live or dangling) or a file in its place: not a tree
+        _SUBAGENT_TREES.pop(d, None)
+        return (), (st,)
+    hit = _SUBAGENT_TREES.get(d)
+    if hit is not None and None not in hit[1]:
+        # an entry carrying an unvouched directory (racy, or a failed listing) can only ever match if that directory is
+        # GONE, and a directory removed between its parent's lstat and its own would then be served as a hit with a None
+        # among the stats, which the readers index (2026-09-16, the fold's review): such an entry re-walks instead
+        t0 = time.monotonic()
+        stats = [st] + [_lstat_or_none(x) for x in hit[0][1:]]   # the root's lstat above serves as its own (dirs[0] is d)
+        _SUBAGENT_TREE_STATS["dirStats"] += len(stats) - 1
+        fresh = tuple(_stat_ident(s) for s in stats)
+        _subagent_tree_charge("validateMs", t0)
+        if fresh == hit[1]:
+            _SUBAGENT_TREE_STATS["hit"] += 1
+            return hit[0], stats
+    _SUBAGENT_TREE_STATS["miss"] += 1
+    t0 = time.monotonic()
+    racy_from = time.time_ns() - _SUBAGENT_DIR_RACY_NS    # a stamp at or past this may still be the tick an entry lands in
+    dirs, stats, clean, stack = [], [], [], [(d, st)]
+    while stack:
+        cur, cst = stack.pop()
+        dirs.append(cur)
+        stats.append(cst)
+        ok, subs = True, []                               # ok: every entry listed and typed, every child stat'd; else unvouched
+        try:
+            with os.scandir(cur) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):   # a symlink to a directory is not a root, as os.walk's
+                            subs.append(e.name)                #  followlinks=False never descended into one
+                    except OSError:
+                        ok = False
+        except OSError:                                   # unreadable, or gone since its lstat: nothing under it this call
+            ok = False
+        subs.sort()
+        pending = []
+        for name in subs:
+            p = os.path.join(cur, name)
+            try:
+                pending.append((p, os.lstat(p)))          # the stamp BEFORE the listing, as the rule says
+            except OSError:
+                ok = False
+        clean.append(ok)
+        stack.extend(reversed(pending))                   # popped first-sorted first: os.walk's top-down sorted order
+    idents = tuple(_stat_ident(s) if ok and max(s.st_mtime_ns, s.st_ctime_ns) < racy_from else None
+                   for s, ok in zip(stats, clean))
+    _SUBAGENT_TREES[d] = (tuple(dirs), idents)
+    _subagent_tree_charge("walkMs", t0)
+    return tuple(dirs), stats
+
+
 def _subagent_dirs(d):
-    """The subagents directory `d` and every directory under it (Claude Code 2.1.261 writes a Workflow agent's file and
-    sidecar one level down, workflows/wf_<id>/), in walk order, no symlink followed (the walk's rule, _subagent_transcripts).
-    [] when `d` is not a directory or is a symlink."""
-    if not os.path.isdir(d) or os.path.islink(d):
-        return []
-    out = []
-    for root, dirs, _files in os.walk(d):                 # followlinks=False: never leaves the session's own tree
-        dirs.sort()
-        out.append(root)
+    """The subagents directory `d` and every directory under it in walk order, no symlink followed; [] when `d` is not a
+    directory or is a symlink. The list is _subagent_tree's, served from the walk memo while the tree stands."""
+    return list(_subagent_tree(d)[0])
+
+
+def _subagent_trees_forget(alive):
+    """Drop the walk memo's entries for every root no alive session owns (2026-09-16): the bound is the alive set, the roots
+    derived from the alive sessions' transcript paths (the root that session's chat, timeline and feed builds walk), so a
+    root walked for nobody alive (a dormant session's kept-open viewer, a sibling fsid's tree a _subagent_file miss looked
+    through) leaves at the next call. Its home is the jobs pass, beside _intr_marks_forget in _interrupt_block_tick, which
+    holds the cycle's alive rows every pass whether or not a client is connected: the jobs thread itself inserts roots
+    with nobody watching (the nudge walk's _session_awaiting reads the sidecar map, and a _subagent_file miss walks every
+    sibling fsid's tree), so a bound that rode the feed frame alone left a headless or timeline-only kernel growing with
+    departed sessions (the adversarial review's finding). Called as a belt after every feed build's loop and from the
+    tracking-off frame too. Iterates a snapshot and pops with a default: _subagent_tree inserts from the pusher's chat
+    builds, the WS handlers' viewer frames and the HTTP handlers at once, and a comprehension over the live dict raises
+    RuntimeError under a concurrent insert (the _prov_ledger_memo_evict and _intr_marks_forget precedent)."""
+    owned = {str(_subagents_dir(s["path"])) for s in alive if s.get("path")}
+    for d in list(_SUBAGENT_TREES):
+        if d not in owned and _SUBAGENT_TREES.pop(d, None) is not None:
+            _SUBAGENT_TREE_STATS["evict"] += 1
+
+
+def _subagent_tree_memo_report():
+    """/perf memos.subagentTree: hit and miss (trees served by validation against trees walked), evict (roots dropped as
+    unowned), dirStats (the lstats validations paid), walkMs and validateMs (the time in each, every thread), and the gauges
+    roots (entries) and dirs (directories held). Written from several threads; a resize under the sum is read again."""
+    for _ in range(3):
+        try:
+            dirs = sum(len(v[0]) for v in list(_SUBAGENT_TREES.values()))
+            break
+        except RuntimeError:
+            dirs = -1
+    out = dict(_SUBAGENT_TREE_STATS, roots=len(_SUBAGENT_TREES), dirs=dirs)
+    out["walkMs"] = round(out["walkMs"], 1)
+    out["validateMs"] = round(out["validateMs"], 1)
     return out
 
 
@@ -29687,29 +30313,27 @@ def _subagent_meta_map(path):
     workflows/wf_<id>/, and a flat listing missed it, so its Agent card never learned its id), cached on the
     directories' mtimes (a sidecar landing changes its directory's — a stat, never a timer). {} when the directory does
     not exist (older CLIs wrote no subagent files)."""
-    d = _subagents_dir(path)
-    try:
-        st = os.stat(d)
-    except OSError:
-        _SUBAGENT_META_CACHE.pop(str(d), None)
-        _chat_dep_note_taskout(str(d), None)              # a running chat build: the directory's absence is a dependency too
-        return {}
-    dirs = _subagent_dirs(str(d))
-    if not dirs:                                          # a symlinked subagents/ is not this session's tree (never listed)
-        _SUBAGENT_META_CACHE.pop(str(d), None)
+    d = str(_subagents_dir(path))
+    dirs, stats = _subagent_tree(d)                       # the shared walk memo (2026-09-16): the directories and the stat each
+    if not dirs:                                          #  was taken under, one pass, no os.walk and no second stat per directory
+        _SUBAGENT_META_CACHE.pop(d, None)
+        # a running chat build: the directory's absence is a dependency too, as os.stat's failure recorded it before the
+        # memo: nothing at the path, or a dangling link in its place, notes None (what _chat_stat_key re-evaluates to); a
+        # LIVE link (not this session's tree, never listed, {} regardless) notes nothing, as before, since a None note
+        # could never match its re-stat and the target's key would rebuild the tab on changes the map does not show
+        if not stats or _chat_stat_key(d) is None:
+            _chat_dep_note_taskout(d, None)
         return {}
     stamps = []
-    for sd in dirs:
-        try:
-            sst = os.stat(sd)
-        except OSError:
-            continue
+    for sd, sst in zip(dirs, stats):
         stamps.append((sd, sst.st_mtime_ns))
         # the running chat build's dependency record (the taskout idiom, _chat_dep_note_taskout): a sidecar landing
-        # moves its directory's mtime, which the next cycle's signature re-stats
+        # moves its directory's mtime, which the next cycle's signature re-stats; the (st_mtime, st_size) pair from the
+        # SAME stat_result the memo validated with, the exact shape _chat_stat_key answers (a value derived from mtime_ns
+        # would miss by float rounding and rebuild the tab every cycle)
         _chat_dep_note_taskout(sd, (sst.st_mtime, sst.st_size))
     key = tuple(stamps)
-    hit = _SUBAGENT_META_CACHE.get(str(d))
+    hit = _SUBAGENT_META_CACHE.get(d)
     if hit is not None and hit[0] == key:
         return hit[1]
     out = {}
@@ -29737,7 +30361,7 @@ def _subagent_meta_map(path):
                                        "parentAgentId": meta.get("parentAgentId") or None}   # optional: a nested agent's launcher (_awaiting_nest)
     if len(_SUBAGENT_META_CACHE) > 256:
         _SUBAGENT_META_CACHE.clear()
-    _SUBAGENT_META_CACHE[str(d)] = (key, out)
+    _SUBAGENT_META_CACHE[d] = (key, out)
     return out
 
 
@@ -29774,9 +30398,10 @@ def _find_agent_file(subdir, name, read=None):
     """`name` anywhere under the subagents directory `subdir`, one level or deeper (workflows/wf_<id>/agent-<id>.jsonl),
     no symlink followed or taken, and never a file reached THROUGH a symlink (its real path stays under the tree's);
     None when absent. `read` collects the directories walked."""
-    dirs = _subagent_dirs(str(subdir))
+    dirs, stats = _subagent_tree(str(subdir))
     if read is not None:
-        read.extend(_dir_stamp(d) for d in dirs)        # stamped as read
+        read.extend((sd, st.st_mtime_ns) for sd, st in zip(dirs, stats))   # stamped as read: each directory's stat from
+        #                                                                    BEFORE its listing (the memo's own), never re-taken after
     real_root = os.path.realpath(str(subdir))
     for root in dirs:
         cand = os.path.join(root, name)
@@ -31548,6 +32173,16 @@ _judge_gen = [0]                                 # bumped when a producer pass C
 # point: a lazy snapshot could capture the planner's mid-pass "blocked" and freeze on THAT.
 _goals_snap = [None]                             # {sid: store} while a judge pass is mid-flight, else None
 _goals_snap_at = [0.0]                           # when that snapshot's file reads STARTED (see _feed_goals)
+_goals_snap_key = [{}]                           # sid → the version its snapshot entry renders: the (ino, mtime_ns, size)
+#                                                  it was decoded from and the pass memo's count of byte changes the stat
+#                                                  did not show for that store (carried on the memo entry). The feed's
+#                                                  memo key names this in place of the pass's clock stamp, which moved
+#                                                  every snapshotted session's key at every pass begin and end although
+#                                                  the store rendered was the same object or the same version
+#                                                  (2026-09-16). {} between passes. A snapshot must be installed through
+#                                                  _begin_goals_pass (or its key set beside it): the feed memo keys a
+#                                                  sid whose snapshot entry has no key as the live file, and serves the
+#                                                  live entry for it.
 _goals_snap_done = {}                            # sid → the user-write mark already punched onto THIS snapshot
 _goals_snap_owned = set()                        # sids whose snapshot entry is THIS pass's private copy (copy-on-punch;
 #                                                  the punch counter's once-per-pass guard, not the copy's: see _feed_goals)
@@ -31556,8 +32191,9 @@ _goals_snap_lock = threading.Lock()
 # start of every pass — on one busy kernel 72 files of up to 1.3 MB, about 3% of its interpreter time
 # and most of the producer thread's cost — although a pass changes only a few of them. Every writer
 # publishes by rename (save_goals), so the bytes under an inode never change once it is at its path. The
-# memo keeps the parsed object per path under (st_ino, st_mtime_ns, st_size); a pass stats every file,
-# decodes only the ones whose key moved, and builds the snapshot from memo REFERENCES. Consequence: a
+# memo keeps the parsed object per path under (st_ino, st_mtime_ns, st_size), with the bytes it was decoded
+# from beside it; a pass reads every file's bytes (a page-cache read and a compare, a small fraction of a
+# decode), decodes only the ones whose key or bytes moved, and builds the snapshot from memo REFERENCES. Consequence: a
 # snapshot entry is shared with later passes, so nothing may mutate it — _feed_goals copies an entry
 # before punching a user gesture onto it (the _apply_rewind_hold idiom), and build_feed only reads. A
 # version that fails to decode is remembered under its key too, so a corrupt store is decoded (and
@@ -31585,15 +32221,18 @@ _goals_snap_lock = threading.Lock()
 # version can sit on the first's inode), and equal sizes are common (a digit bump, a same-length
 # status word). On Linux 6.13+ (multigrain timestamps) the move is guaranteed: the pass's own stat
 # marks the inode as queried, so the next publish gets a fine-grained stamp. On a coarse-timestamp
-# kernel, two equal-size publishes of one store inside one clock tick after the pass's stat reproduce
-# the memoized key and pin the earlier parse until the store's next publish — a known blind spot. A byte
-# compare on a stat hit closes it; this memo does not carry one, so the cost is one pass serving the
-# earlier parse (a stale card until the store's next publish, never a wrong write).
-_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD)
+# kernel, two equal-size publishes of one store inside one clock tick after the pass's read reproduce
+# the memoized key. THE BYTE COMPARE ON A STAT HIT CLOSES THAT (2026-09-16): the memoized text is kept
+# beside the parse and a hit serves the parse only when the bytes read are that text, as the writer
+# loader's parse memo (_RAW_STORE) and the shared view (_SHARED) do; other bytes under an unchanged stat
+# decode afresh (memos.pass compare_miss). Before it the pass served the earlier parse until the store's
+# next publish: a stale card, never a wrong write, and one the feed's own memo would go on serving.
+_goals_memo = [{}]                               # path → ((st_ino, st_mtime_ns, st_size), parsed store | _GOALS_MEMO_BAD, bytes,
+#                                                  the path's count of byte changes no stat showed: the feed key's tie-breaker)
 _GOALS_MEMO_BAD = object()                       # a file version that did not decode: no snapshot entry, no retry until it changes
 # Bare `+= 1` increments with one writer per key: hit/miss/fail/evict/skip are written only by the producer thread
 # (_begin_goals_pass runs only from _producer) and punch only under _goals_snap_lock, so no key has two writers.
-_goals_memo_stats = {"hit": 0, "miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
+_goals_memo_stats = {"hit": 0, "miss": 0, "compare_miss": 0, "fail": 0, "evict": 0, "punch": 0, "skip": 0}   # read by tests and GET /perf (memos.pass)
 # The sweep's skip list (the memo note above): the sids _goals_memo_evict_unowned ruled unowned whose stores are
 # still in the directory. That function rebuilds it whole on the producer thread, the memo's one writer, and
 # rebinds the name (a swap, never a mutation, as the memo); _begin_goals_pass reads it on the same thread, and
@@ -31610,11 +32249,12 @@ def _goals_memo_decode(data):
 
 def _goals_memo_report():
     """The memo's counters plus its current occupancy: `entries` memoized paths and `bytes` their summed
-    on-disk size (a proxy for the parsed objects' footprint). GET /perf reports it as memos.pass."""
+    on-disk size (the text each entry holds beside its parse for the byte compare, and a proxy for the parsed
+    objects' footprint). GET /perf reports it as memos.pass."""
     memo = _goals_memo[0]
     out = dict(_goals_memo_stats)
     out["entries"] = len(memo)
-    out["bytes"] = sum(k[2] for k, v in memo.values() if v is not _GOALS_MEMO_BAD)
+    out["bytes"] = sum(ent[0][2] for ent in memo.values())   # every entry holds its text, a remembered decode failure included
     out["unowned"] = len(_goals_memo_unowned)          # the stores the next pass steps over (the sweep's ruling)
     return out
 
@@ -31678,14 +32318,14 @@ def _note_user_goal_write(sid):
 def _begin_goals_pass():
     """Capture the PRE-pass goal stores so build_feed serves a pass-boundary-consistent view for the pass.
 
-    Stat-keyed (see the memo note above): each store is decoded only when its (ino, mtime_ns, size)
-    moved since the last pass; an unchanged one is served as the memoized object. The key is taken by
-    fstat on the fd the bytes are read from, so key and content are the same file version: a rename
-    landing between the listing's stat and the open is read whole from the new inode and keyed as
-    such. Any race the other way (content newer than its key) only costs one extra decode next pass;
-    it can never pin a stale parse, because the next stat sees a moved key. The one way a stale parse
-    CAN pin is the coarse-timestamp blind spot in the memo note above (equal size, recycled inode, same
-    clock tick); on a multigrain-timestamp kernel it does not occur.
+    Stat-keyed (see the memo note above): each store's bytes are read every pass and decoded only when
+    its (ino, mtime_ns, size) or its bytes moved since the last pass; an unchanged one is served as the
+    memoized object. The key is taken by fstat on the fd the bytes are read from, so key and content are
+    the same file version: a rename landing between the listing and the open is read whole from the new
+    inode and keyed as such. Any race the other way (content newer than its key) only costs one extra
+    decode next pass; it can never pin a stale parse, because the next read sees a moved key, and a
+    version the stat does not show (the coarse-timestamp alias in the memo note above: equal size,
+    recycled inode, same clock tick) is seen by the byte compare (2026-09-16).
 
     A store the compaction sweep ruled unowned (_goals_memo_unowned: no discovered and no live session
     holds it, and its file is still here) is stepped over before its stat, so it gets neither a memo entry nor a snapshot
@@ -31695,10 +32335,11 @@ def _begin_goals_pass():
     # ui/webview/feed-move-ack.test.ts pins the next line's comment text ("stamped BEFORE the reads").
     at = time.time()          # stamped BEFORE the reads and the stats that gate them: a write racing this loop
     snap = {}                 # must count as AFTER them, so it is replayed onto the snapshot, not lost to the read order
+    keys = {}                 # sid → the version its snapshot entry renders (_goals_snap_key)
     prev = _goals_memo[0]
     unowned = _goals_memo_unowned   # the sweep's ruling, read once: the set is swapped whole, never mutated
     memo = {}
-    hit = miss = fail = skip = 0
+    hit = miss = compare_miss = fail = skip = 0
     try:
         entries = [e for e in os.scandir(jd.GOALDIR) if e.name.endswith(".json") and e.is_file()]
     except OSError:
@@ -31706,22 +32347,26 @@ def _begin_goals_pass():
     for ent in entries:
         path, sid = ent.path, ent.name[:-5]
         if sid in unowned:
-            skip += 1                                  # ruled unowned by the last sweep: no stat, no open, no
-            continue                                   # entry; the feed reads it live if asked (_feed_goals)
+            skip += 1                                  # ruled unowned by the last sweep: no open, no entry;
+            continue                                   # the feed reads it live if asked (_feed_goals)
         try:
-            st = ent.stat()
-            key = (st.st_ino, st.st_mtime_ns, st.st_size)
-            old = prev.get(path)
-            if old is not None and old[0] == key:
-                hit += 1                                   # same file version → the memoized parse (or its
-                memo[path] = old                           # remembered decode failure) stands
-                if old[1] is not _GOALS_MEMO_BAD:
-                    snap[sid] = old[1]
-                continue
             with open(path, "rb") as fh:
                 st = os.fstat(fh.fileno())
                 key = (st.st_ino, st.st_mtime_ns, st.st_size)
                 data = fh.read()
+            old = prev.get(path)
+            same = old is not None and old[0] == key
+            if same and old[2] == data:
+                hit += 1                                   # same file version, same bytes → the memoized parse
+                memo[path] = old                           # (or its remembered decode failure) stands
+                if old[1] is not _GOALS_MEMO_BAD:
+                    snap[sid] = old[1]
+                    keys[sid] = (key, old[3])              # the same version: the feed's key sees no move at the pass
+                continue                                   # boundary (2026-09-16); a remembered failure has no key
+            # The path's count of byte changes no stat showed, carried across versions: a compare miss decodes under
+            # the SAME (ino, mtime_ns, size), and this count is what tells the feed's memo key that decode from the
+            # last (2026-09-16); a version move carries it unchanged so the key stands across the publish.
+            alias = (old[3] if old is not None else 0) + (1 if same else 0)
             store = _goals_memo_decode(data)
         except FileNotFoundError:
             continue                                       # gone between the listing and the read: no store
@@ -31732,21 +32377,27 @@ def _begin_goals_pass():
             continue
         except Exception as e:                             # undecodable: out of the snapshot (the feed reads it
             fail += 1                                      # live, as before), said once per version
-            memo[path] = (key, _GOALS_MEMO_BAD)
+            memo[path] = (key, _GOALS_MEMO_BAD, data, alias)
             sys.stderr.write("goals-pass: %s: %s: %s (not in the pass snapshot; served live until the file changes)\n"
                              % (ent.name, type(e).__name__, e))
             continue
-        miss += 1
-        memo[path] = (key, store)
+        if same:
+            compare_miss += 1                              # same stat, other bytes: the coarse-timestamp alias is a
+        else:                                              # new version to the reader whatever the stat says (2026-09-16)
+            miss += 1
+        memo[path] = (key, store, data, alias)
         snap[sid] = store
+        keys[sid] = (key, alias)                           # the version this entry renders (fstat on the fd the bytes came from)
     _goals_memo[0] = memo
     _goals_memo_stats["hit"] += hit
     _goals_memo_stats["miss"] += miss
+    _goals_memo_stats["compare_miss"] += compare_miss
     _goals_memo_stats["fail"] += fail
     _goals_memo_stats["skip"] += skip
     _goals_memo_stats["evict"] += len(prev.keys() - memo.keys())
     with _goals_snap_lock:
         _goals_snap[0] = snap
+        _goals_snap_key[0] = keys
         _goals_snap_at[0] = at
         _goals_snap_done.clear()
         _goals_snap_owned.clear()
@@ -31756,12 +32407,15 @@ def _end_goals_pass():
     The memo keeps its parsed stores: they are the next pass's cache hits."""
     with _goals_snap_lock:
         _goals_snap[0] = None
+        _goals_snap_key[0] = {}
         _goals_snap_done.clear()
         _goals_snap_owned.clear()
 
-def _feed_goals(sid):
-    """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
-    never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
+def _feed_goals_keyed(sid):
+    """(the goal store for the FEED, the key of the snapshot entry it came from): the store frozen at the pre-pass
+    snapshot while a judge pass is mid-flight (so a card never shows a half-applied intermediate), else a live
+    read, keyed None. The key is read under the same lock hold as the entry, so the feed's memo key names exactly
+    the version this read rendered (2026-09-16); _feed_goals is this read without the key. A sid minted DURING the pass isn't in the
     snapshot → live (it has no prior state to flicker from); so is a sid the pass stepped over because the
     compaction sweep ruled its store unowned (no discovered and no live session held it at the sweep: the
     pass took no copy, and a consumer that asks anyway gets the live store, 2026-09-15). See the _goals_snap note above.
@@ -31778,6 +32432,7 @@ def _feed_goals(sid):
         snap = _goals_snap[0]
         if snap is not None and sid in snap:
             store, mark = snap[sid], _user_goal_write.get(str(sid), 0.0)
+            snap_key = _goals_snap_key[0].get(sid)     # the version this entry renders (None: installed by hand, unkeyed)
             if mark >= _goals_snap_at[0] and _goals_snap_done.get(sid) != mark:
                 # COPY-ON-PUNCH, a fresh copy per gesture: the entry is the memo's object, shared with
                 # every later pass that finds the file unchanged, so the replay and rollup below land on
@@ -31798,14 +32453,19 @@ def _feed_goals(sid):
                     #                                    card for the whole pass (the user 2026-07-23)
                 except Exception:
                     sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
-            return _apply_rewind_hold(sid, store)      # a pending rewind's cards are hidden NOW (latched
-            #                                            at the gesture; archive lands at the branch-take)
+            return _apply_rewind_hold(sid, store), snap_key   # a pending rewind's cards are hidden NOW (latched
+            #                                                   at the gesture; archive lands at the branch-take)
     store, fault = jd.load_goals_or_fault(sid)     # no pass in flight → live read, outside the lock
     if fault is not None:
-        return None                                    # the read FAULTED (the pre-pass snapshot skips such a file
+        return None, None                              # the read FAULTED (the pre-pass snapshot skips such a file
     #                                                    too): the row is filed once per episode, and build_feed
     #                                                    renders this one session without goal-derived content
-    return _apply_rewind_hold(sid, store)
+    return _apply_rewind_hold(sid, store), None
+
+
+def _feed_goals(sid):
+    """The FEED's goal store alone: _feed_goals_keyed without the key it was served under."""
+    return _feed_goals_keyed(sid)[0]
 
 # Delta-send (the user 2026-06-25, who wanted to stop re-sending what didn't change): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
@@ -32178,7 +32838,7 @@ def _chat_ident(path):
         st = os.stat(str(path))
     except OSError:
         return None
-    return (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+    return _stat_ident(st)
 
 
 def _chat_reg_sig(sid):
@@ -35249,7 +35909,7 @@ def _tree_of(d):
 
 _branch_cache = {}   # toplevel -> (branch, head_mtime) — git branch derived straight from the FOLDER
 _head_path_cache = {}   # toplevel -> the resolved HEAD file path (worktrees indirect through a .git FILE)
-_git_file_faults = {}   # .git pointer-file path -> the fault text of its CURRENT episode; ONE stderr line + bell row per episode
+_git_file_faults = {}   # .git pointer-file path (RESOLVED) -> the fault text of its CURRENT episode; ONE stderr line + bell row per episode
 _git_file_faults_lock = threading.Lock()   # the pusher and a connect push both run _push, on their own threads
 
 
@@ -35299,6 +35959,12 @@ def _git_head_file(cwd):
     if hp:
         return hp
     dotgit = os.path.join(cwd, ".git")
+    # The episode's key and name: the pointer file at its PHYSICAL place. The fault comes in under the session cwd (git's
+    # toplevel query fails on a torn pointer, so _git_branch falls to the handed directory) and the clean read under git's
+    # toplevel, which git returns resolved; keyed on the handed forms the two never met where the path crosses a symlink (a
+    # temp root under /var or /tmp on macOS, a symlinked project directory anywhere), the entry was never popped, and the
+    # next real break of that pointer saw its own text on record and said nothing (the macOS triage of v0.16).
+    real = os.path.realpath(dotgit)
     try:
         gd = _gitdir_of(cwd, strict=True)              # strict: an unreadable pointer file RAISES, to be named below
         if not gd and _is_bare_gitdir(cwd):
@@ -35312,10 +35978,10 @@ def _git_head_file(cwd):
             shown = os.fsencode(hp).decode("utf-8", "backslashreplace")
             raise FileNotFoundError(errno.ENOENT, "the gitdir it names has no HEAD", shown)
     except OSError as e:                              # unreadable, or dangling (above): the same episode rule
-        _git_file_fault(dotgit, e)                    # never silent: the operator learns WHICH file is bad
+        _git_file_fault(real, e)                      # never silent: the operator learns WHICH file is bad
         return ""                                     # uncached: the next read retries, so a repair ends the episode
     with _git_file_faults_lock:
-        _git_file_faults.pop(dotgit, None)            # a clean read ends the episode
+        _git_file_faults.pop(real, None)              # a clean read ends the episode, under whichever path form it came
     if hp:
         if len(_head_path_cache) > 512:                  # bounded, like _tree_cache
             _head_path_cache.clear()
@@ -39575,8 +40241,6 @@ def _feed_memo_forget(alive_sids):
             _FEED_MEMO_STATS["bytes"] -= _feed_memo.pop(k)[2]
         _FEED_MEMO_STATS["evict"] += len(gone)
         _FEED_MEMO_STATS["entries"] = len(_feed_memo)
-    for k in [k for k in _SUBAGENT_DIRS_MEMO if k not in alive_sids]:   # the key's walk memo leaves with the session
-        _SUBAGENT_DIRS_MEMO.pop(k, None)
     return len(gone)
 
 
@@ -39609,30 +40273,21 @@ def _feed_peer_facts(p, cleared_by_sid):
             host, _remote_name_of(host, p) if r else None)
 
 
-_SUBAGENT_DIRS_MEMO = {}                         # sid → (subagents root, its directories, their identities): the walk,
-#                                                  memoized per living session and dropped with its memo entry (_feed_memo_forget)
-
-
 def _subagent_dirs_ident(sid, d):
-    """(the directories under the subagents root `d`, their identities), the walk memoized: an unchanged tree costs
-    one stat per known directory, not an os.walk per session per build (the T368 review's profile: the walk was a
-    third of the memo key's cost). Sound because a directory added or removed under `d` moves its PARENT's mtime,
-    and every parent is a known directory, so the known identities standing means the tree stands; any of them
-    moving (a sidecar landing, a directory appearing or vanishing, the root itself) re-walks. A root that does not
-    exist is the tree [d] with identity None, and its appearance re-walks the same way. Keyed by the session so
-    _feed_memo_forget drops a departed session's entry with its memo entry; a session whose transcript (and so
-    whose root) moved re-walks. A sidecar REWRITTEN in place under its own name moves no directory's mtime, so
-    neither this memo nor _subagent_meta_map's own cache sees it (pre-existing, shared with that cache; the CLI
-    writes a sidecar once, at the agent's spawn)."""
-    hit = _SUBAGENT_DIRS_MEMO.get(sid)
-    if hit is not None and hit[0] == d:
-        idents = tuple(_chat_ident(x) for x in hit[1])
-        if idents == hit[2]:
-            return hit[1], idents
-    dirs = tuple(_subagent_dirs(d) or [d])
-    idents = tuple(_chat_ident(x) for x in dirs)
-    _SUBAGENT_DIRS_MEMO[sid] = (d, dirs, idents)
-    return dirs, idents
+    """(the directories under the subagents root `d`, their identities) for the feed key's subagents component, from the
+    shared walk memo (_subagent_tree, 2026-09-16; before it this key held a sid-keyed memo of its own over the same walk,
+    the T368 review's profile having put the walk at a third of the key's cost, while every other reader still walked):
+    an unchanged tree costs one lstat per known directory. A root that does not exist is the tree (d,) with identity None,
+    and its appearance moves the component; a symlink or file in its place is (d,) with the LINK's own lstat identity
+    (before the shared memo, the target's os.stat identity: one component miss at deploy for such a session, no output
+    change).
+    A sidecar REWRITTEN in place under its own name moves no directory's mtime, so neither this component nor
+    _subagent_meta_map's own cache sees it (pre-existing, shared with that cache; the CLI writes a sidecar once, at the
+    agent's spawn). `sid` is kept for the call's shape; the memo is per root and bounded by the alive set
+    (_subagent_trees_forget), not per session."""
+    dirs, stats = _subagent_tree(d)
+    idents = tuple(_stat_ident(s) for s in stats)
+    return (dirs or (d,), idents or (None,))
 
 
 def _postal_session_slice(sid, maps=None):
@@ -39771,12 +40426,17 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         colour (_name_color); the snapshot's CONTENT, not the file, since the body reads the cycle's snapshot.
       captions: _chat_ident(CAPDIR/<fsid>.jsonl). The placeholders' gist (_provisional_card / _blocked_placeholder →
         _seg_caption(_captions(fsid))).
-      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the judge-pass
-        snapshot's stamp when this sid is in it (_goals_snap_at[0], else None: _feed_goals serves the pre-pass
-        snapshot while a pass is mid-flight), the user-gesture mark _user_goal_write[fsid], the punch record
-        _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an EIO or a
-        permissions fault moves no stat)). _feed_goals, jd.load_goals_shared inside _bg_placed_tops and
-        _session_stamp_read, jd.review_boundary, jd._done_since and every node read.
+      store: (jd._store_identity(fsid)[1:] (the store, its override journal, its goals-archive entry), the store
+        VERSION the body's read rendered (the key of the pass-snapshot entry _feed_goals_keyed served it from while a
+        pass is mid-flight, since the feed serves the pre-pass snapshot then; else the live file's identity beside
+        the pass memo's count of byte changes the stat did not show for that store, taken before the read like the
+        stat), whether the override journal is replayed onto that version (the live loader replays it, the raw
+        snapshot does not until a punch; None with no journal), the user-gesture mark _user_goal_write[fsid], the
+        punch record _goals_snap_done[fsid], the rewind hold (cutT, leaf, at) or None, whether the read FAULTED (an
+        EIO or a permissions fault moves no stat)). _feed_goals_keyed, jd.load_goals_shared inside _bg_placed_tops
+        and _session_stamp_read, jd.review_boundary, jd._done_since and every node read. The pass's clock stamp is
+        not a component (2026-09-16): a new snapshot that decodes the same versions is not new information, and the
+        stamp moved every snapshotted session's key twice per pass.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
       reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
@@ -39809,9 +40469,11 @@ def _feed_session_key(s, tm, ctx, prev_entry):
       jactive: fsid in {r["fsid"] for r in jd.active_runs()}. The Analyzing swirl's active prong.
       hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
       watch: json of _watch_awaiting(fsid) (the in-memory watches for this sid). An awaiting source.
-      subagents: _chat_ident of the transcript's subagents directory and every directory under it (the walk memoized
-        on those identities, _subagent_dirs_ident). _subagent_meta_map. A sidecar rewritten in place under its own
-        name moves no directory's mtime and is invisible here as it is to the map's own cache (pre-existing).
+      subagents: the identity (ino, mtime_ns, size, ctime_ns) of the transcript's subagents directory and every directory
+        under it, from the shared walk memo (_subagent_dirs_ident over _subagent_tree, 2026-09-16: the directories are
+        listed once per change, vouched for by one lstat each while they stand). _subagent_meta_map. A sidecar rewritten
+        in place under its own name moves no directory's mtime and is invisible here as it is to the map's own cache
+        (pre-existing).
       usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
         _cap_switch_offer), else None. A deps component.
       offer: the login-account usage window sitting at its cap with its reset still ahead of the build's clock, as
@@ -39843,10 +40505,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                    for k in dict.fromkeys([fsid, str(s.get("anchor") or "")]) if k)
     names = (s.get("name"), tuple(_names_parts(fsid) or ()))
     captions = _chat_ident(jd.CAPDIR / (fsid + ".jsonl"))
-    sident = jd._store_identity(fsid)[1:]
-    with _goals_snap_lock:
-        _snap = _goals_snap[0]
-        snap_at = _goals_snap_at[0] if (_snap is not None and fsid in _snap) else None
+    sidentity = jd._store_identity(fsid)             # (the store's path, its identity, the journal's, the archive's)
+    path_s, sident = sidentity[0], sidentity[1:]
+    _ent = _goals_memo[0].get(path_s)                # the pass memo's entry for the store, taken BEFORE the read like
+    alias = _ent[3] if _ent is not None else 0       # the stat: its count of byte changes the stat did not show
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
@@ -39884,7 +40546,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     wait = tuple(sorted((ctx["wmap"].get(fsid) or {}).items(), key=str)) or None
     # ── the per-session facts the body reads through ctx, once per build (a hidden session reads none of them,
     #    exactly as the loop's `continue` skipped them) ──
-    ps, st, who_working, interrupting, closer = None, None, False, False, False
+    ps, st, who_working, interrupting, closer, snap_key = None, None, False, False, False, None
     if not hide:
         ps = _parse_cached(s["path"]) if path else None   # CACHE-ONLY: the cards paint at once on a cold kernel (the user 2026-06-26)
         if ps is not None:
@@ -39895,14 +40557,26 @@ def _feed_session_key(s, tm, ctx, prev_entry):
             who_working = False
         sess_interrupting = _interrupting(fsid, ps or {}, now, tm)   # pops its stamp on the settled path, once per build
         interrupting = sess_interrupting
-        st = _feed_goals(fsid)                       # the store the body renders (None: the read faulted)
+        st, snap_key = _feed_goals_keyed(fsid)       # the store the body renders (None: the read faulted) and the
+        #                                              snapshot key it was served from (None: the live file)
         closer = bool(live and ps and not who_working and not jactive
                       and _closer_pending(fsid, path, now, st if st is not None else {"nodes": {}, "status": {}}))
     ctx.update(ps=ps, who_working=who_working, interrupting=interrupting, store=st, closer=closer, hide=hide)
     # the store component closes on the READ's outcome (st is None: the read faulted, jd.load_goals_or_fault filed it):
     # an EIO or a permissions fault moves no stat, so without the bit a faulted derivation (no cards) would serve
     # on after the fault cleared, and a pre-fault entry would serve through it (tests/test_goal_store_fault_boundary)
-    store = (sident, snap_at, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
+    # The store VERSION the body's read rendered, and whether the override journal is replayed onto it (2026-09-16):
+    # the snapshot entry's key when the read served the pass snapshot, else the live file's identity beside the pass
+    # memo's count of byte changes the stat did not show for this path (a rewrite the pass memo's byte compare caught
+    # moves the key once; the same count on both sides keeps it still); the live loader replays the journal, the raw
+    # snapshot does not (a punch does, and is keyed by its own record below). The mode comes from the read itself, so
+    # a pass boundary between the stat above and the read cannot pair one mode's key with the other's rendering. The
+    # pass's clock stamp stood here before, and it moved every snapshotted session's key at every pass begin and end
+    # although the store rendered was the same object or the same file version: a whole-board re-derivation per pass
+    # boundary, most of a busy board's derivations when short passes run back to back.
+    rendered = snap_key if snap_key is not None else (sident[0], alias)
+    replayed = (snap_key is None) if sident[1] is not None else None
+    store = (sident, rendered, replayed, _user_goal_write.get(fsid, 0.0), _goals_snap_done.get(fsid), hold,
              st is None and not hide)                # a hidden session's skipped read is not a fault
     bg = (tuple((r.get("tid"), r.get("desc"), r.get("t"), r.get("type"), r.get("deadline"), r.get("agentId"))
                 for r in _bg_live_norm(fsid, path)) if (ps is not None and path) else None)
@@ -41139,6 +41813,7 @@ def build_feed(now, live_map=None):
         hidden_total += _hid
         cold_parse = cold_parse or _cold
     _feed_memo_forget({s["sid"] for s in alive})     # a departed session's entry drops with it
+    _subagent_trees_forget(alive)                    # ...and, as a belt, the walk memo's roots nobody alive owns (2026-09-16)
     # THE SERVING FOLD, commit side (T137): join each candidate's rows under its dispatch's
     # tracker row — a read-only render-time join across stores (the node itself stays in the
     # WORKER's store, where plan-sync completion, nudge freshness, and clears live; node ids are
@@ -44249,12 +44924,34 @@ def _js_num(v):
     return str(v)
 
 
+_judging_compact_memo = None   # {id(entry): (entry, compact)} from the LAST _compact_judging call, ONE dict rebound
+#                                whole (never refilled in place): a connect push builds the timeline outside the
+#                                pusher's lock, so two calls can overlap; each reads one snapshot, the last writer's
+#                                memo stands and the other's entries miss once, never a wrong compact (2026-09-16)
+
+
 def _compact_judging(entries):
     """{lane sid: [compact entries]} from the builder's list of {judge, sid, t, t1, kind, text, ms, in, out, sent,
-    recv, open}. Pure. An entry without a sid lands under the empty lane key. The federation code carries a twin
-    (judgingToWire in ui/webview/federation.ts) for an older kernel's flat list; the fixture pins both."""
-    out = {}
+    recv, open}. The same input gives the same output; an entry without a sid lands under the empty lane key. The
+    federation code carries a twin (judgingToWire in ui/webview/federation.ts) for an older kernel's flat list; the
+    fixture pins both. Identity-memoized on the entry OBJECT (2026-09-16): an entry _run_judging handed back unchanged
+    takes the compact dict of the previous call, itself, so the bars fill's identity memo (_delta_split) sees the
+    object it encoded last build and re-encodes nothing; a new entry mints one compact dict and one memo tuple, and
+    a hit hands the previous tuple back (a tuple holding a dict is tracked by the collector for life, so a fresh one
+    per entry per build is the very stream this memo removes). Exact because an entry is a pure function of its
+    row and gloss and is never mutated after it is minted: the band memo holds it across builds, so a writer that
+    mutated one would change every later frame in place. Do not mutate an entry or a compact dict."""
+    global _judging_compact_memo
+    t_start = time.perf_counter()
+    prev = _judging_compact_memo or {}                 # ONE read of the slot (the header comment)
+    cur, out, reused, minted = {}, {}, 0, 0
     for e in entries or []:
+        hit = prev.get(id(e))
+        if hit is not None and hit[0] is e:            # the identity is checked, never an id alone
+            cur[id(e)] = hit
+            out.setdefault(str(e.get("sid") or ""), []).append(hit[1])
+            reused += 1
+            continue
         # the key is (t, judge), not (t, judge, t1): an in-flight run's t1 is the build clock, so a key carrying it
         # changed every build and the run crossed as a delete plus a set per frame; with a stable key it is one
         # changed entry. Two runs of one judge sent at the same instant would collide and take positional keys,
@@ -44277,7 +44974,13 @@ def _compact_judging(entries):
             c["r"] = e["recv"]
         if e.get("open"):
             c["u"] = True
+        cur[id(e)] = (e, c)
+        minted += 1
         out.setdefault(str(e.get("sid") or ""), []).append(c)
+    _judging_compact_memo = cur
+    st = _JUDGING_BAND_STATS
+    st["compact_reused"] += reused; st["compact_minted"] += minted
+    st["compact_ms"] += (time.perf_counter() - t_start) * 1000
     return out
 
 
@@ -44641,7 +45344,19 @@ def _lanes_forget(keep):
 # unshared mutable store disables the prefix for that build (the derivation stays whole). Bounded by the lanes the
 # builds draw (_lanes_forget drops the rest) and by _LANES_MEMO_MAX like the lane memo; the bars it holds are the
 # same objects the lane memo and the wire cache hold. Counted under memos.lanes as prefix_hit and prefix_segs.
-_lane_prefix_memo = {}    # sid -> (inputs, turn_keys, bars, seg_ends, prompts, last_t, nsegs, complained)
+# The closed turns' COMPACTION markers ride the prefix too (2026-09-16): the lane's compactions were a comprehension
+# over every atom of every turn, run after the prefix reuse on every derivation (a live lane whose tail moved derives
+# once per build that draws it, about three lanes a build on the measured board), so a prefix hit still walked the
+# whole history for markers it could have held, and on a restored lane (LazyAtoms, the kernel's closed turns) every
+# one of those atom reads is a lock round trip or a row decode: 20-45 ms per derivation of a 30k-60k record
+# transcript, 60-140 ms of the floor of every build that derives such lanes (the multi-second cycles have other
+# causes). A closed
+# turn's markers are a function of that turn's atoms (type, subtype, t) and the branch clip, already an input, the
+# same premise the held bars rest on, so they are gathered per turn inside the loop (before the echo skip, so an echo
+# turn's markers land in turn order as the one-pass form had them), snapshotted before the tail beside the bars, and
+# held as the ninth field; a hit walks only the tail's atoms. A partial prefix still re-derives the whole lane,
+# markers included.
+_lane_prefix_memo = {}    # sid -> (inputs, turn_keys, bars, seg_ends, prompts, last_t, nsegs, complained, compactions)
 _LANE_PREFIX_LOCK = threading.Lock()
 
 
@@ -44671,17 +45386,17 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
     (the compact shape below, every default omitted); seg_ends maps a segment's start t to its work-END t; last_t
     is the lane's last recorded activity, the newest atom time of its newest bar (its `since` when the liveness
     snapshot has none), never a turn's `end`, which for the tail turn is the parse clock (T324); compactions are the
-    compact_boundary markers; cap_marks and other_marks are this lane's judging marks, unfiltered
-    (_derive_judging_marks); nsegs counts the segments visited (the cost a memo hit saves); complained is True
-    when the seams or the marks stage failed, or a mark carries a time the assembly could not compare, and
-    _bars_complain said so; such a lane is not memoized. No clock is read here. `full_prompts`, when given,
+    compact_boundary markers in turn order, the closed turns' held with the prefix; cap_marks and other_marks are this
+    lane's judging marks, unfiltered (_derive_judging_marks); nsegs counts the segments visited (the cost a memo hit
+    saves); complained is True when the seams or the marks stage failed, or a mark carries a time the assembly could
+    not compare, and _bars_complain said so; such a lane is not memoized. No clock is read here. `full_prompts`, when given,
     receives each segment's WHOLE prompt under its bar id (T278b): the bar carries the wire form (_wire_prompt,
     the first line capped) and _bind_message_execs's sender heuristic reads the whole text through this map; a
     memo that serves the bars serves the map beside them."""
     if full_prompts is None:
         full_prompts = {}
     st_turns = session["turns"]
-    bars, last_t, seg_ends, nsegs, complained = [], None, {}, 0, False   # seg_ends: seg-start t → work-END t (for completion marks)
+    bars, last_t, seg_ends, nsegs, complained, compactions = [], None, {}, 0, False, []   # seg_ends: seg-start t → work-END t (for completion marks)
     # the prefix: the held bars of the closed turns before the last one, reused while their identities and the inputs stand
     inputs = _lane_prefix_inputs(goals, cap_key, live, bft)
     n_last = len(st_turns) - 1
@@ -44699,13 +45414,14 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
             if k > 0:
                 if k == len(held[1]):                       # the whole held prefix stands: reuse its objects
                     bars = list(held[2]); seg_ends = dict(held[3]); prompts_held = held[4]; last_t = held[5]; nsegs_held = held[6]
-                    complained = held[7]
-                else:                                       # a shorter common prefix: keep the bars of the turns that stand
+                    complained = held[7]; compactions = list(held[8])
+                else:                                       # a shorter common prefix: a changed middle turn re-derives all
                     nsegs_held = 0; prompts_held = {}
-                    keep_ids = set()
-                    for t in st_turns[:k]:
-                        keep_ids.update(x.get("id") for x in (t.get("atoms") or ()) if False)   # (bars carry seg ids, below)
-                    k = 0                                   # partial reuse is not attempted: a changed middle turn re-derives all
+                    # partial reuse is not attempted. A leftover from the design that did attempt it walked every atom of
+                    # the k standing turns here into a set nobody read (a generator whose filter was a constant False still
+                    # binds each element): on a restored lane that is one lock round trip or row decode per atom, paid
+                    # right before the whole derivation below reads the same turns again (2026-09-16).
+                    k = 0
                 if k > 0:
                     full_prompts.update(prompts_held)
                     start_k = k
@@ -44715,7 +45431,12 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
     snap = None
     for ti, turn in enumerate(st_turns[start_k:], start=start_k):
         if ti == n_last and turn_keys and snap is None:
-            snap = (list(bars), dict(seg_ends), dict(full_prompts), last_t, nsegs, complained)   # the closed turns' part, before the tail
+            snap = (list(bars), dict(seg_ends), dict(full_prompts), last_t, nsegs, complained, list(compactions))   # the closed turns' part, before the tail
+        # this turn's compaction markers, held with the prefix (2026-09-16, the comment above _lane_prefix_memo); copied
+        # boundaries stay on the parent's lane
+        compactions.extend({"t": a["t"]} for a in turn["atoms"]
+                           if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")
+                           and not (bft and a["t"] <= bft))
         if turn.get("echoTurn"):
             continue        # a stale echo's own turn (T344): a send the transcript never took draws no bar
         turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
@@ -44813,7 +45534,8 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
             _lane_prefix_memo.pop(sid, None)
             while len(_lane_prefix_memo) >= _LANES_MEMO_MAX:
                 _lane_prefix_memo.pop(next(iter(_lane_prefix_memo)))
-            _lane_prefix_memo[sid] = (inputs, turn_keys, snap[0], snap[1], snap[2], snap[3], snap[4] + (nsegs_held if start_k else 0), False)
+            _lane_prefix_memo[sid] = (inputs, turn_keys, snap[0], snap[1], snap[2], snap[3], snap[4] + (nsegs_held if start_k else 0), False,
+                                      snap[6])
     try:
         cap_marks, other_marks = _derive_judging_marks(sid, caps, goals, seg_ends) if goals is not None else ([], [])
         # The horizon comparisons run in _judging_assemble, per build, outside this lane's guard; the one-pass form
@@ -44828,9 +45550,6 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
         _bars_complain(sid, "judging-marks", e)   # this lane loses its marks, the frame ships
         complained = True
         cap_marks, other_marks = [], []
-    compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
-                   if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")
-                   and not (bft and a["t"] <= bft)]           # copied boundaries stay on the parent's lane
     return bars, seg_ends, last_t, compactions, cap_marks, other_marks, nsegs, complained
 
 
@@ -44958,8 +45677,9 @@ def _subagent_transcripts(path):
     per session discovered in its window, live or not, on an HTTP handler thread and so on the GIL:
     five live sessions held 3,577 agent transcripts under 1,292 directories (one of them 326 past
     workflows' directories), every one read per pass. The chat builds' walk over the same tree is
-    _subagent_dirs, with _subagent_meta_map's own cache, not this memo. Cost per call now: one lstat
-    per directory, plus one listing per directory whose stamp moved. A directory gone, or a symlink in
+    _subagent_tree (its own root-keyed memo of the directory list, with _subagent_meta_map's cache
+    over it), not this memo. Cost per call now: one lstat per directory, plus one listing per
+    directory whose stamp moved. A directory gone, or a symlink in
     its place, drops from the memo with everything under it; a directory unreadable when listed yields
     nothing under it (as os.walk had it) and is not memoised, so the next call tries again.
 
@@ -45143,9 +45863,16 @@ def _session_tokens(path, t0):
 # user 2026-08-13, who watched the cost modal sit on "loading…"). One shared incremental reader now:
 # rows parse ONCE, appends parse from the last byte offset, and rows older than the widest consumer
 # window (30 days, plus a day of slack) are pruned so memory stays bounded. A shrunken file (rotation,
-# a fresh install) resets cleanly.
+# a fresh install) resets cleanly. `pruned` counts the rows the left prune has dropped over the cache's life:
+# the judging band's horizon cursor is an index into `rows`, and a prune moves every index by the count
+# dropped, so the band shifts its cursor by the count pruned since its last build instead of rescanning
+# (2026-09-16: the live log spans the window, so most appends prune, and an identity-only cursor would
+# have re-verified every retained row on about a third of builds). The cursor relies on this list being
+# touched in three ways only: rebound to a new list object, appended at the right, or left-pruned in
+# place with `pruned` incremented by the count; anything else (a middle deletion, a clear-and-refill, a
+# replaced row) must rebind the list instead, or the cursor's premise breaks silently.
 _JUDGE_USAGE_RETAIN = 31 * 86400
-_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": []}
+_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": [], "pruned": 0}
 
 
 def _judge_usage_rows():
@@ -45196,6 +45923,7 @@ def _judge_usage_rows():
         while i < len(c["rows"]) and (c["rows"][i].get("t") or 0) < floor:
             i += 1
         del c["rows"][:i]
+        c["pruned"] = c.get("pruned", 0) + i        # the band's cursor shifts by this (the header comment)
     return c["rows"]
 
 
@@ -45455,6 +46183,42 @@ def _bars_complain(who, stage, e):
 _JUDGING_ROW_CAP = 20000     # judging marks per bars frame — far above any legible band density,
                              # far below the 147k-mark storm frame that starved bars (2026-08-18)
 _JUDGING_TRIMMED = {}        # transition latch for the trim log line (order-of-magnitude keyed)
+# The band's memo from the LAST _run_judging call: (rows, skip, skip_row, pruned, t0, entries). ONE tuple in one
+# slot, read once at the start of a call and rebound whole at its end (the _skel_wire pattern): a connect push
+# builds the timeline outside the pusher's lock, so two calls can overlap, and a memo read field by field could
+# pair one call's cursor with another's horizon and skip rows verified under a horizon larger than the reader's
+# own; a whole snapshot is exact by the argument in _run_judging, and the last writer's memo stands while the
+# other's entries miss once (2026-09-16). `entries` is {id(row): (row, kind, text, entry)}, bounded by the band's
+# wire cap: the trim drops the oldest entries from the frame every build, so their tuples leave the memo with them
+# (holding them would buy no reuse and, in a storm like 2026-08-18's 147k-row frame, would hold ~90 MB for entries
+# no client sees); entries <= _JUDGING_ROW_CAP, and `rows` is the reader's own retained list (its 31-day retention,
+# no copy of it here). `skip_row` is the boundary OBJECT
+# the scan verified, never an index into the live list. `rows` is held so the list identity and `skip_row` can be
+# checked against live objects (an id alone could be recycled), at the cost of one transient: after a log rotation
+# the previous list's rows (tens of MB for a full 31-day window) stay alive for one build, until this call rebinds
+# the slot.
+_judging_band = None
+_JUDGING_BAND_STATS = {"builds": 0, "ms": 0.0, "rows_skipped": 0, "rows_visited": 0, "entries_reused": 0, "entries_minted": 0,
+                       "resets": 0, "compact_reused": 0, "compact_minted": 0, "compact_ms": 0.0}
+
+
+def _judging_band_report():
+    """The band memo's counters plus its occupancy, for /perf (memos.judgingBand): builds and their wall ms, the rows
+    the cursor skipped and the rows each build visited, entries reused by identity and minted, the cursor resets
+    (a rotation, a prune the reader did not count, a horizon moved back), _compact_judging's reuse and ms; then the
+    gauges: `entries` and `compact` (the two memos' held entries), `bytes` (their containers' estimated size: the memo
+    tuples and the entry and compact dicts, not the rows and strings they share with the reader and the marks) and
+    `bound` (the band's wire cap, which bounds both memos: only entries that reach the frame are held). The effect of
+    the memo is read here after a rollout, not inferred from a probe. The counters are plain increments from whichever
+    thread built the band (the pusher, or a cold connect push when their builds overlap), so under overlap they can
+    under-count; the memos themselves are exact (one read, one whole rebind)."""
+    out = dict(_JUDGING_BAND_STATS)
+    mb, cm = _judging_band, _judging_compact_memo          # one read each: rebound whole and never mutated, so safe to walk
+    ents, cms = (mb[5] if mb is not None else {}), (cm or {})
+    out["entries"], out["compact"], out["bound"] = len(ents), len(cms), _JUDGING_ROW_CAP
+    out["bytes"] = (sum(sys.getsizeof(t) + sys.getsizeof(t[3]) for t in ents.values())
+                    + sum(sys.getsizeof(t) + sys.getsizeof(t[1]) for t in cms.values()))
+    return out
 
 
 def _run_judging(t0, alive_sids, semantic):
@@ -45465,12 +46229,46 @@ def _run_judging(t0, alive_sids, semantic):
     sits at the old completion, off the live edge), and a COORDINATING courier classification (which plants
     no node, so it had no mark at all). Each call borrows its gloss text/kind best-effort from the nearest
     `semantic` artifact mark of the same (sid, judge) — the usage log records timing + tokens but not the
-    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t."""
-    by = {}
+    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t.
+
+    Incremental since 2026-09-16. Every completed entry is a pure function of ONE usage row (its fsid, judge, sent,
+    recv, t, ms, in, out; the shared reader parses a row once and never mutates it), the static _JUDGE_FAMILY map
+    and the (kind, text) of the gloss it borrows; alive_sids and t0 only decide whether the row yields an entry at
+    all. So a memo keyed on the row object and validated on the gloss by value hands back the SAME entry dict for
+    an unchanged row with an unchanged gloss, and the bars fill's identity memo then re-encodes only the entries
+    that changed (before: every retained row was rescanned and every entry was a fresh dict, so the ~8.7k entries
+    of a live band were re-encoded on every build). The scan covers the horizon rather than every retained row: t0
+    is the build's now minus the horizon and moves forward across builds, so a leading row that failed on its times
+    alone (non-numeric, or ended before t0) fails under every later t0 too, and the cursor advances over the rows
+    it has individually verified, with no ordering assumption on the log. It is dropped when its premise is: another
+    list object (a rotation), a horizon that moved back, or the object at the cursor no longer there (the reader's
+    left prune moves every index; the cursor shifts by the count the reader pruned since the memo's build, and the
+    object check remains the backstop). The memo's validation is by value, so every visited row needs its gloss on
+    every build (a hit is known only once kind and text are in hand): the gloss is found by bisect over the same
+    t-sorted lists the comprehension scanned, so it stays O(log n) on the warm path. The scan walks a slice snapshot
+    of the list: the reader's left prune runs on whichever thread reads the log and can shrink the list under a scan
+    (an index loop over a length taken before it raised IndexError then, and the caller's guard blanked the band for
+    a frame), and the memo records the boundary object the scan verified rather than an index into the live list, so
+    a prune the scan did not see fails the object check next build, a reset. Open runs (t1 = the build clock) are
+    minted per build by design."""
+    global _judging_band
+    t_start = time.perf_counter()
+    by, byts = {}, {}
     for mk in semantic:
         by.setdefault((mk["sid"], mk["judge"]), []).append(mk)
-    for v in by.values():
+    for k, v in by.items():
         v.sort(key=lambda m: m["t"])
+        byts[k] = [m["t"] for m in v]
+
+    def gloss(sid, judge, upto):
+        # the newest same-judge mark at or before `upto`: the list is sorted by t, so the marks with t <= upto are a
+        # prefix and bisect_right's insertion point ends it; the element before it is the one the comprehension this
+        # replaced picked ([m for m in v if m["t"] <= upto][-1]), equal times included (2026-09-16)
+        v = by.get((sid, judge))
+        if not v:
+            return None
+        i = bisect.bisect_right(byts[(sid, judge)], upto)
+        return v[i - 1] if i else None
     out = []
     # The SHARED incremental reader, not a per-build full read: this used to read_text + json.loads
     # the whole of judge-usage.jsonl on EVERY bars build (measured 2026-08-18 during the captioner
@@ -45479,26 +46277,55 @@ def _run_judging(t0, alive_sids, semantic):
     # working sessions painted lanes with no bars. _judge_usage_rows already existed for exactly
     # this (the 2026-08-13 analytics freeze); the band just never adopted it.
     rows = _judge_usage_rows()
+    pruned = _JUDGE_USAGE_CACHE.get("pruned", 0)
+    mb = _judging_band                                # ONE read of the slot: every check below is against one snapshot
+    prev = mb[5] if mb is not None else {}
+    skip = 0
+    if mb is not None:
+        if rows is mb[0] and t0 >= mb[4]:
+            k = mb[1] - (pruned - mb[3])              # the reader's prunes since the memo's build moved every index by that many
+            try:
+                skip = k if 0 < k and rows[k - 1] is mb[2] else 0   # the same object at the cursor: the rows before it are
+            except IndexError:                        #  the ones verified; a list shrunk under another thread is a reset
+                skip = 0
+        if mb[1] and not skip:
+            _JUDGING_BAND_STATS["resets"] += 1
+    scan = rows[skip:]                                # a snapshot (~8.7k references on a live band): the reader's left prune runs
+    #                                                   on whichever thread reads the log and can shrink the list under this scan
+    skip0, num, fam = skip, (int, float), _JUDGE_FAMILY
+    cur, reused, minted = {}, 0, 0
+    advancing = True                                  # still inside the leading run of rows that fail on their times alone
     done = set()                                      # (sid, judge, sent) of completed runs — to dedup live ones
-    for o in rows:
+    for i, o in enumerate(scan, skip):
+        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
+        start = sent if isinstance(sent, num) else lt
+        end = recv if isinstance(recv, num) else start
+        if not isinstance(start, num) or not isinstance(end, num) or end < t0:
+            if advancing:
+                skip = i + 1                          # verified on its times alone: it fails under every later t0 as well
+            continue
+        advancing = False                             # a row that passes on its times ends the run, whatever the sid test says
         sid, judge = o.get("fsid"), o.get("judge")
-        judge = _JUDGE_FAMILY.get(judge, judge)
+        judge = fam.get(judge, judge)
         if sid not in alive_sids:
             continue
-        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
-        start = sent if isinstance(sent, (int, float)) else lt
-        end = recv if isinstance(recv, (int, float)) else start
-        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end < t0:
-            continue
-        if isinstance(sent, (int, float)):
+        if isinstance(sent, num):
             done.add((sid, judge, sent))
         # gloss = the most recent same-judge artifact mark that finished by this call's run time
-        cands = [m for m in by.get((sid, judge), []) if m["t"] <= end + 1]
-        src = cands[-1] if cands else None
-        out.append({"judge": judge, "sid": sid, "t": start, "t1": end,
-                    "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
-                    "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
-                    "sent": sent, "recv": recv})
+        src = gloss(sid, judge, end + 1)
+        kind, text = (src or {}).get("kind", "run"), (src or {}).get("text", "")
+        hit = prev.get(id(o))
+        if hit is not None and hit[0] is o and hit[1] == kind and hit[2] == text:
+            e = hit[3]                                # the same row, the same gloss: the same entry object, and the memo's
+            cur[id(o)] = hit                          #  own tuple back (no fresh container per row per build)
+            reused += 1
+        else:
+            e = {"judge": judge, "sid": sid, "t": start, "t1": end, "kind": kind, "text": text,
+                 "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
+                 "sent": sent, "recv": recv}
+            cur[id(o)] = (o, kind, text, e)
+            minted += 1
+        out.append(e)
     # LIVE in-flight runs: a call still running has no usage line yet (that's written on completion), so its
     # bar would only appear — back-dated — once it ends. Draw it NOW as a span growing to the live edge
     # (open:True → the view extends it to nowS) so a judge bar appears WHEN it starts (the user 2026-06-23).
@@ -45526,11 +46353,21 @@ def _run_judging(t0, alive_sids, semantic):
         out.sort(key=lambda m: m["t"])
         cut = len(out) - _JUDGING_ROW_CAP
         del out[:cut]
+        kept = {id(e) for e in out}                   # the trimmed entries leave the memo with the frame: the oldest are trimmed
+        cur = {k: v for k, v in cur.items() if id(v[3]) in kept}   #  again next build, so holding them buys no reuse (the slot's comment)
         if _JUDGING_TRIMMED.get("mag") != cut // 10000:
             _JUDGING_TRIMMED["mag"] = cut // 10000
             sys.stderr.write("timeline judging band: %d oldest marks trimmed from the frame "
                              "(cap %d; a judge storm is the usual cause — see judge-usage.jsonl)\n"
                              % (cut, _JUDGING_ROW_CAP))
+    # the boundary object: the last row this scan verified when the cursor advanced, else the one the head check found
+    # in place (never rows[skip - 1] of the live list, which a prune under the scan may have shifted or shortened)
+    skip_row = scan[skip - skip0 - 1] if skip > skip0 else (mb[2] if skip else None)
+    _judging_band = (rows, skip, skip_row, pruned, t0, cur)   # rebound whole (the slot's comment)
+    st = _JUDGING_BAND_STATS
+    st["builds"] += 1; st["rows_skipped"] += skip0; st["rows_visited"] += len(scan)
+    st["entries_reused"] += reused; st["entries_minted"] += minted
+    st["ms"] += (time.perf_counter() - t_start) * 1000
     return out
 
 
@@ -45780,6 +46617,11 @@ def build_timeline(now, live_map=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            # which backend the lane is (the tab meta's field, _session_backend): the lane's model/effort pickers speak
+            # that backend's vocabulary and a live Codex lane draws its effort picker before any level is picked
+            # (2026-09-16: the row carried no backend, so the lane read every session as Claude's and a Codex lane
+            # with no level had no picker at all)
+            "backend": _session_backend(sid, tm),
             "modelPending": _model_pending_now(sid, tm),   # switching-dots until the /model pick lands, from EITHER surface (the user 2026-07-03)
             # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
@@ -50434,7 +51276,7 @@ def _repo_index_stood_down(cwd, why):
     # a .git pointer file that cannot be followed is already named, once per fault episode, by _git_file_fault (its
     # stderr line and bell row carry the path): the index standing down there is the same finding, not a second line
     with _git_file_faults_lock:
-        if os.path.join(_tree_of(cwd)[0] or cwd, ".git") in _git_file_faults:
+        if os.path.realpath(os.path.join(_tree_of(cwd)[0] or cwd, ".git")) in _git_file_faults:   # the episode's key: the resolved path
             return
     if len(_REPO_INDEX_STOOD_DOWN) >= 256:
         _REPO_INDEX_STOOD_DOWN.clear()
@@ -51736,6 +52578,16 @@ def _mark_views_dirty():
     _pusher_wake.set()
 
 
+def _dirty_since(started):
+    """Whether the views dirty mark postdates a build that STARTED at the wall stamp `started` (taken before the build
+    read anything): the one rule the feed, the pure feed, the timeline and the thread caches ask. The mark is a wall
+    stamp too, so a mark landing in the SAME clock tick as the start is not older than the build's read and must bust
+    it: `>=`, never `>` (2026-09-16: the macOS runner stamped a build and the mark it was meant to see in one tick, and
+    the strict compare served the stale payload; a fast box can do the same). The cost of the equal case is one extra
+    rebuild after a mark that shares its tick with the rebuild's own start, then the next start stamp is newer."""
+    return _views_dirty[0] >= started
+
+
 def _wake_kernel():
     """The backends' turn-end POKE: wake BOTH loops. The producer runs a judge pass; the pusher runs the
     cycle that delivers parked ops (_apply_pending_ops) and pushes what changed. Until 2026-09-03 the poke
@@ -52001,8 +52853,12 @@ def _feed_off_frame(now, live_map=None):
         f[key] = []
     try:
         alive = _alive_sessions(now, live_map or {})
+        read = True
     except Exception:
-        alive = []
+        alive, read = [], False
+    if read:                                          # the subagents walk memo's belt here too (2026-09-16): with tracking off
+        _subagent_trees_forget(alive)                 #  build_feed never runs; the bound's home is the jobs pass; a FAILED alive
+    #                                                    read evicts nothing (an empty set from a failure is no owner list)
     try:
         cleared = _cleared_ids()
     except Exception:
@@ -52056,7 +52912,8 @@ def _cached_feed(now, live_map, sig, connect=False):
 
 def _feed_servable(sig, connect):
     """Whether the built feed stands for this caller: a connect serves any warmed build (never rebuilds); the pusher
-    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark newer than its start."""
+    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark that is not older than its
+    start (_dirty_since)."""
     e = _built_feed
     # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
     # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
@@ -52066,7 +52923,7 @@ def _feed_servable(sig, connect):
     # until the next sig bust — the window a client fallback needs to bounce a just-replied card
     # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
     # so back-to-back starts must not shrink its window.
-    dirty = not connect and _views_dirty[0] > e[3]
+    dirty = not connect and _dirty_since(e[3])
     return e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S)
 
 
@@ -52210,7 +53067,7 @@ def _pure_feed(now, live_map):
         # _cached_feed's question minus the connect arm. Never a copy a dirty mark postdates (start-keyed,
         # as there: a mutation landing mid-build may have been missed by it). Inside the floor the clock
         # answers and no sig is swept; past it, an unchanged sig answers (the idle board's case).
-        if pf is not None and not _views_dirty[0] > pf[2]:
+        if pf is not None and not _dirty_since(pf[2]):
             if (time.time() - pf[1]) < REBUILD_MIN_S:
                 return _served(pf[0])
             sig = _fleet_view_sig(now, live_map)
@@ -54052,7 +54909,7 @@ def _timeline_cache_fresh(sig):
     when this is False; a connect push, which never rebuilds the full build on the handler thread, builds
     its LANES fresh instead of projecting a stale cache (review find, 2026-09-08; see _push)."""
     e = _built_timeline
-    if e[1] is None or _views_dirty[0] > e[3]:
+    if e[1] is None or _dirty_since(e[3]):
         return False
     return e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S
 
@@ -56419,9 +57276,10 @@ var curFocus='f-chat', lastCol='f-chat';   // for Shift-Up out of the timeline: 
 // pointerdown / focusin / window-focus — event-based, no polling. Exactly one pane is ringed at a time.
 var lastChat='f-chat';   // the chat column the user last worked in (split screen 2026-09-08): where shell relays land
 function paneOf(id){return PANE[id]||(window.__rompChatPaneOf?window.__rompChatPaneOf(id):null);}   // split columns are made after this map
-function allCols(){var c=window.__rompChatFrameIds?window.__rompChatFrameIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat column, then Outline, Feed
+function allCols(){var c=window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat'];return c.concat(COLS.slice(1));}   // every chat COLUMN (not a bottom pane, which is a vertical child), then Outline, Feed
 function setFocus(id){var pid=paneOf(id);if(!pid)return;curFocus=id;if(allCols().indexOf(id)>=0)lastCol=id;if(pid.indexOf('chat-pane')===0)lastChat=id;
-Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){el.classList.toggle('pane-focused',el.id===pid);});}
+var isBottom=!!(window.__rompTopFrameOf&&window.__rompTopFrameOf(id));   // id is the BOTTOM half of a split column (its top frame exists)
+Array.prototype.forEach.call(document.querySelectorAll('.pane'),function(el){var on=el.id===pid;el.classList.toggle('pane-focused',on);el.classList.toggle('focus-bottom',on&&isBottom);el.classList.toggle('focus-top',on&&!isBottom&&el.classList.contains('split-v'));});}
 window.__rompFocusedChatId=function(){return document.getElementById(lastChat)?lastChat:'f-chat';};
 // A FILE dragged onto the shell's own chrome (a gutter, the bar between panes) must not navigate the page to the file —
 // the browser's default for an unhandled drop (the user 2026-09-12). The chat columns take a drop anywhere in their
@@ -56448,14 +57306,20 @@ try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*')
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
 var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*');}catch(x){}});
 function moveFocus(dir){
-  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
-    if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
+  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it, to the last chat pane worked in (a bottom pane too), else the last column
+    if(dir==='up'){var c=paneVisible(lastChat)?lastChat:(paneVisible(lastCol)?lastCol:(visCols()[0]||null));if(c)focusPane(c,dir);}
     return;
   }
-  var cols=visCols(), i=cols.indexOf(curFocus);
+  // the VERTICAL axis inside a split column: Down from the TOP pane goes to the BOTTOM pane, Down from the BOTTOM enters
+  // the timeline; Up from the BOTTOM returns to the TOP (Up from a column top is a no-op, the top row already)
+  var below=window.__rompBelowFrameOf&&window.__rompBelowFrameOf(curFocus);
+  var top=window.__rompTopFrameOf&&window.__rompTopFrameOf(curFocus);   // set only when curFocus IS a bottom pane
+  if(dir==='up'){if(top&&document.getElementById(top))focusPane(top,dir);return;}
+  if(dir==='down'){if(below&&document.getElementById(below)){focusPane(below,dir);return;}if(paneVisible(TL))focusPane(TL,dir);return;}
+  // left/right along the COLUMNS; a bottom pane moves relative to its parent column
+  var cols=visCols(), cur=top||curFocus, i=cols.indexOf(cur);
   if(dir==='left'){if(i>0)focusPane(cols[i-1],dir);}
   else if(dir==='right'){if(i>=0&&i<cols.length-1)focusPane(cols[i+1],dir);}
-  else if(dir==='down'){if(paneVisible(TL))focusPane(TL,dir);}   // up from a column = already the top row, no-op
 }
 function editable(t){if(!t)return false;var tag=(t.tagName||'').toLowerCase();
 return tag==='textarea'||tag==='input'||tag==='select'||t.isContentEditable;}
@@ -59641,15 +60505,19 @@ var BK='romp-vscode-state-chat:';   // a column's state blob (the shim's SK for 
 var row=document.querySelector('.row'),gva=document.getElementById('gv-a');
 if(!row||!gva)return;
 function mobile(){var b=document.getElementById('mtabs');try{return !!b&&getComputedStyle(b).display!=='none';}catch(e){return false;}}
-function save(){try{localStorage.setItem(CK,JSON.stringify({v:2,cols:cols.map(function(c){return {n:c.n,ids:c.ids.slice()};})}));}catch(e){}}
+function save(){try{localStorage.setItem(CK,JSON.stringify({v:2,cols:cols.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;})}));}catch(e){}}
 function paneId(n){return 'chat-pane-'+n;}function frameId(n){return 'f-chat-'+n;}
 function idx(n){for(var i=0;i<cols.length;i++){if(cols[i].n===n)return i;}return -1;}
 function entry(n){var i=idx(n);return i<0?null:cols[i];}
 function frames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}
+function isBelow(c){return !!(c&&c.place==='below');}   // a cols entry that is a bottom pane (nested under parent), not a side column
+function belowOf(n){for(var i=0;i<cols.length;i++){if(isBelow(cols[i])&&cols[i].parent===n)return cols[i];}return null;}   // the bottom pane under column n, if any
+function sideCols(){return cols.filter(function(c){return !isBelow(c);});}   // the SIDE columns in row order: EVERY cols neighbour walk (left/right/last) routes through this, because a bottom pane is a vertical child with no chat-pane-<n> element and must never be resolved as a neighbour
+function columnFrames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){if(!isBelow(c))out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}   // the horizontal columns only: a bottom pane is a vertical child, not a column
 function frameOfWin(win){if(!win)return null;var fs=frames();for(var i=0;i<fs.length;i++){try{if(fs[i].contentWindow===win)return fs[i];}catch(e){}}return null;}
 function colOf(win){var f=frameOfWin(win);return f?String(f.getAttribute('data-col')||''):'';}
 function frameOfCol(n){return document.getElementById(n===1?'f-chat':frameId(n));}
-function lastPane(){return cols.length?paneId(cols[cols.length-1].n):'chat-pane';}
+function lastPane(){var s=cols.filter(function(c){return !isBelow(c);});return s.length?paneId(s[s.length-1].n):'chat-pane';}   // the rightmost SIDE column's pane; a bottom pane has no chat-pane-<n> element, so it must not be the rightmost (else mountZones' edge zone, the gv-a/b/c gutters and __rompSplitGrow all get a missing id)
 // THE PARTITION, three pure readers of cols: the column holding a session (1, the first, when no entry lists it);
 // the sets every column page filters by (an id listed twice — a store another dashboard wrote — belongs to the
 // first entry in row order, so no two columns show it); the lowest free number (a reused number's blob and grow
@@ -59657,6 +60525,7 @@ function lastPane(){return cols.length?paneId(cols[cols.length-1].n):'chat-pane'
 function ownerOf(sid){for(var i=0;i<cols.length;i++){if(cols[i].ids.indexOf(sid)>=0)return cols[i].n;}return 1;}
 function sets(){var out={},seen={};cols.forEach(function(c){out[String(c.n)]=c.ids.filter(function(id){if(seen[id])return false;seen[id]=true;return true;});});return out;}
 function nextNumber(){var n=2;while(entry(n))n++;return n;}
+function colSize(n){if(n!==1){var e=entry(n);return e?e.ids.length:0;}var f=document.getElementById('f-chat');try{return f.contentDocument.querySelectorAll('#tabs .tab[data-id]').length;}catch(e){return 0;}}   // a column's held sessions; the FIRST column's are its page's own tabs (the shell tracks only later columns, sets()), 0 on a read fault, which the ===1 lone checks read as "not lone" so a fault never blocks a split
 function activeIn(f){try{var t=f.contentDocument&&f.contentDocument.querySelector('#tabs .tab.active[data-id]');return t?String(t.getAttribute('data-id')||''):'';}catch(e){return '';}}   // the palette's "move this session": the focused column's own tab
 function focused(){var id=(window.__rompFocusedChatId&&window.__rompFocusedChatId())||'f-chat';return document.getElementById(id)||document.getElementById('f-chat');}
 // Which column a session-focus belongs to: the column that HOLDS the session (one lookup, never a read of the
@@ -59693,7 +60562,36 @@ function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
 var LOCKED='The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session.';
+var deferred={};   // column numbers a peer dashboard's write dropped while their page had a create in flight: closed on the page's idle signal (colBusy below), never under the create
+// A VERTICAL split (drag a tab to a pane's bottom edge): a bottom pane nested inside its PARENT column's pane. The
+// parent's own iframe is kept IN PLACE (an iframe reparented in the DOM reloads, so the top pane is never moved): the
+// .pane becomes .split-v, the parent iframe stops absolute-filling and flexes by the top ratio, and a .gh.gh-chat
+// row-resize gutter plus a .chat-sub holding the bottom iframe follow it. The bottom iframe dials /chat?col=<n>&skeleton=1
+// like any column, seeded on its session; to the kernel it is one more col client.
+function gutterV(gid,topId,botId,colN){var h=document.getElementById(gid);if(!h)return;
+h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.getElementById(topId),B=document.getElementById(botId);if(!T||!B)return;
+document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
+function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
+function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
+var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio: mv() already pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
+var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
+var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
+var r=(ce.ratio>0&&ce.ratio<1)?ce.ratio:0.5;   // accept any proper fraction (the pixel minimum lives in mv()'s clamp, not here), so a legitimately small dragged ratio is not reset to 0.5
+pp.classList.add('split-v');topf.style.flex=r+' 1 0';
+var g=document.createElement('div');g.className='gh gh-chat';g.id='gh-chat-'+ce.n;
+var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-'+ce.n;sub.style.flex=(1-r)+' 1 0';
+var f=document.createElement('iframe');f.id=frameId(ce.n);f.className='chat-col';f.setAttribute('data-col',String(ce.n));
+seed(ce.n,sid);f.src='/chat?col='+ce.n+'&skeleton=1';
+if(state)f.addEventListener('load',function(){adopt(f,sid,state);state=null;});
+sub.appendChild(f);pp.appendChild(g);pp.appendChild(sub);   // .col-x is position:absolute (out of the flex flow), so appending the gutter and the bottom sub after it keeps the flex order top / gutter / bottom
+gutterV(g.id,topId,sub.id,ce.n);   // the two FLEX children: the top iframe (a direct .pane child) and the .chat-sub wrapper; never the bottom iframe (position:absolute in the sub, its flex inert)
+if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
+try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:ce.n,open:true}}));}catch(e){}
+return f;}
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
+var ce0=entry(n);if(ce0&&ce0.place==='below')return makeBelow(ce0,sid,state);   // a bottom pane nests, it is not a new column in the row
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
 p.style.flex='var(--g-chat'+n+',60) 1 0';
@@ -59706,14 +60604,15 @@ p.appendChild(f);p.appendChild(x);
 row.insertBefore(g,gva);row.insertBefore(p,gva);
 if(window.__rompRegisterPane)window.__rompRegisterPane(p.id,'chat'+n);
 if(window.__rompGrowFairIfNew)window.__rompGrowFairIfNew('chat'+n);else if(window.__rompGrowFair)window.__rompGrowFair('chat'+n);   // the half __rompSplitGrow wrote, or a fair width at a restore — never a sliver — and a dragged width survives a reload
-if(window.__rompGutter)window.__rompGutter(g.id,function(){var i=idx(n);return i>0?paneId(cols[i-1].n):'chat-pane';},p.id);
+if(window.__rompGutter)window.__rompGutter(g.id,function(){var s=sideCols(),si=-1;for(var q=0;q<s.length;q++){if(s[q].n===n){si=q;break;}}return si>0?paneId(s[si-1].n):'chat-pane';},p.id);   // the left neighbour among SIDE columns (a bottom pane between them has no chat-pane-<n>, which would kill the gutter)
 if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:n,open:true}}));}catch(e){}   // palette-main wires its keys
 return f;}
 function canSplit(){return !mobile()&&cols.length+1<MAX;}
 // a refused move says why (the click-acknowledgement rule): the cap, the phone's one-pane layout, or nothing to do
 function notify(why){try{if(window.__rompNotify)window.__rompNotify('warn',why);}catch(e){}return null;}
-function refuse(){return notify(mobile()?'The phone shows one pane at a time — no split here.':'Four chat columns at most — close one to open another.');}
+function refuse(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one first.');}   // the cap counts PANES (a bottom pane holds a slot too), so a new column at the cap says panes as well
+function refusePane(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one to split.');}   // the vertical split adds a PANE, not a column: the cap message counts panes
 function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexOf(sid);if(j>=0){c.ids.splice(j,1);return c.ids.length?0:c.n;}}return 0;}   // the number of an entry the removal emptied, else 0
 // THE ONE MUTATION of the sets. `to` is a column number (1 = the first, which derives and takes no entry) or "new":
 // a column of its own to the right of the rightmost, half that column's width. Steps: the source page hands over
@@ -59721,7 +60620,7 @@ function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexO
 // closed); the target adopts the drafts and shows the session; the ring moves there. Returns the target's iframe,
 // null when refused. A session already alone in a later column has nowhere new to go: a new column would be a twin
 // of the origin and the origin would close, so that is refused with a line rather than done for nothing.
-function moveTab(sid,to){if(typeof sid!=='string'||!sid)return null;
+function moveTab(sid,to,dt){if(typeof sid!=='string'||!sid)return null;   // dt: for to==='down', the target column the drag landed on (else the source column, the keyboard)
 var from=ownerOf(sid),src=frameOfCol(from);
 var why=refusal(src,sid);if(why==='locked')return notify(LOCKED);if(why||!movable(src,sid))return notify('Only an open session can be moved between columns.');
 if(to==='new'){var se=entry(from);if(se&&se.ids.length===1)return notify('This session is already alone in its column.');
@@ -59731,6 +60630,15 @@ var state=take(src,sid),n=nextNumber();
 if(window.__rompSplitGrow)window.__rompSplitGrow(lastPane(),'chat'+n);   // the rightmost column and the new one each take half its width
 unlist(sid);cols.push({n:n,ids:[sid]});save();
 var nf=make(n,sid,state);try{nf.contentWindow.focus();}catch(e){}return nf;}
+if(to==='down'){var pc=(typeof dt==='number'&&(dt===1||(entry(dt)&&!isBelow(entry(dt)))))?dt:from;   // the pane the drop landed on (the drag), else the source column (the keyboard)
+if(isBelow(entry(from)))return notify('A split pane cannot split again.');   // the tab already sits in a bottom pane: at most two rows deep
+if(belowOf(pc))return notify('This column is already split top and bottom.');
+if(pc===from&&colSize(pc)===1)return notify('This session is already alone in its column.');   // splitting your OWN lone column has nothing to split off; colSize covers the first column (entry(1) is null) by its page's tabs
+if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&busy(src))return notify(BUSY);}   // a cross-column split-down that empties a lone BUSY source refuses here (else close() below refuses on its busy gate and leaves an open EMPTY column), parity with the sideways move
+if(!canSplit())return refusePane();
+var stD=take(src,sid),nD=nextNumber(),emptiedD=unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
+var bf=make(nD,sid,stD);if(emptiedD&&emptiedD!==pc)close(emptiedD);   // the SOURCE side column emptied by a cross-column split-down closes (never the target)
+try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
 var tf=frameOfCol(tn);if(!tf)return null;
 if(tn===from)return tf;   // already there: nothing moves
@@ -59744,22 +60652,42 @@ try{tf.contentWindow.focus();}catch(e){}return tf;}
 // and its grow go; the Log drops its connection state; the ring moves to the column on its left. `keep` skips the
 // store write (a reconcile of another dashboard tab's write, which is already the truth).
 function close(n,keep){var i=idx(n);if(i<0)return;
+if(isBelow(cols[i]))return closeBelow(i,keep);   // a bottom pane un-nests, it is not a column in the row
 var f=document.getElementById(frameId(n)),home=document.getElementById('f-chat');
 if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with the document (its queued text with it)
+var kid=belowOf(n);   // a bottom pane nested in this column closes WITH it: its sessions rejoin the first column too
+if(!keep&&kid){var kf0=document.getElementById(frameId(kid.n));if(kf0&&busy(kf0)){notify(BUSY);return;}}
 if(f&&home)cols[i].ids.forEach(function(sid){adopt(home,sid,take(f,sid));});
-var left=i>0?paneId(cols[i-1].n):'chat-pane';   // the column on its left: takes the ring below, and the width first
-cols.splice(i,1);if(!keep)save();
+if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);delete deferred[kid.n];if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice; the kid's deferral goes with it (else a reused number's idle fires an unasked reconcile)
+var sideL=sideCols(),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
+var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';
+cols.splice(i,1);delete deferred[n];if(!keep)save();   // delete deferred[n] (#1774): a deferred close is moot once the column is gone by any road
 var p=document.getElementById(paneId(n)),g=document.getElementById('gv-chat-'+n);
-if(window.__rompSplitShrink)window.__rompSplitShrink(left,paneId(n));   // its pixels go to the column on its left (the halving's twin), while the pane is still in the row
+if(window.__rompSplitShrink)window.__rompSplitShrink(leftPane,paneId(n));   // its pixels go to the column on its left (the halving's twin), while the pane is still in the row
 if(window.__rompUnregisterPane)window.__rompUnregisterPane(paneId(n));
-if(p)p.remove();if(g)g.remove();
+if(p)p.remove();if(g)g.remove();   // the nested bottom pane's DOM goes with the parent .pane
 if(window.__rompColGone)window.__rompColGone(String(n));
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:n,open:false}}));}catch(e){}
-var pf=document.getElementById(i>0?frameId(cols[i-1].n):'f-chat');   // the ring moves to the column before it
+var pf=document.getElementById(leftFrame);   // the ring moves to the column before it
 try{pf&&pf.contentWindow.focus();}catch(e){}}
-function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';if(!c&&cols.length)c=String(cols[cols.length-1].n);if(c)close(Number(c));}
+// UN-NEST a bottom pane: its sessions rejoin its PARENT column's top pane, the bottom iframe and the gutter go, and the
+// parent returns from a two-pane split to a single iframe. Reached when a bottom pane empties (colEmpty -> close) or a
+// close targets it directly.
+function closeBelow(i,keep){var ce=cols[i];var topId=ce.parent===1?'f-chat':frameId(ce.parent),pid=ce.parent===1?'chat-pane':paneId(ce.parent);
+var bf=document.getElementById(frameId(ce.n)),home=document.getElementById(topId);
+if(!keep&&busy(bf)){notify(BUSY);return;}   // a busy bottom pane a PEER's write drops is DEFERRED upstream by reconcile (frameOfCol resolves it), so this direct-close busy gate is the by-hand path
+if(bf&&home)ce.ids.forEach(function(sid){adopt(home,sid,take(bf,sid));});
+if(ce.parent!==1){var pe=entry(ce.parent);if(pe)ce.ids.forEach(function(sid){if(pe.ids.indexOf(sid)<0)pe.ids.push(sid);});}   // a side-column parent LISTS them; the first column derives them from the rest
+cols.splice(i,1);delete deferred[ce.n];if(!keep)save();   // clear any deferred mark, as close() does (a deferred close is moot once the pane is gone)
+var g=document.getElementById('gh-chat-'+ce.n),sub=document.getElementById('chat-sub-'+ce.n);if(g)g.remove();if(sub)sub.remove();
+var pp=document.getElementById(pid),topf=document.getElementById(topId);if(pp)pp.classList.remove('split-v');if(topf)topf.style.flex='';   // the top pane returns to absolute-fill
+if(window.__rompColGone)window.__rompColGone(String(ce.n));
+try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:ce.n,open:false}}));}catch(e){}
+try{home&&home.contentWindow.focus();}catch(e){}}
+function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';var sc=sideCols();if(!c&&sc.length)c=String(sc[sc.length-1].n);if(c)close(Number(c));}   // the last SIDE column when nothing is focused (never a bottom pane)
 // the palette's Move this session to a new column: the focused column's active tab (the one DOM read kept, for this)
 window.__rompSplitChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to move.');return moveTab(id,'new');};
+window.__rompSplitDownChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to split.');return moveTab(id,'down');};   // the vertical split: the focused column's active tab to a new bottom pane
 window.__rompCanSplit=canSplit;window.__rompMoveTab=moveTab;
 window.__rompCloseSplit=function(n){if(n===undefined)closeFocused();else close(Number(n));};
 window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the phone: the one chat shows everything
@@ -59767,7 +60695,10 @@ window.__rompChatSets=function(){return mobile()?null:sets();};   // null on the
 // provisional resolves; a session an entry already lists is never stolen
 window.__rompClaimSession=function(sid,col){var n=Number(col),e=entry(n);if(typeof sid!=='string'||!sid||!e||ownerOf(sid)!==1)return false;e.ids.push(sid);save();return true;};
 window.__rompChatFrames=frames;window.__rompChatFrameIds=function(){return frames().map(function(f){return f.id;});};
-window.__rompChatPaneOf=function(fid){return fid==='f-chat'?'chat-pane':(String(fid).indexOf('f-chat-')===0?paneId(String(fid).slice(7)):null);};
+window.__rompChatColumnIds=function(){return columnFrames().map(function(f){return f.id;});};   // columns only: the horizontal focus nav and column-cycling skip a bottom pane (a vertical child)
+window.__rompChatPaneOf=function(fid){if(fid==='f-chat')return 'chat-pane';if(String(fid).indexOf('f-chat-')!==0)return null;var bn=Number(String(fid).slice(7)),bc=entry(bn);if(bc&&bc.place==='below')return bc.parent===1?'chat-pane':paneId(bc.parent);return paneId(bn);};   // a bottom pane rings its PARENT column; the CALLER (setFocus) adds .focus-top/.focus-bottom so each half shows its own ring
+window.__rompTopFrameOf=function(fid){if(String(fid).indexOf('f-chat-')!==0)return null;var c=entry(Number(String(fid).slice(7)));return (c&&c.place==='below')?(c.parent===1?'f-chat':frameId(c.parent)):null;};   // non-null only when fid IS a bottom pane: its parent column's top frame (the ring uses this to tell the bottom half from the top, and the VERTICAL focus axis to step up out of a bottom pane)
+window.__rompBelowFrameOf=function(fid){var n=fid==='f-chat'?1:(String(fid).indexOf('f-chat-')===0?Number(String(fid).slice(7)):0);if(!n)return null;var b=belowOf(n);return b?frameId(b.n):null;};   // the VERTICAL focus axis (moveFocus): a column's bottom pane frame when it is split
 window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOfWin=frameOfWin;window.__rompChatTarget=target;
 // THE DRAG (the user 2026-09-11, who asked for a tab dragged to the right edge to make a column and onto another column
 // to move it). The page posts {romp:'tabDrag',on:true,sid,name,stripH} at its dragstart and {on:false} at dragend
@@ -59788,12 +60719,14 @@ window.__rompLastChatPane=lastPane;window.__rompColOf=colOf;window.__rompFrameOf
 // tab is simply gone there.
 var drag=null,zones=[],ghost=document.getElementById('col-ghost');   // drag: {sid,name,from,stripH} while a tab drags, else null
 function edgeWidth(w){return Math.max(72,Math.min(180,0.2*w));}   // the edge zone's width for a pane w px wide
-function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}   // the right half of the rightmost pane, the row's height: what the drop produces
+function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}   // the right half of the rightmost pane, the row's height: what a NEW-column drop produces
+function ghostRectBottom(pane){return {top:pane.top+pane.height/2,height:pane.height/2,left:pane.left,width:pane.width};}   // the BOTTOM half of the pane: what a split-down drop produces
 function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on','refused');ghost.textContent='';return;}
-var r=ghostRect(z.parentElement.getBoundingClientRect(),row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
+var pr=z.parentElement.getBoundingClientRect(),bottom=z.classList.contains('col-drop-bottom');
+var r=bottom?ghostRectBottom(pr):ghostRect(pr,row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
-ghost.textContent=refused?'Four columns at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
-function cue(z,on){if(z.classList.contains('col-drop-edge'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge, .over on a column zone itself
+ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
+function cue(z,on){if(z.classList.contains('col-drop-edge')||z.classList.contains('col-drop-bottom'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge/bottom, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
 z.addEventListener('dragenter',function(ev){ev.preventDefault();cue(z,true);});
@@ -59802,11 +60735,13 @@ z.addEventListener('dragleave',function(ev){if(ev.relatedTarget&&z.contains(ev.r
 z.addEventListener('drop',function(ev){ev.preventDefault();var d=drag;unmountZones();drag=null;if(d)onDrop(d.sid);});
 p.appendChild(z);zones.push(z);return z;}
 function mountZones(){unmountZones();if(!drag||mobile())return;
-var from=drag.from,last=lastPane(),se=from===1?null:entry(from),alone=!!(se&&se.ids.length===1&&se.ids[0]===drag.sid);
+var from=drag.from,last=lastPane(),se=from===1?null:entry(from),alone=!!(se&&se.ids.length===1&&se.ids[0]===drag.sid),fromBelow=isBelow(entry(from));   // fromBelow: the source tab is in a bottom pane, so moveTab(down) refuses everywhere ("A split pane cannot split again")
 [{n:1,pid:'chat-pane'}].concat(cols.map(function(c){return {n:c.n,pid:paneId(c.n)};})).forEach(function(c){var p=document.getElementById(c.pid);if(!p)return;
 if(c.n!==from)zone(p,'',c.n,function(sid){moveTab(sid,c.n);});   // the column zone: a drop anywhere in the pane moves the session here
 if(c.pid===last&&!alone){var e=zone(p,'col-drop-edge',null,function(sid){if(e.getAttribute('data-refused'))refuse();else moveTab(sid,'new');});   // the edge zone: a new column at the right
-e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}});}
+e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}
+if(!belowOf(c.n)&&!fromBelow&&!(c.n===from&&colSize(from)===1)){var bz=zone(p,'col-drop-bottom',c.n,function(sid){if(bz.getAttribute('data-refused'))refusePane();else moveTab(sid,'down',c.n);});   // the bottom zone: split THIS column, the dragged tab to the new bottom pane. Suppressed where moveTab would refuse the drop: a target already split (belowOf), a bottom-pane source (fromBelow), or the source's OWN lone column (nothing to split off), matching the edge's !alone. A split adds a PANE, so a refused (capped) drop says refusePane
+bz.style.height=edgeWidth(p.getBoundingClientRect().height)+'px';if(!canSplit())bz.setAttribute('data-refused','1');}});}
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m)return;
 if(m.romp==='tabDrag'){if(!m.on){drag=null;unmountZones();return;}   // the page's dragend: the zones go, whatever ended the drag
 if(!frameOfWin(e.source)||mobile()||typeof m.sid!=='string'||!m.sid)return;   // a chat column's dragstart, on the desktop
@@ -59831,26 +60766,50 @@ close(en.n);return;}
 // page offers the sids once it has heard the board; each is taken from it and handed to the column that shows the
 // session, when that page can hear the message — else it stays where it is and the page offers it again on its next render
 if(m.romp==='orphanState'&&Array.isArray(m.sids)){var sf=frameOfWin(e.source);if(!sf)return;var sc=Number(colOf(e.source))||1;
-m.sids.forEach(function(sid){if(typeof sid!=='string'||!sid)return;var o=ownerOf(sid);if(o===sc)return;var t=frameOfCol(o);if(t&&t!==sf&&loaded(t))adopt(t,sid,take(sf,sid));});}});
+m.sids.forEach(function(sid){if(typeof sid!=='string'||!sid)return;var o=ownerOf(sid);if(o===sc)return;var t=frameOfCol(o);if(t&&t!==sf&&loaded(t))adopt(t,sid,take(sf,sid));});return;}
+// THE IDLE SIGNAL (render.ts noteColumnIdle: the page's create resolved or was dropped, or its last failed one was discarded).
+// A column a peer dashboard's write dropped while this page was busy was DEFERRED (reconcile below), not closed under the
+// create; it closes now against a fresh read of the store, and only if the store still lacks it (the peer may have listed
+// it again meanwhile, or the page claimed a created session for it). A signal from a column nobody deferred changes nothing
+if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source)),e2=entry(bc),marks=[bc];if(e2&&e2.place==='below')marks.push(e2.parent);var hit=false;marks.forEach(function(mk){if(deferred[mk]){delete deferred[mk];hit=true;}});if(!hit)return;var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}});   // a bottom pane's idle clears its OWN and its PARENT's deferral (a parent deferred because its nested pane was busy)
 // THE STORE, read: the v2 object, or a v1 array of numbers migrated once (each number to the session its blob names;
 // a number with no session is dropped). Sanitised on the way in: integer numbers from 2, each once; string ids, each
 // in one entry; no empty entry; at most MAX-1 entries.
 function read(){var raw=null;try{raw=JSON.parse(localStorage.getItem(CK)||'null');}catch(e){}
 var out=[],seen={},migrated=false;
-function add(n,ids){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
-var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(keep.length)out.push({n:n,ids:keep});}
+function add(n,ids,place,parent,ratio){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
+var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(!keep.length)return;
+var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>0&&r<1)?r:0.5;}out.push(e);}
 if(Array.isArray(raw)){migrated=true;raw.forEach(function(n){var st=null;try{st=JSON.parse(localStorage.getItem(BK+Number(n))||'null');}catch(e){}add(n,[st&&typeof st.activeId==='string'?st.activeId:'']);});}
-else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[]);});
+else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[],c.place,c.parent,c.ratio);});
+// a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, is DROPPED here
+// (never orphaned, never two-deep): its sessions re-home to the first column (ownerOf defaults to 1). Dropping, not
+// degrading to a side column: a degraded entry whose bottom iframe still exists (a busy kid deferred by reconcile) is
+// skipped by make()'s frame-exists guard, so its paneId names a .pane that was never created and lastPane() breaks.
+var kidPar={};out=out.filter(function(c){if(c.place!=='below')return true;var ok=c.parent===1;for(var i=0;i<out.length&&!ok;i++){if(out[i].n===c.parent&&out[i].place!=='below')ok=true;}
+if(!ok||kidPar[c.parent])return false;kidPar[c.parent]=true;return true;});
 return {cols:out,migrated:migrated};}
 // another dashboard tab's write (this window never hears its own): its arrangement is the truth — close what it
-// dropped, make what it added (seeded like a restore), take its sets — and nothing is written back
-function reconcile(next){cols.filter(function(c){return !next.some(function(d){return d.n===c.n;});}).forEach(function(c){close(c.n,true);});
-cols=next.map(function(c){return {n:c.n,ids:c.ids.slice()};});
-cols.forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});}
+// dropped, make what it added (seeded like a restore), take its sets, and nothing is written back. One close is
+// DEFERRED, never skipped (#1774): a dropped column whose page has a create in flight (busy). `keep` passes close()'s
+// busy gate, so this tore the column down over the create and its queued text died with the document. The entry stays
+// in cols at its place, its number waits in `deferred` for the page's idle signal (the colBusy handler above), which
+// re-reads the store and closes it only if the store still lacks it. A bottom pane is deferred the same way
+// (frameOfCol resolves it; close dispatches it to closeBelow) and re-inserted with its placement.
+function reconcile(next){var kept=[];
+cols.slice().forEach(function(c,i){if(next.some(function(d){return d.n===c.n;})){delete deferred[c.n];return;}
+var kb=belowOf(c.n);if(busy(frameOfCol(c.n))||(kb&&busy(frameOfCol(kb.n)))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});   // defer a busy column OR a column whose nested bottom pane is busy (else close(keep) tears the busy kid down, its queued text with it)
+cols=next.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;});
+kept.forEach(function(k){var e=k[1],o={n:e.n,ids:e.ids.slice()};if(e.place==='below'){o.place='below';o.parent=e.parent;o.ratio=e.ratio;}cols.splice(Math.min(k[0],cols.length),0,o);});   // the busy column or bottom pane, where it was, with its placement
+cols.filter(function(c){return !isBelow(c);}).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});   // columns first, then their bottom panes (a bottom pane nests into a parent that must already be up)
+cols.filter(isBelow).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});}
 window.addEventListener('storage',function(e){if(!e||e.key!==CK||mobile())return;var r=read();if(!r.migrated)reconcile(r.cols);});
 // the columns this browser had open come back, each on a member of its own (the phone restores nothing: the
 // arrangement stays in the store for the desktop); a v1 store is written back in the new shape, once
-try{if(!mobile()){var r0=read();cols=r0.cols;cols.forEach(function(c){make(c.n,seedFor(c),null);});if(r0.migrated)save();}}catch(e){}
+try{if(!mobile()){var r0=read();cols=r0.cols;
+cols.filter(function(c){return !isBelow(c);}).forEach(function(c){make(c.n,seedFor(c),null);});   // columns first
+cols.filter(isBelow).forEach(function(c){if(!make(c.n,seedFor(c),null)){var bi=idx(c.n);if(bi>=0)cols.splice(bi,1);}});   // then bottom panes; a parent that never came up drops the entry to the first column's rest
+if(r0.migrated)save();}}catch(e){}
 })();
 """
 
@@ -60828,19 +61787,34 @@ def _landing():
             # from the focus ring's 0.55-alpha ring with no wash). At the cap the rectangle is .refused: no wash, a 1 px ring, its
             # line saying so.
             ".col-drop{position:absolute;inset:0;z-index:8}"
-            ".col-drop.col-drop-edge{left:auto;z-index:9}"
+            ".col-drop.col-drop-edge{left:auto;z-index:10}"   # above the bottom band (z 9): the edge (new column) owns the bottom-right corner where the two overlap
+            ".col-drop.col-drop-bottom{top:auto;z-index:9}"   # the bottom band (a split-down zone): pinned to the pane's bottom, its height set inline
             ".col-drop.over,#col-ghost{background:rgba(156,210,255,0.12);box-shadow:inset 0 0 0 2px var(--accent,#9cd2ff)}"
             "#col-ghost{display:none;position:fixed;pointer-events:none;z-index:40;align-items:center;justify-content:center;"
             "font:600 11px 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#8a8a8a;letter-spacing:.04em}"
             "#col-ghost.on{display:flex}"
             "#col-ghost.refused{background:transparent;box-shadow:inset 0 0 0 1px var(--accent,#9cd2ff)}"
             ".pane>iframe{position:absolute;inset:0;width:100%;height:100%}"
+            # a VERTICALLY split chat column (the chat vertical split, drag a tab to a pane's bottom edge): the .pane
+            # becomes a column flexbox of two .chat-sub wrappers with a .gh.gh-chat row-resize gutter between. Each sub
+            # wraps its OWN iframe, so the .pane>iframe absolute-fill above does not apply: the subs flex by the stored
+            # ratio and their iframes fill the sub instead. The gutter reuses .gh (the band gutter's row-resize dress).
+            ".pane.split-v{display:flex;flex-direction:column}"
+            ".chat-sub{position:relative;flex:1 1 0;min-width:0;min-height:0;overflow:hidden}"
+            ".chat-sub>iframe{position:absolute;inset:0;width:100%;height:100%}"
+            # the TOP sub of a split column is the parent's own iframe, kept in place (never reparented, moving an
+            # iframe reloads it): under .split-v it stops absolute-filling and flexes by its stored ratio instead
+            ".pane.split-v>iframe{position:relative;inset:auto;flex:1 1 0;min-height:0}"
             # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
             # The focused pane gets a thin inset border (drawn as an inset box-shadow over the iframe edges);
             # the others get nothing, so the only lines on screen are the splitters + this focus ring. The ring
             # is pointer-events:none (never blocks) and z below the timeline collapse handle (z-30).
             ".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;"
             "box-shadow:inset 0 0 0 2px rgba(156,210,255,0.55)}"   # the romp accent — focus cues wear it (CLAUDE.md)
+            # a SPLIT column rings the focused HALF, not the whole column: the whole-pane ring is dropped and the top
+            # iframe or the bottom .chat-sub wears the accent instead, so the user sees which half takes the paste or command
+            ".pane.pane-focused.split-v::after{display:none}"
+            ".pane.pane-focused.split-v.focus-top>iframe,.pane.pane-focused.split-v.focus-bottom>.chat-sub{outline:2px solid rgba(156,210,255,0.55);outline-offset:-2px}"
             "#mtabs{display:none}"
             # narrow OR a touch device up to 1024px → one pane + bottom tabs; mouse desktops keep the grid
             # (_MOBILE_MQ: the same query the mobile script's __rompMobileOn probe answers by)
@@ -66174,12 +67148,28 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
         os._exit(0)
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    """The kernel's server, whose bind does NOT reverse-resolve its own address. HTTPServer.server_bind runs
+    socket.getfqdn(host) after bind() and before listen(), and a host whose resolver cannot reverse-resolve
+    loopback quickly holds the whole server there: GitHub's macOS 15 and 16 images block about 36 seconds per
+    server on it (measured 2026-09-16 on the bats leg, where every Python stub and the postal bus paid it once),
+    and a Mac with a stale resolver would keep this kernel from answering for as long. server_name feeds
+    nothing this kernel reads (the CGI handler's environment, never used here), so it is the bind address."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)     # the bind, with allow_reuse_address as HTTPServer sets it
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def main():
     # Export the kernel's claude resolution for every judge call (in-process tiers AND `romp-judge
     # --once` subprocesses): judges exec the binary directly, and a kernel started over non-login ssh
     # (a federated host) has no ~/.local/bin on PATH — bare `claude` exec-failed silently there.
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
     signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
+    _PERF_STATS.install_gc_hook()                             # the collector's pauses on /perf (2026-09-16): before the boot warm and
+    #                                                           the loops, so the boot's own full collections count (see gc_event)
     # romp holds no API key (credentials.py, 2026-09-08). A retired provider line in service.env, the marker
     # beside it, or a key in this process's environment stops the kernel HERE, before the bundler, the
     # postal bus or the SDK backend spawn anything that could inherit it. RuntimeError: the
@@ -66236,7 +67226,7 @@ def main():
     threading.Thread(target=_update_check_loop, daemon=True).start()   # newer release? boot + every 6h (mode-gated inside)
     threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
-    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    srv = _LoopbackServer((BIND, PORT), Handler)      # no reverse lookup at the bind (the class's docstring)
     _persist_serve_port(srv.server_address[1])     # the port record the Obsidian panel posts to, written
     #                                                once the bind SUCCEEDED (a failed bind leaves no lie)
     url = "http://127.0.0.1:%d" % PORT

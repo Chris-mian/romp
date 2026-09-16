@@ -181,7 +181,7 @@ CTX = {
     "ps": ("sig", ("parse", "transcript", "live", "cut", "states")),   # the cache-only, live-merged parse
     "who_working": ("sig", ("downtime", "parse")),     # _session_working over the open turn, suspension-aware
     "interrupting": ("sig", ("interrupting",)),
-    "store": ("sig", ("store",)),                      # _feed_goals(fsid), read once in the key
+    "store": ("sig", ("store",)),                      # _feed_goals_keyed(fsid), read once in the key
     "closer": ("sig", ("closer", "jactive")),          # the settle gap under the body's gate
 }
 

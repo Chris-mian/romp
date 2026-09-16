@@ -294,9 +294,12 @@ class OnePass(Harness):
     def test_sigterm_mid_pass_exits_promptly_and_leaves_no_half_written_store(self):
         """A check the kernel seam relies on: the kernel ends the child by quit, then SIGTERM on its exit road (and a parent
         death signal at spawn); a child mid-pass must die at once on SIGTERM, its tier threads with it, and every store it
-        was writing is either the old bytes or the new (the stores' atomic replace), never a temp file left behind. Round
-        three: the kill lands in a pass that is WORKING (the fake CLI answers after half a second, so the tiers are between
-        their model calls and their store writes), at three offsets, and every store left behind parses."""
+        was writing is either the old bytes or the new (the stores' atomic replace: a temp file written whole, then renamed).
+        The kill lands in a pass that is WORKING (the fake CLI answers after half a second, so the tiers are between their
+        model calls and their store writes), keyed on the first store file appearing and once at a late offset, and every
+        store left behind parses. A leftover temp file beside the stores is EXPECTED when the kill lands between a temp write
+        and its rename (2026-09-16: CI's Python 3.10 and 3.12 legs saw one); it is counted in the message, never a failure.
+        The litter itself is a queued follow-up (a sweep at the child's start)."""
         def first_store(root, deadline=15.0):
             """Block until the first store file appears under the judge stores (the EVENT the kill keys on: the pass is writing),
             or the deadline passes; returns the path seen or None."""
@@ -328,20 +331,23 @@ class OnePass(Harness):
                     self.fail("the child did not exit within 5 s of SIGTERM")
                 self.assertLess(time.monotonic() - t0, 2.0, "prompt")
                 self.assertEqual(c.proc.returncode, -15)
-                strays, parsed = [], 0
+                temps, parsed, torn = [], 0, []
                 for p in Path(root).rglob("*"):
                     if not p.is_file():
                         continue
                     if p.name.endswith(".tmp") or ".tmp." in p.name:
-                        strays.append(str(p)); continue
-                    if p.suffix == ".json":
-                        json.loads(p.read_text() or "null"); parsed += 1
-                    elif p.suffix == ".jsonl":
-                        for line in p.read_text().splitlines():
-                            if line.strip():
-                                json.loads(line)
-                        parsed += 1
-                self.assertEqual(strays, [], "no half-written store")
+                        temps.append(p.name); continue                              # a temp write the kill cut short: expected
+                    try:
+                        if p.suffix == ".json":
+                            json.loads(p.read_text() or "null"); parsed += 1
+                        elif p.suffix == ".jsonl":
+                            for line in p.read_text().splitlines():
+                                if line.strip():
+                                    json.loads(line)
+                            parsed += 1
+                    except ValueError as e:
+                        torn.append((str(p.relative_to(root)), str(e)[:80]))
+                self.assertEqual(torn, [], "no store is torn: each is the old bytes or the new (temp files beside them: %d)" % len(temps))
                 self.assertGreaterEqual(parsed, 1 if trigger == "first-store" else 0, "every store left behind parses (the kill landed after the first write)")
                 self.assertTrue(c.lines.empty(), "no done line for a killed pass")
 
@@ -428,6 +434,46 @@ class Roads(Harness):
         self.assertEqual(c.proc.returncode, 0)
         self.assertIn("romp-judge: serve: exiting", "".join(c.err))
 
+
+class StaleTemps(Harness):
+    """The follow-up of the SIGTERM tolerance (2026-09-16): a kill between a store's temp write and its rename left the temp file
+    for the life of the state root. At its start the child removes every temp file whose name carries a writer pid that is no
+    live process (the event, never an age); a live writer's temp, this process's, and a fixed-name temp (reused by the next
+    write) stand. Red first: the planted temp files survive the base's start."""
+    def test_the_child_sweeps_a_dead_writers_temp_files_at_its_start_and_leaves_live_and_fixed_ones(self):
+        root = self.state_root("sweep"); romp = Path(root) / "romp"
+        dead = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True).stdout.strip()
+        self.assertTrue(dead.isdigit()); dead = int(dead)
+        live = os.getpid()
+        for sub in ("goals", "archive", "goals-archive", "judge-units-cache", "captions"):
+            (romp / sub).mkdir(parents=True, exist_ok=True)
+        planted_dead = [romp / "goals" / ("%s.json.tmp.%d.139812.7" % (SID, dead)),          # _publish_tmp
+                        romp / "archive" / ("%s.json.tmp.%d.139812.8" % (SID, dead)),
+                        romp / ("judge-limit.json.%d.7f3a.tmp" % dead),                       # _atomic_write_json
+                        romp / ("planner-seen.jsonl.tmp.%d.7f3a" % dead),                     # the planner's rows
+                        romp / "judge-units-cache" / ("abc.json.tmp.%d" % dead),              # the units cache
+                        romp / "goals" / (".tmp-g1-%d-a1b2c3" % dead)]                        # a node's temp
+        kept = [romp / "goals" / ("%s.json.tmp.%d.139812.9" % (SID, live)),                  # a live writer's temp
+                romp / "judge-usage.jsonl.tmp",                                              # a fixed-name temp, reused
+                romp / "judge-auth.tmp",
+                romp / "goals" / (SID + ".json")]                                            # a store itself
+        for p in planted_dead + kept:
+            p.write_text("{}")
+        c = self.child(root)
+        self.assertEqual(c.line()["op"], "ready")
+        c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
+        still = [str(p.relative_to(romp)) for p in planted_dead if p.exists()]
+        self.assertEqual(still, [], "every dead writer's temp file is gone at the child's start (the base left them all)")
+        for p in kept:
+            self.assertTrue(p.exists(), "%s stands: a live writer's temp, a fixed-name temp or a store" % p.name)
+        self.assertIn("romp-judge: serve: swept 6 stale temp files beside the stores", "".join(c.err))
+
+    def test_the_sweep_is_by_the_writers_dead_pid_never_by_age(self):
+        import inspect
+        src = inspect.getsource(jd.sweep_stale_temps)
+        self.assertIn("_pid_alive(pid)", src); self.assertNotIn("mtime", src); self.assertNotIn("time.time", src)
+        self.assertEqual(jd.sweep_stale_temps([os.path.join(self.td, "no-such-dir")]), 0, "a missing directory is skipped")
+        self.assertIn("swept = sweep_stale_temps()", inspect.getsource(jd.serve), "the sweep runs once at the child's start")
 
 class Deltas(unittest.TestCase):
     def test_gauges_ride_as_current_values_and_counters_as_differences(self):

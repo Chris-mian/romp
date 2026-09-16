@@ -1013,9 +1013,14 @@ class ServedChatSplit(unittest.TestCase):
         the rectangle honest to the drop's geometry, the drops through __rompMoveTab, everything unmounted after."""
         s = self._r()["s9"]
         p1, row = s["pane1"], s["row"]
-        # one column: the first is the source AND the rightmost, so the edge zone alone, under the strip, a fifth of the pane
-        self.assertEqual(len(s["zones"]), 1, "no column zone on the source pane, none on the other panes: %r" % s["zones"])
-        e = s["zones"][0]
+        # one column: the first is the source AND the rightmost, so no column zone; the edge zone (new column) under the
+        # strip, a fifth of the pane, plus the split-down zone (the vertical split, PR2) riding the single column
+        self.assertEqual(len(s["zones"]), 2, "the source+rightmost column: the edge zone and the split-down zone, nothing else: %r" % s["zones"])
+        edges = [z for z in s["zones"] if "col-drop-edge" in z["cls"]]
+        bottoms = [z for z in s["zones"] if "col-drop-bottom" in z["cls"]]
+        self.assertEqual(len(edges), 1, "one edge zone: %r" % s["zones"])
+        self.assertEqual(len(bottoms), 1, "the split-down zone rides the single column too: %r" % s["zones"])
+        e = edges[0]
         self.assertEqual(e["cls"], "col-drop col-drop-edge"); self.assertEqual(e["pane"], "chat-pane"); self.assertIsNone(e["refused"])
         want_w = max(72, min(180, 0.2 * p1["width"]))
         self.assertLessEqual(abs(e["width"] - want_w), 1, "the edge is a fifth of the pane, 72 to 180 px: %r for a pane %r wide" % (e["width"], p1["width"]))
@@ -1046,9 +1051,13 @@ class ServedChatSplit(unittest.TestCase):
         d = s["afterDrop"]
         self.assertEqual(d["cls"], "", "the rectangle hidden after the drop"); self.assertEqual(d["display"], "none")
         self.assertEqual(d["zones"], 0, "every zone unmounted")
-        # back: from column 2, alone, onto column 1's pane — one zone (no edge for a twin), the cue on it, the drop brings B home and closes column 2
-        self.assertEqual([(z["pane"], z["col"], z["cls"]) for z in s["backZones"]], [("chat-pane", "", "col-drop")], "column 1's whole-pane zone alone: %r" % s["backZones"])
-        z1 = s["backZones"][0]
+        # back: from column 2, alone, onto column 1's pane. Column 1 (the target) carries its whole-pane zone (no edge
+        # for a twin) and its split-down band; column 2 is the LONE source, so its own band is suppressed (round two
+        # MEDIUM: nothing to split off). The cue on the column zone, the drop brings B home
+        self.assertEqual(sorted((z["pane"], z["col"], z["cls"]) for z in s["backZones"]),
+                         sorted([("chat-pane", "", "col-drop"), ("chat-pane", "", "col-drop col-drop-bottom")]),
+                         "column 1's whole-pane zone and band; no band on the lone source column 2: %r" % s["backZones"])
+        z1 = [z for z in s["backZones"] if z["cls"] == "col-drop" and z["pane"] == "chat-pane"][0]
         self.assertLessEqual(abs(z1["width"] - s["pane1W"]), 1, "the zone covers the whole pane"); self.assertEqual(z1["top"], "")
         self.assertEqual(s["overBack"], ["chat-pane"], "the cue on the zone under the pointer"); self.assertEqual(s["ghostBack"], "", "no rectangle for a column zone")
         h = s["home"]

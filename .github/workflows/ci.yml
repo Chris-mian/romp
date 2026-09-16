@@ -52,8 +52,11 @@ jobs:
     # 600 s per-test timeout plus setup, or a stall that begins late in the run is killed by
     # this cap first - the identical silence the per-test timeout exists to end. Measured pytest
     # phases run 160-300 s, so 15 min left ~100 s of headroom; 25 min = 300 + 600 + setup, with
-    # margin for a slow runner.
-    timeout-minutes: 25
+    # margin for a slow runner. The macOS cells (a manual dispatch) run the same suite in 17 to 25
+    # minutes on the image's slower runners: the 3.10 cell took 24 min 43 s on one dispatch and was
+    # cancelled at 25 min 27 s on the next (2026-09-16), a one-minute margin that can kill the
+    # release's combined proof for nothing. macOS gets 40; Linux keeps 25.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 40 || 25 }}
     strategy:
       # One red cell must not hide the others: a 3.10-only break and a
       # macOS-only break look identical if the matrix stops at the first.
@@ -142,6 +145,14 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo install /tmp/gitleaks /usr/local/bin/gitleaks
       - name: Run bats
+        # A per-test bound from bats itself (BATS_TEST_TIMEOUT, since bats-core 1.8: a background sleep,
+        # then pkill or ps on the test's children), so one hung test fails in minutes and is NAMED in the
+        # TAP line ("# timeout after Ns") instead of eating the job's whole budget and being cancelled
+        # nameless at the ceiling (the macOS leg, 2026-09-16: every dispatch cut at 35 minutes). No
+        # coreutils timeout is involved, which the macOS image lacks. The bound is generous against the
+        # slowest legitimate test on macOS (the romp-serve probe tests hold 60 s by design).
+        env:
+          BATS_TEST_TIMEOUT: "180"
         run: bats --print-output-on-failure tests/*.bats
       # T224: the manager<->kernel handshake proof (tests/manager-*.test.js: restart coalescing, the
       # quiet-window chain, the drain-lease refusal notices) ran only by hand until now. It runs HERE,
@@ -217,8 +228,11 @@ jobs:
     # old 15 min; PR 1598's run 34809524051 was CANCELLED at 15 min 16 s with the served step killed
     # at 13 min 14 s and every earlier step green, so a PR adding a lab, or a slow runner, read as a
     # red. 25 min = 13 min of labs + 600 s for one stalled test + setup, with margin; the served step
-    # names its slowest labs (--durations=20) so the next growth is visible in the log.
-    timeout-minutes: 25
+    # names its slowest labs (--durations=20) so the next growth is visible in the log. The labs kept
+    # growing: PR 1790's run 35138058863 was cancelled at 25 min 04 s mid served-lab on a slow runner,
+    # every step green up to the cut (2026-09-16). 40 min: the served step's 20-odd minutes on a slow
+    # runner plus the 600 s per-test timeout plus setup.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: vscode-extension

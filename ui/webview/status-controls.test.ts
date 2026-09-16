@@ -124,6 +124,32 @@ test("with the chat's hooks a click reaches the picker with the kind, the badge 
   assert.equal(typeof btns[0]._tipText, "string", "with a picker the badge wears its tip");
 });
 
+test("a Codex session with no effort picked yet gets the effort badge, reading the bare kind until a level lands; an SDK session without one gets none", () => {
+  // A Codex session is born with no effort of its own (the registry holds "" and the engine applies its default), and the
+  // badge appeared only once a level was set, so the menu that would set one had no button to open it (2026-09-16).
+  const meta = mk("span"); const presses: any[] = [];
+  const hooks = { onPress: (kind: string, btn: N, forSid: string | null) => presses.push([kind, forSid]) };
+  const codex: any = { mode: "auto", model: "GPT-5 Test", effort: "", backend: "codex" };
+  SC.syncMetaControls(meta, codex, "s-2", hooks);
+  let btns = meta.querySelectorAll(".meta-btn");
+  assert.deepEqual(btns.map((b: N) => b.dataset.kind), ["mode", "model", "effort"], "the effort badge stands before any pick");
+  assert.equal(btns[2].querySelector(".meta-label").textContent, "effort", "it reads the bare kind, not a guessed level");
+  assert.equal(btns[2].querySelector(".meta-label").style.color, "", "no level, no rank tint");
+  btns[2].dispatch("click");
+  assert.deepEqual(presses, [["effort", "s-2"]], "a click reaches the picker as any badge's does");
+  codex.effort = "high"; codex.effortColor = [1, 2, 3];
+  SC.syncMetaControls(meta, codex, "s-2", hooks);
+  btns = meta.querySelectorAll(".meta-btn");
+  assert.equal(btns.length, 3, "the pick refreshes the badge in place");
+  assert.equal(btns[2].querySelector(".meta-label").textContent, "high", "the level lands on the same badge");
+  assert.equal(btns[2].querySelector(".meta-label").style.color, rgb([1, 2, 3]));
+  assert.equal(SC.effortBadgeText(codex), "high"); assert.equal(SC.effortBadgeText({ effort: "", backend: "codex" }), "effort");
+  const sdk = mk("span");
+  SC.syncMetaControls(sdk, { mode: "auto", model: "Opus 5", effort: "", backend: "sdk" }, "s-3", hooks);
+  assert.deepEqual(sdk.querySelectorAll(".meta-btn").map((b: N) => b.dataset.kind), ["mode", "model"], "an SDK session's effort arrives with the CLI's init; no badge before it");
+  assert.equal(SC.effortBadgeText({ effort: "", backend: "sdk" }), ""); assert.equal(SC.effortBadgeText({ effort: "" }), "");
+});
+
 test("the battery: filled to its percentage in the colour given, the number inside; hidden without a percentage; the scan only through the sweep hook; the click-to-compact tooltip only on a bar that compacts", () => {
   const bar = SC.ctxBar();
   assert.equal(bar.id, "", "no id from the module: the chat's wrapper names its one live bar");

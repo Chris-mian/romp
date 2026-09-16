@@ -47,6 +47,8 @@ SID = "11111111-2222-3333-4444-555555555555"
 # and node ids collide across test modules under the shared placeholder (CLAUDE.md, goal-store fixtures).
 GOAL_SID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
 TOP_KEYS = {"now", "since", "uptime_s", "log", "process", "pusher", "jobs", "stages_ms", "builds", "sends",   # jobs: the jobs thread's passes
+            "heap",                                        # heap: where the resident size sits at the read, gauges over every content cache (2026-09-15)
+            "gc",                                          # gc: the collector's pauses per generation, from the gc.callbacks hook (2026-09-16)
             "goals", "memos", "judge", "http", "parses",   # parses: cold event-model parses (T323 stage 1)
             "checkpoints",                                 # checkpoints: the folds' checkpoints (T323 stage 3)
             "asmCheckpoint",                               # asmCheckpoint: the assembly documents (T323 stage 4a)
@@ -126,6 +128,8 @@ class Collector(unittest.TestCase):
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "convergeDeclined", "sessionsListing", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip", "ghostDropped",
                                               "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
+                                              "judgingBand",   # the judging band's per-row memo and horizon cursor (2026-09-16)
+                                              "subagentTree",   # the subagents directory walk memo (2026-09-16): served vs walked, roots held
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks",   # the chat build's fixed-cost memos (2026-09-09)
                                               "outlineProvisional",   # the Outline's provisional-row ledger memo, parse-free (plans/outline-pane-provisional-row.md, 2026-09-15)
                                               "notices"})   # the notice files' parsed rows (T370, plans/notice-cards.md): bytes against their bound
@@ -533,6 +537,7 @@ class GoalIoCounters(unittest.TestCase):
         for k in ("`pass`", "`shared`", "`chain`", "`intrMarks`", "`statesOverlay`", "`deadWait`"):
             self.assertIn(k, doc)
         self.assertIn("`memos.shared`", doc)
+        self.assertIn("- `heap`:", doc, "the heap block is a documented top-level block (tests/test_perf_heap_block.py pins its keys)")
 
     def test_the_pushers_shared_loads_count_under_memos_shared_not_under_goals_loads(self):
         # `goals.loads` is the writer's loader alone; the pusher's read-only loads ride load_goals_shared and

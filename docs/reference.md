@@ -1741,6 +1741,47 @@ same amount. The raise on the session side separates the tiers: the wrapper
 writes it in the session's own process, after the kernel has spawned it, so the
 kernel keeps its own. None of this subsection applies on the launchd path.
 
+### Messages across a restart
+
+A message sent to a session while its CLI is busy waits in the kernel's queue
+for that session; one the CLI has taken but not yet written to the transcript
+is the CLI's to land. A restart ends the CLI, so at the next boot, and at any
+fresh spawn for the session, the kernel checks every message the dead CLI was
+holding: one that reached the transcript is left alone, and one that did not is
+put back into the session's queue behind whatever is already waiting, in send
+order, so the session reads it as if the restart had not happened. Two
+variables bound this:
+
+- `ROMP_REDELIVER_MAX_AGE_S=<seconds>` is the age line on that re-delivery;
+  the default is `1800`, thirty minutes. A message older than this at the
+  restart is not re-fed: it is kept in the chat marked never delivered, where
+  it can be restored or dismissed, and a notice card (the section above) is
+  posted for the session, under Blocked, one per session per restart, naming
+  how many messages were dropped and, for each, its time and its text. The
+  card offers **Send again** for each message (up to three; with two or more
+  there is also **Send all again**, which re-sends them as one message in
+  order, and with four or more that is the only button), and one click spends
+  the card, so a message not re-sent from it is restored from the chat
+  instead; a typed command gets no button. Clearing the card lets them go.
+  The session itself is not told anything. The line exists
+  because a landing the kernel's transcript scan cannot see would otherwise be
+  re-fed at every restart, for days (measured 2026-09-12: the same texts re-fed
+  at two restarts in one night, one of them landing six times). It applies
+  only to messages the CLI was holding, never to the queue proper: a message
+  still waiting its turn is delivered however long the kernel was down. `0`
+  switches the line off, and every unlanded message is re-fed whatever its
+  age. The kernel reads it once, when it starts, so set it where the kernel's
+  service sees it (`service.env`, then a restart).
+- `ROMP_KERNEL_HTTP_TIMEOUT_S=<seconds>` is how long `romp send`, `romp
+  interrupt` and `romp end` wait for the kernel's answer; the default is `10`.
+  A kernel that took the request but answered late (mid-restart, or under
+  load) is exit `3`, with a line saying the message may already have been
+  delivered and not to retry blindly; a kernel nobody is listening on is still
+  `kernel not reachable`, exit `1`, with nothing sent; a refusal the kernel
+  wrote is its own words, exit `1`. Widen it on a slow box. There is no off:
+  a send with no bound would hang the script that runs it. Each command reads
+  it from its own environment, so it can be set for one call.
+
 ## Kernel performance counters
 
 `GET /perf` returns one JSON document of counters the kernel keeps at all
@@ -1766,6 +1807,89 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `process`: `rss_kb` (resident set size in KB: the current size on Linux,
   read from `/proc`; the peak, `ru_maxrss`, on macOS, which has no `/proc`),
   `threads`, `cpu_s`, `pid`.
+- `heap`: where that resident size sits at the moment of the read, so a
+  large `process.rss_kb` can be attributed live, without a restart or a
+  debugger (the lag investigation, 2026-09-15, had to attribute a 5-6 GiB
+  resident size from cumulative byte counters and lab runs). Every value is
+  a GAUGE, the occupancy at the read and not a count since boot, with one
+  exception named below. `allocatedBlocks` is the number of memory blocks
+  the interpreter's object allocator holds at the read, of any size
+  (`sys.getallocatedblocks`; 0 on a build that cannot count them); `gc` is
+  the collector's `enabled`, its `counts` (the young generation's
+  allocations since its last collection, then how many times each younger
+  generation was collected since the older's last) and `thresholds` as
+  lists, and `stats` (per generation: `collections`, `collected`,
+  `uncollectable`), which is cumulative by nature; `tracing` says whether a tracemalloc tracer runs in
+  this process. Then the caches that hold session content: `hydrated` (the
+  lazy bodies read on demand: `entries`, and `bytes`, the records' length on
+  disk, which `capBytes` bounds, a proxy that locates the holder without
+  sizing it: decoded bodies usually weigh more, but escaped text can make the
+  disk bytes exceed the decoded storage),
+  `assemblyEntries` (the assembly cache's entries), `parseSlots` (the one
+  parse store's slots, one per session, cut and leaf), `lazyIndexes` (the
+  lazy indexes alive, a weak count), `materializedLruSlots` (the
+  materialized-atom LRU's slots, not the atoms: on a kernel whose LRU holds
+  its atom lists weakly a collected list's slots stay until they expire, so
+  this is an upper bound on the live materialized atoms; where the LRU holds
+  the lists strongly the two are equal; it is the same read as
+  `asmIndex.resident`, repeated here so the holders sit together),
+  `judgeUsageRows` (the judge-usage reader's rows in memory), `builtChat`
+  (`tabs` cached, their `events`, the cached payloads' event counts, a count
+  and not bytes, the occupancy measure of that cache, and `serializedBytes`, the sum over the
+  cached JSON strings, which only the index wire, a proto-1 client, stores,
+  so under the shipped wire it reads 0), `imgCache` (`entries` and `bytes`
+  of the preview data URLs; the cache has no cap, so this gauge is
+  O(entries) over whatever it holds, a refused file counting as an entry of
+  zero bytes). These occupancy gauges attribute a resident size to its
+  holders; they do not sum to it. The transcript record cache, the largest
+  resident holder when the kernel is large, is not among them: its occupancy
+  already rides this response under `recordCache` (`entries` and `bytes`
+  against `budgetBytes`), so a resident size these gauges leave unaccounted
+  for is read there first. The block reads a length or a counter per
+  cache, under the cache's own lock where its readers take one and over a
+  copied value list otherwise; it walks no object graph, collects nothing,
+  evicts nothing, fills nothing and reads no file. A gauge this process
+  cannot read (an accessor the runtime lacks, a container the source has not
+  got, a cached entry of a shape the gauge does not know) is `null`, said
+  once on stderr.
+- `gc`: the interpreter's garbage collections, counted and timed (2026-09-16:
+  pusher cycles stalled for 9-33 s and a profile of the process caught a 9.2 s
+  generation-2 collection charged to whichever stage happened to be running,
+  with no counter in the kernel to tie the one to the other; the collector's
+  own stats carry no durations). A `gc.callbacks` hook the kernel installs
+  once at boot times every collection from its start to its stop callback,
+  wall time on whichever thread triggered it. The hook never waits on the
+  kernel's own locks (`gc_event` in `kernel/kernel.py` says why: a collection
+  can run inside a locked region of the very thread that holds the lock).
+  `gen` maps each generation (`"0"`, `"1"`, `"2"`; a full collection is
+  generation 2) to `collections` (how many ran since the counters started),
+  `msSum`, `msMax` and `msLast` (their summed, largest and last pause) and
+  `collectedLast` (the objects the last one freed). `thresholds` and `counts`
+  are `gc.get_threshold()` and `gc.get_count()`, repeated from `heap.gc` so
+  the block reads on its own (how near the next collection is); `frozen`
+  counts the objects moved out of the collector's reach by `gc.freeze`, which
+  it never scans; `errors` counts callback failures (counted, never raised
+  into the collector; the first in the process is said once on stderr, a
+  line prefixed `perf: gc hook:`, the rest counted only); `hooked` says
+  whether the kernel's `gc.callbacks` hook is installed, so zeros with
+  `hooked` false mean no hook, not no collections. To read a slow cycle: find
+  its row in `pusher.stageRing` (or `jobs.stageRing`) and read the row's `gc`
+  (`null` when the cycle closed without an opening mark): `n0`, `n1` and
+  `n2`, the collections per generation that ran anywhere in the process
+  while the cycle was open, on whichever thread triggered them (a collection
+  holds the interpreter lock for its whole pause, so the cycle waited on it
+  either way), and `ms2`, the generation-2 milliseconds among them; the
+  young generations' pauses are in `gen.0` and `gen.1` only. A row whose
+  `n2` is 1 and whose `ms2` is most of
+  `s` x 1000 spent its time in the collector, not in the stage that was
+  running, and the stage's own `ms` overstates it by that much. A collection
+  inside overlapping pusher and jobs windows shows in both rings' rows, so
+  neither ring sums to `gen.collections`. `heap.gc` beside it carries the
+  collector's own gauges and its cumulative `stats`; the pauses live only
+  here. A collector accessor this runtime lacks reads `null`, said once on
+  stderr, as in `heap`; the tallies themselves need none. The kernel-samples
+  rows carry the same generation-2 tallies as `gcGen2Collections` and
+  `gcGen2MsSum`, cumulative, to difference per interval beside `rssKb`.
 - `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
   reminder walk, the interrupt tick, the persists, the pause and retry
   family) off the pusher since 2026-09-13, so no browser frame waits on a
@@ -1796,7 +1920,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   since a wake set by another thread or a periodic repost of an unchanged
   frame marks a cycle busy).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
-  split and the newest cycles' splits, each `{s, t, stages}` with, per stage,
+  split and the newest cycles' splits, each `{s, t, stages, gc}` (`gc` is the
+  cycle's own collections, described under `gc` above) with, per stage,
   its wall `ms` (one decimal), the reader's `bytes` off disk and the assembly
   cut's `hydrated` bytes ON THE PUSHER'S THREAD since the previous stage
   boundary (another thread's reads in the window, the judges' first pass or
@@ -1834,7 +1959,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   finishes its first LAST, so `stages` carries both splits (a key both own,
   `jobs.other`, is summed); a jobs pass still open ten minutes after the
   pusher's first cycle closed has the row written without it, marked
-  `jobsFirstPassPending`. The row also carries `parse`, the assembly's road counters at
+  `jobsFirstPassPending`. The row's `gc` carries each first split's collector
+  delta on its own, `firstCycle` and `firstPass` (each the split row's `gc`,
+  the shape the `stageRing` rows carry, or `null`), never summed: the tallies
+  are process-wide, so a collection inside both windows is in both deltas and
+  a sum would count it twice; the key is absent when neither split has one.
+  The row also carries `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
@@ -2010,7 +2140,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `stacks`: every live thread's stack, keyed `"<ident> <kind>"`. The kind
   is the thread's name up to the naming convention's colon (`sdk` and
   `sdk-intr` for a session's threads, `codex` for a Codex session's worker,
-  `end-host` for a session's end hook, `port-up` for a dial's port watch, `peer` for a postal peer loop), the
+  `end-host` for a session's end hook, `port-up` for a dial's port watch, `peer` for a postal peer loop,
+  `romp-refused-mark` for the refused-echo mark a cut-off boot re-delivery writes aside), the
   target function for a thread the code left unnamed (`_ask_poll`,
   `_parent_watch`, `_update_check_loop`, `_tunnel_supervisor`,
   `serve_forever`, ...), `handler` for the HTTP server's request threads,
@@ -2233,7 +2364,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   through the shared store cache and show under `memos.shared`, not here. A
   save that would rewrite identical bytes is a save without a write.
 - `memos`: the identity memos on the goal-store path. `pass` is the
-  judge pass's stat-keyed store memo (`hit`, `miss`, `fail`, `evict`, `punch`,
+  judge pass's stat-keyed store memo (`hit`, `miss`, `compare_miss` for a
+  store whose bytes moved under an unchanged stat, `fail`, `evict`, `punch`,
   `skip` for the files a pass stepped over because the compaction sweep ruled
   their store unowned, its occupancy `entries`, `bytes`, and `unowned`, the
   stores currently ruled out, a gauge); `shared` is the pusher's shared
@@ -2360,7 +2492,23 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the boot's first cycle, since its first pass lists every alive session's
   tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
   directories, the largest 2,581 files) and a runaway spend is minutes,
-  not the first cycle (T401 follow-up); `nudgeGate` is the auto-nudge walk's
+  not the first cycle (T401 follow-up); `subagentTree` is the memo of each
+  subagents directory tree the builds read (the sidecar map, the agent-file
+  lookup, the feed key's subagents component): per root, the directories in
+  walk order and each one's identity (inode, mtime, size, ctime) taken before
+  it was listed, served while every identity stands because a directory
+  entry's creation, removal or renaming moves its parent's stamps and every
+  parent is in the list, with `hit` and `miss` (trees vouched for by one stat
+  per known directory against trees walked), `evict` (roots dropped because
+  no alive session's transcript names them, on every jobs pass and, as a
+  belt, after each feed build and from the tracking-off frame), `dirStats`
+  (the stats validations paid), `walkMs` and `validateMs` (the time in each,
+  every thread), and the gauges `roots` (entries) and `dirs` (directories
+  held); a directory stamped within the last two seconds, or one whose
+  listing failed, is stored unvouched and walked again until it is quiet and
+  lists cleanly, the racy-stamp rule, since a filesystem stamps with a
+  coarser clock than the wall clock and a failure moves no stamp;
+  `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
@@ -2564,6 +2712,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   gauge `entries`; `segs_hit` and `segs_miss` count the segments served and
   derived. `dead_serve`, `dead_miss` and `dead_failed_serve` are the dead-lane
   memo's outcomes on the same block, so one block carries every lane.
+  `judgingBand` is the timeline's judging band memo: a completed judge run's
+  entry is held under its usage row while the row and the gloss it borrowed
+  stand, so an unchanged entry is the same object build after build and the
+  bars fill re-encodes only what changed, and a cursor skips the retained
+  rows each verified to end before the horizon. `builds` and their wall
+  `ms`; `rows_skipped` and `rows_visited` per build; `entries_reused` and
+  `entries_minted`; `resets`, a cursor dropped for a rotated log, a left
+  prune the reader did not count or a horizon moved back; `compact_reused`,
+  `compact_minted` and `compact_ms` for the compact wire form's own identity
+  memo; and the gauges `entries` and `compact` (the two memos' held
+  entries), `bytes` (their containers, estimated) and `bound`, the band's
+  wire cap (20,000 entries): only entries that reach the frame are held, so
+  a judge storm's rows never widen the memo.
   Four memos cover the chat build's per-build fixed costs, each keyed on the
   inputs it reads and evicted by the pusher with the tab set (a comment thread
   built this cycle is kept, like its fold prefix). `chatMergeSets` is the

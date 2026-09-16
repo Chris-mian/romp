@@ -42,7 +42,7 @@ import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
 import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
-import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
+import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
@@ -7214,7 +7214,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     rename.appendChild(ctxIcon("pencil", false));
     const bodyEl = el("span", "ctx-item-body");
     const l = el("span", "ctx-item-label"); l.textContent = "Rename"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub"); sb.textContent = "the name is a label — mail, goals and history follow the session"; bodyEl.appendChild(sb);
+    const sb = el("span", "ctx-item-sub"); sb.textContent = RENAME_SUBLINE; bodyEl.appendChild(sb);   // one copy with the Sessions pane's menu (clear-confirm.ts)
     rename.appendChild(bodyEl);
     rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id, copy); });
     menu.appendChild(rename);
@@ -8141,6 +8141,16 @@ const PROVISIONAL_WAIT_MS = 90_000;
 // "only an open session" for the rest, instead of one line for both
 (window as any).__rompMoveRefusal = (sid: unknown): string => typeof sid !== "string" || !sid || isProvisionalId(sid) || isSubId(sid) ? "not-open" : settings.tabsLocked ? "locked" : "";
 (window as any).__rompColumnBusy = (): boolean => !!provisionalId || failedProvisionals.size > 0;
+// …and the busy answer's TRANSITION to idle, said to the shell once per transition. The shell's reconcile of another
+// dashboard tab's write used to close a dropped column outright, its `keep` passing close()'s busy gate, so a peer closing
+// a column tore THIS tab's column down over a create in flight and the queued text died with the document. The shell now
+// defers that close while the page is busy and carries it out on this signal, against a fresh read of the store
+// (_LANDING_SPLIT_JS reconcile and the colBusy handler). Nothing while a failed create still holds its text (its ✕ is the
+// transition then), and nothing from the first column, which never closes.
+function noteColumnIdle(): void {
+  if (!COL || provisionalId || failedProvisionals.size) return;
+  try { window.parent.postMessage({ romp: "colBusy", busy: false }, "*"); } catch (e) { /* no shell */ }
+}
 
 function openProvisional(req: CreateReq): void {
   dropProvisional();                       // never two at once: a second create supersedes the first
@@ -8185,6 +8195,7 @@ function dropProvisional(): { queued: string[]; draft: string } {
     draft = (activeId === id && ta) ? ta.value : (drafts.get(id) ?? "");
     pendingSent.delete(id);                // the optimistic bubbles belong to a tab that is going away
     dismissSession(id, "close");           // drops it from sessions/order/views and reselects
+    noteColumnIdle();                      // the create is gone: a peer's deferred close of this column may go ahead
   }
   return { queued, draft };
 }
@@ -18107,7 +18118,7 @@ function closeTabLocally(id: string): void {
   // (and the kernel never knew the id): its ✕ is a plain local discard — tab, draft, and all.
   if (isProvisionalId(id)) {
     if (id === provisionalId) cancelProvisional();
-    else { failedProvisionals.delete(id); dismissSession(id, "close"); }
+    else { failedProvisionals.delete(id); dismissSession(id, "close"); noteColumnIdle(); }   // the last failed one discarded: idle again, and the shell's deferred close may go ahead
     return;
   }
   dismissSession(id, "close");
@@ -18676,7 +18687,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // case. Close-and-reopen is End + Revive, which keeps the whole history.
     const nm = String(m.name || "");
     showConfirm(`End “${nm}”?`,
-      "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline.",
+      END_SESSION_STANDING,
       [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
       (v) => {
         if (v !== "end") return;   // Cancel → nothing
@@ -20524,7 +20535,7 @@ setupSettings();
       // 2026-07-27, and ending drops the cards from the working surfaces the same way)
       showConfirm(`End “${nm}”?`,
         endConfirmDetail(openTopTitles(ledgers.get(id)?.tree),
-          "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline."),
+          END_SESSION_STANDING),
         [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
         (v) => {
           if (v !== "end") return;   // Cancel → nothing

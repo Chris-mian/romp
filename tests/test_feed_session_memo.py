@@ -20,6 +20,10 @@ was attributed to, beside the card the moved input changes:
     bookkeeping and undisplayed history do not invalidate, and concurrent writes wait for the next snapshot;
   * a deferral record (the ledger's `deferred` map: the Stalled section, the Blocked filing) minted or retired
     for a node re-derives the card that read that exact node id, a foreign-owned id included, and no other;
+  * a judge pass beginning or ending: nothing derives while the stores' versions stand; a mid-pass publish and a
+    mid-pass journal row re-derive their session at the next build and once more at the pass end; a pass
+    beginning between the key's stat and the body's read keys the entry as what it rendered; a rewrite the
+    stat does not show reaches the card at the next pass;
   * the clock: two builds ten minutes apart derive nothing and differ in `now`, `buildId` and the cards' age
     tint alone (the fold stamps trgb per build; the memo holds nothing clock-derived);
   * the byte bound (FEED_MEMO_BYTES): entries leave oldest first, counted, and the payload stays complete;
@@ -485,6 +489,179 @@ class TheClockIsNotAnInput(_Board):
         self.assertIn("now", km._DEDUP_VOLATILE, "the one clock field the builder emits is a declared volatile")
 
 
+class ThePassBoundaryIsNotAnInput(_Board):
+    """A judge pass beginning or ending moves no key whose store did not (2026-09-16). The `store` component used to
+    carry the pass snapshot's clock stamp (_goals_snap_at[0] while the sid was in the snapshot, None between passes),
+    so every pass boundary re-derived every snapshotted session under the label `store` although the store the body
+    renders was the same memoized object or the same file version. On a busy board with short passes running back to
+    back that was most of the derivations: of the roughly eight misses per build carrying the store label (miss_by
+    attributes a miss to every differing label), 5.7 to 7.9 per build carried no other label, against about one
+    store publish per build. The component now names the store VERSION the body renders (the snapshot entry's decode
+    key mid-pass, the live file's identity between passes, each beside the pass memo's count of byte changes the stat
+    did not show for that store) and whether the override journal is replayed onto it (the live loader replays it, the
+    raw snapshot does not until a punch), so an unchanged store serves across the boundary and the one real change,
+    the version the body renders moving, still re-derives. Both are taken from the read the body renders
+    (_feed_goals_keyed reports the snapshot key it served from, inside its own lock hold), so a pass boundary between
+    the key's stat and the body's read cannot pair one mode's key with the other mode's rendering.
+
+    Named follow-up, not done here: the replay bit flips at every boundary for every session whose journal FILE
+    exists (journals are never pruned, and the replay is a no-op whenever the kernel's own save survived), so such a
+    session still derives twice per pass under `store`. Tightening it needs a fold watermark the store carries (the
+    journal identity save_goals folded, popped like _baseRev) so the bit means the journal has rows after the fold,
+    not that a journal exists.
+
+    The pass here is the real _begin_goals_pass over this board's store directory: the pass memo it swaps in is the
+    process's, saved and restored, and the snapshot is always dropped again (a failing assertion would otherwise
+    leave one installed for every later module in a serial run)."""
+
+    def setUp(self):
+        super().setUp()
+        self.saved_pass_memo = km._goals_memo[0]
+
+    def tearDown(self):
+        km._end_goals_pass()
+        km._goals_memo[0] = self.saved_pass_memo
+        super().tearDown()
+
+    def test_a_pass_beginning_and_ending_over_unchanged_stores_derives_nothing(self):
+        d, before = self._delta(self._build)
+        self.assertEqual(d["derived"], 3)
+        km._begin_goals_pass()                # the snapshot: the same file versions, served as the memoized objects
+        d, mid = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (0, {}), "a pass beginning moved no store: %r" % d)
+        self.assertEqual(_dump(mid), _dump(before), "the snapshot renders the version the live read rendered")
+        km._begin_goals_pass()                # back-to-back passes: the flip that costs when passes outnumber builds
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (0, {}), "a second pass over the same versions: %r" % d)
+        km._end_goals_pass()
+        d, after = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (0, {}), "the pass ending moved no store: %r" % d)
+        self.assertEqual(_dump(after), _dump(before))
+
+    def test_a_mid_pass_publish_re_derives_that_session_at_the_next_build_and_once_more_at_the_pass_end(self):
+        self._build()
+        km._begin_goals_pass()
+        self._complete(API)                   # the closer's verdict lands mid-pass: the file moves, the snapshot does not
+        d, mid = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}), "api's file moved, and api alone: %r" % d)
+        self.assertEqual(self._cards(mid)[API + ":g1"]["column"], "working",
+                         "mid-pass the card renders the pre-pass snapshot, never the half-applied store")
+        d, _ = self._delta(self._build)
+        self.assertEqual(d["derived"], 0, "the snapshot's version stands for the pass: a hit")
+        km._end_goals_pass()
+        d, memoized = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}),
+                         "the pass ending moves api's rendered version to the live file, and api alone: %r" % d)
+        self.assertEqual(self._cards(memoized)[API + ":g1"]["column"], "completed")
+        _reset_memo()
+        d, scratch = self._delta(self._build)
+        self.assertEqual(d["derived"], 3)
+        self.assertEqual(_dump(memoized), _dump(scratch),
+                         "two served entries beside one derivation equal three derivations, byte for byte")
+
+    def test_a_journal_row_appended_mid_pass_reaches_the_card_when_the_pass_ends(self):
+        self._build()
+        km._begin_goals_pass()
+        jd.append_override(WEB, WEB + ":g1", "resolve", NOW - 20)   # the gesture's journal row alone: no mark, no store save
+        d, mid = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}), "the journal's identity moved: %r" % d)
+        self.assertFalse(self._cards(mid)[WEB + ":g1"]["doneConfirming"],
+                         "the raw snapshot does not replay the journal (a punch would, and the punch is keyed on its own)")
+        km._end_goals_pass()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}),
+                         "the live loader replays the journal: the rendered store changed for web alone: %r" % d)
+        self.assertTrue(self._cards(f)[WEB + ":g1"]["doneConfirming"], "the resolve reached the card")
+        d, _ = self._delta(self._build)
+        self.assertEqual(d["derived"], 0, "and holds: a hit")
+
+    def test_a_journaled_session_re_derived_mid_pass_for_another_input_shows_its_gesture_again_at_the_pass_end(self):
+        """The replay bit's own pin (the review, 2026-09-16): keyed on the rendered version alone, a mid-pass derivation
+        for any other input (here a transcript append, the commonest miss) would store the raw un-replayed snapshot
+        rendering under a key equal to the post-pass live one, and the live build would HIT on it: a user's journaled
+        resolve whose store save never landed would vanish from the card with no error until the file or the journal
+        moved. The bit makes the un-replayed and the replayed rendering two keys."""
+        jd.append_override(WEB, WEB + ":g1", "resolve", NOW - 20)
+        d, f = self._delta(self._build)
+        self.assertTrue(self._cards(f)[WEB + ":g1"]["doneConfirming"], "the live build replays the journal")
+        km._begin_goals_pass()
+        with self.tpath[WEB].open("a") as fh:
+            fh.write(json.dumps(uline(NOW - 5, "and the pagination", "u2", "a1")) + "\n")
+        d, mid = self._delta(self._build)
+        self.assertEqual(d["derived"], 1, "web alone: %r" % d)
+        self.assertIn("transcript", d["miss_by"])
+        self.assertFalse(self._cards(mid)[WEB + ":g1"]["doneConfirming"], "mid-pass: the raw snapshot rendering")
+        km._end_goals_pass()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}),
+                         "the pass ending flips the replay bit for the journaled session alone: %r" % d)
+        self.assertTrue(self._cards(f)[WEB + ":g1"]["doneConfirming"], "the resolve is back on the card")
+        d, _ = self._delta(self._build)
+        self.assertEqual(d["derived"], 0, "and holds: a hit")
+
+    def test_a_pass_beginning_between_the_keys_stat_and_the_bodys_read_keys_the_entry_as_what_it_rendered(self):
+        """The key names the mode the body's read used, not the mode a separate read found earlier (the review,
+        2026-09-16). With the mode decided before the body's read, a pass beginning in between stored the raw
+        un-replayed snapshot rendering under the LIVE key (replayed), and the first post-pass build hit on it: a
+        journaled resolve gone from the card with no error until the file or the journal moved. The pass here begins
+        inside the key's rewind-hold read, after web's stat and before its store read."""
+        jd.append_override(WEB, WEB + ":g1", "resolve", NOW - 20)
+        d, f = self._delta(self._build)
+        self.assertTrue(self._cards(f)[WEB + ":g1"]["doneConfirming"])
+        with self.tpath[WEB].open("a") as fh:                       # web derives in the racing build
+            fh.write(json.dumps(uline(NOW - 5, "and the pagination", "u2", "a1")) + "\n")
+        real_hold, fired = km._rewind_hold_get, []
+
+        def begin_then_hold(sid):
+            if sid == WEB and not fired:
+                fired.append(1)
+                km._begin_goals_pass()
+            return real_hold(sid)
+        with mock.patch.object(km, "_rewind_hold_get", begin_then_hold):
+            d, mid = self._delta(self._build)
+        self.assertEqual(fired, [1])
+        self.assertEqual(d["derived"], 1, "web alone: %r" % d)
+        self.assertFalse(self._cards(mid)[WEB + ":g1"]["doneConfirming"], "the racing build rendered the raw snapshot")
+        km._end_goals_pass()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}),
+                         "keyed as the snapshot rendering it holds, the entry is re-derived when the pass ends: %r" % d)
+        self.assertTrue(self._cards(f)[WEB + ":g1"]["doneConfirming"], "the resolve is back on the card")
+
+    def test_a_rewrite_the_stat_does_not_show_reaches_the_card_at_the_next_pass_and_holds(self):
+        """The one content change a stat-keyed identity cannot see: an equal-size in-place rewrite with the mtime put
+        back (two equal-size publishes of one store onto a recycled inode inside one clock tick on a coarse-timestamp
+        kernel, or an mtime-preserving restore). The pass memo's byte compare decodes it and counts it on the entry;
+        the feed key carries that count in the version it renders, so the card re-derives once when a pass sees the
+        bytes and serves from then on. Before, the old key's boundary flap happened to heal it at the pass end through
+        the live loader's byte compare; a key standing across the boundary without the count would have pinned the
+        stale card until the store's next publish (the review, 2026-09-16)."""
+        self._build()
+        km._begin_goals_pass()
+        km._end_goals_pass()                                          # the pass memo holds api's bytes
+        path = jd.GOALDIR / (API + ".json")
+        st, text = path.stat(), path.read_text()
+        new_text = text.replace(GOAL_OF[API], GOAL_OF[API].upper())   # the same length, other bytes
+        self.assertNotEqual(new_text, text)
+        self.assertEqual(len(new_text.encode()), st.st_size, "same length by construction")
+        path.write_text(new_text)                                     # in place: same inode, same size
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))          # same mtime_ns
+        now = path.stat()
+        self.assertEqual((now.st_ino, now.st_mtime_ns, now.st_size), (st.st_ino, st.st_mtime_ns, st.st_size))
+        d, _ = self._delta(self._build)
+        self.assertEqual(d["derived"], 0, "between passes the stat is all the key sees: served until a pass reads the bytes")
+        km._begin_goals_pass()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["miss_by"]), (1, {"store": 1}), "the pass saw the bytes: api alone re-derives: %r" % d)
+        self.assertEqual(self._cards(f)[API + ":g1"]["text"], GOAL_OF[API].upper(), "the new bytes reached the card")
+        km._end_goals_pass()
+        d, f2 = self._delta(self._build)
+        self.assertEqual(d["derived"], 0, "the live loader's byte-compared read agrees with the snapshot's: a hit")
+        self.assertEqual(self._cards(f2)[API + ":g1"]["text"], GOAL_OF[API].upper())
+        _reset_memo()
+        self.assertEqual(_dump(f2), _dump(self._build()), "and equals a from-scratch build")
+
+
 class TheBoundAndTheDepartures(_Board):
     def test_the_byte_bound_sheds_the_oldest_entries_and_the_payload_stays_complete(self):
         self._build()
@@ -517,8 +694,15 @@ class TheBoundAndTheDepartures(_Board):
         self.assertGreater(km.FEED_MEMO_BYTES, 0)
 
     def test_a_departed_sessions_entry_leaves_with_it(self):
+        # a subagents root for every session, so the feed key walks and memoizes each in the shared walk memo
+        # (_SUBAGENT_TREES, 2026-09-16, which replaced the key's own sid-keyed memo this test used to read) and the
+        # departed session's root has something to leave with its entry
+        roots = {sid: str(km._subagents_dir(self.tpath[sid])) for sid in SIDS}
+        for r in roots.values():
+            Path(r).mkdir(parents=True)
         self._build()
         self.assertEqual(km._feed_memo_report()["entries"], 3)
+        self.assertLessEqual(set(roots.values()), set(km._SUBAGENT_TREES), "every alive session's root is memoized")
         self.live.pop(TESTS)                  # the session is gone from the backend's live map ...
         (jd.NAMES / TESTS).unlink()           # ... and from the names registry
         jd._discover_cache.clear()
@@ -530,8 +714,10 @@ class TheBoundAndTheDepartures(_Board):
         self.assertEqual(set(km._feed_memo), {WEB, API})
         self.assertEqual(rep["bytes"], sum(e[2] for e in km._feed_memo.values()))
         self.assertNotIn(TESTS + ":g1", self._cards(f))
-        self.assertEqual(set(km._SUBAGENT_DIRS_MEMO) & set(SIDS), {WEB, API},
-                         "the key's subagent-walk memo drops the departed session with its entry (round two, low 1)")
+        self.assertNotIn(roots[TESTS], km._SUBAGENT_TREES,
+                         "the subagents walk memo drops the departed session's root with its entry (round two, low 1; the "
+                         "root-keyed memo bounded by the alive set, 2026-09-16)")
+        self.assertLessEqual({roots[WEB], roots[API]}, set(km._SUBAGENT_TREES), "...and keeps the alive sessions' roots")
 
     def test_the_perf_snapshot_carries_the_memo_beside_the_feed_builds_counters(self):
         self._build()

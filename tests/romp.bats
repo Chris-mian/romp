@@ -82,6 +82,14 @@ run_romp() {
     "$ROMP_SCRIPT" "$@" 2>&1
 }
 
+# Helper: an in-place sed that BSD sed reads the same way as GNU sed. `sed -i 's/.../' file` is GNU's shape; BSD sed
+# (macOS) takes the word after -i as the backup suffix and then reads the expression as the file ("invalid command code
+# f", the macOS bats leg's first completion, 2026-09-16). The edit goes through a temp file and back into the file
+# itself, so the mock keeps its mode and its inode. $1 the expression, $2 the file.
+_sed_inplace() {
+    sed "$1" "$2" > "$2.sed-tmp" && cat "$2.sed-tmp" > "$2" && rm -f "$2.sed-tmp"
+}
+
 # Helper — a fake `curl` for the kernel-API paths (`romp new` SDK spawn + `-m` send).
 # Logs every call to MOCK_LOG and answers {"ok": true}; MOCK_CURL_FAIL_SEND=1 makes
 # the /send leg fail the way curl -f does, so per-leg error reporting is testable.
@@ -452,7 +460,12 @@ class H(BaseHTTPRequestHandler):
         out, st = (body, code) if self.path.startswith("/tag") else (b"not found", 404)
         self._answer(out, st)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.serve_forever()
@@ -772,7 +785,7 @@ MOCK
     [[ "$output" != *"applied tags"* ]]
     [[ "$output" != *"WARNING"* ]]
     # …while an inherited tag IS reported
-    sed -i 's/"tags": \[\]/"tags": ["pool"]/' "$MOCK_DIR/curl"
+    _sed_inplace 's/"tags": \[\]/"tags": ["pool"]/' "$MOCK_DIR/curl"
     run run_romp new ideabox
     [[ "$output" == *"applied tags pool"* ]]
 }
@@ -802,7 +815,7 @@ MOCK
     [[ "$output" != *"did not apply --in  pool"* ]]
     [[ "$output" != *"did not apply --in aaaa"* ]]
     # against a kernel with only the `tags` echo (no positional pair) the name match still stands
-    sed -i 's/, "tagsRequested".*"tagError"/, "tagError"/' "$MOCK_DIR/curl"
+    _sed_inplace 's/, "tagsRequested".*"tagError"/, "tagError"/' "$MOCK_DIR/curl"
     run run_romp new --in pool --in twin ideabox
     [[ "$output" == *"did not apply --in twin"* ]]
     [[ "$output" != *"did not apply --in pool"* ]]
@@ -867,13 +880,13 @@ MOCK
     [[ "$output" != *"starts in no tags"* ]]
     [[ "$output" != *"already running"* ]]
     # a refused --in (a null slot) is not "applied": the notice names only what landed
-    sed -i 's/"tagsApplied": \["infra", "qa"\]/"tagsApplied": ["infra", null]/' "$MOCK_DIR/curl"
+    _sed_inplace 's/"tagsApplied": \["infra", "qa"\]/"tagsApplied": ["infra", null]/' "$MOCK_DIR/curl"
     run run_romp new --in infra --in qa ideabox
     [[ "$output" == *"; --in applied: infra"* ]]
     [[ "$output" != *"--in applied: infra, qa"* ]]
     # the name was already running: nothing starts and nothing is inherited (no creation event); the
     # notice says so once, after the "is already running" line, and never "starts"
-    sed -i 's/"dir": "\/tmp\/x", "tags": \["infra", "qa"\], "tagsRequested": \["infra", "qa"\], "tagsApplied": \["infra", null\]/"existing": true, "tags": ["pool"], "tagsRequested": [], "tagsApplied": []/' "$MOCK_DIR/curl"
+    _sed_inplace 's/"dir": "\/tmp\/x", "tags": \["infra", "qa"\], "tagsRequested": \["infra", "qa"\], "tagsApplied": \["infra", null\]/"existing": true, "tags": ["pool"], "tagsRequested": [], "tagsApplied": []/' "$MOCK_DIR/curl"
     run run_romp new ideabox
     [ "$status" -eq 0 ]
     [[ "$output" == *'"ideabox" is already running; see the dashboard (romp)'* ]]
@@ -1276,7 +1289,12 @@ class H(http.server.BaseHTTPRequestHandler):
             os._exit(0)
     def log_message(self, *a):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/kpid", "w") as f:
     f.write(str(os.getpid()))
 with open(tdir + "/kport", "w") as f:
@@ -1501,7 +1519,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers()
     def log_message(self, *a): pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 open(tdir + "/kpid", "w").write(str(os.getpid()))
 open(tdir + "/kport", "w").write(str(s.server_address[1]))
 s.serve_forever()
@@ -2206,7 +2229,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2246,7 +2274,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2279,7 +2312,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2314,7 +2352,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2357,7 +2400,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()

@@ -19,22 +19,31 @@ teardown() {
 }
 
 # Start a one-shot fake kernel; writes its port to $TEST_DIR/port and its request to $TEST_DIR/req.
-start_fake_kernel() {   # $1 = response body
-    python3 - "$1" "$TEST_DIR" <<'PY' &
-import http.server, json, sys
-body, tdir = sys.argv[1].encode(), sys.argv[2]
+# $2 (optional): seconds to hold the answer AFTER reading the request — a kernel that took the message
+# but answers late (the boot-storm shape the exit-code test below drives).
+start_fake_kernel() {   # $1 = response body, $2 = answer delay in seconds (default 0)
+    python3 - "$1" "$TEST_DIR" "${2:-0}" <<'PY' &
+import http.server, json, sys, time
+body, tdir, delay = sys.argv[1].encode(), sys.argv[2], float(sys.argv[3])
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         with open(tdir + "/req", "w") as f:
             f.write(self.path + "\n" + self.rfile.read(n).decode())
+        if delay:
+            time.sleep(delay)
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
     def log_message(self, *a):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/port", "w") as f:
     f.write(str(s.server_address[1]))
 s.handle_request()
@@ -230,7 +239,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b)
     def log_message(self, *a):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/port", "w") as f:
     f.write(str(s.server_address[1]))
 for _ in range(12):
@@ -271,6 +285,29 @@ PY
     grep -q '"name": "-oddname"' "$TEST_DIR/req"
     run "$ROMP_SCRIPT" compact --wait
     [ "$status" -eq 2 ]
+}
+
+@test "romp send: a kernel that took the request but answers late exits 3 and says the message may be delivered" {
+    # 2026-09-12: this shape wore "kernel not reachable" and exit 1, so a retry-on-exit caller re-sent a delivered
+    # message on every try (nine copies of one wake, twenty seconds apart, after a restart). The request must be
+    # on the fake kernel's disk (it was taken), the exit distinct from a refusal, and the words honest.
+    start_fake_kernel '{"ok": true}' 3
+    ROMP_KERNEL_HTTP_TIMEOUT_S=1 run "$ROMP_SCRIPT" send helper 'a wake the kernel took slowly'
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"took the request but did not answer within 1s"* ]]
+    [[ "$output" == *"may already have delivered the message"* ]]
+    [[ "$output" == *"do not retry blindly"* ]]
+    [[ "$output" != *"not reachable"* ]]
+    grep -q "^/send$" <(head -1 "$TEST_DIR/req")
+}
+
+@test "romp send: a kernel nobody is listening on is 'not reachable', exit 1, and nothing was sent" {
+    # a port with no listener: the request never left, so the old message and code stand, and the curl code is named
+    export ROMP_KERNEL_PORT=1
+    run "$ROMP_SCRIPT" send helper 'a message nobody took'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel not reachable"* ]]
+    [[ "$output" == *"[curl exit"* ]]
 }
 
 @test "romp send --tag ahead of the session name tags the send instead of addressing a session called --tag" {

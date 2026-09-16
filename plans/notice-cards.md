@@ -390,6 +390,78 @@ megabytes per pass and could never shrink the file: a byte-triggered rewrite mus
 above what the file retains, or it lands back over its own trigger forever. This pass therefore
 triggers on the presence of archivable rows and on a moved modification time, never on bytes.
 
+## The archive bound (2026-09-16)
+
+**What reads the archive today, and when.** `STATE/notices-archive/<sid>.jsonl` is written by the retention
+pass (`_compact_notices`) and read whole at two doors, both under `_notice_lock`. `post_notice` reads it through
+`_notice_archive_rev_unlocked` once per archive state (the file's stat) and keeps the result as `{key: rev}` in
+`_NOTICE_ARCH_REVS`, so a revision never recycles an id the cleared ledger holds. `_undo_clear` reads it through
+`_restore_notice_archive` once per Undo press, to move a restored card's rows back into the live file. Nothing
+prunes the archive, and nothing bounds the `{key: rev}` memo. Three quantities therefore grow with a session's
+history: the archive's bytes on disk (every dismissed, expired, superseded and over-cap row, each up to the
+sixty-four kilobyte body cap); the time each whole read takes under the lock, paid by the next poster and by the
+next Undo after every pass that archived; and the memo's entries, one per distinct key the session ever archived.
+The sizes: a row is its post, a few hundred bytes of fields plus the body, so a producer posting a one kilobyte
+card an hour archives about nine megabytes a year per session, and one posting at the body cap every minute about
+thirty-three gigabytes. A whole read of nine megabytes is tens of milliseconds; the cost is that it sits on the
+post path under the lock and repeats at every archive move, and that its ceiling is the file's size.
+
+**The invariants any bound keeps.** A revision is minted once ever: `notice:<sid>:<key>:<rev>` may stand in the
+cleared ledger forever, and the ledger is never pruned. Undo restores a card's rows from the archive for every batch
+it can reach, one batch a press. The reference's words today are that the pass archives and deletes none.
+
+**The revision index, a derived sidecar.** `STATE/notices-archive/<sid>.revs.json` holds `{key: highest archived
+rev}`. The pass writes it under the lock whenever it archives post rows (a read-modify-write of a small file). It is
+a high-water mark: it never decreases, and an Undo that moves rows back live does not touch it, since
+`rev = 1 + max(live revs, index)` stays right either way. `post_notice` reads the index and never the archive. When
+the index is absent and the archive exists, the first reader (the pass, or a post) rebuilds it from one whole read
+of the archive and writes it: the index is a cache of the archive with a rebuild path, never a second source of
+truth, so a lost or hand-deleted index costs one read and no invariant. Its growth is one entry per distinct key
+ever archived, about fifty bytes each (ten thousand unique keys, half a megabyte), and it is read only at a post.
+The refusal on a fault moves with the read: an index that cannot be read, or an absent index over an archive that
+cannot be read, refuses the post with its reason, as `_notice_archive_rev_unlocked` refuses today; an absent index
+over an absent archive is absence. `_NOTICE_ARCH_REVS` becomes the parsed index memoized on the index file's stat,
+and it joins the rows memo under `NOTICE_MEMO_BYTES`: its bytes counted in the same total, shed by the same
+largest-first rule, reported in `GET /perf memos.notices`, so it has the bound the rows have.
+
+**Undo reads from the tail.** The pass appends a session's archived rows in one write, so the rows of one pass form
+a contiguous block, and every row of one revision (its post, its acted mark, an expire row) is archived in the same
+pass, because the expire row retires the post and the acted mark goes with its target. The pass stamps each row it
+archives with the pass's time (`archivedAt`), and `_restore_notice_archive` strips the stamp when it moves a row back.
+The restore then reads the file backwards in sixty-four kilobyte blocks: once every wanted `(key, rev)` has a row
+found, it continues only to the start of the block those rows came from (the first row whose `archivedAt` differs),
+and stops. The batch Undo restores is the newest cleared one, so its rows sit near the tail and the read is bounded
+by the tail; an old batch reached by repeated presses walks further, as far as its pass and no further. Rows archived
+before the stamp existed carry none and are read as one block.
+
+**Disk growth: the decision.** With the index carrying the revision invariant on its own, pruning the archive would
+cost only Undo reach for the oldest batches and the history, and would be safe for ids. Two roads: keep the words the
+reference has (archives, deletes none), which is what the goals archive and the cleared ledger do, both never pruned,
+their readers bounding their projection instead; or a per-session byte bound, `NOTICE_ARCHIVE_BYTES` with an
+environment override, under which the pass drops the oldest rows first, whole pass blocks at a time, once the index
+holds their revisions. That drop takes the `_USAGE_PRUNE_BYTES` lesson recorded above: the trigger sits well above what
+one pass appends, and a drop removes a large share of the file (the oldest half), so the file never lands back over
+its own trigger. The recommendation is the first road now: the index takes the archive off the post path and the tail
+read takes it off the common Undo, and disk growth is the same accepted growth the cleared ledger and the goals archive
+have. The second road changes a promise the reference makes and is the user's call; its mechanics are written here so
+the call needs no second design.
+
+**The test sketch.** The pass writes the index with the revisions it archives and never lowers it; a post reads rev 2
+from the index with the archive unreadable; an absent index over an archive is rebuilt once and then read, over an
+unreadable archive refuses the post; an unreadable index refuses the post; the index's bytes count under
+`NOTICE_MEMO_BYTES` and appear in `memos.notices`. The restore finds the newest batch's rows in the tail block and
+reads no further (a counter on the blocks read), walks to an old batch's pass on repeated presses, strips
+`archivedAt` on the way back, and reads rows without a stamp whole. Red first at the head that lacks each piece.
+
+**Landed (PR 1776):** the index, the stamp and the tail read as designed; the memo joins `NOTICE_MEMO_BYTES` under the
+same keys in `memos.notices`, hits and misses included; the pass holds a session's rows when its index cannot be written.
+Round two: the index records the archive's size and mtime it describes and is rebuilt when the archive's stat differs (a
+kernel that archived and wrote no index, a pass whose second write failed, a restore's rewrite), so it is the cache with a
+rebuild path and never trusted behind the archive; a rebuild whose write fails still answers the post, uncached. Disk
+growth stays as the reference says; the byte bound is the user's call. Known and queued: an Undo whose batch the pass has
+not archived yet reads the whole archive (its rows are live, the tail read finds none and walks to the start), no worse
+than before the bound.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key
@@ -546,3 +618,5 @@ Moving it onto the notice store is a follow-up, not part of this note.
 - **Posting to a session on another host from this host's command line tool.** `romp card` talks
   to the local kernel, so a notice for a remote session is posted on the host that owns it. The
   federated dashboard then shows it either way.
+- **The archive bound.** The section above (2026-09-16) designs the revision index sidecar, Undo's tail read
+  and the memo bound, and lays out the disk-growth decision; the code follows the design's read.

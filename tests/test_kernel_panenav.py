@@ -36,19 +36,26 @@ class PaneNav(unittest.TestCase):
 
     def test_move_is_spatial_and_skips_hidden_panes(self):
         self.assertIn("function moveFocus(dir)", JS)
-        # every chat column (the split's, in row order) then the static Outline/Feed — only the VISIBLE ones
+        # every chat COLUMN (the split's, in row order) then the static Outline/Feed, only the VISIBLE ones; a bottom
+        # pane is a vertical child, not a column, so the horizontal walk uses the columns-only accessor
         self.assertIn("function visCols(){return allCols().filter(paneVisible);}", JS, "only VISIBLE columns are traversed")
-        self.assertIn("function allCols(){var c=window.__rompChatFrameIds?window.__rompChatFrameIds():['f-chat'];return c.concat(COLS.slice(1));}", JS)
+        self.assertIn("function allCols(){var c=window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat'];return c.concat(COLS.slice(1));}", JS)
         self.assertIn("getComputedStyle(el).display!=='none'", JS, "hidden panes (display:none) are skipped")
-        # left/right along columns, down into the timeline, up back out of it
+        # left/right along columns; the VERTICAL axis inside a split column: Down goes to the bottom pane then the
+        # timeline, Up returns from the bottom pane to the top (a bottom pane is a vertical child, not a column)
         self.assertIn("if(dir==='left'){if(i>0)focusPane(cols[i-1],dir);}", JS)
         self.assertIn("else if(dir==='right'){if(i>=0&&i<cols.length-1)focusPane(cols[i+1],dir);}", JS)
-        self.assertIn("else if(dir==='down'){if(paneVisible(TL))focusPane(TL,dir);}", JS)
+        self.assertIn("if(dir==='down'){if(below&&document.getElementById(below)){focusPane(below,dir);return;}if(paneVisible(TL))focusPane(TL,dir);return;}", JS)
+        self.assertIn("if(dir==='up'){if(top&&document.getElementById(top))focusPane(top,dir);return;}", JS)
+        self.assertIn("var below=window.__rompBelowFrameOf&&window.__rompBelowFrameOf(curFocus);", JS)
         self.assertIn("if(curFocus===TL){", JS)
 
     def test_focus_goes_through_the_parent_and_notifies_the_pane(self):
         # the shell focuses the target iframe (siblings can't) + rings it + tells it to arm intra-pane nav
         self.assertIn("f.contentWindow.focus();", JS)
+        # a split column marks WHICH half holds focus so each half can wear its own ring (the top iframe or the .chat-sub)
+        self.assertIn("var isBottom=!!(window.__rompTopFrameOf&&window.__rompTopFrameOf(id));", JS)
+        self.assertIn("el.classList.toggle('focus-bottom',on&&isBottom);el.classList.toggle('focus-top',on&&!isBottom&&el.classList.contains('split-v'));", JS)
         self.assertIn("f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');", JS)
         # the handler is wired on each iframe's document in CAPTURE so it beats the pane's own key handlers
         self.assertIn("d.addEventListener('keydown',onKey,true);", JS)
