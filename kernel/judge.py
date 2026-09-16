@@ -19749,6 +19749,58 @@ def _serve_delta(prev, cur, gauges=()):
     return round(d, 6) if isinstance(d, float) else d
 
 
+# The judge stores are written whole to a temp file beside the target and renamed into place; a kill between the two (the
+# kernel's SIGTERM on its exit road, a crash) leaves the temp file for the life of the state root. Every accumulating writer
+# names its temp with the WRITER'S PID, so a temp whose pid is no live process is stale by that event alone; the fixed-name
+# temps (`<file>.tmp`, no pid) are reused by the next write of the same file and never accumulate, so they are left alone.
+_STALE_TEMP_PATTERNS = (
+    re.compile(r"\.json\.tmp\.(\d+)\.\d+\.\d+$"),      # _publish_tmp: <fsid>.json.tmp.<pid>.<thread>.<n> (goals, archive, goals-archive)
+    re.compile(r"\.(\d+)\.[0-9a-f]+\.tmp$"),             # _atomic_write_json: <file>.<pid>.<thread hex>.tmp
+    re.compile(r"\.tmp\.(\d+)\.[0-9a-f]+$"),             # the planner's seen rows: <file>.tmp.<pid>.<thread hex>
+    re.compile(r"\.tmp\.(\d+)$"),                         # the units cache and the index: <file>.tmp.<pid>
+    re.compile(r"^\.tmp-.+-(\d+)-[0-9a-f]+$"),           # a node's temp: .tmp-<nid>-<pid>-<hex>
+)
+
+
+def _pid_alive(pid):
+    """Whether `pid` names a live process: the signal-zero probe, a permission error meaning alive."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def sweep_stale_temps(dirs=None):
+    """Remove the temp files a killed writer left beside the judge stores: a file whose name matches one of the writers'
+    pid-carrying temp shapes and whose pid is no live process (the event, never an age). Returns the count removed. Runs
+    once at the serve child's start (serve()); a temp of a live pid (a writer mid-write in the kernel, or this process) and
+    a fixed-name temp are left standing. Best effort: a file that vanishes or refuses is skipped."""
+    if dirs is None:
+        dirs = (STATE, GOALDIR, GOALARCHDIR, ARCHDIR, CAPDIR, PCACHE, GONEDIR, STATESDIR, EPIDIR, NAMES)
+    removed = 0
+    for d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            pid = None
+            for pat in _STALE_TEMP_PATTERNS:
+                m = pat.search(name)
+                if m:
+                    pid = int(m.group(1)); break
+            if pid is None or pid == os.getpid() or _pid_alive(pid):
+                continue
+            try:
+                os.unlink(os.path.join(d, name)); removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def _serve_pass(req, emit):
     """ONE judge pass through the shared body (run_pass), then the `done` line. The request's `mayStart` is the kernel's
     composite gate evaluated on the kernel side (the tracking switch, a live session, retries not paused); the child gates
@@ -19791,6 +19843,9 @@ def serve(inp=None, out=None):
     if why:
         sys.stderr.write("serve: ROMP_JUDGE_SERVE_FAULT ignored: %s\n" % why)   # a malformed knob is no fault, said once
     _SERVE_FAULT[0] = fault
+    swept = sweep_stale_temps()                   # a killed writer's temp files beside the stores go now, by the writer's dead pid
+    if swept:
+        sys.stderr.write("serve: swept %d stale temp file%s beside the stores\n" % (swept, "" if swept == 1 else "s"))
     emit_lock = threading.Lock()
 
     def emit(obj):
