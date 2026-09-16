@@ -184,6 +184,7 @@ class Resolver(unittest.TestCase):
             lines = err.getvalue().splitlines()
             self.assertEqual(len(lines), 1, "one stderr line for the fault: %r" % lines)
             self.assertIn(resolved, lines[0], "the line names the file at its physical place")
+            self.assertIn(handed, lines[0], "...and the form the session carries beside it, so the operator finds the cwd they registered")
             self.assertEqual(len(_bell()), 1)
             # the repair: the clean read comes through git's toplevel, the resolved path
             repo = _mk_repo(td)
@@ -199,6 +200,7 @@ class Resolver(unittest.TestCase):
                 self.assertEqual(km._git_branch(str(link)), "")
             self.assertEqual(len(err3.getvalue().splitlines()), 1, "a new episode: one new line, never silence: %r" % err3.getvalue())
             self.assertIn(resolved, err3.getvalue())
+            self.assertIn(handed, err3.getvalue())
             self.assertEqual(len(_bell()), 2, "a new episode rings once more")
 
     @unittest.skipIf(os.geteuid() == 0, "root reads through chmod 0; the EACCES step needs a real permission fault")
@@ -237,10 +239,11 @@ class Resolver(unittest.TestCase):
         # it (review find, 2026-09-08): a false stderr line, no HEAD path cached (so every rebuild forked
         # `git rev-parse`, the burn the cache exists to stop), and a file-index key with no git-index mtime.
         with tempfile.TemporaryDirectory() as td:
-            parent = Path(td) / os.fsdecode(b"caf\xe9")
-            parent.mkdir()
+            base = Path(os.path.realpath(td))                       # the physical place, as _mk_repo and _torn_cwd build theirs: the
+            parent = base / os.fsdecode(b"caf\xe9")                 # kernel keys its caches on git's toplevel, which git returns resolved,
+            parent.mkdir()                                          # so a cwd built under a symlinked temp root missed its own entries
             repo = _mk_repo(parent)
-            wt = Path(td) / "wt"                                    # a clean cwd, as the registry carries it
+            wt = base / "wt"                                        # a clean cwd, as the registry carries it
             _git("worktree", "add", "-q", "-b", "feature", str(wt), cwd=repo)
             forbid_background(wt)                                   # the kernel forks its own git against it
             self.assertIn(b"\xe9", (wt / ".git").read_bytes(), "premise: git wrote the byte into the pointer")
@@ -381,10 +384,10 @@ class PushCycle(unittest.TestCase):
         dotgit = str(self.torn / ".git")
         real_fault = km._git_file_fault
 
-        def reported(path, exc):
+        def reported(path, exc, handed=None):   # the namer's third argument, the handed form (the 1781 review)
             if seen is not None and path == dotgit:
                 seen.append(path)
-            return real_fault(path, exc)
+            return real_fault(path, exc, handed)
         with mock.patch.object(km, "_git_file_fault", reported), \
                 mock.patch.object(km, "_sessions", lambda now, window=None, forks=True: list(sessions)), \
                 mock.patch.object(km, "_live_map", lambda: dict(live)), \
