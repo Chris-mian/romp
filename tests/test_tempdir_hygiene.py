@@ -148,8 +148,14 @@ class PrivateTempRoot(unittest.TestCase):
         root = tempfile.gettempdir()
         py = _run([sys.executable, "-c", "import tempfile, sys; sys.stdout.write(tempfile.gettempdir())"])
         self.assertEqual(py.stdout, root, "a Python child's tempfile answers with the root")
-        sh = _run(["mktemp", "-d", "-u"])   # -u: name only, nothing created
-        self.assertEqual(os.path.dirname(sh.stdout.strip()), root, "a shell's mktemp -d lands in it")
+        with self.subTest(child="mktemp -d"):
+            if sys.platform == "darwin":
+                # macOS mktemp(1) with no template names its directory from the per-user temp root (the Darwin
+                # confstr), not from TMPDIR, so the shell half cannot hold there; no product script relies on it
+                # (bin/romp-serve and bin/romp-uninstall hand mktemp an explicit template under a dir they choose)
+                self.skipTest("macOS mktemp(1) without a template ignores TMPDIR")
+            sh = _run(["mktemp", "-d", "-u"])   # -u: name only, nothing created
+            self.assertEqual(os.path.dirname(sh.stdout.strip()), root, "a shell's mktemp -d lands in it")
 
     def test_the_handed_temp_dir_is_recorded_once_and_the_roots_nest_under_it(self):
         # The one sanctioned way out of the root (tests/test_kernel_socket_deliver._socket_dir, for
@@ -517,7 +523,7 @@ class GitFloor(unittest.TestCase):
 
 
 LEAKY_MODULE = textwrap.dedent('''\
-    import os, subprocess, tempfile, unittest
+    import os, subprocess, sys, tempfile, unittest
     from git_fixture import git, init_repo    # the suite's runner (tests/__init__.py registers it under tests.conftest)
     ROOT = os.environ["TMPDIR"]
     STATE = tempfile.mkdtemp()            # a module preamble's state root: never cleaned by the module
@@ -532,8 +538,10 @@ LEAKY_MODULE = textwrap.dedent('''\
             open(os.path.join(d, "a.txt"), "w").write("a\\n")
             git(d, "add", "a.txt")
             git(d, "commit", "-q", "-m", "seed")
-            sh = subprocess.run(["mktemp", "-d"], capture_output=True, text=True, check=True).stdout.strip()
-            for p in (STATE, d, f, sh):
+            made = [STATE, d, f]
+            if sys.platform != "darwin":      # macOS mktemp(1) without a template ignores TMPDIR (the Darwin per-user root)
+                made.append(subprocess.run(["mktemp", "-d"], capture_output=True, text=True, check=True).stdout.strip())
+            for p in made:
                 self.assertEqual(os.path.commonpath([ROOT, p]), ROOT, p)
 ''')
 
