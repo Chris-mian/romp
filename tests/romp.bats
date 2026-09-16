@@ -452,7 +452,12 @@ class H(BaseHTTPRequestHandler):
         out, st = (body, code) if self.path.startswith("/tag") else (b"not found", 404)
         self._answer(out, st)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.serve_forever()
@@ -1276,7 +1281,12 @@ class H(http.server.BaseHTTPRequestHandler):
             os._exit(0)
     def log_message(self, *a):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/kpid", "w") as f:
     f.write(str(os.getpid()))
 with open(tdir + "/kport", "w") as f:
@@ -1501,7 +1511,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers()
     def log_message(self, *a): pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 open(tdir + "/kpid", "w").write(str(os.getpid()))
 open(tdir + "/kport", "w").write(str(s.server_address[1]))
 s.serve_forever()
@@ -2206,7 +2221,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2246,7 +2266,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2279,7 +2304,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2314,7 +2344,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()
@@ -2357,7 +2392,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", 0), H)
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
 with open(portfile, "w") as f:
     f.write(str(srv.server_address[1]))
 srv.handle_request()

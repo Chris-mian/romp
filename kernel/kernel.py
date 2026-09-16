@@ -21,6 +21,7 @@ import contextlib, json, os, queue, random, re, signal, socket, sys, time, threa
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
 from urllib.parse import urlparse, parse_qs, quote, unquote, urlencode
 
 
@@ -1100,6 +1101,7 @@ class _PerfStats:
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
+                          ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
@@ -12263,6 +12265,7 @@ def _interrupt_block_tick(now, live_map):
     alive_sids = {s["sid"] for s in alive}              # a sid that left the alive set is the event that retires
     _intr_marks_forget(alive_sids)                      # its interrupt-marks entries and its states-overlay fold
     _states_overlay_forget(alive_sids)                  # entry alike
+    _subagent_trees_forget(alive)                       # ...and the subagents walk memo's root, by the row's path (2026-09-16)
     # a flip's writer marked the views dirty and woke the pusher: the next cycle carries it (docstring)
 
 
@@ -30132,6 +30135,17 @@ _AGENT_LAUNCH_CACHE = {}        # parent jsonl path -> em.fold_records entry (fo
 _SUBAGENT_FRAMES = {}           # (sid, agentId) -> (change key, frame, serialized) — shared by every client with it open
 SUBAGENT_EVENT_CAP = 300        # events shipped per viewer frame — a bounded TAIL, honest about the cut (the episode fold's rule)
 SUBAGENT_STEPS_CAP = 200        # tool calls shipped on the Agent head (agentSteps) — the newest; stepsTotal says the true count
+# THE WALK MEMO (2026-09-16): subagents root -> (its directories in walk order, their identities), one entry per root, shared by
+# every reader of the tree (_subagent_dirs, _subagent_meta_map, _find_agent_file, the feed key's _subagent_dirs_ident). Before
+# it every call ran os.walk over the tree (up to 330 directories, 3,600 files on the measured box), several calls per session
+# per build from the feed, timeline and chat builds and the nudge walk, and a pusher stack sample put a tenth of its push-stage
+# samples inside that walk. Bounded by ownership, not by a count: _subagent_trees_forget drops every root no alive session's
+# transcript names, on every jobs pass (_interrupt_block_tick, audience-independent) and, as a belt, after each feed build
+# and from the tracking-off frame.
+_SUBAGENT_TREES = {}
+_SUBAGENT_TREE_STATS = {"hit": 0, "miss": 0, "evict": 0, "dirStats": 0, "walkMs": 0.0, "validateMs": 0.0}   # /perf memos.subagentTree;
+#                          advisory tallies, incremented without a lock as the neighbouring memos' are (a lost count under a race
+#                          is tolerated; the memo's own writes are single dict stores of immutable tuples)
 
 
 def _subagents_dir(path):
@@ -30139,16 +30153,157 @@ def _subagents_dir(path):
     return Path(str(path)).with_suffix("") / "subagents"
 
 
+def _stat_ident(st):
+    """(ino, mtime_ns, size, ctime_ns) of a stat result, None for None (nothing at the path): the identity _chat_ident folds
+    for a file it names by path, and the one the walk memo holds per directory. ctime is load-bearing for a directory too
+    (2026-09-16): utime back-dating (rsync -a, cp -a, tar) can restore a directory's mtime after an entry change but cannot
+    set its ctime, so a same-inode same-mtime entry change is still a moved identity."""
+    return None if st is None else (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+
+
+def _lstat_or_none(p):
+    """os.lstat, or None when the path is not there (or cannot be reached)."""
+    try:
+        return os.lstat(p)
+    except OSError:
+        return None
+
+
+def _subagent_tree_charge(kind, t0):
+    """Add the milliseconds since t0 to the memo's `kind` tally (walkMs or validateMs) for /perf."""
+    _SUBAGENT_TREE_STATS[kind] += (time.monotonic() - t0) * 1000.0
+
+
+def _subagent_tree(d):
+    """The subagents root `d` and every directory under it (Claude Code 2.1.261 writes a Workflow agent's file and sidecar
+    one level down, workflows/wf_<id>/) in os.walk's top-down sorted order, no symlink followed, as (directories, their
+    stat results), each directory's lstat taken BEFORE it was listed (the _subagent_file rule: a stamp taken after the
+    listing could pair an older listing with a newer mtime). ((), ()) when nothing is at `d`; ((), (the lstat,)) when what
+    is there is not a directory (a symlink, a file in its place: not this session's tree, never listed).
+
+    Memoized per root in _SUBAGENT_TREES on the identities (_stat_ident: ino, mtime_ns, size, ctime_ns) of every directory
+    it listed, the root included. Exact because the directory list changes only by the creation, removal or renaming of a
+    directory entry, and POSIX moves the PARENT directory's mtime and ctime on every one of those; every parent is itself
+    in the list, and the root is taken by lstat (a symlink placed at the root is its own inode, never the target's). So the
+    known identities standing means the tree stands, and a call costs one lstat per known directory and lists nothing; any
+    identity moved, a directory gone (its ident None against a stored tuple), or the root missing or replaced re-walks.
+    Not vouched for on a filesystem that does not stamp a directory on entry changes (some network and FUSE mounts), the
+    assumption _subagent_transcripts and _subagent_meta_map already make.
+
+    Three refinements the identities alone do not give. The racy mask (_SUBAGENT_DIR_RACY_NS, git's rule as
+    _subagent_transcripts applies it), on BOTH stamps: a directory whose mtime or ctime is within the window of the walk is
+    stored with identity None, so its tree never hits and is re-walked (today's cost) until it has been quiet, because a
+    filesystem stamps with a coarser clock than the wall clock (a jiffy before Linux 6.13, a second on some filesystems)
+    and an entry created in the same tick right after its parent was stat'd would carry the memoized stamp; ctime is in
+    the mask because it is the component that catches a back-dated mtime, and a ctime inside the racy tick could be
+    equalled by a later change in the same tick. A failed listing is never vouched (the design review's finding,
+    2026-09-16): when scandir on a directory raises, or an entry's type or a child's lstat cannot be taken, that directory
+    is stored with identity None too, since the failure moved no stamp; a transient EMFILE or EIO would otherwise memoize
+    a truncated list under standing identities and serve it as a hit until an entry landed in that directory (os.walk
+    dropped the subtree for the one call and the next call recovered; _subagent_transcripts declines to memoize a failed
+    listing for the same reason). And the vanished-directory case on the hit path: a fresh None can equal a stored None
+    only for a directory that was unvouched at the walk and is gone now, whose PARENT then has a fresh, real identity (it
+    exists) that mismatches whatever was stored for it, real or None, up to the root; so by induction a
+    fresh-None-equals-stored-None never serves a stale tree. One difference from os.walk, stated: a directory that exists
+    but cannot be listed (EACCES) stays in the list, where os.walk dropped it, unvouched, so the tree is walked on every
+    call until it can be listed (today's cost, and the chmod that opens it is seen at once); no consumer's output changes
+    (_subagent_meta_map's listing of it fails and is skipped, _find_agent_file finds no file in it, the feed key folds one
+    more identity)."""
+    d = str(d)
+    try:
+        st = os.lstat(d)
+    except OSError:                                       # nothing at the root: [] as ever, and the entry is forgotten
+        _SUBAGENT_TREES.pop(d, None)
+        return (), ()
+    if not stat.S_ISDIR(st.st_mode):                      # a symlink (live or dangling) or a file in its place: not a tree
+        _SUBAGENT_TREES.pop(d, None)
+        return (), (st,)
+    hit = _SUBAGENT_TREES.get(d)
+    if hit is not None and None not in hit[1]:
+        # an entry carrying an unvouched directory (racy, or a failed listing) can only ever match if that directory is
+        # GONE, and a directory removed between its parent's lstat and its own would then be served as a hit with a None
+        # among the stats, which the readers index (2026-09-16, the fold's review): such an entry re-walks instead
+        t0 = time.monotonic()
+        stats = [st] + [_lstat_or_none(x) for x in hit[0][1:]]   # the root's lstat above serves as its own (dirs[0] is d)
+        _SUBAGENT_TREE_STATS["dirStats"] += len(stats) - 1
+        fresh = tuple(_stat_ident(s) for s in stats)
+        _subagent_tree_charge("validateMs", t0)
+        if fresh == hit[1]:
+            _SUBAGENT_TREE_STATS["hit"] += 1
+            return hit[0], stats
+    _SUBAGENT_TREE_STATS["miss"] += 1
+    t0 = time.monotonic()
+    racy_from = time.time_ns() - _SUBAGENT_DIR_RACY_NS    # a stamp at or past this may still be the tick an entry lands in
+    dirs, stats, clean, stack = [], [], [], [(d, st)]
+    while stack:
+        cur, cst = stack.pop()
+        dirs.append(cur)
+        stats.append(cst)
+        ok, subs = True, []                               # ok: every entry listed and typed, every child stat'd; else unvouched
+        try:
+            with os.scandir(cur) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):   # a symlink to a directory is not a root, as os.walk's
+                            subs.append(e.name)                #  followlinks=False never descended into one
+                    except OSError:
+                        ok = False
+        except OSError:                                   # unreadable, or gone since its lstat: nothing under it this call
+            ok = False
+        subs.sort()
+        pending = []
+        for name in subs:
+            p = os.path.join(cur, name)
+            try:
+                pending.append((p, os.lstat(p)))          # the stamp BEFORE the listing, as the rule says
+            except OSError:
+                ok = False
+        clean.append(ok)
+        stack.extend(reversed(pending))                   # popped first-sorted first: os.walk's top-down sorted order
+    idents = tuple(_stat_ident(s) if ok and max(s.st_mtime_ns, s.st_ctime_ns) < racy_from else None
+                   for s, ok in zip(stats, clean))
+    _SUBAGENT_TREES[d] = (tuple(dirs), idents)
+    _subagent_tree_charge("walkMs", t0)
+    return tuple(dirs), stats
+
+
 def _subagent_dirs(d):
-    """The subagents directory `d` and every directory under it (Claude Code 2.1.261 writes a Workflow agent's file and
-    sidecar one level down, workflows/wf_<id>/), in walk order, no symlink followed (the walk's rule, _subagent_transcripts).
-    [] when `d` is not a directory or is a symlink."""
-    if not os.path.isdir(d) or os.path.islink(d):
-        return []
-    out = []
-    for root, dirs, _files in os.walk(d):                 # followlinks=False: never leaves the session's own tree
-        dirs.sort()
-        out.append(root)
+    """The subagents directory `d` and every directory under it in walk order, no symlink followed; [] when `d` is not a
+    directory or is a symlink. The list is _subagent_tree's, served from the walk memo while the tree stands."""
+    return list(_subagent_tree(d)[0])
+
+
+def _subagent_trees_forget(alive):
+    """Drop the walk memo's entries for every root no alive session owns (2026-09-16): the bound is the alive set, the roots
+    derived from the alive sessions' transcript paths (the root that session's chat, timeline and feed builds walk), so a
+    root walked for nobody alive (a dormant session's kept-open viewer, a sibling fsid's tree a _subagent_file miss looked
+    through) leaves at the next call. Its home is the jobs pass, beside _intr_marks_forget in _interrupt_block_tick, which
+    holds the cycle's alive rows every pass whether or not a client is connected: the jobs thread itself inserts roots
+    with nobody watching (the nudge walk's _session_awaiting reads the sidecar map, and a _subagent_file miss walks every
+    sibling fsid's tree), so a bound that rode the feed frame alone left a headless or timeline-only kernel growing with
+    departed sessions (the adversarial review's finding). Called as a belt after every feed build's loop and from the
+    tracking-off frame too. Iterates a snapshot and pops with a default: _subagent_tree inserts from the pusher's chat
+    builds, the WS handlers' viewer frames and the HTTP handlers at once, and a comprehension over the live dict raises
+    RuntimeError under a concurrent insert (the _prov_ledger_memo_evict and _intr_marks_forget precedent)."""
+    owned = {str(_subagents_dir(s["path"])) for s in alive if s.get("path")}
+    for d in list(_SUBAGENT_TREES):
+        if d not in owned and _SUBAGENT_TREES.pop(d, None) is not None:
+            _SUBAGENT_TREE_STATS["evict"] += 1
+
+
+def _subagent_tree_memo_report():
+    """/perf memos.subagentTree: hit and miss (trees served by validation against trees walked), evict (roots dropped as
+    unowned), dirStats (the lstats validations paid), walkMs and validateMs (the time in each, every thread), and the gauges
+    roots (entries) and dirs (directories held). Written from several threads; a resize under the sum is read again."""
+    for _ in range(3):
+        try:
+            dirs = sum(len(v[0]) for v in list(_SUBAGENT_TREES.values()))
+            break
+        except RuntimeError:
+            dirs = -1
+    out = dict(_SUBAGENT_TREE_STATS, roots=len(_SUBAGENT_TREES), dirs=dirs)
+    out["walkMs"] = round(out["walkMs"], 1)
+    out["validateMs"] = round(out["validateMs"], 1)
     return out
 
 
@@ -30158,29 +30313,27 @@ def _subagent_meta_map(path):
     workflows/wf_<id>/, and a flat listing missed it, so its Agent card never learned its id), cached on the
     directories' mtimes (a sidecar landing changes its directory's — a stat, never a timer). {} when the directory does
     not exist (older CLIs wrote no subagent files)."""
-    d = _subagents_dir(path)
-    try:
-        st = os.stat(d)
-    except OSError:
-        _SUBAGENT_META_CACHE.pop(str(d), None)
-        _chat_dep_note_taskout(str(d), None)              # a running chat build: the directory's absence is a dependency too
-        return {}
-    dirs = _subagent_dirs(str(d))
-    if not dirs:                                          # a symlinked subagents/ is not this session's tree (never listed)
-        _SUBAGENT_META_CACHE.pop(str(d), None)
+    d = str(_subagents_dir(path))
+    dirs, stats = _subagent_tree(d)                       # the shared walk memo (2026-09-16): the directories and the stat each
+    if not dirs:                                          #  was taken under, one pass, no os.walk and no second stat per directory
+        _SUBAGENT_META_CACHE.pop(d, None)
+        # a running chat build: the directory's absence is a dependency too, as os.stat's failure recorded it before the
+        # memo: nothing at the path, or a dangling link in its place, notes None (what _chat_stat_key re-evaluates to); a
+        # LIVE link (not this session's tree, never listed, {} regardless) notes nothing, as before, since a None note
+        # could never match its re-stat and the target's key would rebuild the tab on changes the map does not show
+        if not stats or _chat_stat_key(d) is None:
+            _chat_dep_note_taskout(d, None)
         return {}
     stamps = []
-    for sd in dirs:
-        try:
-            sst = os.stat(sd)
-        except OSError:
-            continue
+    for sd, sst in zip(dirs, stats):
         stamps.append((sd, sst.st_mtime_ns))
         # the running chat build's dependency record (the taskout idiom, _chat_dep_note_taskout): a sidecar landing
-        # moves its directory's mtime, which the next cycle's signature re-stats
+        # moves its directory's mtime, which the next cycle's signature re-stats; the (st_mtime, st_size) pair from the
+        # SAME stat_result the memo validated with, the exact shape _chat_stat_key answers (a value derived from mtime_ns
+        # would miss by float rounding and rebuild the tab every cycle)
         _chat_dep_note_taskout(sd, (sst.st_mtime, sst.st_size))
     key = tuple(stamps)
-    hit = _SUBAGENT_META_CACHE.get(str(d))
+    hit = _SUBAGENT_META_CACHE.get(d)
     if hit is not None and hit[0] == key:
         return hit[1]
     out = {}
@@ -30208,7 +30361,7 @@ def _subagent_meta_map(path):
                                        "parentAgentId": meta.get("parentAgentId") or None}   # optional: a nested agent's launcher (_awaiting_nest)
     if len(_SUBAGENT_META_CACHE) > 256:
         _SUBAGENT_META_CACHE.clear()
-    _SUBAGENT_META_CACHE[str(d)] = (key, out)
+    _SUBAGENT_META_CACHE[d] = (key, out)
     return out
 
 
@@ -30245,9 +30398,10 @@ def _find_agent_file(subdir, name, read=None):
     """`name` anywhere under the subagents directory `subdir`, one level or deeper (workflows/wf_<id>/agent-<id>.jsonl),
     no symlink followed or taken, and never a file reached THROUGH a symlink (its real path stays under the tree's);
     None when absent. `read` collects the directories walked."""
-    dirs = _subagent_dirs(str(subdir))
+    dirs, stats = _subagent_tree(str(subdir))
     if read is not None:
-        read.extend(_dir_stamp(d) for d in dirs)        # stamped as read
+        read.extend((sd, st.st_mtime_ns) for sd, st in zip(dirs, stats))   # stamped as read: each directory's stat from
+        #                                                                    BEFORE its listing (the memo's own), never re-taken after
     real_root = os.path.realpath(str(subdir))
     for root in dirs:
         cand = os.path.join(root, name)
@@ -32649,7 +32803,7 @@ def _chat_ident(path):
         st = os.stat(str(path))
     except OSError:
         return None
-    return (st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+    return _stat_ident(st)
 
 
 def _chat_reg_sig(sid):
@@ -40052,8 +40206,6 @@ def _feed_memo_forget(alive_sids):
             _FEED_MEMO_STATS["bytes"] -= _feed_memo.pop(k)[2]
         _FEED_MEMO_STATS["evict"] += len(gone)
         _FEED_MEMO_STATS["entries"] = len(_feed_memo)
-    for k in [k for k in _SUBAGENT_DIRS_MEMO if k not in alive_sids]:   # the key's walk memo leaves with the session
-        _SUBAGENT_DIRS_MEMO.pop(k, None)
     return len(gone)
 
 
@@ -40086,30 +40238,21 @@ def _feed_peer_facts(p, cleared_by_sid):
             host, _remote_name_of(host, p) if r else None)
 
 
-_SUBAGENT_DIRS_MEMO = {}                         # sid → (subagents root, its directories, their identities): the walk,
-#                                                  memoized per living session and dropped with its memo entry (_feed_memo_forget)
-
-
 def _subagent_dirs_ident(sid, d):
-    """(the directories under the subagents root `d`, their identities), the walk memoized: an unchanged tree costs
-    one stat per known directory, not an os.walk per session per build (the T368 review's profile: the walk was a
-    third of the memo key's cost). Sound because a directory added or removed under `d` moves its PARENT's mtime,
-    and every parent is a known directory, so the known identities standing means the tree stands; any of them
-    moving (a sidecar landing, a directory appearing or vanishing, the root itself) re-walks. A root that does not
-    exist is the tree [d] with identity None, and its appearance re-walks the same way. Keyed by the session so
-    _feed_memo_forget drops a departed session's entry with its memo entry; a session whose transcript (and so
-    whose root) moved re-walks. A sidecar REWRITTEN in place under its own name moves no directory's mtime, so
-    neither this memo nor _subagent_meta_map's own cache sees it (pre-existing, shared with that cache; the CLI
-    writes a sidecar once, at the agent's spawn)."""
-    hit = _SUBAGENT_DIRS_MEMO.get(sid)
-    if hit is not None and hit[0] == d:
-        idents = tuple(_chat_ident(x) for x in hit[1])
-        if idents == hit[2]:
-            return hit[1], idents
-    dirs = tuple(_subagent_dirs(d) or [d])
-    idents = tuple(_chat_ident(x) for x in dirs)
-    _SUBAGENT_DIRS_MEMO[sid] = (d, dirs, idents)
-    return dirs, idents
+    """(the directories under the subagents root `d`, their identities) for the feed key's subagents component, from the
+    shared walk memo (_subagent_tree, 2026-09-16; before it this key held a sid-keyed memo of its own over the same walk,
+    the T368 review's profile having put the walk at a third of the key's cost, while every other reader still walked):
+    an unchanged tree costs one lstat per known directory. A root that does not exist is the tree (d,) with identity None,
+    and its appearance moves the component; a symlink or file in its place is (d,) with the LINK's own lstat identity
+    (before the shared memo, the target's os.stat identity: one component miss at deploy for such a session, no output
+    change).
+    A sidecar REWRITTEN in place under its own name moves no directory's mtime, so neither this component nor
+    _subagent_meta_map's own cache sees it (pre-existing, shared with that cache; the CLI writes a sidecar once, at the
+    agent's spawn). `sid` is kept for the call's shape; the memo is per root and bounded by the alive set
+    (_subagent_trees_forget), not per session."""
+    dirs, stats = _subagent_tree(d)
+    idents = tuple(_stat_ident(s) for s in stats)
+    return (dirs or (d,), idents or (None,))
 
 
 def _postal_session_slice(sid, maps=None):
@@ -40286,9 +40429,11 @@ def _feed_session_key(s, tm, ctx, prev_entry):
       jactive: fsid in {r["fsid"] for r in jd.active_runs()}. The Analyzing swirl's active prong.
       hide: _session_flag(fsid, "hideFromFeed"). The session yields no entry while set.
       watch: json of _watch_awaiting(fsid) (the in-memory watches for this sid). An awaiting source.
-      subagents: _chat_ident of the transcript's subagents directory and every directory under it (the walk memoized
-        on those identities, _subagent_dirs_ident). _subagent_meta_map. A sidecar rewritten in place under its own
-        name moves no directory's mtime and is invisible here as it is to the map's own cache (pre-existing).
+      subagents: the identity (ino, mtime_ns, size, ctime_ns) of the transcript's subagents directory and every directory
+        under it, from the shared walk memo (_subagent_dirs_ident over _subagent_tree, 2026-09-16: the directories are
+        listed once per change, vouched for by one lstat each while they stand). _subagent_meta_map. A sidecar rewritten
+        in place under its own name moves no directory's mtime and is invisible here as it is to the map's own cache
+        (pre-existing).
       usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
         _cap_switch_offer), else None. A deps component.
       offer: the login-account usage window sitting at its cap with its reset still ahead of the build's clock, as
@@ -41616,6 +41761,7 @@ def build_feed(now, live_map=None):
         hidden_total += _hid
         cold_parse = cold_parse or _cold
     _feed_memo_forget({s["sid"] for s in alive})     # a departed session's entry drops with it
+    _subagent_trees_forget(alive)                    # ...and, as a belt, the walk memo's roots nobody alive owns (2026-09-16)
     # THE SERVING FOLD, commit side (T137): join each candidate's rows under its dispatch's
     # tracker row — a read-only render-time join across stores (the node itself stays in the
     # WORKER's store, where plan-sync completion, nudge freshness, and clears live; node ids are
@@ -45463,8 +45609,9 @@ def _subagent_transcripts(path):
     per session discovered in its window, live or not, on an HTTP handler thread and so on the GIL:
     five live sessions held 3,577 agent transcripts under 1,292 directories (one of them 326 past
     workflows' directories), every one read per pass. The chat builds' walk over the same tree is
-    _subagent_dirs, with _subagent_meta_map's own cache, not this memo. Cost per call now: one lstat
-    per directory, plus one listing per directory whose stamp moved. A directory gone, or a symlink in
+    _subagent_tree (its own root-keyed memo of the directory list, with _subagent_meta_map's cache
+    over it), not this memo. Cost per call now: one lstat per directory, plus one listing per
+    directory whose stamp moved. A directory gone, or a symlink in
     its place, drops from the memo with everything under it; a directory unreadable when listed yields
     nothing under it (as os.walk had it) and is not memoised, so the next call tries again.
 
@@ -46402,6 +46549,11 @@ def build_timeline(now, live_map=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            # which backend the lane is (the tab meta's field, _session_backend): the lane's model/effort pickers speak
+            # that backend's vocabulary and a live Codex lane draws its effort picker before any level is picked
+            # (2026-09-16: the row carried no backend, so the lane read every session as Claude's and a Codex lane
+            # with no level had no picker at all)
+            "backend": _session_backend(sid, tm),
             "modelPending": _model_pending_now(sid, tm),   # switching-dots until the /model pick lands, from EITHER surface (the user 2026-07-03)
             # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
@@ -52633,8 +52785,12 @@ def _feed_off_frame(now, live_map=None):
         f[key] = []
     try:
         alive = _alive_sessions(now, live_map or {})
+        read = True
     except Exception:
-        alive = []
+        alive, read = [], False
+    if read:                                          # the subagents walk memo's belt here too (2026-09-16): with tracking off
+        _subagent_trees_forget(alive)                 #  build_feed never runs; the bound's home is the jobs pass; a FAILED alive
+    #                                                    read evicts nothing (an empty set from a failure is no owner list)
     try:
         cleared = _cleared_ids()
     except Exception:
@@ -66907,6 +67063,20 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
         os._exit(0)
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    """The kernel's server, whose bind does NOT reverse-resolve its own address. HTTPServer.server_bind runs
+    socket.getfqdn(host) after bind() and before listen(), and a host whose resolver cannot reverse-resolve
+    loopback quickly holds the whole server there: GitHub's macOS 15 and 16 images block about 36 seconds per
+    server on it (measured 2026-09-16 on the bats leg, where every Python stub and the postal bus paid it once),
+    and a Mac with a stale resolver would keep this kernel from answering for as long. server_name feeds
+    nothing this kernel reads (the CGI handler's environment, never used here), so it is the bind address."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)     # the bind, with allow_reuse_address as HTTPServer sets it
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def main():
     # Export the kernel's claude resolution for every judge call (in-process tiers AND `romp-judge
     # --once` subprocesses): judges exec the binary directly, and a kernel started over non-login ssh
@@ -66971,7 +67141,7 @@ def main():
     threading.Thread(target=_update_check_loop, daemon=True).start()   # newer release? boot + every 6h (mode-gated inside)
     threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
-    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    srv = _LoopbackServer((BIND, PORT), Handler)      # no reverse lookup at the bind (the class's docstring)
     _persist_serve_port(srv.server_address[1])     # the port record the Obsidian panel posts to, written
     #                                                once the bind SUCCEEDED (a failed bind leaves no lie)
     url = "http://127.0.0.1:%d" % PORT
