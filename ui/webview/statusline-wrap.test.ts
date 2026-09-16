@@ -50,4 +50,10 @@ test("the state unit shrinks with wrappable words while the stop button alone st
   assert.match(CSS, /\.sl-left \{[^}]*flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px 10px;/);
   assert.doesNotMatch(CSS, /\.sl-left \{[^}]*white-space: nowrap/);
   assert.match(CSS, /\.sl-left > \.stop-btn \{ flex: none; \}/);
+  // round three: the chip's min-content was the unbreakable peer label (TESTHOST:integration-tests), so the unit still
+  // overflowed a 280 px line by 26 px; the chip may shrink and the label truncates with an ellipsis, its whole text the
+  // first line of the chip's own tip
+  assert.match(CSS, /\.sl-left > \.chip \{ min-width: 0; \}/);
+  assert.match(CSS, /\.sl-left \.chip-peer-name \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/);
+  assert.match(RENDER, /setTip\(chip, \[words\.peer \? "waiting on " \+ \(words\.peer\.host \? words\.peer\.host \+ ":" : ""\) \+ words\.peer\.name : "",\s*\n\s*awaitBreakdown\(chipItems\),/, "the full label leads the tip");
 });

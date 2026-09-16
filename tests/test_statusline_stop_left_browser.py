@@ -1,6 +1,6 @@
-"""The chat status line's stop button sits beside the state chip, after its timer, in one non-wrapping unit (the user
-2026-09-16: back where it sat from 2026-06-19 until bd9a1dab moved it to the right cluster so a wrapped narrow line
-kept it with the controls). Served, in a browser, at two pane widths: wide (1440) the unit leads the line and the right
+"""The chat status line's stop button sits beside the state chip, after its timer, in one unit whose flex line never wraps
+while the chip inside it may shrink and a long peer label truncates with an ellipsis (the user 2026-09-16: back where it
+sat from 2026-06-19 until bd9a1dab moved it to the right cluster so a wrapped narrow line kept it with the controls). Served, in a browser, at two pane widths: wide (1440) the unit leads the line and the right
 cluster sits on the same row to its right; narrow (420) the right cluster wraps below the unit as a whole, and the
 button stays on the chip's row, adjacent to the timer. The session is left mid-turn (a typed prompt, no reply) so its
 chip reads Working and the button shows. Hermetic: a temp state root, one synthetic session in the notes-api demo
@@ -30,7 +30,7 @@ import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environm
 
 SID = "aaaaaaaa-1111-2222-3333-444444444444"   # web, the notes-api demo world
 WIDTHS = {"wide": 1440, "narrow": 420, "tight": 280}
-PEER, PEER_HOST = "api", "TESTHOST"   # the one named peer of the Awaiting case, remote so the chip carries its host prefix (the notes-api demo world)
+PEER, PEER_HOST = "integration-tests", "TESTHOST"   # the one named peer of the Awaiting case: remote, so the chip carries its host prefix, and long, so the label is one unbreakable word wider than a 280 px line's content (the notes-api demo world)
 
 
 def _free_port():
@@ -63,7 +63,9 @@ const readLine = (chatF) => chatF.evaluate(() => {
   const left = sl.querySelector(".sl-left"), right = sl.querySelector(".sl-right"), stop = sl.querySelector(".stop-btn");
   return { chip: rect(sl.querySelector(".chip")), timer: rect(document.getElementById("work-timer")), stop: rect(stop),
            stopParent: stop ? stop.parentElement.className : null, scrollWidth: sl.scrollWidth, clientWidth: sl.clientWidth,
-           peer: (sl.querySelector(".chip .chip-peer-name") || {}).textContent || null, chipHeight: sl.querySelector(".chip") ? sl.querySelector(".chip").getBoundingClientRect().height : null,
+           peer: (sl.querySelector(".chip .chip-peer-name") || {}).textContent || null,
+           peerTruncated: (() => { const n = sl.querySelector(".chip .chip-peer-name"); return n ? n.scrollWidth > n.clientWidth + 1 : null; })(),
+           chipTip: sl.querySelector(".chip") ? (sl.querySelector(".chip")._tipText || null) : null,
            leftKids: left ? Array.from(left.children).map((n) => n.className) : null,
            right: rect(right), rightKids: right ? Array.from(right.children).map((n) => rect(n)) : null,
            line: rect(sl), width: window.innerWidth, chipCls: (sl.querySelector(".chip") || {}).className || null };
@@ -210,12 +212,15 @@ class ServedStopButtonBesideTheChip(unittest.TestCase):
         self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "nothing overflows the line at 280")
 
     def test_a_named_peer_awaiting_chip_at_280_shrinks_the_unit_instead_of_overflowing(self):
-        # round two of PR 1803: flex:none plus nowrap on the unit put a named-peer Awaiting chip's timer out of view at 280
-        # (scrollWidth 352 against 280); the unit shrinks and the chip wraps its words, the timer stays in view
+        # rounds two and three of PR 1803: a named-peer Awaiting chip made the unit wider than a 280 px line (the read measured
+        # 283 against 280 for TESTHOST:api at round one's head, 306 against 280 for this label at round two's, the timer's
+        # right edge past the line); the chip may shrink and its peer label, one unbreakable word, truncates with an ellipsis
+        # whose full text leads the chip's tip, so the unit never exceeds the line and the timer stays in view
         o = self.out["awaiting"]
         self.assertIn("chip-awaitingBg", o["chipCls"] or "", "the patched frame landed: the chip reads Awaiting")
         self.assertEqual(o["peer"], PEER_HOST + ":" + PEER, "with its one named peer, host-prefixed")
-        if os.environ.get("STOPLEFT_DUMP"): print("MEASURE", json.dumps({k: o[k] for k in ("scrollWidth", "clientWidth", "chipHeight", "timer", "line")}))
+        self.assertTrue(o["peerTruncated"], "the label truncates (an ellipsis) rather than widening the unit")
+        self.assertTrue((o["chipTip"] or "").startswith("waiting on " + PEER_HOST + ":" + PEER), "its whole name leads the chip's tip: %r" % o["chipTip"])
         self.assertIsNone(o["stop"], "no button while awaiting (nothing to interrupt)")
         self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "the line does not overflow (scrollWidth %s against %s)" % (o["scrollWidth"], o["clientWidth"]))
         self.assertLessEqual(o["timer"]["right"], o["line"]["right"] + 1, "the timer stays in view")

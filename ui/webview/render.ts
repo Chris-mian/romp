@@ -15985,7 +15985,12 @@ function updateStatusline() {
     const chipItems = s.status.awaitingItems || [];
     chip.classList.add("chip-awaiting-" + (s.status.awaitingKind || "untyped"));   // per-kind hook, one hue today
     // the tip: the per-kind breakdown when there are rows, the kernel's why, and what the click does
-    setTip(chip, [awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
+    const words = chipWords(s.status);   // the same words again, pure, for the tip's first line (the build line above is pinned as the shared builder's call, with its neighbours)
+    // the one named peer's FULL label leads the tip: inside the status unit the label truncates with an ellipsis when the
+    // pane is narrow (styles.css .sl-left .chip-peer-name; round three of PR 1803), and the chip's own tip is where its
+    // whole name reads, the shared dress and no second title
+    setTip(chip, [words.peer ? "waiting on " + (words.peer.host ? words.peer.host + ":" : "") + words.peer.name : "",
+                  awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
                   "click to see what it's waiting on"].filter(Boolean).join("\n"));
     left.appendChild(chip);
     const timer = el("span", "status-timer");
