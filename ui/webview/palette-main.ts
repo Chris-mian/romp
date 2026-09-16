@@ -200,7 +200,7 @@ installMenuEcho();
     if (!sid) { columnNotice("No session is open in this column to move."); return; }
     const frames = ((w.__rompChatColumnIds ? w.__rompChatColumnIds() : ["f-chat"]) as string[]).map(pane).filter((x): x is HTMLIFrameElement => !!x);   // columns only: a bottom pane is a vertical child, not a left/right column
     const i = f ? frames.indexOf(f) : -1;
-    if (i < 0) return;
+    if (i < 0) { columnNotice("This session is in a bottom pane; move it up out of the split first, then between columns."); return; }   // a bottom pane is not in the column row, so say so rather than no-op silently (the rule above)
     const colOf = (fr: HTMLIFrameElement): number | "new" => (fr.id === "f-chat" ? 1 : Number(fr.getAttribute("data-col")));
     if (dir < 0) {
       if (i === 0) { columnNotice("This session is in the first column already."); return; }

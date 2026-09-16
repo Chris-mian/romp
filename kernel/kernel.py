@@ -59904,6 +59904,7 @@ function entry(n){var i=idx(n);return i<0?null:cols[i];}
 function frames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}
 function isBelow(c){return !!(c&&c.place==='below');}   // a cols entry that is a bottom pane (nested under parent), not a side column
 function belowOf(n){for(var i=0;i<cols.length;i++){if(isBelow(cols[i])&&cols[i].parent===n)return cols[i];}return null;}   // the bottom pane under column n, if any
+function sideCols(){return cols.filter(function(c){return !isBelow(c);});}   // the SIDE columns in row order: EVERY cols neighbour walk (left/right/last) routes through this, because a bottom pane is a vertical child with no chat-pane-<n> element and must never be resolved as a neighbour
 function columnFrames(){var out=[document.getElementById('f-chat')];cols.forEach(function(c){if(!isBelow(c))out.push(document.getElementById(frameId(c.n)));});return out.filter(Boolean);}   // the horizontal columns only: a bottom pane is a vertical child, not a column
 function frameOfWin(win){if(!win)return null;var fs=frames();for(var i=0;i<fs.length;i++){try{if(fs[i].contentWindow===win)return fs[i];}catch(e){}}return null;}
 function colOf(win){var f=frameOfWin(win);return f?String(f.getAttribute('data-col')||''):'';}
@@ -59963,12 +59964,12 @@ h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.get
 document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
 function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
 function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
-var ce=entry(colN);if(ce){ce.ratio=Math.max(0.15,Math.min(0.85,nT/sum));save();}}   // the top ratio persists in the entry, read back at a restore
+var ce=entry(colN);if(ce){ce.ratio=Math.max(0.05,Math.min(0.95,nT/sum));save();}}   // persist the ON-SCREEN top ratio (nT/sum after the pixel-clamped drag); a reload restores exactly this, no divider jump
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
 function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
 var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
 var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
-var r=(ce.ratio>=0.15&&ce.ratio<=0.85)?ce.ratio:0.5;
+var r=(ce.ratio>=0.05&&ce.ratio<=0.95)?ce.ratio:0.5;   // accept the same range the drag persists, so the restore matches the screen
 pp.classList.add('split-v');topf.style.flex=r+' 1 0';
 var g=document.createElement('div');g.className='gh gh-chat';g.id='gh-chat-'+ce.n;
 var sub=document.createElement('div');sub.className='chat-sub';sub.id='chat-sub-'+ce.n;sub.style.flex=(1-r)+' 1 0';
@@ -59994,14 +59995,14 @@ p.appendChild(f);p.appendChild(x);
 row.insertBefore(g,gva);row.insertBefore(p,gva);
 if(window.__rompRegisterPane)window.__rompRegisterPane(p.id,'chat'+n);
 if(window.__rompGrowFairIfNew)window.__rompGrowFairIfNew('chat'+n);else if(window.__rompGrowFair)window.__rompGrowFair('chat'+n);   // the half __rompSplitGrow wrote, or a fair width at a restore — never a sliver — and a dragged width survives a reload
-if(window.__rompGutter)window.__rompGutter(g.id,function(){var i=idx(n);return i>0?paneId(cols[i-1].n):'chat-pane';},p.id);
+if(window.__rompGutter)window.__rompGutter(g.id,function(){var s=sideCols(),si=-1;for(var q=0;q<s.length;q++){if(s[q].n===n){si=q;break;}}return si>0?paneId(s[si-1].n):'chat-pane';},p.id);   // the left neighbour among SIDE columns (a bottom pane between them has no chat-pane-<n>, which would kill the gutter)
 if(window.__rompWireFocus)window.__rompWireFocus(f);if(window.__rompWireEsc)window.__rompWireEsc(f);
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{frame:f,col:n,open:true}}));}catch(e){}   // palette-main wires its keys
 return f;}
 function canSplit(){return !mobile()&&cols.length+1<MAX;}
 // a refused move says why (the click-acknowledgement rule): the cap, the phone's one-pane layout, or nothing to do
 function notify(why){try{if(window.__rompNotify)window.__rompNotify('warn',why);}catch(e){}return null;}
-function refuse(){return notify(mobile()?'The phone shows one pane at a time — no split here.':'Four chat columns at most — close one to open another.');}
+function refuse(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one first.');}   // the cap counts PANES (a bottom pane holds a slot too), so a new column at the cap says panes as well
 function refusePane(){return notify(mobile()?'The phone shows one pane at a time, no split here.':'Four panes at most, close one to split.');}   // the vertical split adds a PANE, not a column: the cap message counts panes
 function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexOf(sid);if(j>=0){c.ids.splice(j,1);return c.ids.length?0:c.n;}}return 0;}   // the number of an entry the removal emptied, else 0
 // THE ONE MUTATION of the sets. `to` is a column number (1 = the first, which derives and takes no entry) or "new":
@@ -60047,7 +60048,7 @@ var kid=belowOf(n);   // a bottom pane nested in this column closes WITH it: its
 if(!keep&&kid){var kf0=document.getElementById(frameId(kid.n));if(kf0&&busy(kf0)){notify(BUSY);return;}}
 if(f&&home)cols[i].ids.forEach(function(sid){adopt(home,sid,take(f,sid));});
 if(kid){var kf=document.getElementById(frameId(kid.n));if(kf&&home)kid.ids.forEach(function(sid){adopt(home,sid,take(kf,sid));});var ki=idx(kid.n);if(ki>=0)cols.splice(ki,1);if(window.__rompColGone)window.__rompColGone(String(kid.n));i=idx(n);}   // re-find i after the kid splice
-var sideL=cols.filter(function(c){return !isBelow(c);}),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
+var sideL=sideCols(),si=-1;for(var q=0;q<sideL.length;q++){if(sideL[q].n===n){si=q;break;}}   // the row order is side columns only; a bottom pane is not a left neighbour
 var leftPane=si>0?paneId(sideL[si-1].n):'chat-pane',leftFrame=si>0?frameId(sideL[si-1].n):'f-chat';
 cols.splice(i,1);delete deferred[n];if(!keep)save();   // delete deferred[n] (#1774): a deferred close is moot once the column is gone by any road
 var p=document.getElementById(paneId(n)),g=document.getElementById('gv-chat-'+n);
@@ -60063,16 +60064,16 @@ try{pf&&pf.contentWindow.focus();}catch(e){}}
 // close targets it directly.
 function closeBelow(i,keep){var ce=cols[i];var topId=ce.parent===1?'f-chat':frameId(ce.parent),pid=ce.parent===1?'chat-pane':paneId(ce.parent);
 var bf=document.getElementById(frameId(ce.n)),home=document.getElementById(topId);
-if(!keep&&busy(bf)){notify(BUSY);return;}
+if(!keep&&busy(bf)){notify(BUSY);return;}   // a busy bottom pane a PEER's write drops is DEFERRED upstream by reconcile (frameOfCol resolves it), so this direct-close busy gate is the by-hand path
 if(bf&&home)ce.ids.forEach(function(sid){adopt(home,sid,take(bf,sid));});
 if(ce.parent!==1){var pe=entry(ce.parent);if(pe)ce.ids.forEach(function(sid){if(pe.ids.indexOf(sid)<0)pe.ids.push(sid);});}   // a side-column parent LISTS them; the first column derives them from the rest
-cols.splice(i,1);if(!keep)save();
+cols.splice(i,1);delete deferred[ce.n];if(!keep)save();   // clear any deferred mark, as close() does (a deferred close is moot once the pane is gone)
 var g=document.getElementById('gh-chat-'+ce.n),sub=document.getElementById('chat-sub-'+ce.n);if(g)g.remove();if(sub)sub.remove();
 var pp=document.getElementById(pid),topf=document.getElementById(topId);if(pp)pp.classList.remove('split-v');if(topf)topf.style.flex='';   // the top pane returns to absolute-fill
 if(window.__rompColGone)window.__rompColGone(String(ce.n));
 try{window.dispatchEvent(new CustomEvent('romp-chat-cols',{detail:{col:ce.n,open:false}}));}catch(e){}
 try{home&&home.contentWindow.focus();}catch(e){}}
-function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';if(!c&&cols.length)c=String(cols[cols.length-1].n);if(c)close(Number(c));}
+function closeFocused(){var f=focused(),c=f?colOf(f.contentWindow):'';var sc=sideCols();if(!c&&sc.length)c=String(sc[sc.length-1].n);if(c)close(Number(c));}   // the last SIDE column when nothing is focused (never a bottom pane)
 // the palette's Move this session to a new column: the focused column's active tab (the one DOM read kept, for this)
 window.__rompSplitChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to move.');return moveTab(id,'new');};
 window.__rompSplitDownChat=function(sid){var id=typeof sid==='string'&&sid?sid:activeIn(focused());if(!id)return notify('No session is open in this column to split.');return moveTab(id,'down');};   // the vertical split: the focused column's active tab to a new bottom pane
@@ -60110,7 +60111,7 @@ function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,l
 function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on','refused');ghost.textContent='';return;}
 var r=ghostRect(z.parentElement.getBoundingClientRect(),row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
-ghost.textContent=refused?'Four columns at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
+ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
 function cue(z,on){if(z.classList.contains('col-drop-edge'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
@@ -60154,7 +60155,7 @@ m.sids.forEach(function(sid){if(typeof sid!=='string'||!sid)return;var o=ownerOf
 // A column a peer dashboard's write dropped while this page was busy was DEFERRED (reconcile below), not closed under the
 // create; it closes now against a fresh read of the store, and only if the store still lacks it (the peer may have listed
 // it again meanwhile, or the page claimed a created session for it). A signal from a column nobody deferred changes nothing
-if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source));if(!deferred[bc])return;delete deferred[bc];var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}});
+if(m.romp==='colBusy'&&m.busy===false){var bc=Number(colOf(e.source)),e2=entry(bc),marks=[bc];if(e2&&e2.place==='below')marks.push(e2.parent);var hit=false;marks.forEach(function(mk){if(deferred[mk]){delete deferred[mk];hit=true;}});if(!hit)return;var r=read();if(!r.migrated&&!mobile())reconcile(r.cols);}});   // a bottom pane's idle clears its OWN and its PARENT's deferral (a parent deferred because its nested pane was busy)
 // THE STORE, read: the v2 object, or a v1 array of numbers migrated once (each number to the session its blob names;
 // a number with no session is dropped). Sanitised on the way in: integer numbers from 2, each once; string ids, each
 // in one entry; no empty entry; at most MAX-1 entries.
@@ -60162,7 +60163,7 @@ function read(){var raw=null;try{raw=JSON.parse(localStorage.getItem(CK)||'null'
 var out=[],seen={},migrated=false;
 function add(n,ids,place,parent,ratio){n=Number(n);if(!(n>=2&&n<100&&n===Math.floor(n))||out.length>=MAX-1)return;for(var i=0;i<out.length;i++){if(out[i].n===n)return;}
 var keep=[];(ids||[]).forEach(function(id){if(typeof id==='string'&&id&&!seen[id]){seen[id]=true;keep.push(id);}});if(!keep.length)return;
-var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>=0.15&&r<=0.85)?r:0.5;}out.push(e);}
+var e={n:n,ids:keep};if(place==='below'){var p=Number(parent),r=Number(ratio);e.place='below';e.parent=(p===1||(p>=2&&p<100&&p===Math.floor(p)))?p:1;e.ratio=(r>=0.05&&r<=0.95)?r:0.5;}out.push(e);}
 if(Array.isArray(raw)){migrated=true;raw.forEach(function(n){var st=null;try{st=JSON.parse(localStorage.getItem(BK+Number(n))||'null');}catch(e){}add(n,[st&&typeof st.activeId==='string'?st.activeId:'']);});}
 else if(raw&&typeof raw==='object'&&raw.v===2&&Array.isArray(raw.cols))raw.cols.forEach(function(c){if(c&&typeof c==='object')add(c.n,Array.isArray(c.ids)?c.ids:[],c.place,c.parent,c.ratio);});
 // a bottom pane whose parent is not a real top-level column, or a SECOND bottom pane on one parent, degrades to a side
@@ -60179,7 +60180,7 @@ return {cols:out,migrated:migrated};}
 // (frameOfCol resolves it; close dispatches it to closeBelow) and re-inserted with its placement.
 function reconcile(next){var kept=[];
 cols.slice().forEach(function(c,i){if(next.some(function(d){return d.n===c.n;})){delete deferred[c.n];return;}
-if(busy(frameOfCol(c.n))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});
+var kb=belowOf(c.n);if(busy(frameOfCol(c.n))||(kb&&busy(frameOfCol(kb.n)))){deferred[c.n]=true;kept.push([i,c]);}else close(c.n,true);});   // defer a busy column OR a column whose nested bottom pane is busy (else close(keep) tears the busy kid down, its queued text with it)
 cols=next.map(function(c){var o={n:c.n,ids:c.ids.slice()};if(c.place==='below'){o.place='below';o.parent=c.parent;o.ratio=c.ratio;}return o;});
 kept.forEach(function(k){var e=k[1],o={n:e.n,ids:e.ids.slice()};if(e.place==='below'){o.place='below';o.parent=e.parent;o.ratio=e.ratio;}cols.splice(Math.min(k[0],cols.length),0,o);});   // the busy column or bottom pane, where it was, with its placement
 cols.filter(function(c){return !isBelow(c);}).forEach(function(c){if(!document.getElementById(frameId(c.n)))make(c.n,seedFor(c),null);});   // columns first, then their bottom panes (a bottom pane nests into a parent that must already be up)
