@@ -22,6 +22,8 @@ import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, installPrLinkOpener } from "./pr-links";
 import { listenForFrames } from "./frame-listener";
 import { openGear } from "./gear-host";
+import { openContextMenu, openConfirmBox } from "./ctx-menu";
+import { openTopTitles, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -431,6 +433,13 @@ function hostLoadStrip(): HTMLElement {
 // on the same events, and nothing until the observer has spoken.
 let paneVisible: boolean | null = null;   // the observer's last word; null until it speaks (the gate reads null as on screen; nothing is published for it)
 let paneDirty = false;
+let renameHold = false;    // an in-place rename is open on a row: render() waits (renameDirty remembers a push that arrived meanwhile); declared
+let renameDirty = false;   //  beside the paint gate's state, inside the slice outline-visibility.test.ts lifts, so that harness needs no stub
+let focusedHead: HTMLElement | null = null;  // the session head holding keyboard focus, the node itself: render() rebuilds the list on every push, and
+//                                              only the rebuild that removes THIS node while it holds the focus puts the focus on the same session's new
+//                                              head (round three: a restore keyed on the sid alone fired on every push once a head had been focused, and
+//                                              pulled the window's focus out of the chat composer into the pane)
+let rebuilding = false;    // render() is replacing the list: the focusout its removals fire (Chromium) is the rebuild's, not the user's focus leaving
 function watchPaneVisibility(list: HTMLElement): void {
   if (typeof IntersectionObserver === "undefined") return;   // no observer → the tab's visibility alone gates
   new IntersectionObserver((entries) => {
@@ -458,7 +467,12 @@ function render() {
   // shows the list at once rather than the pane loader fading out over an empty pane (an empty list IS the
   // loader-up state; one hidden render buys an instant reveal).
   if (paintHeld(document.hidden, paneVisible, list.childElementCount > 0)) { paneDirty = true; return; }
+  if (renameHold) { renameDirty = true; return; }   // a name is being edited in place: the push waits for Enter or Escape (the strip freezes the same way)
+  const held = focusedHead;                                                                 // read before the rebuild: the one event that moves the focus
+  const heldActive = !!held && held.isConnected && held.contains(document.activeElement);   //  back is this render removing the head that holds it
+  rebuilding = true;
   list.replaceChildren();
+  rebuilding = false;
   // BEFORE the first payload: leave the list EMPTY so the page's romp loader (_pane_spin over #fleet-list)
   // stays up — no child means it never hides — instead of flashing a false "no work" message (the user
   // 2026-06-29). A WS drop / kernel restart re-shows that same loader (romp:wsdown), so a restart shows the
@@ -624,6 +638,7 @@ function render() {
       }
       head.title = s.provisional ? "Open this session: its transcript has not been loaded since the restart, so its goals are read from the store and their jumps wait for the tab" : "Open this session";
       head.dataset.act = "open"; head.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
+      head.tabIndex = 0; head.setAttribute("role", "button");   // focusable: Enter opens, the menu key or Shift+F10 opens the row's menu (2026-09-16)
       sec.appendChild(head);
 
       const treeBox = el("div", "ledger-tree");
@@ -645,6 +660,7 @@ function render() {
       const nm = el("span", "fl-name"); nm.textContent = p.name; if (p.color?.bg) nm.style.color = p.color.bg;
       head.appendChild(nm);
       head.title = "Open this session"; head.dataset.act = "open"; head.dataset.sid = p.sid;
+      head.tabIndex = 0; head.setAttribute("role", "button");   // the same reach as a session with a tree
       sec.appendChild(head);
       const treeBox = el("div", "ledger-tree"); treeBox.appendChild(makeProvRow(p, false)); sec.appendChild(treeBox);
       list.appendChild(sec);
@@ -684,6 +700,15 @@ function render() {
     emptyShown = true;
   } else {
     emptyShown = false;
+  }
+  // this rebuild removed the head that held the focus: the same session's new head takes it back, so a row reached by keyboard
+  // (and the row the menu returns focus to) is not lost to the next push (round two, low a). Bounded to that event and to a pane
+  // whose document has the focus: a head focused earlier and left for a goal row or the chat composer is never refocused by a
+  // push (round three, high: each push pulled the focus into the pane and the composer lost the rest of the sentence)
+  if (held && !held.isConnected) {
+    const next = heldActive && document.hasFocus() && held.dataset.sid ? headOf(held.dataset.sid) : null;
+    focusedHead = next;
+    next?.focus({ preventScroll: true });
   }
 }
 
@@ -816,6 +841,120 @@ applyTheme(document, loadSettings());   // the persisted theme applies at boot (
 // which onExternalSettingsChange below already handles in the browser too)
 installSettingsSync();
 onExternalSettingsChange((s) => { applyTheme(document, s); render(); });
+
+// THE ROW'S MENU (the user 2026-09-16, who wanted to right-click a session's name here to rename or delete it):
+// a right-click on a session's head, or the ContextMenu key or Shift+F10 on the focused head, opens Rename and Delete
+// through the shared builder (ctx-menu.ts: the chat's menu dress through the theme tokens, dismissal, keyboard reach).
+// Both verbs take the tab strip's own roads, never a second one: Rename edits the name in place (the strip's
+// startTabRename shape: Enter commits, Escape cancels, a blur commits) and posts renameSession, nothing renamed locally
+// ahead of the kernel, whose push brings the new name to every surface; Delete is the strip's close button: the End
+// confirm (its title, the open goals named in the detail, its buttons) and then endSession and closeTab in its order.
+// The row leaves on the kernel's push (the kill is the event), never locally ahead of it. plans/sessions-pane-session-menu.md.
+function sessionRow(sid: string): FleetSession | undefined { return sessions.find((s) => s.sid === sid); }
+// the row's head as it stands NOW: render() rebuilds the list on every push (every half second to three seconds), so a node
+// captured when the menu opened may be detached by the time an item is picked; every pick resolves by sid (the strip's own
+// rule for its menu: the id only, never the node under the cursor)
+function headOf(sid: string): HTMLElement | null {
+  return document.querySelector('#fleet-list .fl-head[data-sid="' + CSS.escape(sid) + '"]') as HTMLElement | null;
+}
+function displayName(sid: string): string {
+  return sessionRow(sid)?.name || (headOf(sid)?.querySelector(".fl-name") as HTMLElement | null)?.textContent || "";
+}
+
+function showSessionMenu(x: number, y: number, sid: string, viaKeyboard: boolean): void {
+  if (!sid) return;
+  openContextMenu(x, y, [
+    { label: "Rename", sub: RENAME_SUBLINE, pick: () => startRowRename(sid) },
+    { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid) },
+  ], { className: "fl-sess-menu", viaKeyboard, onClose: () => { const h = headOf(sid); if (h) h.focus({ preventScroll: true }); } });   // focus returns to the row
+}
+
+function startRowRename(sid: string): void {
+  const head = headOf(sid);                                     // resolved now: a push since the menu opened rebuilt the row
+  const nm = head?.querySelector(".fl-name") as HTMLElement | null;
+  if (!head || !nm || renameHold) return;                       // the row is gone (the session ended): nothing to edit, nothing held
+  const row: HTMLElement = head;
+  const full = displayName(sid);
+  const p = hostPrefix(full, sid);                              // a federated row shows "host:name": the host is this viewer's metadata and the far kernel
+  const base = p ? p.rest : full;                               //  knows the bare name, so the name alone is edited and posted (the strip's rule)
+  const input = document.createElement("input");
+  input.className = "fl-rename";
+  input.value = base;
+  input.spellcheck = false;
+  input.size = Math.max(base.length, 4);
+  const fixed = p ? document.createElement("span") : null;      // the host stays put beside the input, rendered as the row renders it and not editable
+  if (fixed) { fixed.className = "host-prefix"; fixed.textContent = p!.host; }   //  (the strip's shape; round three, low)
+  let settled = false;
+  const finish = (commit: boolean) => {
+    if (settled) return;
+    settled = true;
+    const v = input.value.trim();
+    const hadFocus = document.activeElement === input;          // Enter or Escape: the row takes the focus back; a blur has already moved it elsewhere
+    if (input.isConnected) input.replaceWith(nm);
+    fixed?.remove();
+    if (hadFocus && row.isConnected) row.focus({ preventScroll: true });
+    renameHold = false;
+    if (renameDirty) { renameDirty = false; render(); }
+    if (commit && v && v !== base) vscodeApi?.postMessage({ type: "renameSession", id: sid, name: v });   // the strip's message; the kernel's push renames the row
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();   // the list's keys (Enter opens, the menu key) are not the input's
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  for (const ev of ["click", "mousedown", "dblclick", "contextmenu"]) input.addEventListener(ev, (e) => e.stopPropagation());   // never the head's open
+  nm.replaceWith(input);
+  if (fixed) input.before(fixed);
+  if (!input.isConnected) return;                               // never hold render() for an input that is not in the document
+  renameHold = true;
+  input.focus();
+  input.select();
+}
+
+function confirmEndSession(sid: string): void {
+  const name = displayName(sid);
+  const titles = openTopTitles((sessionRow(sid)?.ledger?.tree || []) as any);   // the live ledger at click time, as the strip reads it
+  openConfirmBox("End \u201c" + name + "\u201d?",
+    endConfirmDetail(titles, END_SESSION_STANDING),
+    [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+    (v) => {
+      if (v !== "end") return;   // Cancel, Escape, the backdrop: nothing
+      vscodeApi?.postMessage({ type: "endSession", id: sid });   // the strip's two messages, in its order
+      vscodeApi?.postMessage({ type: "closeTab", id: sid });
+    });
+}
+
+(() => {
+  const list = document.getElementById("fleet-list");
+  if (!list) return;
+  list.addEventListener("contextmenu", (e) => {
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    if (!head || !head.dataset.sid) return;   // the goal rows below keep their own clicks; a right-click there does nothing new
+    e.preventDefault(); e.stopPropagation();
+    showSessionMenu(e.clientX, e.clientY, head.dataset.sid, false);
+  });
+  document.addEventListener("focusin", (e) => {   // which session head has the focus, for the restore after a rebuild
+    focusedHead = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+  });
+  list.addEventListener("focusout", (e) => {      // the focus left the list (a goal row, another frame, the menu): no head holds it. A head the rebuild
+    if (rebuilding) return;                        //  removes fires this too (Chromium), and that one is the rebuild's to settle
+    const to = e.relatedTarget as Node | null;
+    if (!to || !list.contains(to)) focusedHead = null;
+  });
+  list.addEventListener("keydown", (e) => {
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    if (!head || !head.dataset.sid || e.target !== head) return;
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      const r = head.getBoundingClientRect();
+      showSessionMenu(r.left + 12, r.bottom, head.dataset.sid, true);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openSession(head.dataset.sid);
+    }
+  });
+})();
 
 // Fleet-list clicks are DELEGATED to the stable #fleet-list (installed once). render() does
 // `#fleet-list`.replaceChildren() on every feed push, so a handler hung on a rebuilt row/header/caret is
