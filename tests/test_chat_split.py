@@ -282,12 +282,13 @@ class SplitSourcePins(unittest.TestCase):
         for needle in ["function movable(f,sid){", "function busy(f){", "function loaded(f){",
                        "var why=refusal(src,sid);if(why==='locked')return notify(LOCKED);if(why||!movable(src,sid))return notify('Only an open session can be moved between columns.');",
                        "var BUSY='A session is still being created in this column.';",
-                       "var se2=entry(from);if(se2&&se2.ids.length===1&&busy(src))return notify(BUSY);",
+                       "var se2=entry(from);if(se2&&se2.ids.length===1&&closeBusy(from,src))return notify(BUSY);",
+                       "function closeBusy(n,f){var kb=belowOf(n);return busy(f)||!!(kb&&busy(frameOfCol(kb.n)));}",
                        "if(!keep&&busy(f)){notify(BUSY);return;}"]:
             self.assertIn(needle, split, needle)
         mt = split[split.index("function moveTab(sid,to,dt){"):split.index("function close(n,keep){")]
         self.assertLess(mt.index("var why=refusal(src,sid);"), mt.index("if(to==='new'){"), "refused before anything is taken or grown (the reason read first, T395)")
-        self.assertLess(mt.index("busy(src)"), mt.index("var st=take(src,sid)"), "refused before the hand-off")
+        self.assertLess(mt.index("closeBusy(from,src)"), mt.index("var st=take(src,sid)"), "the busy/kid-busy pre-check refused before the hand-off")
         # a peer's write that drops a busy column is deferred, not closed under the create (its queued text died with the
         # document): the entry stays where it was, the number waits, and the page's idle signal closes it against a fresh read
         for needle in ["var deferred={};",
@@ -344,7 +345,7 @@ class SplitSourcePins(unittest.TestCase):
         self.assertIn(",fromBelow=isBelow(entry(from));", split)
         self.assertIn("if(!belowOf(c.n)&&!fromBelow&&!(c.n===from&&colSize(from)===1)){var bz=zone", split)
         self.assertIn("if(pc===from&&colSize(pc)===1)return notify('This session is already alone in its column.');", split)
-        self.assertIn("if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&busy(src))return notify(BUSY);}", split)
+        self.assertIn("if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&closeBusy(from,src))return notify(BUSY);}", split)
         self.assertIn("cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});", split)
         self.assertIn("window.__rompSplitDownChat=function(sid){", split)
         # makeBelow nests without reparenting the top iframe (it flexes in place), adds a .gh.gh-chat gutter and a .chat-sub
@@ -1357,6 +1358,20 @@ BYID['f-chat']._tabs = [{}];   // col 1 holds one session
 CALLS.notify = [];
 var firstRet = window.__rompMoveTab(WEB, 'down');   // WEB is in the first column; entry(1) is null so only colSize guards it
 out.firstLone = { ret: !!firstRet, notify: CALLS.notify.slice(), stored: cols() };
+// O) a lone source whose BOTTOM PANE (kid) is busy must not let its last member leave: close() would refuse on its kid
+//    gate and strand the column open and EMPTY (ids:[]). The pre-check now reads the kid frame too (closeBusy), on BOTH
+//    roads: the cross-column split-down and the sideways move.
+var kbStore = { v: 2, cols: [{ n: 2, ids: [API] }, { n: 3, ids: [TESTS], place: 'below', parent: 2, ratio: 0.5 }] };
+boot({ 'romp-chat-cols': JSON.stringify(kbStore) }, false); rects();
+BUSY['f-chat-3'] = true; CALLS.notify = [];   // the KID (bottom pane) is busy; the top (API) is lone and not busy
+var kdRet = window.__rompMoveTab(API, 'down', 1);   // split-down of the lone top into col 1 would empty col 2's top; close(2) hits the kid gate
+out.kidBusyDown = { ret: !!kdRet, notify: CALLS.notify.slice(), stored: cols(), ids: ids() };
+BUSY['f-chat-3'] = false;
+boot({ 'romp-chat-cols': JSON.stringify(kbStore) }, false); rects();
+BUSY['f-chat-3'] = true; CALLS.notify = [];
+var ksRet = window.__rompMoveTab(API, 1);   // sideways move of the lone top to col 1 would empty col 2's top; close(2) hits the kid gate
+out.kidBusySideways = { ret: !!ksRet, notify: CALLS.notify.slice(), stored: cols(), ids: ids() };
+BUSY['f-chat-3'] = false;
 console.log(JSON.stringify(out));
 """
 
@@ -1547,6 +1562,24 @@ class DragZonesExecute(unittest.TestCase):
         o = self.out["firstLone"]
         self.assertEqual(o["notify"], [["warn", "This session is already alone in its column."]], "colSize(1) sees one tab: refused")
         self.assertIsNone(o["stored"], "nothing split: the store is untouched: %r" % o)
+
+    def test_a_lone_source_whose_bottom_pane_is_busy_refuses_a_split_down_and_leaves_no_empty_column(self):
+        # a lone top whose KID (bottom pane) is busy: the split-down pre-check reads the kid frame (closeBusy), so it
+        # refuses up front. Before the fix, busy(src) alone passed, the session left, and close(2) refused on the kid
+        # gate, stranding col 2 open and EMPTY (ids:[]).
+        o = self.out["kidBusyDown"]
+        self.assertEqual(o["notify"], [["warn", "A session is still being created in this column."]], "the kid-busy pre-check refuses")
+        self.assertEqual(o["stored"], {"v": 2, "cols": [{"n": 2, "ids": [API]}, {"n": 3, "ids": [TESTS], "place": "below", "parent": 2, "ratio": 0.5}]},
+                         "col 2's top keeps its session; nothing emptied to ids:[]: %r" % o)
+        self.assertEqual(o["ids"], ["f-chat", "f-chat-2", "f-chat-3"], "no new bottom pane opened")
+
+    def test_a_lone_source_whose_bottom_pane_is_busy_refuses_a_sideways_move_and_leaves_no_empty_column(self):
+        # the same, on the pre-existing sideways-move road: closeBusy reads the kid frame too.
+        o = self.out["kidBusySideways"]
+        self.assertEqual(o["notify"], [["warn", "A session is still being created in this column."]], "the kid-busy pre-check refuses")
+        self.assertEqual(o["stored"], {"v": 2, "cols": [{"n": 2, "ids": [API]}, {"n": 3, "ids": [TESTS], "place": "below", "parent": 2, "ratio": 0.5}]},
+                         "col 2's top keeps its session; nothing emptied to ids:[]: %r" % o)
+        self.assertEqual(o["ids"], ["f-chat", "f-chat-2", "f-chat-3"], "the move refused, col 2 intact")
 
 
 if __name__ == "__main__":
