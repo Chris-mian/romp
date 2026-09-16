@@ -82,7 +82,9 @@ def _strip(tree):
 
 class Harness(unittest.TestCase):
     def setUp(self):
-        self.td = Path(tempfile.mkdtemp())
+        self.td = Path(tempfile.mkdtemp()).resolve()   # the parse is handed the REAL path: the reader's record-cache key must match the
+        #                                                 assembly cache's realpath key (a symlinked temp root on macOS kept them apart: the
+        #                                                 converge pass saw noEntry for every leaf, 2026-09-16)
         self.ck = self.td / "checkpoints"
         em.set_checkpoint_dir(lambda: self.ck)
         self.states, self.sent = None, []                       # what parse() hands the parser until write() sets them

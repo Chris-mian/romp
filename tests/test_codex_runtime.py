@@ -1,4 +1,5 @@
 """The managed runtime is independent of PATH and the SDK's older dependency."""
+import contextlib
 import json
 import os
 import subprocess
@@ -27,6 +28,15 @@ def package(target, version=None):
     return root / 'bin/codex'
 
 
+@contextlib.contextmanager
+def _state_dir(prefix=''):
+    """A temp state directory handed to the product as its REAL path: install_runtime and _codex_config resolve the paths they
+    are given (Path.resolve), and a test that compares against the unresolved mint fails wherever the temp root is reached
+    through a symlink (macOS: /var/folders resolves under /private/var; 2026-09-16)."""
+    with tempfile.TemporaryDirectory(prefix=prefix) as d:
+        yield os.path.realpath(d)
+
+
 class ManagedRuntime(unittest.TestCase):
     def test_all_supported_platforms_have_pinned_official_wheels(self):
         for system, machine in [('Linux', 'x86_64'), ('Linux', 'aarch64'),
@@ -39,12 +49,12 @@ class ManagedRuntime(unittest.TestCase):
             rt.wheel_url('Linux', 'riscv64')
 
     def test_missing_runtime_fails_with_setup_hint(self):
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             with self.assertRaisesRegex(RuntimeError, 'romp-codex-setup'):
                 rt.runtime_path(state)
 
     def test_incomplete_or_wrong_version_is_not_usable(self):
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             target = Path(state) / 'codex-runtime' / rt.VERSION
             exe = package(target, '0.144.4')
             with self.assertRaisesRegex(RuntimeError, 'romp-codex-setup'):
@@ -56,7 +66,7 @@ class ManagedRuntime(unittest.TestCase):
                 rt.runtime_path(state)
 
     def test_install_stages_verified_wheel_and_is_idempotent(self):
-        with tempfile.TemporaryDirectory(prefix='romp runtime ') as state:
+        with _state_dir(prefix='romp runtime ') as state:
             def run(args, **kwargs):
                 if '--target' in args:
                     target = Path(args[args.index('--target') + 1])
@@ -76,7 +86,7 @@ class ManagedRuntime(unittest.TestCase):
                 self.assertEqual(install.call_count, calls)
 
     def test_failed_install_never_publishes_partial_runtime(self):
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             old = package(Path(state) / 'codex-runtime/0.144.4', '0.144.4')
             with mock.patch.object(rt.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'pip')):
                 with self.assertRaises(subprocess.CalledProcessError):
@@ -86,7 +96,7 @@ class ManagedRuntime(unittest.TestCase):
 
     def test_setup_repairs_an_incomplete_existing_target(self):
         for kind in ('file', 'directory'):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as state:
+            with self.subTest(kind=kind), _state_dir() as state:
                 target = Path(state) / 'codex-runtime' / rt.VERSION
                 target.parent.mkdir(parents=True)
                 if kind == 'file':
@@ -101,7 +111,7 @@ class ManagedRuntime(unittest.TestCase):
                     self.assertEqual(rt.install_runtime(state), rt.runtime_path(state))
 
     def test_wrong_executable_version_is_not_published(self):
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             def run(args, **kwargs):
                 if '--target' in args:
                     package(Path(args[args.index('--target') + 1]))
@@ -115,7 +125,7 @@ class ManagedRuntime(unittest.TestCase):
 class BackendRuntimeSelection(unittest.TestCase):
     def test_managed_executable_and_helpers_win_over_path(self):
         cb = load_source('runtime_selection_backend', str(HERE / 'kernel/codex_backend.py'))
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             exe = package(Path(state) / 'codex-runtime' / rt.VERSION)
             with mock.patch.dict('os.environ', {'PATH': '/TESTBIN'}):
                 config = cb._codex_config(lambda **kwargs: kwargs, None, state)
@@ -132,7 +142,7 @@ class BackendRuntimeSelection(unittest.TestCase):
 
     def test_missing_runtime_does_not_fall_back_to_sdk_or_path(self):
         cb = load_source('runtime_missing_backend', str(HERE / 'kernel/codex_backend.py'))
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             config = mock.Mock()
             with self.assertRaisesRegex(RuntimeError, 'romp-codex-setup'):
                 cb._codex_config(config, None, state)
@@ -140,7 +150,7 @@ class BackendRuntimeSelection(unittest.TestCase):
 
     def test_explicit_packaged_runtime_keeps_its_matching_helpers(self):
         cb = load_source('runtime_override_backend', str(HERE / 'kernel/codex_backend.py'))
-        with tempfile.TemporaryDirectory() as state:
+        with _state_dir() as state:
             exe = package(Path(state) / 'custom')
             config = cb._codex_config(lambda **kwargs: kwargs, str(exe))
             self.assertEqual(config['codex_bin'], str(exe))
@@ -148,7 +158,7 @@ class BackendRuntimeSelection(unittest.TestCase):
 
     def test_bare_executable_does_not_grant_reads_to_its_parent(self):
         cb = load_source('runtime_bare_backend', str(HERE / 'kernel/codex_backend.py'))
-        with tempfile.TemporaryDirectory(prefix='romp runtime ') as state:
+        with _state_dir(prefix='romp runtime ') as state:
             exe = Path(state) / 'codex'
             exe.touch()
             (Path(state) / 'private.json').write_text('synthetic private fixture')
