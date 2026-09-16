@@ -971,8 +971,9 @@ class ConfigFile(unittest.TestCase):
         with open(os.path.join(wt, ".git")) as f:
             gd = f.readline().strip()[len("gitdir:"):].strip()
         self.assertTrue(os.path.isabs(gd), "git writes the pointer absolute")
-        with open(os.path.join(wt, ".git"), "w") as f:
-            f.write("gitdir: %s\n" % os.path.relpath(gd, wt))
+        wt = os.path.realpath(wt)                      # git resolves the worktree before it walks a relative pointer, so the
+        with open(os.path.join(wt, ".git"), "w") as f:   #  pointer is built against the same path (a symlinked temp root on macOS
+            f.write("gitdir: %s\n" % os.path.relpath(gd, wt))   #  walked one level too far otherwise, 2026-09-16)
         real = km._git_out
         reads = []
 
