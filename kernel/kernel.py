@@ -60563,6 +60563,7 @@ function movable(f,sid){try{var m=f&&f.contentWindow&&f.contentWindow.__rompMova
 // the page's REASON behind movable (T395 round one): 'locked' means the tab lock, and the toast names the padlock; '' is movable
 function refusal(f,sid){try{var w=f&&f.contentWindow&&f.contentWindow.__rompMoveRefusal;return typeof w==='function'?String(w(sid)||''):'';}catch(e){return '';}}
 function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;return typeof b==='function'&&!!b();}catch(e){return false;}}
+function closeBusy(n,f){var kb=belowOf(n);return busy(f)||!!(kb&&busy(frameOfCol(kb.n)));}   // close(n) refuses on its OWN frame's busy OR its bottom pane's (kid) busy; a lone source's last member must not leave over EITHER, else close() strands the column open and empty (ids:[])
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
 var LOCKED='The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session.';
@@ -60638,7 +60639,7 @@ if(to==='down'){var pc=(typeof dt==='number'&&(dt===1||(entry(dt)&&!isBelow(entr
 if(isBelow(entry(from)))return notify('A split pane cannot split again.');   // the tab already sits in a bottom pane: at most two rows deep
 if(belowOf(pc))return notify('This column is already split top and bottom.');
 if(pc===from&&colSize(pc)===1)return notify('This session is already alone in its column.');   // splitting your OWN lone column has nothing to split off; colSize covers the first column (entry(1) is null) by its page's tabs
-if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&busy(src))return notify(BUSY);}   // a cross-column split-down that empties a lone BUSY source refuses here (else close() below refuses on its busy gate and leaves an open EMPTY column), parity with the sideways move
+if(pc!==from){var sfe=entry(from);if(sfe&&sfe.ids.length===1&&closeBusy(from,src))return notify(BUSY);}   // a cross-column split-down that empties a lone source refuses here when the source OR its bottom pane is busy (else close() below refuses on its own-frame or KID busy gate and leaves an open EMPTY column), parity with the sideways move
 if(!canSplit())return refusePane();
 var stD=take(src,sid),nD=nextNumber(),emptiedD=unlist(sid);cols.push({n:nD,ids:[sid],place:'below',parent:pc,ratio:0.5});save();
 var bf=make(nD,sid,stD);if(emptiedD&&emptiedD!==pc)close(emptiedD);   // the SOURCE side column emptied by a cross-column split-down closes (never the target)
@@ -60646,7 +60647,7 @@ try{bf&&bf.contentWindow.focus();}catch(e){}return bf;}
 var tn=Number(to);if(tn!==1&&!entry(tn))return null;
 var tf=frameOfCol(tn);if(!tf)return null;
 if(tn===from)return tf;   // already there: nothing moves
-var se2=entry(from);if(se2&&se2.ids.length===1&&busy(src))return notify(BUSY);   // its last listed member leaving would close it over a create in flight
+var se2=entry(from);if(se2&&se2.ids.length===1&&closeBusy(from,src))return notify(BUSY);   // its last listed member leaving would close it over a create in flight, in the column OR its bottom pane (kid)
 var st=take(src,sid),emptied=unlist(sid);if(tn!==1)entry(tn).ids.push(sid);save();
 adopt(tf,sid,st);try{tf.contentWindow.postMessage({type:'focus',id:sid},'*');}catch(e){}   // a plain focus: the target is the owner now, so its own gate takes it
 if(emptied)close(emptied);   // the origin's last member left: it closes (the ring lands on the target below, not on the origin's neighbour)

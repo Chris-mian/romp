@@ -197,9 +197,15 @@ try {
   await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
   await page.waitForFunction((b) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + b + '"]'); return !!(t && t.draggable); }, cfg.bot, { timeout: 40000 });
   out.pane = await page.evaluate(() => { const p = document.getElementById("chat-pane"); const r = p.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; });
-  // A REAL pointer drag of the bottom session's tab past the threshold: the page's dragstart mounts the shell's zones
-  const t = await rectIn("f-chat", '#tabs .tab[data-id="' + cfg.bot + '"]');
-  if (!t) throw new Error("no tab for the bottom session");
+  // A REAL pointer drag of the bottom session's tab past the threshold: the page's dragstart mounts the shell's zones.
+  // Wait for the seeded tab to render AND lay out (a slow runner paints the strip late, so a one-shot boundingBox can be
+  // null) with a bounded, event-based locator wait, never a fixed sleep, before measuring it.
+  const botSel = '#tabs .tab[data-id="' + cfg.bot + '"]';
+  const botFr = await frameOf("f-chat");
+  if (!botFr) throw new Error("no drag start: f-chat's content frame was missing");
+  let t = null;
+  try { const loc = botFr.locator(botSel).first(); await loc.waitFor({ state: "visible", timeout: 40000 }); const b = await loc.boundingBox(); if (b) t = { x: b.x + b.width / 2, y: b.y + b.height / 2 }; } catch (e) {}
+  if (!t) throw new Error("no drag start: the bottom session's tab (data-id " + cfg.bot + ") never rendered as a visible box in f-chat's strip within 40s");
   await page.mouse.move(t.x, t.y); await page.mouse.down(); await page.mouse.move(t.x + 24, t.y + 6, { steps: 4 });
   await page.waitForFunction(() => !!document.querySelector("#chat-pane > .col-drop.col-drop-bottom"), null, { timeout: 20000 });
   const bz = await page.evaluate(() => { const z = document.querySelector("#chat-pane > .col-drop.col-drop-bottom"); const r = z.getBoundingClientRect(); const p = z.parentElement.getBoundingClientRect(); return { col: z.getAttribute("data-col"), top: Math.round(r.top), height: Math.round(r.height), x: r.left + r.width / 2, y: r.top + r.height / 2, paneTop: Math.round(p.top), paneHeight: Math.round(p.height) }; });
