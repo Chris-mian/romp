@@ -93,8 +93,8 @@ function lift(): (hooks: Hooks) => Api {
     let vanishedId = null, vanishedWhy = null;   // the unfocused pane's memory of what vanished and why (T357)
     let collapsedTabIds = new Set(), draggedGroup = null, provisionalId = null, provisionalTags = [];
     // stripGroupRows mirrors the default. Its break site is never reached here: FakeEl has no childElementCount,
-    // so the gate's last operand is undefined whatever the setting, hence no makeRowBreak stub. Give FakeEl a
-    // childElementCount and this prelude needs one.
+    // so the gate's childElementCount operand is undefined whatever the setting (and the packed bit after it is
+    // never read), hence no makeRowBreak stub. Give FakeEl a childElementCount and this prelude needs one.
     let settings = { tabCtx: "over50", stripGroupRows: true, theme: "classic", colormap: "aurora", tabWidgets: { on: {}, order: [], opts: {} } };
     const H = HOOKS;
     // the tab-title widgets (T379): a faithful stand-in for the registry's composition over the real tab-state rules, so the
