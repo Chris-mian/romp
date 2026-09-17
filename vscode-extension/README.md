@@ -12,6 +12,12 @@ session advances. A browser tab and this extension share one kernel and render
 the same UI — the pane sources live in `../ui/webview/` and are bundled here by
 `esbuild.js`.
 
+The extension requests keyed feed and timeline updates (`delta=1`) and reconstructs
+complete frames before handing them to a panel or the passive status bar. Each
+socket owns its revision state; reconnecting starts fresh, and a missing or invalid
+base requests the affected full slot with `needSlot`. This keeps unchanged cards
+off the wire while preserving the complete-frame interface used by the views.
+
 ## How it works
 
 - The **kernel** parses each session's transcript into an event tree

@@ -56441,6 +56441,7 @@ function deliver(m){if(window.__rompFed){window.__rompFed.inbound("",m);}else{wi
 // lane and id). LAST holds, per slot, the revision, the last
 // full message handed to the bundle, and per-collection maps {order:[keys], items:{key:value}}. A delta
 // builds a NEW message object (the bundle may still hold the previous one) reusing every unchanged part.
+// BEGIN VIEW DELTA DECODER: tests/extension_delta_fixture.py pins the rendered source for the extension (2026-09-16).
 var DELTA_KINDS={bars:{turns:"dictlist:id",judging:"dictlist:k",messages:"byid"},feed:{asks:"byid:itemId"}};var LAST={};var SEP="\u001f";
 // KEYS ARE DERIVED HERE (T278c), not carried: the same rules as the kernel's _delta_split, item for item — a dictlist item is keyed
 // lane + SEP + its id field, a byid item by its id field, an item without one (or a duplicate) takes the positional "#n", and an
@@ -56478,6 +56479,7 @@ if(c.order){order=c.order.slice();}else{order=order.filter(function(kk){return i
 var touched=kind.indexOf("dictlist:")===0?touchedLanes(c,map.order,order):null;
 last.maps[name]={order:order,items:items};m[name]=assemble(kind,last.maps[name],last.msg[name],touched);}
 last.rev=d.rev;last.msg=m;return m;}
+// END VIEW DELTA DECODER
 window.__rompLocalSend=send;window.__rompApp=APP;
 window.__rompDiag=function(what,data){try{send({type:"clientDiag",surface:"reload-core",what:what,data:data});}catch(e){}};   // the reload core's breadcrumb door: this pane's socket, the serving kernel (the core itself names no send route)   // federation.ts (the multi-kernel manager) routes local sends + knows the app through these
 var SK="romp-vscode-state-%s"+(COL?":"+COL:"");   // persist webview state to localStorage so UI prefs survive a refresh — per chat column (split screen 2026-09-08)

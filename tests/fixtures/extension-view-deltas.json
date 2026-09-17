@@ -1,0 +1,1106 @@
+{
+  "kinds": {
+    "bars": {
+      "turns": "dictlist:id",
+      "judging": "dictlist:k",
+      "messages": "byid"
+    },
+    "feed": {
+      "asks": "byid:itemId"
+    }
+  },
+  "decoder": "var DELTA_KINDS={bars:{turns:\"dictlist:id\",judging:\"dictlist:k\",messages:\"byid\"},feed:{asks:\"byid:itemId\"}};var LAST={};var SEP=\"\u001f\";\n// KEYS ARE DERIVED HERE (T278c), not carried: the same rules as the kernel's _delta_split, item for item \u2014 a dictlist item is keyed\n// lane + SEP + its id field, a byid item by its id field, an item without one (or a duplicate) takes the positional \"#n\", and an\n// empty or non-list lane is one entry under its bare prefix. Every keyed field is a string on the wire, so String(v) spells it as\n// Python did. The old bykeys judging composite spelled floats and needed a carried key list; judging now keys by a kernel-minted k.\nfunction keyOf(kind,it,pre){if(!it||typeof it!==\"object\")return null;var f=kind===\"byid\"?\"id\":kind.slice(kind.indexOf(\":\")+1);var v=it[f];return(v===null||v===undefined||v===\"\")?null:(pre||\"\")+String(v);}\nfunction buildMaps(m){var kinds=DELTA_KINDS[m.type]||{},maps={};for(var name in kinds){var kind=kinds[name],v=m[name],order=[],items={};\nvar put=function(kk,val,pre){if(kk===null||Object.prototype.hasOwnProperty.call(items,kk)){var n=order.length;for(;;){kk=(pre||\"\")+\"#\"+n;if(!Object.prototype.hasOwnProperty.call(items,kk))break;n++;}}items[kk]=val;order.push(kk);};\nif(kind===\"dict\"){if(v&&typeof v===\"object\"&&!Array.isArray(v))for(var dk in v)put(String(dk),v[dk],\"\");}\nelse if(kind.indexOf(\"dictlist:\")===0){if(v&&typeof v===\"object\"&&!Array.isArray(v))for(var lane in v){var pre=lane+SEP,lst=v[lane];if(!Array.isArray(lst)||!lst.length){put(pre,lst,\"\");continue;}for(var i=0;i<lst.length;i++)put(keyOf(kind,lst[i],pre),lst[i],pre);}}\nelse{if(Array.isArray(v))for(var i2=0;i2<v.length;i2++)put(keyOf(kind,v[i2],\"\"),v[i2],\"\");}\nmaps[name]={order:order,items:items};}return maps;}\n// dictlist lanes keep their ARRAY IDENTITY across a delta that did not touch them: the lane prefix of\n// every set/del key names a touched lane, and an order that crosses touches every lane whose key\n// subsequence differs from the held order. An untouched lane assembles elementwise-identical to the\n// array the pane already holds, so assemble hands back that same array \u2014 turns[sid] identity then means\n// \"unchanged\", and a per-lane cache in the pane can key on it. The assembled VALUE is what it always\n// was; only object identity differs.\nfunction laneOf(kk){var cut=kk.indexOf(SEP);return cut<0?kk:kk.slice(0,cut);}\nfunction laneSeqs(order){var s={};for(var i=0;i<order.length;i++){var kk=order[i],ln=laneOf(kk);(s[ln]||(s[ln]=[])).push(kk);}return s;}\nfunction touchedLanes(c,oldOrder,newOrder){var t={},k;if(c.del)for(k=0;k<c.del.length;k++)t[laneOf(c.del[k])]=1;if(c.set)for(k in c.set)t[laneOf(k)]=1;\nif(c.order){var a=laneSeqs(oldOrder),b=laneSeqs(newOrder),ln;for(ln in a)if(!(ln in b)||JSON.stringify(a[ln])!==JSON.stringify(b[ln]))t[ln]=1;for(ln in b)if(!(ln in a))t[ln]=1;}return t;}\nfunction assemble(kind,map,prev,touched){var i,kk;if(kind===\"dict\"){var o={};for(i=0;i<map.order.length;i++){kk=map.order[i];if(map.items.hasOwnProperty(kk))o[kk]=map.items[kk];}return o;}\nif(kind.indexOf(\"dictlist:\")===0){var d={};for(i=0;i<map.order.length;i++){kk=map.order[i];if(!map.items.hasOwnProperty(kk))continue;var cut=kk.indexOf(SEP);var dk=cut<0?kk:kk.slice(0,cut),rest=cut<0?\"\":kk.slice(cut+1);\nif(prev&&touched&&!touched[dk]&&Object.prototype.hasOwnProperty.call(prev,dk)){if(!d.hasOwnProperty(dk))d[dk]=prev[dk];continue;}   // an untouched lane: the held array itself, not a copy\nif(rest===\"\"){d[dk]=map.items[kk];continue;}   // a bare-prefix entry: the lane's own (empty or non-list) value\nif(!d.hasOwnProperty(dk))d[dk]=[];d[dk].push(map.items[kk]);}return d;}\nvar out=[];for(i=0;i<map.order.length;i++){kk=map.order[i];if(map.items.hasOwnProperty(kk))out.push(map.items[kk]);}return out;}\nfunction applyDelta(d){var last=LAST[d.slot];if(!last||last.rev!==d.base)return null;var kinds=DELTA_KINDS[d.slot]||{};var m={};for(var k0 in last.msg)m[k0]=last.msg[k0];\nif(d.rest){if(d.restAll){for(var k1 in m){if(!kinds[k1]&&!(k1 in d.rest))delete m[k1];}}for(var rk in d.rest)m[rk]=d.rest[rk];}\nvar coll=d.coll||{};for(var name in coll){var kind=kinds[name];if(!kind)continue;var c=coll[name],map=last.maps[name]||{order:[],items:{}};var items={};for(var ik in map.items)items[ik]=map.items[ik];var order=map.order.slice();\nif(c.del){for(var x=0;x<c.del.length;x++){delete items[c.del[x]];}}\nif(c.set){for(var sk in c.set){if(!items.hasOwnProperty(sk))order.push(sk);items[sk]=c.set[sk];}}\nif(c.order){order=c.order.slice();}else{order=order.filter(function(kk){return items.hasOwnProperty(kk);});}\nvar touched=kind.indexOf(\"dictlist:\")===0?touchedLanes(c,map.order,order):null;\nlast.maps[name]={order:order,items:items};m[name]=assemble(kind,last.maps[name],last.msg[name],touched);}\nlast.rev=d.rev;last.msg=m;return m;}\n",
+  "steps": [
+    {
+      "wire": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa2": [
+            {
+              "id": "api-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "k": "1\u001fcloser",
+              "t": 1,
+              "j": "closer",
+              "t1": 2
+            }
+          ]
+        },
+        "messages": [
+          {
+            "id": "m1",
+            "text": "synthetic message m1"
+          }
+        ],
+        "now": 1000,
+        "warming": false
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa2": [
+            {
+              "id": "api-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "k": "1\u001fcloser",
+              "t": 1,
+              "j": "closer",
+              "t1": 2
+            }
+          ]
+        },
+        "messages": [
+          {
+            "id": "m1",
+            "text": "synthetic message m1"
+          }
+        ],
+        "now": 1000,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 0,
+        "rev": 1,
+        "coll": {
+          "turns": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fweb-2": {
+                "id": "web-2",
+                "t": 880,
+                "end": 910
+              }
+            }
+          }
+        },
+        "rest": {
+          "now": 1005
+        }
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            },
+            {
+              "id": "web-2",
+              "t": 880,
+              "end": 910
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa2": [
+            {
+              "id": "api-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "k": "1\u001fcloser",
+              "t": 1,
+              "j": "closer",
+              "t1": 2
+            }
+          ]
+        },
+        "messages": [
+          {
+            "id": "m1",
+            "text": "synthetic message m1"
+          }
+        ],
+        "now": 1005,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 1,
+        "rev": 2,
+        "coll": {
+          "turns": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-0": {
+                "id": "tests-0",
+                "t": 1000,
+                "end": 1030
+              }
+            },
+            "del": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa2\u001fapi-0"
+            ]
+          },
+          "judging": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001f3\u001fplanner": {
+                "k": "3\u001fplanner",
+                "t": 3,
+                "j": "planner",
+                "t1": 4
+              }
+            },
+            "del": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f1\u001fcloser"
+            ]
+          },
+          "messages": {
+            "set": {
+              "m2": {
+                "id": "m2",
+                "text": "synthetic message m2"
+              }
+            },
+            "order": [
+              "m2",
+              "m1"
+            ]
+          }
+        },
+        "rest": {
+          "type": "bars",
+          "now": 1010,
+          "warming": true
+        },
+        "restAll": 1
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            },
+            {
+              "id": "web-2",
+              "t": 880,
+              "end": 910
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "k": "3\u001fplanner",
+              "t": 3,
+              "j": "planner",
+              "t1": 4
+            }
+          ]
+        },
+        "messages": [
+          {
+            "id": "m2",
+            "text": "synthetic message m2"
+          },
+          {
+            "id": "m1",
+            "text": "synthetic message m1"
+          }
+        ],
+        "now": 1010,
+        "warming": true
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 2,
+        "rev": 3,
+        "coll": {
+          "judging": {
+            "del": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001f3\u001fplanner"
+            ]
+          },
+          "messages": {
+            "del": [
+              "m1"
+            ]
+          }
+        },
+        "rest": {
+          "type": "bars",
+          "now": 1015,
+          "warming": false
+        },
+        "restAll": 1
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            },
+            {
+              "id": "web-2",
+              "t": 880,
+              "end": 910
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {},
+        "messages": [
+          {
+            "id": "m2",
+            "text": "synthetic message m2"
+          }
+        ],
+        "now": 1015,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 3,
+        "rev": 4,
+        "coll": {
+          "messages": {
+            "set": {
+              "10": {
+                "id": "10",
+                "text": "synthetic message 10"
+              },
+              "11": {
+                "id": "11",
+                "text": "synthetic message 11"
+              }
+            },
+            "del": [
+              "m2"
+            ]
+          }
+        },
+        "rest": {
+          "now": 1020
+        }
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            },
+            {
+              "id": "web-2",
+              "t": 880,
+              "end": 910
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {},
+        "messages": [
+          {
+            "id": "10",
+            "text": "synthetic message 10"
+          },
+          {
+            "id": "11",
+            "text": "synthetic message 11"
+          }
+        ],
+        "now": 1020,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 4,
+        "rev": 5,
+        "coll": {
+          "messages": {
+            "set": {
+              "30": {
+                "id": "30",
+                "text": "synthetic message 30"
+              },
+              "9": {
+                "id": "9",
+                "text": "synthetic message 9"
+              }
+            },
+            "order": [
+              "10",
+              "11",
+              "30",
+              "9"
+            ]
+          }
+        },
+        "rest": {
+          "now": 1025
+        }
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "web-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "web-1",
+              "t": 940,
+              "end": 970
+            },
+            {
+              "id": "web-2",
+              "t": 880,
+              "end": 910
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            }
+          ]
+        },
+        "judging": {},
+        "messages": [
+          {
+            "id": "10",
+            "text": "synthetic message 10"
+          },
+          {
+            "id": "11",
+            "text": "synthetic message 11"
+          },
+          {
+            "id": "30",
+            "text": "synthetic message 30"
+          },
+          {
+            "id": "9",
+            "text": "synthetic message 9"
+          }
+        ],
+        "now": 1025,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 5,
+        "rev": 6,
+        "coll": {
+          "turns": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f": [],
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-1": {
+                "id": "tests-1",
+                "t": 940,
+                "end": 970
+              }
+            },
+            "del": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fweb-0",
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fweb-1",
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fweb-2"
+            ],
+            "order": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f",
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-0",
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-1"
+            ]
+          },
+          "messages": {
+            "del": [
+              "10",
+              "11",
+              "30"
+            ]
+          }
+        },
+        "rest": {
+          "now": 1030
+        }
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "tests-1",
+              "t": 940,
+              "end": 970
+            }
+          ]
+        },
+        "judging": {},
+        "messages": [
+          {
+            "id": "9",
+            "text": "synthetic message 9"
+          }
+        ],
+        "now": 1030,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 6,
+        "rev": 7,
+        "coll": {
+          "turns": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f#0": {
+                "id": "",
+                "t": 1
+              },
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fb2": {
+                "id": "b2",
+                "t": 2
+              }
+            },
+            "del": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f"
+            ],
+            "order": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f#0",
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fb2",
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-0",
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-1"
+            ]
+          },
+          "messages": {
+            "set": {
+              "#1": {
+                "id": "#1",
+                "x": 0
+              },
+              "#2": {
+                "x": 1
+              }
+            },
+            "del": [
+              "9"
+            ]
+          }
+        },
+        "rest": {
+          "type": "bars",
+          "now": 1035,
+          "warming": true
+        },
+        "restAll": 1
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "",
+              "t": 1
+            },
+            {
+              "id": "b2",
+              "t": 2
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "tests-1",
+              "t": 940,
+              "end": 970
+            }
+          ]
+        },
+        "judging": {},
+        "messages": [
+          {
+            "id": "#1",
+            "x": 0
+          },
+          {
+            "x": 1
+          }
+        ],
+        "now": 1035,
+        "warming": true
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 7,
+        "rev": 8,
+        "coll": {
+          "messages": {
+            "set": {
+              "#2": {
+                "x": 5
+              }
+            }
+          }
+        },
+        "rest": {
+          "type": "bars",
+          "now": 1040
+        },
+        "restAll": 1
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "",
+              "t": 1
+            },
+            {
+              "id": "b2",
+              "t": 2
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "tests-1",
+              "t": 940,
+              "end": 970
+            }
+          ]
+        },
+        "judging": {},
+        "messages": [
+          {
+            "id": "#1",
+            "x": 0
+          },
+          {
+            "x": 5
+          }
+        ],
+        "now": 1040
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 8,
+        "rev": 9,
+        "coll": {
+          "turns": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fdup": {
+                "id": "dup",
+                "t": 1
+              },
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f#1": {
+                "id": "dup",
+                "t": 2
+              }
+            },
+            "del": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f#0",
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fb2"
+            ],
+            "order": [
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001fdup",
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f#1",
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-0",
+              "11111111-2222-3333-4444-aaaaaaaaaaa3\u001ftests-1"
+            ]
+          },
+          "judging": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f": null
+            }
+          }
+        },
+        "rest": {
+          "type": "bars",
+          "now": 1045,
+          "warming": false
+        },
+        "restAll": 1
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "dup",
+              "t": 1
+            },
+            {
+              "id": "dup",
+              "t": 2
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "tests-1",
+              "t": 940,
+              "end": 970
+            }
+          ]
+        },
+        "judging": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": null
+        },
+        "messages": [
+          {
+            "id": "#1",
+            "x": 0
+          },
+          {
+            "x": 5
+          }
+        ],
+        "now": 1045,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "bars",
+        "base": 9,
+        "rev": 10,
+        "coll": {
+          "turns": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f#1": {
+                "id": "dup",
+                "t": 9
+              }
+            }
+          },
+          "judging": {
+            "set": {
+              "11111111-2222-3333-4444-aaaaaaaaaaa1\u001f": []
+            }
+          }
+        },
+        "rest": {
+          "now": 1050
+        }
+      },
+      "full": {
+        "type": "bars",
+        "turns": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": [
+            {
+              "id": "dup",
+              "t": 1
+            },
+            {
+              "id": "dup",
+              "t": 9
+            }
+          ],
+          "11111111-2222-3333-4444-aaaaaaaaaaa3": [
+            {
+              "id": "tests-0",
+              "t": 1000,
+              "end": 1030
+            },
+            {
+              "id": "tests-1",
+              "t": 940,
+              "end": 970
+            }
+          ]
+        },
+        "judging": {
+          "11111111-2222-3333-4444-aaaaaaaaaaa1": []
+        },
+        "messages": [
+          {
+            "id": "#1",
+            "x": 0
+          },
+          {
+            "x": 5
+          }
+        ],
+        "now": 1050,
+        "warming": false
+      }
+    },
+    {
+      "wire": {
+        "type": "feed",
+        "asks": [
+          {
+            "itemId": "a",
+            "text": "first"
+          },
+          {
+            "itemId": "b",
+            "text": "second"
+          }
+        ],
+        "now": 1000,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": [],
+        "obsolete": true
+      },
+      "full": {
+        "type": "feed",
+        "asks": [
+          {
+            "itemId": "a",
+            "text": "first"
+          },
+          {
+            "itemId": "b",
+            "text": "second"
+          }
+        ],
+        "now": 1000,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": [],
+        "obsolete": true
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "feed",
+        "base": 0,
+        "rev": 1,
+        "coll": {
+          "asks": {
+            "set": {
+              "a": {
+                "itemId": "a",
+                "text": "changed"
+              }
+            }
+          }
+        },
+        "rest": {
+          "type": "feed",
+          "now": 1005,
+          "sessions": [
+            {
+              "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+              "name": "web",
+              "color": null
+            }
+          ],
+          "order": [
+            "11111111-2222-3333-4444-aaaaaaaaaaa1"
+          ],
+          "working": [],
+          "awaiting": []
+        },
+        "restAll": 1
+      },
+      "full": {
+        "type": "feed",
+        "asks": [
+          {
+            "itemId": "a",
+            "text": "changed"
+          },
+          {
+            "itemId": "b",
+            "text": "second"
+          }
+        ],
+        "now": 1005,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": []
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "feed",
+        "base": 1,
+        "rev": 2,
+        "coll": {
+          "asks": {
+            "set": {
+              "c": {
+                "itemId": "c",
+                "text": "third"
+              }
+            },
+            "del": [
+              "a"
+            ]
+          }
+        },
+        "rest": {
+          "now": 1010
+        }
+      },
+      "full": {
+        "type": "feed",
+        "asks": [
+          {
+            "itemId": "b",
+            "text": "second"
+          },
+          {
+            "itemId": "c",
+            "text": "third"
+          }
+        ],
+        "now": 1010,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": []
+      }
+    },
+    {
+      "wire": {
+        "type": "delta",
+        "slot": "feed",
+        "base": 2,
+        "rev": 3,
+        "coll": {
+          "asks": {
+            "del": [
+              "b",
+              "c"
+            ]
+          }
+        },
+        "rest": {
+          "now": 1015
+        }
+      },
+      "full": {
+        "type": "feed",
+        "asks": [],
+        "now": 1015,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": []
+      }
+    },
+    {
+      "wire": {
+        "type": "feed",
+        "asks": [
+          {
+            "itemId": "large",
+            "text": "synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card "
+          }
+        ],
+        "now": 1020,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": []
+      },
+      "full": {
+        "type": "feed",
+        "asks": [
+          {
+            "itemId": "large",
+            "text": "synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card synthetic card "
+          }
+        ],
+        "now": 1020,
+        "sessions": [
+          {
+            "sid": "11111111-2222-3333-4444-aaaaaaaaaaa1",
+            "name": "web",
+            "color": null
+          }
+        ],
+        "order": [
+          "11111111-2222-3333-4444-aaaaaaaaaaa1"
+        ],
+        "working": [],
+        "awaiting": []
+      }
+    }
+  ]
+}
