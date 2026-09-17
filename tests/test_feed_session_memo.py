@@ -27,7 +27,12 @@ was attributed to, beside the card the moved input changes:
   * the clock: two builds ten minutes apart derive nothing and differ in `now`, `buildId` and the cards' age
     tint alone (the fold stamps trgb per build; the memo holds nothing clock-derived);
   * the byte bound (FEED_MEMO_BYTES): entries leave oldest first, counted, and the payload stays complete;
-  * a departed session's entry leaves with it; GET /perf reports the memo's counters.
+  * a departed session's entry leaves with it; GET /perf reports the memo's counters;
+  * one session's card build raising is CONTAINED (2026-09-17), the decode of its memoized entry and its key included:
+    the other sessions' cards ship, the failure is counted (`failed`, cumulative; `failing`, the sessions whose build is
+    failing now) and said once per (session, cause) episode on stderr and as a bell row, the session's previous cards
+    are served when the memo holds a decodable entry (never memoized; an entry that no longer decodes is dropped), and
+    a build that serves or derives the session ends the episode, so a later fault is said anew.
 
 Harness: tests/test_payload_dedup_invariant.py's world (a hermetic state root the kernel's judge is rebound to,
 names/ entries and projects/<launch dir>/<sid>.jsonl transcripts discover finds, a fixed live map, a warm first
@@ -37,6 +42,8 @@ jd.save_goals). The parses stay cold, as the feed reads them (cache-only), so a 
 Synthetic fixtures only: private synthetic sids (the goal-store fixture rule: load_goals replays the per-sid
 override journal, so a shared placeholder sid would be re-flagged by other modules' rows), invented text.
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -112,10 +119,11 @@ def _reset_memo():
     with km._feed_memo_lock:
         km._feed_memo.clear()
         st = km._FEED_MEMO_STATS
-        for k in ("hit", "miss", "evict", "derived", "entries", "bytes"):
+        for k in ("hit", "miss", "evict", "derived", "entries", "bytes", "failed"):
             st[k] = 0
         for k in st["miss_by"]:
             st["miss_by"][k] = 0
+        getattr(km, "_FEED_DERIVE_FAILED", {}).clear()
 
 
 def _memo_snapshot():
@@ -123,18 +131,22 @@ def _memo_snapshot():
     if not hasattr(km, "_feed_memo"):
         return None
     with km._feed_memo_lock:
-        return dict(km._feed_memo), json.loads(json.dumps(km._FEED_MEMO_STATS))
+        return (dict(km._feed_memo), json.loads(json.dumps(km._FEED_MEMO_STATS)),
+                dict(getattr(km, "_FEED_DERIVE_FAILED", {})))
 
 
 def _memo_restore(snap):
     if snap is None:
         return
-    entries, stats = snap
+    entries, stats, failed = snap
     with km._feed_memo_lock:
         km._feed_memo.clear()
         km._feed_memo.update(entries)
         km._FEED_MEMO_STATS.clear()
         km._FEED_MEMO_STATS.update(stats)
+        if hasattr(km, "_FEED_DERIVE_FAILED"):
+            km._FEED_DERIVE_FAILED.clear()
+            km._FEED_DERIVE_FAILED.update(failed)
 
 
 class _Board(unittest.TestCase):
@@ -724,7 +736,9 @@ class TheBoundAndTheDepartures(_Board):
         feed = km._PERF_STATS.snapshot()["builds"]["feed"]
         self.assertEqual(set(feed), {"cached", "built", "ms", "memo"})
         self.assertEqual(feed["memo"], km._feed_memo_report())
-        self.assertEqual(set(feed["memo"]), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by"})
+        self.assertEqual(set(feed["memo"]), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by",
+                                             "failed", "failing"})   # the contained derivation faults (2026-09-17)
+        self.assertEqual((feed["memo"]["failed"], feed["memo"]["failing"]), (0, 0))
         self.assertEqual(set(feed["memo"]["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
         self.assertEqual(feed["memo"]["derived"], 3)
         self.assertEqual(feed["memo"]["bound"], km.FEED_MEMO_BYTES)
@@ -1044,6 +1058,212 @@ class PerCardNudgeInputs(_Board):
         self.assertEqual(self._cards(frame)[gid]["nudged"]["count"], 2)
         _reset_memo()
         self.assertEqual(_dump(frame), _dump(self._build()))
+
+
+class OneSessionsFaultIsContained(_Board):
+    """One session's card build raising inside build_feed's loop (2026-09-17). Before the guard the exception left
+    build_feed, the pusher's catch swallowed it, no counter moved and every client kept the last successful frame:
+    the whole board froze behind one session. Now the fault stays that session's: counted, said once per episode on
+    stderr and in the dashboard's bell (a row on the ring _sync_notice feeds, stubbed here onto a list), the frame
+    ships. One guard spans the session's whole path (the memo decode, the key, the derivation), and the raise is
+    synthetic at each of those calls (a RuntimeError or OSError with invented text, a memo entry that is not JSON),
+    the live cause being another lane's."""
+
+    BOOM = "synthetic: the api card's derivation blew up"
+
+    def setUp(self):
+        super().setUp()
+        self.bells = []                            # every bell row the build posts: (text, ok, kind), nothing on the ring
+
+        def ring(text, ok=True, kind="sync"):
+            self.bells.append({"text": str(text), "ok": ok, "kind": kind})
+        patcher = mock.patch.object(km, "_sync_notice", ring)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _raising_for(self, bad_sid, text=BOOM):
+        real = km._feed_session_entry
+
+        def fake(s, ctx):
+            if s["sid"] == bad_sid:
+                raise RuntimeError(text)
+            return real(s, ctx)
+        return mock.patch.object(km, "_feed_session_entry", fake)
+
+    def _build_capturing(self, now=NOW):
+        """(the frame, what the build wrote to stderr)."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            frame = self._build(now)
+        return frame, err.getvalue()
+
+    def test_a_raising_session_with_no_previous_entry_is_absent_and_the_other_two_ship_counted_and_said_once(self):
+        with self._raising_for(API):
+            frame, said = self._build_capturing()
+            self.assertEqual(sorted(self._cards(frame)), sorted([WEB + ":g1", TESTS + ":g1"]),
+                             "the two healthy sessions' cards ship; the failing session's are absent this build")
+            rep = km._feed_memo_report()
+            self.assertEqual((rep["failed"], rep["failing"]), (1, 1), rep)
+            self.assertEqual(rep["entries"], 2, "the failing session is never memoized")
+            self.assertNotIn(API, km._feed_memo)
+            lines = [ln for ln in said.splitlines() if ln.startswith("feed: ")]
+            self.assertEqual(len(lines), 1, said)
+            self.assertIn(API[:8], lines[0]); self.assertIn("(api)", lines[0])
+            self.assertIn("its cards are absent", lines[0]); self.assertIn("RuntimeError: " + self.BOOM, lines[0])
+            self.assertIn("Traceback (most recent call last)", said, "the traceback rides the first line")
+            # the next build: raises again, counted again, NOT said again (one line per session per cause, never per build)
+            frame2, said2 = self._build_capturing()
+            self.assertEqual(sorted(self._cards(frame2)), sorted([WEB + ":g1", TESTS + ":g1"]))
+            rep = km._feed_memo_report()
+            self.assertEqual((rep["failed"], rep["failing"]), (2, 1), rep)
+            self.assertEqual(said2, "", "the same session failing for the same cause is not re-said")
+            # a DIFFERENT cause for the same session is a new line
+            with self._raising_for(API, "synthetic: a second, distinct cause"):
+                _, said3 = self._build_capturing()
+            self.assertEqual(len([ln for ln in said3.splitlines() if ln.startswith("feed: ")]), 1, said3)
+            self.assertEqual(km._feed_memo_report()["failed"], 3)
+
+    def test_a_raising_session_with_a_previous_entry_serves_its_stale_card_and_leaves_the_memo_untouched(self):
+        before = self._cards(self._build())              # every session memoized under its current inputs
+        stored = km._feed_memo[API]
+        self._complete(API)                              # api's store moves: its next build MISSES and derives
+        with self._raising_for(API):
+            d, (frame, said) = self._delta(self._build_capturing)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        cards = self._cards(frame)
+        self.assertEqual(sorted(cards), sorted(sid + ":g1" for sid in SIDS), "all three cards ship")
+        self.assertEqual(cards[API + ":g1"], before[API + ":g1"],
+                         "the failing session's PREVIOUS card is served as it was: stale (still working, not completed)")
+        self.assertEqual(cards[API + ":g1"]["column"], "working")
+        rep = km._feed_memo_report()
+        self.assertEqual((rep["failed"], rep["failing"]), (1, 1), rep)
+        self.assertIs(km._feed_memo[API], stored, "the stored entry is unchanged: a failure never memoizes")
+        line = [ln for ln in said.splitlines() if ln.startswith("feed: ")]
+        self.assertEqual(len(line), 1, said)
+        self.assertIn("serving its previous cards", line[0])
+
+    def test_when_the_derivation_stops_raising_the_next_build_derives_memoizes_and_clears_the_record(self):
+        self._build()
+        self._complete(API)
+        with self._raising_for(API):
+            self._build_capturing()
+        self.assertEqual(km._feed_memo_report()["failing"], 1)
+        stale_key = km._feed_memo[API][0]
+        d, (frame, said) = self._delta(self._build_capturing)       # the derivation works again
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        self.assertEqual(said, "")
+        self.assertEqual(self._cards(frame)[API + ":g1"]["column"], "completed", "the verdict reaches the card now")
+        rep = km._feed_memo_report()
+        self.assertEqual(rep["failing"], 0, "the standing count drops with the recovery")
+        self.assertEqual(rep["failed"], 1, "the cumulative count is history: it stays")
+        self.assertNotEqual(km._feed_memo[API][0], stale_key, "memoized under the fresh key")
+        d, f2 = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (0, 3), d)
+        self.assertEqual(_dump(frame), _dump(f2))
+        # a recovered session failing AGAIN for the same cause is a new incident: said again
+        self._complete(WEB)
+        with self._raising_for(WEB):
+            _, said = self._build_capturing()
+        self.assertEqual(len([ln for ln in said.splitlines() if ln.startswith("feed: ")]), 1, said)
+        with self._raising_for(WEB):
+            _, said = self._build_capturing()
+        self.assertEqual(said, "")
+        self.assertEqual(km._feed_memo_report()["failing"], 1)
+        self._build_capturing()                          # web recovers
+        self.assertEqual(km._feed_memo_report()["failing"], 0)
+
+    def test_a_departed_failing_session_leaves_the_standing_count_with_it(self):
+        with self._raising_for(API):
+            self._build_capturing()
+        self.assertEqual(km._feed_memo_report()["failing"], 1)
+        live = {sid: self._row() for sid in (WEB, TESTS)}   # api departs
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.build_feed(NOW, live)
+        self.assertEqual(km._feed_memo_report()["failing"], 0, "nothing derives a departed session: it is not failing")
+
+    def test_the_bell_rings_once_per_episode_as_a_refused_row_and_again_after_a_recovery(self):
+        """The user sees the fault on the dashboard, not only on stderr and /perf: one bell row per (session, cause)
+        episode, worn as the kind a state file that cannot be read wears, naming the session, what the board shows
+        for it and the cause without a traceback; the next failing build rings nothing; a recovery ends the episode,
+        so a later fault rings again."""
+        with self._raising_for(API):
+            self._build_capturing()
+            self.assertEqual(len(self.bells), 1, self.bells)
+            row = self.bells[0]
+            self.assertEqual((row["ok"], row["kind"]), (False, "refused"))
+            self.assertIn("api", row["text"])
+            self.assertIn("absent from the board", row["text"], "no previous cards: the row says the board lacks them")
+            self.assertIn("RuntimeError: " + self.BOOM, row["text"])
+            self.assertNotIn("Traceback", row["text"], "the traceback goes to stderr, never the bell")
+            self._build_capturing()
+            self.assertEqual(len(self.bells), 1, "the same session failing for the same cause rings nothing more")
+        self._build_capturing()                                  # the derivation works: the episode ends
+        self.assertEqual(km._feed_memo_report()["failing"], 0)
+        self.assertEqual(len(self.bells), 1, "a recovery rings nothing: the board itself shows it")
+        self._complete(API)                                      # api's store moves: the next build derives it again
+        with self._raising_for(API):
+            self._build_capturing()
+        self.assertEqual(len(self.bells), 2, "a new episode after a recovery rings again")
+        self.assertIn("shows their last state", self.bells[1]["text"],
+                      "previous cards held: the row says the board shows them as they were")
+
+    def test_a_key_that_raises_is_a_failed_build_the_previous_cards_served_and_the_board_ships(self):
+        """_feed_session_key stats files and reads stores, so it can raise; a key that raises cannot tell a hit
+        from a miss, so it is a failed build like any other: neither counted, the previous cards served, the
+        session counted failing, nothing memoized, and a key that works again serves the entry and ends the episode."""
+        before = self._cards(self._build())
+        stored = km._feed_memo[API]
+        real_key = km._feed_session_key
+
+        def bad_key(s, tm, ctx, prev):
+            if s["sid"] == API:
+                raise OSError("synthetic: a store stat blew up inside the key")
+            return real_key(s, tm, ctx, prev)
+        with mock.patch.object(km, "_feed_session_key", bad_key):
+            d, (frame, said) = self._delta(self._build_capturing)
+        self.assertEqual((d["derived"], d["hit"], d["miss"]), (0, 2, 0), d)
+        cards = self._cards(frame)
+        self.assertEqual(sorted(cards), sorted(sid + ":g1" for sid in SIDS), "all three cards ship")
+        self.assertEqual(cards[API + ":g1"], before[API + ":g1"], "the previous card, as it was")
+        rep = km._feed_memo_report()
+        self.assertEqual((rep["failed"], rep["failing"]), (1, 1), rep)
+        self.assertIs(km._feed_memo[API], stored, "nothing memoized")
+        self.assertIn("OSError: synthetic: a store stat blew up inside the key", said)
+        self.assertEqual(len(self.bells), 1)
+        self.assertIn("shows their last state", self.bells[0]["text"])
+        d, (frame, said) = self._delta(self._build_capturing)      # the key works again
+        self.assertEqual((d["derived"], d["hit"]), (0, 3), d)
+        self.assertEqual(km._feed_memo_report()["failing"], 0, "served: the episode ends")
+        self.assertEqual(said, "")
+
+    def test_a_memoized_entry_that_no_longer_decodes_is_dropped_the_session_absent_this_build_and_cold_the_next(self):
+        """The decode of the previous entry sits under the guard too. An entry that is not JSON serves nobody and
+        would fail the same way every build, so it is dropped (entries and bytes fall, an eviction counted), the
+        session's cards are absent this build, and the next build starts it cold and memoizes it again."""
+        self._build()
+        with km._feed_memo_lock:
+            key, _js, size = km._feed_memo[API]
+            km._feed_memo[API] = (key, "{not json", size)     # the recorded size stands, so the byte count reconciles
+        rep0 = km._feed_memo_report()
+        d, (frame, said) = self._delta(self._build_capturing)
+        self.assertEqual(sorted(self._cards(frame)), sorted([WEB + ":g1", TESTS + ":g1"]), "api's cards are absent")
+        self.assertEqual((d["derived"], d["hit"], d["evict"]), (0, 2, 1), d)
+        rep = km._feed_memo_report()
+        self.assertNotIn(API, km._feed_memo)
+        self.assertEqual(rep["entries"], rep0["entries"] - 1)
+        self.assertEqual(rep["bytes"], rep0["bytes"] - size)
+        self.assertEqual((rep["failed"], rep["failing"]), (1, 1), rep)
+        self.assertIn("JSONDecodeError", said)
+        self.assertEqual(len(self.bells), 1)
+        self.assertIn("absent from the board", self.bells[0]["text"])
+        d, (frame, said) = self._delta(self._build_capturing)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        self.assertEqual(d["miss_by"], {"cold": 1}, "no entry: the next build starts the session cold")
+        self.assertEqual(sorted(self._cards(frame)), sorted(sid + ":g1" for sid in SIDS))
+        self.assertIn(API, km._feed_memo, "memoized again")
+        self.assertEqual(km._feed_memo_report()["failing"], 0, "derived: the episode ends")
+        self.assertEqual(said, "")
+        self.assertEqual(len(self.bells), 1, "the recovery rings nothing")
 
 
 if __name__ == "__main__":
