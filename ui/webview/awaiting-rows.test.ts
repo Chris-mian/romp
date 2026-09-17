@@ -113,8 +113,10 @@ test("the Awaiting chip is a BUTTON on the stable statusline delegate, acknowled
   assert.match(branch, /chip\.classList\.add\("chip-btn"\);/);
   assert.match(branch, /chip\.type = "button";/);
   assert.match(branch, /chip\.dataset\.act = "awaitingChip";/, "keyed for the delegate — never a listener on the rebuilt node");
-  // the tooltip: the per-kind breakdown, the kernel's why, and what the click does (setTip, one line each)
-  assert.match(branch, /setTip\(chip, \[awaitBreakdown\(chipItems\), s\.status\.awaitingWhy \|\| "idle, waiting on background work it dispatched",\s*\n\s*"click to see what it's waiting on"\]\.filter\(Boolean\)\.join\("\\n"\)\);/);
+  // the tooltip: the one named peer's whole label when the chip names one (inside the status unit the label truncates with
+  // an ellipsis on a narrow pane, round three of PR 1803), the per-kind breakdown, the kernel's why, and what the click
+  // does (setTip, one line each)
+  assert.match(branch, /setTip\(chip, \[words\.peer \? "waiting on " \+ \(words\.peer\.host \? words\.peer\.host \+ ":" : ""\) \+ words\.peer\.name : "",\s*\n\s*awaitBreakdown\(chipItems\), s\.status\.awaitingWhy \|\| "idle, waiting on background work it dispatched",\s*\n\s*"click to see what it's waiting on"\]\.filter\(Boolean\)\.join\("\\n"\)\);/);
   assert.doesNotMatch(branch, /chip\.title =/, "styled tip only — never the native title beside it");
   // installed ONCE on #statusline (updateStatusline rebuilds its children every push); the handler opens the
   // box's own fold state, re-renders it, and scrolls it into view

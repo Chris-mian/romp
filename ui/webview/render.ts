@@ -5961,11 +5961,17 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
   if (be) rows.push(["Backend", backendLabel(be)]);
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
-  rows.push(["Mail", !s.postalServiceOff ? "on"
-    : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
-    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
-    : s.mailOffWhy === "thread" ? "off until the thread is broken out"
-    : "off: this session neither sends nor receives peer mail"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+  // The value is a GLANCE (the user 2026-09-16): an accent check mark when mail is on, the bare word off or held when it is
+  // not, and no explanation inline. The reasons live where a hover works, the Sessions pane's mail mark title (mail off /
+  // mail held with the four reasons); this rich tip is pointer-inert by tip.ts's contract, so a value tip here
+  // could never show (round two of PR 1803). The two HELD states, a session that needs repair, get one dim sub-line
+  // under the row; off gets none.
+  rows.push(["Mail", !s.postalServiceOff ? "\u2713" : (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags") ? "held" : "off",
+             !s.postalServiceOff ? "var(--accent)" : undefined]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+  if (s.postalServiceOff && (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags")) {
+    rows.push(["", s.mailOffWhy === "unreadable" ? "its record cannot be read; mail waits until it is repaired"
+                 : "its settings file cannot be read; mail waits until it is written again", "var(--dim)"]);
+  }
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
   // user 2026-08-09: shown whenever the backend reports it, one-auth machines included). No key material, ever.
   // When the CLI's own init landed on the OTHER side (authLive — say, a key found via apiKeyHelper
@@ -5999,7 +6005,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
-    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372)
+    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372); the Mail sub-line's dim
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
   // context BATTERY (the same widget as the bottom bar), not a text %
@@ -15878,8 +15884,16 @@ function updateStatusline() {
   // controls that are always there. A widget that renders nothing adds nothing.
   const rec = statusRecordOf(s, activeId || "");
   composeStatusWidgets(sl, "left", rec, settings.statusWidgets);
-  // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
-  // states get the plain chip (no timer). Right: model + effort · ctx%, always.
+  // Left: the state chip. WORKING gets a sine color-pulse + elapsed timer; idle
+  // states get the plain chip (no timer), and the stop button sits right after the chip and its timer
+  // (the user 2026-09-16: back where it sat from 2026-06-19 to 2026-08-27). The three are ONE unit
+  // (.sl-left) whose flex line never wraps its parts while the unit itself shrinks (flex: 0 1 auto,
+  // min-width: 0): the chip inside gives way and a long peer label truncates above a floor, the stop
+  // button alone keeps flex: none; a narrow pane wraps the right cluster below as a whole, and the
+  // button never separates from its badge, which is what riding in the right cluster had bought
+  // (bd9a1dab). Right: model + effort · ctx%, always.
+  const left = el("span", "sl-left");
+  sl.appendChild(left);
   if (s.status.state === "working") {
     // pill bg stays on the chip; the gradient text-clip lives on an inner span
     // (background-clip:text on the chip itself would erase the pill background)
@@ -15887,11 +15901,11 @@ function updateStatusline() {
     const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
     chip.appendChild(label);
-    sl.appendChild(chip);
+    left.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
-    sl.appendChild(timer);
+    left.appendChild(timer);
   } else if (s.status.state === "awaitingBg") {
     // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own await-green
     // chip — no pulse (nothing is computing HERE), but the elapsed timer stays so the wait has a clock
@@ -15914,28 +15928,33 @@ function updateStatusline() {
     const chipItems = s.status.awaitingItems || [];
     chip.classList.add("chip-awaiting-" + (s.status.awaitingKind || "untyped"));   // per-kind hook, one hue today
     // the tip: the per-kind breakdown when there are rows, the kernel's why, and what the click does
-    setTip(chip, [awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
+    const words = chipWords(s.status);   // the same words again, pure, for the tip's first line (the build line above is pinned as the shared builder's call, with its neighbours)
+    // the one named peer's FULL label leads the tip: inside the status unit the label truncates with an ellipsis when the
+    // pane is narrow (styles.css .sl-left .chip-peer-name; round three of PR 1803), and the chip's own tip is where its
+    // whole name reads, the shared dress and no second title
+    setTip(chip, [words.peer ? "waiting on " + (words.peer.host ? words.peer.host + ":" : "") + words.peer.name : "",
+                  awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
                   "click to see what it's waiting on"].filter(Boolean).join("\n"));
-    sl.appendChild(chip);
+    left.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
-    sl.appendChild(timer);
+    left.appendChild(timer);
     // The WHY renders in the #bg-tasks box between transcript and composer (renderBgTasks), not
     // here — a reason line beside the chip crowded the composer area (the user 2026-08-13, on the
     // same day's PR #350 that first surfaced it here).
   } else if (s.status.state === "compacting") {
     const c = el("span", "compacting-line");
     c.textContent = "⟳ Compacting context…";
-    sl.appendChild(c);
+    left.appendChild(c);
   } else if (s.status.state === "clearing") {
     const c = el("span", "compacting-line");   // same in-progress line treatment as compacting (one style per info type)
     c.textContent = "⟳ Clearing conversation…";
-    sl.appendChild(c);
+    left.appendChild(c);
   } else if (s.status.state === "opening") {
-    sl.appendChild(openingLine());             // spawned, transcript not on disk yet — dots until the first record
+    left.appendChild(openingLine());             // spawned, transcript not on disk yet: dots until the first record
   } else {
-    sl.appendChild(statusChip(chipWords(s.status)));   // the shared chip (status-chip.ts): `chip chip-<state>`, the state's words in sentence case
+    left.appendChild(statusChip(chipWords(s.status)));   // the shared chip (status-chip.ts): `chip chip-<state>`, the state's words in sentence case
   }
 
   // The right-side cluster — dir · branch · mode/model/effort/fast badges · ctx battery — grouped in ONE
@@ -15957,15 +15976,16 @@ function updateStatusline() {
   const bar = ctxBar();
   setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
   right.appendChild(bar);
-  // stop/interrupt button — at the FAR RIGHT of the statusline (the user 2026-08-28; it sat
-  // beside the state chip on the left before), riding inside the right cluster so a wrapped
-  // narrow statusline keeps it with the controls. Shown while busy (working/compacting) AND while
-  // stuck retrying / blocked, where it doubles as the per-thread auto-retry off-switch (the user
-  // 2026-07-06). Omitted in idle states (nothing to interrupt — the user 2026-06-19) and while
-  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie — the user 2026-07-02).
-  if (s.status.state === "working" || s.status.state === "compacting"
-      || s.status.state === "retrying" || s.status.state === "blocked") right.appendChild(stopButton(s.status.state));
   sl.appendChild(right);
+  // stop/interrupt button: beside the state chip, after its timer, inside the left unit (the user
+  // 2026-09-16, its place from 2026-06-19; the far right from 2026-08-28 to today rode the right
+  // cluster so a wrapped narrow statusline kept it with the controls: the unit keeps it with its
+  // badge instead, and the right cluster wraps below whole). Shown while busy (working/compacting)
+  // AND while stuck retrying / blocked, where it doubles as the per-thread auto-retry off-switch (the
+  // user 2026-07-06). Omitted in idle states (nothing to interrupt, the user 2026-06-19) and while
+  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie, the user 2026-07-02).
+  if (s.status.state === "working" || s.status.state === "compacting"
+      || s.status.state === "retrying" || s.status.state === "blocked") left.appendChild(stopButton(s.status.state));
   pruneTip();   // a rebuilt statusline tears tip anchors (the stop button) out mid-hover — drop the orphan (PR #763 item 8; the feed's render does the same)
 }
 

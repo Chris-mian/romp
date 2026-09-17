@@ -42,3 +42,18 @@ test("render.ts groups dir, branch, badges and ctx battery into .sl-right", () =
   assert.match(RENDER, /right\.appendChild\(bar\)/);
   assert.match(RENDER, /sl\.appendChild\(right\)/);
 });
+
+
+test("the state unit shrinks with wrappable words while the stop button alone stays whole", () => {
+  // round two of PR 1803: flex:none plus nowrap on the unit overflowed a 280 px pane for a named-peer Awaiting chip (the
+  // timer pushed out of view); the unit shrinks and its chip wraps its words, the button keeps flex:none beside its badge
+  assert.match(CSS, /\.sl-left \{[^}]*flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px 10px;/);
+  assert.doesNotMatch(CSS, /\.sl-left \{[^}]*white-space: nowrap/);
+  assert.match(CSS, /\.sl-left > \.stop-btn \{ flex: none; \}/);
+  // round three: the chip's min-content was the unbreakable peer label (TESTHOST:integration-tests), so the unit still
+  // overflowed a 280 px line by 26 px; the chip may shrink and the label truncates with an ellipsis, its whole text the
+  // first line of the chip's own tip
+  assert.match(CSS, /\.sl-left > \.chip \{ min-width: 0; \}/);
+  assert.match(CSS, /\.sl-left \.chip-peer-name \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/, "the label truncates with no floor: one that bound at 240 px would overflow a narrower pane (round four)");
+  assert.match(RENDER, /setTip\(chip, \[words\.peer \? "waiting on " \+ \(words\.peer\.host \? words\.peer\.host \+ ":" : ""\) \+ words\.peer\.name : "",\s*\n\s*awaitBreakdown\(chipItems\),/, "the full label leads the tip");
+});

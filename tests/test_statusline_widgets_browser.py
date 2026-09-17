@@ -84,9 +84,10 @@ const readLine = (chatF) => chatF.evaluate(() => {
   const sl = document.getElementById("statusline");
   const desc = (n) => ({ cls: n.className, text: n.textContent, title: n.title || "", act: n.dataset.act || null, cwd: n.dataset.cwd || null, id: n.dataset.id || null, bg: n.style.background || "" });
   const kids = Array.from(sl.children).map(desc);
+  const left = sl.querySelector(".sl-left");   // the state chip, its timer and the stop button: one unit since 2026-09-16
   const right = sl.querySelector(".sl-right");
   const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-  return { kids, right: right ? Array.from(right.children).map(desc) : null,
+  return { kids, left: left ? Array.from(left.children).map(desc) : null, right: right ? Array.from(right.children).map(desc) : null,
            store: { statusWidgets: "statusWidgets" in s ? s.statusWidgets : "absent", showBranch: "showBranch" in s ? s.showBranch : "absent", showSessionBadge: "showSessionBadge" in s ? s.showSessionBadge : "absent" } };
 });
 const settingsFrame = async (page) => {
@@ -308,7 +309,8 @@ class ServedStatusLineWidgets(unittest.TestCase):
         line = self.out["line0"]
         kids = [k["cls"] for k in line["kids"]]
         self.assertNotIn("chip chip-session", kids, "the session name is off by default (the user's ruling)")
-        self.assertTrue(kids[0].startswith("chip"), "the state chip leads the line when no left widget is on: %r" % kids)
+        self.assertEqual(kids[0], "sl-left", "the state unit leads the line when no left widget is on: %r" % kids)
+        self.assertTrue(line["left"][0]["cls"].startswith("chip"), "and the state chip leads the unit: %r" % line["left"])
         right = line["right"]
         self.assertEqual([k["cls"] for k in right][:3], ["status-dir folder-link", "status-branch", "spinner-meta"], "folder, branch, then the controls: %r" % right)
         dir_ = right[0]

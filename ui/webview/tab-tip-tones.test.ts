@@ -57,7 +57,7 @@ const PRELUDE = `
 const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 const prettyMode = (m) => m; const backendLabel = (b) => b; const authFellTo = () => ""; const ctxBar = () => el("div"); const setCtxBar = () => {};
 const ledgers = new Map(); let draggedId = null; let tabTipEl = null; const sessions = new Map();
-const setTip = () => {}; const toggleMetaMenu = () => {}; const modeIconSvg = () => ""; const riskyMode = () => false;
+const setTip = (a: any, text: string) => { a._tipText = text; }; const toggleMetaMenu = () => {}; const modeIconSvg = () => ""; const riskyMode = () => false;
 const prettyFast = (f) => f; const metaCurrent = (kind, st) => kind === "model" ? st.model : effortBadgeText(st); const fastAvailable = () => false;   // effortBadgeText is lifted from the module below (2026-09-16)
 const metaDots = () => el("span", "meta-dots"); const isMetaPending = () => false;
 `;
@@ -122,7 +122,7 @@ test("a status without colours (an older kernel) leaves the values plain, as the
   const bare = { ...status, modelColor: undefined, effortColor: undefined, modelTone: undefined, effortTone: undefined };
   mod.showTabTip(new El("div"), { ...session, status: bare });
   const tip = body.children[body.children.length - 1];
-  for (const r of tip.children) if (r.className === "tab-tip-row") assert.equal(r.children[1].style.color ?? "", "", r.children[0].textContent);
+  for (const r of tip.children) if (r.className === "tab-tip-row" && r.children[0].textContent !== "Mail" && r.children[0].textContent !== "") assert.equal(r.children[1].style.color ?? "", "", r.children[0].textContent);   // the Mail check wears the accent and its held sub-line the dim by design (2026-09-16), not a footer tone
   const meta = new El("div"); mod.syncMetaControls(meta, bare, null, {});
   for (const b of meta.querySelectorAll(".meta-btn")) assert.equal(b.querySelector(".meta-label")!.style.color ?? "", "");
 });
@@ -136,4 +136,32 @@ test("at source: the rows carry the colour as a third member, the value span tak
   assert.doesNotMatch(stt, /addEventListener\("(resize|keydown|mousedown)"/, "no window listener inside the lifted slice");
   const sync = MODULE.slice(MODULE.indexOf("function syncMetaControls("), MODULE.indexOf("\n}\n", MODULE.indexOf("function syncMetaControls(")));
   assert.match(sync, /label\.style\.color = showDots \? "" : metaColor\(kind, st\);/, "the footer tints through the same helper");
+});
+
+test("the Mail row is a glance: an accent check mark when mail is on, the bare word off or held when not, a dim sub-line for the held states alone", () => {
+  // the user 2026-09-16, with the session info rows in view: the row read "off: this session neither sends nor receives
+  // peer mail" inline; now the state alone. Round two of PR 1803: this rich tip is pointer-inert (tip.ts), so a value tip
+  // could never show; the reasons live in the Sessions panel's mail mark title, and the two held states, a session that
+  // needs repair, get one dim sub-line under the row; off gets none
+  const rowsOf = (extra: any) => {
+    mod.showTabTip(new El("div"), { ...session, ...extra });
+    const tip = body.children[body.children.length - 1];
+    return tip.children.filter((r) => r.className === "tab-tip-row").map((r) => ({ k: r.children[0].textContent, v: r.children[1] }));
+  };
+  type Row = { k: string; v: any };
+  const mailOf = (rows: Row[]) => rows.find((r) => r.k === "Mail")!.v;
+  const subOf = (rows: Row[]) => { const i = rows.findIndex((r) => r.k === "Mail"); return rows[i + 1] && rows[i + 1].k === "" ? rows[i + 1].v : null; };
+  const on = rowsOf({ postalServiceOff: false, mailOffWhy: "" });
+  assert.equal(mailOf(on).textContent, "\u2713", "on: the check mark alone"); assert.equal(mailOf(on).style.color, "var(--accent)", "on the accent");
+  assert.equal(subOf(on), null, "no sub-line when mail is on"); assert.equal((mailOf(on) as any)._tipText, undefined, "no tip inside the pointer-inert tab tip");
+  const off = rowsOf({ postalServiceOff: true, mailOffWhy: "" });
+  assert.equal(mailOf(off).textContent, "off"); assert.equal(mailOf(off).style.color ?? "", "", "the word, untinted");
+  assert.equal(subOf(off), null, "off explains nothing here: the Sessions panel's mail mark does");
+  const held = rowsOf({ postalServiceOff: true, mailOffWhy: "flags" });
+  assert.equal(mailOf(held).textContent, "held", "held reads at a glance");
+  assert.equal(subOf(held)!.textContent, "its settings file cannot be read; mail waits until it is written again"); assert.equal(subOf(held)!.style.color, "var(--dim)", "dim, under the row");
+  const unread = rowsOf({ postalServiceOff: true, mailOffWhy: "unreadable" });
+  assert.equal(mailOf(unread).textContent, "held"); assert.equal(subOf(unread)!.textContent, "its record cannot be read; mail waits until it is repaired");
+  const thread = rowsOf({ postalServiceOff: true, mailOffWhy: "thread" });
+  assert.equal(mailOf(thread).textContent, "off"); assert.equal(subOf(thread), null);
 });
