@@ -1695,5 +1695,144 @@ class ReviewProbes(Base):
         self.assertTrue(em.checkpoint_write(self.p))
         self.assertIn("state", self.doc(self.p)["folds"]["t"], "and written whole")
 
+
+class CursorTableBound(Base):
+    """fold_records' cursor dicts past 256 keys (2026-09-17). A fold dict is keyed per FILE, and the chat build's agent-gist dict
+    holds one cursor per agent transcript the board shows, finished ones included (a live board: 315), so its stepping folds (a
+    running agent's append, a new agent's first fold) reached the bound at every build. The bound CLEARED the dict, and a
+    finished file's cursor gone while its restored tail entry still stood had nothing to restore from (a document's restore is
+    taken once per pending record): the next fold read the file whole, the quiescent drop popped the entry and rewrote the
+    document, the fold after restored again, and so on, one whole read per build per finished file (live: 2,369 whole refolds
+    and 1.24 GB read in an hour). At the bound the fold now drops only the cursors that cannot serve a hit (no reader entry for
+    the path, or one of another generation) and keeps every live one, so the table is bounded by the reader's entries."""
+
+    def setUp(self):
+        super().setUp()
+        self.d = self.td / "agents"; self.d.mkdir()
+        em.checkpoint_cycle_begin(64 * 1024 * 1024)   # a cycle budget of the test's own, so the drops write (review 2026-09-17): it
+        #                                               began with the env-derived default, and the class's ~258 drop writes take 8 KB
+        #                                               of the budget each, so ROMP_CKPT_CONVERGE_MB exported at 1 deferred the drops
+        #                                               from about the 128th file on, the entries standing, and turned exactly this
+        #                                               class red; the module's other budget tests make a drop or two and never notice
+        self.cache = {}
+        self.kinds = []
+
+    @staticmethod
+    def _step(st, o):
+        return st + [o["n"]]
+
+    def _finished(self, name):
+        p = str(self.d / name)
+        _write(p, [{"n": i} for i in range(3)])
+        old = time.time() - 600; os.utime(p, (old, old))       # unchanged past the quiescence window: a subagent that returned
+        return p
+
+    def _fold(self, p, ckpt="synthGist"):
+        with em._READ_BYTES_LOCK:
+            b0 = em._READ_BYTES.get(p, 0)
+        got = em.fold_records(self.cache, p, list, self._step, on=self.kinds.append, ckpt=ckpt, drop_after="quiescent")
+        with em._READ_BYTES_LOCK:
+            b1 = em._READ_BYTES.get(p, 0)
+        return got, self.kinds[-1], b1 - b0
+
+    def _rotation(self, prefix, ckpt="synthGist"):
+        """257 finished files, each folded twice: a refold (the drop pops the entry and writes the document), then a restore
+        over a tail entry that now stands. Every cursor is live: at its standing entry's generation."""
+        ps = [self._finished("%s-%03d.jsonl" % (prefix, i)) for i in range(257)]
+        for p in ps:
+            self.assertEqual(self._fold(p, ckpt)[1], "refold", "the first fold reads whole")
+            with em._JSONL_CACHE_LOCK:
+                self.assertIsNone(em._JSONL_CACHE.get(p), "the quiescent drop popped the entry")
+            self.assertIn("state", self.doc(p)["folds"][ckpt], "and wrote the document")
+        for p in ps:
+            self.assertEqual(self._fold(p, ckpt)[1], "restore", "the second fold restores over a tail entry")
+            with em._JSONL_CACHE_LOCK:
+                ent = em._JSONL_CACHE.get(p)
+            self.assertIsNotNone(ent, "which stands after the fold")
+            self.assertEqual((ent[5], len(ent[4]), self.cache[p][1]), (3, 0, ent[6]), "base 3, nothing held, the cursor at its gen")
+        self.assertEqual(len(self.cache), 257)
+        return ps
+
+    def test_a_live_cursor_survives_the_bound_and_its_finished_file_stays_a_hit(self):
+        ps = self._rotation("f")
+        new = self._finished("new.jsonl")
+        self.assertEqual(self._fold(new)[1], "refold")            # a stepping fold with the dict at 257: the bound trips
+        refolds = {k: dict(v) for k, v in em._CKPT_STATS["refolds"].items()}
+        seq = self.doc(ps[0])["seq"]
+        got, kind, nread = self._fold(ps[0])
+        self.assertEqual((kind, nread, got), ("hit", 0, [0, 1, 2]), "the finished file costs a stat: its cursor survived the bound")
+        self.assertEqual(em._CKPT_STATS["refolds"], refolds, "no whole read counted against the fold")
+        self.assertEqual(self.doc(ps[0])["seq"], seq, "and its document is not rewritten")
+        self.assertEqual(len(self.cache), 258, "every cursor at a standing entry's generation is kept")
+
+    def test_dead_cursors_leave_the_table_at_the_bound(self):
+        """A cursor whose reader entry left memory, with no document to restore from, serves nothing: the next fold of its file
+        reads whole whatever the table holds. Those are what the bound drops, so the table stays bounded."""
+        saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None          # no checkpoints in play: the drop pops and writes nothing
+        self.addCleanup(setattr, em, "_CKPT_DIR_FN", saved)
+        ps = [self._finished("d-%03d.jsonl" % i) for i in range(257)]
+        for p in ps:
+            self.assertEqual(self._fold(p, "synthDead")[1], "refold")
+        with em._JSONL_CACHE_LOCK:
+            self.assertTrue(all(em._JSONL_CACHE.get(p) is None for p in ps), "every entry popped by the drop")
+        self.assertEqual(self.ckpt_files(), [], "and no document written")
+        self.assertEqual(len(self.cache), 257, "under the bound nothing is swept")
+        new = self._finished("new.jsonl")
+        self.assertEqual(self._fold(new, "synthDead")[1], "refold")
+        self.assertEqual(set(self.cache), {new}, "at the bound every dead cursor left; the stepping fold's own stands")
+        got, kind, nread = self._fold(ps[0], "synthDead")
+        self.assertEqual((kind, got), ("refold", [0, 1, 2]), "a dead cursor served nothing: its file reads whole regardless")
+        self.assertGreater(nread, 0)
+
+    def test_the_bound_sweeps_the_dead_cursors_and_keeps_the_live_ones(self):
+        """The two together: entries popped from under half the cursors (an owed drop paid by its pop alone, the real event that
+        kills a cursor) make those dead; the sweep takes exactly those, and the finished files behind the rest stay hits."""
+        ps = self._rotation("m")
+        for p in ps[1::2]:
+            em._pop_owed_entry(p)
+        new = self._finished("new.jsonl")
+        self.assertEqual(self._fold(new)[1], "refold")
+        self.assertEqual(set(self.cache), set(ps[0::2]) | {new}, "the dead cursors left, the live ones and the stepping fold's stand")
+        got, kind, nread = self._fold(ps[2])
+        self.assertEqual((kind, nread, got), ("hit", 0, [0, 1, 2]), "a live cursor's file: a stat")
+        got, kind, nread = self._fold(ps[1])
+        self.assertEqual((kind, got), ("restore", [0, 1, 2]), "a dead cursor's file restores over a fresh tail entry, as it would have "
+                                                              "with the stale cursor in the table (its gen was another entry's)")
+        self.assertGreater(nread, 0, "the guard read, nothing of the prefix")
+
+    def test_a_cursor_under_an_entry_of_another_generation_leaves_at_the_bound(self):
+        """The sweep's second arm (review 2026-09-17: the three tests above kill every cursor by popping its entry, so a sweep
+        that asked only whether the entry is gone passed them all). Production reaches this arm through the two fold dicts that
+        share every agent file (the gist's and the launch ids'): one dict's quiescent drop pops the file's entry, the sibling
+        dict's next fold rebuilds it from the document at a NEW generation and restores at the witness, which pops nothing and
+        leaves the entry standing, and the first dict's cursor stands under it at the old generation, unable to serve a hit
+        (every from-zero read is a new gen). At the bound that cursor leaves, and the file's next fold in the first dict restores
+        from its document rather than answering from the stale cursor."""
+        ps = self._rotation("g")
+        other, kinds = {}, []                                  # the sibling fold dict over the same files, as the launch-ids dict is
+        stale, live = ps[1::2], ps[0::2]
+        for p in stale:
+            em.fold_records(other, p, list, self._step, on=kinds.append, ckpt="synthOther", drop_after="quiescent")
+            self.assertEqual(kinds[-1], "refold", "the sibling's first fold has no restore of its own: whole, and its drop pops")
+            with em._JSONL_CACHE_LOCK:
+                self.assertIsNone(em._JSONL_CACHE.get(p))
+            em.fold_records(other, p, list, self._step, on=kinds.append, ckpt="synthOther", drop_after="quiescent")
+            self.assertEqual(kinds[-1], "restore", "its second fold restores over a tail entry rebuilt from the document")
+            with em._JSONL_CACHE_LOCK:
+                ent = em._JSONL_CACHE.get(p)
+            self.assertIsNotNone(ent, "which stands: a restore at the witness pops nothing")
+            self.assertEqual(other[p][1], ent[6], "the sibling's cursor is at the new generation")
+            self.assertNotEqual(self.cache[p][1], ent[6], "this dict's cursor is at the old one, under a standing entry")
+        self.assertEqual(len(self.cache), 257, "under the bound the stale cursors stand")
+        new = self._finished("new.jsonl")
+        self.assertEqual(self._fold(new)[1], "refold")            # the stepping fold that trips the bound
+        self.assertEqual(set(self.cache), set(live) | {new}, "at the bound every cursor under an entry of another generation left")
+        got, kind, nread = self._fold(stale[0])
+        self.assertEqual((kind, nread, got), ("restore", 0, [0, 1, 2]), "its file restores from the document over the standing entry")
+        with em._JSONL_CACHE_LOCK:
+            self.assertEqual(self.cache[stale[0]][1], em._JSONL_CACHE[stale[0]][6], "and its cursor is at the entry's generation again")
+        got, kind, nread = self._fold(live[0])
+        self.assertEqual((kind, nread, got), ("hit", 0, [0, 1, 2]), "a neighbour at its entry's generation stayed: a stat")
+
 if __name__ == "__main__":
     unittest.main()

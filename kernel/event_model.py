@@ -2047,7 +2047,11 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
     cursor is written into the file's checkpoint (checkpoint_write, when it stands at the reader's witness)
     and restored from it at the first fold of the file in a new process, over a TAIL entry that read only the
     bytes past the checkpoint's offset; the fold then steps the tail alone. A refold over a tail entry reads
-    the whole file first. Folds without `ckpt` behave as before, over whatever entry the reader holds.
+    the whole file first. Folds without `ckpt` behave as before, over whatever entry the reader holds. The cursor dict is
+    bounded by the reader's entries (2026-09-17): past 256 cursors a stepping fold sweeps the ones whose entry left memory or
+    was replaced (they could only refold or restore) and keeps every cursor at a standing entry's generation, so live cursors
+    number at most _JSONL_CACHE_MAX. It was cleared whole at 256, a figure sized to sessions where the keys are files, and a
+    finished agent file's cursor cleared under its standing tail entry read the file whole once per build.
 
     `on`, when given, is called once per call with the path the fold took: "hit" (the records are the
     cached ones; nothing stepped), "append" (only the records past the cached prefix stepped), "refold"
@@ -2149,8 +2153,31 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
     for r in recs[start:]:
         if isinstance(r, dict):
             state = step(state, r)
-    if len(cache) > 256:                                  # bounded by the session count; never unbounded
-        cache.clear()
+    if len(cache) > 256:
+        # Past 256 cursors the dict is swept of the ones that cannot serve a hit (2026-09-17). It was CLEARED here, "bounded by
+        # the session count", but a fold dict is keyed per FILE, and the chat build's agent-gist dict holds one cursor per agent
+        # transcript the board shows, finished ones included (a live board: 315), so a running agent's append or a new agent's
+        # first fold cleared it at every build; a finished file's cursor gone while its restored tail entry still stood had
+        # nothing to restore from (a document's restore is taken once per pending record), so the next fold read the file
+        # whole, the drop popped the entry and rewrote the document, the fold after restored again: one whole read per build
+        # per finished file (live: 2,369 refolds, 1.24 GB read in an hour). A cursor is dead the moment the reader's entry for
+        # its path left memory (the quiescent drop, an eviction, a failure's pop) or was replaced (every from-zero read is a new
+        # gen): those go, and would have refolded or restored anyway; a cursor at a standing entry's gen is exactly what makes
+        # a finished file a stat, and stays. The bound is the reader's: live cursors number at most its standing entries
+        # (_JSONL_CACHE_MAX); dead ones are swept at the next stepping fold past 256. One pass of dict lookups under the
+        # reader's lock (its cheap-ops discipline). The dicts are shared across threads and, like every cursor dict here,
+        # unlocked (the store at this function's end, a failure's pop): the pass walks a snapshot and pops a cursor only while
+        # the dict still holds the very one it judged, which narrows the window but does not close it (review 2026-09-17: the
+        # check and the pop are two operations). A concurrent fold's fresh cursor stored between them is popped, and that costs
+        # its file one refold at its next fold, the price a lost cursor has always had here, never a raise. Not worth a lock: a
+        # same-class race stands without the sweep (two threads folding one path, last store wins), and the module's rule for
+        # its shared dicts is that a lost race degrades to a re-read.
+        with _JSONL_CACHE_LOCK:
+            dead = [(k, cur) for k, cur in list(cache.items())
+                    if k != key and (_JSONL_CACHE.get(k) is None or _JSONL_CACHE[k][6] != cur[1])]
+        for k, cur in dead:
+            if cache.get(k) is cur:
+                cache.pop(k, None)
     cache[key] = (total, gen, state)
     if ckpt is not None:
         with _CKPT_LOCK:

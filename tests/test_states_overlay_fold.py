@@ -292,8 +292,10 @@ class OverlayFold(_State):
         self.assertNotIn(str(self.states_path()), km._states_overlay_failed, "a good read ends the episode")
 
     def test_the_failed_set_is_cleared_whole_above_its_cap(self):
-        # The forget leaves a departed sid's path in the set, so the set is bounded the way the fold cache is:
-        # cleared whole above 256 paths (fold_records), never per path. At 256 nothing is cleared.
+        # The forget leaves a departed sid's path in the set, so the set is bounded at 256 paths, the fold cursor dict's
+        # trip point (fold_records), and cleared whole above it, never per path. (Since 2026-09-17 the fold dict itself
+        # is swept there per cursor, of the ones whose reader entry is gone or replaced; this set has no liveness to
+        # judge a path by, so it still clears whole.) At 256 nothing is cleared.
         seeded = {os.path.join(self.td, "states", "cap-%d.jsonl" % i) for i in range(256)}
         with km._STATES_OVERLAY_LOCK:
             km._states_overlay_failed.update(seeded)
@@ -310,8 +312,7 @@ class OverlayFold(_State):
                              "256 paths is the cap, not above it: nothing cleared, the failing path enters")
             self.assertEqual(err.getvalue().count("unreadable"), 1)
             # 257 paths now: the next fail clears the set whole, and a clear ends every open episode at once,
-            # so the same unreadable file is named a second time on that read, as the fold cache re-folds
-            # after its own clear
+            # so the same unreadable file is named a second time on that read
             with redirect_stderr(err):
                 self.assertIsNone(km._states_awaiting_overlay(SID))
             self.assertEqual(km._states_overlay_failed, {str(self.states_path())},
