@@ -196,47 +196,63 @@ const filled4 = await page.evaluate(() => { const c = document.getElementById("c
 // notice clicked away, the window released) must keep that row at its offset and name the point under the viewport top as a turn:
 // the row names its own turn (data-turn), the fill reads it, and looks nothing up by uuid.
 await reboot();
-// the head gap's own page asks are parked for the whole road (CI, 2026-09-14, twice: with the reader at the gap's top a rebuild re-observed the
-// gap and it asked its FIRST page, turns 0 to 16, which the kernel filled, 33 events; turn 10 was then a rendered row and the second focus
-// landed on it exactly, asking no window: held 0, no fill, nothing moved). Parked, the gap stays [0, 39) and turn 10 stays inside it.
+// ROAD 7a (T386; a fresh page): a READER'S OWN SCROLL brings an answered AskUserQuestion (a row anchored on a tool_result uuid no event
+// carries as its own) under the viewport top. A wheel over #content stamps the reader's input, so the scroll it drives is a gesture the
+// settling landing YIELDS to (settleGesture), not a page sample it re-lands ("land-realign"); the row stays under the top, the reader's
+// promise, whatever the message line-height (whole device px since the raster fix, no longer the exact 20.8 px road 7 once leaned on).
+// Parked head-gap page asks (loadTurns) keep the gap whole (CI, 2026-09-14: a rebuild at the gap's top re-asked its first page).
 await page.evaluate(() => { window.__hold.add("loadTurns"); });
 const auqUser7 = "11111111-2222-3333-4444-" + pad(2 * 100), auqAnswer7 = "66666666-7777-8888-9999-" + pad(2 * 100);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: auqUser7, anchorT: cfg.base + 2 * 100 });   // turn 100: its window (about turns 40 to 160) leaves the head gap above it
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), auqAnswer7, { timeout: 15000 }).catch(() => {});
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
 await painted();
-const toTop7 = () => page.evaluate((u) => { const c = document.getElementById("content"); const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); if (t) c.scrollTop += t.getBoundingClientRect().top - c.getBoundingClientRect().top; }, auqAnswer7);   // the answered question's row to the viewport top
-await toTop7(); await painted();
-const top7 = await rowAtTop();
-const turnAttr7 = await page.evaluate((u) => { const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); return t ? (t.dataset.turn === undefined ? null : t.dataset.turn) : "absent"; }, auqAnswer7);
-const sentAt7 = await page.evaluate(() => window.__sent.length);
-// the first landing settled before the fill's ask is made: its record taken, no ask in flight, the socket open (a held ask is parked at the
-// socket only once the shim's send runs; while the socket is down the shim queues and flushes on the redial). CI read 0 here twice on
-// 2026-09-14 (PR 1640's merge ref, PR 1643) with the road's wait below on the wrong predicate (a HELD ask never reaches __sent, so it
-// burned its timeout every run): the fill's ask is now waited for where it lands, the socket, and the payload names what stood if not.
-await page.waitForFunction((sid) => { const a = window.__rompAskState(sid); return a.asks.length === 0 && !a.loadingOlder && !!window.__ws && window.__ws.readyState === 1; }, cfg.sid, { timeout: 15000 }).catch(() => {});   // (a parked page ask may stand: it cannot land)
-const settled7 = await page.evaluate((sid) => ({ ask: window.__rompAskState(sid), socket: window.__ws ? window.__ws.readyState : null }), cfg.sid);
+const gestureToTop7 = () => page.evaluate((u) => { const c = document.getElementById("content"); const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); if (c) c.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 4 })); if (t && c) c.scrollTop += t.getBoundingClientRect().top - c.getBoundingClientRect().top; }, auqAnswer7);   // the wheel (the reader's input) then the scroll it drives: a gesture the settle yields to, so the answer stays under the top
+const nWr7a = await page.evaluate(() => window.__sent.length);
+await gestureToTop7();
+await page.waitForFunction((n) => window.__sent.slice(n).some((m) => m.type === "locateDiag" && "settled" in m), nWr7a, { timeout: 15000 }).catch(() => {});   // the gesture's takeover ends the settle: its landing row files
+await painted();
+const top7a = await rowAtTop();
+const turnAttr7a = await page.evaluate((u) => { const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); return t ? (t.dataset.turn === undefined ? null : t.dataset.turn) : "absent"; }, auqAnswer7);
+const point7a = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+const realign7a = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "land-realign").length, nWr7a);   // zero: the settle yielded to the gesture, it did not snap the row back
+await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__heldRaw = []; });
+await reboot();
+// ROAD 7b (T386; a fresh page): at the viewport the landing LEAVES (the answered question's turn at the top, NO scroll), a fill ABOVE it (a
+// deep link into the head gap, held at the socket, its notice clicked to stay, then released) inserts its run above the reader WITHOUT moving
+// the point under the top: it holds at turn 100, named by position through the insertion. No scroll here, so no settle to fight: the reader
+// who lands and stays keeps their place while history fills in above them.
+await page.evaluate(() => { window.__hold.add("loadTurns"); });
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: auqUser7, anchorT: cfg.base + 2 * 100 });
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), auqAnswer7, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const sentAt7b = await page.evaluate(() => window.__sent.length);
+await page.waitForFunction((sid) => { const a = window.__rompAskState(sid); return a.asks.length === 0 && !a.loadingOlder && !!window.__ws && window.__ws.readyState === 1; }, cfg.sid, { timeout: 15000 }).catch(() => {});   // the landing settled: no window ask in flight, the socket open
+const rowTurnAtTop = () => page.evaluate(() => { const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top; for (const t of Array.from(document.querySelectorAll("#content .turn[data-uuid]"))) { const r = t.getBoundingClientRect(); if (r.bottom > cTop + 1) return { uuid: t.dataset.uuid, turn: t.dataset.turn === undefined ? null : t.dataset.turn, y: Math.round(r.top - cTop) }; } return null; });
+const pointUnderTop = () => page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+const rowB7Before = await rowTurnAtTop();
+const pointB7Before = await pointUnderTop();
 await page.evaluate(() => { window.__hold.add("loadAround"); });
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 10), anchorT: cfg.base + 2 * 10 });   // turn 10: in the head gap above the landed window
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 10), anchorT: cfg.base + 2 * 10 });   // turn 10: a fill in the head gap above the landed window
 await page.waitForFunction(() => (window.__heldRaw || []).some((d) => JSON.parse(d).type === "loadAround"), null, { timeout: 15000 }).catch(() => {});   // the fill's window ask, parked at the socket
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
-const held7 = await page.evaluate(() => (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround").length);
-const askState7 = await page.evaluate((sid) => ({ ask: window.__rompAskState(sid), socket: window.__ws ? window.__ws.readyState : null, trail: (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail().slice(-6) : null),
-  held: (window.__heldRaw || []).map((d) => JSON.parse(d).type), recv: window.__recv.slice(-6) }), cfg.sid);   // what stood at the read, for the assertion's message
-await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });
+const held7b = await page.evaluate(() => (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround").length);
+const askState7b = await page.evaluate((sid) => ({ ask: window.__rompAskState(sid), socket: window.__ws ? window.__ws.readyState : null, held: (window.__heldRaw || []).map((d) => JSON.parse(d).type) }), cfg.sid);
+await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });   // click to STAY: the turn-10 navigation is cancelled, the reader kept at the landed turn 100
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
-await quiet(); await toTop7(); await painted();   // the click's pre-jump moved the view (its deferred write has run: quiet); the row back to the top before the fill
-const top7Held = await rowAtTop();
-const point7Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+await quiet();   // the click's deferred write has run: the reader is back at the landed place
+const rowB7Held = await rowTurnAtTop();
+const pointB7Held = await pointUnderTop();
 const runN7 = () => page.evaluate(() => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0));
-const runNBefore7 = await runN7();
+const runNBefore7b = await runN7();
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround"); window.__release(); });   // the fill's window alone goes out; a parked page ask is dropped
-await page.waitForFunction((n0) => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0) > n0, runNBefore7, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction((n0) => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0) > n0, runNBefore7b, { timeout: 15000 }).catch(() => {});
 await painted();
-const top7After = await rowAtTop();
-const point7After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
-const fillWrites7 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt7);
-const runNAfter7 = await runN7();
+const rowB7After = await rowTurnAtTop();
+const pointB7After = await pointUnderTop();
+const runNAfter7b = await runN7();
+const fillWrites7b = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt7b);
 await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__heldRaw = []; });
 // ROAD 8 (round seven, medium 3; a fresh page): the notice's click cancels a landing whose ask is still on the wire; the reader's NEXT
 // card click must ask, not be refused as "still going to the earlier message" (a cancelled landing is not busy). Two deep links into two
@@ -477,7 +493,7 @@ await noticeHidden(); await painted();
 const targetB15 = await onScreen(deepB15);
 await page.waitForTimeout(700);                                                       // past the cut animation's own length: a listener the hide did not remove would still be there
 const afterCut15 = await page.evaluate(() => ({ add: window.__aeAdd, remove: window.__aeRemove, cls: !!document.querySelector(".tx-landing-notice.pulse"), shown: (() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; })() }));
-process.stdout.write("RESULT:" + JSON.stringify({ listeners15, cut15, afterCut15, first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, settled7, askState7, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+process.stdout.write("RESULT:" + JSON.stringify({ listeners15, cut15, afterCut15, first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7a, turnAttr7a, point7a, realign7a, rowB7Before, pointB7Before, rowB7Held, pointB7Held, rowB7After, pointB7After, held7b, askState7b, fillWrites7b, runNBefore7b, runNAfter7b, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -559,28 +575,37 @@ class ServedLandingNotice(WindowLab):
         self.assertGreaterEqual(r["reask5"], 1, "the landing was asked again on the healed socket (the redial's flush re-sent the lost ask: %r; else a fresh deep link asked): %r" % (r["flushAsk5"], r["reask5"]))
         self.assertTrue(r["landed5"], "…and the lost target landed: %r" % r["landed5"])
 
-    def test_an_answered_question_under_the_viewport_top_names_its_turn_and_holds_through_a_fill_above_it(self):
-        # round six, medium 2: a row anchored on a tool_result uuid (an answered AskUserQuestion) is no event's own uuid, so the fill
-        # cannot name the point under the viewport top by looking the row up; the row names its own turn (data-turn) instead
+    def test_a_readers_scroll_puts_the_answered_question_under_the_viewport_top_and_the_settle_does_not_snap_it_back(self):
+        # T386, road 7a: the answered AskUserQuestion is anchored on its ANSWER's uuid, a tool_result line no event carries as its own. A
+        # reader's own scroll (a wheel: input evidence) brings that row under the viewport top, and the settling landing YIELDS to the gesture
+        # (settleGesture) rather than re-landing ("land-realign") the row off the top. This is the path a real scroll takes, so it holds whatever
+        # the message line-height (whole device px since the raster fix): the point names the turn by position, never a uuid lookup.
         r = self._result()
         answer = "66666666-7777-8888-9999-%012d" % 200
-        self.assertIsNotNone(r["top7"], "a row sat under the viewport top")
-        self.assertEqual(r["top7"]["uuid"], answer, "the row under the viewport top is the answered question, anchored on its answer's uuid (a fixture fact): %r" % r["top7"])
-        self.assertTrue(isinstance(r["turnAttr7"], str) and r["turnAttr7"].isdigit(), "the row names its own turn (data-turn), so the fill reads it by position, never a uuid lookup: %r" % r["turnAttr7"])
-        self.assertEqual(int(r["turnAttr7"]), 100, "…the answered question's turn: %r" % r["turnAttr7"])
-        s7 = r["settled7"]
-        self.assertEqual((s7["ask"]["asks"], s7["socket"]), ([], 1), "the first landing settled before the fill's ask: no window ask in flight, the socket open: %r" % s7)
-        self.assertEqual(r["held7"], 1, "the fill's window ask was held at the socket (CI read 0 twice on 2026-09-14 with the wait on the wrong predicate): %r" % r["askState7"])
-        self.assertGreater(r["runNAfter7"], r["runNBefore7"], "the released window inserted its run above the reader: %r -> %r" % (r["runNBefore7"], r["runNAfter7"]))
-        self.assertGreaterEqual(len(r["fillWrites7"]), 1, "the fill wrote the scroll once in place (gap-fill): %r" % r["fillWrites7"])
-        self.assertEqual(r["top7Held"]["uuid"], answer, "the answered question was the row under the viewport top when the fill came: %r" % r["top7Held"])
-        self.assertIsNotNone(r["top7After"], "a row is on screen after the fill (no zero-row view)")
-        self.assertEqual(r["top7After"]["uuid"], answer, "the same row sits under the viewport top after the fill above it: %r -> %r" % (r["top7Held"], r["top7After"]))
-        self.assertLessEqual(abs(r["top7After"]["y"] - r["top7Held"]["y"]), 2, "…at its offset: %r -> %r" % (r["top7Held"], r["top7After"]))
-        self.assertIsNotNone(r["point7Before"], "the point under the viewport top was named as a turn with the answered question at the top")
-        self.assertIsNotNone(r["point7After"], "…and after the fill")
-        self.assertLess(abs(r["point7After"] - r["point7Before"]), 1.0, "the point moved by less than a turn: %r -> %r" % (r["point7Before"], r["point7After"]))
+        self.assertIsNotNone(r["top7a"], "a row sat under the viewport top after the reader's scroll")
+        self.assertEqual(r["top7a"]["uuid"], answer, "the reader's scroll put the answered question (its answer's tool_result uuid) under the viewport top: %r" % r["top7a"])
+        self.assertTrue(isinstance(r["turnAttr7a"], str) and r["turnAttr7a"].isdigit(), "the row names its own turn (data-turn), read by position, never a uuid lookup: %r" % r["turnAttr7a"])
+        self.assertEqual(int(r["turnAttr7a"]), 100, "…the answered question's turn: %r" % r["turnAttr7a"])
+        self.assertEqual(int(r["point7a"]), 100, "the point under the viewport top names turn 100 (its integer part) with the answer (a tool_result row, no event's own uuid) at the top, by position not a uuid lookup: %r" % r["point7a"])
+        self.assertEqual(r["realign7a"], 0, "the settle YIELDED to the reader's gesture: no land-realign snapped the row back off the top: %r" % r["realign7a"])
 
+    def test_an_answered_questions_turn_holds_under_the_viewport_top_through_a_fill_above_it(self):
+        # T386, road 7b: at the viewport the landing LEAVES (the answered question's turn at the top, no scroll), a fill ABOVE it (a held deep
+        # link into the head gap, its notice clicked to stay, then released) inserts its run above the reader WITHOUT moving the point under the
+        # top: it holds at turn 100, named by position through the insertion. No scroll here, so no settle to fight: the reader who lands and
+        # stays keeps their place while history fills in above them.
+        r = self._result()
+        self.assertEqual(int(r["pointB7Before"]), 100, "the landing left turn 100 under the viewport top (the point's integer part): %r" % r["pointB7Before"])
+        self.assertEqual(r["held7b"], 1, "the fill's window ask was held at the socket: %r" % r["askState7b"])
+        self.assertGreater(r["runNAfter7b"], r["runNBefore7b"], "the released window inserted its run above the reader: %r -> %r" % (r["runNBefore7b"], r["runNAfter7b"]))
+        self.assertGreaterEqual(len(r["fillWrites7b"]), 1, "the fill wrote the scroll once in place (gap-fill): %r" % r["fillWrites7b"])
+        self.assertIsNotNone(r["rowB7Held"], "a row sat under the viewport top when the fill came")
+        self.assertEqual(r["rowB7Held"]["turn"], "100", "the row under the top when the fill came names turn 100: %r" % r["rowB7Held"])
+        self.assertIsNotNone(r["rowB7After"], "a row is on screen after the fill (no zero-row view)")
+        self.assertEqual(r["rowB7After"]["uuid"], r["rowB7Held"]["uuid"], "the same row sits under the viewport top after the fill above it: %r -> %r" % (r["rowB7Held"], r["rowB7After"]))
+        self.assertLessEqual(abs(r["rowB7After"]["y"] - r["rowB7Held"]["y"]), 2, "…at its offset: %r -> %r" % (r["rowB7Held"], r["rowB7After"]))
+        self.assertEqual(int(r["pointB7After"]), 100, "the point under the top holds at turn 100 after the fill above it: %r" % r["pointB7After"])
+        self.assertLess(abs(r["pointB7After"] - r["pointB7Before"]), 1.0, "the point moved by less than a turn through the fill above: %r -> %r" % (r["pointB7Before"], r["pointB7After"]))
     def test_a_cancelled_landing_is_not_busy_the_next_card_click_asks_and_both_replies_land_in_place(self):
         # round seven, medium 3: click, cancel, click
         r = self._result()

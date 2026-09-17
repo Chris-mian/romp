@@ -2891,13 +2891,13 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
 .diff-hunk { margin-top: 2px; }
 
 /* ---------- markdown ---------- */
-.md { overflow-wrap: anywhere; } /* wrap long unbreakable strings (tokens/base64/urls) */
+.md { overflow-wrap: anywhere; line-height: round(1.6em, 1px); } /* wrap long unbreakable strings (tokens/base64/urls); a WHOLE css px line-height (so whole device px at 1x and 2x), not the inherited unitless 1.6 which is 20.8px at 13px and straddles device rows at 2x, doubling alternate lines; scoped to the message body (not body/tabs) and round() rederives per --fs so it still scales */
 /* the assistant's replies read in the PROSE face (— the user's own bubbles stay in the UI face:
    the claude.ai reading split). Dark: --font-prose = --sans, so nothing changes there. */
 .assistant { font-family: var(--font-prose); }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
-.md p { margin: 0.5em 0; }
+.md p { margin: round(0.5em, 1px) 0; }   /* a WHOLE css px (0.5em is 6.5px at 13px, which lands alternate paragraphs on a half px and straddles a device row at 1x); round() keeps it scaling with --fs */
 .md h1, .md h2, .md h3, .md h4 { font-weight: 600; color: var(--vscode-foreground, #fff); margin: 1em 0 0.4em; line-height: 1.3; }
 .md h1 { font-size: 1.3em; } .md h2 { font-size: 1.15em; } .md h3 { font-size: 1.05em; }
 .md ul, .md ol { margin: 0.4em 0; padding-left: 1.4em; }
