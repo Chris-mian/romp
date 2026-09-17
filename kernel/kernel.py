@@ -40170,8 +40170,11 @@ _FEED_NUDGE_FIELDS = ("count", "failed", "failedAt")  # the fields the card read
 _feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
-_FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0,
+_FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0, "failed": 0,
                     "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)}}   # /perf builds.feed.memo
+_FEED_DERIVE_FAILED = {}   # sid → cause head of the session's LAST derivation, present while that derivation is failing:
+#                            the stderr line's dedupe (one per distinct cause per session, never per 2s build) and /perf's
+#                            `failing` count; a success or the session's departure drops the record (2026-09-17)
 
 
 def _feed_memo_bound():
@@ -40245,7 +40248,36 @@ def _feed_memo_forget(alive_sids):
             _FEED_MEMO_STATS["bytes"] -= _feed_memo.pop(k)[2]
         _FEED_MEMO_STATS["evict"] += len(gone)
         _FEED_MEMO_STATS["entries"] = len(_feed_memo)
+        for k in [k for k in _FEED_DERIVE_FAILED if k not in alive_sids]:
+            _FEED_DERIVE_FAILED.pop(k, None)         # a departed session is not failing any more (nothing derives it)
     return len(gone)
+
+
+def _feed_derive_complain(sid, name, e, served_prev):
+    """One session's card derivation raised inside build_feed (the miss path: _feed_session_entry, the dependency key,
+    the serialization). Counted (builds.feed.memo `failed`, cumulative; `failing`, the sessions whose last derivation
+    failed), said on stderr ONCE per (session, cause) with the traceback, the _bars_complain shape: loud, never per
+    build, and never silent (fail loudly, 2026-07-03). The caller decides what the board shows for the session."""
+    head = "%s: %s" % (type(e).__name__, str(e)[:160])
+    with _feed_memo_lock:
+        _FEED_MEMO_STATS["failed"] = _FEED_MEMO_STATS.get("failed", 0) + 1
+        said = _FEED_DERIVE_FAILED.get(sid) == head
+        _FEED_DERIVE_FAILED[sid] = head
+    if said:
+        return
+    try:                                          # the reporter must never be the exception that re-opens the freeze it reports
+        sys.stderr.write("feed: %s (%s) card derivation failed — %s until it derives again: %s\n%s"
+                         % (str(sid)[:8], name, "serving its previous cards" if served_prev else "its cards are absent",
+                            head, traceback.format_exc()))
+    except (OSError, ValueError):                 # a closed or broken stderr (2026-09-17): the count and the record still stand
+        pass
+
+
+def _feed_derive_recovered(sid):
+    """The session's entry was served or derived: whatever was failing for it is not any more."""
+    if sid in _FEED_DERIVE_FAILED:               # the common path takes no lock: the dict is empty
+        with _feed_memo_lock:
+            _FEED_DERIVE_FAILED.pop(sid, None)
 
 
 def _feed_memo_report():
@@ -40255,6 +40287,7 @@ def _feed_memo_report():
         out["miss_by"] = dict(_FEED_MEMO_STATS["miss_by"])
         out["entries"] = len(_feed_memo)
         out["bound"] = FEED_MEMO_BYTES
+        out["failing"] = len(_FEED_DERIVE_FAILED)   # sessions whose LAST derivation raised (a standing fault, not history)
     return out
 
 
@@ -41801,17 +41834,33 @@ def build_feed(now, live_map=None):
         key = _feed_session_key(s, tm, ctx, prev)
         if ent is not None and ent[0] == key:
             _feed_memo_count("hit")
+            _feed_derive_recovered(fsid)
             entry = prev
         else:
             _feed_memo_miss(ent[0] if ent is not None else None, key)
             _feed_memo_count("derived")
-            entry = _feed_session_entry(s, ctx)
-            key = _feed_key_with_deps(key, ctx, entry)   # the peers and reads THIS derivation recorded
-            js = json.dumps(entry, default=_wire_default_in("_feed_memo"))   # str() of an unencodable value, said once
-            if not (entry or {}).get("faults"):      # a derivation that met a body-read fault is served but not kept:
-                _feed_memo_put(fsid, key, js)        #   the next build re-derives it (the anchor memo skipped it too)
-            entry = json.loads(js)                   # the fold's objects come from the string on a miss too, so a hit and
-            #                                          a miss hand the board the same shapes, byte for byte
+            # CONTAINMENT (2026-09-17): one session's derivation raising used to propagate out of build_feed; the
+            # pusher's catch swallowed it, no counter moved, and every client kept the LAST successful frame: the whole
+            # board froze for an hour behind one session (a pre-cut atom whose transcript the hydration map did not
+            # know, a LazyBodyRead out of _last_plain_user_turn_t; that root cause is fixed separately). Here the
+            # fault stays the session's: said once and counted (_feed_derive_complain), its previous cards served
+            # when the memo holds them (stale, and said so) else absent this build, never memoized, so the next build
+            # re-derives it; every other session folds as usual and the frame ships.
+            try:
+                entry = _feed_session_entry(s, ctx)
+                key = _feed_key_with_deps(key, ctx, entry)   # the peers and reads THIS derivation recorded
+                js = json.dumps(entry, default=_wire_default_in("_feed_memo"))   # str() of an unencodable value, said once
+            except Exception as e:
+                _feed_derive_complain(fsid, s["name"], e, prev is not None)
+                if prev is None:
+                    continue
+                entry = prev
+            else:
+                _feed_derive_recovered(fsid)
+                if not (entry or {}).get("faults"):      # a derivation that met a body-read fault is served but not kept:
+                    _feed_memo_put(fsid, key, js)        #   the next build re-derives it (the anchor memo skipped it too)
+                entry = json.loads(js)                   # the fold's objects come from the string on a miss too, so a hit and
+                #                                          a miss hand the board the same shapes, byte for byte
         _heal, _hid, _cold = _feed_fold_entry(entry, now, cmap, s["name"], asks, working, awaiting, bg_services, serving_folds)
         heal_total += _heal
         hidden_total += _hid

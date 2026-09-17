@@ -27,7 +27,10 @@ was attributed to, beside the card the moved input changes:
   * the clock: two builds ten minutes apart derive nothing and differ in `now`, `buildId` and the cards' age
     tint alone (the fold stamps trgb per build; the memo holds nothing clock-derived);
   * the byte bound (FEED_MEMO_BYTES): entries leave oldest first, counted, and the payload stays complete;
-  * a departed session's entry leaves with it; GET /perf reports the memo's counters.
+  * a departed session's entry leaves with it; GET /perf reports the memo's counters;
+  * one session's derivation raising is CONTAINED (2026-09-17): the other sessions' cards ship, the failure is counted
+    (`failed`, cumulative; `failing`, the sessions whose last derivation raised) and said on stderr once per cause, the
+    session's previous cards are served when the memo holds them (never memoized), and a recovery clears its record.
 
 Harness: tests/test_payload_dedup_invariant.py's world (a hermetic state root the kernel's judge is rebound to,
 names/ entries and projects/<launch dir>/<sid>.jsonl transcripts discover finds, a fixed live map, a warm first
@@ -37,6 +40,8 @@ jd.save_goals). The parses stay cold, as the feed reads them (cache-only), so a 
 Synthetic fixtures only: private synthetic sids (the goal-store fixture rule: load_goals replays the per-sid
 override journal, so a shared placeholder sid would be re-flagged by other modules' rows), invented text.
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -112,10 +117,11 @@ def _reset_memo():
     with km._feed_memo_lock:
         km._feed_memo.clear()
         st = km._FEED_MEMO_STATS
-        for k in ("hit", "miss", "evict", "derived", "entries", "bytes"):
+        for k in ("hit", "miss", "evict", "derived", "entries", "bytes", "failed"):
             st[k] = 0
         for k in st["miss_by"]:
             st["miss_by"][k] = 0
+        getattr(km, "_FEED_DERIVE_FAILED", {}).clear()
 
 
 def _memo_snapshot():
@@ -123,18 +129,22 @@ def _memo_snapshot():
     if not hasattr(km, "_feed_memo"):
         return None
     with km._feed_memo_lock:
-        return dict(km._feed_memo), json.loads(json.dumps(km._FEED_MEMO_STATS))
+        return (dict(km._feed_memo), json.loads(json.dumps(km._FEED_MEMO_STATS)),
+                dict(getattr(km, "_FEED_DERIVE_FAILED", {})))
 
 
 def _memo_restore(snap):
     if snap is None:
         return
-    entries, stats = snap
+    entries, stats, failed = snap
     with km._feed_memo_lock:
         km._feed_memo.clear()
         km._feed_memo.update(entries)
         km._FEED_MEMO_STATS.clear()
         km._FEED_MEMO_STATS.update(stats)
+        if hasattr(km, "_FEED_DERIVE_FAILED"):
+            km._FEED_DERIVE_FAILED.clear()
+            km._FEED_DERIVE_FAILED.update(failed)
 
 
 class _Board(unittest.TestCase):
@@ -724,7 +734,9 @@ class TheBoundAndTheDepartures(_Board):
         feed = km._PERF_STATS.snapshot()["builds"]["feed"]
         self.assertEqual(set(feed), {"cached", "built", "ms", "memo"})
         self.assertEqual(feed["memo"], km._feed_memo_report())
-        self.assertEqual(set(feed["memo"]), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by"})
+        self.assertEqual(set(feed["memo"]), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by",
+                                             "failed", "failing"})   # the contained derivation faults (2026-09-17)
+        self.assertEqual((feed["memo"]["failed"], feed["memo"]["failing"]), (0, 0))
         self.assertEqual(set(feed["memo"]["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
         self.assertEqual(feed["memo"]["derived"], 3)
         self.assertEqual(feed["memo"]["bound"], km.FEED_MEMO_BYTES)
@@ -1044,6 +1056,115 @@ class PerCardNudgeInputs(_Board):
         self.assertEqual(self._cards(frame)[gid]["nudged"]["count"], 2)
         _reset_memo()
         self.assertEqual(_dump(frame), _dump(self._build()))
+
+
+class OneSessionsFaultIsContained(_Board):
+    """One session's derivation raising inside build_feed's loop (2026-09-17). Before the guard the exception left
+    build_feed, the pusher's catch swallowed it, no counter moved and every client kept the last successful frame:
+    the whole board froze behind one session. Now the fault stays that session's: counted, said once, the frame ships.
+    The raise is synthetic (a RuntimeError with invented text) at the loop's call, the live cause being another lane's."""
+
+    BOOM = "synthetic: the api card's derivation blew up"
+
+    def _raising_for(self, bad_sid, text=BOOM):
+        real = km._feed_session_entry
+
+        def fake(s, ctx):
+            if s["sid"] == bad_sid:
+                raise RuntimeError(text)
+            return real(s, ctx)
+        return mock.patch.object(km, "_feed_session_entry", fake)
+
+    def _build_capturing(self, now=NOW):
+        """(the frame, what the build wrote to stderr)."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            frame = self._build(now)
+        return frame, err.getvalue()
+
+    def test_a_raising_session_with_no_previous_entry_is_absent_and_the_other_two_ship_counted_and_said_once(self):
+        with self._raising_for(API):
+            frame, said = self._build_capturing()
+            self.assertEqual(sorted(self._cards(frame)), sorted([WEB + ":g1", TESTS + ":g1"]),
+                             "the two healthy sessions' cards ship; the failing session's are absent this build")
+            rep = km._feed_memo_report()
+            self.assertEqual((rep["failed"], rep["failing"]), (1, 1), rep)
+            self.assertEqual(rep["entries"], 2, "the failing session is never memoized")
+            self.assertNotIn(API, km._feed_memo)
+            lines = [ln for ln in said.splitlines() if ln.startswith("feed: ")]
+            self.assertEqual(len(lines), 1, said)
+            self.assertIn(API[:8], lines[0]); self.assertIn("(api)", lines[0])
+            self.assertIn("its cards are absent", lines[0]); self.assertIn("RuntimeError: " + self.BOOM, lines[0])
+            self.assertIn("Traceback (most recent call last)", said, "the traceback rides the first line")
+            # the next build: raises again, counted again, NOT said again (one line per session per cause, never per build)
+            frame2, said2 = self._build_capturing()
+            self.assertEqual(sorted(self._cards(frame2)), sorted([WEB + ":g1", TESTS + ":g1"]))
+            rep = km._feed_memo_report()
+            self.assertEqual((rep["failed"], rep["failing"]), (2, 1), rep)
+            self.assertEqual(said2, "", "the same session failing for the same cause is not re-said")
+            # a DIFFERENT cause for the same session is a new line
+            with self._raising_for(API, "synthetic: a second, distinct cause"):
+                _, said3 = self._build_capturing()
+            self.assertEqual(len([ln for ln in said3.splitlines() if ln.startswith("feed: ")]), 1, said3)
+            self.assertEqual(km._feed_memo_report()["failed"], 3)
+
+    def test_a_raising_session_with_a_previous_entry_serves_its_stale_card_and_leaves_the_memo_untouched(self):
+        before = self._cards(self._build())              # every session memoized under its current inputs
+        stored = km._feed_memo[API]
+        self._complete(API)                              # api's store moves: its next build MISSES and derives
+        with self._raising_for(API):
+            d, (frame, said) = self._delta(self._build_capturing)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        cards = self._cards(frame)
+        self.assertEqual(sorted(cards), sorted(sid + ":g1" for sid in SIDS), "all three cards ship")
+        self.assertEqual(cards[API + ":g1"], before[API + ":g1"],
+                         "the failing session's PREVIOUS card is served as it was: stale (still working, not completed)")
+        self.assertEqual(cards[API + ":g1"]["column"], "working")
+        rep = km._feed_memo_report()
+        self.assertEqual((rep["failed"], rep["failing"]), (1, 1), rep)
+        self.assertIs(km._feed_memo[API], stored, "the stored entry is unchanged: a failure never memoizes")
+        line = [ln for ln in said.splitlines() if ln.startswith("feed: ")]
+        self.assertEqual(len(line), 1, said)
+        self.assertIn("serving its previous cards", line[0])
+
+    def test_when_the_derivation_stops_raising_the_next_build_derives_memoizes_and_clears_the_record(self):
+        self._build()
+        self._complete(API)
+        with self._raising_for(API):
+            self._build_capturing()
+        self.assertEqual(km._feed_memo_report()["failing"], 1)
+        stale_key = km._feed_memo[API][0]
+        d, (frame, said) = self._delta(self._build_capturing)       # the derivation works again
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        self.assertEqual(said, "")
+        self.assertEqual(self._cards(frame)[API + ":g1"]["column"], "completed", "the verdict reaches the card now")
+        rep = km._feed_memo_report()
+        self.assertEqual(rep["failing"], 0, "the standing count drops with the recovery")
+        self.assertEqual(rep["failed"], 1, "the cumulative count is history: it stays")
+        self.assertNotEqual(km._feed_memo[API][0], stale_key, "memoized under the fresh key")
+        d, f2 = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (0, 3), d)
+        self.assertEqual(_dump(frame), _dump(f2))
+        # a recovered session failing AGAIN for the same cause is a new incident: said again
+        self._complete(WEB)
+        with self._raising_for(WEB):
+            _, said = self._build_capturing()
+        self.assertEqual(len([ln for ln in said.splitlines() if ln.startswith("feed: ")]), 1, said)
+        with self._raising_for(WEB):
+            _, said = self._build_capturing()
+        self.assertEqual(said, "")
+        self.assertEqual(km._feed_memo_report()["failing"], 1)
+        self._build_capturing()                          # web recovers
+        self.assertEqual(km._feed_memo_report()["failing"], 0)
+
+    def test_a_departed_failing_session_leaves_the_standing_count_with_it(self):
+        with self._raising_for(API):
+            self._build_capturing()
+        self.assertEqual(km._feed_memo_report()["failing"], 1)
+        live = {sid: self._row() for sid in (WEB, TESTS)}   # api departs
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.build_feed(NOW, live)
+        self.assertEqual(km._feed_memo_report()["failing"], 0, "nothing derives a departed session: it is not failing")
 
 
 if __name__ == "__main__":

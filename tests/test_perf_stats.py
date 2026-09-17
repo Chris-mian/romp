@@ -213,7 +213,8 @@ class Collector(unittest.TestCase):
         snap = self.st.snapshot()
         self.assertEqual(set(snap["builds"]["feed"]), {"cached", "built", "ms", "memo"})
         memo = snap["builds"]["feed"]["memo"]
-        self.assertEqual(set(memo), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by"})
+        self.assertEqual(set(memo), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by",
+                                     "failed", "failing"})   # failed: derivations that raised, cumulative; failing: sessions whose last one did (2026-09-17)
         self.assertEqual(set(memo["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
         self.assertEqual(memo["bound"], km.FEED_MEMO_BYTES)
         self.assertEqual(memo, km._feed_memo_report())
