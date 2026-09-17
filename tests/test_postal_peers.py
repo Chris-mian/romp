@@ -1624,7 +1624,7 @@ class BusStartSweepsUnfinishedWrites(_LoudBus):
         import inspect
         src = inspect.getsource(pm.serve)
         self.assertIn("_sweep_unfinished_writes()", src)
-        self.assertLess(src.index("_sweep_unfinished_writes()"), src.index("ThreadingHTTPServer("),
+        self.assertLess(src.index("_sweep_unfinished_writes()"), src.index("_LoopbackServer("),   # the bus's server class: its bind skips the reverse lookup
                         "the sweep runs at start, before any writer of ours can run")
 
 

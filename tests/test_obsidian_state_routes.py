@@ -384,7 +384,7 @@ class PortRecord(unittest.TestCase):
 
     def test_main_writes_it_right_after_the_bind_succeeds(self):
         src = inspect.getsource(km.main)
-        bind = src.index("srv = ThreadingHTTPServer((BIND, PORT), Handler)")
+        bind = src.index("srv = _LoopbackServer((BIND, PORT), Handler)")   # the kernel's server class (its bind skips the reverse lookup)
         rec = src.index("_persist_serve_port(srv.server_address[1])")
         self.assertLess(bind, rec, "the record follows the bind")
         between = src[bind:rec].split("\n")[1:]

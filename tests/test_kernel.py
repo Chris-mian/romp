@@ -5499,13 +5499,17 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(served["seq"], 1, "…and the new version is what the pass serves")
         self.assertNotEqual(old_key, new_key)
 
-    def test_a_same_size_in_place_rewrite_with_the_mtime_put_back_is_the_documented_blind_spot(self):
+    def test_a_same_size_in_place_rewrite_with_the_mtime_put_back_is_seen_by_the_byte_compare(self):
         # All three components held: same inode (in place), same length (seq 0 → 1), mtime pinned back. The
-        # key cannot tell, so the pass serves the EARLIER parse. Pinned as the named exception the memo note
-        # documents, as its two sibling memos pin theirs (the absent-store memo in test_judge_propagate_loads,
-        # the shared cache's byte compare in test_judge_store_cache; review find, 2026-09-08). No romp writer
-        # does this (every publish is a tmp+rename); it stands in for two equal-size publishes onto a
-        # recycled inode inside one clock tick on a coarse-timestamp kernel. A publish of another size is seen.
+        # key cannot tell, and until 2026-09-16 the pass served the EARLIER parse (pinned here as the memo's
+        # documented blind spot, as its two sibling memos pin theirs: the absent-store memo in
+        # test_judge_propagate_loads, the shared cache's byte compare in test_judge_store_cache). The hit path
+        # now reads the bytes and compares them to the memoized text, as the writer loader's parse memo and
+        # the shared view do, so other bytes under an unchanged stat are decoded afresh (memos.pass
+        # compare_miss); the key stands, since it is the same version to every stat, and the snapshot holds
+        # the new bytes. No romp writer does this (every publish is a tmp+rename); it stands in for two
+        # equal-size publishes onto a recycled inode inside one clock tick on a coarse-timestamp kernel, or
+        # an mtime-preserving restore of the goals directory. A publish of another size is seen as before.
         def mutate(path, st, store):
             store["seq"] = 1
             data = json.dumps(store)
@@ -5514,10 +5518,25 @@ class ViewBuilder(unittest.TestCase):
             os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))        # same mtime_ns
             now = path.stat()
             self.assertEqual((now.st_ino, now.st_mtime_ns, now.st_size), (st.st_ino, st.st_mtime_ns, st.st_size))
+        before = dict(km._goals_memo_stats)
         decodes, served, old_key, new_key = self._memo_key_probe(mutate)
-        self.assertEqual(decodes, 0, "the key did not move → no decode")
-        self.assertEqual(served["seq"], 0, "…so the pass serves the earlier parse: the documented blind spot")
-        self.assertEqual(old_key, new_key)
+        self.assertEqual(decodes, 1, "the stat did not move but the bytes did → decoded again")
+        self.assertEqual(served["seq"], 1, "…and the new bytes are what the pass serves")
+        self.assertEqual(old_key, new_key, "the key is the same version to every stat")
+        n = len(list(jd.GOALDIR.glob("*.json")))               # the stores each of the probe's two passes read
+        d = {k: km._goals_memo_stats[k] - before[k] for k in ("hit", "miss", "compare_miss")}
+        self.assertEqual(d, {"miss": n, "hit": n - 1, "compare_miss": 1},
+                         "the cold pass decoded every store; the second hit all but the rewritten one, a compare miss, not a miss")
+        real, calls = self._count_decodes()
+        try:
+            km._begin_goals_pass()
+            try:
+                self.assertEqual(len(calls), 0, "the new bytes are memoized: the next pass is a hit")
+                self.assertEqual(km._feed_goals(self.OTHER_SID)["seq"], 1)
+            finally:
+                km._end_goals_pass()
+        finally:
+            km._goals_memo_decode = real
         path = self._publish_store(self.OTHER_SID, {"rompUuid": self.OTHER_SID, "seq": 2, "nodes": {},
                                                     "placements": {}, "status": {}, "note": "another size"})
         real, calls = self._count_decodes()
@@ -6573,7 +6592,10 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(km._session_backend("x", None), "codex")                # a Codex record, live or dead → codex
             km._codex = lambda: None
             lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
-            self.assertNotIn("backend", lane, "the lane never read it — dropped (2026-07-07 payload audit)")
+            # the lane reads it again (2026-09-16): its model/effort pickers speak the backend's vocabulary and a live Codex
+            # lane draws its effort picker before any level is picked, both keyed on the row's backend; the 2026-07-07
+            # payload audit had dropped the field because no lane code read it then
+            self.assertEqual(lane["backend"], "", "a names-only session: the lane carries the same '' label as the tab")
             self.assertEqual(km.build_session(SID, NOW)["status"]["backend"], "", "a names-only session: no label")
         finally:
             km._sdk, km._codex = saved, saved_cx

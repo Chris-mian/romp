@@ -493,7 +493,12 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    visible divider: a line of its own, with no chip, already says "in no tag" (the trail stays
    unlabeled by the user's ruling); the element keeps the .tab-group-sep class as the boundary
    sectionHeadOf reads. With the setting off the divider below returns. The tab drag's virtual layout
-   (dragslot.ts) opens a row at the same places (`br`), so a drag wraps where the strip wraps. */
+   (dragslot.ts) opens a row at the same places (`br`), so a drag wraps where the strip wraps. The one
+   header no break precedes is a folded one right after another folded header (tab-groups.ts planStrip
+   `packed`, the user 2026-09-16): a run of folded groups, each only its header, shares one row instead
+   of a row apiece, wrapping like tabs when the run is wider than the strip; an open group and the
+   trail keep their own rows. Two packed headers sit as two tabs do — the strip's column gap apart,
+   their own 7px paddings between the labels — and each header's box is its own click target. */
 .tab-group-break { flex: 0 0 100%; height: 0; margin: 0; padding: 0; pointer-events: none; }
 /* THE UNTAGGED TRAIL'S DIVIDER with the one-group-per-row setting off (render.ts makeTrailSep): a 1px
    line between 6px gutters. The gutters are PADDING, not margin, and the line is the content box, so
@@ -799,6 +804,7 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ctx-tag-input:focus { outline: none; border-color: var(--accent); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
+.ctx-item-danger .ctx-item-label { color: var(--vscode-errorForeground, #f48771); }   /* a destructive row wears the confirm button's danger colour (the Sessions pane's Delete) */
 /* identity-color swatches (the user 2026-06-29): the romp palette as circles, the current one ringed. A grid
    so 9 colors wrap to a tidy block instead of one long row. */
 /* Billing submenu (the user 2026-08-09: the login/API-key switch lives here now, not the statusline).
@@ -1607,6 +1613,12 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
    clustered on the right edge instead of restarting at the left (the user 2026-08-10, on a phone;
    flat statusline children right-justify only the row holding the auto margin). Same 10px column gap
    the statusline uses between siblings, so the wide-pane look is unchanged. */
+.sl-left {   /* the state chip, its timer and the stop button: one row that keeps its parts on one line (the user 2026-09-16); the right cluster wraps below it whole */
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px 10px;   /* shrinkable: a 280px pane with a named-peer Awaiting chip wraps the chip's words instead of overflowing (round two of PR 1803) */
+}
+.sl-left > .stop-btn { flex: none; }   /* the button stays whole beside its badge; the row's own nowrap keeps it on the chip's line */
+.sl-left > .chip { min-width: 0; }   /* the chip gives way before the unit overflows the line (round three of PR 1803) */
+.sl-left .chip-peer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* a peer label is one unbreakable word (TESTHOST:integration-tests): it truncates with an ellipsis, as .chip-session does, and its full text leads the chip's tip. No floor: with the kernel's real timer the label keeps about 60 px (seven characters) at 240 px, and a floor that bound would overflow the line on a narrower pane (a 55 px floor by 15 px at 220), the very overflow this rule removes */
 .sl-right {
   margin-left: auto; min-width: 0;
   display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 10px;

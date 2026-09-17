@@ -33,8 +33,8 @@ test("INTERRUPTING is a first-class chip state: labeled, styled, timerless, butt
   assert.match(CHIP, /interrupting: "Interrupting…",/);   // CHIP_LABEL lives in status-chip.ts since T322b
   // the generic chip branch renders it; the stop button is drawn for working/compacting AND the stuck
   // retrying/blocked states — but NEVER for interrupting (the stop is already in flight)
-  assert.match(SRC, /state === "working" \|\| s\.status\.state === "compacting"\s*\n\s*\|\| s\.status\.state === "retrying" \|\| s\.status\.state === "blocked"\) right\.appendChild\(stopButton\(s\.status\.state\)\)/);
-  assert.doesNotMatch(SRC, /=== "interrupting"\) right\.appendChild\(stopButton/, "no stop button while interrupting");
+  assert.match(SRC, /state === "working" \|\| s\.status\.state === "compacting"\s*\n\s*\|\| s\.status\.state === "retrying" \|\| s\.status\.state === "blocked"\) left\.appendChild\(stopButton\(s\.status\.state\)\)/);
+  assert.doesNotMatch(SRC, /=== "interrupting"\) left\.appendChild\(stopButton/, "no stop button while interrupting");
   assert.match(CSS, /\.chip-interrupting \{ background: var\(--st-working-bg\);[^}]*opacity: 0\.75; \}/,
                "busy-yellow but dimmed + static — in flight, not still grinding");
 });

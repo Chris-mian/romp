@@ -230,7 +230,8 @@ test("pins: render.ts posts a writeId on every views write and routes both acks 
   const sync = RENDER.slice(RENDER.indexOf("function syncNewTagInput("), RENDER.indexOf("\n}\n", RENDER.indexOf("function syncNewTagInput(")));
   assert.match(sync, /const busy = createInFlight\(viewsWrites\);\s*\n\s*tagsFlyNewInput\.disabled = busy;\s*\n\s*tagsFlyNewInput\.placeholder = busy \? "creating…" : "New tag…";/,
     "disabled and saying so while a create is in flight (a second Enter before the ack made a second tag)");
-  assert.match(RENDER, /function dismissTabMenu\(\) \{\s*\n\s*ctxMenuEl\?\.remove\(\);\s*\n\s*ctxMenuEl = null;\s*\n\s*tagsFlyNewInput = null;/, "a closed menu forgets its input");
+  assert.match(RENDER, /function dismissTabMenu\(\) \{\s*\n\s*closeContextMenu\(\);/, "the menu closes through the shared builder (v0.16.0)");
+  assert.match(RENDER, /function onTabMenuClosed\(\) \{\s*\n\s*ctxMenuEl = null;\s*\n\s*tagsFlyNewInput = null;/, "a closed menu forgets its input");
 });
 
 test("pins: every views arrival in render.ts goes through the ONE seq-gated adopter, and the exact-echo clear is legacy-only", () => {

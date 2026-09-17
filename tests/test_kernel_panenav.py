@@ -41,10 +41,13 @@ class PaneNav(unittest.TestCase):
         self.assertIn("function visCols(){return allCols().filter(paneVisible);}", JS, "only VISIBLE columns are traversed")
         self.assertIn("function allCols(){var c=window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat'];return c.concat(COLS.slice(1));}", JS)
         self.assertIn("getComputedStyle(el).display!=='none'", JS, "hidden panes (display:none) are skipped")
-        # left/right along columns, down into the timeline, up back out of it
+        # left/right along columns; the VERTICAL axis inside a split column: Down goes to the bottom pane then the
+        # timeline, Up returns from the bottom pane to the top (a bottom pane is a vertical child, not a column)
         self.assertIn("if(dir==='left'){if(i>0)focusPane(cols[i-1],dir);}", JS)
         self.assertIn("else if(dir==='right'){if(i>=0&&i<cols.length-1)focusPane(cols[i+1],dir);}", JS)
-        self.assertIn("else if(dir==='down'){if(paneVisible(TL))focusPane(TL,dir);}", JS)
+        self.assertIn("if(dir==='down'){if(below&&document.getElementById(below)){focusPane(below,dir);return;}if(paneVisible(TL))focusPane(TL,dir);return;}", JS)
+        self.assertIn("if(dir==='up'){if(top&&document.getElementById(top))focusPane(top,dir);return;}", JS)
+        self.assertIn("var below=window.__rompBelowFrameOf&&window.__rompBelowFrameOf(curFocus);", JS)
         self.assertIn("if(curFocus===TL){", JS)
 
     def test_focus_goes_through_the_parent_and_notifies_the_pane(self):

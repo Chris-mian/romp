@@ -963,7 +963,7 @@ function applyPal() {
 applyPal();
 function modelLabel(s) {
   if (!s) return '';
-  if (!s.model) return s.effort || '';   // effort is always known (registry) — show it even before the model connects
+  if (!s.model) return s.effort || '';   // an SDK lane's effort is known from the registry before the model connects; a Codex lane's is '' until a pick
   return s.effort ? s.model + ' ' + s.effort : s.model;
 }
 
@@ -5923,7 +5923,11 @@ class TimelinePanel {
     // so "high"/"xhigh"/… line up as a column instead of dangling right after each model. Reserve the widest
     // model PIECE (name + caret) and the widest effort PIECE (word + caret) independently.
     const modelPieceW = (s) => (s.model ? this.ctxWidth(s.model) + caretW : 0);
-    const effortPieceW = (s) => (s.effort ? this.ctxWidth(s.effort) + caretW : 0);
+    // a LIVE Codex lane that has picked no effort yet still gets the picker, reading the bare kind (effortWord; the
+    // chat badge's effortBadgeText rule, 2026-09-16): the registry holds "" until a pick lands, and a lane with no
+    // picker had no way to make one. Dead lanes keep the old rule (static text only for a known level).
+    const effortWord = (s) => s.effort || (s.live && s.backend === 'codex' ? 'effort' : '');
+    const effortPieceW = (s) => (effortWord(s) ? this.ctxWidth(effortWord(s)) + caretW : 0);
     const maxModelPiece = Math.max(0, ...vis.map(modelPieceW));
     const maxEffortPiece = Math.max(0, ...vis.map(effortPieceW));
     const effortGap = maxEffortPiece > 0 ? META_GAP : 0;
@@ -6400,7 +6404,7 @@ class TimelinePanel {
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
       // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose
       // pick injects /model or /effort into that pane. Dead/historical lanes render it as static text.
-      if (s.model || s.effort) {   // a freshly-launched SDK lane has no model for a few seconds, but effort is always known
+      if (s.model || effortWord(s)) {   // a freshly-launched SDK lane has no model for a few seconds; a Codex lane's effort word stands before a pick
         if (!s.live) {
           // static text (no picker), but STILL split model @ modelColX / effort @ effortColX so a dead lane's
           // effort lines up in the same column as the live lanes' (the user 2026-07-03).
@@ -6447,7 +6451,7 @@ class TimelinePanel {
           };
           // model @ its column, effort @ the FIXED effort column — so efforts line up across lanes
           if (s.model) drawPiece('model', s.model, modelColX);
-          if (s.effort) drawPiece('effort', s.effort, effortColX);
+          if (effortWord(s)) drawPiece('effort', effortWord(s), effortColX);
         }
       }
       const bdg = visB[visIdx.get(s.id)];

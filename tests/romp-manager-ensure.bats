@@ -118,7 +118,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
     def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(os.environ["ROMP_SERVE_PORT"])), H).serve_forever()
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+_Bound(("127.0.0.1", int(os.environ["ROMP_SERVE_PORT"])), H).serve_forever()
 PYEOF
     chmod +x "$FAKEK"
 
@@ -178,7 +183,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
     def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(os.environ["ROMP_SERVE_PORT"])), H).serve_forever()
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+_Bound(("127.0.0.1", int(os.environ["ROMP_SERVE_PORT"])), H).serve_forever()
 PYEOF
     chmod +x "$FAKEK"
 

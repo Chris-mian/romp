@@ -201,6 +201,139 @@ OLD
     [[ "$output" != *"PORT="* ]]
 }
 
+# Helper: this PATH with the named tools hidden. A directory that holds one of them is replaced by a farm of symlinks to
+# everything else in it, so `command -v timeout` finds nothing while bash, sleep, mktemp and the rest stay reachable: the
+# shape of a stock mac (no coreutils) on a Linux box. $@ the tool names.
+_path_without() {
+    local out="" n=0 d f name farm
+    local -a dirs; IFS=: read -r -a dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        local hide=0; for name in "$@"; do [ -e "$d/$name" ] && hide=1; done
+        if [ "$hide" -eq 0 ]; then out="${out:+$out:}$d"; continue; fi
+        n=$((n + 1)); farm="$TEST_DIR/nopath$n"; mkdir -p "$farm"
+        for f in "$d"/*; do
+            for name in "$@"; do [ "${f##*/}" = "$name" ] && continue 2; done
+            ln -s "$f" "$farm/${f##*/}" 2>/dev/null || true
+        done
+        out="${out:+$out:}$farm"
+    done
+    printf '%s' "$out"
+}
+
+@test "romp-serve: with no timeout on PATH (a stock mac), a blocking interpreter is still refused as unresponsive at the bound" {
+    # the macOS bats leg's first completion (2026-09-16) reached the no-timeout road and found it unbounded: the blocking
+    # interpreter was run for its whole life and never refused. The probe bounds itself there now (_pybound: a watchdog
+    # beside the probe, TERM at 5 s, KILL a second later), the same refusal, the same words.
+    cat > "$TEST_DIR/blocking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) sleep 20 ;;      # blocks on any -c probe; short enough that the unbounded base still ends inside this test's own bound
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/blocking-python"
+    local nopath; nopath="$(_path_without timeout gtimeout)"
+    [ -z "$(PATH="$nopath" command -v timeout || true)" ]            # the tool really is hidden
+    local t0=$SECONDS
+    PATH="$nopath" ROMP_PYTHON="$TEST_DIR/blocking-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [[ "$output" == *"blocking-python"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]                             # the bound plus the kill, not the interpreter's 20 s
+    [[ "$output" != *"PORT="* ]]
+}
+
+@test "romp-serve: with no timeout on PATH, an interpreter that ignores TERM is killed a second after the bound and refused" {
+    # the -k of the shell's own watchdog: a TERM-deaf interpreter dies to the KILL a second after the bound, and the
+    # refusal is the same; nothing of it is left running (it became its sleep)
+    cat > "$TEST_DIR/deaf-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) trap '' TERM; exec sleep 20 ;;
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/deaf-python"
+    local nopath; nopath="$(_path_without timeout gtimeout)"
+    local t0=$SECONDS
+    PATH="$nopath" ROMP_PYTHON="$TEST_DIR/deaf-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]                             # the KILL a second after the ignored TERM, not the interpreter's 20 s
+}
+
+@test "romp-serve: an interpreter that exits 143 of its own accord is refused for it only where the watchdog runs (the 1796 read)" {
+    # the watchdog's TERM reads 143, so on ITS road a 143 of the interpreter's own is indistinguishable and refused, as timeout's
+    # 124 and 137 are on the timeout road; on the timeout road no watchdog runs, and a 143 of the interpreter's own is not the
+    # bound's code there: it is the no-version leg, as any other exit without a version line
+    cat > "$TEST_DIR/exit143-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *-c*) exit 143 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/exit143-python"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "the timeout road needs coreutils timeout"
+    ROMP_PYTHON="$TEST_DIR/exit143-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]                                       # the no-version leg: not refused as unresponsive
+    [[ "$output" != *"did not answer its version probe"* ]]
+    [ "$output" = "$TEST_DIR/exit143-python" ]
+    # and on the watchdog road the same interpreter IS refused, the message naming 143 as that road's own code
+    local nopath; nopath="$(_path_without timeout gtimeout)"
+    PATH="$nopath" ROMP_PYTHON="$TEST_DIR/exit143-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [[ "$output" == *"exits 143 or 137 of its own accord"* ]]
+}
+
+@test "romp-serve: with no timeout on PATH, the watchdog's stand-down takes its sleep with it: no five-second orphan per probe" {
+    # the 1796 read: the stand-down TERMed the watchdog subshell and left its `sleep 5` running, one orphan per probe of a good
+    # interpreter. The watchdog is its own process group now (job control in the probe's subshell), and the stand-down signals
+    # the group. The sleep on PATH here records its pid before it sleeps, so the orphan would be named; the interpreter
+    # holds its answer half a second (the real sleep, by path: the recording one is for the watchdog alone), so the
+    # watchdog's sleep is up and recorded before the stand-down, which otherwise beats it to the pid file (a good
+    # interpreter answers in milliseconds, and the file was empty on one run).
+    printf '#!/usr/bin/env bash\ncase "$*" in *romp-pyver*) %s 0.5; echo "romp-pyver 3.12"; exit 0 ;; esac\nexec bash "$@"\n' "$(command -v sleep)" > "$TEST_DIR/good-python"
+    chmod +x "$TEST_DIR/good-python"
+    local nopath; nopath="$(_path_without timeout gtimeout sleep)"
+    local tools="$TEST_DIR/sleeptool"; mkdir -p "$tools"
+    printf '#!/usr/bin/env bash\necho "$$" >> "%s"\nexec %s "$@"\n' "$TEST_DIR/sleeps.pid" "$(command -v sleep)" > "$tools/sleep"
+    chmod +x "$tools/sleep"
+    PATH="$tools:$nopath" ROMP_PYTHON="$TEST_DIR/good-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]
+    [ "$output" = "$TEST_DIR/good-python" ]
+    [ -s "$TEST_DIR/sleeps.pid" ]                              # the watchdog did start its sleep
+    sleep 0.3
+    local pid; while read -r pid; do
+        if ! _dead "$pid"; then kill -KILL "$pid" 2>/dev/null; return 1; fi   # an orphan outlived the probe (killed here so the suite is clean)
+    done < "$TEST_DIR/sleeps.pid"
+}
+
+@test "romp-serve: with no timeout on PATH, a child the blocked interpreter left behind dies at the bound with it (the group is signalled)" {
+    # the 1796 read: the watchdog signalled the probe's own pid, so a helper the interpreter started outlived the bound where
+    # coreutils timeout, signalling the group, would have ended it (the timeout road's sibling test above); the watchdog
+    # signals the group now
+    cat > "$TEST_DIR/forking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) sleep 60 & echo $! > "$ROMP_TEST_PIDFILE"; wait ;;   # blocks, with a child of its own
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/forking-python"
+    local nopath; nopath="$(_path_without timeout gtimeout)"
+    local t0=$SECONDS
+    PATH="$nopath" ROMP_TEST_PIDFILE="$TEST_DIR/child.pid" ROMP_PYTHON="$TEST_DIR/forking-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]
+    [ -s "$TEST_DIR/child.pid" ]
+    local child; child="$(cat "$TEST_DIR/child.pid")"
+    sleep 0.5
+    if ! _dead "$child"; then kill -KILL "$child" 2>/dev/null; return 1; fi   # the child outlived the bound (killed here so the suite's wake is clean)
+}
+
 @test "romp-serve: an interpreter that ignores TERM is killed a second after the bound (-k) and refused; no watchdog, no clock" {
     # round four of issue 1600: timeout carried no -k, so a TERM-ignoring interpreter hung past the bound. Round five dropped
     # the watchdog that stood in for timeout where there is none (its TERM trap ran under set -e and let a blocking

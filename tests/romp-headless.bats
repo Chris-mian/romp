@@ -38,7 +38,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *a):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/port", "w") as f:
     f.write(str(s.server_address[1]))
 s.handle_request()
@@ -234,7 +239,12 @@ class H(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b)
     def log_message(self, *a):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/port", "w") as f:
     f.write(str(s.server_address[1]))
 for _ in range(12):

@@ -630,7 +630,10 @@ test("pinned: the wiring the lifted slices cannot reach: showActive's branch, th
   assert.ok(TABS_DELEGATE_AT > 0 && ACTS_AT > TABS_DELEGATE_AT && !RENDER.slice(TABS_DELEGATE_AT + 1, ACTS_AT).includes("delegate("), "the header acts sit on the #tabs delegate");
   assert.ok(!RENDER.includes('"group-active"'), "the no-op act is gone: every header folds");
   // the tab menu's closer marks the Escape it consumed, so the view's Escape yields to it
-  assert.match(RENDER, /window\.addEventListener\("keydown", \(e\) => \{ if \(e\.key === "Escape" && ctxMenuEl\) \{ dismissTabMenu\(\); e\.preventDefault\(\); \} \}, true\);/);
+  const CTX = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "ctx-menu.ts"), "utf8");   // the tab menu's closer is the shared builder's since v0.16.0
+  assert.match(CTX, /const onKey = \(e: KeyboardEvent\) => \{ if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); closeContextMenu\(\); \} \};/);
+  assert.match(CTX, /document\.addEventListener\("keydown", onKey, true\);/, "at the capture phase, ahead of the view's own Escape");
+  assert.match(RENDER, /ctxMenuEl = showMenuCard\(menu, e\.clientX, e\.clientY, \{ onClose: onTabMenuClosed \}\);/);
   // the window's arrows and the host's next/prev commands step from the header's place too
   assert.match(RENDER, /const nb = collapsedTabIds\.has\(activeId\) \? neighborOfFolded\(lastStripItems, activeId, dir\) : null;\s*\n\s*if \(nb\) \{ e\.preventDefault\(\); setActive\(nb\); \}/, "the window's arrows");
   assert.match(RENDER, /const nb = neighborOfFolded\(lastStripItems, activeId, dir > 0 \? 1 : -1\);\s*\n\s*if \(nb\) setActive\(nb\);/, "cycleTab (nextTab / prevTab)");

@@ -89,7 +89,7 @@ test("pinned: the bar and the tag overview's rows both build from this module; n
   assert.doesNotMatch(RENDER, /const CHIP_LABEL/, "the map has one home");
   const bar = RENDER.split("function updateStatusline() {")[1].split("\nfunction ")[0];
   assert.match(bar, /const chip = statusChip\(chipWords\(s\.status\), "button"\) as HTMLButtonElement;/, "the Awaiting chip, as the bar's button");
-  assert.match(bar, /sl\.appendChild\(statusChip\(chipWords\(s\.status\)\)\);/, "every plain state's chip");
+  assert.match(bar, /left\.appendChild\(statusChip\(chipWords\(s\.status\)\)\);/, "every plain state's chip (into the state unit, .sl-left, since 2026-09-16)");
   assert.doesNotMatch(bar, /el\("span", `chip chip-\$\{/, "no chip class assembled by hand");
   const row = RENDER.split("function fillSnapshotRow(")[1].split("\n}\n")[0];
   assert.match(row, /if \(r\.chip\) btn\.appendChild\(statusChip\(r\.chip\)\);/, "the overview row: the model's chip, painted by the shared builder, a span inside the row's button");

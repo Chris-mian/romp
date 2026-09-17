@@ -98,10 +98,22 @@ export function prettyMode(m: string | undefined): string {
     default: return "Normal";   // default / normal / unknown
   }
 }
-// the live value of a meta kind for the active session
+// the badge's word for a meta kind of the active session: its live value, or for a Codex session with no effort picked the
+// bare kind (effortBadgeText); callers compare it with itself (the pending check), never send it as a value
 export function metaCurrent(kind: MetaKind, st: MetaStatus): string {
-  return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast
+  return (kind === "model" ? st.model : kind === "effort" ? effortBadgeText(st) : kind === "fast" ? st.fast
     : st.mode) || "";
+}
+/** the effort badge's word: the session's effort, or the bare kind for a Codex session that has picked none yet.
+ * A Codex session is born with no effort of its own (the registry holds "" and the engine applies its default; the
+ * kernel reports no level for it), and the badge used to appear only once a level was set, so the menu that sets
+ * one had no button to open it (2026-09-16). Codex takes a pick at any time (set_effort), so the badge stands from
+ * the start and reads "effort" until a level lands. An SDK session keeps the old rule: its effort is never empty (the
+ * registry's level, else the backend's default, set when the session object is built), so its badge already stands
+ * from the first status, and an empty SDK effort is the backend's failed-row placeholder, where a badge would offer a
+ * pick no session is there to take. */
+export function effortBadgeText(st: MetaStatus): string {
+  return st.effort || (st.backend === "codex" ? "effort" : "");
 }
 // Three pulsing accent-blue dots shown IN the model badge while a /model switch resolves (the user
 // 2026-07-03) — the romp loader's dot motif, so a wait always reads as "something's happening, it's
@@ -156,13 +168,14 @@ export function syncMetaControls(meta: HTMLElement, st: MetaStatus, forSid: stri
   // run it (fastAvailable). Billing moved to the tab's right-click menu (the user 2026-08-09) — no
   // badge here.
   const fast = st.fast && fastAvailable(st) ? st.fast : "";   // reported AND the model can run it — else no dead control
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", fast ? "fast" : ""].filter(Boolean).join();
+  const effort = effortBadgeText(st);   // a Codex session's badge stands before any level is picked (see effortBadgeText)
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", effort ? "effort" : "", fast ? "fast" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
     if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode), forSid, hooks));
     if (st.model) meta.appendChild(metaButton("model", st.model, forSid, hooks));
-    if (st.effort) meta.appendChild(metaButton("effort", st.effort, forSid, hooks));
+    if (effort) meta.appendChild(metaButton("effort", effort, forSid, hooks));
     if (fast) meta.appendChild(metaButton("fast", prettyFast(fast), forSid, hooks));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {

@@ -30,10 +30,13 @@ test("kernel: the dirty floor keys on build START, so a mid-build mutation still
   // the cache rows carry both stamps: finish (REBUILD_MIN_S) and start (the dirty floor)
   assert.match(KERNEL, /_built_feed = \[None, None, 0\.0, 0\.0\]/);
   assert.match(KERNEL, /_built_timeline = \[None, None, 0\.0, 0\.0\]/);
-  // both caches compare the dirty mark against the START slot, never the finish
-  const dirtyChecks = KERNEL.match(/_views_dirty\[0\] > e\[3\]/g) || [];
+  // both caches compare the dirty mark against the START slot, never the finish, through the one rule
+  // (_dirty_since, 2026-09-16: a mark in the build's own clock tick busts it, so the rule is >=, never >)
+  const dirtyChecks = KERNEL.match(/_dirty_since\(e\[3\]\)/g) || [];
   assert.equal(dirtyChecks.length, 2, "feed AND timeline key dirty on build start");
-  assert.ok(!/_views_dirty\[0\] > e\[2\]/.test(KERNEL), "no dirty check keys on build finish");
+  assert.ok(!/_dirty_since\(e\[2\]\)/.test(KERNEL) && !/_views_dirty\[0\] > e\[2\]/.test(KERNEL), "no dirty check keys on build finish");
+  assert.match(KERNEL, /return _views_dirty\[0\] >= started/, "the rule: a mark not older than the start busts the build");
+  assert.ok(!/_views_dirty\[0\] > /.test(KERNEL), "no strict compare against the mark survives");
   // the start stamp is taken BEFORE the build runs, in both caches
   const feedBody = KERNEL.slice(KERNEL.indexOf("def _cached_feed"), KERNEL.indexOf("def _cached_timeline"));
   assert.ok(feedBody.indexOf("started = time.time()") < feedBody.indexOf("build_feed(now, live_map)"),

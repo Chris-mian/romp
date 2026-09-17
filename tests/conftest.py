@@ -333,6 +333,14 @@ def _no_cli_scope():
     os.environ["ROMP_CLI_SCOPE"] = "0"
     for v in _CLI_SCOPE_LIMIT_VARS:
         os.environ.pop(v, None)
+    # The CLI-binary floor above, re-asserted per test for the same reason as the scope's: a test module's module-level
+    # write executes at COLLECTION and would hold for every test after it. tests/test_login_flow.py once set its mock CLI
+    # that way, so every lab kernel of a whole run (kernel_env passes ROMP_CLAUDE_BIN through) ran its judges against a
+    # login mock, which answered the planner with junk; the coerce floor minted goals, the auto-nudge fired into sessions
+    # no CLI could run, and the nudge walk read those parked nudges as the user's queued input for the rest of both
+    # boots (tests/test_fold_checkpoints_served.py, one red only under a whole suite, 2026-09-16). A module that needs
+    # its own binary sets it in setUp and restores it in tearDown (tests/test_kernel_env_floor.py pins both halves).
+    os.environ["ROMP_CLAUDE_BIN"] = "/bin/false"
     yield
 
 

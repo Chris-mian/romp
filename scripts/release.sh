@@ -330,13 +330,46 @@ canonical="$(canonical_remote)"
 step git push -q "$canonical" "$tag" || die "could not push $tag to $canonical."
 say "pushed $tag."
 
-if [ -n "$prev" ]; then
-    step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" \
-        --generate-notes --notes-start-tag "$prev" \
+# GitHub's generated notes list every merged pull request in the range, and its release body has a
+# ceiling of 125000 characters: the v0.16.0 cut (2026-09-16) held about nine hundred pull requests,
+# the API answered HTTP 422 "body is too long", and the tag was pushed with no release behind it.
+# A cut never ends half-finished now: a range with more merged pull requests than
+# ROMP_RELEASE_NOTES_MAX_PRS (500, well under the ceiling at GitHub's line lengths) goes straight to
+# a short body, and a generated-notes attempt that fails for any reason falls back to the same
+# short body: the range, the count and the compare view, where the full list lives.
+notes_max="${ROMP_RELEASE_NOTES_MAX_PRS:-500}"
+publish_short() {
+    # $1 = the previous tag ('' when none); the short body names the range and the count
+    local body
+    if [ -n "$1" ]; then
+        local n
+        n="$(git rev-list --merges --first-parent --count "$1..$tag" 2>/dev/null || echo 0)"
+        body="romp $tag
+
+$n pull requests merged since $1. The full list: https://github.com/$UPSTREAM/compare/$1...$tag"
+    else
+        body="romp $tag
+
+The first tagged release: https://github.com/$UPSTREAM/commits/$tag"
+    fi
+    step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" --notes "$body" \
         || die "$tag is pushed, but publishing the release failed — finish with:
-  gh release create $tag --repo $UPSTREAM --generate-notes"
+  gh release create $tag --repo $UPSTREAM --title 'romp $tag' --notes '<a short body>'"
+}
+if [ -n "$prev" ]; then
+    n_prs="$(git rev-list --merges --first-parent --count "$prev..$tag" 2>/dev/null || echo 0)"
+    if [ "$n_prs" -gt "$notes_max" ]; then
+        say "$n_prs pull requests since $prev, more than $notes_max: publishing with a short body (GitHub's generated notes would exceed its ceiling)."
+        publish_short "$prev"
+    elif ! step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" \
+            --generate-notes --notes-start-tag "$prev"; then
+        say "the generated notes were refused (a body over GitHub's ceiling, or a transient error): publishing with a short body instead."
+        publish_short "$prev"
+    fi
 else
-    step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" --generate-notes \
-        || die "$tag is pushed, but publishing the release failed."
+    if ! step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" --generate-notes; then
+        say "the generated notes were refused: publishing with a short body instead."
+        publish_short ""
+    fi
 fi
 say "published. $tag is live — bootstrap.sh will install it."

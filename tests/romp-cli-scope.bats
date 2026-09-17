@@ -276,7 +276,11 @@ assert_direct_exec_in_place() {
     wait "$wpid"
     [ -s "$REAL_PIDFILE" ]
     [ "$(cat "$REAL_PIDFILE")" = "$wpid" ]
-    printf 'REAL pid=%s ppid=%s\n' "$wpid" "$BASHPID" > "$EXP"
+    # this shell's pid, read a way bash 3.2 has: $BASHPID is bash 4 (the repo's portability pin lists it), so under a stock
+    # mac's bash it expanded to nothing, the expected ppid was empty, and the four direct-path tests read as failures on the
+    # first completed macOS leg (2026-09-16); `exec sh -c 'echo $PPID'` inside the substitution names the same process
+    local me; me="${BASHPID:-$(exec sh -c 'echo $PPID')}"
+    printf 'REAL pid=%s ppid=%s\n' "$wpid" "$me" > "$EXP"
     printf 'ARG:%s\n' "$@" >> "$EXP"
     cmp -s "$OUT" "$EXP"
     [ ! -e "$FAKE_LOG" ]   # never a scoped launch on a direct path
@@ -486,7 +490,7 @@ SH
 #!/bin/sh
 printf '%s\n' "$@" > "$FAKE_LOG"
 echo "$*" >> "$FAKE_CALLS"
-n="$(wc -l < "$FAKE_CALLS")"
+n="$(wc -l < "$FAKE_CALLS" | tr -d ' ')"   # BSD wc pads the count with spaces: unstripped, no arm below matched on macOS
 case "$n" in
     1) echo "Failed to connect to bus: Connection timed out" >&2; exit 1 ;;
     3) echo "Failed to start transient scope unit: Unknown assignment: OOMPolicy=continue" >&2; exit 1 ;;

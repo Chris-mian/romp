@@ -14,25 +14,25 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-const SEP = 'menu.appendChild(el("div", "ctx-sep"));';   // the MENU's divider; the Tags flyout appends its own to `sub`
+const SEP = 'addMenuSep(menu);';   // the MENU's divider; the Tags flyout appends its own to `sub`
 
 // the one marker per member the source carries exactly once inside showTabMenu
 const MARKERS: Record<string, string> = {
-  Rename: 'l.textContent = "Rename"',
+  Rename: 'label: "Rename"',
   colours: 'el("div", "ctx-colors")',
   Tags: 'l.textContent = "Tags"',
-  Move: 'l.textContent = "Move to folder…"',
+  Move: 'label: "Move to folder…"',
   feed: 'toggle("feed"',
   mail: 'toggle("mail"',
   bell: 'toggle("bell"',
   Billing: 'l.textContent = "Billing"',
-  Browse: 'l.textContent = "Browse files"',
+  Browse: 'label: "Browse files"',
 };
 
 function sections(): string[] {
   const at = RENDER.indexOf("function showTabMenu(");
   assert.ok(at > 0, "showTabMenu exists");
-  const body = RENDER.slice(at, RENDER.indexOf("document.body.appendChild(menu);", at));
+  const body = RENDER.slice(at, RENDER.indexOf("ctxMenuEl = showMenuCard(menu,", at));
   for (const [name, m] of Object.entries(MARKERS)) assert.equal(body.split(m).length, 2, `${name} is built once in the menu`);
   return body.split(SEP);
 }

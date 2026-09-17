@@ -12,6 +12,11 @@ export function isClearCmd(text: string): boolean {
 
 export interface OpenCardNode { depth: number; done: boolean; cleared?: boolean; text: string; }
 
+// The two sentences every surface that renames or ends a session shows (the chat's tab strip and its close button, the
+// Sessions pane's row menu): one copy, so the surfaces never drift apart (the Sessions pane review, 2026-09-16).
+export const RENAME_SUBLINE = "the name is a label: mail, goals and history follow the session";
+export const END_SESSION_STANDING = "The session shuts down. Its history stays on disk; revive it any time from the picker or the timeline.";
+
 // The open TOP-level cards a /clear would drop — the same population the kernel's boundary settle
 // takes (open tops only; completed stay, already-cleared are gone). Blocked tops count: they are
 // open, and dropping an owed question is exactly the silent loss the gate exists to stop.

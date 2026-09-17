@@ -42,7 +42,7 @@ import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
 import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
-import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
+import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
@@ -88,6 +88,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";   // the browser
 import { pastedFilePath } from "./paste-path";
 import { insertAtCaret } from "./composer-insert";
 import { hostNameNodes, hostPartsNodes, hostPrefix, hostOf, hostIsDown, hostIsDialing, hostDownNote } from "./host-prefix";
+import { menuCard, addMenuItem, addMenuSep, showMenuCard, openContextMenu, closeContextMenu } from "./ctx-menu";   // the one menu builder (the v0.16.0 tidy)
 import { focusAfterDismiss, emptyStateParts } from "./pane-focus";   // where focus goes when a tab leaves, and the empty body's line (T357)
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";   // the @-mention card's rules, pure; the DOM is setupComposer's mention block and markMentions
 import type { MentionCandidate, MentionQuery } from "./composer-mention";
@@ -5960,11 +5961,17 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
   if (be) rows.push(["Backend", backendLabel(be)]);
   // the session's mail state (T356): off means peers cannot see or mail it and its own sends are refused
-  rows.push(["Mail", !s.postalServiceOff ? "on"
-    : s.mailOffWhy === "unreadable" ? "held: this session's record cannot be read, so mail waits until it is repaired"
-    : s.mailOffWhy === "flags" ? "held: the session settings file cannot be read, so mail waits until it is written again"
-    : s.mailOffWhy === "thread" ? "off until the thread is broken out"
-    : "off: this session neither sends nor receives peer mail"]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+  // The value is a GLANCE (the user 2026-09-16): an accent check mark when mail is on, the bare word off or held when it is
+  // not, and no explanation inline. The reasons live where a hover works, the Sessions pane's mail mark title (mail off /
+  // mail held with the four reasons); this rich tip is pointer-inert by tip.ts's contract, so a value tip here
+  // could never show (round two of PR 1803). The two HELD states, a session that needs repair, get one dim sub-line
+  // under the row; off gets none.
+  rows.push(["Mail", !s.postalServiceOff ? "\u2713" : (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags") ? "held" : "off",
+             !s.postalServiceOff ? "var(--accent)" : undefined]);   // the shared names (T288); a session still running on the retired terminal backend (until stage 3) reads its id, never blank (review find)
+  if (s.postalServiceOff && (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags")) {
+    rows.push(["", s.mailOffWhy === "unreadable" ? "its record cannot be read; mail waits until it is repaired"
+                 : "its settings file cannot be read; mail waits until it is written again", "var(--dim)"]);
+  }
   // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
   // user 2026-08-09: shown whenever the backend reports it, one-auth machines included). No key material, ever.
   // When the CLI's own init landed on the OTHER side (authLive — say, a key found via apiKeyHelper
@@ -5998,7 +6005,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
-    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372)
+    if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372); the Mail sub-line's dim
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
   // context BATTERY (the same widget as the bottom bar), not a text %
@@ -6239,11 +6246,14 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
 }
 /** A ROW BREAK (T264, the user 2026-09-08): a zero-height item spanning the strip, so whatever follows
  *  opens a new line — every tag group starts on its own row (chip at the left edge, its tabs after
- *  it, wrapping as they need) instead of the groups running on as one long concatenation. The
+ *  it, wrapping as they need) instead of the groups running on as one long concatenation; the one
+ *  header that gets no break is a folded one packed onto the folded header before it (planStrip's
+ *  `packed`, the user 2026-09-16: folded neighbours share a row, since each is only its header). The
  *  untagged trail's break also wears .tab-group-sep, the boundary sectionHeadOf reads (the trail
  *  stays unlabeled by the user's ruling — its own line, with no chip, says "in no tag"). Breaks are
  *  layout only: no drop, no hover, not a row for paintTabRowLines, and in the tab drag's virtual
- *  layout the box AFTER a break starts a row (`br`) so the simulation wraps where the strip does.
+ *  layout the box AFTER a break starts a row (`br`) so the simulation wraps where the strip does; a
+ *  packed header, with no break ahead of it, is a plain box in its row there as here.
  *  Breaks are emitted only under the `stripGroupRows` setting (the gear's "One tag group per row in
  *  the tab strip", on by default): with it off the groups follow one another and wrap as they need,
  *  and the trail stands behind makeTrailSep's divider. */
@@ -6738,10 +6748,12 @@ function renderTabs() {
   for (const item of plan.items) {
     if ("head" in item) {
       // every group on its own line (T264), under the one-group-per-row setting: a row break ahead of
-      // each header except the strip's first item, which already opens the first row; the untagged
-      // trail's header IS a break. With the setting off, heads and tabs follow one another and wrap
-      // as they need, and the trail stands behind its divider (makeGroupHead).
-      if (settings.stripGroupRows && item.head.name !== null && bar.childElementCount) bar.appendChild(makeRowBreak(false));
+      // each header except the strip's first item, which already opens the first row, and except a
+      // folded header PACKED onto the folded header before it (planStrip: a run of bare folded headers
+      // shares one row, the user 2026-09-16); the untagged trail's header IS a break. With the setting
+      // off, heads and tabs follow one another and wrap as they need, and the trail stands behind its
+      // divider (makeGroupHead).
+      if (settings.stripGroupRows && item.head.name !== null && bar.childElementCount && !item.packed) bar.appendChild(makeRowBreak(false));
       bar.appendChild(makeGroupHead(item.head, item.folded, item.active, item.hidden));
       copyGroup = item.head.name;
       continue;
@@ -7005,9 +7017,13 @@ function stripAftermath(visibleIds: readonly string[], ids: readonly string[]): 
 // Right-click context menu on a tab. Webviews can't use VS Code's native menus,
 // so this is a small themed floating menu; one open at a time, dismissed by any
 // outside click, Escape, scroll, or losing window focus.
-let ctxMenuEl: HTMLElement | null = null;
+let ctxMenuEl: HTMLElement | null = null;   // the open tab or selection menu's card (the shared builder's), read by the composer's typing gates
 function dismissTabMenu() {
-  ctxMenuEl?.remove();
+  closeContextMenu();   // the builder's teardown hands the focus back and runs onTabMenuClosed
+}
+// the card is gone (a pick, Escape, a press outside, a scroll, the window's blur, Tab, the focus leaving): forget it and the
+// tags flyout's input with it
+function onTabMenuClosed() {
   ctxMenuEl = null;
   tagsFlyNewInput = null;
 }
@@ -7023,13 +7039,8 @@ function showSelectionMenu(e: MouseEvent) {
   if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
   e.preventDefault();
   dismissTabMenu();
-  const menu = el("div", "ctx-menu");
-  const mk = (labelText: string, fn: () => void) => {
-    const item = el("div", "ctx-item");
-    item.textContent = labelText;
-    item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
-    menu.appendChild(item);
-  };
+  const items: { label: string; pick: () => void }[] = [];
+  const mk = (labelText: string, fn: () => void) => { items.push({ label: labelText, pick: fn }); };
   // Comment first, Quote second (the user 2026-08-23): Comment is the primary act — a side thread
   // about the passage — and Quote is the lighter one. Comment only when the selection sits in a real
   // transcript turn (transcriptSelection's uuid) on a real session.
@@ -7043,11 +7054,7 @@ function showSelectionMenu(e: MouseEvent) {
   // the item just puts the caret where the reply goes. The in-box editable-blockquote form is gone.
   mk("Quote", () => { (document.getElementById("composer-input") as HTMLTextAreaElement | null)?.focus(); });
   mk("Copy", () => copyToClipboard(text));
-  document.body.appendChild(menu);
-  ctxMenuEl = menu;
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+  ctxMenuEl = openContextMenu(e.clientX, e.clientY, items, { onClose: onTabMenuClosed });   // the shared card: placed, dismissed and keyed the one way
 }
 
 function copyToClipboard(text: string) {
@@ -7191,7 +7198,7 @@ function wireFlyout(menu: HTMLElement, item: HTMLElement, sel: string, open: (by
 
 function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: the group the right-clicked copy sits in (T264b), a plain string so the menu stays id-keyed
   dismissTabMenu();
-  const menu = el("div", "ctx-menu");
+  const menu = menuCard();   // the shared card: the standard rows through addMenuItem, the swatches and the flyouts appended beside them
   // Four sections, dividers only; the titles live here and in tab-menu-sections.test.ts (the user
   // 2026-09-11, who asked for the menu regrouped by what each item changes about the session).
   // ── 1. HOW IT SHOWS: Rename; the colour swatches. Both change the tab's label and tint and nothing
@@ -7203,35 +7210,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // id only, never the tab node under the cursor: the menu (on document.body) outlives kernel pushes,
   // but the tab it was opened from does not — renderTabs() swaps the strip on every push, so a node
   // captured here is usually DETACHED by the time Rename is clicked (the click-safety rule).
-  {
-    const rename = el("div", "ctx-item ctx-item-toggle");
-    rename.appendChild(ctxIcon("pencil", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Rename"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub"); sb.textContent = "the name is a label — mail, goals and history follow the session"; bodyEl.appendChild(sb);
-    rename.appendChild(bodyEl);
-    rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id, copy); });
-    menu.appendChild(rename);
-  }
+  addMenuItem(menu, { icon: ctxIcon("pencil", false), label: "Rename", sub: RENAME_SUBLINE, pick: () => startTabRename(id, copy) });   // the sub-line is one copy with the Sessions pane's menu (clear-confirm.ts)
   // Hot key (the user 2026-09-10): a key combination that switches to this tab, recorded in the shell's
   // shortcuts dialog (it owns the recorder and the conflict check) — this pane only asks. The chord shows
   // minified on the tab (the T379 keycap widget, from the same store). ONE row (the user 2026-09-11): while a chord is bound it reads "Update hot key…", and the
   // recorder it opens both re-records and removes (Backspace, or its Remove button — an unbind in the shared store).
   if (inRompShell() && typeof (window.parent as any).__rompHotkeyConfigure === "function") {
     const cur = tabHotkey(id);
-    const hot = el("div", "ctx-item ctx-item-toggle");
-    hot.appendChild(ctxIcon("key", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = cur ? "Update hot key…" : "Hot key…"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = cur ? "now " + miniChord(cur) + " — press a new combination, or remove it" : "press a key combination that switches to this tab";
-    bodyEl.appendChild(sb);
-    hot.appendChild(bodyEl);
-    hot.addEventListener("click", (ev) => {
-      ev.stopPropagation(); dismissTabMenu();
-      try { window.parent.postMessage({ romp: "hotkeyConfigure", sid: id, name: sessions.get(id)?.name || "" }, "*"); } catch (e) { /* no shell to ask */ }
-    });
-    menu.appendChild(hot);
+    addMenuItem(menu, { icon: ctxIcon("key", false), label: cur ? "Update hot key…" : "Hot key…",
+      sub: cur ? "now " + miniChord(cur) + " — press a new combination, or remove it" : "press a key combination that switches to this tab",
+      pick: () => { try { window.parent.postMessage({ romp: "hotkeyConfigure", sid: id, name: sessions.get(id)?.name || "" }, "*"); } catch (e) { /* no shell to ask */ } } });
   }
   // The colour swatches close the section with Rename (the user 2026-08-24, who grouped the menu by
   // kind). The swatch row itself is unchanged (the user 2026-06-29): the identity palette as circles,
@@ -7255,7 +7243,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     }
     menu.appendChild(row);
   }
-  menu.appendChild(el("div", "ctx-sep"));
+  addMenuSep(menu);
   // ── 2. WHERE IT BELONGS: Tags (flyout); Move to folder…. Membership and location
   // are functional: they change what the kernel and the file system know about the session, and the
   // user placed Move beside Tags. A session's chat COLUMN is placed by dragging its tab (the shell's drop
@@ -7524,19 +7512,8 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // session should follow it; the user 2026-09-11 placed it here) — the same dress, the sub-line saying what a move KEEPS. The dialog does
   // the rest (showMovePrompt); the kernel wraps the CLI's own relocation. Every session moves (T331: the
   // terminal backend, which had no relocation primitive, is no longer offered).
-  {
-    const mv = el("div", "ctx-item ctx-item-toggle");
-    mv.appendChild(ctxIcon("folder", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Move to folder…"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = "the conversation, mail, goals and history stay with the session";
-    bodyEl.appendChild(sb);
-    mv.appendChild(bodyEl);
-    mv.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); showMovePrompt(id); });
-    menu.appendChild(mv);
-  }
-  menu.appendChild(el("div", "ctx-sep"));
+  addMenuItem(menu, { icon: ctxIcon("folder", false), label: "Move to folder…", sub: "the conversation, mail, goals and history stay with the session", pick: () => showMovePrompt(id) });
+  addMenuSep(menu);
   // ── 3. WHAT REACHES YOU: Hide from feed / Show in feed; Mute mail / Rejoin mail; Notify me / Stop
   // notifying; Billing (flyout). Per-session switches on how the session takes part in the dashboard's
   // surfaces and who pays; the icon-plus-sub-line toggle dress throughout.
@@ -7547,14 +7524,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   const offMail = !!(s && s.postalServiceOff);
   const onBell = !!(s && s.notify);
   const toggle = (kind: "feed" | "mail" | "bell", off: boolean, lab: string, sub: string, fn: () => void) => {
-    const item = el("div", "ctx-item ctx-item-toggle");
-    item.appendChild(ctxIcon(kind, off));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = lab; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub"); sb.textContent = sub; bodyEl.appendChild(sb);
-    item.appendChild(bodyEl);
-    item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
-    menu.appendChild(item);
+    addMenuItem(menu, { icon: ctxIcon(kind, off), label: lab, sub, pick: fn });
   };
   toggle("feed", offFeed,
     offFeed ? "Show in feed" : "Hide from feed",
@@ -7708,28 +7678,16 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // names that place, read when the menu builds. Web-only: the VS Code webview cannot reach the kernel
   // origin, and the editor has its own explorer.
   if (location.protocol === "http:" || location.protocol === "https:") {
-    menu.appendChild(el("div", "ctx-sep"));
-    const browse = el("div", "ctx-item ctx-item-toggle");
-    browse.appendChild(ctxIcon("folder", false));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Browse files"; bodyEl.appendChild(l);
+    addMenuSep(menu);
     const where = browseRouteNow();
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = "the session's working tree, " + (where === "pane" ? "in the Files pane" : "in a viewer over this chat");
-    bodyEl.appendChild(sb);
-    browse.appendChild(bodyEl);
-    browse.addEventListener("click", (ev) => {
-      ev.stopPropagation(); dismissTabMenu();
-      openBrowse(s?.cwd || ".", id);
-    });
-    menu.appendChild(browse);
+    addMenuItem(menu, { icon: ctxIcon("folder", false), label: "Browse files",
+      sub: "the session's working tree, " + (where === "pane" ? "in the Files pane" : "in a viewer over this chat"),
+      pick: () => openBrowse(s?.cwd || ".", id) });
   }
-  document.body.appendChild(menu);
-  ctxMenuEl = menu;
-  // at the cursor, clamped so it never overflows the pane
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+  // at the cursor, clamped inside the pane; dismissed on a press outside, Escape, a scroll outside the card (its own scroll is
+  // not a dismissal: taller than the window it scrolls inside it, styles.css max-height, 2026-09-13), Tab, the focus leaving,
+  // the window's blur; the rows reachable by the arrows; the focus back on the opener at the close (the shared builder)
+  ctxMenuEl = showMenuCard(menu, e.clientX, e.clientY, { onClose: onTabMenuClosed });
 }
 // A remote host coming or going flips the disconnected marks on its tabs. The federation manager fires
 // this only when the reachable set actually CHANGES (its own /tunnels poll is the event), so this is a
@@ -7752,14 +7710,8 @@ onlyHashWindow.addEventListener("hashchange", onOnlyHashChange);
 // detached pane's document alive for the shell's lifetime (retention is the whole cost: Chromium does not run a removed
 // frame's handler, the review's probe showed): pagehide takes it off again
 window.addEventListener("pagehide", () => onlyHashWindow.removeEventListener("hashchange", onOnlyHashChange));
-window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
-// an Escape that closed the menu says so on the event (preventDefault), so the section view's own Escape
-// (installSnapshotEscape, armed at this same capture phase, later in the listener order) yields to it
-window.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenuEl) { dismissTabMenu(); e.preventDefault(); } }, true);
-// …but not the menu's own scroll: taller than the window it scrolls inside it (styles.css max-height, 2026-09-13), and a
-// dismissal on that scroll closed it under the pointer the moment a row below the fold was brought into view
-window.addEventListener("scroll", (e) => { if (ctxMenuEl && ctxMenuEl.contains(e.target as Node)) return; dismissTabMenu(); }, true);
-window.addEventListener("blur", () => dismissTabMenu());
+// (the menus' dismissal listeners, a press outside, Escape marked on the event so the section view's own Escape yields to it,
+// a scroll outside the card and the window's blur, are the shared builder's, installed per open: ctx-menu.ts showMenuCard)
 
 // "Rename" (tab context menu): swap the tab's label for an inline input. Enter
 // or clicking away commits (the kernel renames the session and confirms with
@@ -15937,8 +15889,16 @@ function updateStatusline() {
   // controls that are always there. A widget that renders nothing adds nothing.
   const rec = statusRecordOf(s, activeId || "");
   composeStatusWidgets(sl, "left", rec, settings.statusWidgets);
-  // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
-  // states get the plain chip (no timer). Right: model + effort · ctx%, always.
+  // Left: the state chip. WORKING gets a sine color-pulse + elapsed timer; idle
+  // states get the plain chip (no timer), and the stop button sits right after the chip and its timer
+  // (the user 2026-09-16: back where it sat from 2026-06-19 to 2026-08-27). The three are ONE unit
+  // (.sl-left) whose flex line never wraps its parts while the unit itself shrinks (flex: 0 1 auto,
+  // min-width: 0): the chip inside gives way and a long peer label truncates above a floor, the stop
+  // button alone keeps flex: none; a narrow pane wraps the right cluster below as a whole, and the
+  // button never separates from its badge, which is what riding in the right cluster had bought
+  // (bd9a1dab). Right: model + effort · ctx%, always.
+  const left = el("span", "sl-left");
+  sl.appendChild(left);
   if (s.status.state === "working") {
     // pill bg stays on the chip; the gradient text-clip lives on an inner span
     // (background-clip:text on the chip itself would erase the pill background)
@@ -15946,11 +15906,11 @@ function updateStatusline() {
     const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
     chip.appendChild(label);
-    sl.appendChild(chip);
+    left.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
-    sl.appendChild(timer);
+    left.appendChild(timer);
   } else if (s.status.state === "awaitingBg") {
     // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own await-green
     // chip — no pulse (nothing is computing HERE), but the elapsed timer stays so the wait has a clock
@@ -15973,28 +15933,33 @@ function updateStatusline() {
     const chipItems = s.status.awaitingItems || [];
     chip.classList.add("chip-awaiting-" + (s.status.awaitingKind || "untyped"));   // per-kind hook, one hue today
     // the tip: the per-kind breakdown when there are rows, the kernel's why, and what the click does
-    setTip(chip, [awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
+    const words = chipWords(s.status);   // the same words again, pure, for the tip's first line (the build line above is pinned as the shared builder's call, with its neighbours)
+    // the one named peer's FULL label leads the tip: inside the status unit the label truncates with an ellipsis when the
+    // pane is narrow (styles.css .sl-left .chip-peer-name; round three of PR 1803), and the chip's own tip is where its
+    // whole name reads, the shared dress and no second title
+    setTip(chip, [words.peer ? "waiting on " + (words.peer.host ? words.peer.host + ":" : "") + words.peer.name : "",
+                  awaitBreakdown(chipItems), s.status.awaitingWhy || "idle, waiting on background work it dispatched",
                   "click to see what it's waiting on"].filter(Boolean).join("\n"));
-    sl.appendChild(chip);
+    left.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
-    sl.appendChild(timer);
+    left.appendChild(timer);
     // The WHY renders in the #bg-tasks box between transcript and composer (renderBgTasks), not
     // here — a reason line beside the chip crowded the composer area (the user 2026-08-13, on the
     // same day's PR #350 that first surfaced it here).
   } else if (s.status.state === "compacting") {
     const c = el("span", "compacting-line");
     c.textContent = "⟳ Compacting context…";
-    sl.appendChild(c);
+    left.appendChild(c);
   } else if (s.status.state === "clearing") {
     const c = el("span", "compacting-line");   // same in-progress line treatment as compacting (one style per info type)
     c.textContent = "⟳ Clearing conversation…";
-    sl.appendChild(c);
+    left.appendChild(c);
   } else if (s.status.state === "opening") {
-    sl.appendChild(openingLine());             // spawned, transcript not on disk yet — dots until the first record
+    left.appendChild(openingLine());             // spawned, transcript not on disk yet: dots until the first record
   } else {
-    sl.appendChild(statusChip(chipWords(s.status)));   // the shared chip (status-chip.ts): `chip chip-<state>`, the state's words in sentence case
+    left.appendChild(statusChip(chipWords(s.status)));   // the shared chip (status-chip.ts): `chip chip-<state>`, the state's words in sentence case
   }
 
   // The right-side cluster — dir · branch · mode/model/effort/fast badges · ctx battery — grouped in ONE
@@ -16016,15 +15981,16 @@ function updateStatusline() {
   const bar = ctxBar();
   setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
   right.appendChild(bar);
-  // stop/interrupt button — at the FAR RIGHT of the statusline (the user 2026-08-28; it sat
-  // beside the state chip on the left before), riding inside the right cluster so a wrapped
-  // narrow statusline keeps it with the controls. Shown while busy (working/compacting) AND while
-  // stuck retrying / blocked, where it doubles as the per-thread auto-retry off-switch (the user
-  // 2026-07-06). Omitted in idle states (nothing to interrupt — the user 2026-06-19) and while
-  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie — the user 2026-07-02).
-  if (s.status.state === "working" || s.status.state === "compacting"
-      || s.status.state === "retrying" || s.status.state === "blocked") right.appendChild(stopButton(s.status.state));
   sl.appendChild(right);
+  // stop/interrupt button: beside the state chip, after its timer, inside the left unit (the user
+  // 2026-09-16, its place from 2026-06-19; the far right from 2026-08-28 to today rode the right
+  // cluster so a wrapped narrow statusline kept it with the controls: the unit keeps it with its
+  // badge instead, and the right cluster wraps below whole). Shown while busy (working/compacting)
+  // AND while stuck retrying / blocked, where it doubles as the per-thread auto-retry off-switch (the
+  // user 2026-07-06). Omitted in idle states (nothing to interrupt, the user 2026-06-19) and while
+  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie, the user 2026-07-02).
+  if (s.status.state === "working" || s.status.state === "compacting"
+      || s.status.state === "retrying" || s.status.state === "blocked") left.appendChild(stopButton(s.status.state));
   pruneTip();   // a rebuilt statusline tears tip anchors (the stop button) out mid-hover — drop the orphan (PR #763 item 8; the feed's render does the same)
 }
 
@@ -18674,7 +18640,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // case. Close-and-reopen is End + Revive, which keeps the whole history.
     const nm = String(m.name || "");
     showConfirm(`End “${nm}”?`,
-      "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline.",
+      END_SESSION_STANDING,
       [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
       (v) => {
         if (v !== "end") return;   // Cancel → nothing
@@ -20232,28 +20198,11 @@ setupSettings();
     const link = (ev.target as HTMLElement).closest?.(".folder-link[data-cwd]") as HTMLElement | null;
     if (!link || link.dataset.act !== "browseFiles") return;   // openFolder clicks need no second door
     ev.preventDefault();
-    document.getElementById("folder-ctx")?.remove();
-    const menu = el("div", "ctx-menu");
-    menu.id = "folder-ctx";
-    const item = el("div", "ctx-item");
-    item.textContent = "Open folder window";
-    const sub = el("span", "ctx-item-sub");
-    sub.textContent = "on the machine the session runs on";
-    item.appendChild(sub);
     const cwd = link.dataset.cwd || "";
     const id = link.dataset.id;
-    item.addEventListener("click", (e2) => {
-      e2.stopPropagation();
-      menu.remove();
-      vscodeApi?.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd });
-    });
-    menu.appendChild(item);
-    document.body.appendChild(menu);
-    const r = menu.getBoundingClientRect();
-    menu.style.left = Math.max(0, Math.min(ev.clientX, window.innerWidth - r.width - 4)) + "px";
-    menu.style.top = Math.max(0, Math.min(ev.clientY, window.innerHeight - r.height - 4)) + "px";
-    const dismiss = () => { menu.remove(); document.removeEventListener("click", dismiss); };
-    document.addEventListener("click", dismiss);
+    // the shared card (the v0.16.0 tidy), keeping its #folder-ctx id: placed, dismissed and keyed the one way
+    openContextMenu(ev.clientX, ev.clientY, [{ label: "Open folder window", sub: "on the machine the session runs on",
+      pick: () => vscodeApi?.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd }) }], { id: "folder-ctx" });
   });
   delegate(document.body, {
     // Subagent transcripts (plans/subagent-transcripts.md): the arrow on an Agent head / agent bg row
@@ -20522,7 +20471,7 @@ setupSettings();
       // 2026-07-27, and ending drops the cards from the working surfaces the same way)
       showConfirm(`End “${nm}”?`,
         endConfirmDetail(openTopTitles(ledgers.get(id)?.tree),
-          "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline."),
+          END_SESSION_STANDING),
         [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
         (v) => {
           if (v !== "end") return;   // Cancel → nothing
@@ -20592,8 +20541,11 @@ setupSettings();
     // simulation (`br`), as does the untagged trail's break itself, a zero-width row opener, so the
     // slot past a group's last tab (the end of its row) and the slot before the trail's first tab
     // (the head of the next row) stay two distinct slots, as they were when the trail stood behind a
-    // visible separator. With the setting off the trail's divider is a real 13px box and no break
-    // exists, so the boxes below measure it as they did before T264. A drop changes
+    // visible separator. A folded header PACKED onto the folded header before it (planStrip, the user
+    // 2026-09-16) has no break ahead of it and so opens no row here either: a plain box on the shared
+    // row, and the slot before it is the slot between the two headers. With the setting off the
+    // trail's divider is a real 13px box and no break exists, so the boxes below measure it as they
+    // did before T264. A drop changes
     // no membership (the tab re-sections on the next render); "Move to" in the tab menu is the
     // membership path.
     const others = Array.from(tabs.querySelectorAll<HTMLElement>(".tab[data-id], .tab-group-head, .tab-group-sep")).filter((t) => t !== dragged);

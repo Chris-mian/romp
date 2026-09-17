@@ -2364,7 +2364,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   through the shared store cache and show under `memos.shared`, not here. A
   save that would rewrite identical bytes is a save without a write.
 - `memos`: the identity memos on the goal-store path. `pass` is the
-  judge pass's stat-keyed store memo (`hit`, `miss`, `fail`, `evict`, `punch`,
+  judge pass's stat-keyed store memo (`hit`, `miss`, `compare_miss` for a
+  store whose bytes moved under an unchanged stat, `fail`, `evict`, `punch`,
   `skip` for the files a pass stepped over because the compaction sweep ruled
   their store unowned, its occupancy `entries`, `bytes`, and `unowned`, the
   stores currently ruled out, a gauge); `shared` is the pusher's shared
@@ -2491,7 +2492,23 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the boot's first cycle, since its first pass lists every alive session's
   tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
   directories, the largest 2,581 files) and a runaway spend is minutes,
-  not the first cycle (T401 follow-up); `nudgeGate` is the auto-nudge walk's
+  not the first cycle (T401 follow-up); `subagentTree` is the memo of each
+  subagents directory tree the builds read (the sidecar map, the agent-file
+  lookup, the feed key's subagents component): per root, the directories in
+  walk order and each one's identity (inode, mtime, size, ctime) taken before
+  it was listed, served while every identity stands because a directory
+  entry's creation, removal or renaming moves its parent's stamps and every
+  parent is in the list, with `hit` and `miss` (trees vouched for by one stat
+  per known directory against trees walked), `evict` (roots dropped because
+  no alive session's transcript names them, on every jobs pass and, as a
+  belt, after each feed build and from the tracking-off frame), `dirStats`
+  (the stats validations paid), `walkMs` and `validateMs` (the time in each,
+  every thread), and the gauges `roots` (entries) and `dirs` (directories
+  held); a directory stamped within the last two seconds, or one whose
+  listing failed, is stored unvouched and walked again until it is quiet and
+  lists cleanly, the racy-stamp rule, since a filesystem stamps with a
+  coarser clock than the wall clock and a failure moves no stamp;
+  `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
@@ -2695,6 +2712,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   gauge `entries`; `segs_hit` and `segs_miss` count the segments served and
   derived. `dead_serve`, `dead_miss` and `dead_failed_serve` are the dead-lane
   memo's outcomes on the same block, so one block carries every lane.
+  `judgingBand` is the timeline's judging band memo: a completed judge run's
+  entry is held under its usage row while the row and the gloss it borrowed
+  stand, so an unchanged entry is the same object build after build and the
+  bars fill re-encodes only what changed, and a cursor skips the retained
+  rows each verified to end before the horizon. `builds` and their wall
+  `ms`; `rows_skipped` and `rows_visited` per build; `entries_reused` and
+  `entries_minted`; `resets`, a cursor dropped for a rotated log, a left
+  prune the reader did not count or a horizon moved back; `compact_reused`,
+  `compact_minted` and `compact_ms` for the compact wire form's own identity
+  memo; and the gauges `entries` and `compact` (the two memos' held
+  entries), `bytes` (their containers, estimated) and `bound`, the band's
+  wire cap (20,000 entries): only entries that reach the frame are held, so
+  a judge storm's rows never widen the memo.
   Four memos cover the chat build's per-build fixed costs, each keyed on the
   inputs it reads and evicted by the pusher with the tab set (a comment thread
   built this cycle is kept, like its fold prefix). `chatMergeSets` is the

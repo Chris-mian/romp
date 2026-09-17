@@ -85,3 +85,24 @@ test("a `br` box right after the zero-width break shares the break's row under a
   assert.equal(dragSlotIndex(strip(0), 1884, 0, 32.1, 110, 48), 6);
   assert.equal(dragSlotIndex(strip(3), 1884, 3, 32.1, 110, 48), 6, "gap 3: before u2, not the trail's head");
 });
+
+test("two folded headers PACKED onto one row are plain boxes on it: the slot between them is a slot, and the trail's row still reads below (the user 2026-09-16)", () => {
+  // planStrip packs a folded header onto the folded header before it (no break between), so the dragover marks neither
+  // `br` (only a header a break precedes is a row opener); the break before the trail still opens the trail's row.
+  // Row 0: the two headers (40 + 40 of 400); row 1: the break (zero width, br) and the trail's three tabs.
+  const strip = [{ id: "\0head:qa", w: 40 }, { id: "\0head:infra", w: 40 }, { id: "\0sep", w: 0, br: true }, { id: "u1", w: 50 }, { id: "u2", w: 50 }, { id: "u3", w: 50 }];
+  assert.equal(dragSlotIndex(strip, 400, 0, 20, 10, 5), 0, "row 0, left of qa: before both headers (the strip's very start)");
+  assert.equal(dragSlotIndex(strip, 400, 0, 20, 40, 5), 1, "row 0, between the two headers: the slot between them");
+  assert.equal(dragSlotIndex(strip, 400, 0, 20, 300, 5), 2, "row 0, past infra: the slot before the trail's break (the end of the packed row)");
+  assert.equal(dragSlotIndex(strip, 400, 0, 20, 10, 25), 3, "row 1, left of u1: the head of the trail — one row down, not two");
+  assert.equal(dragSlotIndex(strip, 400, 0, 20, 60, 25), 4, "row 1, between u1 and u2");
+  assert.equal(dragSlotIndex(strip, 400, 0, 20, 300, 25), 6, "row 1, past u3: the end");
+  // had the second header still opened a row (the layout before the rule), the trail would have read one row lower
+  const unpacked = strip.map((b) => (b.id === "\0head:infra" ? { ...b, br: true } : b));
+  assert.equal(dragSlotIndex(unpacked, 400, 0, 20, 10, 25), 1, "…as it did with a row per folded group: y=25 is infra's own row there");
+  assert.equal(dragSlotIndex(unpacked, 400, 0, 20, 10, 45), 3, "…and the trail sat on the third row");
+  // a run wider than the strip wraps like tabs: three 150px headers at 400px → two on row 0, the third on row 1
+  const wide = [{ id: "\0head:a", w: 150 }, { id: "\0head:b", w: 150 }, { id: "\0head:c", w: 150 }, { id: "\0sep", w: 0, br: true }, { id: "u1", w: 50 }];
+  assert.equal(dragSlotIndex(wide, 400, 0, 20, 10, 25), 2, "row 1, left of the wrapped third header: the slot before it");
+  assert.equal(dragSlotIndex(wide, 400, 0, 20, 10, 45), 4, "row 2: the trail's head");
+});

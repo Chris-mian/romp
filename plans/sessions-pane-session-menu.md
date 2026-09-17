@@ -36,8 +36,11 @@ One road per verb, the tab strip's, never a second one.
 - **Builder.** A small shared module, `ui/webview/ctx-menu.ts`: `openContextMenu(x, y, items, opts)` builds the card
   and its rows from `{label, sub?, danger?, pick()}` items, places it inside the viewport, dismisses on an outside
   press, Escape, scroll or blur, and gives the rows keyboard reach (arrows move, Enter or Space picks, Home and End).
-  The Sessions pane uses it now. The tab menu, the feed's card menu and the file browser's row menu each build the
-  same rows by hand today; moving them onto the builder is a later tidy, not this change (their pins hold their text).
+  The Sessions pane used it first. The tab menu, the feed's card menu, the file browser's row menu, the chat's selection
+  menu and the folder link's right-click built the same rows by hand until the tidy after v0.16.0 moved them onto it:
+  the standard rows through addMenuItem, a caller's own rows (the tab menu's colour swatches and flyouts) appended to a
+  card from menuCard and shown with showMenuCard, so the placement, dismissal, keyboard reach and focus return are one
+  code path (their pins hold their text; tests/test_shared_menus_served.py drives one road per surface).
 - **Keyboard reach.** The row's head is focusable (`tabindex=0`); the ContextMenu key and Shift+F10 open the menu
   anchored to the row, Enter opens the session as a click does. The menu's own keys come from the builder.
 - **Where it opens.** A right-click on the row's head (the name, the status dot, the mail mark): the goal rows below it
