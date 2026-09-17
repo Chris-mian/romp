@@ -774,7 +774,7 @@ test("executed: a Codex lane menu with no choices carries one non-interactive ro
     let p = view.loadModelChoices();
     pending[0]({ rev: 3, models: [], efforts: [], codex: { models: [], efforts: [], error: REASON } });
     await p;
-    assert.equal(view.CODEX_MODELS_ERROR, REASON, "the payload's codex.error is read");
+    assert.equal(view.codexModelsError(), REASON, "the payload's codex.error is read");
     let menu = open("effort", "gpt-5-test");
     assert.equal(menu.children.length, 1, "one row");
     const row = menu.children[0];
@@ -789,7 +789,7 @@ test("executed: a Codex lane menu with no choices carries one non-interactive ro
     p = view.loadModelChoices();
     pending[1]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-test-none", label: "Tests", isDefault: true, efforts: [] }], efforts: [], error: null } });
     await p;
-    assert.equal(view.CODEX_MODELS_ERROR, "", "a null error clears the held reason");
+    assert.equal(view.codexModelsError(), "", "a null error clears the held reason");
     menu = open("effort", "gpt-test-none");
     assert.deepEqual(menu.children[0].children.map(textOf), ["No effort list from Codex", "no effort levels from Codex for this model"]);
     menu = open("effort", "gpt-unknown");

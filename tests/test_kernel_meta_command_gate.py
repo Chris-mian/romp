@@ -113,10 +113,10 @@ class MetaCommandGateCost(unittest.TestCase):
             self.be.effort_ok = False
             state = {}
             self.assertTrue(km._route_meta_command(self.be, SID, "/effort ultra", client, state=state))
-            self.assertIn("Codex catalog does not offer", state["refused"])
-            self.assertIn("'ultra'", state["refused"], "the refused level is named")
+            self.assertIn("Codex catalog does not offer", state["refused_effort"])
+            self.assertIn("'ultra'", state["refused_effort"], "the refused level is named")
             self.assertIs(state["queued"], False)
-            self.assertEqual(sent, [{"type": "warn", "text": state["refused"]}], "the client hears the same words")
+            self.assertEqual(sent, [{"type": "warn", "text": state["refused_effort"]}], "the client hears the same words")
             self.assertEqual(self.be.calls, [("effort", "ultra")], "the backend was asked, and said no")
             self.assertNotIn(SID, km._pending_ops, "a refusal parks nothing")
 

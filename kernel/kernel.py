@@ -24596,8 +24596,10 @@ def _deliver_text(sid, text, plain=False):
     be = Sessions.backend_for(sid)
     meta = {}
     if not plain and _route_meta_command(be, sid, text, state=meta):
+        if meta.get("refused_effort"):
+            return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused"):
-            return False, str(meta["refused"]), False    # the route's own words: no owning backend, or a level the backend refused
+            return False, "no running backend owns %s — the command was not delivered" % sid, False
         return True, "", bool(meta.get("queued"))
     res = _send_or_park(be, sid, text, user="<!-- romp-tag: " not in text)
     if res is None:
@@ -35366,7 +35368,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     caller's to send verbatim: the CLI owns what executes. A refused fast toggle is told to
     the client (fail loudly): a dormant SDK session has no live CLI to apply it, and the typed text
     used to at least draw the CLI's own refusal; a refused effort level (one the Codex model's catalog
-    does not offer) is told the same way and filed as state["refused"], so POST /send answers ok:false
+    does not offer) is told the same way and filed as state["refused_effort"], so POST /send answers ok:false
     with the words. `state`, when given, receives {"queued": bool}: whether
     the change PARKED, taken from each setter's own return, so POST /send answers `queued` for a meta
     command exactly as for a text send (2026-09-03: a parked /model read as plain 'ok'). The effort/fast
@@ -35426,7 +35428,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
             # command answered ok while the badge stayed put (the review of #1814).
             why = _effort_refusal(be, value)
             if state is not None:
-                state["refused"] = why
+                state["refused_effort"] = why
             if client:
                 client["send"](json.dumps({"type": "warn", "text": why}))
             sys.stderr.write("effort %r for %s refused by %s\n" % (value, sid, type(be).__name__))

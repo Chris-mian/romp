@@ -1094,6 +1094,7 @@ const CODEX_EFFORT_CHOICES = [];
 // yet, a failed model list), held from the last /models read so a lane menu with no list can say it
 // (render.ts CODEX_MODELS_ERROR, the chat's twin). An absent or non-string one clears it.
 let CODEX_MODELS_ERROR = '';
+function codexModelsError() { return CODEX_MODELS_ERROR; }   // read by the unit tests; a getter in module.exports would break the exports-line pins
 // The lane's effort menu lists the ladder TOP-DOWN (the user 2026-09-14): highest first, lowest last, as the
 // chat's statusline menu does (render.ts effortDisplayOrder, its twin). The kernel serves `efforts` low→high
 // because its rank ramp and the gear's settings selects read that order, and neither moves; each row carries
@@ -7147,4 +7148,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES, codexEffortChoices, get CODEX_MODELS_ERROR() { return CODEX_MODELS_ERROR; } };
+module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES, codexEffortChoices, codexModelsError };
