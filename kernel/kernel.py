@@ -19530,7 +19530,13 @@ def _drive(msg, client):
         # forget the family's remembered pin and send the alias
         _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))); _push_soon()
     elif t == "setEffort" and msg.get("value"):
-        _set_effort_or_park(be, sid, str(msg["value"])); _push_soon()   # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked
+        # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked.
+        # LOUD on refusal, as setFast below: a level the model's Codex catalog does not advertise (the menu
+        # lists the catalog's levels, but a stale list or a model change under it can still send one) used
+        # to leave the badge on the old level with no reason given (the review of #1814)
+        if not _set_effort_or_park(be, sid, str(msg["value"]))[0]:
+            client["send"](json.dumps({"type": "warn", "text": _effort_refusal(be, str(msg["value"]))}))
+        _push_soon()
     elif t == "setFast" and msg.get("value") in ("on", "off"):
         # the chat's fast badge — /fast on|off delivered like any slash command; mid-compaction → parked.
         # LOUD on refusal (fail loudly, never degrade silently): a dormant SDK session has no live CLI to
@@ -24591,7 +24597,7 @@ def _deliver_text(sid, text, plain=False):
     meta = {}
     if not plain and _route_meta_command(be, sid, text, state=meta):
         if meta.get("refused"):
-            return False, "no running backend owns %s — the command was not delivered" % sid, False
+            return False, str(meta["refused"]), False    # the route's own words: no owning backend, or a level the backend refused
         return True, "", bool(meta.get("queued"))
     res = _send_or_park(be, sid, text, user="<!-- romp-tag: " not in text)
     if res is None:
@@ -35286,11 +35292,27 @@ def _set_model_or_park(be, sid, value, floating=False):
 def _set_effort_or_park(be, sid, value):
     """Apply an effort change now — or park it while the session compacts (the user 2026-07-02: /effort
     is a slash command like /model, so it must queue the same way — it used to slip straight through,
-    with no queued chip and the same derail risk the /model park was built for)."""
-    parked = _gate_or_park(sid, ("effort", value))
-    if not parked:
-        be.set_effort(sid, value)
-    return parked
+    with no queued chip and the same derail risk the /model park was built for). Returns (took, parked)
+    in _set_fast_or_park's shape: `parked` is True when the change queued (mid-compaction or behind a
+    queue), `took` is False when the backend refused the value, so the caller can be loud. The
+    SessionBackend.set_effort contract is a bool and every shipped setter keeps it: CodexBackend refuses
+    a level the session's model does not advertise, an unknown model or a catalog it could not read,
+    SdkBackend a value outside its levels or a session it holds no row for, the unowned route everything.
+    This used to return only `parked` and drop that verdict, so a refused /effort answered ok and moved
+    nothing (the review of #1814)."""
+    if _gate_or_park(sid, ("effort", value)):
+        return (True, True)
+    return (bool(be.set_effort(sid, value)), False)
+
+
+def _effort_refusal(be, value):
+    """The sentence a refused effort pick is answered with (fail loudly, never a silent no-op), the
+    setEffort op's and _route_meta_command's alike: a Codex session's model does not advertise the level
+    in its catalog (or the catalog could not be read); any other backend refused it outright (an SDK
+    session it holds no row for; the unowned route refuses before a setter is reached)."""
+    if be is not None and be is _codex():
+        return "Couldn't set effort '%s': this model's Codex catalog does not offer it." % value
+    return "Couldn't set effort '%s': the session's backend refused it." % value
 
 
 def _set_env_or_park(be, sid, value):
@@ -35343,7 +35365,9 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     command, a bare "/model" (the CLI's own picker), plain text that merely contains one — is the
     caller's to send verbatim: the CLI owns what executes. A refused fast toggle is told to
     the client (fail loudly): a dormant SDK session has no live CLI to apply it, and the typed text
-    used to at least draw the CLI's own refusal. `state`, when given, receives {"queued": bool}: whether
+    used to at least draw the CLI's own refusal; a refused effort level (one the Codex model's catalog
+    does not offer) is told the same way and filed as state["refused"], so POST /send answers ok:false
+    with the words. `state`, when given, receives {"queued": bool}: whether
     the change PARKED, taken from each setter's own return, so POST /send answers `queued` for a meta
     command exactly as for a text send (2026-09-03: a parked /model read as plain 'ok'). The effort/fast
     setters report whether they parked under _gate_or_park (the one _ops_gate evaluation those two pay),
@@ -35394,7 +35418,18 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
         # read, not inferred from _ops_gate, which would say `queued` for a pick that had already applied
         parked = _set_model_or_park(be, sid, value, floating=floating)
     elif effort_pick:
-        parked = _set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command
+        took, parked = _set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command
+        if not took:
+            # the backend refused the level (a Codex model whose catalog does not offer it, or a catalog the
+            # backend could not read): said, as the /fast arm says its refusal, and filed in `state` so POST
+            # /send answers ok:false with the words. Before this the setter's verdict was dropped and the
+            # command answered ok while the badge stayed put (the review of #1814).
+            why = _effort_refusal(be, value)
+            if state is not None:
+                state["refused"] = why
+            if client:
+                client["send"](json.dumps({"type": "warn", "text": why}))
+            sys.stderr.write("effort %r for %s refused by %s\n" % (value, sid, type(be).__name__))
     elif head == "/fast" and value in ("on", "off"):
         took, parked = _set_fast_or_park(be, sid, value)          # took: applied or parked; parked: queued
         if not took and client:

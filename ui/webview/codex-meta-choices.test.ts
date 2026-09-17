@@ -728,3 +728,80 @@ test("executed: the timeline's loader fills its effort arrays highest first, and
   // the menu takes the array's order: no sort and no second reversal between the loader and the rows
   assert.match(TIMELINE, /: \(kind === 'model' \? MODEL_CHOICES : EFFORT_CHOICES\);\n\s+for \(const c of choices\) \{/);
 });
+
+// A Codex lane's picker with no list opened BLANK: codexEffortChoices answers [] for a model whose catalog
+// entry lists no levels, for one the catalog does not know, and for an empty catalog (the app-server client
+// down at the last /models read), and the row loop drew nothing, with no word why. The lane menu now carries
+// the chat's reason row: the head names the missing list, the sub-line the kernel's `codex.error` (read from
+// the payload into CODEX_MODELS_ERROR, as render.ts reads it), else that this model advertises no levels.
+// EXECUTED over the real module: _openMetaMenu driven on a prototype instance, with a small stand-in for
+// what it touches of the DOM (Obsidian's createDiv/createSpan, a rect, a style bag, a dataset).
+test("executed: a Codex lane menu with no choices carries one non-interactive row naming the reason", async () => {
+  const view = requireCjs(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  const makeNode = (tag: string): any => {
+    const n: any = {
+      tag, children: [] as any[], attrs: {} as Record<string, string>, style: {} as Record<string, string>,
+      dataset: {} as Record<string, string>, listeners: {} as Record<string, number>, text: "", parent: null as any,
+      setAttribute(k: string, v: string) { n.attrs[k] = v; },
+      addEventListener(t: string) { n.listeners[t] = (n.listeners[t] || 0) + 1; },
+      appendChild(c: any) { c.parent = n; n.children.push(c); return c; },
+      remove() { if (n.parent) n.parent.children.splice(n.parent.children.indexOf(n), 1); n.parent = null; },
+      getBoundingClientRect() { return { left: 40, top: 100, right: 120, bottom: 116, width: 80, height: 16 }; },
+      createEl(t: string, o?: any) { const e = makeNode(t); if (o && o.text) e.text = o.text; n.appendChild(e); return e; },
+      createDiv(o?: any) { return n.createEl("div", o); }, createSpan(o?: any) { return n.createEl("span", o); },
+    };
+    return n;
+  };
+  const textOf = (n: any): string => n.text + n.children.map(textOf).join("");
+  const g = globalThis as any;
+  const saved = { fetch: g.fetch, document: g.document, window: g.window };
+  const pending: Array<(d: any) => void> = [];
+  g.fetch = () => new Promise<any>((res) => pending.push((d: any) => res({ ok: true, status: 200, json: async () => d })));
+  g.window = { innerWidth: 1000, innerHeight: 800 };
+  // a lane menu opened on a live Codex lane whose model is `model`; the panel is the prototype's methods over
+  // the few fields _openMetaMenu reads
+  const open = (kind: string, model: string): any => {
+    g.document = { body: makeNode("body") };
+    const panel: any = Object.create(view.TimelinePanel.prototype);
+    Object.assign(panel, { _metaMenu: null, _metaPending: {}, _tipWin: null, _sendCommand: () => {}, draw: () => {} });
+    panel._openMetaMenu(kind, { id: SID, name: "web", backend: "codex", model, effort: "", state: "ready", live: true }, makeNode("span"));
+    return panel._metaMenu;
+  };
+  assert.match(TIMELINE, /let CODEX_MODELS_ERROR = '';/);
+  assert.match(TIMELINE, /if \(d\.codex\) CODEX_MODELS_ERROR = typeof d\.codex\.error === 'string' \? d\.codex\.error : '';/);
+  try {
+    // the catalog unavailable: the kernel's reason, verbatim, under the head that names the list
+    let p = view.loadModelChoices();
+    pending[0]({ rev: 3, models: [], efforts: [], codex: { models: [], efforts: [], error: REASON } });
+    await p;
+    assert.equal(view.CODEX_MODELS_ERROR, REASON, "the payload's codex.error is read");
+    let menu = open("effort", "gpt-5-test");
+    assert.equal(menu.children.length, 1, "one row");
+    const row = menu.children[0];
+    assert.deepEqual(row.children.map(textOf), ["No effort list from Codex", REASON]);
+    assert.equal(row.attrs.tabindex, undefined, "takes no focus");
+    assert.deepEqual(row.listeners, {}, "answers no click, hover or key");
+    assert.match(row.attrs.style, /cursor:default/);
+    assert.match(row.children[1].attrs.style, /font-size:0\.82em;opacity:0\.6;/, "the menu's sub-line style");
+    menu = open("model", "gpt-5-test");
+    assert.deepEqual(menu.children[0].children.map(textOf), ["No model list from Codex", REASON]);
+    // the catalog read, but this model advertises no levels (or is not in it): no kernel reason to show
+    p = view.loadModelChoices();
+    pending[1]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-test-none", label: "Tests", isDefault: true, efforts: [] }], efforts: [], error: null } });
+    await p;
+    assert.equal(view.CODEX_MODELS_ERROR, "", "a null error clears the held reason");
+    menu = open("effort", "gpt-test-none");
+    assert.deepEqual(menu.children[0].children.map(textOf), ["No effort list from Codex", "no effort levels from Codex for this model"]);
+    menu = open("effort", "gpt-unknown");
+    assert.deepEqual(menu.children[0].children.map(textOf), ["No effort list from Codex", "no effort levels from Codex for this model"]);
+    // a model with levels draws its rows, every one a choice, and no reason row among them
+    p = view.loadModelChoices();
+    pending[2]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-5-test", label: "GPT-5 Test", isDefault: true, efforts: effortRows(["low", "high"]) }], efforts: [], error: null } });
+    await p;
+    menu = open("effort", "gpt-5-test");
+    assert.deepEqual(menu.children.map(textOf), ["high", "low"]);
+    assert.ok(menu.children.every((r: any) => r.attrs.tabindex === "0"), "every row is a choice");
+  } finally {
+    g.fetch = saved.fetch; g.document = saved.document; g.window = saved.window;
+  }
+});
