@@ -115,7 +115,7 @@ test("render.ts + styles.css: the bell command's word on the new state is a quie
 });
 
 test("render.ts: the tab menu's one row asks the shell to record a hot key; a bound one reads Update and the recorder removes too", () => {
-  const i = RENDER.indexOf('l.textContent = cur ? "Update hot key…" : "Hot key…"');
+  const i = RENDER.indexOf('label: cur ? "Update hot key…" : "Hot key…"');
   assert.ok(i > 0);
   const block = RENDER.slice(RENDER.lastIndexOf("if (inRompShell()", i), RENDER.indexOf("// The colour swatches close the section with Rename", i));
   assert.match(block, /typeof \(window\.parent as any\)\.__rompHotkeyConfigure === "function"/, "shell-hosted only: the shell owns the recorder");
@@ -123,7 +123,7 @@ test("render.ts: the tab menu's one row asks the shell to record a hot key; a bo
   // one row (the user 2026-09-11): no separate Remove row — the recorder it opens re-records or removes (Backspace, or
   // its Remove button, shortcuts-modal.ts: the same unbind in the bindings store)
   assert.doesNotMatch(block, /Remove hot key/);
-  assert.match(block, /sb\.textContent = cur \? "now " \+ miniChord\(cur\) \+ " — press a new combination, or remove it" : "press a key combination that switches to this tab";/);
+  assert.match(block, /sub: cur \? "now " \+ miniChord\(cur\) \+ " — press a new combination, or remove it" : "press a key combination that switches to this tab",/);
   assert.match(block, /ctxIcon\("key", false\)/);
   assert.ok(i > RENDER.indexOf('l.textContent = "Rename"') && i < RENDER.indexOf('const row = el("div", "ctx-colors")'), "with Rename, before the colour swatches: how this tab shows and holds on the strip (the partition has no split row, 2026-09-11)");
   assert.match(RENDER, /kind === "key"\n\s*\? '<rect x="1.5" y="4" width="13" height="8" rx="1.5"\/><line x1="4.5" y1="9.5" x2="11.5" y2="9.5"\/>'/);

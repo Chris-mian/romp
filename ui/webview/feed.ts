@@ -10,6 +10,7 @@
 // it reads moved, a gesture touched it, or the 15 s live pass aged it. Its column and
 // order are re-applied on every render regardless.
 import { distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote } from "./distiller-line";
+import { openContextMenu, CtxItem } from "./ctx-menu";   // the one menu builder (the v0.16.0 tidy): the card menu's card, dismissal and keys
 import { flipNeeded } from "./feed-flip";
 import { delegate } from "./actions";
 import { paintHeld, paintReleased, publishPaneHidden } from "./paint-gate";
@@ -1015,13 +1016,8 @@ function ensureHeader() {
 // clicked value sticky across pushes until the kernel's payload agrees, so the bell never flickers
 // back while the rebuild lands.
 const pendingNotify = new Map<string, boolean>();   // itemId -> clicked value, until the payload confirms
-let cardMenuEl: HTMLElement | null = null;
-
-function dismissCardMenu(): void { if (cardMenuEl) { cardMenuEl.remove(); cardMenuEl = null; } }
-window.addEventListener("mousedown", (e) => { if (cardMenuEl && !cardMenuEl.contains(e.target as Node)) dismissCardMenu(); }, true);
-window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissCardMenu(); }, true);
-window.addEventListener("scroll", dismissCardMenu, true);
-window.addEventListener("blur", () => dismissCardMenu());
+// (the menu's card, its dismissal on a press outside, Escape, a scroll or the window's blur, and its keys are the shared
+// builder's: ctx-menu.ts openContextMenu)
 
 // the same drawn bell as the chat tab menu's toggle icon (16-unit viewBox, currentColor, slash = off)
 function cardBellSvg(off: boolean): string {
@@ -1103,46 +1099,20 @@ function rearmLatches(reply: LatchReply): number {
 }
 
 function showCardMenu(e: MouseEvent, card: HTMLElement): void {
-  dismissCardMenu();
   const it = (card as any)._it as AskItem | undefined;   // the freshest payload copy (updateAskCard stashes it)
   if (!it) return;
   const on = cardNotifyOn(it);
-  const menu = el("div", "ctx-menu");
-  const item = el("div", "ctx-item ctx-item-toggle");
   const icon = el("span", "ctx-icon" + (on ? "" : " off"));
   icon.innerHTML = cardBellSvg(!on);
-  const body = el("span", "ctx-item-body");
-  const lab = el("span", "ctx-item-label"); lab.textContent = on ? "Stop notifying" : "Notify me";
-  const sub = el("span", "ctx-item-sub");
-  sub.textContent = on ? "no more system notifications for this card"
-    : "system notification when this card blocks on you or completes";
-  body.append(lab, sub);
-  item.append(icon, body);
-  item.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    dismissCardMenu();
-    setCardNotify(card, it, !on);
-  });
-  menu.appendChild(item);
+  const items: CtxItem[] = [{ icon, label: on ? "Stop notifying" : "Notify me",
+    sub: on ? "no more system notifications for this card" : "system notification when this card blocks on you or completes",
+    pick: () => setCardNotify(card, it, !on) }];
   // Browse the session's working tree. Only the sid rides: the feed payload doesn't carry cwd, and
   // "." lets the OWNING kernel resolve it authoritatively (_resolve_open_path) rather than this pane
   // scraping another pane's state. Gated on canPreview() (web only): the VS Code webview can't reach
   // the kernel origin, and the editor has its own explorer.
-  if (canPreview()) {
-    const browse = el("div", "ctx-item");
-    browse.textContent = "Browse files";
-    browse.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      dismissCardMenu();
-      openFileBrowse(".", it.sid);
-    });
-    menu.appendChild(browse);
-  }
-  document.body.appendChild(menu);
-  cardMenuEl = menu;
-  const r = menu.getBoundingClientRect();   // at the cursor, clamped inside the pane
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+  if (canPreview()) items.push({ label: "Browse files", pick: () => openFileBrowse(".", it.sid) });
+  openContextMenu(e.clientX, e.clientY, items);   // at the cursor, clamped inside the pane (the shared card)
 }
 
 function makeAskCard(it: AskItem): HTMLElement {

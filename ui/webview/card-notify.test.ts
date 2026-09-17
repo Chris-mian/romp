@@ -68,8 +68,9 @@ test("a provisional placeholder hides its bell (no stable identity to arm)", () 
 test("the menu wears the tab menu's chrome (feed.css has its own copy — the feed page loads only feed.css)", () => {
   assert.match(CSS, /\.ctx-menu \{\s*\n\s*position: fixed; z-index: 100;/);
   assert.match(CSS, /\.ctx-item-toggle \.ctx-icon\.off \{ color: var\(--dim\); \}/);
-  // the standard dismissers: outside mousedown (capture), Escape, scroll, blur
-  assert.match(SRC, /if \(cardMenuEl && !cardMenuEl\.contains\(e\.target as Node\)\) dismissCardMenu\(\)/);
-  assert.match(SRC, /if \(e\.key === "Escape"\) dismissCardMenu\(\)/);
-  assert.match(SRC, /window\.addEventListener\("scroll", dismissCardMenu, true\);/);
+  // the standard dismissers (a press outside, Escape, scroll, blur) and the keys are the shared builder's (ctx-menu.ts showMenuCard,
+  // pinned in ctx-menu.test.ts): the feed opens the card through it and keeps no menu state of its own (the v0.16.0 tidy)
+  assert.match(SRC, /import \{ openContextMenu, CtxItem \} from "\.\/ctx-menu";/);
+  assert.match(SRC, /openContextMenu\(e\.clientX, e\.clientY, items\);/);
+  assert.doesNotMatch(SRC, /cardMenuEl|dismissCardMenu/);
 });
