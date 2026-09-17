@@ -29,7 +29,7 @@ test("menu construction picks the choice list by the session's backend", () => {
   assert.match(RENDER, /const rows = metaChoices\(kind, s\.status\)\.filter\(/);
   assert.match(RENDER, /for \(const c of rows\) \{/);
   assert.match(TIMELINE, /s\.backend === 'codex'/);
-  assert.match(TIMELINE, /\? \(kind === 'model' \? CODEX_MODEL_CHOICES : CODEX_EFFORT_CHOICES\)/);
+  assert.match(TIMELINE, /\? \(kind === 'model' \? CODEX_MODEL_CHOICES : codexEffortChoices\(s\.model\)\)/);
 });
 
 test("a live Codex lane with no effort picked yet draws the effort picker, reading the bare kind (both surfaces agree)", () => {
@@ -290,11 +290,12 @@ function liftMenu(opts: { thread?: { th: unknown; status: any } } = {}) {
     "let activeId = null;",
     // metaChoices, as render.ts routes a session: a Codex session's own lists, else the SDK lists (both
     // lifted with the loader below); the mode and fast lists are not lifted
-    "const metaChoices = (kind, st) => st.backend === 'codex' ? (kind === 'model' ? CODEX_MODEL_CHOICES : kind === 'effort' ? CODEX_EFFORT_CHOICES : []) : (kind === 'model' ? MODEL_CHOICES : kind === 'effort' ? EFFORT_CHOICES : []);",
+    slice("function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {"),
     slice("function el(tag: string, cls?: string): HTMLElement {"),
     slice("function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {"),   // the real ✓ rule (by value): a row order the tests move must never lose it
     sliceMod("export function metaDots(): HTMLElement {"),   // the dots live in status-controls.ts (T415 part two)
     slice("const MODEL_CHOICES: {", "function loadModelChoices(): void {"),
+    "const META_CHOICES = {model: MODEL_CHOICES, effort: EFFORT_CHOICES}; const CODEX_MODE_CHOICES = [];",
     sliceMod("export function metaButton(kind: MetaKind, text: string, forSid: string | null | undefined, hooks: MetaHooks): HTMLElement {").replace("function metaButton(", "function buildMetaButton("),
     // the chat's wrapper (render.ts META_HOOKS / metaButton, pinned by settings-previews.test.ts): the picker as the press hook
     "const META_HOOKS = { onPress: (kind, btn, forSid) => toggleMetaMenu(kind, btn, forSid), pending: () => false };",
@@ -642,6 +643,38 @@ test("executed: a menu closed before the read lands stays closed, and a failure 
 // current effort.
 const LADDER = ["low", "medium", "high", "xhigh", "max", "ultracode"];   // the wire order: the kernel's EFFORT_CHOICES
 const effortRows = (values: string[]) => values.map((v, i) => ({ value: v, label: v, color: [i, i, i] }));
+test("executed: chat and timeline select only the current model's advertised efforts", async () => {
+  const models = [
+    { value: "gpt-5-test", model: "gpt-test-web", label: "Web", isDefault: true,
+      efforts: effortRows(["low", "ultra", "future-level"]) },
+    { value: "gpt-test-api", label: "API", efforts: effortRows(["minimal", "high"]) },
+    { value: "gpt-test-none", label: "Tests", efforts: [] },
+  ];
+  const payload = { rev: 3, models: [], efforts: [], codex: { models, efforts: effortRows(["wrong-model"]), error: null } };
+  const { api, sessions, body, pending } = liftMenu();
+  sessions.set(SID, { status: { ...CODEX_READY } }); api.active = SID;
+  api.loadModelChoices(); pending[0](payload); await tick(); await tick();
+  const sl = statusline(api, 700, 760); body.appendChild(sl.sl);
+  api.toggleMetaMenu("effort", sl.effortBtn, null);
+  assert.deepEqual(rows(api.menu), ["future-level", "ultra", "low"]);
+  api.closeMetaMenu(); sessions.get(SID).status.model = "gpt-test-api";
+  api.toggleMetaMenu("effort", sl.effortBtn, null);
+  assert.deepEqual(rows(api.menu), ["high", "minimal"], "a model change changes the effort choices");
+
+  const view = requireCjs(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  const savedFetch = (globalThis as any).fetch;
+  (globalThis as any).fetch = async () => ({ json: async () => payload });
+  try {
+    await view.loadModelChoices();
+    for (const model of ["gpt-5-test", "gpt-test-web", ""]) {
+      assert.deepEqual(view.codexEffortChoices(model).map((c: any) => c.value), ["future-level", "ultra", "low"]);
+    }
+    assert.deepEqual(view.codexEffortChoices("gpt-test-api").map((c: any) => c.value), ["high", "minimal"]);
+    assert.deepEqual(view.codexEffortChoices("gpt-test-none"), []);
+    assert.deepEqual(view.codexEffortChoices("gpt-unknown"), []);
+  } finally { (globalThis as any).fetch = savedFetch; }
+});
+
 test("executed: the effort menu lists efforts highest first, colours riding their rows and the ✓ on the current one", async () => {
   // an SDK session on high
   {

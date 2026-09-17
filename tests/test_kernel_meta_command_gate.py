@@ -91,6 +91,21 @@ class MetaCommandGateCost(unittest.TestCase):
         self.assertEqual(self.be.calls, [], "nothing fired: every op parked")
         self.assertEqual([op[0] for op in km._pending_ops[SID]], ["effort", "fast", "model"], "parked in press order")
 
+    def test_codex_effort_commands_reach_the_backend_instead_of_becoming_prompts(self):
+        with mock.patch.object(km, "_codex", return_value=self.be):
+            self.assertEqual(self._route("/effort ultra"), (1, False))
+            self.assertEqual(self.be.calls, [("effort", "ultra")])
+            self.verdict = True
+            self.assertEqual(self._route("/effort future-level"), (1, True))
+            self.assertEqual(km._pending_ops[SID][-1], ("effort", "future-level"))
+            self.assertEqual(self.be.calls, [("effort", "ultra")], "a parked pick waits its turn")
+
+    def test_a_new_effort_on_an_unowned_session_is_refused_not_sent(self):
+        state = {}
+        self.assertTrue(km._route_meta_command(km._UNOWNED, SID, "/effort future-level", state=state))
+        self.assertIn("not delivered", state["refused"])
+        self.assertNotIn(SID, km._pending_ops)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,9 @@ sb = load_source("romp_session_backend", os.path.join(ROOT, "kernel", "session_b
 em = load_source("romp_event_model", os.path.join(ROOT, "bin", "romp-event-model"))
 
 
+MODEL_CHOICES = [{"value": "gpt-5-test", "model": "gpt-5-test", "label": "GPT-5 Test", "isDefault": True,
+                  "efforts": [{"value": v, "label": v, "sub": ""} for v in ("low", "medium", "high", "xhigh")]}]
+
 @contextlib.contextmanager
 def _disk_full(nf):
     """ENOSPC beneath the REAL names writer: the publish (os.replace onto names/<sid>) fails, and an
@@ -173,7 +176,9 @@ class FakeClient:
     def model_list(self, *a, **k):
         self._rec("model_list")
         return SimpleNamespace(data=[
-            SimpleNamespace(id="gpt-5-test", display_name="GPT-5 Test", hidden=False),
+            SimpleNamespace(id="gpt-5-test", display_name="GPT-5 Test", hidden=False, is_default=True,
+                            supported_reasoning_efforts=[SimpleNamespace(reasoning_effort=v, description="")
+                                                        for v in ("low", "medium", "high", "xhigh")]),
             SimpleNamespace(id="gpt-5-hidden", display_name="Hidden", hidden=True)])
 
     def turn_start(self, tid, input_items, params=None):
@@ -1761,7 +1766,7 @@ for i in range(20):
         be, _, _ = build()
         sid = be.spawn("web", "/TESTDIR")
         self.assertTrue(be.set_effort(sid, "xhigh"))    # Codex takes xhigh natively
-        self.assertFalse(be.set_effort(sid, "max"))     # Claude-only → loud refusal
+        self.assertFalse(be.set_effort(sid, "max"))     # not advertised by this synthetic model
         self.assertFalse(be.set_fast(sid, "on"))
         self.assertFalse(be.set_mode(sid, "plan"))
         self.assertFalse(be.set_auth(sid, "key"))
@@ -1796,10 +1801,66 @@ for i in range(20):
     def test_model_catalog_from_app_server(self):
         be, fake, _ = build()
         cat = be.model_catalog()
-        self.assertEqual(cat, [{"value": "gpt-5-test", "label": "GPT-5 Test"}])
+        self.assertEqual(cat, MODEL_CHOICES)
         be.model_catalog()
         self.assertEqual(len(fake.called("model_list")), 1, "catalog is fetched once, then cached")
         self.assertIsNone(be.model_catalog_error(), "a held catalog carries no error")
+
+    def test_efforts_come_from_each_models_catalog_including_future_values(self):
+        from enum import Enum
+        class Level(str, Enum):
+            ultra = "ultra"
+        be, fake, _ = build()
+        fake.model_list = lambda: SimpleNamespace(data=[
+            SimpleNamespace(id="gpt-test-web", model="gpt-test-web", display_name="Web", hidden=False,
+                            is_default=True, supported_reasoning_efforts=[
+                                SimpleNamespace(reasoning_effort=Level.ultra, description="Detailed reasoning"),
+                                SimpleNamespace(reasoning_effort="future-level", description="New level")]),
+            SimpleNamespace(id="gpt-test-api", model="gpt-test-api", display_name="API", hidden=False,
+                            is_default=False, supported_reasoning_efforts=[
+                                SimpleNamespace(reasoning_effort="low", description="Quick")])])
+        rows = be.model_catalog()
+        self.assertEqual(rows[0]["efforts"], [
+            {"value": "ultra", "label": "ultra", "sub": "Detailed reasoning"},
+            {"value": "future-level", "label": "future-level", "sub": "New level"}])
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.set_model(sid, "gpt-test-web"))
+        self.assertTrue(be.set_effort(sid, "ultra"))
+        self.assertTrue(be.set_effort(sid, "future-level"))
+        self.assertFalse(be.set_effort(sid, "low"))
+        self.assertEqual(be.live_sessions()[sid]["effort"], "future-level")
+        self.assertTrue(be.set_model(sid, "gpt-test-api"))
+        self.assertFalse(be.set_effort(sid, "ultra"))
+        self.assertTrue(be.set_effort(sid, "low"))
+
+    def test_effort_refuses_unknown_model_or_unavailable_catalog(self):
+        be, fake, _ = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.set_model(sid, "gpt-not-listed"))
+        self.assertFalse(be.set_effort(sid, "high"))
+        self.assertEqual(be.live_sessions()[sid]["effort"], "")
+        fake.model_list = lambda: SimpleNamespace(data=[])
+        be._catalog = None
+        self.assertTrue(be.set_model(sid, "gpt-5-test"))
+        self.assertFalse(be.set_effort(sid, "high"))
+        self.assertEqual(be.live_sessions()[sid]["effort"], "")
+
+    def test_effort_uses_catalog_default_alias_and_model_after_catalog_read(self):
+        be, fake, _ = build()
+        sid = be.spawn("web", "/TESTDIR")
+        rows = [{"value": "gpt-test-choice", "model": "gpt-test-alias", "isDefault": True,
+                 "efforts": [{"value": "ultra"}]}]
+        with be._session(sid).lock:
+            be._session(sid).model = ""
+        with mock.patch.object(be, "model_catalog", return_value=rows):
+            self.assertTrue(be.set_effort(sid, "ultra"), "unset model uses the advertised default")
+            self.assertTrue(be.set_model(sid, "gpt-test-alias"))
+            self.assertTrue(be.set_effort(sid, "ultra"), "the app-server model alias also matches")
+        def changed():
+            be.set_model(sid, "gpt-not-listed")
+            return rows
+        with mock.patch.object(be, "model_catalog", side_effect=changed):
+            self.assertFalse(be.set_effort(sid, "ultra"), "validate after the possibly blocking catalog read")
 
     def test_model_catalog_empty_answer_is_not_cached_and_is_named(self):
         # The picker opened on a blank menu and stayed blank for the life of the kernel: the app-server's
@@ -1816,7 +1877,7 @@ for i in range(20):
             return pages.pop() if pages else real(*a, **k)
         fake.model_list = paged
         self.assertEqual(be.model_catalog(), [])
-        self.assertEqual(be.model_catalog(), [{"value": "gpt-5-test", "label": "GPT-5 Test"}],
+        self.assertEqual(be.model_catalog(), MODEL_CHOICES,
                          "an empty answer is not the catalog: the next read asks the app-server again")
         self.assertEqual(len(asked), 2)
         self.assertEqual(logged.count("the Codex app-server listed no models"), 1, "the empty answer is named, once")
@@ -1849,7 +1910,7 @@ for i in range(20):
         self.assertEqual(be.model_catalog_error(), "model_list failed: pump died")
         self.assertEqual(named(), ["model_list failed: app-server not ready", "model_list failed: pump died"],
                          "a different reason is a new line")
-        self.assertEqual(be.model_catalog(), [{"value": "gpt-5-test", "label": "GPT-5 Test"}],
+        self.assertEqual(be.model_catalog(), MODEL_CHOICES,
                          "the next read retries instead of serving the failed answer")
         self.assertIsNone(be.model_catalog_error())
 

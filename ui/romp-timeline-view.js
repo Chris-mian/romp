@@ -1095,6 +1095,12 @@ const CODEX_EFFORT_CHOICES = [];
 // because its rank ramp and the gear's settings selects read that order, and neither moves; each row carries
 // its own colour and isCurrentMeta matches by value, so only the order changes.
 function effortDisplayOrder(efforts) { return efforts.slice().reverse(); }
+function codexEffortChoices(model) {
+  // Per-model capabilities (2026-09-17); only an older kernel without this field uses its flat list.
+  if (!CODEX_MODEL_CHOICES.some((m) => Array.isArray(m.efforts))) return CODEX_EFFORT_CHOICES;
+  const row = CODEX_MODEL_CHOICES.find((m) => model ? m.value === model || m.model === model : m.isDefault);
+  return effortDisplayOrder(row?.efforts || []);
+}
 // Loaded once at page load and RE-LOADED on the kernel's {type:"models"} frame (TimelinePanel.refreshModels,
 // the frame's arm in both boots): the pick memory moved — a version pinned, a family un-pinned by Latest, a
 // refused pin dropped, from any surface or dashboard — or the catalog grew, and a family's `default` is
@@ -3300,7 +3306,7 @@ class TimelinePanel {
     // a CODEX lane's pickers speak its own vocabulary (docs/codex.md) — those choices carry no
     // versions, so the family submenus below simply never arm for them
     const choices = s.backend === 'codex'
-      ? (kind === 'model' ? CODEX_MODEL_CHOICES : CODEX_EFFORT_CHOICES)
+      ? (kind === 'model' ? CODEX_MODEL_CHOICES : codexEffortChoices(s.model))
       : (kind === 'model' ? MODEL_CHOICES : EFFORT_CHOICES);
     for (const c of choices) {
       const cur = isCurrentMeta(kind, s, c.value);
@@ -7122,4 +7128,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES };
+module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES, codexEffortChoices };

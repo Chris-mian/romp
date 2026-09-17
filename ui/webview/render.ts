@@ -15395,6 +15395,7 @@ function elapsedMs(sinceMs: number | null): string {
 // One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
 // label; `sdkOnly` drops the entry on a backend that cannot apply it (Codex).
 interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null;
+  model?: string; isDefault?: boolean; efforts?: MetaChoice[];
   versions?: { label: string; value: string; learned?: boolean }[]; default?: string }   // model families only (the
   // user 2026-08-25). `default` is the family's remembered version pin, else the family ALIAS; `learned`
   // marks a version the catalog lacks — a running session's CLI reported it (kernel /models).
@@ -15405,9 +15406,9 @@ interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boo
 const MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 // A CODEX session's pickers speak Codex's vocabulary (the payload's codex section — models from
-// the app-server's own list, efforts the four Codex accepts). Empty until the codex backend has
+// the app-server's own list, including each model's supported efforts). Empty until the codex backend has
 // run: an empty model menu beats offering another vendor's models (docs/codex.md).
-const CODEX_MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+const CODEX_MODEL_CHOICES: MetaChoice[] = [];
 const CODEX_EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 // The effort menus list the ladder TOP-DOWN (the user 2026-09-14): the highest effort first, the lowest
 // last, the way the model menu already leads with the most capable family. The kernel serves `efforts`
@@ -15417,6 +15418,12 @@ const CODEX_EFFORT_CHOICES: { label: string; value: string; color?: number[] | n
 // and the ✓ matches by value (isCurrentMeta), so it follows its row.
 const effortDisplayOrder = (efforts: { label: string; value: string; color?: number[] | null }[]): { label: string; value: string; color?: number[] | null }[] =>
   [...efforts].reverse();
+function codexEffortChoices(model?: string): MetaChoice[] {
+  // Per-model capabilities (2026-09-17); only an older kernel without this field uses its flat list.
+  if (!CODEX_MODEL_CHOICES.some((m) => Array.isArray(m.efforts))) return CODEX_EFFORT_CHOICES;
+  const row = CODEX_MODEL_CHOICES.find((m) => model ? m.value === model || m.model === model : m.isDefault);
+  return effortDisplayOrder(row?.efforts || []);
+}
 // Why the Codex list is empty, when it is: the payload's `codex.error` (the app-server client not up yet,
 // a failed model list, no live Codex session). A Codex menu with no list shows it in place of a
 // blank menu. "" while a list is held or the field is absent.
@@ -15518,13 +15525,13 @@ const META_CHOICES: Record<MetaKind, MetaChoice[]> = {
   mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES,
 };
 // The choices a menu offers depend on the session's BACKEND: a Codex session speaks Codex's
-// vocabulary (its own model list, the four efforts it accepts) — never Claude's, whose aliases
+// vocabulary (its own model list and each model's efforts) — never Claude's, whose aliases
 // the codex backend refuses (docs/codex.md). Codex modes use its own approval reviewer.
 function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {
   if (st.backend === "codex") {
     if (kind === "mode") return CODEX_MODE_CHOICES;
     if (kind === "model") return CODEX_MODEL_CHOICES;
-    if (kind === "effort") return CODEX_EFFORT_CHOICES;
+    if (kind === "effort") return codexEffortChoices(st.model);
   }
   return META_CHOICES[kind];
 }

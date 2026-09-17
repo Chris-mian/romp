@@ -35371,7 +35371,11 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     model_pick = head == "/model" and (_vouched_model(value)
                                         or (value.startswith("gpt") and be is not None
                                             and (be is _UNOWNED or be is _codex())))
-    is_meta = (model_pick or (head == "/effort" and value in _EFFORT_VALUES)
+    # Codex's backend validates against the selected model's advertised capabilities (2026-09-17).
+    # Its effort command must never become model input just because a new level is absent from the SDK list.
+    effort_pick = head == "/effort" and (value in _EFFORT_VALUES or (be is not None
+                                         and (be is _UNOWNED or be is _codex())))
+    is_meta = (model_pick or effort_pick
                or (head == "/fast" and value in ("on", "off")))
     if is_meta and be is _UNOWNED:
         # a session no running backend owns takes no setting: refuse before any stamp (the switching dots
@@ -35389,7 +35393,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
         # model_switches_live — none shipped does yet, so the SDK still parks; #923), so its verdict is
         # read, not inferred from _ops_gate, which would say `queued` for a pick that had already applied
         parked = _set_model_or_park(be, sid, value, floating=floating)
-    elif head == "/effort" and value in _EFFORT_VALUES:
+    elif effort_pick:
         parked = _set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command
     elif head == "/fast" and value in ("on", "off"):
         took, parked = _set_fast_or_park(be, sid, value)          # took: applied or parked; parked: queued
@@ -63154,7 +63158,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the codex section rides along untinted: what a CODEX session's pickers offer
                 # (docs/codex.md) — models from the app-server's own list via the backend (the
                 # authoritative source; [] until the backend runs, so no picker ever shows another
-                # vendor's models); efforts are the four Codex accepts — max/ultracode are Claude-only.
+                # vendor's models); each model carries the efforts the app-server advertises for it (2026-09-17).
                 # The section's `error` field names WHY `models` is empty: null beside a non-empty list,
                 # else one sentence for the picker to show (a string, never an object or a code).
                 # Without it the picker opens on a blank menu with no word of why: the backend's
@@ -63183,6 +63187,9 @@ class Handler(BaseHTTPRequestHandler):
                     cx_err = "no live Codex session; the list is read once one runs"
                 else:
                     cx_err = "the Codex backend is unavailable (see the kernel log)"
+                # Older panes read the flat list; derive it from the same catalog, never a second allowlist.
+                # Current panes select the model's own efforts, so one model cannot lend levels to another.
+                cx_efforts = {e["value"]: e for m in cx_models for e in m.get("efforts", [])}
                 return self._send(200, json.dumps(
                     # `rev` is the pick memory's revision — the models frame's counter (_models_changed),
                     # read here BEFORE the picks so a payload never carries a rev newer than its list: a
@@ -63198,8 +63205,7 @@ class Handler(BaseHTTPRequestHandler):
                      "efforts": [dict(c, color=_effort_color(c["value"], _stops), tone=_effort_tone(c["value"]))
                                  for c in EFFORT_CHOICES],
                      "codex": {"models": cx_models, "error": cx_err,
-                               "efforts": [{"value": v, "label": v}
-                                           for v in ("low", "medium", "high", "xhigh")]},
+                               "efforts": list(cx_efforts.values())},
                      # the create dialog's pre-read (the user 2026-08-29): what a new comment thread
                      # gets when the dialog is left untouched — RAW ("session" = same as the session),
                      # so the dialog shows the effective default and a pick stays a deviation
