@@ -43,7 +43,8 @@ cb = load_source("romp_codex_backend_codex_models",
                       os.path.join(ROOT, "kernel", "codex_backend.py"))
 
 SID = "11111111-2222-4333-8444-555555555555"
-MODELS = [{"value": "gpt-5-test", "label": "GPT-5 Test"}]
+MODELS = [{"value": "gpt-5-test", "label": "GPT-5 Test",
+           "efforts": [{"value": "ultra", "label": "ultra"}, {"value": "future-level", "label": "future-level"}]}]
 
 
 class FakeCodex:
@@ -108,7 +109,7 @@ class ModelsRoute(unittest.TestCase):
         km._codex_backend = FakeCodex(models=MODELS, live={SID: {"backend": "codex"}})
         cx = self._codex()
         self.assertEqual((cx["models"], cx["error"]), (MODELS, None))
-        self.assertEqual([e["value"] for e in cx["efforts"]], ["low", "medium", "high", "xhigh"])
+        self.assertEqual([e["value"] for e in cx["efforts"]], ["ultra", "future-level"])
 
     def test_an_empty_list_carries_the_backends_reason(self):
         km._codex_backend = FakeCodex(models=[], error="model_list failed: app-server not ready",

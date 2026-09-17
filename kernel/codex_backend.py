@@ -95,10 +95,6 @@ def _approval_params(mode="sandboxed"):
     # Reset the reviewer as well: thread/resume otherwise inherits a previous Auto selection.
     return {"approvalPolicy": APPROVAL_POLICY, "approvalsReviewer": "user"}
 
-# romp effort names → Codex ReasoningEffort. Identity for the shared four; max/ultracode are
-# Claude-only knobs and set_effort refuses them (False → the kernel warns instead of pretending).
-EFFORTS = ("low", "medium", "high", "xhigh")
-
 SEED_TAIL = 200   # records whose uuids seed the normalizer's dedup on re-attach (replay guard)
 CLIENT_RETRY_MIN = 0.25
 CLIENT_RETRY_MAX = 5.0
@@ -1149,7 +1145,7 @@ class CodexBackend:
         return True
 
     def model_catalog(self):
-        """[{value,label}] for the UI's model picker — the app-server's own model list (the ONE
+        """Model choices and their supported efforts from the app-server's own model list (the ONE
         authoritative source), fetched once per process and cached. [] when the list cannot be had,
         and then model_catalog_error() says WHY (the picker shows nothing rather than another vendor's
         list, and the kernel's /models hands the reason on). Three ways to [], each recorded: the
@@ -1174,9 +1170,20 @@ class CodexBackend:
                 return []
             try:
                 ms = c.model_list()
-                rows = [{"value": m.id, "label": getattr(m, "display_name", None) or m.id}
-                        for m in (getattr(ms, "data", None) or [])
-                        if not getattr(m, "hidden", False)]
+                rows = []
+                for m in (getattr(ms, "data", None) or []):
+                    if getattr(m, "hidden", False):
+                        continue
+                    efforts = []
+                    for option in getattr(m, "supported_reasoning_efforts", None) or []:
+                        level = getattr(option, "reasoning_effort", None)
+                        level = getattr(level, "value", level)  # SDK enums preserve newly advertised values (2026-09-17)
+                        if isinstance(level, str) and level and not any(e["value"] == level for e in efforts):
+                            efforts.append({"value": level, "label": level,
+                                            "sub": getattr(option, "description", "") or ""})
+                    rows.append({"value": m.id, "label": getattr(m, "display_name", None) or m.id,
+                                 "model": getattr(m, "model", None) or m.id,
+                                 "isDefault": bool(getattr(m, "is_default", False)), "efforts": efforts})
             except Exception as e:
                 self._note_catalog_error("model_list failed: %s" % (str(e) or e.__class__.__name__))
                 return []
@@ -1231,9 +1238,15 @@ class CodexBackend:
 
     def set_effort(self, sid, value):
         s = self._session(sid)
-        if not s or value not in EFFORTS:
-            return False                   # max/ultracode are Claude-only — refuse loudly
+        if not s:
+            return False
+        catalog = self.model_catalog()                  # may contact the app-server; never under the session lock
         with s.lock:
+            # Validate the CURRENT model after the catalog read: a concurrent model pick may have landed.
+            model = next((m for m in catalog if (s.model in (m["value"], m["model"]) if s.model
+                                                else m["isDefault"])), None)
+            if s.dead or model is None or not any(e["value"] == value for e in model["efforts"]):
+                return False                            # unknown catalog/model/value never borrows another model's levels
             s.effort = value
             s.change_generation += 1
             queued = bool(s.queue) and not s.dead

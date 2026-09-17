@@ -156,6 +156,12 @@ replies, thinking, commands, file diffs, web searches), steering a running
 turn, interrupts, model and reasoning-effort switches, resume after restarts,
 and postal delivery into Codex sessions.
 
+The chat and timeline effort menus use the selected model's supported levels
+from the Codex app-server's model catalog. Romp also validates effort changes
+against that catalog; it does not maintain a separate list of Codex levels.
+New levels appear when the installed app-server advertises them. A missing
+catalog or unknown model provides no effort choices.
+
 Not yet (tracked in `plans/codex-backend.md`): approval prompts as needs-you
 cards, Codex plan items on the card checklist, subagent lanes, rate-limit
 gating, and MCP server management from the dashboard (Codex sessions read MCP
@@ -168,4 +174,3 @@ terminal, the two setup steps above (`romp-codex-setup`, `codex login`) — and
 `romp engine codex` if the machine should run Codex-only. `romp` opens the
 dashboard; a machine that never runs these steps is unaffected and defaults to
 Claude Code.
-

@@ -19530,7 +19530,13 @@ def _drive(msg, client):
         # forget the family's remembered pin and send the alias
         _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))); _push_soon()
     elif t == "setEffort" and msg.get("value"):
-        _set_effort_or_park(be, sid, str(msg["value"])); _push_soon()   # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked
+        # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked.
+        # LOUD on refusal, as setFast below: a level the model's Codex catalog does not advertise (the menu
+        # lists the catalog's levels, but a stale list or a model change under it can still send one) used
+        # to leave the badge on the old level with no reason given (the review of #1814)
+        if not _set_effort_or_park(be, sid, str(msg["value"]))[0]:
+            client["send"](json.dumps({"type": "warn", "text": _effort_refusal(be, str(msg["value"]))}))
+        _push_soon()
     elif t == "setFast" and msg.get("value") in ("on", "off"):
         # the chat's fast badge — /fast on|off delivered like any slash command; mid-compaction → parked.
         # LOUD on refusal (fail loudly, never degrade silently): a dormant SDK session has no live CLI to
@@ -24590,6 +24596,8 @@ def _deliver_text(sid, text, plain=False):
     be = Sessions.backend_for(sid)
     meta = {}
     if not plain and _route_meta_command(be, sid, text, state=meta):
+        if meta.get("refused_effort"):
+            return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused"):
             return False, "no running backend owns %s — the command was not delivered" % sid, False
         return True, "", bool(meta.get("queued"))
@@ -35286,11 +35294,27 @@ def _set_model_or_park(be, sid, value, floating=False):
 def _set_effort_or_park(be, sid, value):
     """Apply an effort change now — or park it while the session compacts (the user 2026-07-02: /effort
     is a slash command like /model, so it must queue the same way — it used to slip straight through,
-    with no queued chip and the same derail risk the /model park was built for)."""
-    parked = _gate_or_park(sid, ("effort", value))
-    if not parked:
-        be.set_effort(sid, value)
-    return parked
+    with no queued chip and the same derail risk the /model park was built for). Returns (took, parked)
+    in _set_fast_or_park's shape: `parked` is True when the change queued (mid-compaction or behind a
+    queue), `took` is False when the backend refused the value, so the caller can be loud. The
+    SessionBackend.set_effort contract is a bool and every shipped setter keeps it: CodexBackend refuses
+    a level the session's model does not advertise, an unknown model or a catalog it could not read,
+    SdkBackend a value outside its levels or a session it holds no row for, the unowned route everything.
+    This used to return only `parked` and drop that verdict, so a refused /effort answered ok and moved
+    nothing (the review of #1814)."""
+    if _gate_or_park(sid, ("effort", value)):
+        return (True, True)
+    return (bool(be.set_effort(sid, value)), False)
+
+
+def _effort_refusal(be, value):
+    """The sentence a refused effort pick is answered with (fail loudly, never a silent no-op), the
+    setEffort op's and _route_meta_command's alike: a Codex session's model does not advertise the level
+    in its catalog (or the catalog could not be read); any other backend refused it outright (an SDK
+    session it holds no row for; the unowned route refuses before a setter is reached)."""
+    if be is not None and be is _codex():
+        return "Couldn't set effort '%s': this model's Codex catalog does not offer it." % value
+    return "Couldn't set effort '%s': the session's backend refused it." % value
 
 
 def _set_env_or_park(be, sid, value):
@@ -35343,7 +35367,9 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     command, a bare "/model" (the CLI's own picker), plain text that merely contains one — is the
     caller's to send verbatim: the CLI owns what executes. A refused fast toggle is told to
     the client (fail loudly): a dormant SDK session has no live CLI to apply it, and the typed text
-    used to at least draw the CLI's own refusal. `state`, when given, receives {"queued": bool}: whether
+    used to at least draw the CLI's own refusal; a refused effort level (one the Codex model's catalog
+    does not offer) is told the same way and filed as state["refused_effort"], so POST /send answers ok:false
+    with the words. `state`, when given, receives {"queued": bool}: whether
     the change PARKED, taken from each setter's own return, so POST /send answers `queued` for a meta
     command exactly as for a text send (2026-09-03: a parked /model read as plain 'ok'). The effort/fast
     setters report whether they parked under _gate_or_park (the one _ops_gate evaluation those two pay),
@@ -35371,7 +35397,11 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     model_pick = head == "/model" and (_vouched_model(value)
                                         or (value.startswith("gpt") and be is not None
                                             and (be is _UNOWNED or be is _codex())))
-    is_meta = (model_pick or (head == "/effort" and value in _EFFORT_VALUES)
+    # Codex's backend validates against the selected model's advertised capabilities (2026-09-17).
+    # Its effort command must never become model input just because a new level is absent from the SDK list.
+    effort_pick = head == "/effort" and (value in _EFFORT_VALUES or (be is not None
+                                         and (be is _UNOWNED or be is _codex())))
+    is_meta = (model_pick or effort_pick
                or (head == "/fast" and value in ("on", "off")))
     if is_meta and be is _UNOWNED:
         # a session no running backend owns takes no setting: refuse before any stamp (the switching dots
@@ -35389,8 +35419,19 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
         # model_switches_live — none shipped does yet, so the SDK still parks; #923), so its verdict is
         # read, not inferred from _ops_gate, which would say `queued` for a pick that had already applied
         parked = _set_model_or_park(be, sid, value, floating=floating)
-    elif head == "/effort" and value in _EFFORT_VALUES:
-        parked = _set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command
+    elif effort_pick:
+        took, parked = _set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command
+        if not took:
+            # the backend refused the level (a Codex model whose catalog does not offer it, or a catalog the
+            # backend could not read): said, as the /fast arm says its refusal, and filed in `state` so POST
+            # /send answers ok:false with the words. Before this the setter's verdict was dropped and the
+            # command answered ok while the badge stayed put (the review of #1814).
+            why = _effort_refusal(be, value)
+            if state is not None:
+                state["refused_effort"] = why
+            if client:
+                client["send"](json.dumps({"type": "warn", "text": why}))
+            sys.stderr.write("effort %r for %s refused by %s\n" % (value, sid, type(be).__name__))
     elif head == "/fast" and value in ("on", "off"):
         took, parked = _set_fast_or_park(be, sid, value)          # took: applied or parked; parked: queued
         if not took and client:
@@ -63230,7 +63271,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the codex section rides along untinted: what a CODEX session's pickers offer
                 # (docs/codex.md) — models from the app-server's own list via the backend (the
                 # authoritative source; [] until the backend runs, so no picker ever shows another
-                # vendor's models); efforts are the four Codex accepts — max/ultracode are Claude-only.
+                # vendor's models); each model carries the efforts the app-server advertises for it (2026-09-17).
                 # The section's `error` field names WHY `models` is empty: null beside a non-empty list,
                 # else one sentence for the picker to show (a string, never an object or a code).
                 # Without it the picker opens on a blank menu with no word of why: the backend's
@@ -63259,6 +63300,9 @@ class Handler(BaseHTTPRequestHandler):
                     cx_err = "no live Codex session; the list is read once one runs"
                 else:
                     cx_err = "the Codex backend is unavailable (see the kernel log)"
+                # Older panes read the flat list; derive it from the same catalog, never a second allowlist.
+                # Current panes select the model's own efforts, so one model cannot lend levels to another.
+                cx_efforts = {e["value"]: e for m in cx_models for e in m.get("efforts", [])}
                 return self._send(200, json.dumps(
                     # `rev` is the pick memory's revision — the models frame's counter (_models_changed),
                     # read here BEFORE the picks so a payload never carries a rev newer than its list: a
@@ -63274,8 +63318,7 @@ class Handler(BaseHTTPRequestHandler):
                      "efforts": [dict(c, color=_effort_color(c["value"], _stops), tone=_effort_tone(c["value"]))
                                  for c in EFFORT_CHOICES],
                      "codex": {"models": cx_models, "error": cx_err,
-                               "efforts": [{"value": v, "label": v}
-                                           for v in ("low", "medium", "high", "xhigh")]},
+                               "efforts": list(cx_efforts.values())},
                      # the create dialog's pre-read (the user 2026-08-29): what a new comment thread
                      # gets when the dialog is left untouched — RAW ("session" = same as the session),
                      # so the dialog shows the effective default and a pick stays a deviation

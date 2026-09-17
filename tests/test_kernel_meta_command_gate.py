@@ -11,6 +11,7 @@ thread, per command, for a value nothing read. The review of #954 (#986) removed
 2026-09-07; the #923 merge the same day brought it back. tests/test_model_live_midturn pins the value
 of `queued`; this pins its cost. The gate is patched to a counter, so the counts are the gate's own
 evaluations and nothing underneath it runs. Synthetic only: a placeholder sid, invented values."""
+import json
 import os
 import tempfile
 import unittest
@@ -33,10 +34,12 @@ SID = "11111111-2222-4333-8444-0a0a0a0a0a0a"      # private to this module: park
 
 class _Backend:
     """A backend that takes every setter; records what fired. Only the three setters' calls: neither the
-    route nor a setter reaches any other method on the paths driven here."""
-    def __init__(self): self.calls = []
+    route nor a setter reaches any other method on the paths driven here. `effort_ok` is set_effort's
+    verdict, the SessionBackend contract's bool: False is a level the Codex model's catalog does not
+    offer (CodexBackend.set_effort answers it for an unknown model or an unreadable catalog too)."""
+    def __init__(self): self.calls = []; self.effort_ok = True
     def set_model(self, sid, v): self.calls.append(("model", v))
-    def set_effort(self, sid, v): self.calls.append(("effort", v))
+    def set_effort(self, sid, v): self.calls.append(("effort", v)); return self.effort_ok
     def set_fast(self, sid, v): self.calls.append(("fast", v)); return True
 
 
@@ -90,6 +93,59 @@ class MetaCommandGateCost(unittest.TestCase):
             self.assertEqual(self._route("/model opus"), (0, True))
         self.assertEqual(self.be.calls, [], "nothing fired: every op parked")
         self.assertEqual([op[0] for op in km._pending_ops[SID]], ["effort", "fast", "model"], "parked in press order")
+
+    def test_codex_effort_commands_reach_the_backend_instead_of_becoming_prompts(self):
+        with mock.patch.object(km, "_codex", return_value=self.be):
+            self.assertEqual(self._route("/effort ultra"), (1, False))
+            self.assertEqual(self.be.calls, [("effort", "ultra")])
+            self.verdict = True
+            self.assertEqual(self._route("/effort future-level"), (1, True))
+            self.assertEqual(km._pending_ops[SID][-1], ("effort", "future-level"))
+            self.assertEqual(self.be.calls, [("effort", "ultra")], "a parked pick waits its turn")
+
+    # The setter's verdict used to be dropped (only `parked` came back), so a Codex level the model's catalog
+    # does not offer answered ok while nothing moved. It returns (took, parked) like the fast setter now, the
+    # route files the refusal for POST /send and tells a client, and an offered level still answers plain ok.
+    def test_a_codex_level_the_catalog_does_not_offer_is_refused_with_the_reason(self):
+        sent = []
+        client = {"send": lambda t: sent.append(json.loads(t))}
+        with mock.patch.object(km, "_codex", return_value=self.be):
+            self.be.effort_ok = False
+            state = {}
+            self.assertTrue(km._route_meta_command(self.be, SID, "/effort ultra", client, state=state))
+            self.assertIn("Codex catalog does not offer", state["refused_effort"])
+            self.assertIn("'ultra'", state["refused_effort"], "the refused level is named")
+            self.assertIs(state["queued"], False)
+            self.assertEqual(sent, [{"type": "warn", "text": state["refused_effort"]}], "the client hears the same words")
+            self.assertEqual(self.be.calls, [("effort", "ultra")], "the backend was asked, and said no")
+            self.assertNotIn(SID, km._pending_ops, "a refusal parks nothing")
+
+    def test_a_codex_level_the_catalog_offers_is_taken_and_answers_ok(self):
+        sent = []
+        client = {"send": lambda t: sent.append(json.loads(t))}
+        with mock.patch.object(km, "_codex", return_value=self.be):
+            state = {}
+            self.assertTrue(km._route_meta_command(self.be, SID, "/effort ultra", client, state=state))
+            self.assertNotIn("refused", state)
+            self.assertIs(state["queued"], False)
+            self.assertEqual(sent, [], "nothing to say: the level landed")
+            self.assertEqual(self.be.calls, [("effort", "ultra")])
+
+    def test_the_effort_setter_returns_took_and_parked_like_the_fast_setter(self):
+        self.be.effort_ok = False
+        self.assertEqual(km._set_effort_or_park(self.be, SID, "ultra"), (False, False), "refused: not taken, not queued")
+        self.be.effort_ok = True
+        self.assertEqual(km._set_effort_or_park(self.be, SID, "ultra"), (True, False), "landed now")
+        self.verdict = True
+        self.assertEqual(km._set_effort_or_park(self.be, SID, "ultra"), (True, True), "parked: taken, queued")
+        self.assertEqual(self.be.calls, [("effort", "ultra"), ("effort", "ultra")], "the parked pick waits its turn")
+        self.assertEqual(km._pending_ops[SID], [("effort", "ultra")])
+
+    def test_a_new_effort_on_an_unowned_session_is_refused_not_sent(self):
+        state = {}
+        self.assertTrue(km._route_meta_command(km._UNOWNED, SID, "/effort future-level", state=state))
+        self.assertIn("not delivered", state["refused"])
+        self.assertNotIn(SID, km._pending_ops)
 
 
 if __name__ == "__main__":
