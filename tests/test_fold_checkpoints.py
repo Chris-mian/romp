@@ -1709,7 +1709,11 @@ class CursorTableBound(Base):
     def setUp(self):
         super().setUp()
         self.d = self.td / "agents"; self.d.mkdir()
-        em.checkpoint_cycle_begin(em._CKPT_CYCLE_CAP_DEFAULT)   # a whole cycle budget, as the pusher's start gives: the drops write
+        em.checkpoint_cycle_begin(64 * 1024 * 1024)   # a cycle budget of the test's own, so the drops write (review 2026-09-17): it
+        #                                               began with the env-derived default, and the class's ~258 drop writes take 8 KB
+        #                                               of the budget each, so ROMP_CKPT_CONVERGE_MB exported at 1 deferred the drops
+        #                                               from about the 128th file on, the entries standing, and turned exactly this
+        #                                               class red; the module's other budget tests make a drop or two and never notice
         self.cache = {}
         self.kinds = []
 
@@ -1795,6 +1799,40 @@ class CursorTableBound(Base):
         self.assertEqual((kind, got), ("restore", [0, 1, 2]), "a dead cursor's file restores over a fresh tail entry, as it would have "
                                                               "with the stale cursor in the table (its gen was another entry's)")
         self.assertGreater(nread, 0, "the guard read, nothing of the prefix")
+
+    def test_a_cursor_under_an_entry_of_another_generation_leaves_at_the_bound(self):
+        """The sweep's second arm (review 2026-09-17: the three tests above kill every cursor by popping its entry, so a sweep
+        that asked only whether the entry is gone passed them all). Production reaches this arm through the two fold dicts that
+        share every agent file (the gist's and the launch ids'): one dict's quiescent drop pops the file's entry, the sibling
+        dict's next fold rebuilds it from the document at a NEW generation and restores at the witness, which pops nothing and
+        leaves the entry standing, and the first dict's cursor stands under it at the old generation, unable to serve a hit
+        (every from-zero read is a new gen). At the bound that cursor leaves, and the file's next fold in the first dict restores
+        from its document rather than answering from the stale cursor."""
+        ps = self._rotation("g")
+        other, kinds = {}, []                                  # the sibling fold dict over the same files, as the launch-ids dict is
+        stale, live = ps[1::2], ps[0::2]
+        for p in stale:
+            em.fold_records(other, p, list, self._step, on=kinds.append, ckpt="synthOther", drop_after="quiescent")
+            self.assertEqual(kinds[-1], "refold", "the sibling's first fold has no restore of its own: whole, and its drop pops")
+            with em._JSONL_CACHE_LOCK:
+                self.assertIsNone(em._JSONL_CACHE.get(p))
+            em.fold_records(other, p, list, self._step, on=kinds.append, ckpt="synthOther", drop_after="quiescent")
+            self.assertEqual(kinds[-1], "restore", "its second fold restores over a tail entry rebuilt from the document")
+            with em._JSONL_CACHE_LOCK:
+                ent = em._JSONL_CACHE.get(p)
+            self.assertIsNotNone(ent, "which stands: a restore at the witness pops nothing")
+            self.assertEqual(other[p][1], ent[6], "the sibling's cursor is at the new generation")
+            self.assertNotEqual(self.cache[p][1], ent[6], "this dict's cursor is at the old one, under a standing entry")
+        self.assertEqual(len(self.cache), 257, "under the bound the stale cursors stand")
+        new = self._finished("new.jsonl")
+        self.assertEqual(self._fold(new)[1], "refold")            # the stepping fold that trips the bound
+        self.assertEqual(set(self.cache), set(live) | {new}, "at the bound every cursor under an entry of another generation left")
+        got, kind, nread = self._fold(stale[0])
+        self.assertEqual((kind, nread, got), ("restore", 0, [0, 1, 2]), "its file restores from the document over the standing entry")
+        with em._JSONL_CACHE_LOCK:
+            self.assertEqual(self.cache[stale[0]][1], em._JSONL_CACHE[stale[0]][6], "and its cursor is at the entry's generation again")
+        got, kind, nread = self._fold(live[0])
+        self.assertEqual((kind, nread, got), ("hit", 0, [0, 1, 2]), "a neighbour at its entry's generation stayed: a stat")
 
 if __name__ == "__main__":
     unittest.main()

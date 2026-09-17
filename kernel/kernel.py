@@ -29622,7 +29622,8 @@ def _states_awaiting_overlay(sid):
     evicted: `fail` counts reads that were attempted and failed. The interrupt tick drops the entries of
     sessions outside its alive set each cycle (_states_overlay_forget); a dormant session read by
     GET /sessions re-enters and leaves again on the next tick, one fold of cached records with no I/O, and
-    the fold's own cache clears whole above 256 entries, the shared idiom. Counters ride GET /perf under
+    the fold's own cursor dict past 256 entries sheds the cursors whose reader entry is gone or replaced
+    (fold_records; it cleared whole there before 2026-09-17). Counters ride GET /perf under
     memos.statesOverlay."""
     p = jd.STATE / "states" / ("%s.jsonl" % sid)
     last, working_after = _fold_records(_states_overlay_cache, p, _states_overlay_init, _states_overlay_step, ckpt="statesOverlay",
@@ -29673,11 +29674,12 @@ def _states_overlay_on(path_s, kind):
     stderr line per episode, so a failed read is told apart from a rewrite in GET /perf and in the log. A
     later good fold of the same file ends the episode, and no per-path event does: the interrupt tick's forget
     (_states_overlay_forget) leaves the set alone, since a departed session's file is still read. The set is
-    instead cleared whole above 256 paths, the fold cache's own bound (fold_records), so a path stranded by a
-    session whose file is never read again cannot pin it forever; a whole clear ends every open episode at
-    once, so a still-unreadable file is named a second time after it, exactly as the fold cache re-folds
-    after its clear. Cheap on purpose, since it runs inside every fold: one locked increment, and the set is
-    touched only on a failure or while an episode is open."""
+    instead cleared whole above 256 paths (the fold cursor dict's trip point in fold_records, which since
+    2026-09-17 sweeps only the dead cursors there; this set has no liveness to judge a path by, so it clears),
+    so a path stranded by a session whose file is never read again cannot pin it forever; a whole clear ends
+    every open episode at once, so a still-unreadable file is named a second time after it. Cheap on purpose,
+    since it runs inside every fold: one locked increment, and the set is touched only on a failure or while
+    an episode is open."""
     _states_overlay_bump(kind)
     if kind == "fail":
         with _STATES_OVERLAY_LOCK:

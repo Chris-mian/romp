@@ -2165,8 +2165,13 @@ def fold_records(cache, path, init, step, on=None, ckpt=None, drop_after=None):
         # gen): those go, and would have refolded or restored anyway; a cursor at a standing entry's gen is exactly what makes
         # a finished file a stat, and stays. The bound is the reader's: live cursors number at most its standing entries
         # (_JSONL_CACHE_MAX); dead ones are swept at the next stepping fold past 256. One pass of dict lookups under the
-        # reader's lock (its cheap-ops discipline); the dicts are shared across threads, so the pass walks a snapshot and
-        # pops only the very cursor it judged.
+        # reader's lock (its cheap-ops discipline). The dicts are shared across threads and, like every cursor dict here,
+        # unlocked (the store at this function's end, a failure's pop): the pass walks a snapshot and pops a cursor only while
+        # the dict still holds the very one it judged, which narrows the window but does not close it (review 2026-09-17: the
+        # check and the pop are two operations). A concurrent fold's fresh cursor stored between them is popped, and that costs
+        # its file one refold at its next fold, the price a lost cursor has always had here, never a raise. Not worth a lock: a
+        # same-class race stands without the sweep (two threads folding one path, last store wins), and the module's rule for
+        # its shared dicts is that a lost race degrades to a re-read.
         with _JSONL_CACHE_LOCK:
             dead = [(k, cur) for k, cur in list(cache.items())
                     if k != key and (_JSONL_CACHE.get(k) is None or _JSONL_CACHE[k][6] != cur[1])]

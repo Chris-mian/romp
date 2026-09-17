@@ -2700,8 +2700,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   lift's tick drops the gate's and the placed-launch memo's entries of
   sessions that left the alive set. The interrupt tick drops from `intrMarks`
   and `statesOverlay` the entries of sessions outside its alive set each
-  cycle; the `statesOverlay` cache is also cleared whole above 256 entries, a
-  drop `evict` does not count and `entries` shows. `lanes` is the timeline's
+  cycle; past 256 entries the `statesOverlay` cache also sheds the cursors
+  whose reader entry is gone or replaced (they could only refold or restore);
+  a drop `evict` does not count and `entries` shows. `lanes` is the timeline's
   per-lane segment memo: a live lane's bars, segment ends, last activity,
   compaction markers and judging marks, held while its parsed transcript and
   goal store are the previous build's objects and its captions file, archive
