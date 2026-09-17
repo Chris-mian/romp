@@ -5,9 +5,10 @@ name: CI
 # extension build; and scan the whole history for credentials (the secrets job).
 #
 # LINUX runs on every push and PR — it is free on a public repo, no minute cap.
-# macOS is BILLED even on a public repo (larger runners always are, at ~10x), and
-# the bats suite alone is ~16 macOS-minutes = ~160 billable minutes per run, so
-# it does NOT run on every push. It runs once a week on a schedule (see `on:`) and
+# macOS is free too on the standard macOS runners of a public repository (2026-09-17;
+# an earlier note here said it was billed), but the macOS cells are slow (the bats
+# suite alone is about 16 minutes) and the runners are scarcer, so they do NOT run
+# on every push. They run once a week on a schedule (see `on:`) and
 # by hand from the Actions tab ("Run workflow") when you want a cross-platform
 # check before a release or after touching a platform-sensitive surface (launchd,
 # the folder opener, the CLI scope).
