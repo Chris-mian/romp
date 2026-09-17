@@ -40172,9 +40172,11 @@ _feed_memo = {}                                  # sid → (key, entry_json, siz
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
 _FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0, "failed": 0,
                     "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)}}   # /perf builds.feed.memo
-_FEED_DERIVE_FAILED = {}   # sid → cause head of the session's LAST derivation, present while that derivation is failing:
-#                            the stderr line's dedupe (one per distinct cause per session, never per 2s build) and /perf's
-#                            `failing` count; a success or the session's departure drops the record (2026-09-17)
+_FEED_DERIVE_FAILED = {}   # sid → cause head of the session's CURRENT card-build fault episode (the decode of its memoized
+#                            entry, its key, its derivation, the serialization: whatever raised last), present while it is
+#                            failing: the dedupe of the stderr line and the bell row (one per distinct cause per session,
+#                            never per 2s build; the _chat_build_faults rule) and /perf's `failing` count; a build that
+#                            serves or derives the session, or its departure, ends the episode (2026-09-17)
 
 
 def _feed_memo_bound():
@@ -40239,6 +40241,17 @@ def _feed_memo_put(sid, key, entry_json):
         _FEED_MEMO_STATS["entries"] = len(_feed_memo)
 
 
+def _feed_memo_drop(sid):
+    """Drop sid's entry (an entry whose JSON no longer decodes serves nobody and would fail the same way every build;
+    the next build starts it cold). Counted as an eviction."""
+    with _feed_memo_lock:
+        old = _feed_memo.pop(sid, None)
+        if old is not None:
+            _FEED_MEMO_STATS["bytes"] -= old[2]
+            _FEED_MEMO_STATS["evict"] += 1
+            _FEED_MEMO_STATS["entries"] = len(_feed_memo)
+
+
 def _feed_memo_forget(alive_sids):
     """Drop the entries of sessions no longer in the build's alive set (a departed session's cards are not coming
     back under its sid; a revived one re-derives). Called after every build's loop."""
@@ -40254,10 +40267,13 @@ def _feed_memo_forget(alive_sids):
 
 
 def _feed_derive_complain(sid, name, e, served_prev):
-    """One session's card derivation raised inside build_feed (the miss path: _feed_session_entry, the dependency key,
-    the serialization). Counted (builds.feed.memo `failed`, cumulative; `failing`, the sessions whose last derivation
-    failed), said on stderr ONCE per (session, cause) with the traceback, the _bars_complain shape: loud, never per
-    build, and never silent (fail loudly, 2026-07-03). The caller decides what the board shows for the session."""
+    """One session's card build raised inside build_feed's loop (the decode of its memoized entry, its key, the derivation,
+    the dependency key, the serialization or the memo put). Counted (builds.feed.memo `failed`, cumulative; `failing`, the
+    sessions whose current build is failing) and, ONCE per (session, cause) episode, said on stderr with the traceback AND
+    as a dashboard bell row through _sync_notice, the _chat_build_fault seam: the user sees which session's cards are
+    stale or absent and why, without a traceback, in the bell every client mirrors, rather than a board that looks fine
+    (fail loudly, 2026-07-03). The row wears the kind a state file that cannot be read wears. The caller decides what the
+    board shows for the session; the bell is a courtesy inside the build and never raises."""
     head = "%s: %s" % (type(e).__name__, str(e)[:160])
     with _feed_memo_lock:
         _FEED_MEMO_STATS["failed"] = _FEED_MEMO_STATS.get("failed", 0) + 1
@@ -40265,6 +40281,13 @@ def _feed_derive_complain(sid, name, e, served_prev):
         _FEED_DERIVE_FAILED[sid] = head
     if said:
         return
+    try:
+        _sync_notice("feed: the cards for %s cannot be built; %s until a build succeeds (%s)"
+                     % (name or str(sid)[:8],
+                        "the board shows their last state" if served_prev else "they are absent from the board",
+                        head[:120]), ok=False, kind="refused")
+    except Exception:
+        pass
     try:                                          # the reporter must never be the exception that re-opens the freeze it reports
         sys.stderr.write("feed: %s (%s) card derivation failed — %s until it derives again: %s\n%s"
                          % (str(sid)[:8], name, "serving its previous cards" if served_prev else "its cards are absent",
@@ -40274,7 +40297,7 @@ def _feed_derive_complain(sid, name, e, served_prev):
 
 
 def _feed_derive_recovered(sid):
-    """The session's entry was served or derived: whatever was failing for it is not any more."""
+    """The session's entry was served or derived: its fault episode ends, so the same fault later is said (and rung) anew."""
     if sid in _FEED_DERIVE_FAILED:               # the common path takes no lock: the dict is empty
         with _feed_memo_lock:
             _FEED_DERIVE_FAILED.pop(sid, None)
@@ -41829,38 +41852,42 @@ def build_feed(now, live_map=None):
         fsid = s["sid"]
         tm = live_map.get(fsid)
         ent = _feed_memo_get(fsid)
-        prev = json.loads(ent[1]) if ent is not None else None   # the ONE decode per session per build: a hit's fresh
-        #                                                          objects to fold, and the dependency record the key reads
-        key = _feed_session_key(s, tm, ctx, prev)
-        if ent is not None and ent[0] == key:
-            _feed_memo_count("hit")
-            _feed_derive_recovered(fsid)
-            entry = prev
-        else:
-            _feed_memo_miss(ent[0] if ent is not None else None, key)
-            _feed_memo_count("derived")
-            # CONTAINMENT (2026-09-17): one session's derivation raising used to propagate out of build_feed; the
-            # pusher's catch swallowed it, no counter moved, and every client kept the LAST successful frame: the whole
-            # board froze for an hour behind one session (a pre-cut atom whose transcript the hydration map did not
-            # know, a LazyBodyRead out of _last_plain_user_turn_t; that root cause is fixed separately). Here the
-            # fault stays the session's: said once and counted (_feed_derive_complain), its previous cards served
-            # when the memo holds them (stale, and said so) else absent this build, never memoized, so the next build
-            # re-derives it; every other session folds as usual and the frame ships.
-            try:
+        prev = None
+        # CONTAINMENT (2026-09-17): one session's card build raising used to propagate out of build_feed; the pusher's
+        # catch swallowed it, no counter moved, and every client kept the LAST successful frame: the whole board froze
+        # for an hour behind one session (a pre-cut atom whose transcript the hydration map did not know, a LazyBodyRead
+        # out of _last_plain_user_turn_t; that root cause is fixed separately). ONE guard spans the session's whole path,
+        # the decode of its memoized entry and its key included (the key stats files and reads stores, and a key that
+        # raises means hit and miss cannot be told apart, so it is a failed build like any other): the fault stays the
+        # session's, counted and said once on stderr and in the bell (_feed_derive_complain), its previous cards served
+        # when the memo holds a decodable entry (stale, and the bell says so) else absent this build, nothing memoized,
+        # so the next build tries again; every other session folds as usual and the frame ships.
+        try:
+            prev = json.loads(ent[1]) if ent is not None else None   # the ONE decode per session per build: a hit's fresh
+            #                                                          objects to fold, and the dependency record the key reads
+            key = _feed_session_key(s, tm, ctx, prev)
+            if ent is not None and ent[0] == key:
+                _feed_memo_count("hit")
+                entry = prev
+            else:
+                _feed_memo_miss(ent[0] if ent is not None else None, key)
+                _feed_memo_count("derived")
                 entry = _feed_session_entry(s, ctx)
                 key = _feed_key_with_deps(key, ctx, entry)   # the peers and reads THIS derivation recorded
                 js = json.dumps(entry, default=_wire_default_in("_feed_memo"))   # str() of an unencodable value, said once
-            except Exception as e:
-                _feed_derive_complain(fsid, s["name"], e, prev is not None)
-                if prev is None:
-                    continue
-                entry = prev
-            else:
-                _feed_derive_recovered(fsid)
                 if not (entry or {}).get("faults"):      # a derivation that met a body-read fault is served but not kept:
                     _feed_memo_put(fsid, key, js)        #   the next build re-derives it (the anchor memo skipped it too)
                 entry = json.loads(js)                   # the fold's objects come from the string on a miss too, so a hit and
                 #                                          a miss hand the board the same shapes, byte for byte
+        except Exception as e:
+            _feed_derive_complain(fsid, s["name"], e, prev is not None)
+            if prev is None:
+                if ent is not None:
+                    _feed_memo_drop(fsid)                # an entry that no longer decodes: gone, so the next build starts cold
+                continue
+            entry = prev
+        else:
+            _feed_derive_recovered(fsid)
         _heal, _hid, _cold = _feed_fold_entry(entry, now, cmap, s["name"], asks, working, awaiting, bg_services, serving_folds)
         heal_total += _heal
         hidden_total += _hid
