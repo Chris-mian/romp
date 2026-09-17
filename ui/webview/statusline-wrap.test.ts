@@ -54,6 +54,6 @@ test("the state unit shrinks with wrappable words while the stop button alone st
   // overflowed a 280 px line by 26 px; the chip may shrink and the label truncates with an ellipsis, its whole text the
   // first line of the chip's own tip
   assert.match(CSS, /\.sl-left > \.chip \{ min-width: 0; \}/);
-  assert.match(CSS, /\.sl-left \.chip-peer-name \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/);
+  assert.match(CSS, /\.sl-left \.chip-peer-name \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/, "the label truncates with no floor: one that bound at 240 px would overflow a narrower pane (round four)");
   assert.match(RENDER, /setTip\(chip, \[words\.peer \? "waiting on " \+ \(words\.peer\.host \? words\.peer\.host \+ ":" : ""\) \+ words\.peer\.name : "",\s*\n\s*awaitBreakdown\(chipItems\),/, "the full label leads the tip");
 });

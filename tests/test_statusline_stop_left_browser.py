@@ -1,10 +1,13 @@
 """The chat status line's stop button sits beside the state chip, after its timer, in one unit whose flex line never wraps
-while the chip inside it may shrink and a long peer label truncates with an ellipsis (the user 2026-09-16: back where it
-sat from 2026-06-19 until bd9a1dab moved it to the right cluster so a wrapped narrow line kept it with the controls). Served, in a browser, at two pane widths: wide (1440) the unit leads the line and the right
-cluster sits on the same row to its right; narrow (420) the right cluster wraps below the unit as a whole, and the
-button stays on the chip's row, adjacent to the timer. The session is left mid-turn (a typed prompt, no reply) so its
-chip reads Working and the button shows. Hermetic: a temp state root, one synthetic session in the notes-api demo
-world, the lab kernel of test_ship_reship_served."""
+while the chip inside it may shrink and a long peer label truncates with an ellipsis (the user 2026-09-16: back
+where it sat from 2026-06-19 until bd9a1dab moved it to the right cluster so a wrapped narrow line kept it with the
+controls). Served, in a browser, at four pane widths: wide (1440) the unit leads the line and the right cluster sits on the
+same row to its right; narrow (420) and tight (280) the right cluster wraps below the unit as a whole and the button stays on
+the chip's row, adjacent to the timer; and at 240, an Awaiting chip with one long host-prefixed peer, fed through the
+federation manager's inbound door in the kernel's own shape (sinceEpoch in milliseconds), shrinks inside the unit instead of
+overflowing the line. The working session is left mid-turn (a typed prompt, no reply) so its chip reads Working and the
+button shows. Hermetic: a temp state root, one synthetic session in the notes-api demo world, the lab kernel of
+test_ship_reship_served."""
 import json
 import os
 import re
@@ -30,7 +33,7 @@ import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environm
 
 SID = "aaaaaaaa-1111-2222-3333-444444444444"   # web, the notes-api demo world
 WIDTHS = {"wide": 1440, "narrow": 420, "tight": 280}
-PEER, PEER_HOST = "integration-tests", "TESTHOST"   # the one named peer of the Awaiting case: remote, so the chip carries its host prefix, and long, so the label is one unbreakable word wider than a 280 px line's content (the notes-api demo world)
+PEER, PEER_HOST = "integration-tests", "TESTHOST"   # the one named peer of the Awaiting case: remote, so the chip carries its host prefix, and long, so the label is one unbreakable word wider than a 240 px line's content (the notes-api demo world)
 
 
 def _free_port():
@@ -65,6 +68,8 @@ const readLine = (chatF) => chatF.evaluate(() => {
            stopParent: stop ? stop.parentElement.className : null, scrollWidth: sl.scrollWidth, clientWidth: sl.clientWidth,
            peer: (sl.querySelector(".chip .chip-peer-name") || {}).textContent || null,
            peerTruncated: (() => { const n = sl.querySelector(".chip .chip-peer-name"); return n ? n.scrollWidth > n.clientWidth + 1 : null; })(),
+           peerBox: (() => { const n = sl.querySelector(".chip .chip-peer-name"); return n ? n.getBoundingClientRect().width : null; })(),
+           timerText: (document.getElementById("work-timer") || {}).textContent || null,
            chipTip: sl.querySelector(".chip") ? (sl.querySelector(".chip")._tipText || null) : null,
            leftKids: left ? Array.from(left.children).map((n) => n.className) : null,
            right: rect(right), rightKids: right ? Array.from(right.children).map((n) => rect(n)) : null,
@@ -72,11 +77,12 @@ const readLine = (chatF) => chatF.evaluate(() => {
 });
 // the Awaiting case: the web session's status patched on the federation manager's inbound door (the shim hands every
 // local frame to window.__rompFed.inbound, deltas applied), so the chip reads Awaiting with one named peer and no button
-const awaiting = { state: "awaitingBg", sinceEpoch: Math.floor(Date.now() / 1000) - 60, awaitingKind: "peer", awaitingCount: 1,
+const awaiting = { state: "awaitingBg", sinceEpoch: Date.now() - 60000, awaitingKind: "peer", awaitingCount: 1,   // MILLISECONDS, as every kernel payload ships sinceEpoch (elapsedMs divides by 1000): a seconds value rendered a twenty-thousand-day timer, 47 px wide, which is what overflowed in rounds two and three
                    awaitingWhy: "waiting on a peer's reply", awaitingItems: [{ kind: "peer", id: cfg.peer, label: cfg.peer }],
                    awaitingPeers: [{ name: cfg.peer, host: cfg.peerHost, color: { bg: "#B69513", fg: "black" } }] };
 const cases = Object.entries(cfg.widths).map(([name, width]) => [name, width, null]);
-cases.push(["awaiting", 280, awaiting]);
+cases.push(["awaiting", 240, awaiting]);   // the tightest pane: the long label's unbreakable word against 200 px of content
+cases.push(["awaiting-long-wait", 240, Object.assign({}, awaiting, { sinceEpoch: Date.now() - (2 * 3600 + 15 * 60) * 1000 })]);   // two hours in: a wide timer ("2h 15m") presses the label against its floor
 for (const [name, width, patch] of cases) {
   const ctx = await browser.newContext({ viewport: { width, height: 800 } });
   if (patch) await ctx.addInitScript(({ sid, status }) => {
@@ -211,20 +217,39 @@ class ServedStopButtonBesideTheChip(unittest.TestCase):
         o = self.out["tight"]
         self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "nothing overflows the line at 280")
 
-    def test_a_named_peer_awaiting_chip_at_280_shrinks_the_unit_instead_of_overflowing(self):
-        # rounds two and three of PR 1803: a named-peer Awaiting chip made the unit wider than a 280 px line (the read measured
-        # 283 against 280 for TESTHOST:api at round one's head, 306 against 280 for this label at round two's, the timer's
-        # right edge past the line); the chip may shrink and its peer label, one unbreakable word, truncates with an ellipsis
-        # whose full text leads the chip's tip, so the unit never exceeds the line and the timer stays in view
+    def test_a_named_peer_awaiting_chip_at_240_shrinks_the_unit_instead_of_overflowing(self):
+        # rounds two to four of PR 1803: a named-peer Awaiting chip made the unit wider than a narrow line. The read at round two's
+        # head measured 279 against 240 for this label with a real one-minute timer (the earlier 283 and 306 were this fixture's
+        # own artifact: sinceEpoch fed in seconds rendered a twenty-thousand-day timer); the chip may shrink and its peer
+        # label, one unbreakable word, truncates with an ellipsis, its full text leading the chip's tip, so the unit never
+        # exceeds the line and the timer stays in view
         o = self.out["awaiting"]
+        self.assertEqual(o["width"], 240)
         self.assertIn("chip-awaitingBg", o["chipCls"] or "", "the patched frame landed: the chip reads Awaiting")
         self.assertEqual(o["peer"], PEER_HOST + ":" + PEER, "with its one named peer, host-prefixed")
+        self.assertRegex(o["timerText"] or "", r"^1m( \d+s)?$", "a real one-minute timer, as the kernel's milliseconds render (not a twenty-thousand-day one): %r" % o["timerText"])
         self.assertTrue(o["peerTruncated"], "the label truncates (an ellipsis) rather than widening the unit")
+        self.assertGreaterEqual(o["peerBox"], 50, "with the real timer the label keeps room for several characters (label box %.1f px)" % o["peerBox"])
         self.assertTrue((o["chipTip"] or "").startswith("waiting on " + PEER_HOST + ":" + PEER), "its whole name leads the chip's tip: %r" % o["chipTip"])
         self.assertIsNone(o["stop"], "no button while awaiting (nothing to interrupt)")
         self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "the line does not overflow (scrollWidth %s against %s)" % (o["scrollWidth"], o["clientWidth"]))
         self.assertLessEqual(o["timer"]["right"], o["line"]["right"] + 1, "the timer stays in view")
         self.assertGreaterEqual(o["right"]["top"], o["chip"]["bottom"] - 2, "the right cluster still wraps below the unit whole")
+
+    def test_a_long_wait_at_240_keeps_the_peer_label_readable_beside_a_wide_timer_with_no_floor(self):
+        # round four, low: with the fixture's inflated timer the label showed two to five characters, and a floor was asked for
+        # or a reason against one. This guard records the reason: with the kernel's real timer, even a two-hour one, the label
+        # keeps about 60 px (seven characters) at 240 px with no floor, and a floor that bound would overflow the line on a
+        # narrower pane (a 55 px floor by 15 px at 220), the very overflow this branch removes. Green at the prior heads too:
+        # a guard on the room, not a red-first
+        o = self.out["awaiting-long-wait"]
+        self.assertEqual(o["width"], 240)
+        self.assertRegex(o["timerText"] or "", r"^2h 1[45]m$", "a two-hour timer, wide: %r" % o["timerText"])
+        self.assertEqual(o["peer"], PEER_HOST + ":" + PEER)
+        self.assertTrue(o["peerTruncated"], "the label truncates")
+        self.assertGreaterEqual(o["peerBox"], 50, "and keeps room for several characters without a floor (label box %.1f px)" % o["peerBox"])
+        self.assertLessEqual(o["scrollWidth"], o["clientWidth"] + 1, "the line does not overflow (scrollWidth %s against %s)" % (o["scrollWidth"], o["clientWidth"]))
+        self.assertLessEqual(o["timer"]["right"], o["line"]["right"] + 1, "the timer stays in view")
 
     def test_narrow_the_right_cluster_wraps_below_the_unit_whole_and_the_button_stays_with_its_badge(self):
         self._unit("narrow")

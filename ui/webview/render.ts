@@ -15945,10 +15945,12 @@ function updateStatusline() {
   composeStatusWidgets(sl, "left", rec, settings.statusWidgets);
   // Left: the state chip. WORKING gets a sine color-pulse + elapsed timer; idle
   // states get the plain chip (no timer), and the stop button sits right after the chip and its timer
-  // (the user 2026-09-16: back where it sat from 2026-06-19 to 2026-08-27). The three are ONE
-  // non-wrapping unit (.sl-left, flex: none): a narrow pane wraps the right cluster below as a
-  // whole, and the button never separates from its badge, which is what riding in the right
-  // cluster had bought (bd9a1dab). Right: model + effort · ctx%, always.
+  // (the user 2026-09-16: back where it sat from 2026-06-19 to 2026-08-27). The three are ONE unit
+  // (.sl-left) whose flex line never wraps its parts while the unit itself shrinks (flex: 0 1 auto,
+  // min-width: 0): the chip inside gives way and a long peer label truncates above a floor, the stop
+  // button alone keeps flex: none; a narrow pane wraps the right cluster below as a whole, and the
+  // button never separates from its badge, which is what riding in the right cluster had bought
+  // (bd9a1dab). Right: model + effort · ctx%, always.
   const left = el("span", "sl-left");
   sl.appendChild(left);
   if (s.status.state === "working") {

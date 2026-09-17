@@ -1613,7 +1613,7 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 }
 .sl-left > .stop-btn { flex: none; }   /* the button stays whole beside its badge; the row's own nowrap keeps it on the chip's line */
 .sl-left > .chip { min-width: 0; }   /* the chip gives way before the unit overflows the line (round three of PR 1803) */
-.sl-left .chip-peer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* a peer label is one unbreakable word (TESTHOST:integration-tests): it truncates with an ellipsis, as .chip-session does, and its full text leads the chip's tip; the timer and the button stay beside the chip */
+.sl-left .chip-peer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* a peer label is one unbreakable word (TESTHOST:integration-tests): it truncates with an ellipsis, as .chip-session does, and its full text leads the chip's tip. No floor: with the kernel's real timer the label keeps about 60 px (seven characters) at 240 px, and a floor that bound would overflow the line on a narrower pane (a 55 px floor by 15 px at 220), the very overflow this rule removes */
 .sl-right {
   margin-left: auto; min-width: 0;
   display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 10px;
