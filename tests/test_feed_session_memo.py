@@ -119,8 +119,10 @@ def _reset_memo():
     with km._feed_memo_lock:
         km._feed_memo.clear()
         st = km._FEED_MEMO_STATS
-        for k in ("hit", "miss", "evict", "derived", "entries", "bytes", "failed"):
-            st[k] = 0
+        for k in ("hit", "miss", "evict", "derived", "entries", "bytes", "failed", "coldLive", "coldFlip"):
+            if k in st:                           # zero what the kernel defines, never plant a key: an unconditional write
+                st[k] = 0                         # seeded coldLive/coldFlip into a kernel without them, and the exact
+                #                                   key-set pin below then passed on that kernel (review find, 2026-09-18)
         for k in st["miss_by"]:
             st["miss_by"][k] = 0
         getattr(km, "_FEED_DERIVE_FAILED", {}).clear()
@@ -737,7 +739,8 @@ class TheBoundAndTheDepartures(_Board):
         self.assertEqual(set(feed), {"cached", "built", "ms", "memo"})
         self.assertEqual(feed["memo"], km._feed_memo_report())
         self.assertEqual(set(feed["memo"]), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by",
-                                             "failed", "failing"})   # the contained derivation faults (2026-09-17)
+                                             "failed", "failing",     # the contained derivation faults (2026-09-17)
+                                             "coldLive", "coldFlip"})   # the cache-only parse misses and the in-place re-reads (2026-09-18)
         self.assertEqual((feed["memo"]["failed"], feed["memo"]["failing"]), (0, 0))
         self.assertEqual(set(feed["memo"]["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
         self.assertEqual(feed["memo"]["derived"], 3)
@@ -1264,6 +1267,60 @@ class OneSessionsFaultIsContained(_Board):
         self.assertEqual(km._feed_memo_report()["failing"], 0, "derived: the episode ends")
         self.assertEqual(said, "")
         self.assertEqual(len(self.bells), 1, "the recovery rings nothing")
+
+
+class AWarmEntryIsNeverDerivedCold(_Board):
+    """A living session the memo holds WARM is never derived COLD when its transcript moves past the parse the chat's
+    build stored (2026-09-18). The feed reads the parse cache-only, so on the build after an append with no parse in
+    between (the stream lands after the chat's build, before the feed's) the read missed, and the key's parse
+    component fell to (False, None): the entry lost its parse-derived half for one build (sessState unknown, no
+    working dot, bg None, the closer off), then the next build, after the chat re-parsed, derived it warm again.
+    Two derivations and a blink per append, a card move on no new information. Now the key re-reads through _parse
+    in place for a session whose memoized key was warm, and only for one: a cold kernel's first paint still parses
+    nothing. The fixture's appended exchange ENDS the turn (an assistant reply with stop_reason end_turn), so
+    who_working stays False and the discriminator is sessState quiet (warm) against unknown (cold) on the working
+    card, independent of idle synthesis (which reads states rows this board never writes)."""
+
+    def test_an_append_after_the_chats_parse_derives_the_session_warm_once_and_the_chats_next_parse_hits(self):
+        self._build()                                              # cold: three derivations, no parse
+        km._parse(str(self.tpath[WEB]), WEB, NOW)                 # the chat's parse of web's tab warms the store
+        d, f = self._delta(self._build)                            # the boot flip: web re-derives warm once
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
+        p0 = km._PERF_STATS.parses["kernel"]
+        c0 = km._feed_memo_report()
+        with self.tpath[WEB].open("a") as fh:                     # the stream lands AFTER the chat's build...
+            fh.write(json.dumps(uline(NOW - 10, "and the pagination", "u2", "a1")) + "\n")
+            fh.write(json.dumps(aline(NOW - 5, "Done.", "a2", "u2")) + "\n")
+        self.assertIsNone(km._parse_cached(str(self.tpath[WEB])), "...so the cache-only read misses the grown file")
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet",
+                         "derived over the parse re-read in place, never cold")
+        self.assertIs(km._feed_memo_get(WEB)[0][km._FEED_MEMO_LABELS.index("parse")][0], True,
+                      "the stored key's parse bit stays warm")
+        self.assertNotIn("bg", d["miss_by"], "bg no longer flips with the parse bit")
+        self.assertTrue(set(d["miss_by"]) <= {"transcript", "parse"}, d)
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 1, "the one in-place parse")
+        c1 = km._feed_memo_report()
+        # coldLive counts EVERY living session whose cache-only read missed, per build: web (the flip) plus api and
+        # tests, which nothing ever parses in this fixture and which ride coldLive every build by design
+        self.assertEqual((c1["coldLive"] - c0["coldLive"], c1["coldFlip"] - c0["coldFlip"]), (3, 1),
+                         "web flipped; api and tests are the standing cold reads")
+        km._parse(str(self.tpath[WEB]), WEB, NOW)                 # the chat's next parse: a hit on the tree the feed stored
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 1)
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (0, 3), d)     # no warm re-derivation: the key already read warm
+
+    def test_a_cold_kernels_first_paint_still_parses_nothing(self):
+        p0 = km._PERF_STATS.parses["kernel"]
+        c0 = km._feed_memo_report()
+        self._build()
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 0, "no entry is warm yet, so nothing re-reads")
+        for sid in SIDS:
+            self.assertIsNone(km._parse_cached(str(self.tpath[sid])))
+        c1 = km._feed_memo_report()
+        self.assertEqual((c1["coldLive"] - c0["coldLive"], c1["coldFlip"] - c0["coldFlip"]), (3, 0),
+                         "three living sessions read cold, none flipped")
 
 
 if __name__ == "__main__":
