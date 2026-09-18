@@ -1101,7 +1101,7 @@ class _PerfStats:
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
-                          ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked
+                          ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked, scoped
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
@@ -30151,9 +30151,11 @@ SUBAGENT_STEPS_CAP = 200        # tool calls shipped on the Agent head (agentSte
 # per build from the feed, timeline and chat builds and the nudge walk, and a pusher stack sample put a tenth of its push-stage
 # samples inside that walk. Bounded by ownership, not by a count: _subagent_trees_forget drops every root no alive session's
 # transcript names, on every jobs pass (_interrupt_block_tick, audience-independent) and, as a belt, after each feed build
-# and from the tracking-off frame.
+# and from the tracking-off frame. And, since 2026-09-18, one sample per cycle on `_live_scope.subagent_trees`: the first
+# reader of a root in a pusher cycle (a jobs pass, a handler thread's connect push) validates or walks, and every later
+# reader of that cycle is served the same (directories, stats) with no lstat (_subagent_tree, THE CYCLE SCOPE).
 _SUBAGENT_TREES = {}
-_SUBAGENT_TREE_STATS = {"hit": 0, "miss": 0, "evict": 0, "dirStats": 0, "walkMs": 0.0, "validateMs": 0.0}   # /perf memos.subagentTree;
+_SUBAGENT_TREE_STATS = {"hit": 0, "miss": 0, "scoped": 0, "evict": 0, "dirStats": 0, "walkMs": 0.0, "validateMs": 0.0}   # /perf memos.subagentTree;
 #                          advisory tallies, incremented without a lock as the neighbouring memos' are (a lost count under a race
 #                          is tolerated; the memo's own writes are single dict stores of immutable tuples)
 
@@ -30218,7 +30220,52 @@ def _subagent_tree(d):
     but cannot be listed (EACCES) stays in the list, where os.walk dropped it, unvouched, so the tree is walked on every
     call until it can be listed (today's cost, and the chmod that opens it is seen at once); no consumer's output changes
     (_subagent_meta_map's listing of it fails and is skipped, _find_agent_file finds no file in it, the feed key folds one
-    more identity)."""
+    more identity).
+
+    THE CYCLE SCOPE (2026-09-18). The event is one pusher cycle (or one jobs pass, or one connect push's chat loop on a
+    handler thread), which opens `_live_scope.subagent_trees`: {root path: (directories, stats)}, exactly what this
+    function returns. The first reader of a root in the cycle validates or walks (_subagent_tree_sample, the body) and
+    its answer is stored on the scope; every later reader of the cycle is served that sample with no lstat, counted as
+    `scoped`. Before it each reader took its own sample within the one cycle: the chat build's sidecar-map reads
+    (_stamp_agents, _awaiting_live_rows, _awaiting_nest, through _subagent_meta_map), the feed key's
+    _subagent_dirs_ident, the derivation's _session_awaiting, and a viewer frame's agent-file re-walk on a cache miss
+    (its first open, or after a file landed in a directory the walk read), which samples the root through
+    _find_agent_file (the frame's hit-path re-stats through _dir_stamps are a separate route, a follow-up); 63k
+    validations and 5.2M lstats over 3.9k cycles live, of which the ~39,500 outside the feed key are the candidates,
+    an estimated 30-50% of all validations being re-samples of a root another reader had taken in the same cycle, the
+    `scoped` tally measuring the realized share. A
+    directory change landing after the sample is invisible to the rest of the cycle and seen by the next cycle's fresh
+    sample, the one-cycle lag _sessions' mtime and _live_scope.snapshot already accept. Exact across the boundary because
+    every scoped sample carries a stamp per directory it listed (the stats), so a reader that folds those stamps into its
+    own memo (_subagent_meta_map's key, _subagent_file's stamps, the feed key's identities, the chat build's taskout notes)
+    mismatches next cycle when the tree moved and re-derives, never a stale hit; an EMPTY answer (nothing at the root, or
+    not a directory) carries no stamp and is therefore NOT scoped: _subagent_file_walk stamps the root itself with a fresh
+    _dir_stamp and reads its listing through _find_agent_file, and served an older empty sample it would memoize a nested
+    agent's miss under a stamp newer than the listing it read, a stale miss that outlives the cycle because
+    _subagent_file's hit path re-stats and never re-walks; so such a root costs each caller its one lstat, as before. The
+    `stats` list is shared by every reader of the cycle and read-only by contract, as _sessions' rows are (the readers
+    zip, iterate or copy it). Outside a scope every call samples afresh, as _live_map, _sessions, _path_of and
+    _auth_avail_status behave (a WS viewer handler, GET /feed.json read fresh)."""
+    d = str(d)
+    scope = getattr(_live_scope, "subagent_trees", None)
+    if scope is not None:
+        got = scope.get(d)
+        if got is not None:
+            _SUBAGENT_TREE_STATS["scoped"] += 1
+            return got
+    out = _subagent_tree_sample(d)
+    if scope is not None and out[0]:
+        # only an answer with at least one directory is scoped (2026-09-18): it carries a stamp per directory it listed,
+        # so a reader folding those stamps into its own memo re-derives next cycle; the two zero-directory answers carry
+        # none, and a scoped empty answer would let _subagent_file_walk memoize a nested agent's miss under the root's
+        # fresh stamp for good (its hit path re-stats and never re-walks)
+        scope[d] = out
+    return out
+
+
+def _subagent_tree_sample(d):
+    """One fresh sample of the tree at `d`: the memo's validation or walk, with no cycle scope (2026-09-18: _subagent_tree's
+    body before the scope, unchanged; the memo's rules are documented there)."""
     d = str(d)
     try:
         st = os.lstat(d)
@@ -30302,9 +30349,11 @@ def _subagent_trees_forget(alive):
 
 
 def _subagent_tree_memo_report():
-    """/perf memos.subagentTree: hit and miss (trees served by validation against trees walked), evict (roots dropped as
-    unowned), dirStats (the lstats validations paid), walkMs and validateMs (the time in each, every thread), and the gauges
-    roots (entries) and dirs (directories held). Written from several threads; a resize under the sum is read again."""
+    """/perf memos.subagentTree: hit and miss (trees served by validation against trees walked), scoped (served from the
+    cycle's sample with no stat at all, 2026-09-18: scoped / (hit + miss + scoped) is the share of reads that were
+    re-samples of a root another reader took in the same cycle), evict (roots dropped as unowned), dirStats (the lstats
+    validations paid), walkMs and validateMs (the time in each, every thread), and the gauges roots (entries) and dirs
+    (directories held). Written from several threads; a resize under the sum is read again."""
     for _ in range(3):
         try:
             dirs = sum(len(v[0]) for v in list(_SUBAGENT_TREES.values()))
@@ -30322,7 +30371,9 @@ def _subagent_meta_map(path):
     transcript at `path`, the nested workflow directories included (T355: a workflow agent's sidecar sits under
     workflows/wf_<id>/, and a flat listing missed it, so its Agent card never learned its id), cached on the
     directories' mtimes (a sidecar landing changes its directory's — a stat, never a timer). {} when the directory does
-    not exist (older CLIs wrote no subagent files)."""
+    not exist (older CLIs wrote no subagent files). The directories and their stats come from the shared walk memo
+    (_subagent_tree), one sample per cycle across every reader since 2026-09-18: the three reads a chat build makes of
+    this map (_stamp_agents, _awaiting_live_rows, _awaiting_nest) and the feed key's read share the cycle's stamps."""
     d = str(_subagents_dir(path))
     dirs, stats = _subagent_tree(d)                       # the shared walk memo (2026-09-16): the directories and the stat each
     if not dirs:                                          #  was taken under, one pass, no os.walk and no second stat per directory
@@ -32900,12 +32951,24 @@ def _chat_sig_shared():
 def _chat_push_scopes_open():
     """Open what the chat loop reads once per push and would otherwise read once per TAB on a thread with
     no pusher-cycle scope (a connect push on a handler thread): the shared signature components
-    (_chat_sig_shared), the caption-map slot (_msg_summaries_scoped) and the names snapshot (a registry
-    scan per outgoing postal card without it). A pusher cycle already holds the last two, so only the
-    absent ones are opened, and the record says which; _chat_push_scopes_close clears exactly what was
-    opened here, so a cycle's own scopes are never touched. A names snapshot on a handler thread makes
-    that push's postal values one read (the fold's `_scoped`), which is the condition the recorded values
-    rest on, and gives the signature's names digest the same content the pusher's has."""
+    (_chat_sig_shared), the caption-map slot (_msg_summaries_scoped), the names snapshot (a registry
+    scan per outgoing postal card without it) and the subagents-tree samples (`subagent_trees`,
+    2026-09-18: a rebuilt tab reads its sidecar map two to four times, each a validation of its own
+    without the slot, and a viewer frame's agent-file re-walk on a cache miss (its first open, or after
+    a file landed in a directory the walk read) samples the root once more; a handler thread's push
+    shares one sample per root across its chat loop and those re-walks, exactly as a pusher cycle does.
+    The frame's hit-path re-stats through _dir_stamps are a separate route, a follow-up). A pusher cycle
+    already holds the last three, so only the absent ones are opened, and the record says which;
+    _chat_push_scopes_close clears exactly what was opened here, so a cycle's own scopes are never
+    touched. The ownership record is written BEFORE the shared components are read (2026-09-18, the
+    review's finding): _chat_sig_shared reads the flags and cards files, the colormap, the login label
+    and the billing availability, and a raise there used to leave the slots just opened set on the
+    handler thread with no record of them, so the push's except branch and the next push's opening
+    close cleared nothing, and every later push and viewer frame on that connection's thread was served
+    the stale snapshot for the connection's life (the open skips a slot that is already set, so the leak
+    was adopted, never replaced). A names snapshot on a handler thread makes that push's postal values
+    one read (the fold's `_scoped`), which is the condition the recorded values rest on, and gives the
+    signature's names digest the same content the pusher's has."""
     owned = ["chat_shared"]
     if getattr(_live_scope, "msgsum", None) is None:
         _live_scope.msgsum = [_MSGSUM_UNSET]
@@ -32913,8 +32976,11 @@ def _chat_push_scopes_open():
     if getattr(_live_scope, "names", None) is None:
         _live_scope.names = _names_snapshot()
         owned.append("names")
-    _live_scope.chat_shared = _chat_sig_shared()
-    _live_scope.chat_push_owned = owned
+    if getattr(_live_scope, "subagent_trees", None) is None:
+        _live_scope.subagent_trees = {}                   # one sample per subagents root across this push's chat loop and its
+        owned.append("subagent_trees")                    #  viewer frames' agent-file re-walks (_push_subagents runs before the close), 2026-09-18
+    _live_scope.chat_push_owned = owned                   # recorded before the read below can raise (2026-09-18): the close must
+    _live_scope.chat_shared = _chat_sig_shared()          #  find every slot this open set, on the except path too
 
 
 def _chat_push_scopes_close():
@@ -40380,7 +40446,9 @@ def _subagent_dirs_ident(sid, d):
     """(the directories under the subagents root `d`, their identities) for the feed key's subagents component, from the
     shared walk memo (_subagent_tree, 2026-09-16; before it this key held a sid-keyed memo of its own over the same walk,
     the T368 review's profile having put the walk at a third of the key's cost, while every other reader still walked):
-    an unchanged tree costs one lstat per known directory. A root that does not exist is the tree (d,) with identity None,
+    an unchanged tree costs one lstat per known directory, once per cycle across every reader (the cycle scope,
+    2026-09-18: the chat build's sidecar-map reads earlier in the same cycle sampled this root, and the key is served that
+    sample). A root that does not exist is the tree (d,) with identity None,
     and its appearance moves the component; a symlink or file in its place is (d,) with the LINK's own lstat identity
     (before the shared memo, the target's os.stat identity: one component miss at deploy for such a session, no output
     change).
@@ -40576,7 +40644,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         under it, from the shared walk memo (_subagent_dirs_ident over _subagent_tree, 2026-09-16: the directories are
         listed once per change, vouched for by one lstat each while they stand). _subagent_meta_map. A sidecar rewritten
         in place under its own name moves no directory's mtime and is invisible here as it is to the map's own cache
-        (pre-existing).
+        (pre-existing). Sampled once per pusher cycle across every reader (2026-09-18), so the key's identities are the
+        same sample the derivation's map read.
       usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
         _cap_switch_offer), else None. A deps component.
       offer: the login-account usage window sitting at its cap with its reset still ahead of the build's clock, as
@@ -51998,7 +52067,8 @@ def _push(targets, connect=False, live_map=None):
             # start-keyed dirty watermark for the in-memory stamps neither key named; every stamp is a
             # component now, so a bare _mark_views_dirty rebuilds no chat tab (it still busts the feed and the
             # timeline). The shared components, the caption map and the names snapshot are opened once per
-            # push (_chat_push_scopes_open; a pusher cycle already holds the last two).
+            # push (_chat_push_scopes_open; a pusher cycle already holds the last three, 2026-09-18: the caption
+            # map, the names snapshot and the subagents-tree samples).
             _chat_push_scopes_open()
             _nd = len(_CHAT_SIG_DEPS)
             # the render floor (T323 stage 4b): a proto-1 client needs today's index frames over the whole
@@ -55667,6 +55737,15 @@ def _pusher_cycle():
         #                                         forks); the wide walk under ("wide", window)): ~35 sweeps
         #                                         per cycle became one
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
+        _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
+        #                                       root per cycle for every tree that exists, validated or walked by the
+        #                                       first reader and served to every reader after it: the chat builds'
+        #                                       sidecar maps and awaiting rows, the feed key and its derivations, a
+        #                                       viewer frame's agent-file re-walk on a cache miss (2026-09-18: each
+        #                                       reader took its own sample, 63k validations and 5.2M lstats over 3.9k
+        #                                       cycles live, an estimated 30-50% of them re-samples, the `scoped` tally
+        #                                       measures the realized share; an absent root stays one lstat per caller,
+        #                                       never a validation)
         _live_scope.msgsum = [_MSGSUM_UNSET]    # …and the cycle's caption-map slot (_msg_summaries_scoped): the
         #                                       first chat build that needs the map fetches it, the rest read it
         _live_scope.names = _names_snapshot()   # …and the cycle's NAMES snapshot, same idiom: the name/
@@ -55683,6 +55762,7 @@ def _pusher_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
@@ -55902,6 +55982,8 @@ def _jobs_cycle():
         _live_scope.paths = {}
         _live_scope.sessions = {}
         _live_scope.auth = {}
+        _live_scope.subagent_trees = {}         # the pass's subagents-tree samples (2026-09-18): the reminder walk's
+        #                                       _session_awaiting readers and _mark_nudge_failed read the same roots per pass
         _live_scope.msgsum = [_MSGSUM_UNSET]
         _live_scope.names = _names_snapshot()
         _PERF_STATS.stage("jobs.prelude", time.monotonic() - _t)
@@ -55913,6 +55995,7 @@ def _jobs_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
         _live_scope.files_dirty = None

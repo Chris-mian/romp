@@ -2499,7 +2499,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   it was listed, served while every identity stands because a directory
   entry's creation, removal or renaming moves its parent's stamps and every
   parent is in the list, with `hit` and `miss` (trees vouched for by one stat
-  per known directory against trees walked), `evict` (roots dropped because
+  per known directory against trees walked), `scoped` (reads served from the
+  cycle's one sample with no stat at all: one sample per subagents root per
+  pusher cycle, jobs pass or connect push since 2026-09-18, the first reader
+  validating or walking and every later reader of the cycle served it, so
+  scoped over hit plus miss plus scoped is the share of reads that re-sampled
+  a root another reader took in the same cycle), `evict` (roots dropped because
   no alive session's transcript names them, on every jobs pass and, as a
   belt, after each feed build and from the tracking-off frame), `dirStats`
   (the stats validations paid), `walkMs` and `validateMs` (the time in each,
