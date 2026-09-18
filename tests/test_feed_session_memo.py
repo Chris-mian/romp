@@ -72,6 +72,7 @@ jd = km.jd                              # the kernel's judge: the one object bui
 SIDS = ("5f3e2d1c-0b9a-4876-9543-210fedcba001", "5f3e2d1c-0b9a-4876-9543-210fedcba002",
         "5f3e2d1c-0b9a-4876-9543-210fedcba003")
 WEB, API, TESTS = SIDS
+DOCS = SIDS[0][:-3] + "004"             # a fourth synthetic sid for the transcript-less row case alone: no names entry, no transcript
 NAME_OF = {WEB: "web", API: "api", TESTS: "tests"}
 COLOR_OF = {WEB: "#1EA1EB", API: "#E67E22", TESTS: "#2ECC71"}
 GOAL_OF = {WEB: "wire the notes-api web client", API: "add the notes-api list endpoint",
@@ -300,7 +301,9 @@ class ColdWarmAndFromScratch(_Board):
 
 
 class HostRegistryProgress(_Board):
-    """Host journal bookkeeping does not change cards; registry content still does."""
+    """Host journal bookkeeping and every registry field the feed never reads leave the cards cached; the fields it
+    reads still re-derive their session (the `reg` component is _feed_reg_sig's allow-list, 2026-09-18); a
+    transcript-less live row's registry-derived path moves its key under `transcript`, not `reg`."""
 
     @staticmethod
     def _publish_registry(sid, record):
@@ -329,11 +332,12 @@ class HostRegistryProgress(_Board):
                                  "skipping host bookkeeping must preserve the real feed payload")
 
     def test_other_registry_content_invalidates_only_its_session(self):
+        """The two registry fields a derivation reads (the allow-list: the launch ledger and the CLI epoch) re-derive
+        their session once each and a from-scratch build agrees; a field nobody reads is the next test's case."""
         record = {"sid": API, "name": "api", "spawnedAt": T0}
         self._publish_registry(API, record)
         self._build()
-        for fields in ({"spawnedAt": T0 + 10}, {"bgLedger": {"worker": {"state": "running"}}},
-                       {"futureDisplayField": "changed"}):
+        for fields in ({"spawnedAt": T0 + 10}, {"bgLedger": [{"toolUseId": "toolu_9", "deadlineEpoch": T0 + 99}]}):
             with self.subTest(fields=fields):
                 record.update(fields)
                 self._publish_registry(API, record)
@@ -342,6 +346,81 @@ class HostRegistryProgress(_Board):
                 self.assertEqual(delta["miss_by"], {"reg": 1})
                 _reset_memo()
                 self.assertEqual(_dump(cached), _dump(self._build()))
+
+    def test_bookkeeping_the_feed_never_reads_keeps_every_session_cached_and_matches_a_fresh_build(self):
+        """The registry fields no feed derivation reads move no key: a result's cost watermark, the Stop hook's
+        settle stamp and opener, the echo and queue mirrors, the bgTasks mirror, the cron records, a pending ask, a
+        field nobody reads. The `reg` component takes the record's state and its allow-listed fields alone
+        (_feed_reg_sig, 2026-09-18); before, it folded every field but the host journal's, and each of these writes
+        re-derived the session's cards though no card reads them. The two payload equalities are a regression belt,
+        not the proof that the body reads none of these: this board has no SDK backend and no live snapshot, so
+        _bg_live_norm answers [] before it reaches the ledger and the parse is cache-only, which makes the
+        equalities hold whatever the body reads. The proof is the census in tests/test_feed_memo_inputs.py
+        (RegAllowList): every registry field read anywhere in the kernel or the judge is classified, and the fields
+        the feed's readers name ARE the allow-list."""
+        record = {"sid": WEB, "name": "web", "spawnedAt": T0}
+        self._publish_registry(WEB, record)
+        before = self._build()
+        for fields in ({"costState": {"total": 1.25, "tokens": {"in": 10}, "t": T0 + 5}},
+                       {"lastStopAt": T0 + 6, "lastTurnOpener": "human"},
+                       {"echoes": [{"text": "hello", "t": T0 + 7}]},
+                       {"queue": ["next"], "queueMeta": [{"text": "next"}]},
+                       {"bgTasks": [{"toolUseId": "toolu_1", "desc": "a shell", "since": T0 + 8}]},
+                       {"sessionCrons": [], "sessionCronsAt": T0 + 9},
+                       {"pendingAsk": True},
+                       {"futureDisplayField": "changed"}):
+            with self.subTest(fields=fields):
+                record.update(fields)
+                self._publish_registry(WEB, record)
+                delta, cached = self._delta(self._build)
+                self.assertEqual((delta["derived"], delta["hit"]), (0, 3), delta)
+                self.assertEqual(delta["miss_by"], {})
+                self.assertEqual(_dump(cached), _dump(before))
+                _reset_memo()
+                self.assertEqual(_dump(cached), _dump(self._build()),
+                                 "skipping bookkeeping the feed never reads must preserve the real payload")
+
+    def test_a_transcript_less_live_rows_registry_path_move_re_derives_it_once_under_transcript(self):
+        """A live SDK session discover cannot see yet (no names entry, no transcript on disk) takes its row from the
+        registry record through _sdk_sess: cwd and lastSid name its transcript path, name its name. `reg` no longer
+        folds those fields (the allow-list), so the path rides the `transcript` component as a string beside the
+        file's identity (2026-09-18): a cwd move between two directories with no transcript, the same identity (None)
+        at both, re-derives the session once under `transcript` alone, and a from-scratch build agrees. The SDK
+        backend singleton is built once per process over the first test's state root and never rebuilt, so its
+        `owns` (the record's existence under ITS root) cannot see this board's record; a thin proxy owns the sid and
+        hands every other call to the real backend, so the row-building path is the kernel's own."""
+        real = km._sdk()
+
+        class _Owner:
+            def owns(self, sid):
+                return sid == DOCS or bool(real and real.owns(sid))
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        dirs = [Path(self.td.name) / ("launch-docs-" + tag) for tag in ("a", "b")]
+        for d in dirs:
+            d.mkdir()
+        record = {"sid": DOCS, "name": "docs", "cwd": str(dirs[0]), "spawnedAt": T0}
+        self._publish_registry(DOCS, record)
+        self.live[DOCS] = self._row()
+        with mock.patch.object(km, "_sdk", lambda: _Owner()):
+            rows = {s["sid"]: s for s in km._alive_sessions(NOW, self.live)}
+            self.assertEqual(rows[DOCS]["path"], str(jd._proj_dir(str(dirs[0])) / (DOCS + ".jsonl")),
+                             "the row's path is the record's cwd resolved the way discover resolves a launch dir")
+            self.assertFalse(os.path.exists(rows[DOCS]["path"]), "no transcript at the first path")
+            self._build()                                     # the newcomer's first sight: adopted and derived cold
+            delta, _ = self._delta(self._build)
+            self.assertEqual((delta["derived"], delta["hit"]), (0, 4), delta)
+            self.assertEqual(delta["miss_by"], {})
+            record["cwd"] = str(dirs[1])
+            self._publish_registry(DOCS, record)
+            delta, cached = self._delta(self._build)
+            self.assertEqual((delta["derived"], delta["hit"]), (1, 3), delta)
+            self.assertEqual(delta["miss_by"], {"transcript": 1},
+                             "the path string moved under transcript; the identity is None at both and reg holds")
+            _reset_memo()
+            self.assertEqual(_dump(cached), _dump(self._build()))
 
     def test_missing_empty_object_and_unreadable_registry_remain_distinct(self):
         self._build()

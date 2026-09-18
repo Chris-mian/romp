@@ -69,6 +69,41 @@ matches the list the key builder's docstring documents, in order; the miss attri
 is taken. The census enforces ONE level, the helpers the body calls directly and the module names it reads
 directly; what each reads in turn is the classification's claim, verified by the differential cases in
 tests/test_feed_session_memo.py.
+
+THE REGISTRY CENSUS (2026-09-18). The key's `reg` component is an ALLOW-list: _feed_reg_sig folds the SDK registry
+record's readable/missing/unreadable state and _FEED_REG_FIELDS alone. That flips the failure mode. Under the
+deny-list it replaced (every field but the host journal's), a field the feed never read cost one extra derivation
+per write; under the allow-list a field a feed reader takes up WITHOUT joining the list is a silent staleness, the
+card serving on after the field moved. So this census is not one level deep like the two above: it walks EVERY
+top-level function and method of the kernel and of the judge for a read of a registry field, and every reader is
+classified in one of four tables, so a reader added in any of the RECEIVER SHAPES below is red until it is:
+ON_FEED, the readers a derivation reaches, whose fields must EQUAL the allow-list; FOLDED_BY, the reads of
+_sdk_sess (the loop's row for a live SDK sid discover cannot see yet), each landing in a row field another
+component folds; NOT_CONSUMED, a read inside the body whose output no card consumes, held disjoint from the list
+with the reason; OFF_FEED, the readers no derivation reaches, each with the surface it serves. A second pin holds
+the PLACEMENT, not only the membership: a static callee walk from _feed_session_entry over the same functions (a
+call by name, a `jd.<name>` call, a class-method call, and a bare reference to a function's name, so a callback
+handed by name counts; a method called through `self` is not followed; the backend constructors _sdk_locked and
+_codex are reached but never expanded, their edges being wiring, not derivation calls) must reach exactly ON_FEED
+plus NOT_CONSUMED among the readers, so a feed helper that starts calling an OFF_FEED reader is red too.
+
+A registry RECEIVER is one of these shapes, and no other (the rule is pinned on a synthetic module, shape by
+shape): a call to _thread_reg or _thread_reg_read (and `[1]` of the latter's pair); a call whose callee's last name
+is read_reg (`sbm.read_reg`, `read_reg`); a json.load or json.loads, or a def nested in the function that calls
+one, whose argument is the registry path (the "sdk" path segment, SDKDIR, or a name bound, transitively, from an
+expression naming them: the path, its text, a scandir or glob over the directory, an open's handle); a parameter
+named `reg`; a parameter some function in the census passes a receiver to, under any name, whether a top-level
+function or a def nested in the caller (to a fixpoint); a dict() or .copy() copy of a receiver, a dict display
+merging one (`{**reg, ...}`), a walrus whose value is one, a bool-op or conditional over one, a list, set or
+generator comprehension whose element is one; and a name, an attribute target such as `self.reg`, or a for or
+comprehension target bound from any of these (the record half of a `state, reg = _thread_reg_read(sid)` unpack). A
+READ is `.get("field")`, `["field"]` or `"field" in` on a receiver; a method on a field's VALUE
+(`_thread_reg(sid).get("bgLedger")` iterated, its rows read) is not a registry read. Outside the rule, by design
+and said here: a record that reaches a function through a container other than those shapes (a dict of records
+built in another function, an object attribute set in another method), a field read by a variable rather than a
+literal, and a registry field that reaches the kernel through a backend's own surface (the live row's authLive from
+apiKeyAuth, be.thread_sessions()'s threadOf), which is that surface's, folded by `row` or read off the feed path;
+the census reads the kernel's own decodes of the file.
 """
 import ast
 import builtins
@@ -137,6 +172,9 @@ HELPERS = {
     "jd.review_boundary": ("sig", ("store",)),
     "_handoff_card_fields": ("sig", ("store", "peers")),
     "_bg_owner_tops": ("sig", ("transcript", "store", "reg", "bg")),
+    # the two below reach _bg_live_norm (bgLedger) and _session_stamp_read (lastSid) too, and do not claim `reg` the way
+    # _bg_owner_tops does for its indirect reach: the registry census (RegAllowList) covers every registry read
+    # module-wide, so the label here says only what the helper's own reads ride (2026-09-18)
     "_bg_service_descs": ("sig", ("transcript", "store", "bg", "postal")),
     "_awaiting_task_descs": ("sig", ("transcript", "store", "bg")),
     "_bg_live_norm": ("sig", ("bg", "reg", "row", "transcript")),      # the launch ledger, the row's bgTasks
@@ -194,6 +232,57 @@ READ_KINDS = {"const", "sig", "pure"}     # MODULE_READS
 # the value types a `const` read may hold: bound once, never mutated in place
 CONST_TYPES = (int, float, str, bytes, bool, tuple, frozenset, re.Pattern, type, types.ModuleType, pathlib.PurePath,
                type(None))
+
+# ── the SDK registry's field census (the module docstring's REGISTRY CENSUS, 2026-09-18) ──────────────────
+REG_READERS = ("_thread_reg", "_thread_reg_read")        # the kernel's shared readers of the registry record
+REG_BACKEND_READER = "read_reg"                           # the backend module's reader, matched as a callee's LAST name (sbm.read_reg)
+REG_DECODERS = ("json.load", "json.loads")                # a decode is a receiver when its argument is the registry path
+FEED_CUT = ("_sdk_locked", "_codex")                      # the backend constructors: reached by the feed walk, never expanded (their
+#                                                           edges hand the kernel's callbacks to the backend; none is a derivation call)
+# the readers a feed derivation reaches, reader -> the fields it names; their union IS _FEED_REG_FIELDS
+ON_FEED = {
+    "_bg_live_norm": ("bgLedger",),      # the launch ledger's deadline and acting-agent join over the live task rows: the body's
+    #                                      own call, _session_awaiting -> _awaiting_live_rows, _bg_owner_tops' rows,
+    #                                      _awaiting_task_descs, _bg_service_descs
+    "jd._cli_epoch": ("spawnedAt",),     # the CLI epoch, the bg ghost gate of _bg_live_norm's transcript rung (_sdk_spawned_at
+    #                                      delegates here)
+}
+# _sdk_sess's reads, field -> the component that folds the row field it lands in: cwd and lastSid name the row's
+# transcript path (folded by string and by file identity), name is the row's name (by value)
+FOLDED_BY = {"cwd": "transcript", "lastSid": "transcript", "name": "names"}
+# read inside the body, output consumed by no card: held disjoint from the allow-list, with the reason in the test
+NOT_CONSUMED = {
+    "jd._sdk_last_sid": ("lastSid",),    # _session_stamp_read (under _bg_split -> _session_stamped_tops, run by _awaiting_task_descs
+    #                                      and _bg_service_descs): shapes that helper's own memo key and its deleg output only
+}
+# the readers no feed derivation reaches, each with the surface it serves (the fields, for the record)
+OFF_FEED = (
+    "_asker_row_alive",            # the postal debt asks (_debt_asks): alive, threadOf
+    "_branch_marker",              # the chat's recovery flush: forkedFrom
+    "_comment_promote_inner",      # a comment thread's promotion: cwd, lastSid
+    "_comment_reply",              # the comment reply drive: name
+    "_comments_frame",             # the comment threads frame (the push, the drive): alive, effort, forkOf, liveModel, model
+    "_compact_suggest_tick",       # the compaction tick: threadOf
+    "_dead_wait_corroborated",     # the dead-wait sweep and the wake: alive
+    "_death_boot_pass",            # main's boot pass over the registry: alive
+    "_lift_decisions",             # the lift tick (_lift_spent_awaiting): bgLedgerEnded
+    "_model_alias_boot_pass",      # main's model-alias migration, a rewrite of every record: model, name
+    "_page_sig",                   # the chat history page's signature: forkedFrom
+    "_reported_model_ids",         # the learned model versions: liveModelId
+    "_session_row",                # the /sessions row and the fork, comment and rewind handlers: cwd, name
+    "_settle_event_key",           # the nudge and compaction ticks: lastStopAt
+    "_thread_events",              # comment threads: forkOf
+    "_thread_mail_off",            # the mail-off gate: threadOf
+    "_thread_messages",            # comment threads: forkOf
+    "_thread_names",               # name claims and the sid resolve: name
+    "_thread_owes_first_reply",    # comment threads: forkOf
+    "_thread_transcript_path",     # comment threads' transcript resolve (a `reg` parameter): cwd, lastSid
+    "_thread_turn_read",           # comment threads: forkOf
+    "_turn_end_key",               # the post-loop notify pass, the checkpoints, the bell pass after the feed's loop: lastStopAt
+    "_turn_opener",                # the post-loop notify pass: lastTurnOpener
+    "jd._judge_auth",              # the judge's billing pick: auth, authLogin
+    "jd._reg_spawned_at",          # the judge tiers' plan and close signatures: spawnedAt
+)
 
 
 def _stripped(src, strings=False):
@@ -343,6 +432,250 @@ def _resolve(name):
         obj = getattr(obj, a, missing) if obj is not missing else missing
     return (None if obj is missing else obj), obj is not missing
 
+
+# ── the registry census (the module docstring's REGISTRY CENSUS) ──────────────────────────────────────────
+def _direct_callee(func):
+    """The dotted name of a callee that is a Name or an attribute chain on one (`json.loads`, `_thread_reg`,
+    `jd._cli_epoch`, `self.reg`), None when a Call or Subscript sits inside it: `_thread_reg(sid).get` is a method
+    on a FIELD's value, not a reader."""
+    attrs, f = [], func
+    while isinstance(f, ast.Attribute):
+        attrs.append(f.attr)
+        f = f.value
+    return ".".join([f.id] + attrs[::-1]) if isinstance(f, ast.Name) else None
+
+
+def _stores(target):
+    """The names a target binds, and the dotted text of an attribute target (`self.reg`)."""
+    out = set()
+    for n in ast.walk(target):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            out.add(n.id)
+        elif isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Store) and _direct_callee(n):
+            out.add(_direct_callee(n))
+    return out
+
+
+def _binders(fn):
+    """(targets, value) for every binding in the body: an assignment, an annotated one, a walrus, a for or
+    comprehension target over its iterable, a with-as name over its context expression."""
+    out = []
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign):
+            out.append((n.targets, n.value))
+        elif isinstance(n, (ast.AnnAssign, ast.NamedExpr)) and n.value is not None:
+            out.append(([n.target], n.value))
+        elif isinstance(n, (ast.For, ast.comprehension)):
+            out.append(([n.target], n.iter))
+        elif isinstance(n, ast.withitem) and n.optional_vars is not None:
+            out.append(([n.optional_vars], n.context_expr))
+    return out
+
+
+def _mentions_sdk(expr, known):
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Constant) and n.value == "sdk":
+            return True
+        if isinstance(n, ast.Name) and (n.id == "SDKDIR" or n.id in known):
+            return True
+        if isinstance(n, ast.Attribute) and n.attr == "SDKDIR":
+            return True
+    return False
+
+
+def _sdk_path_names(fn):
+    """The body's names bound, transitively, from an expression naming the registry directory: the path, the text
+    read from it, a scandir or glob over it, the handle of an open on it."""
+    known, binders = set(), _binders(fn)
+    while True:
+        new = {t for targets, value in binders if _mentions_sdk(value, known) for tg in targets for t in _stores(tg)}
+        if new <= known:
+            return known
+        known |= new
+
+
+def _decoders(fn):
+    """json.load and json.loads, plus every def nested in the body that calls one (a local `_load(p)`)."""
+    names = set(REG_DECODERS)
+    for n in ast.walk(fn):
+        if isinstance(n, ast.FunctionDef) and n is not fn and any(
+                isinstance(c, ast.Call) and _direct_callee(c.func) in REG_DECODERS for c in ast.walk(n)):
+            names.add(n.name)
+    return names
+
+
+def _reg_receivers(fn, handed=()):
+    """A predicate over the body's expressions: is this a registry RECEIVER (the module docstring's list)? `handed`
+    names the parameters some caller passes a receiver to. A receiver handed to a def nested in the body binds that
+    def's parameter (the names are one set over the whole body, so a nested def's parameter that shadows an outer
+    receiver's name is bound too: the rule over-approximates, never under)."""
+    sdk, decoders, binders = _sdk_path_names(fn), _decoders(fn), _binders(fn)
+    nested = {n.name: n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n is not fn}
+
+    def reg_call(call):
+        callee = _direct_callee(call.func)
+        if callee is None:
+            return False
+        return (callee in REG_READERS or callee.split(".")[-1] == REG_BACKEND_READER
+                or (callee in decoders and any(_mentions_sdk(a, sdk) for a in call.args)))
+
+    bound = {a.arg for a in ast.walk(fn.args) if isinstance(a, ast.arg) and (a.arg == "reg" or a.arg in handed)}
+
+    def is_recv(e):
+        if isinstance(e, ast.Name):
+            return e.id in bound
+        if isinstance(e, ast.Attribute):                      # self.reg, bound in this body
+            return _direct_callee(e) in bound
+        if isinstance(e, ast.Call):
+            if reg_call(e):
+                return True
+            if isinstance(e.func, ast.Attribute) and e.func.attr == "copy" and not e.args:
+                return is_recv(e.func.value)                  # reg.copy()
+            return _direct_callee(e.func) == "dict" and len(e.args) == 1 and is_recv(e.args[0])
+        if isinstance(e, ast.Dict):                           # {**reg, ...}
+            return any(k is None and is_recv(v) for k, v in zip(e.keys, e.values))
+        if isinstance(e, ast.NamedExpr):
+            return is_recv(e.value)
+        if isinstance(e, ast.BoolOp):
+            return any(is_recv(v) for v in e.values)
+        if isinstance(e, ast.IfExp):
+            return is_recv(e.body) or is_recv(e.orelse)
+        if isinstance(e, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return is_recv(e.elt)                             # a collection of records: its for-target is bound
+        if isinstance(e, ast.Subscript):                      # the (state, record) pair's record
+            return isinstance(e.slice, ast.Constant) and e.slice.value == 1 and is_recv(e.value)
+        return False
+
+    while True:
+        new = set()
+        for targets, value in binders:
+            if not is_recv(value):
+                continue
+            for tg in targets:
+                pair = (isinstance(tg, (ast.Tuple, ast.List)) and len(tg.elts) == 2 and isinstance(value, ast.Call)
+                        and _direct_callee(value.func) == "_thread_reg_read")
+                new |= _stores(tg.elts[1]) if pair else _stores(tg)
+        for n in ast.walk(fn):                                # a receiver handed to a def nested in the body
+            if isinstance(n, ast.Call) and _direct_callee(n.func) in nested:
+                inner = nested[_direct_callee(n.func)]
+                new |= {p for p in (_param_name(inner, i) for i, a in enumerate(n.args) if is_recv(a)) if p}
+                new |= {kw.arg for kw in n.keywords if kw.arg and is_recv(kw.value)}
+        if new <= bound:
+            return is_recv
+        bound |= new
+
+
+def _reg_fields(fn, handed=()):
+    """{field: shapes} for one function: every registry field the body reads, as `get`, `item` or `in`."""
+    is_recv = _reg_receivers(fn, handed)
+    fields = {}
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get" and n.args
+                and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str) and is_recv(n.func.value)):
+            fields.setdefault(n.args[0].value, set()).add("get")
+        elif (isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str)
+              and is_recv(n.value)):
+            fields.setdefault(n.slice.value, set()).add("item")
+        elif (isinstance(n, ast.Compare) and len(n.ops) == 1 and isinstance(n.ops[0], (ast.In, ast.NotIn))
+              and isinstance(n.left, ast.Constant) and isinstance(n.left.value, str) and is_recv(n.comparators[0])):
+            fields.setdefault(n.left.value, set()).add("in")
+    return {k: frozenset(v) for k, v in fields.items()}
+
+
+def _handed(fn, is_recv):
+    """{(callee, position or keyword)} for every call in the body that passes a receiver on."""
+    out = set()
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.Call) or _direct_callee(n.func) is None:
+            continue
+        out.update((_direct_callee(n.func), i) for i, a in enumerate(n.args) if is_recv(a))
+        out.update((_direct_callee(n.func), kw.arg) for kw in n.keywords if kw.arg and is_recv(kw.value))
+    return out
+
+
+def _module_functions(src):
+    """(name, def) for every top-level function of a module's source and every method of its top-level classes."""
+    for node in ast.parse(src).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node.name, node
+        elif isinstance(node, ast.ClassDef):
+            for m in node.body:
+                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield node.name + "." + m.name, m
+
+
+def _param_name(fn, which):
+    if isinstance(which, str):
+        return which
+    params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+    return params[which] if which < len(params) else None
+
+
+def _census_sources():
+    """[(prefix, source)] for the kernel and the judge (prefix `jd.`, the kernel's alias for it)."""
+    return [("", open(inspect.getsourcefile(km)).read()), ("jd.", open(inspect.getsourcefile(km.jd)).read())]
+
+
+def _census_functions(sources):
+    """{qualified name: (prefix, def)} over the given modules: `_bg_live_norm`, `Sessions.backend_for`,
+    `jd._cli_epoch`."""
+    return {prefix + name: (prefix, node) for prefix, src in sources for name, node in _module_functions(src)}
+
+
+def _registry_census(fns):
+    """{reader: {field: shapes}} over _census_functions' map. Two passes: the parameters a receiver is handed to,
+    followed to a fixpoint, then the reads."""
+    handed = {}
+    while True:
+        grew = False
+        for name, (prefix, node) in fns.items():
+            is_recv = _reg_receivers(node, handed.get(name, ()))
+            for callee, which in _handed(node, is_recv):
+                target = next((c for c in (prefix + callee, callee) if c in fns), None)
+                p = _param_name(fns[target][1], which) if target else None
+                if p and p not in handed.get(target, set()):
+                    handed.setdefault(target, set()).add(p)
+                    grew = True
+        if not grew:
+            break
+    out = {}
+    for name, (_prefix, node) in fns.items():
+        fields = _reg_fields(node, handed.get(name, ()))
+        if fields:
+            out[name] = fields
+    return out
+
+
+def _callees(name, fns):
+    """The census functions one function's body names: a call by name (`_bg_live_norm(...)`,
+    `Sessions.backend_for(...)`, `jd._cli_epoch(...)`; inside the judge a bare name is the judge's own), and a bare
+    reference to a function's name (a callback handed by name)."""
+    prefix, node = fns[name]
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            d = _direct_callee(n.func)
+            if d is not None:
+                cand = d if (prefix == "" and d.startswith("jd.")) else prefix + d
+                if cand in fns:
+                    out.add(cand)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and (prefix + n.id) in fns:
+            out.add(prefix + n.id)
+    return out
+
+
+def _feed_reach(fns, start="_feed_session_entry", cut=FEED_CUT):
+    """Every census function a static callee walk from `start` reaches, `cut` included but never expanded."""
+    seen, queue = {start}, [start]
+    while queue:
+        cur = queue.pop()
+        if cur in cut:
+            continue
+        for nxt in _callees(cur, fns):
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append(nxt)
+    return seen
 
 class Census(unittest.TestCase):
     @classmethod
@@ -512,6 +845,167 @@ class LabelsAndDocstring(unittest.TestCase):
     def test_the_entry_docstring_names_this_pin(self):
         self.assertIn("test_feed_memo_inputs", km._feed_session_entry.__doc__)
 
+
+class RegAllowList(unittest.TestCase):
+    """The `reg` component's allow-list against every registry reader in the kernel and the judge (the module
+    docstring's REGISTRY CENSUS): each reader is classified, the ON_FEED readers' fields are exactly
+    _FEED_REG_FIELDS, the feed path reaches exactly the ON_FEED and NOT_CONSUMED readers, _sdk_sess's reads land
+    in components the key folds and the transcript component carries the path string, the stamp helper's read is
+    consumed by no card, the key takes the feed's own signature, and the census rule sees every receiver shape it
+    names."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fns = _census_functions(_census_sources())
+        cls.census = _registry_census(cls.fns)
+        cls.reached = _feed_reach(cls.fns)
+
+    def test_every_registry_reader_in_the_kernel_and_the_judge_is_classified(self):
+        tables = (set(ON_FEED), {"_sdk_sess"}, set(NOT_CONSUMED), set(OFF_FEED))
+        classified = set().union(*tables)
+        self.assertEqual(sum(len(t) for t in tables), len(classified), "a reader is classified under one table")
+        self.assertEqual(set(self.census), classified,
+                         "a function of the kernel or the judge reads a registry field in a receiver shape the census "
+                         "names and is not classified (a reader a feed derivation reaches: ON_FEED, and its field joins "
+                         "_FEED_REG_FIELDS; one no derivation reaches: OFF_FEED, with the surface it serves), or a table "
+                         "names a function that no longer reads the registry: %r" % sorted(set(self.census) ^ classified))
+
+    def test_the_allow_list_equals_the_fields_the_feed_readers_name(self):
+        named = set()
+        for reader, fields in ON_FEED.items():
+            self.assertEqual(set(self.census[reader]), set(fields), reader)
+            named |= set(fields)
+        self.assertEqual(set(km._FEED_REG_FIELDS), named,
+                         "a field a feed reader names is missing from the allow-list (a SILENT staleness: the card "
+                         "would serve on after the field moved), or the list carries a field no feed reader takes: "
+                         "%r" % sorted(set(km._FEED_REG_FIELDS) ^ named))
+        self.assertEqual(len(set(km._FEED_REG_FIELDS)), len(km._FEED_REG_FIELDS))
+
+    def test_the_feed_path_reaches_exactly_the_on_feed_and_not_consumed_readers(self):
+        """The PLACEMENT pin: the tables say which readers a derivation reaches, and this walks the code to check
+        them. A feed helper that starts calling an OFF_FEED reader (the settle key for lastStopAt, the mail-off gate
+        for threadOf) would pass the membership test above with every field set unchanged while the card served
+        stale after each such write; here it moves that reader into the reached set and is red until the reader is
+        re-classified and its field joins the allow-list."""
+        for name in FEED_CUT:
+            self.assertIn(name, self.reached, "%s: the cut sits on the walk's path (reached, never expanded)" % name)
+        reached_readers = set(self.census) & self.reached
+        self.assertEqual(reached_readers, set(ON_FEED) | set(NOT_CONSUMED),
+                         "the registry readers a callee walk from _feed_session_entry reaches are not the ON_FEED and "
+                         "NOT_CONSUMED tables: %r" % sorted(reached_readers ^ (set(ON_FEED) | set(NOT_CONSUMED))))
+        self.assertNotIn("_sdk_sess", self.reached, "the loop's row builder runs outside the derivation")
+        self.assertFalse(set(OFF_FEED) & self.reached, sorted(set(OFF_FEED) & self.reached))
+
+    def test_the_session_rows_registry_reads_land_in_components_the_key_folds(self):
+        self.assertEqual(set(self.census["_sdk_sess"]), set(FOLDED_BY))
+        for field, label in FOLDED_BY.items():
+            self.assertIn(label, km._FEED_MEMO_LABELS, field)
+        self.assertFalse(set(FOLDED_BY) & set(km._FEED_REG_FIELDS), "a folded field needs no allow-list entry")
+
+    def test_the_transcript_component_carries_the_path_string_beside_the_identity(self):
+        """The half of the change that closes the move dropping cwd and lastSid from `reg` opened: a row whose
+        registry-derived path moves between two NON-EXISTENT transcripts has the same file identity (None) at both,
+        so the string rides beside it. Pinned on the key builder's source (a Call or a bool-op in place of the bare
+        `path` fails it); the behaviour is tests/test_feed_session_memo.py's transcript-less row case."""
+        fn = ast.parse(textwrap.dedent(inspect.getsource(km._feed_session_key))).body[0]
+        binds = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "transcript" for t in n.targets)]
+        self.assertEqual(len(binds), 1)
+        value = binds[0].value
+        self.assertTrue(isinstance(value, ast.IfExp) and isinstance(value.body, ast.Tuple)
+                        and "path" in {e.id for e in value.body.elts if isinstance(e, ast.Name)},
+                        "the transcript component is (the file's identity, the path string) when the row has a path")
+
+    def test_the_stamp_helpers_registry_read_is_consumed_by_no_card(self):
+        for reader, fields in NOT_CONSUMED.items():
+            self.assertEqual(set(self.census[reader]), set(fields), reader)
+            self.assertFalse(set(fields) & set(km._FEED_REG_FIELDS),
+                             "%s's read shapes only _session_stamp_read's own memo key and its deleg output, which no "
+                             "card consumes (the body never passes stamp=True to _session_awaiting), and the "
+                             "transcript path it resolves is discover's, folded by `transcript`; a card that starts "
+                             "consuming deleg moves lastSid into _FEED_REG_FIELDS and this entry out" % reader)
+
+    def test_the_feed_key_takes_the_feed_signature(self):
+        src = _stripped(inspect.getsource(km._feed_session_key))      # the code, not the docstring
+        self.assertIn("_feed_reg_sig(fsid)", src)
+        self.assertNotIn("_chat_reg_sig(fsid)", src)
+        self.assertIsNotNone(km._feed_reg_sig.__doc__)
+
+    def test_the_census_sees_every_receiver_shape(self):
+        """The rule on a synthetic module, shape by shape, so a regression to a narrower reader fails here rather
+        than passing a read unclassified: a call's method, a bool-op over a call, the pair's unpack (get, `in`,
+        item), the pair's `[1]`, a with-as handle of an open on the registry path, a text read from the path then
+        decoded, a dict() copy, a nested decoder over a glob of the directory, a comprehension of records and a
+        comprehension over it, a .copy(), the backend module's read_reg under an alias and bare, a receiver handed
+        to a nested def's parameter, a `{**reg}` merge, a walrus's own get and the name it bound, an attribute
+        target (`self.reg`) in the same method, a record handed on to a top-level function by position and by
+        keyword under another name, a parameter named `reg`; and the shapes that are NOT reads: a method on a
+        field's value (the ledger's rows, a nested get), a decode of something else, a row's or a module table's
+        get."""
+        src = textwrap.dedent('''
+            def one(sid, body, live, sids):
+                a = _thread_reg(sid).get("a")
+                b = (_thread_reg(sid) or {}).get("b")
+                state, reg = _thread_reg_read(sid)
+                c = reg.get("c")
+                d = "d" in reg
+                e = reg["e"]
+                f = _thread_reg_read(sid)[1].get("f")
+                with open(STATE / "sdk" / (sid + ".json")) as fh:
+                    g = json.load(fh).get("g")
+                p = SDKDIR / (sid + ".json")
+                raw = p.read_text()
+                rec = json.loads(raw)
+                h = rec.get("h")
+                copy = dict(reg)
+                k = copy.get("k")
+                def _load(q):
+                    return json.loads(q.read_text())
+                for rp in sorted((jd.STATE / "sdk").glob("*.json")):
+                    j = _load(rp).get("j")
+                regs = [_thread_reg(s) for s in sids]
+                m1 = [r.get("m1") for r in regs]
+                m2 = reg.copy().get("m2")
+                m3 = sbm.read_reg(jd.STATE, sid).get("m3")
+                m4 = read_reg(jd.STATE, sid).get("m4")
+                def _inner(record):
+                    return record.get("m5")
+                m5 = _inner(reg)
+                merged = {**reg, "x": 1}
+                m6 = merged.get("m6")
+                m7 = (fresh := _thread_reg(sid)).get("m7")
+                m8 = fresh.get("m8")
+                led = [x.get("no1") for x in (_thread_reg(sid).get("led") or [])]
+                nested = _thread_reg(sid).get("a").get("no2")
+                other = json.loads(body).get("no3")
+                row = live.get("no4")
+                memo = _thread_reg_memo.get("no5")
+                two(sid, reg)
+                three(sid, record=reg)
+                return a, b, c, d, e, f, g, h, k, j, m1, m2, m3, m4, m5, m6, m7, m8, led, nested, other, row, memo
+
+            def two(sid, rec=None):
+                return (rec if rec is not None else _thread_reg(sid) or {}).get("i")
+
+            def three(sid, record=None):
+                return (record or {}).get("l")
+
+            def four(sid, reg):
+                return reg.get("m")
+
+            class Holder:
+                def load(self, sid):
+                    self.reg = _thread_reg(sid)
+                    return self.reg.get("m9")
+        ''')
+        census = _registry_census(_census_functions([("", src)]))
+        self.assertEqual(set(census), {"one", "two", "three", "four", "Holder.load"})
+        self.assertEqual(set(census["one"]), {"a", "b", "c", "d", "e", "f", "g", "h", "k", "j", "led",
+                                              "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"})
+        self.assertEqual((census["one"]["d"], census["one"]["e"], census["one"]["a"]),
+                         (frozenset({"in"}), frozenset({"item"}), frozenset({"get"})))
+        self.assertEqual((set(census["two"]), set(census["three"]), set(census["four"]), set(census["Holder.load"])),
+                         ({"i"}, {"l"}, {"m"}, {"m9"}))
 
 if __name__ == "__main__":
     unittest.main()

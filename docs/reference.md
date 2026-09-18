@@ -2346,7 +2346,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `watch`, `subagents`, `usage`, `offer`, `auth`, `downtime`, `debug`,
   `interrupting`, `closer`, `peers`, plus `cold` for a session with no
   entry) to the re-derivations it caused; a miss with several moved
-  components counts under each. Nudge facts invalidate only entries that read
+  components counts under each (`reg` is the SDK registry record's state
+  plus the two fields a card reads, `bgLedger` and `spawnedAt`, and the
+  death marker's identity; the record's other fields move `reg` no
+  further, and a transcript-less live row's `cwd`, `lastSid` and `name`
+  reach the key through its session row, under `transcript` and `names`). Nudge facts invalidate only entries that read
   the changed node's count, failure state or displayed history. The key on hand, the
   host-suspension spans and the debug mode are board-wide inputs: a change
   to one re-derives every session. The clock is not a component of the key:
