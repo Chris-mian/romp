@@ -718,27 +718,45 @@ export function rebaseExecs(messages: any[], offsets: Record<string, number>): a
  *  (hasExec: the recipient's kernel binds exec to its own transcript; the sender's can't). */
 export function stitchMessages(messages: any[], sessions: readonly any[]): any[] {
   if (!messages.length) return messages;
-  const laneIds = new Set(sessions.map((s: any) => s && s.id));
-  const byBare = new Map(sessions.filter((s: any) => s && typeof s.id === "string").map((s: any) => [bareId(s.id), s]));
+  const lanes = sessions.filter((s: any) => s && typeof s.id === "string");
+  const byId = new Map(lanes.map((s: any) => [s.id, s]));
+  const byBare = new Map(lanes.map((s: any) => [bareId(s.id), s]));
+  // A relayed message has TWO ids: the sender's bus minted one, the recipient's bus another for the delivered copy.
+  // The copy carries the sender's as `originMid` from the moment it lands, and the read receipt carries the copy's
+  // back to the sender's row as `dmid`. The sender's row and the recipient's are ONE message: key both under the
+  // sender's id so the board draws one connector, never a pair, now that the sender's kernel ends its row at the
+  // recipient's lane (the user 2026-09-18). Either link alone joins them, so the pair never shows in the receipt's lag.
+  const canon = new Map<string, string>();
+  for (const m of messages) {
+    if (!m || typeof m.id !== "string") continue;
+    if (typeof m.dmid === "string" && m.dmid) canon.set(m.dmid, m.id);
+    if (typeof m.originMid === "string" && m.originMid) canon.set(m.id, m.originMid);
+  }
   const best = new Map<string, any>();
   const out: any[] = [];
   for (const m of messages) {
     if (!m || typeof m !== "object") { out.push(m); continue; }
     const c: any = { ...m };
-    for (const [idKey, nameKey] of [["fromId", "from"], ["toId", "to"]] as const) {
+    for (const [idKey, nameKey, anchorKey] of [["fromId", "from", "fromThreadT"], ["toId", "to", "toThreadT"]] as const) {
       const v = c[idKey];
-      if (typeof v !== "string" || laneIds.has(v)) continue;
-      const lane = byBare.get(bareId(v));
-      if (lane) {
-        c[idKey] = lane.id;
-        if (!c[nameKey]) c[nameKey] = lane.name; // the emitting kernel never knew the foreign name
-      }
+      if (typeof v !== "string") continue;
+      const lane = byId.get(v) || byBare.get(bareId(v));
+      if (!lane) continue;
+      c[idKey] = lane.id;
+      // The display name follows the LANE. A kernel names its own session bare ("web") and the merged lane wears the
+      // host ("TESTHOST:web"), so a remote twin of a local session is told apart in the tooltip exactly as on its
+      // label; the emitting kernel never knew a foreign end's name at all. A thread-anchored end keeps the THREAD's
+      // name (the kernel's rule: the tooltip says who really spoke, from the parent's lane).
+      if (!c[nameKey] || (hostOf(lane.id) !== LOCAL && c[anchorKey] == null)) c[nameKey] = lane.name;
     }
-    const key = typeof c.id === "string" ? c.id : null;
+    const key = typeof c.id === "string" ? (canon.get(c.id) || c.id) : null;
     if (!key) { out.push(c); continue; }
     const prev = best.get(key);
     if (!prev) { best.set(key, c); out.push(c); continue; }
-    if (c.hasExec && !prev.hasExec) Object.assign(prev, c); // upgrade in place — keeps sent-order
+    if (c.hasExec && !prev.hasExec) {   // upgrade in place: keeps sent-order and the sender's ids (the join keys)
+      const id = prev.id, dmid = prev.dmid;
+      Object.assign(prev, c, { id, ...(dmid ? { dmid } : {}), pending: false });   // an exec IS the landing: nothing is pending
+    }
   }
   return out;
 }
