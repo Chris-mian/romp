@@ -100,6 +100,8 @@ interface AskItem {
   turnId: string;
   trgb: [number, number, number];
   column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
+  board?: string;                                  // the board model's fields (plans/card-boards.md, agreed 2026-09-18): the board the card sits on ("feed" today)
+  category?: string;                               // and its category, today's column value, carried beside column until the renderer reads it alone
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   followupAt?: number | null;                      // when that follow-up/continue went — the latched button's honest age (T150)
   doneConfirming?: boolean;                        // the done verdict is in, only the settle event is pending → steady "done, confirming" chip on the Working card; placement deliberately does NOT move early (no working↔done flicker) (kernel build_feed ← judge rollup confirming export; the user 2026-07-24)
@@ -596,6 +598,11 @@ function feedPrefs(): FeedPrefs {
 // user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
 // per-host orders local-first, ids pre-prefixed.
 let sessionOrder: string[] = [];
+// The owner-less notice cards' owner key (kernel.py NOTICE_OWNERLESS_SID; the user 2026-09-18: a card with no session at the
+// top of the feed). The feed board's SORT RULE, never a card field or a timestamp trick (plans/notice-cards.md, "Owner-less
+// cards"): within a column, the owner-less run ranks before every session run, then the session order, then time.
+const NOTICE_OWNERLESS_SID = "notes";
+const ownerRank = (sid: string): number => sid === NOTICE_OWNERLESS_SID ? 0 : 1;
 // The chat tab strip's sessions (sid+name+color), riding every feed push: the footer's session-filter
 // menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
 // filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
@@ -2062,9 +2069,15 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
   if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
   setLinkedText(a._title, it.text, prRepoOf(it.sid));   // `#123` in the goal text → its PR page; keyed, so an unchanged title keeps its anchors across pushes (pr-links.ts)
-  a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
-  if (it.color) a._name.style.color = it.color.bg;
-  setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
+  // an OWNER-LESS notice card has no session chip: no session stands behind it, so no name to open and no dot to paint; the
+  // run header above it says Notes (the user 2026-09-18)
+  const ownerless = it.sid === NOTICE_OWNERLESS_SID;
+  a._name.style.display = ownerless ? "none" : "";
+  if (!ownerless) {
+    a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
+    if (it.color) a._name.style.color = it.color.bg;
+    setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
+  }
   // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
   const og = a._origin as HTMLElement;
   if (it.origin && it.origin.peer) {
@@ -5628,6 +5641,9 @@ function renderBody(list: HTMLElement) {
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
   const newestFirst = feedPrefs().newestFirst;
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
+  // the feed board's owner rule (stable, so each run keeps the column's time order): the owner-less cards first in every mode
+  const entryOwner = (e: Entry) => e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
+  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entryOwner(x)) - ownerRank(entryOwner(y)));
   // THE FOCUSED SESSION's view of these buckets (T347), taken HERE, before grouping: the section shows one
   // session, so it carries no run headers, and a thread folded below must not empty it — the fold hides
   // cards behind a caret the section does not have, and a compact view never dead-ends (ui/CLAUDE.md).
@@ -5642,7 +5658,7 @@ function renderBody(list: HTMLElement) {
     for (const k of Object.keys(buckets) as Column[]) {
       const extra = new Map<string, number>();   // sids the order list doesn't know → after it, first-seen order
       for (const e of buckets[k]) { const s = eSid(e); if (!rank.has(s) && !extra.has(s)) extra.set(s, extra.size); }
-      const rk = (e: Entry) => { const s = eSid(e); return rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };
+      const rk = (e: Entry) => { const s = eSid(e); return s === NOTICE_OWNERLESS_SID ? -1 : rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };   // the owner-less run heads the column
       buckets[k].sort((x, y) => rk(x) - rk(y));
       const withHeads: Entry[] = [];
       let cur: string | null = null;

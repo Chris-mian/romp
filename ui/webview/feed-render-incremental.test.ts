@@ -1136,3 +1136,44 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   c2._clr.onclick(ev);
   assert.deepEqual(posted.slice(sent2).filter((m) => m.type === "askClear"), [{ type: "askClear", itemId: "notice:" + API + ":dropped-sends:1", sid: API }]);
 });
+
+test("an OWNER-LESS notice card (no session) shows no session chip and heads its column in both modes; needs-you still wins its column", async () => {
+  // the user 2026-09-18: a card with no session at the top of the feed. The kernel posts it under the reserved owner key
+  // (kernel.py NOTICE_OWNERLESS_SID, "notes"; the pane's literal is pinned equal in federation-notice.test.ts) with the name
+  // Notes and no colour; the feed board's SORT RULE ranks that owner before every session run, then the session order, then
+  // time; needs-you still decides the column (plans/notice-cards.md, "Owner-less cards")
+  const setPrefs = (v: string) => { stores.local.set("romp:settings", v); win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:settings", newValue: v })); };
+  const notice = (key: string, t: number, column: string) =>
+    ({ ...cardOf("notice:notes:" + key + ":1", "notes", "Notes", "", "A note for everyone " + key, column, { live: false, tree: [], blocked: null, board: "feed", category: column,
+       notice: { producer: "cli", key, rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false, acted: false } }), t, color: null });
+  // ungrouped: one owner-less card older than every session card and one newer, both standing first, in their own time order
+  setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
+  const older = notice("old", 5, "completed"); const newer = notice("new", 5000, "completed"); const ask = notice("ask", 5001, "needs_input");
+  // a SESSION's needs-you card, older than the Notes ask: a time sort would put it first, the owner rule puts Notes first
+  const sAsk = { ...cardOf("s-ask", WEB, "web", "#3366cc", "A question from the web session", "needs_input", { live: true, tree: [], blocked: null }), t: 1 };
+  await dispatch(frame([g1, g2, g3, sAsk, older, newer, ask], { working: ["web"] }));
+  const c = card("notice:notes:new:1");
+  assert.ok(c, "on the board"); assert.equal(c._name.style.display, "none", "no session chip: no session stands behind it (the name node hides; the row keeps its other parts)");
+  assert.equal(card("g1")._name.style.display, "", "a session's card keeps its chip");
+  assert.equal(colOf("notice:notes:new:1"), "col-completed-list"); assert.equal(colOf("notice:notes:ask:1"), "col-needsInput-list", "needs-you still wins its column");
+  const order = (col: string) => Array.from(body.querySelector("#" + col)!.children).filter((n: any) => n.dataset && n.dataset.key).map((n: any) => n.dataset.key as string);
+  const done = order("col-completed-list");
+  assert.deepEqual(done.slice(0, 2), ["a:notice:notes:old:1", "a:notice:notes:new:1"], "the owner-less cards first, in their own time order (stable): " + done.join(" "));
+  assert.ok(done.length > 2 && done.slice(2).every((k) => !k.startsWith("a:notice:notes:")), "the sessions' cards after them");
+  assert.deepEqual(order("col-needsInput-list").filter((k) => k.startsWith("a:")), ["a:notice:notes:ask:1", "a:s-ask"], "and first in the needs-you column, above the session's older card");
+  // grouped: the Notes run opens the column, its header says Notes, before the order list's first session
+  setPrefs(JSON.stringify({ grouped: true, newestFirst: false }));
+  await dispatch(frame([g1, g2, g3, sAsk, older, newer, ask], { working: ["web"], order: [WEB] }));
+  // the needs-you column holds a Notes card AND a session's card: the Notes run's header stands first, then the session's,
+  // and the Notes card precedes every session card (the completed column holds the two Notes cards and stream items alone)
+  const heads = Array.from(body.querySelectorAll("#col-needsInput-list .feed-sess-head")).filter((h: any) => !h.classList.contains("sess-exit")) as any[];
+  assert.ok(heads.length >= 2, "a header per run in the needs-you column: " + heads.length);
+  assert.equal(heads[0].getAttribute("data-fsid"), "notes", "the Notes run heads the column, before the session runs");
+  assert.match(heads[0].textContent, /Notes/, "its header says Notes");
+  assert.notEqual(heads[1].getAttribute("data-fsid"), "notes", "then a session's run");
+  const kids = order("col-needsInput-list").filter((k) => k.startsWith("a:"));
+  assert.deepEqual(kids, ["a:notice:notes:ask:1", "a:s-ask"], "its card above the session's, though older: " + kids.join(" "));
+  assert.equal(heads[1].getAttribute("data-fsid"), WEB, "the session order's first run follows");
+  assert.equal(order("col-completed-list").filter((k) => k.startsWith("a:")).slice(0, 2).join(" "), "a:notice:notes:old:1 a:notice:notes:new:1", "the completed column's Notes run keeps its time order under its header");
+  setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
+});
