@@ -2566,8 +2566,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   lists cleanly, the racy-stamp rule, since a filesystem stamps with a
   coarser clock than the wall clock and a failure moves no stamp;
   `nudgeGate` is the auto-nudge walk's
-  planner-placement gate, derived once per (parse, store) and served while
-  both stand (`served`, `derived`, and `failed`: the derivations that raised;
+  planner-placement gate, derived once per (parse, store, episode log, clears
+  log) and served while all four stand (`served`, `derived`, and `failed`: the
+  derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
   hold and proceeds on the closer gate alone, and a non-zero `failed` means
   nudges were waved PAST the planner gate, not held; zero on a healthy box, and
