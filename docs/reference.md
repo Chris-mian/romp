@@ -1530,6 +1530,43 @@ before, so the CLI's own scope and its memory limits are unchanged; the boot
 sweep stops a dead host's scope by its lease. On macOS the host is a plain
 detached process and everything else is the same.
 
+A host upgrades itself in place when the kernel that attaches runs newer code.
+Until 2026-09-18 a host kept the code it started with for as long as its
+session lived, so a host bug outlived every kernel deploy (the lease census
+reported each such host as `lease.version-skew`, thousands of rows a week, and
+one host carried a stale open-turn count for three days). Now, at an attach
+whose lease names another code version, the kernel first rewrites the host's
+`spawn.json` with its own version and asks the host to re-exec (a `reexec`
+frame carrying the kernel's interpreter, its own `bin/romp-session-host` and
+its version). The host answers at once: `ok` with `when` `now` when its CLI is
+idle, `at-turn-end` when a turn is open (the exec waits for that turn's
+`result`, the event, never a timer), or `ok` false with a reason when it cannot
+hand its descriptors over, in which case the kernel attaches to the old host as
+before and files a `host.reexec-refused` row. To re-exec, the host drains its
+stdin pump and its journal writer, writes a handoff file
+(`hosts/<sid>/reexec.json`: the CLI's pid, start time, spawn time and
+conversation id, the three pipe descriptors, the read count, the open requests
+and the acknowledged offset), marks the descriptors inheritable, closes its
+socket, tells an attached kernel `reexec-now`, and calls `execv` on the same
+pid: the CLI stays its child, the pipes stay open (descriptors survive an
+execve), the lease holder's pid and start time are unchanged, so `hostAck`
+still names this host and the replay offset holds, and the journal is
+reopened from its segment files (the index rebuilt from the files, the next
+offset from the last record). The new host adopts the CLI through the pipe
+transport over the inherited descriptors (on Linux it confirms them against
+the CLI's own `/proc` descriptors before trusting the handoff), re-serves the
+socket, writes the lease with the new version, and waits for the kernel's
+attach; the kernel, told `reexec-now`, treats the socket's close as the
+planned handover, not a host death: no `host.died` row, no orphan replay, no
+resume, one re-attach from the same acknowledged offset, and a
+`host.reexeced` row. A re-exec that fails before the exec leaves the old host
+running and says so (a `reexec-failed` line in the host's log, the refusal row
+from the kernel); one that fails inside the new process, on a handoff that does
+not check out, makes the new host exit with the CLI still running, which the
+kernel's existing orphan road handles as a host death: the CLI finishes its
+turn on end-of-file and the session resumes from the transcript. The worst
+case is the pre-host behaviour for one session, never a dead one.
+
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
 exception type and the failing frame (file, line and function, first on the line
