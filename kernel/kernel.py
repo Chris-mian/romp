@@ -19783,6 +19783,14 @@ def _reveal_or_confirm(sid, focus_msg, client=None):
     Where a CLIENT is in scope (every WS op that calls this), the reveal is aimed at that dashboard
     alone: a jump into a transcript is one viewer's navigation, and broadcasting it dragged every open
     dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
+    if sid == NOTICE_OWNERLESS_SID:               # the owner-less notice cards' home is no session: nothing to reveal, nothing to revive (round three of PR 1831)
+        if client is not None:
+            try:
+                client["send"](json.dumps({"type": "err", "sid": sid, "title": "Nothing to open",
+                                           "text": "That card belongs to no session (an owner-less notice), so there is no chat to show and nothing to revive."}))
+            except Exception:
+                pass
+        return
     if sid and sid not in _live_map():
         _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
         if client:
@@ -65241,7 +65249,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
                 # No id and no name posts an OWNER-LESS card (the user 2026-09-18): the reserved home, the top of the feed. Only
                 # an ABSENT session takes that road: a name no session answers to is still refused, never guessed owner-less.
-                who = str(b.get("id") or b.get("name") or "").strip()
+                raw_who = b.get("id") if b.get("id") is not None else b.get("name")
+                who = str(raw_who or "").strip()
+                if raw_who is not None and not who:   # a whitespace-only id or name names nobody: refused, never guessed owner-less (round three of PR 1831)
+                    return self._send(200, json.dumps({"ok": False, "error": 'no session answers to "%s"' % str(raw_who)}), "application/json")
                 owner = _sid_of(who) if who else ""
                 if b.get("expire"):
                     row, err = expire_notice(owner, str(b["expire"]))

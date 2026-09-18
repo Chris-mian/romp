@@ -1,15 +1,17 @@
 // NOTICE CARDS over federation (T370, plans/notice-cards.md): a notice ask from another host rides the asks array the
-// merge already carries; its sid and name take the host prefix like every card's, its item id stays as the owner minted it
-// (notice:<sid>:<key>:<rev>, a namespaced family), and a viewer's foreign clear never names the family (the kernel's
-// _cleared_foreign skips it), so a dismissal is a routed gesture into the owning kernel's ledger.
+// merge already carries; its sid, name AND item id take the host prefix (the id since round three of PR 1831: the reserved
+// owner-less key sits in the sid slot on every host, so two hosts' cards under one key minted one id), the route strips
+// the id on the way out, and a viewer's foreign clear never names the family (the kernel's _cleared_foreign skips it), so a
+// dismissal is a routed gesture into the owning kernel's ledger.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { mergeHostFeeds } from "./federation";
+import { mergeHostFeeds, prefixInbound, routeOutbound } from "./federation";
 
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
 
 const SID = "11111111-2222-3333-4444-555555555555";
 const notice = (sid: string, rev: number) => ({
@@ -28,7 +30,7 @@ test("a remote host's notice card merges with its prefixed sid and name kept and
   assert.ok(a, "the notice ask rides the merged asks");
   assert.equal(a.sid, A, "the sid wears the host prefix (gestures route by it)");
   assert.equal(a.name, "HOSTA:web", "the name too (the chip shows the host)");
-  assert.equal(a.itemId, `notice:${SID}:figure:2`, "the item id is the owner's, never prefixed");
+  assert.equal(a.itemId, `notice:${SID}:figure:2`, "the MERGE touches no id: this fixture arrives already prefixed at the sid; the item id's host prefix is prefixInbound's (the test below), applied at the socket before the merge");
   assert.deepEqual(a.notice, remote.asks[0].notice, "the flavour object passes through untouched");
   assert.equal(merged.asks.length, 1, "a foreign clear of a goal id touches no notice");
 });
@@ -54,4 +56,23 @@ test("the owner-less notice cards' owner key is one literal in the kernel and th
   assert.match(FEED, /if \(isOwnerless\(e\.sid\) !== \(nm\.tagName === "SPAN"\)\) \{/, "the header's name node is a span for the owner-less run");
   assert.match(FEED, /nm\.classList\.remove\("dead"\); nm\.removeAttribute\("title"\); nm\.onclick = null;/, "plain text: no title, no dead class, no click");
   assert.match(KERNEL, /"board": "feed", "category": column,/, "the board model's two fields on every notice card (agreed with the board design's author)");
+});
+
+test("a remote notice card's item id is host-prefixed on the way in, stripped on the way out, and compared bare against the viewer's cleared ids", () => {
+  // round three of PR 1831: two hosts' owner-less cards under one key minted one id (the reserved word sits in the sid slot on
+  // every host) and the merged board kept one element; the prefix rides the id like the sid, the route strips it, the overlay
+  // compares the bare form; a goal card's id ("sid:gN") is never prefixed (T287)
+  assert.match(FED, /if \(typeof out\.itemId === "string" && out\.itemId\.startsWith\("notice:"\)\) out\.itemId = prefixId\(host, out\.itemId\);/, "the inbound prefix, notice ids alone");
+  assert.match(FED, /if \(typeof out\.itemId === "string" && bareId\(out\.itemId\)\.startsWith\("notice:"\)\) out\.itemId = stripHost\(host, out\.itemId\);/, "the outbound strip on the scalar route");
+  assert.match(FED, /foreign\.has\(id\) \|\| \(bareId\(id\)\.startsWith\("notice:"\) && foreign\.has\(bareId\(id\)\)\)/, "the overlay compares the bare notice id");
+  const a = { itemId: "notice:notes:k:1", sid: "notes", name: "Notes", column: "completed", t: 1 };
+  const g = { itemId: "11111111-2222-3333-4444-555555555555:g1", sid: "11111111-2222-3333-4444-555555555555", name: "web", column: "working", t: 2 };
+  const inb = prefixInbound("TESTHOST", { type: "feed", asks: [a, g], now: 1 });
+  assert.equal(inb.asks[0].itemId, "TESTHOST:notice:notes:k:1", "a notice id wears the host");
+  assert.equal(inb.asks[0].sid, "TESTHOST:notes");
+  assert.equal(inb.asks[1].itemId, "11111111-2222-3333-4444-555555555555:g1", "a goal id stays bare");
+  const r = routeOutbound({ type: "noticeAction", itemId: inb.asks[0].itemId, sid: inb.asks[0].sid, route: "/send", body: {} }, new Set(["TESTHOST"]));
+  assert.deepEqual(r.map((x: any) => [x.host, x.msg.itemId, x.msg.sid]), [["TESTHOST", "notice:notes:k:1", "notes"]], "the action reaches the owning kernel with bare ids");
+  const c = routeOutbound({ type: "askClear", itemId: inb.asks[0].itemId, sid: inb.asks[0].sid }, new Set(["TESTHOST"]));
+  assert.deepEqual(c.map((x: any) => [x.host, x.msg.itemId]), [["TESTHOST", "notice:notes:k:1"]], "a clear too");
 });

@@ -1410,7 +1410,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   if (titleAnchor === "prompt" && !titleUuid && cardAnchorUuid) { titleAnchor = "work"; titleUuid = cardAnchorUuid; }
   // A PROVISIONAL placeholder has no goal node / timeline anchor — clicking anywhere just opens the live
   // session (go see what it's working on); the modal, timeline deep-link, and path-hover are all skipped.
-  title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
+  title.onclick = (ev) => { ev.stopPropagation(); if (isOwnerless(it.sid)) { fullscreenAskId = it.itemId; renderModal(); return; } if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };   // an owner-less card: the title opens the card, never a session gesture (round three of PR 1831)
   // (The auto-line is plain text now — no deep-link — so no onclick here; its hover tooltip = the planner's
   // why, set in updateAskCard. The inline sub-goal checkmarks remain clickable via wireNodeZones.)
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };

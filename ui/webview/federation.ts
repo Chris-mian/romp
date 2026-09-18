@@ -203,6 +203,10 @@ function _prefixIdBearing(host: string, o: any, idKey: string): any {
   if (!o || typeof o !== "object" || typeof o[idKey] !== "string") return o;
   const out: any = { ...o, [idKey]: prefixId(host, o[idKey]) };
   if (typeof out.name === "string") out.name = prefixId(host, out.name);
+  // a NOTICE card's item id is prefixed like its sid (round three of PR 1831): the reserved owner-less key sits in the sid slot
+  // on every host, so two hosts' cards under one hand-picked key minted one id and the merged board kept one element; a goal
+  // card's id ("sid:gN") stays bare, as the clear routes and the viewer's cleared overlay expect (T287)
+  if (typeof out.itemId === "string" && out.itemId.startsWith("notice:")) out.itemId = prefixId(host, out.itemId);
   // A feed card's delegation origin (asks[].origin): peerHost empty means the SENDER is local to the
   // card's own kernel — attribute it to that host, and prefix peerSid so the click routes there. A
   // set peerHost means the sender lives on some OTHER host (that kernel recorded which); keep it,
@@ -415,6 +419,10 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
     // "g448"; the owning kernel then recorded a node id with no session, cleared nothing, and the cards the
     // laptop's session-header Clear all had crossed off came back with the next payload and every restart.
     if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => typeof x === "string" ? stripHost(host, x) : x);
+    // a NOTICE card's item id is host-prefixed on the way in (prefixInbound: two hosts' owner-less cards under one key would
+    // otherwise share one id on the merged board, round three of PR 1831), so it is stripped on the way out like the sid;
+    // a goal card's id ("sid:gN") is never prefixed and passes untouched
+    if (typeof out.itemId === "string" && bareId(out.itemId).startsWith("notice:")) out.itemId = stripHost(host, out.itemId);
     return [{ host, msg: out }];
   }
 
@@ -485,7 +493,9 @@ export function applyViewerClears(merged: any, ledgers: any[], clearedForeign: a
   // ("sid:gN") and compare as they are against the bare foreign ids (T287: reading the id's own first colon as
   // a host took the uuid for a host and compared "gN", so nothing ever matched).
   const remote = (sid: any) => typeof sid === "string" && hostOf(sid) !== LOCAL;
-  const hit = (sid: any, id: any) => remote(sid) && typeof id === "string" && foreign.has(id);
+  // a remote NOTICE card's item id arrives host-prefixed (prefixInbound), while the foreign cleared ids are the owning
+  // kernel's bare ids: compare the bare form for those (round three of PR 1831); goal ids are unprefixed and compare as they are
+  const hit = (sid: any, id: any) => remote(sid) && typeof id === "string" && (foreign.has(id) || (bareId(id).startsWith("notice:") && foreign.has(bareId(id))));
   merged.asks = merged.asks.filter((a: any) => !hit(a?.sid, a?.itemId));
   merged.items = merged.items.filter((c: any) => !hit(c?.sid, c?.itemId));
   ledgers.forEach((l: any, i: number) => {

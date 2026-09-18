@@ -369,6 +369,15 @@ class OwnerLess(unittest.TestCase):
         row, err = km.post_notice(None, "k2", "t", producer="cli", now=100)
         self.assertEqual((err, row["sid"]), (None, "notes"))
 
+    def test_the_reveal_road_refuses_the_reserved_key_loudly_instead_of_offering_a_revive(self):
+        # round three of PR 1831, medium A: showOnTimeline with sid notes reached _reveal_or_confirm, which found notes absent from
+        # the live map and popped confirmRevive for a session that never existed
+        sent = []; client = {"send": lambda m: sent.append(json.loads(m))}
+        km._reveal_or_confirm("notes", {"type": "showOnTimeline", "itemId": "notice:notes:k:1"}, client)
+        self.assertEqual(len(sent), 1); self.assertEqual(sent[0]["type"], "err", "an error to the asking pane, never a confirmRevive")
+        self.assertIn("belongs to no session", sent[0]["text"]); self.assertIn("nothing to revive", sent[0]["text"])
+        self.assertFalse(any(m.get("type") == "confirmRevive" for m in sent))
+
     def test_owner_less_cards_ride_the_ledger_the_pass_the_index_and_undo_like_any_notice_card(self):
         km.post_notice("", "k1", "first", producer="cli", now=100, t=100)
         iid = "notice:notes:k1:1"
@@ -869,6 +878,11 @@ class TheDoors(unittest.TestCase):
         st, r = self._post({"name": "notes", "expire": "k"})
         self.assertEqual((st, r.get("ok")), (200, False)); self.assertIn("no session answers", r.get("error", ""))
         self.assertFalse(km._notice_path("notes").exists(), "nothing reached the reserved home by name")
+        # a whitespace-only id or name names nobody: refused, never guessed owner-less (round three of PR 1831, low)
+        for who in ({"id": "   "}, {"name": " \t"}):
+            st, r = self._post({**who, "key": "k", "title": "t"})
+            self.assertEqual((st, r.get("ok")), (200, False), r); self.assertIn("no session answers to", r.get("error", ""))
+        self.assertFalse(km._notice_path("notes").exists(), "nothing reached the reserved home")
         st, r = self._post({"key": "k1", "title": "Owner-less through the route", "body": "b"})
         self.assertEqual((st, r.get("ok")), (200, True), r); self.assertEqual(r["notice"]["sid"], "notes")
         self.assertEqual([c["itemId"] for c in km._notice_cards(500, set())], ["notice:notes:k1:1"])

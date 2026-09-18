@@ -1201,3 +1201,24 @@ test("a REMOTE host's owner-less card (sid host-prefixed by federation) ranks fi
   assert.equal(heads[1]._name.tagName, "A", "a session's header keeps its anchor"); assert.equal(heads[1]._name.getAttribute("title"), "open this session");
   setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
 });
+
+test("two hosts' owner-less cards under one key both render (their ids differ by the host), and an owner-less title click opens the card and posts no session gesture", async () => {
+  // round three of PR 1831, medium B: federation prefixes a remote notice card's item id like its sid, so the local and the
+  // remote Notes cards under the same hand-picked key are two elements; medium A: the title click used to post showOnTimeline
+  // with sid notes and the kernel offered to revive a session that never existed
+  const setPrefs = (v: string) => { stores.local.set("romp:settings", v); win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:settings", newValue: v })); };
+  setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
+  const local = { ...cardOf("notice:notes:same:1", "notes", "Notes", "", "A local note", "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
+    notice: { producer: "cli", key: "same", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false, acted: false } }), t: 10, color: null };
+  const remote = { ...cardOf("TESTHOST:notice:notes:same:1", "TESTHOST:notes", "TESTHOST:Notes", "", "A remote note", "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
+    notice: { producer: "cli", key: "same", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false, acted: false } }), t: 11, color: null };
+  await dispatch(frame([g1, local, remote], { working: ["web"] }));
+  assert.ok(card("notice:notes:same:1"), "the local card"); assert.ok(card("TESTHOST:notice:notes:same:1"), "and the remote one, a second element");
+  assert.equal(card("notice:notes:same:1")._title.textContent, "A local note"); assert.equal(card("TESTHOST:notice:notes:same:1")._title.textContent, "A remote note", "neither overwrote the other");
+  const sent = posted.length;
+  card("notice:notes:same:1")._title.onclick(ev);
+  assert.equal(posted.length, sent, "the title click on an owner-less card posts nothing (no showOnTimeline, no openSession)");
+  const mbody = body.querySelector("#feed-modal-body") as any;
+  assert.ok(mbody, "it opens the card's modal instead"); assert.match(body.textContent || "", /A local note/, "the modal shows the card");
+  setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
+});
