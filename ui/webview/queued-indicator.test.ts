@@ -210,8 +210,7 @@ test("the kernel parks every drive op while the account can't serve one, and dra
   // the drain's account gate is its own step, checked before the transcript refresh and the compacting/working
   // reads (2026-09-05): a held session is not re-parsed for a verdict the hold already decided
   assert.match(KERNEL, /if _limit_hold\(sid\):\n\s+continue\s+# the account can't serve a request yet/, "the drain gate");
-  assert.match(KERNEL, /if _compacting_now\(sid\) or _working_now\(sid\):\n(?:\s+_pending_ops_held_working\(sid\)[^\n]*\n)?\s+continue/,
-               "the drain's quiet gate (a held queue is said once inside it, 2026-09-18; the gate itself is unchanged)");
+  assert.match(KERNEL, /if _compacting_now\(sid\) or _working_now\(sid\):\n\s+continue/, "the drain's quiet gate");
   // RELEASE rides the API's own stamp — no romp-invented timer, and no clock promised without one
   assert.match(KERNEL, /"resetsAt": max\(known\) if len\(known\) == len\(resets\) else None,/);
   assert.match(KERNEL, /known = \[r for r in resets if isinstance\(r, \(int, float\)\) and r > 0\]/);
