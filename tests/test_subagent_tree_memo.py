@@ -397,7 +397,7 @@ class Reported(_Tree):
         km._subagent_dirs(str(self.subdir))                         # a miss: the walk
         km._subagent_dirs(str(self.subdir))                         # a hit: one lstat per known directory
         rep = km._PERF_STATS.snapshot()["memos"]["subagentTree"]
-        self.assertEqual(set(rep), {"hit", "miss", "evict", "dirStats", "walkMs", "validateMs", "roots", "dirs"})
+        self.assertEqual(set(rep), {"hit", "miss", "scoped", "evict", "dirStats", "walkMs", "validateMs", "roots", "dirs"})
         self.assertEqual((rep["miss"] - base["miss"], rep["hit"] - base["hit"]), (1, 1))
         self.assertGreaterEqual(rep["dirStats"] - base["dirStats"], 2, "the hit paid a stat per directory beyond the root")
         self.assertGreaterEqual(rep["roots"], 1)
@@ -406,6 +406,21 @@ class Reported(_Tree):
         self.assertGreaterEqual(rep["validateMs"], 0.0)
         self.assertEqual(rep, km._subagent_tree_memo_report())
         json.dumps(rep)
+        # under an open cycle scope (2026-09-18) the first call is the cycle's sample (a hit: one lstat per known directory)
+        # and the second is served from it: `scoped` moves, `dirStats` does not
+        km._live_scope.subagent_trees = {}
+        try:
+            km._subagent_dirs(str(self.subdir))
+            mid = km._subagent_tree_memo_report()
+            self.assertEqual((mid["hit"] - rep["hit"], mid["dirStats"] - rep["dirStats"]), (1, 2), "the sample: a validation")
+            km._subagent_dirs(str(self.subdir))
+            served = km._subagent_tree_memo_report()
+            self.assertEqual(served["scoped"] - mid["scoped"], 1, "served from the cycle's sample")
+            self.assertEqual(served["dirStats"] - mid["dirStats"], 0, "...with no stat at all")
+            self.assertEqual((served["hit"], served["miss"]), (mid["hit"], mid["miss"]))
+        finally:
+            km._live_scope.subagent_trees = None
+        rep = km._subagent_tree_memo_report()
         (self.wf / "wf_inner").mkdir()                              # the tree moved: the call validates, mismatches and walks
         km._subagent_dirs(str(self.subdir))
         after = km._subagent_tree_memo_report()
