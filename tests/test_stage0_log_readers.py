@@ -205,6 +205,7 @@ class PostalLogReaders(_StateSandbox):
     def setUp(self):
         super().setUp()
         em._JSONL_CACHE.pop(str(jd.MESSAGES), None)
+        km._parked_fold_cache.clear()                 # the feed's parked-handoff fold over this log (2026-09-18)
         _write_rows(jd.MESSAGES, [
             {"ev": "sent", "id": "m-1", "from_id": self.A, "to_id": self.B, "t": NOW - 100, "body": "please review", "park": True},
             {"ev": "sent", "id": "m-2", "from_id": self.A, "to_id": self.B, "t": NOW - 90, "body": "and this"},
@@ -215,6 +216,7 @@ class PostalLogReaders(_StateSandbox):
 
     def tearDown(self):
         em._JSONL_CACHE.pop(str(jd.MESSAGES), None)
+        km._parked_fold_cache.clear()
         try:
             os.unlink(jd.MESSAGES)
         except OSError:
