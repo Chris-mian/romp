@@ -10367,8 +10367,19 @@ class SdkBackend:
             open_turns = int(hello.get("inflight") or 0)
         except (TypeError, ValueError):
             open_turns = 0
-        if open_turns > sess.inflight:
-            sess.inflight = open_turns
+        # The host is the authority for the CLI's open turn: its count becomes ours EXACTLY, up or down. Taking only a
+        # higher count carried this kernel's own stale count across the attach, and a stale count on either side read
+        # as Working forever: every send parked behind a turn that had ended days before (the user's laptop,
+        # 2026-09-18). The count is never carried across an attach; a zero clears the fed-text twin too, since the
+        # CLI answered everything it was fed.
+        sess.inflight = open_turns
+        if open_turns == 0:
+            texts = getattr(sess, "_inflight_texts", None)
+            if texts is not None:
+                try:
+                    texts.clear()
+                except Exception:
+                    pass
         if getattr(sess, "_host_is_attach", False):
             # an attach's hello has nothing to wait for (no init record follows a replay); a SPAWN's hello is
             # the host's, not the CLI's, and the init record releases the boot-stagger slot as for any spawn

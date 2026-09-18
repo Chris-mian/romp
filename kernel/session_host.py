@@ -341,6 +341,19 @@ class Journal:
             self._fh = None
 
 
+def _opens_turn(obj: dict) -> bool:
+    """Whether a `user` line fed to the CLI opens a turn the CLI will answer with a result: a message whose content
+    carries text (a string, or a text block). A user line carrying only tool results or nothing is bookkeeping the CLI
+    absorbs into the running turn, never a turn of its own, so counting it left the open-turn count high for good."""
+    msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(isinstance(c, dict) and c.get("type") == "text" and str(c.get("text") or "").strip() for c in content)
+    return False
+
+
 def read_journal_dir(directory, offset: int = 0):
     """Read an ORPHAN journal (its host is gone) from `offset` to the end without an index: segments in
     first-offset order, each record numbered from its segment's first offset, so acknowledged-and-deleted
@@ -674,7 +687,9 @@ class SessionHost:
         self.fsid = str(self.spec.get("resume") or self.spec.get("session_id") or "")
         self.attached = None            # the attached kernel's writer, or None
         self.kernel = None
-        self.inflight = 0               # user messages fed minus results seen (the idle judgement)
+        self.inflight = 0               # open turns: a text-bearing user line fed opens one; a result closes ALL of them (the CLI folds
+        #                                 queued lines into the running turn and answers with one result); an output row after the result
+        #                                 (an assistant or user row: the CLI running a queued line as its own turn) re-opens one
         self.idle_since = self.now()
         self.exit_info = None
         self.ending = None              # (deadline, cause) once `end` was requested
@@ -931,12 +946,21 @@ class SessionHost:
                 self.fsid = str(msg["session_id"])
                 self._write_lease()
         elif mt == "result":
-            self.inflight = max(0, self.inflight - 1)
-            if self.inflight == 0:
-                self.idle_since = self.now()
-                if self._reexec_pending is not None:              # a kernel asked mid-turn: the turn's end is the event
-                    python, launcher = self._reexec_pending
-                    asyncio.ensure_future(self._reexec_now(python, launcher))
+            # ONE result closes everything fed: the CLI folds messages queued while it works into the running turn
+            # and answers them with a single result, so a fed-minus-resulted count stays above zero forever after a
+            # fold (the kernel's own settle learned this on 2026-07-09; the host re-created it, and every attach then
+            # adopted the stale count from the hello: a session that read Ready yet swallowed every send, 2026-09-18).
+            # A line the CLI runs as a SEPARATE turn instead re-opens the count from the output side below: its first
+            # assistant or user row after this result (its own user line was counted before the result, so nothing on
+            # the input side can tell a fold from a queue; the output can).
+            self.inflight = 0
+            self.idle_since = self.now()
+            if self._reexec_pending is not None:                  # a kernel asked mid-turn: the turn's end is the event
+                python, launcher = self._reexec_pending
+                asyncio.ensure_future(self._reexec_now(python, launcher))
+        elif mt in ("assistant", "user") and self.inflight == 0:
+            self.inflight = 1                              # output arriving with no turn counted: a queued line running as its own turn
+            self.log("turn-reopened", offset=off)
         elif mt == "control_request":
             self.parked.park(msg, off, self.now(), attached=self.attached is not None)
             self.log("request-open", requestId=str(msg.get("request_id") or ""),
@@ -1154,7 +1178,7 @@ class SessionHost:
             self._send(writer, self.exit_info)
         await writer.drain()
 
-    def _queue_in(self, data: str) -> None:
+    def _queue_in(self, data: str) -> None:   # (the turn-opening test is _opens_turn, module level, so the kernel's tests can pin it)
         """One line from the kernel for the CLI's stdin: bookkeeping now, the write on the stdin pump. A user
         message opens a turn; a control_response for a request already answered is dropped."""
         try:
@@ -1162,7 +1186,7 @@ class SessionHost:
         except ValueError:
             obj = None
         if isinstance(obj, dict):
-            if obj.get("type") == "user":
+            if obj.get("type") == "user" and _opens_turn(obj):
                 self.inflight += 1
             elif obj.get("type") == "control_response":
                 rid = str(((obj.get("response") or {}).get("request_id")) or "")

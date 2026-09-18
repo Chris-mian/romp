@@ -445,9 +445,12 @@ class BackendHostRules(unittest.TestCase):
         s = types.SimpleNamespace(sid=SID, name="web", inflight=0, _host=t, _host_is_attach=True, _fire_boot_settled=lambda: fired.append(1))
         be._on_host_hello(s, {"host": {"pid": 1, "start": "a"}, "cli": {"pid": 2, "start": "b"}, "journal": {"next": 6}, "parked": [], "inflight": 1})
         self.assertEqual((s.inflight, fired), (1, [1]), "mid-turn adopted; the boot slot released for an attach")
-        s2 = types.SimpleNamespace(sid=SID, name="web", inflight=1, _host=t, _host_is_attach=False, _fire_boot_settled=lambda: fired.append(2))
+        s2 = types.SimpleNamespace(sid=SID, name="web", inflight=1, _inflight_texts=["a fed text"], _host=t, _host_is_attach=False,
+                                   _fire_boot_settled=lambda: fired.append(2))
         be._on_host_hello(s2, {"host": {"pid": 1, "start": "a"}, "cli": {}, "journal": {"next": 0}, "parked": [], "inflight": 0})
-        self.assertEqual((s2.inflight, fired), (1, [1]), "a lower count never lowers ours; a spawn's hello leaves the slot to the init record")
+        self.assertEqual((s2.inflight, s2._inflight_texts, fired), (0, [], [1]),
+                         "the host's count is adopted EXACTLY, down as well as up: a stale count on our side never survives an attach "
+                         "(the base kept the higher of the two and read Working for two days); a spawn's hello leaves the slot to the init record")
 
     def test_a_reexec_request_reads_the_hosts_answer_and_an_older_host_as_a_refusal(self):
         """The kernel's half of the re-exec (2026-09-18): one connection, one frame, one answer. A host that knows the frame

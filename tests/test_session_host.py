@@ -491,6 +491,56 @@ class HostProcess(unittest.TestCase):
         self.assertEqual(self._lease().get("version"), "abc12345", "the old host, the old version, still serving")
         self.assertEqual([r["kind"] for r in self._hostlog() if r["kind"].startswith("reexec")], ["reexec-refused"])
         k.close()
+    def test_a_turn_that_folded_a_queued_message_leaves_no_open_turn_for_the_next_attach(self):
+        """The stuck-Working shape (2026-09-18): the host counted every user line fed and took one off per result, so a
+        turn that folded a second message (the real CLI answers messages typed while it works with the running turn's
+        single result) left the count at one for good, and every kernel that attached afterwards adopted it: Ready on the
+        page, Working to the drain, every send parked. One result now closes everything fed."""
+        host, sock, spec = self._start()
+        k, _ = self._attach(sock)
+        k.send({"t": "in", "data": self._user("one sleep=0.6 merge=1")})
+        k.send({"t": "in", "data": self._user("two sleep=0")})                   # queued while the turn runs; folded into it
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        self.assertEqual(sum(1 for f in k.outs() if f["data"].get("type") == "result"), 1, "one result answered both messages")
+        k.send({"t": "detach"}); k.close()
+        k2, hello = self._attach(sock, ack=-1, pid=4343)
+        self.assertEqual(hello["inflight"], 0, "no open turn after the fold's result (the base reported one: fed two, resulted one)")
+        k2.send({"t": "in", "data": self._user("three sleep=0")})                 # and the idle CLI takes the next send at once
+        k2.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result" and f["data"].get("uuid") not in
+                      {g["data"].get("uuid") for g in k.outs() if g["data"].get("type") == "result"}, timeout=15)
+        k2.close()
+
+    def test_a_queued_line_the_cli_runs_as_its_own_turn_re_opens_the_count_and_holds_the_grace_gate(self):
+        """Round two of 1838: zeroing the count on every result read 0 during a genuinely separate queued turn (two lines
+        fed before the first result, the CLI running the second as its own turn): the hello said idle, the drain fed into
+        the running turn, and the unattached grace gate ended a working CLI. The count re-opens from the OUTPUT side: the
+        second turn's first assistant row after the result. A fold (one result for both) still reads 0."""
+        host, sock, spec = self._start(unattached_grace_s=1.5)
+        k, _ = self._attach(sock)
+        k.send({"t": "in", "data": self._user("one sleep=0.3")})
+        k.send({"t": "in", "data": self._user("two sleep=1.0")})                   # queued; the fake runs it as its own turn
+        first = k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "assistant" and f["offset"] > first["offset"], timeout=15)
+        k.send({"t": "detach"}); k.close()                                          # unattached while the second turn runs
+        k2, hello = self._attach(sock, ack=first["offset"], pid=4343)
+        self.assertEqual(hello["inflight"], 1, "the second turn counts as open once its output started (the fold-only settle read 0)")
+        second = k2.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result" and f["offset"] > first["offset"], timeout=15)
+        k2.send({"t": "detach"}); k2.close()
+        k3, hello3 = self._attach(sock, ack=second["offset"], pid=4344)
+        self.assertEqual((hello3["inflight"], hello3["exited"]), (0, False), "idle after the second result, the CLI alive")
+        kinds = [r["kind"] for r in self._hostlog()]
+        self.assertNotIn("unattached-grace-expired", kinds, "the grace gate saw the open turn and did not end a working CLI")
+        self.assertEqual(kinds.count("turn-reopened"), 1, "the re-open happened once, for the queued turn")
+        k3.close()
+
+    def test_only_a_user_line_carrying_text_opens_a_turn(self):
+        fn = getattr(sh, "_opens_turn", None)
+        self.assertIsNotNone(fn, "the host decides which user lines open a turn (the base counted every one)")
+        self.assertTrue(fn({"type": "user", "message": {"role": "user", "content": "hello"}}))
+        self.assertTrue(fn({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}}))
+        self.assertFalse(fn({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}))
+        self.assertFalse(fn({"type": "user", "message": {"role": "user", "content": ""}}))
+        self.assertFalse(fn({"type": "user"}))
 
     def test_a_detached_kernel_reattaches_and_replays_from_its_ack_while_the_turn_kept_running(self):
         host, sock, spec = self._start()

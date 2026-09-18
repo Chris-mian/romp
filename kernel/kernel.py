@@ -35735,6 +35735,65 @@ def _deliver_send_batch(be, sid, run):
         be.send(sid, merged)
 
 
+_HELD_WORKING_SAID = set()   # sids whose parked queue was said to be held by the backend's working signal; cleared when the hold lifts
+
+
+def _pending_ops_held_working(sid):
+    """A parked queue skipped because the session reads working: said ONCE per hold, a stderr line, a session-events row
+    (kind pending-ops.held-working) and the error center's ring, when the backend's open-turn count is the reason while the
+    transcript, read authoritatively, shows no open turn (or cannot be read: said as unknown, never as idle). That pairing is a stale count, not a turn: on the user's laptop (2026-09-18) a
+    host that survived several kernel restarts handed each new kernel an open-turn count a folded turn had left high, so
+    the session read Ready on the page and Working to the drain, and three inputs sat parked for two days with no line
+    anywhere. The count is fixed at its source (the host's settle, the hello's exact adoption); this is the belt, so the
+    next such state is a row the error center shows and a line the log carries, never an infinite silent park."""
+    # Called INSIDE the drain's quiet gate, after `_compacting_now(sid) or _working_now(sid)` read true, and it reads the
+    # backend's busy() itself never: the gate's one read is the backend's (tests/test_drain_hoists.py counts it), and
+    # _working_now answers with the backend's signal whenever the backend gives one, so a skip that is not a compaction
+    # while the transcript shows no open turn IS the backend's count alone saying working. The transcript is read
+    # AUTHORITATIVELY: the cached parse first, the kernel's own parse (memoized per transcript change) on a miss, since a
+    # cache miss is not "no open turn" (round two of 1838: the cache misses on every actively written transcript and
+    # whenever no client refreshes it, and the note then blamed a real turn); an unreadable transcript is said as unknown,
+    # never as idle. A pending queue on the backend is a real hold, not a count: nothing is said for it.
+    try:
+        if _compacting_now(sid):
+            return                                        # a compaction holds the queue on its own account
+        be = Sessions.backend_for(sid)
+        pending = getattr(be, "pending_queued", None)
+        if pending is not None and pending(sid):
+            return                                        # a send queued and about to run: the backend's hold is a real one
+        path = _path_of(sid)
+        session = _parse_cached(path) if path else None
+        if session is None and path:
+            try:
+                session = _parse(path, sid, time.time())  # the authoritative read: one parse per transcript change
+            except Exception:
+                session = None
+        if session is not None and _session_working(session.get("turns") or []):
+            return                                        # the transcript agrees: a real turn
+        transcript = "no open turn" if session is not None else "unknown"
+    except Exception:
+        return
+    if sid in _HELD_WORKING_SAID:
+        return
+    _HELD_WORKING_SAID.add(sid)
+    with _pending_ops_lock:
+        n = len(_pending_ops.get(sid) or [])
+    name = _name_of(sid) or sid[:8]
+    if transcript == "unknown":
+        text = ("%s: %d parked input(s) held because the backend reads the session as working while its transcript could not "
+                "be read; the hold is unverified" % (name, n))
+    else:
+        text = ("%s: %d parked input(s) held because the backend counts an open turn while its transcript shows none; a stale "
+                "count, not a turn" % (name, n))
+    sys.stderr.write("pending-ops: %s\n" % text)
+    try:
+        m = sys.modules.get("romp_sdk_backend") or load_source("romp_sdk_backend", HERE / "sdk_backend.py")
+        m.problem_row(jd.STATE, text, "pending-ops.held-working", sid=sid, name=name, log=getattr(be, "_log", None), parked=n,
+                      transcript=transcript, ring=True)   # a decision-shaped fault: the error center shows it
+    except Exception:
+        sys.stderr.write("pending-ops row: %s\n" % traceback.format_exc())
+
+
 def _apply_pending_ops(now=None):
     """Pusher cycle: FIFO-deliver parked ops once the session is QUIET (neither compacting nor an open
     turn) — in exactly the order they were parked, which is exactly the order the chat rendered their
@@ -35849,7 +35908,9 @@ def _apply_pending_ops(now=None):
             if _limit_hold(sid):
                 continue                              # the account can't serve a request yet: no parse, no gates
             if _compacting_now(sid) or _working_now(sid):
+                _pending_ops_held_working(sid)            # said once when the backend ALONE reads working: a stale count is a row and a line
                 continue
+            _HELD_WORKING_SAID.discard(sid)               # the hold lifted: the next one is said again
             changed = False                               # a real mutation below → save the mirror + wake the pusher
             try:
                 be = Sessions.backend_for(sid)
@@ -62088,8 +62149,9 @@ def _landing():
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
-            # same treatment as the settings modal's .rs-sec section headers (10.5px/700/.08em uppercase)
-            ".rnet-khead{color:#6e7681;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
+            # same treatment as the settings modal's .rs-sec section headers (11px/600, sentence case, the accent blue;
+            # the user 2026-09-18: no all-caps delineators in the settings)
+            ".rnet-khead{color:var(--accent,#9cd2ff);font-size:11px;font-weight:600;"
             "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
