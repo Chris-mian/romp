@@ -53903,17 +53903,32 @@ def _board_path(bid):
 
 
 def _boards_data():
-    """The data-defined boards, {id: defn}, memoized on the directory's stat; {} when there is no directory."""
+    """The data-defined boards, {id: defn}, memoized on the directory's stat AND each file's (mtime_ns, size): the door's
+    os.replace moves the directory's stat, but an in-place rewrite of boards/<id>.json (a shell redirection, an editor) moves
+    the file's alone (the 1845 read), and the handful of files make the per-file stat cheap. A moved key after the first read
+    marks the views dirty, so the edit reaches the next frame instead of waiting for the pusher's own reasons. {} when there is
+    no directory."""
     d = _board_dir()
     st = _stat_key(d)
-    key = (str(d),) + st if st is not None else None
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+    except OSError:
+        names = []
+    files = []
+    for n in names:
+        try:
+            fs = os.stat(d / n)
+            files.append((n, fs.st_mtime_ns, fs.st_size))
+        except OSError:
+            files.append((n, None, None))
+    key = ((str(d),) + st + tuple(files)) if st is not None else None
     slot = _BOARDS_MEMO["slot"]
     if key is not None and slot is not None and slot[0] == key:
         return slot[1]
     out = {}
-    try:
-        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
-    except OSError:
+    if not names:
+        if key is not None:
+            _BOARDS_MEMO["slot"] = (key, out)
         return out
     for n in names:
         fp = d / n
@@ -53932,8 +53947,11 @@ def _boards_data():
                 sys.stderr.write("[boards] %s skipped: %s\n" % (fp, err))
             continue
         out[defn["id"]] = defn
+    moved = slot is not None and key is not None and slot[0] != key
     if key is not None:
         _BOARDS_MEMO["slot"] = (key, out)
+    if moved:
+        _mark_views_dirty()                            # a file edited under the kernel: the next frame carries it
     return out
 
 
@@ -54045,7 +54063,8 @@ def _board_resolve_post(board, category, *, needs_you=False, producer="", key=""
     board and no category: the board's rules in order over {needsYou, producer, keyPrefix}, else needs_you's badge category,
     else defaultCategory. An unknown board: CREATED on first use (pending = the defaults, the category named or "notes"). A
     known data board and an unknown category: the category APPENDED in neutral dress (pending = the board with it); on a
-    code-defined board refused. needs_you on a board with no badge category is refused."""
+    code-defined board refused. needs_you on a board with no badge category is refused, an
+    UNKNOWN board included (its defaults would carry none), so the first post and every later one answer alike."""
     board = str(board or "").strip()
     category = str(category or "").strip()
     if not board or board == "feed":
@@ -54058,6 +54077,10 @@ def _board_resolve_post(board, category, *, needs_you=False, producer="", key=""
         return None, None, "board id must match [a-z][a-z0-9_-]{0,31}", None
     d = _boards().get(board)
     if d is None:
+        if needs_you:
+            # a first-use board carries no badge category (the defaults name none), so the flag is refused BEFORE the defaults
+            # are minted: the same answer the second post gets, never a first post that drops the flag silently (the 1845 read)
+            return None, None, "board %r would be created without a needs-you category: define it with needsYou first (romp board define), or post without --needs-you" % board, None
         if category and not _BOARD_ID_RE.match(category):
             return None, None, "category id must match [a-z][a-z0-9_-]{0,31}", None
         pending = _default_board(board, category or "notes")

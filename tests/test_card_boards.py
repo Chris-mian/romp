@@ -212,7 +212,12 @@ class World:
 
     @staticmethod
     def reset_memos():
-        km._BOARDS_MEMO["slot"] = None; km._BOARDS_BAD.clear()
+        # guarded: at a base without the store these names are absent, and each method must then red on its own behaviour,
+        # never on the world's setUp (the 1845 read, low 1)
+        memo = getattr(km, "_BOARDS_MEMO", None)
+        if isinstance(memo, dict):
+            memo["slot"] = None
+        getattr(km, "_BOARDS_BAD", set()).clear()
         km._NOTICE_MEMO.clear(); km._NOTICE_SWEPT.clear(); km._CLEARED_MEMO["slot"] = None
 
     def close(self):
@@ -282,6 +287,22 @@ class TheStore(unittest.TestCase):
         self.assertTrue(any("bad.json skipped" in l and "categories" in l for l in lines), lines)
         self.assertTrue(any("other.json skipped" in l and "names board" in l for l in lines), lines)
 
+    def test_a_file_rewritten_in_place_is_read_on_the_next_call_and_dirties_the_views(self):
+        # the 1845 read (low 3): the memo was keyed on the directory's stat alone, so an edit through a shell redirection or an
+        # editor (the path docs/reference.md names) was invisible until the directory moved or the kernel restarted
+        km.define_board(dict(NOTES))
+        self.assertEqual(km._boards_data()["notes"]["title"], "Notes")
+        dirt = len(self.w.dirty)
+        fp = km.jd.STATE / "boards" / "notes.json"
+        fp.write_text(json.dumps(dict(NOTES, title="Lab notes")))            # in place: the directory's stat stands
+        self.assertEqual(km._boards_data()["notes"]["title"], "Lab notes", "the file's own stat is in the key")
+        self.assertEqual(len(self.w.dirty), dirt + 1, "a moved key after the first read marks the views dirty, once")
+        self.assertEqual(km._boards_data()["notes"]["title"], "Lab notes")
+        self.assertEqual(len(self.w.dirty), dirt + 1, "an unchanged key dirties nothing")
+        fp.write_text(json.dumps(dict(NOTES, title="Lab notes")))            # the same bytes again: the mtime moves, the parse agrees
+        km._boards_data()
+        self.assertEqual(len(self.w.dirty), dirt + 2, "the key moved (mtime), one more dirty; the frame's dedup absorbs an unchanged set")
+
     def test_define_refuses_by_name_and_the_reserved_id(self):
         bad = dict(NOTES); bad["categories"] = [dict(c, chip="red") for c in NOTES["categories"]]
         self.assertRegex(km.define_board(bad)[1], r"chip must be one of")
@@ -337,6 +358,19 @@ class TheResolver(unittest.TestCase):
         b, c, err, pending = km._board_resolve_post("feed", "done")
         self.assertRegex(err, r"the feed has no category 'done'"); self.assertIsNone(pending)
 
+    def test_needs_you_on_an_unknown_board_is_refused_before_the_defaults_are_minted(self):
+        # the 1845 read (medium): the first post with needs_you on a new board resolved to the defaults and dropped the flag
+        # (no badge, no bell) while the identical second post was refused; one behaviour for both, the refusal naming the flag
+        b, c, err, pending = km._board_resolve_post("scratch", "", needs_you=True, producer="cli", key="k")
+        self.assertEqual((b, c, pending), (None, None, None))
+        self.assertRegex(err, r"board 'scratch' would be created without a needs-you category")
+        self.assertRegex(err, r"needsYou|--needs-you")
+        self.assertEqual(km._boards_data(), {}, "nothing minted")
+        # the same board defined with a badge category: the flag files there, first post and later posts alike
+        km.define_board(dict(NOTES, id="scratch"))
+        self.assertEqual(km._board_resolve_post("scratch", "", needs_you=True)[:2], ("scratch", "new"))
+        self.assertEqual(km._board_resolve_post("scratch", "", needs_you=True)[:2], ("scratch", "new"))
+
     def test_an_unknown_board_is_created_on_first_use_with_the_defaults(self):
         b, c, err, pending = km._board_resolve_post("scratch", "", producer="cli", key="k")
         self.assertEqual((b, c, err), ("scratch", "notes", None))
@@ -383,6 +417,48 @@ class TheSnapshotKnowsItsBoard(unittest.TestCase):
         self.assertEqual(km._notify_prev_entry(old), dict(old, board="feed"), "an entry written before the boards reads as the feed's")
         self.assertIsNone(km._notify_prev_entry({"sid": SID, "board": "gone", "column": "new", "announced": None, "announcedAt": None}),
                           "a removed board's entry falls to the feed's set, where new is not a category: dropped, so it re-announces once")
+
+
+class TheBellRoundTripOnADataBoard(unittest.TestCase):
+    """The 1845 read (low 2): the bell on a data board, EXECUTED. A card entering a category the feed lacks, on a board whose
+    notify names it, announces once; the entry is written with its board; a fresh kernel life reloads it under that board and
+    announces nothing (the same-pair rule); before the entries carried their board, the reload dropped the entry as outside
+    the feed's set and the card announced again."""
+    def setUp(self):
+        self.w = World()
+        km._notify_cards_cache.clear(); km._flags_cache.clear()
+        km._NOTIFY_PREV[0] = None; km._NOTIFY_PREV_DISK[0] = None
+        km._set_notify_all(True)                                        # the master bell: every card notifies
+
+    def tearDown(self):
+        km._NOTIFY_PREV[0] = None; km._NOTIFY_PREV_DISK[0] = None
+        km._notify_cards_cache.clear(); km._flags_cache.clear()
+        self.w.close()
+
+    def _feed(self, category, now):
+        card = {"itemId": "notice:%s:sweep:1" % SID, "sid": SID, "name": "web", "text": "The sweep finished", "board": "notes",
+                "category": category, "column": "completed"}
+        return {"type": "feed", "asks": [card], "sessions": [{"sid": SID, "name": "web"}], "now": now}
+
+    def test_a_card_entering_a_data_boards_category_announces_once_and_is_remembered_across_a_life(self):
+        import io, contextlib
+        km.define_board(dict(NOTES))                                    # notify ["new"], needsYou "new"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(km._feed_notifications(self._feed("kept", 1000)), [], "the first build of a life seeds silently")
+        out = km._feed_notifications(self._feed("new", 1010))
+        self.assertEqual([(o[0], o[3]) for o in out], [("Romp needs you: web", "notice:%s:sweep:1" % SID)],
+                         "entering new announces once, worded from the board's badge category")
+        disk = json.loads((km.jd.STATE / "notify-prev.json").read_text())
+        ent = disk["notice:%s:sweep:1" % SID]
+        self.assertEqual((ent["board"], ent["column"], ent["announced"]), ("notes", "new", "new"), "the entry carries its board")
+        self.assertEqual(km._feed_notifications(self._feed("new", 1020)), [], "holding the category is not news")
+        km._NOTIFY_PREV[0] = None; km._NOTIFY_PREV_DISK[0] = None      # a fresh kernel life reads the file
+        with contextlib.redirect_stderr(err):
+            again = km._feed_notifications(self._feed("new", 2000))
+        self.assertEqual(again, [], "the reloaded entry stands under its board: the same pair is not announced again")
+        self.assertIn("seeded 1 cards from disk", err.getvalue())
+        self.assertEqual(km._NOTIFY_PREV[0]["notice:%s:sweep:1" % SID]["board"], "notes")
 
 
 class TheDoors(unittest.TestCase):
