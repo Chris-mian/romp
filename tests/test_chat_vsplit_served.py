@@ -193,19 +193,31 @@ const filled = async (fid) => {
 try {
   await page.goto(cfg.url);
   await page.waitForFunction((t) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + t + '"]')); }, cfg.top, { timeout: 40000 });
-  // both sessions sit in column 1; show the top one, then wait for the bottom session's tab to be draggable (its manager up, not locked)
+  // both sessions sit in column 1; show the top one
   await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
-  await page.waitForFunction((b) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + b + '"]'); return !!(t && t.draggable); }, cfg.bot, { timeout: 40000 });
-  out.pane = await page.evaluate(() => { const p = document.getElementById("chat-pane"); const r = p.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; });
   // A REAL pointer drag of the bottom session's tab past the threshold: the page's dragstart mounts the shell's zones.
-  // Wait for the seeded tab to render AND lay out (a slow runner paints the strip late, so a one-shot boundingBox can be
-  // null) with a bounded, event-based locator wait, never a fixed sleep, before measuring it.
-  const botSel = '#tabs .tab[data-id="' + cfg.bot + '"]';
-  const botFr = await frameOf("f-chat");
-  if (!botFr) throw new Error("no drag start: f-chat's content frame was missing");
+  // The tab is found AND measured in ONE in-page step (2026-09-18). The chat page rebuilds its strip from scratch on every
+  // frame that changes its signature (a placeholder tab turning into a loaded one, a status change), so a Playwright
+  // locator's two-step boundingBox (resolve a handle, then measure it) can measure a node the rebuild just replaced and
+  // read null: the driver then died in milliseconds wearing a 40 s message, with the tab present, visible and draggable
+  // at every instant. The page's JS is single-threaded, so an in-page find-and-measure cannot be interleaved with a
+  // rebuild. The predicate wants the live node draggable (its manager up, not locked), laid out (a non-empty box; a slow
+  // runner paints the strip late) and not visibility:hidden (Playwright's own visible test), and maps its centre through
+  // the iframe's box (the pane's iframe is position:absolute at inset 0 with no border, under no transformed ancestor).
+  // waitForFunction retries it every frame under the same 40 s bound, never a fixed sleep; a non-timeout error keeps its
+  // own text, so the timeout is the only road to the throw below.
   let t = null;
-  try { const loc = botFr.locator(botSel).first(); await loc.waitFor({ state: "visible", timeout: 40000 }); const b = await loc.boundingBox(); if (b) t = { x: b.x + b.width / 2, y: b.y + b.height / 2 }; } catch (e) {}
-  if (!t) throw new Error("no drag start: the bottom session's tab (data-id " + cfg.bot + ") never rendered as a visible box in f-chat's strip within 40s");
+  try {
+    const h = await page.waitForFunction((b) => {
+      const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const el = d && d.querySelector('#tabs .tab[data-id="' + b + '"]');
+      if (!el || !el.draggable) return null;
+      const r = el.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0) || d.defaultView.getComputedStyle(el).visibility === "hidden") return null;
+      const fr = f.getBoundingClientRect(); return { x: fr.left + f.clientLeft + r.left + r.width / 2, y: fr.top + f.clientTop + r.top + r.height / 2 };
+    }, cfg.bot, { timeout: 40000 });
+    t = await h.jsonValue();
+  } catch (e) { if (!(e && e.name === "TimeoutError")) throw e; }
+  if (!t) throw new Error("no drag start: the bottom session's tab (data-id " + cfg.bot + ") never rendered as a visible, draggable box in f-chat's strip within 40s");
+  out.pane = await page.evaluate(() => { const p = document.getElementById("chat-pane"); const r = p.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; });
   await page.mouse.move(t.x, t.y); await page.mouse.down(); await page.mouse.move(t.x + 24, t.y + 6, { steps: 4 });
   await page.waitForFunction(() => !!document.querySelector("#chat-pane > .col-drop.col-drop-bottom"), null, { timeout: 20000 });
   const bz = await page.evaluate(() => { const z = document.querySelector("#chat-pane > .col-drop.col-drop-bottom"); const r = z.getBoundingClientRect(); const p = z.parentElement.getBoundingClientRect(); return { col: z.getAttribute("data-col"), top: Math.round(r.top), height: Math.round(r.height), x: r.left + r.width / 2, y: r.top + r.height / 2, paneTop: Math.round(p.top), paneHeight: Math.round(p.height) }; });
