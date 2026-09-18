@@ -30021,9 +30021,13 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     the dispatch and never overwritten by the completion's summary; never the brief or script) and shares by
     the smaller word set, more than half and at least two, so one stray word never carries it; it only picks
     WHICH launch supplies the why and, when several hosts are open, which is the parent; with no matching
-    launch the parent is the newest host minted before the node (else the oldest) and the why says the record
-    it is rooted in. Returns {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no
-    host). Deterministic: a pure function of the store and the task stream. Never writes the store."""
+    launch the parent is the newest host minted before the node and the why says the record it is rooted in.
+    A host minted AFTER the node was never current at its mint, so a node older than every host is NOT nested:
+    it keeps its card, with its face (an oldest-host fallback stood here until 2026-09-18, when a store whose
+    five human-anchored hosts were all minted in one day swept two completed roots from days before into the
+    newest request's tree, as its reviewed-earlier rows: a time boundary applied across roots). Returns
+    {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no host current at its mint).
+    Deterministic: a pure function of the store and the task stream. Never writes the store."""
     out = {}
     status = status or {}
     def delegate(nd):
@@ -30074,7 +30078,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
         host = None
         if nest:
             before = [h for h in hosts if (h[1].get("t") or 0) <= (nd.get("t") or 0) and h[0] != nid]
-            pool = before or [h for h in hosts if h[0] != nid][:1]
+            pool = before                       # only a host current at the mint: never one minted after the node
             if pool:
                 host = pool[-1]
                 if hit and len(pool) > 1:            # several open: the launch's words pick the parent, ties the newest
