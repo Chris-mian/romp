@@ -2940,15 +2940,20 @@ orphan reply) carry synthetic uuids keyed by their second and ordinal.
 Stage three of the process split (plans/judges-process.md) moves the judge pass into one long-lived child, `romp-judge
 --serve`, that the kernel starts at boot and speaks to over a line protocol on the child's stdin and stdout (JSON, one
 object per line). The child announces `{"op":"ready","pid","judgeVersion","protocolVersion"}` once; the kernel sends
-`{"op":"pass","seq","now","mayStart"}` per producer wake and `{"op":"quit"}` to end; the child answers exactly one
-`{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered","recordCache","asmCheckpoint",
-"parses","goalIo"}` per pass. Every counter on it is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are the
-pass's own, `failures` its tier crashes, and the four blocks (`recordCache` and `asmCheckpoint` from the event model,
-`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes) are the DIFFERENCES
-against the previous pass's snapshot for every counter, so the kernel can feed its `/perf` counters per pass, while each
-block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes` (the cache's contents now),
-`budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document memo's size and cap);
-`parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
+`{"op":"pass","seq","mayStart"}` per producer wake, with an OPTIONAL `now`, and `{"op":"quit"}` to end; the child
+answers exactly one `{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered",
+"recordCache","asmCheckpoint","parses","goalIo","tierGate"}` per pass. The request's `now`: absent or null, the tiers read
+their own clock during the pass, the in-process producer's behaviour and the kernel's DEFAULT (it sends no `now`), so a
+measured comparison of the two roads isolates the process split from the clock semantics; a number is the explicit clock
+variant, truncated to the second and handed to both tiers for the whole pass, available for a measurement that wants it
+on its own (2026-09-18). Every counter on the done line is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are
+the pass's own, `failures` its tier crashes, and the five blocks (`recordCache` and `asmCheckpoint` from the event model,
+`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes, `tierGate` as the tiers'
+gate counters per stage (`plan`, `group`, `close`, `distill`, `unblock`, `consolidate`): `ran`, `skipped`, `stamped`,
+`bypassed`, `incomplete`, `due_clock`, the admittance the pass ran under) are the DIFFERENCES against the previous pass's snapshot for every counter, so the kernel can feed its `/perf`
+counters per pass, while each block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes`
+(the cache's contents now), `budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document
+memo's size and cap); in `tierGate` the key `stamps` (the stage stamps held now); `parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
 since boot, as described above), so the line carries the pass's own restore time. A non-numeric value (a name) rides as
 current too. `recovered` is the child's judge-module recovery flag (the once-per-storm
 edge `consume_judge_recovery` reads), consumed by the child and acted on by the kernel, which re-arms its given-up cards on
