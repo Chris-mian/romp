@@ -33960,7 +33960,9 @@ def _parse_cached(path):
     cost on the request path. build_feed reads it for the working-dots + deep-link anchors so its CARDS
     (which come from the goal store, cheap) paint AT ONCE on a cold kernel start; the dots/anchors fill in a
     beat later once _warm_fleet_bg has parsed the session in the background (the user 2026-06-26: the feed
-    cards lagged the timeline lanes on startup, all of it the ~1s cold parse of the fleet)."""
+    cards lagged the timeline lanes on startup, all of it the ~1s cold parse of every living session). The one caller-side
+    exception (2026-09-18): _feed_session_key falls through to _parse when the memo already holds a WARM-keyed
+    entry for the session and this read misses; a session parsed once, never a cold kernel's first paint."""
     ent = jd.parse_entry_for_leaf(str(path))     # the entry names its romp sid: a leaf's stem is the CLI session's id
     if ent is None or len(ent) < 5:               # after a /clear or a resume fork, never the romp sid (review find)
         return None
@@ -40328,6 +40330,17 @@ _feed_memo = {}                                  # sid → (key, entry_json, siz
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
 _FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0, "failed": 0,
+                    "coldLive": 0, "coldFlip": 0,   # coldLive: a living session with a transcript whose cache-only parse
+                    #                                  read MISSED, per session per build; a session no client and no judge
+                    #                                  has parsed rides it EVERY build, so a standing count is those
+                    #                                  cold-by-design sessions, not a fault. coldFlip: those the memo held
+                    #                                  WARM-keyed and the key re-read in place through _parse instead of
+                    #                                  deriving cold (one kernel parse each, also under /perf parses.kernel;
+                    #                                  2026-09-18, the re-read comment in _feed_session_key). Watch: coldFlip
+                    #                                  climbing every build for ONE session with no appends means its parse
+                    #                                  never stores (jd._parse_store refuses a retired leaf), a row still
+                    #                                  naming a leaf discover retired; discover retires the old leaf exactly
+                    #                                  when handing out the new one, so it should not occur, and this shows it
                     "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)},   # /perf builds.feed.memo
                     "row_by": {k: 0 for k in _FEED_ROW_FIELDS + ("presence",)}}   # ...and which row position moved on a row
 #                                                  miss; `presence`: the row appeared or left (None on one side) or has another
@@ -40675,7 +40688,9 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
     they did before the memo. `prev_entry` is the session's previous decoded entry (None when cold): its `peers` and
     `reads` records drive the dependency components (_FEED_MEMO_DEPS), which _feed_key_with_deps re-evaluates over the NEW entry
-    after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build.
+    after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build. `ctx["prev_key"]`
+    is the key that entry was memoized under (None when cold), set per session by build_feed's loop beside `prev_entry`:
+    its parse component decides the warm-to-stale re-read below.
 
     Components, label: what it covers (the reads in the body), how it is taken.
       transcript: (_chat_ident(s["path"]), s["path"]). The file's identity and its PATH, the string (2026-09-18: a live
@@ -40694,7 +40709,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         parse that is not a function of its files (em.parse_session reads the clock for the trailing idle span's
         end alone, synthesize_idle), so a parse re-run at a later clock with no file change (an evicted parse warmed
         again) differs there and nowhere else; keying on it re-derives once per re-parse and makes the parse's
-        identity exact without a clock in the key (T368 review round two).
+        identity exact without a clock in the key (T368 review round two). The bit never flips back to False for an
+        entry the memo holds warm: when the cache-only read misses for such a session, the key re-reads through _parse
+        in place (the re-read comment in the body, 2026-09-18) rather than deriving the session cold and warm again a
+        build later; a cold kernel's first paint still parses nothing, since no entry is warm yet.
       cut: the SDK backend's pending_cut(sid), a chat DELETE rollback that changes the parse with no file change.
       states: (_chat_ident(STATE/states/<fsid>.jsonl), _chat_ident(STATE/states/<anchor>.jsonl)). The parse key's
         states file, the machine cuts (_interrupt_suppresses_nudge → _last_machine_cut), _session_retrying's
@@ -40841,6 +40859,36 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     ps, st, who_working, interrupting, closer, snap_key = None, None, False, False, False, None
     if not hide:
         ps = _parse_cached(s["path"]) if path else None   # CACHE-ONLY: the cards paint at once on a cold kernel (the user 2026-06-26)
+        if ps is None and path:
+            _feed_memo_count("coldLive")             # a living session (every session in build_feed's loop is in live_map:
+            #                                          _alive_sessions filters on it, so no `live` gate here) whose parse
+            #                                          the cache does not hold at this version; a session nothing has
+            #                                          parsed rides this every build
+            prev_key = ctx.get("prev_key")           # the key the memo holds this session's entry under (build_feed's loop
+            #                                          sets it per session, None when cold)
+            if _feed_key_was_warm(prev_key):
+                # THE WARM-TO-STALE RE-READ (2026-09-18). This session's memoized entry was derived over a warm parse and
+                # the cache-only read just missed: its transcript, its states log or its cut moved since the parse the
+                # chat's build stored, which is what a streaming session does every cycle (the chat builds before the
+                # feed in _push; the stream lands between them). Deriving COLD here painted the entry without its
+                # parse-derived half (no working dot, no open-turn narration, no anchors, sessState unknown, bg None,
+                # the closer swirl off) and the next build, after the chat re-parsed, derived it WARM again: two
+                # derivations and a dot blink per append, a card move on no new information (live: the parse miss label
+                # 2061 against transcript 1297 over 1195 builds). The parse is the shared store's (jd.parsed_session
+                # through _parse, the slot the chat's build hits next cycle), so a tab the chat builds every cycle pays
+                # it once either way, here instead of there; a session the chat skips pays one assembly fold per
+                # appended version (em.parse_session's `fold` mode; a full parse when the fold cannot serve), on
+                # whichever thread builds the feed (the pusher, a clearAll handler, GET /feed.json), a racing build on
+                # another thread costing a duplicate parse and never a wrong entry. A session never derived warm still
+                # reads cache-only, so a cold kernel's first paint parses nothing, as before. The one completeness
+                # caveat: a parse whose content changed while the transcript's identity, both states identities, the
+                # cut, the reg and the last turn's end all stand now key-equals and hits (the cold/warm pair used to
+                # re-derive it). The only parse input outside the key is the anchor candidate transcript
+                # (jd._judge_candidates), which the store treats as immutable after the fork (jd._note_leaf retires the
+                # old leaf as discover hands out the new one); were that contract to break, add the anchor's identity
+                # to the `transcript` component (same label, no census change).
+                ps = _parse(path, fsid, now)
+                _feed_memo_count("coldFlip")
         if ps is not None:
             ps = _merge_live_atoms(ps, fsid)         # the same LIVE-MERGED session the chat chip + timeline lane read
         try:
@@ -40876,6 +40924,17 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     return (transcript, parse, cut, states, names, captions, store, anchors, reg, cl, row, ask, live_rev,
             bg, wait, postal, stalls, nudge, jauth, jactive, hide, watch, subagents, usage, offer, auth, downtime,
             debug, interrupting, closer, peers)
+
+
+_FEED_PARSE_IDX = _FEED_MEMO_LABELS.index("parse")
+
+
+def _feed_key_was_warm(key):
+    """Whether a memoized key was taken over a WARM parse: its parse component reads (True, end). False for no key, a
+    key of another shape (a build before a label change; _feed_memo_miss files that under cold) or a cold one
+    (2026-09-18, the warm-to-stale re-read in _feed_session_key)."""
+    return (isinstance(key, tuple) and len(key) == len(_FEED_MEMO_LABELS)
+            and isinstance(key[_FEED_PARSE_IDX], tuple) and key[_FEED_PARSE_IDX][0] is True)
 
 
 _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build's key can equal (the builder makes None or
@@ -42097,6 +42156,10 @@ def build_feed(now, live_map=None):
         try:
             prev = json.loads(ent[1]) if ent is not None else None   # the ONE decode per session per build: a hit's fresh
             #                                                          objects to fold, and the dependency record the key reads
+            ctx["prev_key"] = ent[0] if ent is not None else None    # ...and the key it was memoized under: the key's
+            #                                                          warm-to-stale re-read reads its parse component
+            #                                                          (2026-09-18). Set for EVERY session, None when cold:
+            #                                                          ctx is one dict across the loop (the peer_facts idiom)
             key = _feed_session_key(s, tm, ctx, prev)
             if ent is not None and ent[0] == key:
                 _feed_memo_count("hit")

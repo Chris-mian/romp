@@ -5,6 +5,8 @@ badges / provisional card read the transcript parse ONLY if it's already cached 
 paint at once on a cold kernel start (the user 2026-06-26). The dedicated warmer (_warm_fleet_bg) fills the
 cache for a FEED-ONLY window — but a chat or timeline client already parses the same fleet into the same
 cache, so the warmer must skip then, or it steals GIL from the chat's active-tab reshape on a cold restart.
+The one exception to cache-only (2026-09-18): a session the memo already holds warm is re-read in place when its
+files moved, so its entry never falls cold for a build; a session never parsed still costs the first paint nothing.
 """
 import inspect
 import os
@@ -29,6 +31,8 @@ class FeedCacheOnly(unittest.TestCase):
                + inspect.getsource(km._feed_session_entry))   # T368: the loop body and its key builder
         self.assertIn("ps = _parse_cached(s[\"path\"])", src, "the working-dot reads the CACHED parse, no cold parse")
         self.assertIn("cold_parse = True", src)
+        self.assertIn("if _feed_key_was_warm(prev_key):", src, "the re-read is gated on a WARM memoized key (2026-09-18)")
+        self.assertIn("ps = _parse(path, fsid, now)", src, "...and only then does the key parse in place")
         self.assertIn("_warm_fleet_bg(now)", src, "an unparsed living session kicks the background warmer")
         # the parse-derived enrichments are all gated on `ps` (cached) so the cold first paint is just cards
         # API-error floor — gated on awaiting too since 2026-07-05 (yields to live background agents)

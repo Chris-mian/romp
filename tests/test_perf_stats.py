@@ -219,7 +219,8 @@ class Collector(unittest.TestCase):
         memo = snap["builds"]["feed"]["memo"]
         self.assertEqual(set(memo), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by",
                                      "failed", "failing",   # failed: derivations that raised, cumulative; failing: sessions whose last one did (2026-09-17)
-                                     "row_by"})            # a row miss by the row position that moved (2026-09-18)
+                                     "row_by",            # a row miss by the row position that moved (2026-09-18)
+                                     "coldLive", "coldFlip"})   # coldLive: living sessions whose cache-only parse read missed, per build; coldFlip: those re-read in place because the memo held them warm (2026-09-18)
         self.assertEqual(set(memo["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
         self.assertEqual(set(memo["row_by"]), set(km._FEED_ROW_FIELDS) | {"presence"})
         self.assertEqual(memo["bound"], km.FEED_MEMO_BYTES)
