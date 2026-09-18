@@ -1222,3 +1222,28 @@ test("two hosts' owner-less cards under one key both render (their ids differ by
   assert.ok(mbody, "it opens the card's modal instead"); assert.match(body.textContent || "", /A local note/, "the modal shows the card");
   setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
 });
+
+// ── the predicted move on a card that carries its category (plans/card-boards.md, phase two, round two) ──────────────────
+// Every card the kernel builds carries `category` since phase two and askColumn reads it first; the optimistic follow-up
+// move predicted `column` alone, so a Continue, a reply or a Check status left the card in Blocked (with the re-check
+// styling) until the kernel re-filed it. The four follow-move tests are source pins that never boot feed.ts, which is how
+// it escaped them; this one boots it.
+test("Continue on a category-carrying card predicts the move to Working: the prediction writes the category too", async () => {
+  const others = Array.from(body.querySelectorAll(".fitem")).map((c: any) => c._it).filter(Boolean);
+  const g9 = cardOf("g9", WEB, "web", "#3366cc", "Decide the notes-api retry policy", "needs_input", { board: "feed", category: "needs_input" });
+  await dispatch(frame([g9, ...others], { working: ["api"] }));   // web is live and waiting on you
+  assert.equal(colOf("g9"), "col-needsInput-list", "the kernel filed it under Blocked by its category");
+  const cont = card("g9")._cont;
+  assert.equal(cont.style.display, ""); assert.equal(cont.disabled, false);
+  const sent = posted.length;
+  cont.onclick(ev);
+  assert.deepEqual(posted.slice(sent).filter((m) => m.type === "askFollowUp"), [{ type: "askFollowUp", itemId: "g9", sid: WEB, cont: true }]);
+  assert.equal(colOf("g9"), "col-asks-list", "the predicted move: the card goes to Working ahead of the kernel, category and column alike");
+  const shown = card("g9")._it;
+  assert.equal(shown.category, "working", "the rendered copy's category is the prediction");
+  assert.equal((g9 as any).category, "needs_input", "the frame's own object is untouched (the copy-on-write rule)");
+  await dispatch(frame([g9, ...others], { working: ["api"] }));   // a re-emit of the same objects: nothing decided
+  assert.equal(colOf("g9"), "col-asks-list", "the prediction holds through a re-emit");
+  await dispatch(frame([{ ...g9, column: "working", category: "working", followupPending: true, followupAt: K0 }, ...others], { working: ["web", "api"] }));
+  assert.equal(colOf("g9"), "col-asks-list", "the kernel's re-filing confirms it");
+});

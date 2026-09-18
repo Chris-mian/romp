@@ -728,27 +728,45 @@ export function rebaseExecs(messages: any[], offsets: Record<string, number>): a
  *  (hasExec: the recipient's kernel binds exec to its own transcript; the sender's can't). */
 export function stitchMessages(messages: any[], sessions: readonly any[]): any[] {
   if (!messages.length) return messages;
-  const laneIds = new Set(sessions.map((s: any) => s && s.id));
-  const byBare = new Map(sessions.filter((s: any) => s && typeof s.id === "string").map((s: any) => [bareId(s.id), s]));
+  const lanes = sessions.filter((s: any) => s && typeof s.id === "string");
+  const byId = new Map(lanes.map((s: any) => [s.id, s]));
+  const byBare = new Map(lanes.map((s: any) => [bareId(s.id), s]));
+  // A relayed message has TWO ids: the sender's bus minted one, the recipient's bus another for the delivered copy.
+  // The copy carries the sender's as `originMid` from the moment it lands, and the read receipt carries the copy's
+  // back to the sender's row as `dmid`. The sender's row and the recipient's are ONE message: key both under the
+  // sender's id so the board draws one connector, never a pair, now that the sender's kernel ends its row at the
+  // recipient's lane (the user 2026-09-18). Either link alone joins them, so the pair never shows in the receipt's lag.
+  const canon = new Map<string, string>();
+  for (const m of messages) {
+    if (!m || typeof m.id !== "string") continue;
+    if (typeof m.dmid === "string" && m.dmid) canon.set(m.dmid, m.id);
+    if (typeof m.originMid === "string" && m.originMid) canon.set(m.id, m.originMid);
+  }
   const best = new Map<string, any>();
   const out: any[] = [];
   for (const m of messages) {
     if (!m || typeof m !== "object") { out.push(m); continue; }
     const c: any = { ...m };
-    for (const [idKey, nameKey] of [["fromId", "from"], ["toId", "to"]] as const) {
+    for (const [idKey, nameKey, anchorKey] of [["fromId", "from", "fromThreadT"], ["toId", "to", "toThreadT"]] as const) {
       const v = c[idKey];
-      if (typeof v !== "string" || laneIds.has(v)) continue;
-      const lane = byBare.get(bareId(v));
-      if (lane) {
-        c[idKey] = lane.id;
-        if (!c[nameKey]) c[nameKey] = lane.name; // the emitting kernel never knew the foreign name
-      }
+      if (typeof v !== "string") continue;
+      const lane = byId.get(v) || byBare.get(bareId(v));
+      if (!lane) continue;
+      c[idKey] = lane.id;
+      // The display name follows the LANE. A kernel names its own session bare ("web") and the merged lane wears the
+      // host ("TESTHOST:web"), so a remote twin of a local session is told apart in the tooltip exactly as on its
+      // label; the emitting kernel never knew a foreign end's name at all. A thread-anchored end keeps the THREAD's
+      // name (the kernel's rule: the tooltip says who really spoke, from the parent's lane).
+      if (!c[nameKey] || (hostOf(lane.id) !== LOCAL && c[anchorKey] == null)) c[nameKey] = lane.name;
     }
-    const key = typeof c.id === "string" ? c.id : null;
+    const key = typeof c.id === "string" ? (canon.get(c.id) || c.id) : null;
     if (!key) { out.push(c); continue; }
     const prev = best.get(key);
     if (!prev) { best.set(key, c); out.push(c); continue; }
-    if (c.hasExec && !prev.hasExec) Object.assign(prev, c); // upgrade in place — keeps sent-order
+    if (c.hasExec && !prev.hasExec) {   // upgrade in place: keeps sent-order and the sender's ids (the join keys)
+      const id = prev.id, dmid = prev.dmid;
+      Object.assign(prev, c, { id, ...(dmid ? { dmid } : {}), pending: false });   // an exec IS the landing: nothing is pending
+    }
   }
   return out;
 }
@@ -889,6 +907,11 @@ interface Conn {
 function pendingTypes(c: Conn): string[] {
   return [...c.pending.values()].map((m) => (m && typeof m.type === "string" ? m.type : ""));
 }
+
+// The apps that RENDER a pushed channel a remote host can be heard on (pendingFor): the chat its tab list, the feed and the
+// Outline pane the feed payload, the timeline its lanes. settings and files load this module too, for the fan-out and the routing,
+// and receive no pushed view, so they are not here.
+const PANE_CHANNELS = new Set(["chat", "feed", "fleet", "timeline"]);
 
 export class FederationManager {
   app = "chat";
@@ -1287,11 +1310,21 @@ export class FederationManager {
     });
   }
 
-  private lastPendingSig = "";
+  // null, not "": the FIRST publish always posts, an empty list included, so a pane's fresh instance (a reload) replaces
+  // whatever list its dead predecessor left in the shell; with "" a reloaded pane that pended nothing never spoke and the
+  // shell kept the stale names (2026-09-18)
+  private lastPendingSig: string | null = null;
 
   /** Which attached hosts THIS pane is still waiting on, by the channel it renders: the chat reads the
-   *  tab list, the feed and fleet the feed payload, the timeline the lanes skeleton. */
+   *  tab list, the feed and the Outline pane the feed payload, the timeline the lanes skeleton. A page that renders no
+   *  pushed channel pends nothing: the settings page and the file browser load this module (the gear's
+   *  kernel-side settings fan out to every host; the browser routes by host) but sit outside every build
+   *  audience (kernel.py _settings_page, app=settings), so no frame of theirs could ever retire a host, and
+   *  the settings frame's manager posted every attached host as pending for good: the network panel read
+   *  every connected remote as "connected · loading sessions…" from the moment the gear was first opened
+   *  (the user's 2026-09-18 screenshot, three remotes, all up, their sessions in the tabs). */
   private pendingFor(): string[] {
+    if (!PANE_CHANNELS.has(this.app)) return [];
     const src = this.app === "timeline" ? this.perHostTl : this.app === "chat" ? this.perHostOrder : this.perHostFeed;
     return this.hostSeq.filter((h) => h !== LOCAL && !(h in src));
   }
@@ -1302,6 +1335,7 @@ export class FederationManager {
   // says "connected · loading sessions…" until this pane's first payload from that host retires it.
   // Posted on CHANGE only, and only to a same-origin parent (a cross-origin host has no network panel).
   private publishPending(): void {
+    if (!PANE_CHANNELS.has(this.app)) return;   // no channel to retire by: nothing to tell the shell (see pendingFor)
     const hosts = this.pendingFor();
     const sig = hosts.join("\u0000");
     if (sig === this.lastPendingSig) return;

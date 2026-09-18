@@ -16,6 +16,8 @@ Behaviour:
                        (or `hook_0` if none) and wait for the response
       cancel-after=N   cancel an unanswered control request after N seconds (the CLI's own timeout)
       after=N          wait N seconds before the extras above (so a test can detach first)
+      merge=1          at the end of the turn, fold every user message queued meanwhile INTO this turn and answer
+                       them all with this one result (the real CLI's shape for messages typed while it works)
   * Stdin end-of-file: finish the current turn, then exit 0 (probe finding 4).
   * SIGINT, or an `interrupt` control request (the SDK's interrupt()): the current turn ends with an
     `interrupted` result, as the real CLI's does.
@@ -124,6 +126,12 @@ def run_turn(text: str) -> None:
     end = time.time() + sleep
     while time.time() < end and not _interrupted.is_set():   # loop-ok: a bounded wait on the scripted turn length
         time.sleep(0.05)
+    if "merge" in opts:                       # the fold: the queued messages join this turn, one result for all of them
+        while not _turns.empty():             # loop-ok: bounded by the queue's length
+            try:
+                _turns.get_nowait()
+            except Exception:
+                break
     emit({"type": "result", "subtype": "success", "is_error": False, "duration_ms": int(sleep * 1000), "duration_api_ms": 1,
           "num_turns": 1, "result": "interrupted" if _interrupted.is_set() else "done", "session_id": SESSION_ID,
           "total_cost_usd": 0.0, "usage": {"input_tokens": 1, "output_tokens": 1}, "uuid": str(uuid.uuid4())})

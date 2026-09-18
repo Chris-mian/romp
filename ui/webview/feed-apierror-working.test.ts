@@ -14,7 +14,7 @@ test("askColumn maps it.column directly — no crafty it.blocked re-route (the u
   assert.doesNotMatch(FEED, /it\.blocked && it\.blocked\.state !== "apiError"/, "the it.blocked override is gone");
   // the mapping is the feed board definition's table since phase one of plans/card-boards.md (board-def.ts FEED_LOCAL_KEY:
   // working → asks, needs_input → needsInput, completed → completed; board-def.test.ts executes it)
-  assert.match(FEED, /return columnOf\(FEED_BOARD, it\.column\);/);
+  assert.match(FEED, /return columnOf\(FEED_BOARD, it\.category \?\? it\.column\);/, "the category since phase two, the column from an older kernel's frame");
   // an apiError card keeps column=working from the kernel → lands in "asks" (Working), no special-casing needed.
 });
 

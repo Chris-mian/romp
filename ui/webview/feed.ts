@@ -43,7 +43,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
 import { inInputEvent } from "./input-event";
 import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
-import { FEED_BOARD, columnOf, columnTable, feedColumns, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
+import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
 import { wireTip, setTip, pruneTip } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
 import { listenForFrames } from "./frame-listener";
@@ -100,9 +100,9 @@ interface AskItem {
   text: string; t: number; live: boolean;
   turnId: string;
   trgb: [number, number, number];
+  board?: string;                                  // the board model (plans/card-boards.md, phase two): the kernel writes "feed" on every card it builds
+  category?: string;                               // the board's category id, the kernel's raw column value for the feed; absent from an older kernel's frame
   column: FeedCategory;                            // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks": that was a stale lie that silently broke `it.column === "asks"` checks.
-  board?: string;                                  // the board model's fields (plans/card-boards.md, agreed 2026-09-18): the board the card sits on ("feed" today)
-  category?: string;                               // and its category, today's column value, carried beside column until the renderer reads it alone
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   followupAt?: number | null;                      // when that follow-up/continue went — the latched button's honest age (T150)
   doneConfirming?: boolean;                        // the done verdict is in, only the settle event is pending → steady "done, confirming" chip on the Working card; placement deliberately does NOT move early (no working↔done flicker) (kernel build_feed ← judge rollup confirming export; the user 2026-07-24)
@@ -416,8 +416,8 @@ function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Re
     // absent → gone, unless this payload cannot vouch for every host's cards (the gate in applyFeedPayload, T404 round
     // seven): then the prediction waits for a payload that can, with the MOVE_ACK_MS backstop standing behind it
     if (!a && cardsUnknown) continue;
-    if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
-      clearFollowMove(id, !a ? "gone" : a.column === "working" ? "confirmed" : "answer-yield");
+    if (!a || askColumn(a) === "asks" || pendingMoveKind.get(id) === "answer") {
+      clearFollowMove(id, !a ? "gone" : askColumn(a) === "asks" ? "confirmed" : "answer-yield");   // Working by the kernel's category (askColumn, the boards' phase two)
       continue;
     }
     // ACKED, yet this payload still shows the card elsewhere. Trust it ONLY if it was built after the kernel
@@ -464,8 +464,11 @@ function applyFollowMove(list: AskItem[]) {
   const nowSec = Math.floor(Date.now() / 1000);
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
-    if (!pendingFollowMove.has(a.itemId) || a.column === "working") continue;
-    const c: AskItem = { ...a, column: "working" };
+    if (!pendingFollowMove.has(a.itemId) || askColumn(a) === "asks") continue;   // already in Working by its category (its column from an older kernel)
+    // the prediction names the feed's Working under BOTH keys: askColumn reads the category first since phase two of the
+    // boards (plans/card-boards.md), so a copy predicting the column alone stayed in Blocked until the kernel re-filed it
+    // (the 1837 read); the frame's own object keeps its category, as it keeps its column
+    const c: AskItem = { ...a, column: "working", category: "working" };
     if ((pendingMoveKind.get(a.itemId) ?? "followup") === "followup") { c.recheck = true; c.followupPending = true; }   // plain move / answer: no chip
     if (c.t < nowSec) c.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
     predictedFrom.set(a.itemId, a);   // what a refusal of the post puts back (revertFollowMove)
@@ -493,7 +496,7 @@ function askColumn(it: AskItem): Column {
   // "working" while showing it under Blocked — it now reports needs_input directly (the user 2026-06-29). An
   // API-error card stays in its natural column (working): the kernel keeps column=working for it (a transient
   // stall, not a block), so it lands in "asks" with just the "⚠ API error" chip + Retry.
-  return columnOf(FEED_BOARD, it.column);   // the feed definition's own table: working → asks, needs_input → needsInput, completed → completed
+  return columnOf(FEED_BOARD, it.category ?? it.column);   // the feed definition's own table (the category since phase two; column from an older kernel)
 }
 
 // How opaque the recency tint is over the (black) page — low = a faint, very
@@ -1940,8 +1943,11 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     // reviewed (kernel reviewedEarlier, from the SAME boundary the distiller scopes the takeaway with)
     // collapse behind one row, so a re-completed card presents only the new work — the old material is
     // one click away, never gone. Fresh rows first; the fold row sits below them.
-    const revKids = (root.children || []).filter((c) => !!byId.get(c)?.reviewedEarlier);
-    const freshKids = (root.children || []).filter((c) => !byId.get(c)?.reviewedEarlier);
+    // …counting what the walk RENDERS: a handoff child is skipped by walk (delegations live in their own section), so a
+    // reviewed handoff counted in the label made "3 reviewed earlier" open to two rows (the 2026-09-18 read)
+    const shown = (c: string) => { const n = byId.get(c); return !!n && n.kind !== "handoff"; };
+    const revKids = (root.children || []).filter((c) => shown(c) && !!byId.get(c)?.reviewedEarlier);
+    const freshKids = (root.children || []).filter((c) => shown(c) && !byId.get(c)?.reviewedEarlier);
     const revOpen = cardTreeExpanded.has(id + ":reviewed");
     for (const c of freshKids) walk(c, 0);
     const freshEnd = rows.length;
@@ -5510,7 +5516,7 @@ function viewBase(list: AskItem[]): AskItem[] {
   const s = viewScope(list);
   if (lensAll(feedLens)) return s;   // default All = today's board, byte-identical
   const u = lensUnions(feedTagViews);
-  return s.filter((a) => lensVisible(feedLens, u, a.sid) || a.column === "needs_input");
+  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(FEED_BOARD, a.category ?? a.column));   // the board's badge category passes every lens
 }
 
 // The disclosure count: what the TAG LENS alone hides (breakthroughs already show; counting them

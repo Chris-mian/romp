@@ -45,7 +45,9 @@ export interface Board {
 export type FeedColumnKey = "asks" | "needsInput" | "completed";
 /** The kernel's raw column values, the feed board's category ids (AskItem.column is typed to them). */
 export type FeedCategory = "working" | "needs_input" | "completed";
-export const FEED_LOCAL_KEY: Readonly<Record<string, FeedColumnKey>> = { working: "asks", needs_input: "needsInput", completed: "completed" };
+// a Map, never a plain object: a category is producer-facing from phase three, and a prototype-named one ("toString",
+// "constructor") read a plain object's prototype member where the old ternary read the default (the 1834 read, low 1)
+export const FEED_LOCAL_KEY: ReadonlyMap<string, FeedColumnKey> = new Map([["working", "asks"], ["needs_input", "needsInput"], ["completed", "completed"]]);
 
 /** Today's feed, as one definition. Every value is a literal feed.ts or kernel.py carries now; board-def.test.ts asserts
  *  them against the source, so this constant cannot drift from what renders. */
@@ -70,8 +72,8 @@ export const FEED_BOARD: Board = {
 
 // ── the kinds: the card families feed.ts renders, described ────────────────────────────────────────────────────────────
 // A kind's sections and actions are code (the plan's section 1); the descriptors below name each by its id, the label the
-// button wears (null when the label is computed per card) and the feed.ts function that builds or wires it (`via`), so the
-// test can hold the description to the source. The elements are minted by makeAskCard in one fixed order for every kind
+// button wears (null when the label is computed per card) and the feed.ts function whose body mints the element that wears
+// it (`via`), so the test can hold each label to that function's own source and each kind's list to the reviewed table. The elements are minted by makeAskCard in one fixed order for every kind
 // and shown or hidden by updateAskCard and applySections; nothing here changes that.
 export interface Descriptor { id: string; label: string | null; via: string; }
 export interface CardKind { id: KindId; sections: readonly Descriptor[]; actions: readonly Descriptor[]; menu: readonly Descriptor[]; }
@@ -86,30 +88,30 @@ const MENU: readonly Descriptor[] = [
 export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
   goal: {
     id: "goal",
-    sections: [
-      { id: "bg", label: "Background", via: "applySections" },
-      { id: "summary", label: "Summary", via: "applySections" },
-      { id: "subgoals", label: null, via: "applySections" },      // "N sub-goals", the count in the label
-      { id: "stall", label: "Stalled", via: "applySections" },
-      { id: "tasks", label: null, via: "applySections" },         // the awaiting pill's word (spin-caption awaitWord)
+    sections: [                                                   // the toggles makeAskCard mints; applySections wires them
+      { id: "bg", label: "Background", via: "makeAskCard" },
+      { id: "summary", label: "Summary", via: "makeAskCard" },
+      { id: "subgoals", label: null, via: "makeAskCard" },        // "N sub-goals", the count in the label (applySections)
+      { id: "stall", label: "Stalled", via: "makeAskCard" },
+      { id: "tasks", label: null, via: "makeAskCard" },           // the awaiting pill's word (spin-caption awaitWord)
     ],
     actions: [
       CLEAR,
-      { id: "followUp", label: "Follow up", via: "updateAskCard" },
-      { id: "checkStatus", label: "Check status", via: "updateAskCard" },
-      { id: "continue", label: "Continue", via: "updateAskCard" },
-      { id: "retry", label: "Retry", via: "updateAskCard" },
-      { id: "login", label: "Log in…", via: "updateAskCard" },
-      { id: "capSwitch", label: null, via: "updateAskCard" },
+      { id: "followUp", label: "Follow up", via: "renderModalNow" },
+      { id: "checkStatus", label: "Check status", via: "renderModalNow" },
+      { id: "continue", label: "Continue", via: "makeAskCard" },
+      { id: "retry", label: "Retry", via: "makeAskCard" },
+      { id: "login", label: "Log in…", via: "makeAskCard" },
+      { id: "capSwitch", label: null, via: "makeAskCard" },
       BELL,
     ],
     menu: MENU,
   },
-  placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "applySections" }], actions: [CLEAR, BELL], menu: MENU },
-  parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "updateAskCard" }, BELL], menu: MENU },
+  placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "makeAskCard" }], actions: [CLEAR, BELL], menu: MENU },
+  parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "makeAskCard" }, BELL], menu: MENU },
   quarantine: {
     id: "quarantine", sections: [],
-    actions: [{ id: "approve", label: "Approve", via: "updateAskCard" }, { id: "deny", label: "Deny", via: "updateAskCard" }, BELL],
+    actions: [{ id: "approve", label: "Approve", via: "makeAskCard" }, { id: "deny", label: "Deny", via: "makeAskCard" }, BELL],
     menu: MENU,
   },
   notice: {
@@ -135,7 +137,12 @@ export function kindOf(card: { notice?: unknown; provisional?: unknown; blocked?
 /** The renderer's local column key for a category id; an unknown id files under the board's default category, which is
  *  what the old mapping did for anything but the two named values. */
 export function columnOf(board: Board, category: string): FeedColumnKey {
-  return FEED_LOCAL_KEY[category] ?? FEED_LOCAL_KEY[board.defaultCategory];
+  return FEED_LOCAL_KEY.get(category) ?? FEED_LOCAL_KEY.get(board.defaultCategory) ?? "asks";
+}
+
+/** Whether a card in `category` is one the board's badge counts (the interrupt rule every lens lets through). */
+export function isNeedsYou(board: Board, category: string): boolean {
+  return board.needsYou !== null && category === board.needsYou;
 }
 
 /** The board's columns in its order, as the local keys the layout and the view state use. */

@@ -41,7 +41,11 @@ test("kernel: reviewedEarlier keys on the SHARED review boundary, never a second
 
 test("feed: reviewed-earlier sub-goals collapse behind ONE toggle row, fresh rows first", () => {
   assert.match(FEED, /reviewedEarlier\?: boolean;/);
-  assert.match(FEED, /const revKids = \(root\.children \|\| \[\]\)\.filter\(\(c\) => !!byId\.get\(c\)\?\.reviewedEarlier\);/);
+  // the fold's label counts what its walk RENDERS: a handoff child (walk skips it) is out of both lists, so the count never
+  // exceeds the rows the open fold shows (2026-09-18: "3 reviewed earlier" opened to two rows)
+  assert.match(FEED, /const shown = \(c: string\) => \{ const n = byId\.get\(c\); return !!n && n\.kind !== "handoff"; \};/);
+  assert.match(FEED, /const revKids = \(root\.children \|\| \[\]\)\.filter\(\(c\) => shown\(c\) && !!byId\.get\(c\)\?\.reviewedEarlier\);/);
+  assert.match(FEED, /const freshKids = \(root\.children \|\| \[\]\)\.filter\(\(c\) => shown\(c\) && !byId\.get\(c\)\?\.reviewedEarlier\);/);
   assert.match(FEED, /const revOpen = cardTreeExpanded\.has\(id \+ ":reviewed"\);/);
   assert.match(FEED, /rows\.slice\(0, freshEnd\)\.forEach\(paintRow\);/);
   assert.match(FEED, /txt\.textContent = revKids\.length \+ " reviewed earlier";/);
