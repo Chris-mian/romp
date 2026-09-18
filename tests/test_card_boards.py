@@ -5,6 +5,7 @@ board and its category beside its column; the bell, the phone and the badge read
 category instead of a literal. Synthetic fixtures only (the notes-api demo world)."""
 import inspect
 import json
+from unittest import mock
 import os
 import re
 import sys
@@ -47,17 +48,19 @@ class BoardTable(unittest.TestCase):
         self.assertIn('_NOTIFY_COLUMNS = tuple(_CODE_BOARDS["feed"]["notify"])', KSRC)
 
     def test_the_renderer_constant_and_the_kernel_table_name_the_same_feed(self):
-        # ui/webview/board-def.ts FEED_BOARD, field for field, read from the source (no TypeScript runtime here)
-        ts = TSRC[TSRC.index("export const FEED_BOARD: Board = {"):]
-        ts = ts[:ts.index("\n};") + 3]
-        cats = re.findall(r'\{ id: "([^"]+)", title: "([^"]+)", chip: "([^"]+)" \}', ts)
-        self.assertEqual(cats, [(c["id"], c["title"], c["chip"]) for c in _feed_def()["categories"]])
-        for key, want in (("defaultCategory", '"working"'), ("groupBy", '"session"'), ("needsYou", '"needs_input"')):
-            self.assertRegex(ts, r'\b%s: %s' % (key, re.escape(want)), key)
-        self.assertRegex(ts, r'notify: \["needs_input", "completed"\]')
-        self.assertRegex(ts, r'sort: \{ key: "t", dir: "asc" \}')
-        self.assertRegex(ts, r'kinds: \["goal", "placeholder", "parked", "quarantine", "notice"\]')
-        self.assertEqual(_feed_def()["kinds"], ["goal", "placeholder", "parked", "quarantine", "notice"])
+        # ui/webview/board-def.ts FEED_BOARD, EVERY member (the 1837 read, low 3: a compare of seven members let id, title,
+        # rules, subSorts and order drift, and a kernel-side order of ownerRank passed both suites), read from the source
+        # (no TypeScript runtime here): the object literal's comments stripped, its keys quoted, its trailing commas dropped,
+        # then json.loads, so the two copies of the one definition are compared as values
+        ts = TSRC[TSRC.index("export const FEED_BOARD: Board = {") + len("export const FEED_BOARD: Board = "):]
+        ts = ts[:ts.index("\n};") + 2]
+        lit = re.sub(r"//[^\n]*", "", ts)                                  # the line comments
+        lit = re.sub(r"(?m)^(\s*)([A-Za-z_]\w*)\s*:", r'\1"\2":', lit)       # keys at a line's start
+        lit = re.sub(r"([{,]\s*)([A-Za-z_]\w*)\s*:", r'\1"\2":', lit)      # keys inside one-line objects
+        lit = re.sub(r",(\s*[}\]])", r"\1", lit)                          # trailing commas
+        renderer = json.loads(lit)
+        self.assertEqual(sorted(renderer), sorted(_feed_def()), "the same twelve members on both sides")
+        self.assertEqual(renderer, _feed_def(), "the renderer's FEED_BOARD and the kernel's _CODE_BOARDS['feed'], member for member")
 
     def test_the_check_refuses_a_copy_with_one_member_changed_naming_it(self):
         def refused(mut, want):
@@ -151,10 +154,20 @@ class BellAndBadgeReadTheBoard(unittest.TestCase):
         ]}
         self.assertEqual(km._needs_you_count(feed), 2)
         self.assertIn('a.get("category", a.get("column")) == _board_needs_you(a.get("board"))', inspect.getsource(km._needs_you_count))
+        # a board whose badge category is None counts nothing, a key-less card included (the 1837 read, low 2: None == None
+        # counted a card carrying neither field); the table has no such board yet, so the helper stands in for one
+        keyless = {"asks": [{"itemId": "k", "board": "notes"}, {"itemId": "a", "board": "notes", "category": "needs_input"}]}
+        with mock.patch.object(km, "_board_needs_you", lambda board: None):
+            self.assertEqual(km._needs_you_count(keyless), 0)
+        self.assertEqual(km._needs_you_count(keyless), 1, "the same cards under the feed's fallback: the category-carrying one counts")
 
     def test_the_notifications_diff_reads_the_boards_notify_set(self):
         src = inspect.getsource(km._feed_notifications_diff)
+        self.assertIn('col, sid, ent = a.get("category", a.get("column")), str(a.get("sid") or ""), prev.get(iid)', src,
+                      "the diff reads the category with the column as the fallback, the same read as the badge (the 1837 read, low 1)")
         self.assertIn('if col in _board_notify(a.get("board")):', src)
+        self.assertIn('needs_you = col == _board_needs_you(a.get("board"))', src, "the notification's words come from the board's badge category, never a literal")
+        self.assertNotIn('col == "needs_input"', src)
         self.assertNotIn("col in _NOTIFY_COLUMNS", src, "no literal set in the diff; the snapshot's entry check keeps _NOTIFY_COLUMNS")
         self.assertIn("_NOTIFY_COLUMNS", inspect.getsource(km._notify_prev_entry), "the stored snapshot's entries are still checked against the feed's set")
 

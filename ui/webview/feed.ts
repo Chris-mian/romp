@@ -416,8 +416,8 @@ function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Re
     // absent → gone, unless this payload cannot vouch for every host's cards (the gate in applyFeedPayload, T404 round
     // seven): then the prediction waits for a payload that can, with the MOVE_ACK_MS backstop standing behind it
     if (!a && cardsUnknown) continue;
-    if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
-      clearFollowMove(id, !a ? "gone" : a.column === "working" ? "confirmed" : "answer-yield");
+    if (!a || askColumn(a) === "asks" || pendingMoveKind.get(id) === "answer") {
+      clearFollowMove(id, !a ? "gone" : askColumn(a) === "asks" ? "confirmed" : "answer-yield");   // Working by the kernel's category (askColumn, the boards' phase two)
       continue;
     }
     // ACKED, yet this payload still shows the card elsewhere. Trust it ONLY if it was built after the kernel
@@ -464,8 +464,11 @@ function applyFollowMove(list: AskItem[]) {
   const nowSec = Math.floor(Date.now() / 1000);
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
-    if (!pendingFollowMove.has(a.itemId) || a.column === "working") continue;
-    const c: AskItem = { ...a, column: "working" };
+    if (!pendingFollowMove.has(a.itemId) || askColumn(a) === "asks") continue;   // already in Working by its category (its column from an older kernel)
+    // the prediction names the feed's Working under BOTH keys: askColumn reads the category first since phase two of the
+    // boards (plans/card-boards.md), so a copy predicting the column alone stayed in Blocked until the kernel re-filed it
+    // (the 1837 read); the frame's own object keeps its category, as it keeps its column
+    const c: AskItem = { ...a, column: "working", category: "working" };
     if ((pendingMoveKind.get(a.itemId) ?? "followup") === "followup") { c.recheck = true; c.followupPending = true; }   // plain move / answer: no chip
     if (c.t < nowSec) c.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
     predictedFrom.set(a.itemId, a);   // what a refusal of the post puts back (revertFollowMove)

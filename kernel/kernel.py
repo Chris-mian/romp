@@ -54160,7 +54160,7 @@ def _feed_notifications_diff(feed):
     now_t = int(feed.get("now") or time.time())   # the build's own moment: wall clock, like the journal's t
     entered = []                                     # (itemId, card, column, entry): the cards that ENTERED a column
     for iid, a in cur.items():
-        col, sid, ent = a.get("column"), str(a.get("sid") or ""), prev.get(iid)
+        col, sid, ent = a.get("category", a.get("column")), str(a.get("sid") or ""), prev.get(iid)   # the board's category; the column from an older card
         if col in _board_notify(a.get("board")):   # the card's board's notify set (the feed's is _NOTIFY_COLUMNS)
             e = {"sid": sid, "column": col,
                  "announced": ent.get("announced") if ent else None,
@@ -54182,7 +54182,7 @@ def _feed_notifications_diff(feed):
             if e["announced"] == col and not _notify_user_acted_since(e["sid"], iid, e["announcedAt"]):
                 continue                             # the same (card, column), told already, nothing of the user's since
             e["announced"], e["announcedAt"] = col, now_t
-            needs_you = col == "needs_input"            # the card's column: the authoritative state, not the words
+            needs_you = col == _board_needs_you(a.get("board"))   # the board's badge category: the authoritative state, not the words (the same read as _needs_you_count)
             what = "Needs you" if needs_you else "Completed"
             txt = str(a.get("text") or "").strip()
             out.append((_notify_title(a.get("name") or "session", needs_you),
@@ -54200,7 +54200,8 @@ def _needs_you_count(feed):
     """How many real (non-provisional) cards sit in needs_input — the number the app icon wears.
     Counted from the same feed build the notifications diff, so badge and bell can never disagree."""
     return sum(1 for a in (feed.get("asks") or [])
-               if not a.get("provisional") and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category
+               if not a.get("provisional") and _board_needs_you(a.get("board")) is not None
+               and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category; a board with none counts nothing
 
 
 # The count the shell clients last heard (None = nothing sent since boot). The badge moves on feed
