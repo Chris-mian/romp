@@ -30044,9 +30044,13 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     the dispatch and never overwritten by the completion's summary; never the brief or script) and shares by
     the smaller word set, more than half and at least two, so one stray word never carries it; it only picks
     WHICH launch supplies the why and, when several hosts are open, which is the parent; with no matching
-    launch the parent is the newest host minted before the node (else the oldest) and the why says the record
-    it is rooted in. Returns {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no
-    host). Deterministic: a pure function of the store and the task stream. Never writes the store."""
+    launch the parent is the newest host minted before the node and the why says the record it is rooted in.
+    A host minted AFTER the node was never current at its mint, so a node older than every host is NOT nested:
+    it keeps its card, with its face (an oldest-host fallback stood here until 2026-09-18, when a store whose
+    five human-anchored hosts were all minted in one day swept two completed roots from days before into the
+    newest request's tree, as its reviewed-earlier rows: a time boundary applied across roots). Returns
+    {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no host current at its mint).
+    Deterministic: a pure function of the store and the task stream. Never writes the store."""
     out = {}
     status = status or {}
     def delegate(nd):
@@ -30097,7 +30101,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
         host = None
         if nest:
             before = [h for h in hosts if (h[1].get("t") or 0) <= (nd.get("t") or 0) and h[0] != nid]
-            pool = before or [h for h in hosts if h[0] != nid][:1]
+            pool = before                       # only a host current at the mint: never one minted after the node
             if pool:
                 host = pool[-1]
                 if hit and len(pool) > 1:            # several open: the launch's words pick the parent, ties the newest
@@ -31419,7 +31423,7 @@ def _postal_intent(kind, body=""):
     return m.group(1) if m else ""
 
 
-_postal_index_memo = [None]   # ((mtime_ns, size), idx, body_map) — exact-change key of messages.jsonl
+_postal_index_memo = [None]   # ((mtime_ns, size), idx, body_map, sid_revs) — exact-change key of messages.jsonl
 
 
 def _postal_index():
@@ -31430,7 +31434,8 @@ def _postal_index():
     through this and re-parsed the whole log per push otherwise (~7% of the pusher's wall time,
     py-spy 2026-08-31). Consumers only read the index (_hydrate_postal), so sharing one dict is safe.
     The memo also carries the index's body-keyed map (_postal_body_rows), built once per index version
-    beside it, so the outgoing-card join does not rescan every row per card per build."""
+    beside it, so the outgoing-card join does not rescan every row per card per build, and the per-session
+    revision table (_postal_sid_revs_of, 2026-09-18), so a chat's postal key is a dict lookup per build."""
     p = jd.STATE / "timeline" / "messages.jsonl"
     try:
         st = os.stat(p)
@@ -31484,7 +31489,7 @@ def _postal_index():
                     rec["bouncedWhy"] = re.sub(r"[\x00-\x1f\x7f]+", " ", why)[:200]
             elif ev == "recall":
                 rec["recalled"] = o["t"]
-    _postal_index_memo[0] = (key, idx, _postal_body_map(idx))
+    _postal_index_memo[0] = (key, idx, _postal_body_map(idx), _postal_sid_revs(idx))
     return idx
 
 
@@ -31511,6 +31516,61 @@ def _postal_body_rows(index):
     if hit is not None and hit[1] is index:
         return hit[2]
     return _postal_body_map(index)
+
+
+def _postal_sid_revs(index):
+    """Per session, its revision of the postal index (2026-09-18): {key: (n, last_mid, outcomes)} over the
+    records whose fromId or toId is the key, walked in the index's (the log's) order. n is the count of such
+    records, last_mid the id of the latest, outcomes a tuple with one entry per such record that carries any
+    outcome, (id, read, relayed, bounced, recalled, bouncedWhy) as the record holds them: the receipt a sent
+    card renders (enrich_out in _hydrate_postal), lossless, so equality is exact by value. Being a fold of
+    the records' VALUES it equals a fresh walk of the same records (a caller's own dict and the memo's table
+    agree) and moves exactly when a card's receipt would: an exec on one message beside an unexec on
+    another moves it, where a count of outcomes would net to no change; an exec then an unexec of ONE
+    message with no build between leaves it where it was, because the receipt is back where it was (the
+    drain rolled back, the mail is unread again); with a build between it moves twice, as the receipt did;
+    and a later exec after the restore lands a new time, which the card renders, so that moves it too.
+
+    The key "" is the bucket for records with NO recipient: such a record hydrates in every chat
+    (_postal_addressed_to), so every session's revision folds this bucket (_chat_postal_rev). A record with
+    no SENDER keys its recipient alone: the bus refuses an anonymous /send, so the only writer of one is the
+    bus's own return note (deliver from "romp-postal", from_id ""), and an outgoing card joins its row by
+    body with no sender filter today, so such a row is no more its sender's than any third party's; keying
+    it here would rebuild every mail-bearing tab per return note for nothing. When the join is scoped to
+    rows with fromId in (sid, "") the bucket must key fromId == "" too. A self-addressed or pre-schema row
+    (from == to) counts once, the keys being a set. A relay row's to_id is "peer:<host>", an unused bucket
+    (this kernel builds chats only for sessions with a local transcript; an incoming relayed message is a
+    local sent row with to_id the local session), one dict entry per peer host. A second `sent` row for one
+    id is not a case: deliver mints a unique maildir name, the relay park a px- name, the start sweep's row
+    rebuild skips ids already sent, and every writer appends (_tl_append)."""
+    revs = {}
+    for rec in index.values():
+        keys = {rec.get("toId") or ""}
+        if rec.get("fromId"):
+            keys.add(rec["fromId"])
+        outs = None
+        if rec.get("read") or rec.get("relayed") or rec.get("bounced") or rec.get("recalled"):
+            outs = (rec["id"], rec.get("read") or None, rec.get("relayed") or None, rec.get("bounced") or None,
+                    rec.get("recalled") or None, rec.get("bouncedWhy") or None)
+        for k in keys:
+            ent = revs.get(k)
+            if ent is None:
+                ent = revs[k] = [0, None, []]
+            ent[0] += 1
+            ent[1] = rec["id"]
+            if outs is not None:
+                ent[2].append(outs)
+    return {k: (n, mid, tuple(outs)) for k, (n, mid, outs) in revs.items()}
+
+
+def _postal_sid_revs_of(index):
+    """The per-session revision table for `index` (2026-09-18): the memoized index's table comes from its
+    memo entry (built once per index version, never per build); any other dict (a caller's own index) gets
+    one built here, once per call. _chat_postal_rev reads a session's revision through this."""
+    hit = _postal_index_memo[0]
+    if hit is not None and hit[1] is index:
+        return hit[3]
+    return _postal_sid_revs(index)
 
 
 def _name_color_by_name(name):
@@ -31791,8 +31851,8 @@ def _postal_card_deps(cards, index, captions):
     re-hydration in this build would read: per card its mid, the caption under that mid, and its peer's
     identity (the sender's name and colour for an incoming card, the recipient's colour for an outgoing
     one); a raw event that did not hydrate contributes None, its rendering depending on the log alone,
-    which the gate keys beside this by the log's identity (_chat_postal_key). Everything else a card
-    carries comes from the raw event or the log row. `captions` is the build's caption-map getter and is
+    which the gate keys beside this by this session's postal revision (_chat_postal_rev). Everything else
+    a card carries comes from the raw event or the log row. `captions` is the build's caption-map getter and is
     called only when a card carries a mid, so a tab whose cards join no caption never pays for the map.
     The gate re-hydrates when this tuple moved: O(cards) dict lookups instead of a whole-list re-hydration
     on every judge pass, which was the gate's rule while the judge generation was its key (2026-09-09)."""
@@ -32845,13 +32905,29 @@ def _chat_stat_key(path):
         return None
 
 
-def _chat_postal_key():
-    """The postal index's identity — messages.jsonl (mtime_ns, size), the same key _postal_index memoizes on."""
-    try:
-        st = os.stat(jd.STATE / "timeline" / "messages.jsonl")
-        return (st.st_mtime_ns, st.st_size)
-    except OSError:
-        return None
+def _chat_postal_rev(sid, index):
+    """This session's revision of the postal index (2026-09-18): (its own entry, the no-recipient bucket) from
+    _postal_sid_revs_of(index), the postal component's key beside the values the cards embed
+    (_postal_card_deps). It moves on exactly the postal events that can change this tab's cards: a record
+    addressed to or from this session appearing (a raw marker resolving, an outgoing card's body join), an
+    outcome landing on one of those (read, relayed, bounced with its why, recalled: the receipt a sent card
+    renders), or a record with no recipient appearing (it hydrates in every chat). It deliberately does not
+    move on mail between two other sessions, nor on outcome rows for their messages. The key before it was
+    the log's identity ((mtime_ns, size), the index memo's own key), so a message between ANY two sessions
+    rebuilt every mail-bearing tab and re-hydrated their sealed cards: 1862 of 5907 background chat rebuilds
+    on one live kernel carried the postal label, and the gate re-hydrated sealed cards 1624 times (a /perf
+    read, 2026-09-18).
+
+    One residual inexactness, inherited from the outgoing join: enrich_out in _hydrate_postal joins an
+    outgoing card to ANY sent row wearing its exact body, closest in time to the tool call, with no sender
+    filter. For a card correctly joined to its own row, a later identical-body row from another pair would
+    STEAL the join under the log key, so the render this key leaves unrefreshed is the correct one; the one
+    wrong-either-way case is a card already mis-joined to a third party's row whose outcomes then change,
+    which this key does not see. The follow-up that scopes the join to rows with fromId in (sid, "") makes
+    this key exact by construction (and adds fromId == "" to the bucket, see _postal_sid_revs). `index` is
+    the object the build hydrates against, so the key and the cards it stands for read one index."""
+    revs = _postal_sid_revs_of(index)
+    return (revs.get(sid), revs.get(""))
 _prev_chat_ledger = {}                           # sid → the previous build's ledger (so a delta carries it only when changed)
 
 # The ledger memo (2026-09-09): build_session's goal-tree walk and live roots per sid, keyed on every input
@@ -33116,10 +33192,10 @@ def _chat_build_deps(sid, payload):
     so _chat_build_sig can re-evaluate them every cycle as its three trailing components
     (_CHAT_SIG_DEPS): the files whose tails the payload embeds, each with the identity it was read under
     (taskout); the messages whose path tokens are still unresolved (a mention precedes its file, so the
-    build retries them), with the links and pins as rendered (pathlink); and the postal cards, with the
-    log's identity and the embedded values (_postal_card_deps) read from the index and caption map the
-    build hydrated against, never from a fresh read (postal). `at_build` is the three components as this
-    build embedded them, the tail of the signature stored with the entry; the next cycle's
+    build retries them), with the links and pins as rendered (pathlink); and the postal cards, with this
+    session's postal revision (_chat_postal_rev) and the embedded values (_postal_card_deps) read from the
+    index and caption map the build hydrated against, never from a fresh read (postal). `at_build` is the
+    three components as this build embedded them, the tail of the signature stored with the entry; the next cycle's
     _chat_sig_deps evaluates the same record against the world then. A cold tab records its dependencies
     on its first build and is cached from then on."""
     sc = getattr(_chat_dep_scope, "deps", None) or {}
@@ -33137,12 +33213,13 @@ def _chat_build_deps(sid, payload):
     postal_any = bool(cards) or bool(sc.get("postal_any"))
     postal = None
     if postal_any:
+        pidx = sc.get("pidx")
+        idx = pidx if pidx is not None else _postal_index()  # the index first: the revision is read from it (2026-09-18)
         pk = sc.get("postal_key", _DEPS_UNSET)
         if pk is _DEPS_UNSET:
-            pk = _chat_postal_key()
-        pidx = sc.get("pidx")
+            pk = _chat_postal_rev(sid, idx)
         msum = sc.get("msum") or _msg_summaries_scoped
-        postal = (pk, _postal_card_deps(cards, pidx if pidx is not None else _postal_index(), msum))
+        postal = (pk, _postal_card_deps(cards, idx, msum))
     pl_at = tuple((u, l, p) for u, _md, l, p in pl)
     # `pl_check` starts None: the next cycle's signature re-resolves the pending tokens once (the build's
     # own resolves ran before any pre-check could be taken) and vouches from there (_chat_sig_deps)
@@ -33219,9 +33296,9 @@ def _chat_sig_deps(sid, deps):
     the build ran per pass before, moved into the key), except that a message none of whose candidate
     directories moved since the record's answers were verified (_chat_pl_precheck) keeps those answers,
     and only the messages a moved directory could have resolved are re-resolved (pathlink); and the
-    postal cards' embedded values re-read from the current index and caption map beside the log's
-    identity (postal). No record (a cold tab) → the empty components, which a first build's record then
-    replaces. The pre-check is taken BEFORE the re-resolve and stored on the record only when every
+    postal cards' embedded values re-read from the current index and caption map beside this session's
+    postal revision (postal). No record (a cold tab) → the empty components, which a first build's record
+    then replaces. The pre-check is taken BEFORE the re-resolve and stored on the record only when every
     answer held (stat-then-read): a file landing between the two is seen by the resolve, one landing
     after moves the next pre-check."""
     if not deps:
@@ -33249,8 +33326,11 @@ def _chat_sig_deps(sid, deps):
     postal = None
     if deps["postal_any"]:
         # the caption map through the cycle's slot on the pusher (_msg_summaries_scoped): the same map every
-        # build of the cycle hydrates against, one fetch per cycle; a handler thread reads it fresh
-        postal = (_chat_postal_key(), _postal_card_deps(deps["postal_cards"], _postal_index(), _msg_summaries_scoped))
+        # build of the cycle hydrates against, one fetch per cycle; a handler thread reads it fresh. The
+        # revision is read from the one index resolved here (2026-09-18): one stat of the log per tab per
+        # cycle, where the log-identity key stat'd it once and _postal_index again
+        idx = _postal_index()
+        postal = (_chat_postal_rev(sid, idx), _postal_card_deps(deps["postal_cards"], idx, _msg_summaries_scoped))
     return (touts, tuple(pl), postal)
 
 
@@ -37554,12 +37634,15 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     _fk, _fe, _fold_ok, _fold_why = _floor, None, False, None
     _pref_len = 0
     _seams_sig = json.dumps((_bs_store or {}).get("seams") or [], sort_keys=True, default=str)
-    _pk = _chat_postal_key()
     # ONE postal index and ONE caption map per build: the fold gate's check, the tail pass and the commit
     # hydrate against the same objects, so the entry records exactly the values its cards embed (a caption
     # appended between two of them would otherwise be embedded by one hydration and recorded by another).
     # The map is the cycle's on the pusher thread (_msg_summaries_scoped); a handler thread fetches its own.
+    # This session's postal revision (_pk, _chat_postal_rev) is read from that same index (2026-09-18), so
+    # the key the gate compares and the index it hydrates against are one object; the log's identity was
+    # the key before it, and mail between two other sessions rebuilt every mail-bearing tab.
     _pidx = _postal_index()
+    _pk = _chat_postal_rev(sid, _pidx)
     _msum_slot = [None]
     def _msum():
         if _msum_slot[0] is None:
@@ -37643,11 +37726,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                             break
             if _fold_why is None and _fe["postal_raw"]:
                 # The sealed postal cards are keyed on the VALUES they embed from outside the transcript
-                # (2026-09-09): the log's identity (_pk, the index memo's own key) and, per card, its caption
-                # and its peer's name and colour, read from the same index and caption map a re-hydration in
-                # this build would read (_postal_card_deps). They used to be re-hydrated on every judge pass
-                # (_judge_gen), although the only judge-written input a card embeds is its caption: every
-                # tab's whole sealed list, on every pass that moved any store. A deps tuple of None is an
+                # (2026-09-09): this session's postal revision (_pk, _chat_postal_rev, 2026-09-18) and, per
+                # card, its caption and its peer's name and colour, read from the same index and caption map a
+                # re-hydration in this build would read (_postal_card_deps). They used to be re-hydrated on
+                # every judge pass (_judge_gen), although the only judge-written input a card embeds is its
+                # caption: every tab's whole sealed list, on every pass that moved any store. A deps tuple of None is an
                 # entry sealed outside the pusher's names scope (see _scoped): unverified, so it re-hydrates
                 # once here and is recorded by this build if it is scoped.
                 _deps = _fe.get("postal_deps")
@@ -38159,7 +38242,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         if _ev.get("uuid") and _ev["uuid"] not in _raw_turn:
             _raw_turn[_ev["uuid"]] = _ti
     # A raw postal event that did not hydrate (its message not in the index yet) renders from the log alone and
-    # depends on the postal log, so the signature folds the log's identity even when no card rendered
+    # depends on the postal log, so the signature folds this session's postal revision even when no card rendered
     # (_chat_build_deps: postal_any); the record keeps the index and caption map this build hydrated against.
     if _chat_dep_scope.deps is not None:
         _chat_dep_scope.deps["postal_any"] = _chat_dep_scope.deps["postal_any"] or any(_chat_postal_relevant(_e) for _e in _raw_tail)
@@ -38282,6 +38365,8 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                                     + [(em.parse_z(_e.get("ts")) or 0, (_e.get("md") or "").strip()) for _e in _newpart if _e.get("orphaned")],
                     "open_tools": _open_tools, "skill_unfilled": _skill_unf,
                     "postal_raw": _praw, "postal_cards": _pcards,
+                    # postal_key: this session's postal revision (2026-09-18; the field's name predates it, and an
+                    # entry sealed under the old shape never outlives a restart: _chat_fold is in memory)
                     "postal_key": _pk, "postal_deps": _pdeps, "pl_pending": _plp, "pv_missing": _pvm,
                     "task_outs": _touts,
                     # the sealed Agent cards, for _chat_agents_moved: (toolUseId, agentId, pending) —

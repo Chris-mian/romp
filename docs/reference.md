@@ -2774,13 +2774,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   building only the user rows that carry text, so the two say whether a
   dropped echo days back should hold the floor at all. `chatPostal` is
   the chat fold's memo of a tab's sealed postal cards, keyed on the values
-  the cards embed from outside the transcript (the message log's identity
-  and, per card, its caption and its peer's name and colour): `gate` (gate
-  checks that re-hydrated a tab's sealed cards because one of those values
-  moved, or because the entry was sealed outside the pusher's names snapshot
-  and had to be verified), `hit` (checks that verified the sealed cards from
-  their recorded values without hydrating), and `commit_new` (raw postal
-  events hydrated at fold commits; each is hydrated once, when it is first
+  the cards embed from outside the transcript (this session's revision of
+  the postal index: the records addressed to or from it, their outcomes and
+  the records with no recipient, and, per card, its caption and its peer's
+  name and colour; since 2026-09-18 a message between two other sessions
+  moves none of these, so it is a `hit`): `gate` (gate checks that
+  re-hydrated a tab's sealed cards because one of those values moved, or
+  because the entry was sealed outside the pusher's names snapshot and had to
+  be verified), `hit` (checks that verified the sealed cards from their
+  recorded values without hydrating), and `commit_new` (raw postal events
+  hydrated at fold commits; each is hydrated once, when it is first
   sealed). Before this memo every judge pass re-hydrated every tab's sealed
   cards, although a caption is the only judge-written value a card carries.
   `chatLedger` is the chat build's memo of a session's goal-tree walk and
