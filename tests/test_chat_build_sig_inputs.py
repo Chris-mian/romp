@@ -384,6 +384,42 @@ class Census(unittest.TestCase):
         for retired in ("_active_chat_sig", "_clock_predicates", "_external_sig", "_ACTIVE_SIG_FILES"):
             self.assertFalse(hasattr(km, retired), "%s: the watched tab's separate key is retired" % retired)
 
+    def test_the_row_projection_drops_only_fields_no_chat_reader_reads(self):
+        """The `row` component is the liveness row without _CHAT_ROW_UNKEYED and, per task row, without
+        _CHAT_TASK_ROW_UNKEYED (_chat_row_sig, 2026-09-18). A dropped field must stay unread by the build, or the
+        memo rule breaks silently: a stale payload served while the key holds. Two pins. The named chat readers'
+        own source (the reads the census classifies) names neither field, by word so a single-quoted read is seen
+        too. And, as the transitive backstop a reader added in a helper they call would slip past, the whole kernel
+        source: every mention of lastTool lies in the projection block itself (the constants, their comment and
+        _chat_row_sig, which name the field in order to drop it) or in _chat_build_sig (the key, whose row comment
+        says so; a read there would be a key input, not a payload read), and every mention of ctxTokens in those
+        two, in the compaction-suggestion tick (its one reader, a tick, not a build) or in Sessions.live (the merge
+        that writes it). _interrupting reads snapT and interrupting by design and is folded under clock; it is
+        deliberately not among the readers."""
+        self.assertEqual(km._CHAT_ROW_UNKEYED, {"snapT", "interrupting", "ctxTokens"})
+        self.assertEqual(km._CHAT_TASK_ROW_UNKEYED, {"lastTool"})
+        readers = (km.build_session, km._light_status, km._session_chip, km._bg_live_norm, km._bg_tasks,
+                   km._agent_alive, km._awaiting_live_rows, km._session_background_items, km._model_pending_now,
+                   km._compacting, km._session_backend, km._session_retrying)
+        src = "\n".join(inspect.getsource(f) for f in readers)
+        for k in ("ctxTokens", "lastTool"):
+            self.assertIsNone(re.search(r"\b%s\b" % k, src),
+                              "%s is dropped from the row component, so no chat reader may read it" % k)
+        lines = Path(inspect.getsourcefile(km._chat_build_sig)).read_text(encoding="utf-8").splitlines()
+        deps_src, deps_at = inspect.getsourcelines(km._chat_sig_deps)
+        _sig_src, sig_at = inspect.getsourcelines(km._chat_build_sig)
+        block = "\n".join(lines[deps_at - 1 + len(deps_src):sig_at - 1])
+        self.assertIn("def _chat_row_sig", block, "the projection sits between _chat_sig_deps and _chat_build_sig")
+        whole = "\n".join(lines)
+        key_src = block + "\n" + "".join(_sig_src)
+        count = lambda k, text: len(re.findall(r"\b%s\b" % k, text))
+        self.assertEqual(count("lastTool", whole), count("lastTool", key_src),
+                         "lastTool is mentioned outside the projection and the key: a reader the row component holds against")
+        self.assertEqual(count("ctxTokens", whole),
+                         count("ctxTokens", key_src) + count("ctxTokens", inspect.getsource(km._compact_suggest_tick))
+                         + count("ctxTokens", inspect.getsource(km.Sessions.live)),
+                         "ctxTokens is mentioned beyond the projection, the key, the compaction tick and the merge writing it")
+
 
 # ── the differential tests ────────────────────────────────────────────────────────────────────────
 # One hermetic world (a session discovery finds, with a fixed liveness row, and no backend owns); each test moves one
@@ -693,6 +729,36 @@ class Differential(_World):
         self.assertEqual(self.moved(a, self.sig(tm=dict(self.row, context=42))), ("row",))
         self.assertEqual(self.moved(a, km._chat_build_sig(self.sess, None, NOW, live_map={})), ("row",),
                          "no row for the sid, and an empty map: a different key, never a false hit")
+
+    def test_a_tasks_progress_and_the_raw_token_count_hold_the_row_and_a_start_or_end_moves_it(self):
+        """The row component is the projection _chat_row_sig (2026-09-18): a background task's progress chatter
+        (lastTool, which every task_progress that names a tool rewrites) and the raw token count (ctxTokens, which
+        every usage report moves while the payload renders the percent) hold the key; a task starting, ending or
+        learning its description or type, the percent, ctxOver, a subagent and the state each move it, as before."""
+        km._live_map = self.saved[5]                 # the kernel's own reader, so the bg component reads the handed map
+        aid = "a0123456789abcdef"
+        task = {"toolUseId": "tu_1", "taskId": aid, "desc": "Running Map the parser", "since": NOW - 30,
+                "type": "local_agent", "lastTool": ""}
+        row = dict(self.row, bgTasks=[task], subagents=[], ctxTokens=120_000)
+        key = lambda r: km._chat_build_sig(self.sess, r, NOW, live_map={SID: r})
+        a = key(row)
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[dict(task, lastTool="Read")]))), (),
+                         "a task_progress that rewrote lastTool: nothing the build reads changed")
+        self.assertEqual(self.moved(a, key(dict(row, ctxTokens=120_512))), (),
+                         "a usage report that moved the raw count and not the percent")
+        task2 = dict(task, toolUseId="tu_2", taskId="a0123456789abcde0", desc="Running Check the docs")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[task, task2]))), ("bg", "row"), "a second task started")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[]))), ("bg", "row"), "the task ended")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[dict(task, desc="Running Map the lexer")]))), ("bg", "row"),
+                         "the task's description landed")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[dict(task, type="local_bash")]))), ("bg", "row"),
+                         "the task's type landed")
+        self.assertEqual(self.moved(a, key(dict(row, context=42))), ("row",), "the percent stepped")
+        self.assertEqual(self.moved(a, key(dict(row, ctxOver=True))), ("row",), "the overflow flag flipped")
+        self.assertEqual(self.moved(a, key(dict(row, subagents=[{"type": "Explore", "since": NOW - 10, "agentId": aid}]))),
+                         ("row",), "a subagent started")
+        self.assertEqual(self.moved(a, key(dict(row, state="working"))), ("row",))
+        self.assertEqual(key(dict(row, snapT=NOW + 3)), a, "snapT moves every cycle and is not rendered")
 
     def test_each_clock_boolean_misses_under_clock_exactly_at_its_crossing(self):
         tm = dict(self.row, state="ready", since=NOW - 3599)
