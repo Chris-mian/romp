@@ -2703,7 +2703,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `fail`: a read that failed on a file that exists, answered as no overlay,
   memoized nothing and named once per episode on the kernel's stderr;
   `evict`: entries dropped for sessions that left the alive set; and the
-  gauge `entries`). The compaction sweep after each judge pass evicts from
+  gauge `entries`). `parkedHandoffs` is the feed's fold over the postal log
+  for the handoffs parked in a dead session's maildir (2026-09-18): one
+  carried set of the parked sends not yet recalled or bounced, so a quiet log
+  is one cursor check per feed build where the scan walked every row of the
+  log before (`hit`, `append`, `refold` and `fail` as above, the failure
+  answered as no parked handoffs for that build, memoized nothing and named
+  once per episode on the kernel's stderr; `restore`: the cursor came from
+  the log's checkpoint and the tail alone was stepped; `cold`: a checkpointed
+  cursor without its state, stepped from its cut; and the gauge `entries`,
+  the candidates held). Whether each candidate is still parked is read from
+  the maildir at every build, as before, for no more than the paths the walk
+  checked; the fold only spares the walk. The compaction sweep after each
+  judge pass evicts from
   `pass` and `shared` the entries of stores no session in the discover window
   owns, so both stay bounded by the live board; the courier's and the
   planner's change-gate tables are pruned to the sessions each pass discovers,

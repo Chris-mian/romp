@@ -128,6 +128,7 @@ class Collector(unittest.TestCase):
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "convergeDeclined", "sessionsListing", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip", "ghostDropped",
                                               "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
+                                              "parkedHandoffs",   # the feed's parked-handoff fold over the postal log (2026-09-18)
                                               "judgingBand",   # the judging band's per-row memo and horizon cursor (2026-09-16)
                                               "subagentTree",   # the subagents directory walk memo (2026-09-16): served vs walked, roots held
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks",   # the chat build's fixed-cost memos (2026-09-09)
@@ -157,6 +158,9 @@ class Collector(unittest.TestCase):
         self.assertEqual(snap["memos"]["intrMarks"], km._intr_marks_memo_report())
         self.assertEqual(set(snap["memos"]["statesOverlay"]), {"hit", "append", "refold", "fail", "evict", "entries"})
         self.assertEqual(snap["memos"]["statesOverlay"], km._states_overlay_report())
+        self.assertEqual(set(snap["memos"]["parkedHandoffs"]), {"hit", "append", "refold", "restore", "cold", "fail", "entries"},
+                         "the parked-handoff fold's paths, pre-seeded so the key set is fixed, and its occupancy (2026-09-18)")
+        self.assertEqual(snap["memos"]["parkedHandoffs"], km._parked_fold_report())
         for blk in ("intrMarks", "statesOverlay"):
             for k, v in snap["memos"][blk].items():
                 self.assertIsInstance(v, int, "%s.%s" % (blk, k))
