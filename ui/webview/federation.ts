@@ -880,6 +880,11 @@ function pendingTypes(c: Conn): string[] {
   return [...c.pending.values()].map((m) => (m && typeof m.type === "string" ? m.type : ""));
 }
 
+// The apps that RENDER a pushed channel a remote host can be heard on (pendingFor): the chat its tab list, the feed and the
+// Outline pane the feed payload, the timeline its lanes. settings and files load this module too, for the fan-out and the routing,
+// and receive no pushed view, so they are not here.
+const PANE_CHANNELS = new Set(["chat", "feed", "fleet", "timeline"]);
+
 export class FederationManager {
   app = "chat";
   private iidFallback = "";   // a stable per-page prefix for the remote iid when this dashboard has no wid, so the iid a hub pane sends is NEVER bare (a bare iid equal to a remote's own local page retires that page's socket): iidNamespace()
@@ -1277,11 +1282,21 @@ export class FederationManager {
     });
   }
 
-  private lastPendingSig = "";
+  // null, not "": the FIRST publish always posts, an empty list included, so a pane's fresh instance (a reload) replaces
+  // whatever list its dead predecessor left in the shell; with "" a reloaded pane that pended nothing never spoke and the
+  // shell kept the stale names (2026-09-18)
+  private lastPendingSig: string | null = null;
 
   /** Which attached hosts THIS pane is still waiting on, by the channel it renders: the chat reads the
-   *  tab list, the feed and fleet the feed payload, the timeline the lanes skeleton. */
+   *  tab list, the feed and the Outline pane the feed payload, the timeline the lanes skeleton. A page that renders no
+   *  pushed channel pends nothing: the settings page and the file browser load this module (the gear's
+   *  kernel-side settings fan out to every host; the browser routes by host) but sit outside every build
+   *  audience (kernel.py _settings_page, app=settings), so no frame of theirs could ever retire a host, and
+   *  the settings frame's manager posted every attached host as pending for good: the network panel read
+   *  every connected remote as "connected · loading sessions…" from the moment the gear was first opened
+   *  (the user's 2026-09-18 screenshot, three remotes, all up, their sessions in the tabs). */
   private pendingFor(): string[] {
+    if (!PANE_CHANNELS.has(this.app)) return [];
     const src = this.app === "timeline" ? this.perHostTl : this.app === "chat" ? this.perHostOrder : this.perHostFeed;
     return this.hostSeq.filter((h) => h !== LOCAL && !(h in src));
   }
@@ -1292,6 +1307,7 @@ export class FederationManager {
   // says "connected · loading sessions…" until this pane's first payload from that host retires it.
   // Posted on CHANGE only, and only to a same-origin parent (a cross-origin host has no network panel).
   private publishPending(): void {
+    if (!PANE_CHANNELS.has(this.app)) return;   // no channel to retire by: nothing to tell the shell (see pendingFor)
     const hosts = this.pendingFor();
     const sig = hosts.join("\u0000");
     if (sig === this.lastPendingSig) return;
