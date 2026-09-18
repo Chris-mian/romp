@@ -432,6 +432,9 @@ class _PerfStats:
                                    entries) and the awaiting overlay's states-log fold
                                    (_states_overlay_report: hit, append, refold, fail, evict,
                                    entries), both trimmed to the interrupt tick's alive set each cycle;
+                                   parkedHandoffs: the feed's parked-handoff fold over the postal log
+                                   (_parked_fold_report: hit, append, refold, restore, cold, fail, and
+                                   the gauge entries, the parked sends not yet recalled or bounced);
                                    the chat build's fixed-cost memos: chatMergeSets (the live merge's
                                    transcript-side sets, one entry per sid on the parsed session's
                                    identity, see _merge_tx_sets) -> hit / miss and the gauge entries;
@@ -1098,6 +1101,7 @@ class _PerfStats:
                           ("intrMarks", _intr_marks_memo_report), ("deadWait", lambda: dict(_DEAD_WAIT_STATS)),
                           ("tickSeen", _tick_seen_report),
                           ("statesOverlay", _states_overlay_report),
+                          ("parkedHandoffs", _parked_fold_report),   # the feed's parked-handoff fold over the postal log (2026-09-18): its path counts and candidates held
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
@@ -44636,6 +44640,93 @@ def _thread_anchors(alive_sids):
     return out
 
 
+_parked_fold_cache = {}       # str(jd.MESSAGES) -> _fold_records cursor (count, gen, state) over the parked-handoff candidates:
+#                               the feed's parked-handoff scan walked every row of the postal log per build (2026-09-18); a fold
+#                               keeps only the parked candidates, and a quiet log is one cursor check per build
+_parked_fold_stats = {"hit": 0, "append": 0, "refold": 0, "restore": 0, "cold": 0, "fail": 0}   # pre-seeded with every path
+#                               fold_records reports through `on`, so the /perf key set is fixed (memos.parkedHandoffs)
+_parked_fold_failed = set()   # paths whose last read failed on a file that exists: one stderr line per episode, ended by the
+#                               next good read (_parked_fold_on). One path in production (the postal log), so no cap
+_PARKED_FOLD_LOCK = threading.Lock()   # the pusher, the connect-time builds on WS threads and the GET handlers all build the
+#                                        feed, so a bare `+= 1` is a read-modify-write across threads (the statesOverlay
+#                                        precedent); the episode set rides the same lock. The cursor dict itself is unlocked
+#                                        like every fold dict in the module: a lost race degrades to a re-read, never a wrong
+#                                        answer
+
+
+def _parked_fold_fresh():
+    return {}
+
+
+def _parked_fold_step(state, o):
+    """One postal-log row into the parked-handoff candidates {mid: {fromId, toId, body, t}} (2026-09-18): a park:true
+    'sent' row enters (a `recovered` sent row, the postal start's rowless rebuild, exactly as the walk let it), and a
+    'recall' or 'bounced' row retires it (terminal, the same pair _postal_log_step files under `ended`: recalled by the
+    sender, or the bus refused or destroyed it; it can never land now). Those two rows are written only AFTER the file
+    has left new/: recall unlinks new/<mid> and writes its row second, none when the unlink fails; _mail_unreadable
+    moves the file aside and writes bounced second, none when the move fails (both in postal_service.py); the orphan
+    sweep never bounces parked mail; and every other bounced writer closes a message that stands in no box, a claim
+    already in cur/, or a cross-host outbox record that never had a new/ file. So the pop never hides a standing file.
+    'exec' and 'unexec' are NOT consulted: read_box(consume=True) renames new/ to cur/ and writes exec second, but
+    restore() moves the file back to new/ BEFORE its unexec row lands and ignores a failed append, so a claim the
+    ledger records can outlive the maildir's truth; the maildir new/ check in _parked_handoffs stays the sole authority
+    for hiding as well as surfacing, applied to every candidate. The body is clipped here as the answer clipped it;
+    `t` reads as the walk's `int(t or now)` did (0 is missing), and a non-numeric t reads as missing too: the walk
+    raised out of the feed build on one, and in a fold that raise would recur as a whole refold per build.
+    Mutate-and-return: fold_records deep-copies the cached state before stepping."""
+    ev, mid = o.get("ev"), o.get("id")
+    if not mid:
+        return state
+    if ev == "sent":
+        to_id, from_id = o.get("to_id"), o.get("from_id")
+        if o.get("park") and to_id and from_id:
+            t = o.get("t")
+            try:
+                t = int(t) if t else None
+            except (TypeError, ValueError):
+                t = None
+            state[mid] = {"fromId": from_id, "toId": to_id, "body": (o.get("body") or "")[:240], "t": t}
+    elif ev in ("recall", "bounced"):
+        state.pop(mid, None)
+    return state
+
+
+def _parked_fold_on(path_s, kind):
+    """The fold's `on` for the postal log: count the path the fold took, and on "fail" (the log exists and could not be
+    stat'ed, opened or read; the fold answered its empty state and memoized nothing, so the feed shows no parked handoff
+    for that build) write one stderr line per episode, the awaiting overlay's shape (_states_overlay_on): the walk this
+    replaced answered [] on such a failure with no trace at all, and a /perf counter alone is not the visible error an
+    unavailable source owes (2026-09-18). A later good read of the same path ends the episode, so a failure after it is
+    said again; nothing else ends one. Cheap on purpose, since it runs inside every fold: one locked increment, and the
+    set is touched only on a failure or while an episode is open."""
+    with _PARKED_FOLD_LOCK:
+        _parked_fold_stats[kind] = _parked_fold_stats.get(kind, 0) + 1
+        if kind == "fail":
+            first = path_s not in _parked_fold_failed
+            _parked_fold_failed.add(path_s)
+        else:
+            first = False
+            _parked_fold_failed.discard(path_s)
+    if first:
+        sys.stderr.write("parked-handoffs: %s unreadable (the file exists); parked handoffs are answered as none until the "
+                         "log reads again\n" % os.path.basename(path_s))
+
+
+def _parked_fold_report():
+    """The fold's counters plus its occupancy, for GET /perf (memos.parkedHandoffs) (2026-09-18): hit (the records were
+    the cached ones; nothing stepped), append (only the appended rows stepped), refold (every row stepped: a rewrite, a
+    shrink, or the first fold of the file), restore (the cursor came from the log's checkpoint and the tail alone was
+    stepped), cold (a checkpointed cursor without its state: stepped from its cut), fail (a read that failed on a file
+    that exists; not memoized, answered as no parked handoffs and said once per episode on stderr) and the gauge
+    entries: the parked sends not yet recalled or bounced, consumed ones included (no terminal row ever comes for a
+    consumed mail; each is one stat per build, a stat the walk paid too)."""
+    with _PARKED_FOLD_LOCK:
+        out = dict(_parked_fold_stats)
+    out["entries"] = sum(len(cur[2]) for cur in list(_parked_fold_cache.values())
+                         if isinstance(cur, tuple) and isinstance(cur[2], dict))
+    return out
+
+
 def _parked_handoffs(now, alive_sids):
     """Parked-to-dead HANDOFFS still awaiting your decision (the user 2026-06-22): a send to a session that
     is DEAD parks in its maildir until that session is revived. Each is a decision only the human can make —
@@ -44643,25 +44734,35 @@ def _parked_handoffs(now, alive_sids):
     parking silently. DETERMINISTIC, no judging: a parked 'sent' row in the postal log (park:true) whose
     maildir file is STILL in the recipient's new/ (unconsumed — the authoritative 'still parked' signal, so a
     later revive+consume or a recall clears it) AND whose recipient is still dead. Returns oldest-first
-    [{msgId, fromId, fromName, toId, toName, body, t}]. Best-effort []."""
+    [{msgId, fromId, fromName, toId, toName, body, t}]. Best-effort [].
+
+    (2026-09-18) A _fold_records fold over the log (_parked_fold_step, checkpointed as "parkedHandoffs") keeps
+    only the parked candidates, so a quiet log is one cursor check per build and an append steps its new rows
+    alone; before it the scan walked every row of the ~32k-row log per feed build (about 4.6 ms in a synthetic
+    replay of the loop, ~9 ms quoted from the live kernel, which built the feed 1370 times in a sampled 97
+    minutes). Keyed on jd.MESSAGES, the file _messages_rows read (tests re-point it); in production it is the
+    file _postal_messages folds under "postalLog", the two cursors sharing one reader entry. The maildir new/
+    check is still applied to every candidate whose recipient is dead: no more than the stats the walk paid, one
+    per parked send not yet recalled or bounced whose recipient is dead (the walk stat'd the recalled ones too);
+    names resolve and the alive set is read at answer time (names change; the state carries ids only). A log
+    that exists and cannot be read answers [] for the build, as the walk did, and is now said once per episode
+    on stderr (_parked_fold_on). Counters ride GET /perf under memos.parkedHandoffs."""
+    cands = _fold_records(_parked_fold_cache, jd.MESSAGES, _parked_fold_fresh, _parked_fold_step,
+                          ckpt="parkedHandoffs", on=functools.partial(_parked_fold_on, str(jd.MESSAGES)))
     base = jd.STATE / "postal"
     out = []
-    for o in _messages_rows():
-        if not isinstance(o, dict):
-            continue
-        mid, to_id, from_id = o.get("id"), o.get("to_id"), o.get("from_id")
-        if not (o.get("park") and mid and to_id and from_id):
-            continue
+    for mid, c in cands.items():                     # never mutate c or cands: on a hit the fold hands back its cached state
+        to_id, from_id = c["toId"], c["fromId"]
         if to_id in alive_sids:                          # recipient revived → the parked mail already delivered
             continue
         try:
-            if not (base / "mail" / to_id / "new" / mid).exists():   # consumed / recalled / gone → resolved
+            if not (base / "mail" / to_id / "new" / mid).exists():   # consumed / recalled / gone → resolved (the authority)
                 continue
         except OSError:
             continue
         out.append({"msgId": mid, "fromId": from_id, "fromName": _name_of(from_id) or from_id[:8],
                     "toId": to_id, "toName": _name_of(to_id) or to_id[:8],
-                    "body": (o.get("body") or "")[:240], "t": int(o.get("t") or now)})
+                    "body": c["body"], "t": c["t"] if c["t"] is not None else int(now)})
     out.sort(key=lambda h: h["t"])
     return out
 

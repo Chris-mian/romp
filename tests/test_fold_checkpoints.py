@@ -573,7 +573,9 @@ class KernelFolds(Base):
         head = [{"ev": "sent", "id": "m1", "from_id": SID, "to_id": "22222222-2222-4333-8444-000000000302", "body": "ping", "t": TS0, "kind": "coordinate"},
                 {"ev": "exec", "id": "m1", "t": TS0 + 1, "dmid": None}]
         rest = [{"ev": "sent", "id": "m2", "from_id": SID, "to_id": SID, "body": "note", "t": TS0 + 2},
-                {"ev": "recall", "id": "m2", "t": TS0 + 3}, {"ev": "unexec", "id": "m1", "t": TS0 + 4}]
+                {"ev": "recall", "id": "m2", "t": TS0 + 3}, {"ev": "unexec", "id": "m1", "t": TS0 + 4},
+                {"ev": "sent", "id": "m3", "from_id": SID, "to_id": "22222222-2222-4333-8444-000000000302", "body": "handoff",
+                 "t": TS0 + 5, "park": True}]   # a parked send: the feed's parked-handoff fold (2026-09-18)
         return head + rest if tail else head
 
     def queue_recs(self, tail):
@@ -614,6 +616,8 @@ class KernelFolds(Base):
             "bgJudge": [dict(t) for t in jd._bg_unresolved(self.leaf, now=TS0 + 100)],
             "postalLog": {k: (dict(v) if isinstance(v, dict) else sorted(v)) for k, v in
                           km._fold_records(km._postal_log_cache, self.postal, km._postal_log_fresh, km._postal_log_step, ckpt="postalLog").items()},
+            "parkedHandoffs": dict(km._fold_records(km._parked_fold_cache, self.postal, km._parked_fold_fresh, km._parked_fold_step,
+                                                    ckpt="parkedHandoffs")),
         }
 
     def write_all(self, tail):
@@ -629,7 +633,7 @@ class KernelFolds(Base):
             names |= set(self.doc(p)["folds"])
         ALL_NAMES = {"sessionMeta", "bgRunning", "bgAll", "bgJudge", "agentLaunches", "agentGist", "agentLaunchIds", "statesOverlay",
                      "stateIntervals", "statesNotes", "machineCut", "queueLedger", "wakeTail", "postalLog", "lastState",
-                     "lastNaturalState", "retryingSince", "nudgeTimes"}
+                     "lastNaturalState", "retryingSince", "nudgeTimes", "parkedHandoffs"}
         self.assertEqual(names, ALL_NAMES, "every kernel fold this test drives left its state in the checkpoint")
         ksrc = open(os.path.join(BIN, "romp-kernel")).read(); jsrc = open(os.path.join(BIN, "romp-judge")).read()
         import re as _re
@@ -667,6 +671,7 @@ class KernelFolds(Base):
         self.assertEqual([t["id"] for t in cold["bgJudge"]], ["toolu_bg2"], "the judge's settled gate reads the same pairing")
         self.assertEqual(cold["postalLog"]["ended"], ["m2"])
         self.assertNotIn("m1", cold["postalLog"]["execd"])
+        self.assertEqual(sorted(cold["parkedHandoffs"]), ["m3"], "the one park:true send, folded from the tail alone after the restore")
 
     def test_the_kernel_writes_at_a_settle_or_a_states_log_move_and_not_otherwise(self):
         self.write_all(tail=False)
