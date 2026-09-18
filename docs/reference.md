@@ -720,7 +720,7 @@ two. Every session's tab menu offers Move to folder.
   manager and the supervised service use. Set either and the other follows; set
   both to different values and the kernel refuses to start rather than picking
   one for you.
-- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`.
+- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`. The kernel dials the port the bus actually bound, read from the bus's record `postal/postal-port` under the state directory (written after the bind, removed on a clean exit), and falls back to this variable only when the record is absent; a mismatch between the two is said once in the kernel's log. The two can disagree when a unit or profile sets the variable for one process and not the other, or when a stale legacy tunnel still reverse-forwards another machine's bus onto the fixed port: the operator's two checks when a held message's approve comes back refused.
 
 Set these if something else on the machine already holds the default. Both have
 to agree across everything that talks to the kernel, so export them where the
@@ -1529,6 +1529,43 @@ outside the service cgroup and starts the CLI through `bin/romp-cli-scope` as
 before, so the CLI's own scope and its memory limits are unchanged; the boot
 sweep stops a dead host's scope by its lease. On macOS the host is a plain
 detached process and everything else is the same.
+
+A host upgrades itself in place when the kernel that attaches runs newer code.
+Until 2026-09-18 a host kept the code it started with for as long as its
+session lived, so a host bug outlived every kernel deploy (the lease census
+reported each such host as `lease.version-skew`, thousands of rows a week, and
+one host carried a stale open-turn count for three days). Now, at an attach
+whose lease names another code version, the kernel first rewrites the host's
+`spawn.json` with its own version and asks the host to re-exec (a `reexec`
+frame carrying the kernel's interpreter, its own `bin/romp-session-host` and
+its version). The host answers at once: `ok` with `when` `now` when its CLI is
+idle, `at-turn-end` when a turn is open (the exec waits for that turn's
+`result`, the event, never a timer), or `ok` false with a reason when it cannot
+hand its descriptors over, in which case the kernel attaches to the old host as
+before and files a `host.reexec-refused` row. To re-exec, the host drains its
+stdin pump and its journal writer, writes a handoff file
+(`hosts/<sid>/reexec.json`: the CLI's pid, start time, spawn time and
+conversation id, the three pipe descriptors, the read count, the open requests
+and the acknowledged offset), marks the descriptors inheritable, closes its
+socket, tells an attached kernel `reexec-now`, and calls `execv` on the same
+pid: the CLI stays its child, the pipes stay open (descriptors survive an
+execve), the lease holder's pid and start time are unchanged, so `hostAck`
+still names this host and the replay offset holds, and the journal is
+reopened from its segment files (the index rebuilt from the files, the next
+offset from the last record). The new host adopts the CLI through the pipe
+transport over the inherited descriptors (on Linux it confirms them against
+the CLI's own `/proc` descriptors before trusting the handoff), re-serves the
+socket, writes the lease with the new version, and waits for the kernel's
+attach; the kernel, told `reexec-now`, treats the socket's close as the
+planned handover, not a host death: no `host.died` row, no orphan replay, no
+resume, one re-attach from the same acknowledged offset, and a
+`host.reexeced` row. A re-exec that fails before the exec leaves the old host
+running and says so (a `reexec-failed` line in the host's log, the refusal row
+from the kernel); one that fails inside the new process, on a handoff that does
+not check out, makes the new host exit with the CLI still running, which the
+kernel's existing orphan road handles as a host death: the CLI finishes its
+turn on end-of-file and the session resumes from the transcript. The worst
+case is the pre-host behaviour for one session, never a dead one.
 
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
@@ -2904,15 +2941,20 @@ orphan reply) carry synthetic uuids keyed by their second and ordinal.
 Stage three of the process split (plans/judges-process.md) moves the judge pass into one long-lived child, `romp-judge
 --serve`, that the kernel starts at boot and speaks to over a line protocol on the child's stdin and stdout (JSON, one
 object per line). The child announces `{"op":"ready","pid","judgeVersion","protocolVersion"}` once; the kernel sends
-`{"op":"pass","seq","now","mayStart"}` per producer wake and `{"op":"quit"}` to end; the child answers exactly one
-`{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered","recordCache","asmCheckpoint",
-"parses","goalIo"}` per pass. Every counter on it is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are the
-pass's own, `failures` its tier crashes, and the four blocks (`recordCache` and `asmCheckpoint` from the event model,
-`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes) are the DIFFERENCES
-against the previous pass's snapshot for every counter, so the kernel can feed its `/perf` counters per pass, while each
-block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes` (the cache's contents now),
-`budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document memo's size and cap);
-`parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
+`{"op":"pass","seq","mayStart"}` per producer wake, with an OPTIONAL `now`, and `{"op":"quit"}` to end; the child
+answers exactly one `{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered",
+"recordCache","asmCheckpoint","parses","goalIo","tierGate"}` per pass. The request's `now`: absent or null, the tiers read
+their own clock during the pass, the in-process producer's behaviour and the kernel's DEFAULT (it sends no `now`), so a
+measured comparison of the two roads isolates the process split from the clock semantics; a number is the explicit clock
+variant, truncated to the second and handed to both tiers for the whole pass, available for a measurement that wants it
+on its own (2026-09-18). Every counter on the done line is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are
+the pass's own, `failures` its tier crashes, and the five blocks (`recordCache` and `asmCheckpoint` from the event model,
+`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes, `tierGate` as the tiers'
+gate counters per stage (`plan`, `group`, `close`, `distill`, `unblock`, `consolidate`): `ran`, `skipped`, `stamped`,
+`bypassed`, `incomplete`, `due_clock`, the admittance the pass ran under) are the DIFFERENCES against the previous pass's snapshot for every counter, so the kernel can feed its `/perf`
+counters per pass, while each block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes`
+(the cache's contents now), `budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document
+memo's size and cap); in `tierGate` the key `stamps` (the stage stamps held now); `parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
 since boot, as described above), so the line carries the pass's own restore time. A non-numeric value (a name) rides as
 current too. `recovered` is the child's judge-module recovery flag (the once-per-storm
 edge `consume_judge_recovery` reads), consumed by the child and acted on by the kernel, which re-arms its given-up cards on

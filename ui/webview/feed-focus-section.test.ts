@@ -200,7 +200,11 @@ test("the three follow-ups after the review: Tab keeps the copy, Clear from a co
 
 // ── feed.css: the section's rules, through the variables ─────────────────────────────────────────────
 test("feed.css: #feed-focus, the head, the caption, the rule and the empty line exist, var() only", () => {
-  assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; \}/);
+  assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; background: var\(--accent-tint\); border-radius: 8px; padding: 6px 8px 2px; \}/,
+    "the whole region on the very faint accent tint, a small radius, padding around the cards (the user 2026-09-18)");
+  assert.match(CSS, /--accent-tint: rgba\(156, 210, 255, 0\.04\);/, "the tint token beside the wash, a third of its alpha, in the dark block");
+  assert.match(CSS, /--accent-tint: rgba\(194, 65, 12, 0\.04\);/, "…and re-inked in the light block");
+  assert.doesNotMatch(CSS, /#feed-focus \{[^}]*rgba\(/, "the region's ground is the token, never a literal colour");
   assert.match(CSS, /\.feed-focus-head \{ display: flex; flex-wrap: nowrap;[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
     "the label (T410): ONE line (nowrap, so the name's clamp can act: review round two), the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
   assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: calc\(1em \/ 0\.72\); font-weight: 600;/, "the name as a session name below: the headers' size, bold (its identity colour is set inline)");
