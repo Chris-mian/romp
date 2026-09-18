@@ -43,7 +43,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
 import { inInputEvent } from "./input-event";
 import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
-import { FEED_BOARD, columnOf, columnTable, feedColumns, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
+import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
 import { wireTip, setTip, pruneTip } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
 import { listenForFrames } from "./frame-listener";
@@ -100,6 +100,8 @@ interface AskItem {
   text: string; t: number; live: boolean;
   turnId: string;
   trgb: [number, number, number];
+  board?: string;                                  // the board model (plans/card-boards.md, phase two): the kernel writes "feed" on every card it builds
+  category?: string;                               // the board's category id, the kernel's raw column value for the feed; absent from an older kernel's frame
   column: FeedCategory;                            // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks": that was a stale lie that silently broke `it.column === "asks"` checks.
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   followupAt?: number | null;                      // when that follow-up/continue went — the latched button's honest age (T150)
@@ -491,7 +493,7 @@ function askColumn(it: AskItem): Column {
   // "working" while showing it under Blocked — it now reports needs_input directly (the user 2026-06-29). An
   // API-error card stays in its natural column (working): the kernel keeps column=working for it (a transient
   // stall, not a block), so it lands in "asks" with just the "⚠ API error" chip + Retry.
-  return columnOf(FEED_BOARD, it.column);   // the feed definition's own table: working → asks, needs_input → needsInput, completed → completed
+  return columnOf(FEED_BOARD, it.category ?? it.column);   // the feed definition's own table (the category since phase two; column from an older kernel)
 }
 
 // How opaque the recency tint is over the (black) page — low = a faint, very
@@ -5475,7 +5477,7 @@ function viewBase(list: AskItem[]): AskItem[] {
   const s = viewScope(list);
   if (lensAll(feedLens)) return s;   // default All = today's board, byte-identical
   const u = lensUnions(feedTagViews);
-  return s.filter((a) => lensVisible(feedLens, u, a.sid) || a.column === "needs_input");
+  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(FEED_BOARD, a.category ?? a.column));   // the board's badge category passes every lens
 }
 
 // The disclosure count: what the TAG LENS alone hides (breakthroughs already show; counting them

@@ -7,7 +7,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FEED_BOARD, FEED_KINDS, FEED_LOCAL_KEY, CHIPS, SORT_FIELDS, KIND_IDS, RESERVED_BOARD_IDS,
-         kindOf, columnOf, columnTable, feedColumns, boardCheck, defaultBoard } from "./board-def";
+         kindOf, columnOf, columnTable, feedColumns, isNeedsYou, boardCheck, defaultBoard } from "./board-def";
 import { FEED_COLUMNS } from "./feed-view-state";
 
 const read = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", ...p), "utf8");
@@ -37,7 +37,12 @@ test("the category mapping: the kernel's raw column values to the renderer's loc
   assert.equal(columnOf(FEED_BOARD, "completed"), "completed");
   assert.equal(columnOf(FEED_BOARD, "working"), "asks");
   assert.equal(columnOf(FEED_BOARD, "awaiting"), "asks", "a value the kernel never sends files under the default, as the old mapping did");
-  assert.deepEqual(FEED_LOCAL_KEY, { working: "asks", needs_input: "needsInput", completed: "completed" });
+  // a Map, so a prototype-named category (producer-facing from phase three) files under the default like any unknown one
+  for (const bad of ["toString", "constructor", "__proto__", "hasOwnProperty"]) assert.equal(columnOf(FEED_BOARD, bad), "asks", bad);
+  assert.deepEqual([...FEED_LOCAL_KEY], [["working", "asks"], ["needs_input", "needsInput"], ["completed", "completed"]]);
+  assert.equal(isNeedsYou(FEED_BOARD, "needs_input"), true);
+  assert.equal(isNeedsYou(FEED_BOARD, "working"), false);
+  assert.equal(isNeedsYou({ ...FEED_BOARD, needsYou: null }, "needs_input"), false, "a board that never badges lets nothing through as needs-you");
   assert.deepEqual(FEED_BOARD.categories.map((c) => c.id), ["working", "needs_input", "completed"], "the ids are the kernel's raw values");
 });
 
@@ -47,19 +52,27 @@ test("the sort, the grouping and the notification set equal the sources' literal
   assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => newestFirst \? y\.t - x\.t : x\.t - y\.t\)/, "asc is x.t - y.t when newestFirst is off");
   assert.equal(FEED_BOARD.groupBy, "session");
   assert.match(FEED, /grouped: s\.grouped !== false/, "grouped mode defaults on");
-  // kernel.py: the columns whose entry announces, and the one the badge counts
-  const notify = (KERNEL.match(/^_NOTIFY_COLUMNS = \(([^)]*)\)/m) || [])[1] || "";
+  // kernel.py: the board table's feed entry (phase two) is this constant field for field; tests/test_card_boards.py holds the
+  // two together over every member, this end reads the three the bell and the badge use
+  const feedTable = (KERNEL.match(/_CODE_BOARDS = \{\s*\n\s*"feed": \{([\s\S]*?)\n    \},/) || [])[1] || "";
+  assert.ok(feedTable.length > 0, "the kernel's board table carries the feed");
+  const notify = (feedTable.match(/"notify": \[([^\]]*)\]/) || [])[1] || "";
   assert.deepEqual([...FEED_BOARD.notify], notify.split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean));
+  assert.match(feedTable, /"needsYou": "needs_input"/);
   assert.equal(FEED_BOARD.needsYou, "needs_input");
-  assert.match(KERNEL, /a\.get\("column"\) == "needs_input"\)/, "_needs_you_count counts needs_input");
+  assert.match(KERNEL, /_NOTIFY_COLUMNS = tuple\(_CODE_BOARDS\["feed"\]\["notify"\]\)/, "the feed's notify set is read from the table");
+  assert.match(KERNEL, /a\.get\("category", a\.get\("column"\)\) == _board_needs_you\(a\.get\("board"\)\)/, "_needs_you_count counts the board's badge category, the column from an older card");
   assert.deepEqual([...FEED_BOARD.kinds], [...KIND_IDS]);
   assert.deepEqual([...FEED_BOARD.rules], []); assert.deepEqual([...FEED_BOARD.order], []); assert.deepEqual([...FEED_BOARD.subSorts], []);
 });
 
 test("feed.ts reads the definition at the section-4 sites and nowhere else", () => {
-  assert.match(FEED, /import \{ FEED_BOARD, columnOf, columnTable, feedColumns, type FeedCategory \} from "\.\/board-def";/);
+  assert.match(FEED, /import \{ FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, type FeedCategory \} from "\.\/board-def";/);
   assert.match(FEED, /column: FeedCategory;/, "the record's column is typed to the feed board's category ids");
-  assert.match(FEED, /return columnOf\(FEED_BOARD, it\.column\);/, "askColumn is the definition's table");
+  assert.match(FEED, /board\?: string;[^\n]*\n\s*category\?: string;/, "the record carries its board and category (phase two), optional for an older kernel's frame");
+  assert.match(FEED, /return columnOf\(FEED_BOARD, it\.category \?\? it\.column\);/, "askColumn is the definition's table over the category, the column as the older frame's fallback");
+  assert.match(FEED, /\|\| isNeedsYou\(FEED_BOARD, a\.category \?\? a\.column\)\);/, "the lens's breakthrough is the board's badge category, not a literal (the 1834 read, low 2)");
+  assert.doesNotMatch(FEED, /\.column === "needs_input"/, "no hand comparison against the raw category id remains");
   assert.equal((FEED.match(/for \(const \[key, label, chip\] of columnTable\(FEED_BOARD\)\)/g) || []).length, 2, "ensureCols and the focused section's twin");
   assert.equal((FEED.match(/of feedColumns\(FEED_BOARD\)\)/g) || []).length, 4, "the four column loops (the stack, the focused layout, the order flip, the freeze badges)");
   assert.match(FEED, /const FLY_COLS: readonly \("asks" \| "needsInput" \| "completed"\)\[\] = feedColumns\(FEED_BOARD\);/);
@@ -70,20 +83,39 @@ test("feed.ts reads the definition at the section-4 sites and nowhere else", () 
   assert.match(FEED, /const ROW_DEFAULT = \["asks", "needsInput", "completed"\];/);
 });
 
-test("the kinds describe the card builder: every labelled button is a literal in feed.ts, every via names a function there", () => {
-  const seen = new Set<string>();
-  for (const kind of Object.values(FEED_KINDS)) {
+// the reviewed table of each kind's ids (the plan's section 2): a descriptor that over-lists a section or action for a kind
+// (a parked kind given Background, or Approve) reads red here, before phase four gates rendering on the descriptors
+const KIND_TABLE: Record<string, { sections: string[]; actions: string[]; menu: string[] }> = {
+  goal: { sections: ["bg", "summary", "subgoals", "stall", "tasks"], actions: ["clear", "followUp", "checkStatus", "continue", "retry", "login", "capSwitch", "bell"], menu: ["notify", "browse"] },
+  placeholder: { sections: ["tasks"], actions: ["clear", "bell"], menu: ["notify", "browse"] },
+  parked: { sections: [], actions: ["clear", "revive", "bell"], menu: ["notify", "browse"] },
+  quarantine: { sections: [], actions: ["approve", "deny", "bell"], menu: ["notify", "browse"] },
+  notice: { sections: ["body", "attachment"], actions: ["stored", "clear", "bell"], menu: ["notify", "browse"] },
+};
+// a top-level function's own source: from its declaration to the next top-level declaration
+function fnBody(name: string): string {
+  const at = FEED.indexOf("\nfunction " + name + "(");
+  assert.ok(at >= 0, "feed.ts has function " + name);
+  const next = FEED.indexOf("\nfunction ", at + 1);
+  return FEED.slice(at, next < 0 ? FEED.length : next);
+}
+
+test("the kinds describe the card builder: each kind lists exactly the reviewed ids, and every labelled button is a literal inside the function its descriptor names", () => {
+  assert.deepEqual(Object.keys(FEED_KINDS).sort(), Object.keys(KIND_TABLE).sort());
+  for (const [id, kind] of Object.entries(FEED_KINDS)) {
+    assert.equal(kind.id, id);
+    assert.deepEqual(kind.sections.map((d) => d.id), KIND_TABLE[id].sections, id + ": sections");
+    assert.deepEqual(kind.actions.map((d) => d.id), KIND_TABLE[id].actions, id + ": actions");
+    assert.deepEqual(kind.menu.map((d) => d.id), KIND_TABLE[id].menu, id + ": menu");
     for (const d of [...kind.sections, ...kind.actions, ...kind.menu]) {
-      assert.match(FEED, new RegExp("function " + d.via + "\\("), d.id + " points at feed.ts " + d.via);
-      if (d.label !== null && !seen.has(d.label)) {
-        seen.add(d.label);
+      const body = fnBody(d.via);
+      if (d.label !== null) {
         const lit = d.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        assert.match(FEED, new RegExp('(?:textContent = |label = |label: )"' + lit + '"'), d.id + "'s label is the literal the card wears");
+        assert.match(body, new RegExp('(?:textContent = |label = |label: )"' + lit + '"'), id + "." + d.id + ": the label is minted inside " + d.via);
       }
     }
   }
-  assert.deepEqual(FEED_KINDS.goal.sections.map((s) => s.id), ["bg", "summary", "subgoals", "stall", "tasks"], "the five one-at-a-time sections, applySections' choices");
-  assert.match(FEED, /"bg" \| "summary" \| "subgoals" \| "tasks" \| "stall"/, "the same five ids in the renderer's choice type");
+  assert.match(FEED, /"bg" \| "summary" \| "subgoals" \| "tasks" \| "stall"/, "the same five section ids in the renderer's choice type");
 });
 
 test("kindOf discriminates by the flavour, as the renderer does", () => {

@@ -1,6 +1,7 @@
 # Card boards: the feed as one instance of a generic card UI
 
-Status: PROPOSED (2026-09-18), phased. Landing commits: TBD per phase. Tier per phase in section 6:
+Status: IN PROGRESS (2026-09-18), phased. Landing commits: phase one 58c3ce83 (PR 1834, the definition
+extracted); the rest TBD per phase. Tier per phase in section 6:
 `feature` for phases one, two, four and five; phase three (the board definition store, its door and
 its frame field) is the `major-feature` discussion point, called out there with the reasons, and the
 phasing is built so nothing before it changes a persisted record or the feed protocol.
@@ -244,8 +245,8 @@ definition names the kinds a board renders.
 - `placeholder`: `provisional`, `awaiting:<sid>` and `blocked:<sid>` cards. No sections; actions
   Clear (where the family allows it) and the bell.
 - `parked`: `blocked.state === "parkedHandoff"`; action Revive.
-- `quarantine`: `blocked.state === "quarantine"`; the held body shown in full; actions Approve,
-  Deny, Edit.
+- `quarantine`: `blocked.state === "quarantine"`; the held body shown in full; actions Approve and
+  Deny (the edit happens in the modal, not as a card action; the 1834 read, 2026-09-18).
 - `notice`: `it.notice`; the producer label, the body through the sanitizer, the attachment; actions
   the record's own `actions` list (`noticeAction`), Clear and the bell. The one kind a data-defined
   board renders.
