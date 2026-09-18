@@ -386,7 +386,7 @@ class HealOlderStores(_Feed):
 class HostsCurrentAtTheMint(_Feed):
     """The heal nests a machine-rooted top only under a host that was CURRENT when the top was minted (2026-09-18, the user's
     card): a store whose human-anchored hosts were all minted in one day had the oldest-host fallback sweep two completed
-    roots from days before into the newest request's tree, where the card's button counted them as sub-goals and its fold
+    roots from days before into the oldest host's tree (the first request of that day), where the card's button counted them as sub-goals and its fold
     listed them as reviewed earlier. Two roots, one older than every host: the host's payload never holds the other root's
     nodes, and the three counts the card derives from the payload (the button's direct non-handoff children, the fold's
     reviewed-earlier children, the rows the fold shows) agree with the store's own children."""
@@ -431,13 +431,15 @@ class HostsCurrentAtTheMint(_Feed):
         rows = {r["id"]: r for r in asks[host]["tree"]}
         self.assertEqual(set(rows), {host, h1, h2, h3, h4}, "the request's payload holds its own subtree and nothing of the other root")
         self.assertEqual(set(r["id"] for r in asks[old]["tree"]), {old, o1})
-        # the counts the card derives from the payload, computed the client's way (feed.ts applySections / renderTree)
+        # the counts the card derives from the payload, computed the client's way (feed.ts applySections / renderTree): the
+        # handoff child is out of every count, since the walk never renders it (a reviewed handoff counted in the fold's label
+        # made "3 reviewed earlier" open to two rows, the 2026-09-18 read)
         direct = rows[host]["children"]
         button = [c for c in direct if rows[c]["kind"] != "handoff"]                    # "N sub-goals"
-        fold = [c for c in direct if rows[c].get("reviewedEarlier")]                    # "N reviewed earlier"
-        shown = [c for c in fold if rows[c]["kind"] != "handoff"]                       # the rows the open fold walks
+        fold = [c for c in button if rows[c].get("reviewedEarlier")]                    # "N reviewed earlier"
+        shown = fold                                                                    # the rows the open fold walks
         self.assertEqual(sorted(direct), sorted([h1, h2, h4]), "the direct children are the store's, by parentId")
-        self.assertEqual((len(button), len(fold), len(shown)), (2, 3, 2), "button 2, fold 3 (the handoff counts), rows 2")
+        self.assertEqual((len(button), len(fold), len(shown)), (2, 2, 2), "button 2, fold 2, rows 2: one count per row that renders")
         self.assertEqual(rows[h4]["kind"], "handoff")
         self.assertTrue(all(rows[c].get("reviewedEarlier") for c in (h1, h2, h4)), "every done kid predates the boundary")
         self.assertEqual(err, "", "nothing nested: nothing counted")
