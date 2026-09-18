@@ -217,7 +217,7 @@ CTX = {
     "stalls": ("sig", ("stalls",)),
     "jauth_map": ("sig", ("jauth",)),
     "jactive": ("sig", ("jactive",)),
-    "ps": ("sig", ("parse", "transcript", "live", "cut", "states")),   # the cache-only, live-merged parse
+    "ps": ("sig", ("parse", "transcript", "live", "cut", "states")),   # the cache-only, live-merged parse, re-read in place for a warm entry gone stale
     "who_working": ("sig", ("downtime", "parse")),     # _session_working over the open turn, suspension-aware
     "interrupting": ("sig", ("interrupting",)),
     "store": ("sig", ("store",)),                      # _feed_goals_keyed(fsid), read once in the key

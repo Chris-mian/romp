@@ -1447,6 +1447,32 @@ class Pusher(unittest.TestCase):
             for k in ("names", "msgsum", "chat_shared", "chat_push_owned"):
                 setattr(km._live_scope, k, None)
 
+    def test_a_raise_reading_the_shared_components_leaks_none_of_the_slots_the_open_set(self):
+        """_chat_push_scopes_open records what it owns BEFORE it reads the shared components (2026-09-18): a
+        _chat_sig_shared that raised used to leave the names, msgsum and subagent_trees slots it had just opened
+        set on the handler thread with no ownership record, so the push's except branch and the next push's
+        opening close cleared nothing, and every later push and viewer frame on that connection's thread was
+        served the stale samples for the connection's life (the open skips a slot already set, so the leak was
+        adopted, never replaced)."""
+        slots = ("names", "msgsum", "subagent_trees", "chat_shared", "chat_push_owned")
+        for k in slots:
+            setattr(km._live_scope, k, None)
+        saved = km._chat_sig_shared
+
+        def unreadable():
+            raise RuntimeError("flags unreadable")
+        km._chat_sig_shared = unreadable
+        try:
+            km._push([self.chat])                             # the raise lands in the push's except branch, which closes
+        finally:
+            km._chat_sig_shared = saved
+        try:
+            for k in slots:
+                self.assertIsNone(getattr(km._live_scope, k, None), "%s: nothing the open set survives its raise" % k)
+        finally:
+            for k in slots:
+                setattr(km._live_scope, k, None)
+
 
 # ── the recording half: the real build makes the record the differential tests hand over ──────────
 SID_R = "77777777-8888-9999-aaaa-eeeeeeeeeee1"
