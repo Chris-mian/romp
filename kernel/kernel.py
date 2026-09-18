@@ -20720,12 +20720,16 @@ def _note_tunnel_teardown(r, now):
 BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # the environment's word for this machine's bus port: the tunnel's
 #                                                                    local side (the -L target, the legacy -R) and the FALLBACK of _bus_port()
 _BUS_PORT_SAID = [None]                                           # the census line's memory: (port, source) said once, a change said again
+_BUS_ENSURED = [False]                                            # this kernel ENSURED its bus (the ensure exited 0): the bus whose record it may trust
 
 
 def _bus_port():
     """The port this machine's bus BOUND, for every loopback dial of it: the bus's own record STATE/postal/postal-port ({"port",
     "pid", "tok"}, written after its bind, removed on a clean exit; postal_service.py PORTFILE) ahead of the environment, which is
-    the fallback when the record is absent, stale (its pid no longer runs) or another bus's (its token mark is not this kernel's). Both processes read ROMP_POSTAL_PORT at import and
+    the fallback when the record is absent, stale (its pid no longer runs), another bus's (its token mark is not this kernel's),
+    or when this kernel ensured no bus at all (_BUS_ENSURED: client-only mode, a lab kernel, an in-process test kernel; the
+    whole test suite showed a record one world left under the shared state root redirecting a later world's dial, and the
+    ensure is the event that makes a bus this kernel's). Both processes read ROMP_POSTAL_PORT at import and
     nothing bound them (2026-09-18): a unit or profile that set the port for one process and not the other, or a stale legacy
     tunnel reverse-forwarding the hub's bus onto this loopback at the fixed port, had the kernel dial a bus that was not its
     own, and a held message's approve came back "no held message" from a bus that never held it. The record is the bus's
@@ -20735,8 +20739,10 @@ def _bus_port():
     try:
         rec = json.loads((jd.STATE / "postal" / "postal-port").read_text())
         rp, pid = int(rec.get("port") or 0), int(rec.get("pid") or 0)
-        # trusted only when it is THIS kernel's bus: its pid runs AND its token mark is this kernel's own
-        if rp > 0 and pid > 0 and _pid_alive(pid) and str(rec.get("tok") or "") == _bus_token_mark():
+        # trusted only when it is THIS kernel's bus: this kernel ENSURED a bus (a kernel that ensured none, client-only or a
+        # lab's, dials the environment's port and no record can redirect it), its pid runs, and its token mark is this
+        # kernel's own
+        if _BUS_ENSURED[0] and rp > 0 and pid > 0 and _pid_alive(pid) and str(rec.get("tok") or "") == _bus_token_mark():
             port, source = rp, "record"
     except (OSError, ValueError, TypeError, AttributeError):
         pass
@@ -20816,6 +20822,8 @@ def _ensure_postal_bus():
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
         if r.returncode != 0:   # the bus said no (2026-09-10: it refuses the machine's fixed port under a test): say so here, where the kernel's log is
             sys.stderr.write("postal bus ensure refused (exit %d): %s\n" % (r.returncode, (r.stderr or "").strip()[-2000:]))
+        else:
+            _BUS_ENSURED[0] = True   # the bus this kernel ensured is the one whose port record _bus_port() may trust
     except Exception:
         sys.stderr.write("postal bus ensure failed:\n%s" % traceback.format_exc())
 

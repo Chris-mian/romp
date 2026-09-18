@@ -511,12 +511,14 @@ class BusPortRecord(unittest.TestCase):
         except FileNotFoundError:
             pass
         km._BUS_PORT_SAID[0] = None
+        self._saved_ens = km._BUS_ENSURED[0]; km._BUS_ENSURED[0] = True   # this kernel ensured its bus: the record may be trusted
         self._err, self._saved_bp = io.StringIO(), km.BUS_PORT
         self._saved_stderr = sys.stderr; sys.stderr = self._err
 
     def tearDown(self):
         sys.stderr = self._saved_stderr
         km.BUS_PORT = self._saved_bp
+        km._BUS_ENSURED[0] = self._saved_ens
         km._BUS_PORT_SAID[0] = None
         try:
             self.rec.unlink()
@@ -553,6 +555,12 @@ class BusPortRecord(unittest.TestCase):
         self.assertEqual(km._bus_port(), 1, "a foreign record (another bus, another world, a reused pid) is ignored: the environment")
         self.rec.write_text(json.dumps({"port": 45681, "pid": os.getpid()}))   # a record with no mark (an older bus): never trusted
         self.assertEqual(km._bus_port(), 1)
+        # a kernel that ensured NO bus (client-only, a lab's, an in-process test's) dials the environment whatever the record says
+        self.rec.write_text(self._rec(45682))
+        km._BUS_ENSURED[0] = False
+        self.assertEqual(km._bus_port(), 1, "no ensure, no record: the environment")
+        km._BUS_ENSURED[0] = True
+        self.assertEqual(km._bus_port(), 45682, "the ensure is the event that makes the bus this kernel's")
         self.rec.write_text("torn")
         self.assertEqual(km._bus_port(), 1, "a torn record: the environment, never a raise")
         self.rec.write_text(self._rec(0))
@@ -591,6 +599,23 @@ class BusPortRecord(unittest.TestCase):
         ok, err = km._bus_quarantine_act({"mid": "px-1.2_abc.TESTHOST", "action": "approve"})
         self.assertEqual((ok, err), (True, "bus HTTP 200"), "the dial followed the override to the stub, not the foreign record")
         self.assertEqual(seen[0][0], "/quarantine/act")
+
+    def test_the_ensure_exiting_zero_is_what_arms_the_record(self):
+        # the flag is set by _ensure_postal_bus on a zero exit and by nothing else; a refused ensure (the fixed port under a test)
+        # leaves it off, so a hermetic kernel never trusts a record
+        saved = km.subprocess.run
+        class R:
+            def __init__(self, code): self.returncode, self.stderr = code, "refused"
+        try:
+            km._BUS_ENSURED[0] = False
+            km.subprocess.run = lambda *a, **kw: R(1)
+            km._ensure_postal_bus()
+            self.assertFalse(km._BUS_ENSURED[0], "a refused ensure arms nothing")
+            km.subprocess.run = lambda *a, **kw: R(0)
+            km._ensure_postal_bus()
+            self.assertTrue(km._BUS_ENSURED[0], "the ensure that answered arms the record")
+        finally:
+            km.subprocess.run = saved
 
     def test_the_decision_op_carries_the_recipient_sid_to_the_bus(self):
         bodies = []
