@@ -40210,11 +40210,25 @@ _FEED_MEMO_LABELS = ("transcript", "parse", "cut", "states", "names", "captions"
                      "closer", "peers")
 _FEED_MEMO_DEPS = ("usage", "offer", "peers", "nudge", "stalls")    # components evaluated over the previous entry's read record
 _FEED_NUDGE_FIELDS = ("count", "failed", "failedAt")  # the fields the card reads; pinned by the input census
+# The `row` component's positions and the live-row fields each folds (2026-09-18): _feed_row_key reads them by name,
+# the input census (tests/test_feed_memo_inputs.py RowFieldCensus) pins them to the readers' constant reads, and a
+# row miss is attributed to the positions that moved (row_by).
+_FEED_ROW_FIELDS = ("state", "since", "billing", "retry", "agents", "tasks")   # `billing`, not `auth`: miss_by's `auth` is the
+#                                                  machine's key on hand (_auth_key_present), a board-wide input; this is one row's fields
+_FEED_ROW_AUTH_FIELDS = ("authLive", "auth", "authLogin", "authLoginLive", "authLabel")   # the billing position's fields:
+#                                                  _cap_switch_offer (authLive, auth); _login_refusal_label and the body's refused-login
+#                                                  mark (authLogin, authLoginLive, authLabel)
+_FEED_ROW_RETRY_FIELDS = ("max", "status", "networkDown", "rateLimitType")   # the retryInfo fields _session_retrying reads, beside retryCount
+_FEED_ROW_AGENT_FIELDS = ("agentId", "type", "since")                      # the subagents fields _awaiting_live_rows reads
+_FEED_ROW_TASK_FIELDS = ("toolUseId", "type", "desc", "since", "taskId")   # the bgTasks fields _bg_live_norm reads
 _feed_memo = {}                                  # sid → (key, entry_json, size); dict order is the LRU order: a served entry
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
 _FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0, "failed": 0,
-                    "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)}}   # /perf builds.feed.memo
+                    "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)},   # /perf builds.feed.memo
+                    "row_by": {k: 0 for k in _FEED_ROW_FIELDS + ("presence",)}}   # ...and which row position moved on a row
+#                                                  miss; `presence`: the row appeared or left (None on one side) or has another
+#                                                  shape. Not `live`, which miss_by uses for the live tail's revision (2026-09-18)
 _FEED_DERIVE_FAILED = {}   # sid → cause head of the session's CURRENT card-build fault episode (the decode of its memoized
 #                            entry, its key, its derivation, the serialization: whatever raised last), present while it is
 #                            failing: the dedupe of the stderr line and the bell row (one per distinct cause per session,
@@ -40245,15 +40259,26 @@ def _feed_memo_count(key, n=1):
 def _feed_memo_miss(old, new):
     """Count a miss and attribute it: the sorted labels of every key component that differs between the cached key
     `old` and the fresh one `new` (`cold` when there was no cached entry, or its key has another shape). A miss with
-    several moved components counts under each, so miss_by's sum can exceed `miss`."""
+    several moved components counts under each, so miss_by's sum can exceed `miss`. A row miss is further attributed
+    to the row positions that moved (row_by, in _FEED_ROW_FIELDS order; its sum can exceed miss_by's row), or to
+    `presence` when the row appeared or left or is not a tuple of the positions' length (2026-09-18)."""
     if old is None or len(old) != len(new):
         labels = ("cold",)
     else:
         labels = tuple(sorted(lab for lab, a, b in zip(_FEED_MEMO_LABELS, old, new) if a != b))
+    positions = ()
+    if "row" in labels:
+        a, b = old[_FEED_MEMO_LABELS.index("row")], new[_FEED_MEMO_LABELS.index("row")]
+        if isinstance(a, tuple) and isinstance(b, tuple) and len(a) == len(b) == len(_FEED_ROW_FIELDS):
+            positions = tuple(f for f, x, y in zip(_FEED_ROW_FIELDS, a, b) if x != y)
+        else:
+            positions = ("presence",)
     with _feed_memo_lock:
         _FEED_MEMO_STATS["miss"] += 1
         for lab in labels:
             _FEED_MEMO_STATS["miss_by"][lab] = _FEED_MEMO_STATS["miss_by"].get(lab, 0) + 1
+        for f in positions:
+            _FEED_MEMO_STATS["row_by"][f] = _FEED_MEMO_STATS["row_by"].get(f, 0) + 1
     return labels
 
 
@@ -40351,6 +40376,7 @@ def _feed_memo_report():
     with _feed_memo_lock:
         out = dict(_FEED_MEMO_STATS)
         out["miss_by"] = dict(_FEED_MEMO_STATS["miss_by"])
+        out["row_by"] = dict(_FEED_MEMO_STATS["row_by"])
         out["entries"] = len(_feed_memo)
         out["bound"] = FEED_MEMO_BYTES
         out["failing"] = len(_FEED_DERIVE_FAILED)   # sessions whose LAST derivation raised (a standing fault, not history)
@@ -40495,6 +40521,47 @@ def _feed_stalls_key(ctx, entry):
     return tuple(sorted((g, v.get("why"), v.get("since")) for g, v in ctx["stalls"].items() if g in ids))
 
 
+def _feed_row_key(tm):
+    """The `row` component of _feed_session_key: the live row's fields the derivation reads, by position
+    (_FEED_ROW_FIELDS), or None when the session is not live (`tm is None`, the same test the key's `live` makes; the
+    whole-row fold keyed an empty row None while `live` read True). The positions:
+      state, since: `live`, perm_state, _warm_wanted's state, the blocked placeholder's since; the key builder itself
+        also reads state, for the `ask` gate (a row on a permission or picker prompt asks the backend for its ask).
+      billing: authLive and auth (_cap_switch_offer), authLogin, authLoginLive and authLabel (_login_refusal_label and
+        the body's refused-login mark): five named reads, so the census derivation sees each (_FEED_ROW_AUTH_FIELDS
+        documents them and is pinned to these reads). Named for what it is, not `auth`: miss_by's `auth` label is the
+        machine's key on hand, a board-wide input, and /perf shows the two maps side by side.
+      retry: retryCount and retryInfo's max, status, networkDown and rateLimitType (_session_retrying). Keyed whether
+        or not the row reads "retrying", where the reader alone looks: a superset of the reads, one possible extra
+        derivation at a storm's edge, within the contract.
+      agents: each subagent's (agentId, type, since), the fields _awaiting_live_rows reads.
+      tasks: whether the row carries a task set at all (`"bgTasks" in tm`, _bg_live_norm's branch: a live row with no
+        set falls to the transcript scan, an empty set is authoritative) and each task's (toolUseId, type, desc, since,
+        taskId), the fields _bg_live_norm reads. desc stays: a task_progress event may rename a task, and
+        _agent_task_label renders the name.
+    Not the whole row (2026-09-18): ctxTokens, context and ctxOver move on every context refresh (after each landed
+    turn, on connect, on a model switch) and a background agent's bgTasks[].lastTool on its every tool call; no card
+    reads them, yet the sorted whole row re-derived the owning session in every cycle that saw them moved (row rode
+    1454 of 4132 misses on the live kernel at the design's read, 2568 of 6245 at the review's; the row-only share is
+    what row_by reports). model, effort, mode, fast, the pending bits, connected and spawning are the chat chip's and
+    the lanes' facts (_chat_build_sig and the views' per-row signature fold them), not a card's. snapT and interrupting
+    are not read here: the `interrupting` component carries _interrupting's boolean. The merged row (Sessions.live) is
+    the only shape the feed reads, and it carries neither, its since an int via _num; a running session whose reg
+    vanished is no second shape, since _backend_rows hands its own snapshot back through that same projection.
+    Pre-existing and unchanged: _cap_switch_offer, _session_awaiting and _bg_live_norm take the row off _live_map()
+    (the cycle snapshot), not off this `tm`; the same map under the pusher. The exact readers and their fields are
+    pinned by tests/test_feed_memo_inputs.py's RowFieldCensus."""
+    if tm is None:
+        return None
+    info = tm.get("retryInfo") if isinstance(tm.get("retryInfo"), dict) else {}
+    return (tm.get("state"), tm.get("since"),
+            (tm.get("authLive"), tm.get("auth"), tm.get("authLogin"), tm.get("authLoginLive"), tm.get("authLabel")),
+            (tm.get("retryCount"),) + tuple(info.get(k) for k in _FEED_ROW_RETRY_FIELDS),
+            tuple(tuple(a.get(k) for k in _FEED_ROW_AGENT_FIELDS) for a in (tm.get("subagents") or ()) if isinstance(a, dict)),
+            ("bgTasks" in tm,
+             tuple(tuple(t.get(k) for k in _FEED_ROW_TASK_FIELDS) for t in (tm.get("bgTasks") or ()) if isinstance(t, dict))))
+
+
 def _feed_session_key(s, tm, ctx, prev_entry):
     """One session's memo key: a tuple in _FEED_MEMO_LABELS order, one component per input _feed_session_entry reads,
     every file stat'd BEFORE any read below it (stat-then-read: a publish landing between the stat and the read pairs
@@ -40548,8 +40615,18 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         flag (_display_sdk_human).
       cleared: the session's own slice of _cleared_ids(), sorted. `nid in cleared` per top, the provisional card's
         follow-up target check; a peer's slice rides `peers`.
-      row: the live row tm without snapT and interrupting, as sorted items (None when not live). `live`, perm_state,
-        `since`, _session_retrying's retry fields, the subagent and bgTasks sets, authLive (_cap_switch_offer).
+      row: _feed_row_key(tm): the live row's fields the derivation reads, by position (state, since; the billing fields
+        authLive, auth, authLogin, authLoginLive, authLabel; retryCount with retryInfo's max, status, networkDown,
+        rateLimitType; each
+        subagent's (agentId, type, since); whether the row carries a task set and each task's (toolUseId, type, desc,
+        since, taskId)); None when not live. Read by `live`, perm_state, the blocked placeholder's since, the `ask`
+        gate's state read below, _session_retrying, _cap_switch_offer, _login_refusal_label, _warm_wanted's state,
+        _awaiting_live_rows' agents, _bg_live_norm's tasks. Not the whole row (2026-09-18): ctxTokens, context and
+        ctxOver move on every context refresh and a background agent's lastTool on its every tool call, none read
+        here, and the sorted whole row re-derived the session on each (row rode 1454 of 4132 misses on the live kernel
+        at the design's read, 2568 of 6245 at the review's). The merged row (Sessions.live) is the only shape read here,
+        a vanished-reg session's included (_backend_rows hands its snapshot through the same projection): no snapT, no
+        interrupting, an int since.
       ask: json of the backend's current_ask(fsid) while the row is on a permission/picker prompt, else None. The
         blocked placeholder's title.
       live: Sessions.live_rev(fsid, be). The in-memory live tail _merge_live_atoms folds in ahead of the disk.
@@ -40617,8 +40694,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     anchors = _node_anchor_rev.get(fsid, 0)
     reg = (_chat_reg_sig(fsid), _chat_ident(jd.GONEDIR / (fsid + ".json")))
     cl = board["cleared_by_sid"].get(fsid, ())
-    row = (tuple(sorted(((k, v) for k, v in tm.items() if k not in ("snapT", "interrupting")), key=lambda kv: kv[0]))
-           if tm else None)
+    row = _feed_row_key(tm)                          # the read fields by position, None when not live (2026-09-18)
     postal = _postal_session_slice(fsid, board["postal"])
     nudge = _feed_nudge_key(ctx, prev_entry)
     stalls = _feed_stalls_key(ctx, prev_entry)
