@@ -76,7 +76,7 @@ CENSUS = {
     "_chat_fold_get": ("memo", "the sealed prefix: every gate it checks is an input classified here, and its output is the events an unfolded build produces"),
     "_chat_fold_put": ("out", "the fold entry's write"),
     "_chat_memo_bump": ("out", "a memo counter's increment"),
-    "_chat_postal_key": ("sig", "postal", "the log's identity, folded when the payload carries postal traffic"),
+    "_chat_postal_rev": ("sig", "postal", "this session's revision of the postal index: the records addressed to or from it, their outcomes, and the no-recipient bucket, folded when the payload carries postal traffic (2026-09-18)"),
     "_chat_postal_relevant": ("pure", "over a raw event"),
     "_chat_seam_open_at": ("pure", "over the events"),
     "_chat_stat_key": ("sig", "taskout", "the fold's per-output identity; the same stat the taskout dep re-takes"),
@@ -428,6 +428,8 @@ class Census(unittest.TestCase):
 # record, the way _chat_sig_deps evaluates one; the pusher tests drive the REAL build_session through _push.
 SID = "77777777-8888-9999-aaaa-ccccccccccc1"      # this module's private synthetic sids: goal stores are minted under SID
 PEER = "77777777-8888-9999-aaaa-ccccccccccc2"
+OTHER_A = "77777777-8888-9999-aaaa-ccccccccccc3"   # two sessions this tab is party to no message with
+OTHER_B = "77777777-8888-9999-aaaa-ccccccccccc4"
 NOW = 1781100000
 T0 = NOW - 3600
 
@@ -1087,6 +1089,80 @@ class Differential(_World):
         finally:
             km._msg_summaries = saved
 
+    def test_mail_between_two_other_sessions_leaves_the_postal_dependency_unmoved(self):
+        """The postal component folds THIS session's revision of the postal log (2026-09-18): the records
+        addressed to or from it, their outcomes, and the records with no recipient. A message between two
+        other sessions, or an outcome on one, moves the log's identity and nothing this tab renders, so the
+        component holds; a record touching this session, an outcome on one of its own messages, or a record
+        with no recipient (which hydrates in every chat) moves it."""
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {}
+        self.addCleanup(km._postal_index_memo.__setitem__, 0, None)
+        km._postal_index_memo[0] = None
+        try:
+            jd.MESSAGES.parent.mkdir(parents=True, exist_ok=True)
+
+            def row(r):
+                with open(jd.MESSAGES, "a") as f:
+                    f.write(json.dumps(r) + "\n")
+            row({"ev": "sent", "id": "m7", "from_id": PEER, "to_id": SID, "body": "hello", "t": T0})
+            card = {"kind": "postal-service", "direction": "in", "mid": "m7", "peer": "api"}
+            rec = {"task_outs": [], "pl_pending": [], "pl_at": (), "pl_check": None, "postal_any": True, "postal_cards": [card]}
+            a = self.sig(deps=rec)
+            row({"ev": "sent", "id": "m8", "from_id": OTHER_A, "to_id": OTHER_B, "body": "unrelated", "t": T0 + 1})
+            b = self.sig(deps=rec)
+            self.assertEqual(self.moved(a, b), (), "mail between two other sessions: nothing this tab renders moved")
+            row({"ev": "exec", "id": "m8", "t": T0 + 2})
+            c = self.sig(deps=rec)
+            self.assertEqual(self.moved(b, c), (), "an outcome on a third party's message: still nothing")
+            row({"ev": "sent", "id": "m9", "from_id": PEER, "to_id": SID, "body": "more", "t": T0 + 3})
+            d = self.sig(deps=rec)
+            self.assertEqual(self.moved(c, d), ("postal",), "a record addressed to this session")
+            # an outgoing card joined to its own row: an outcome landing on that row is the receipt the card renders
+            row({"ev": "sent", "id": "m10", "from_id": SID, "to_id": PEER, "body": "ship it", "t": T0 + 4})
+            out = {"kind": "postal-service", "direction": "out", "peer": "api", "mid": "m10", "body": "ship it"}
+            rec2 = {"task_outs": [], "pl_pending": [], "pl_at": (), "pl_check": None, "postal_any": True, "postal_cards": [out]}
+            e = self.sig(deps=rec2)
+            row({"ev": "exec", "id": "m10", "t": T0 + 5})
+            f = self.sig(deps=rec2)
+            self.assertEqual(self.moved(e, f), ("postal",), "the receipt on this session's own message moved")
+            row({"ev": "sent", "id": "m11", "from_id": "", "to_id": "", "body": "pre-schema", "t": T0 + 6})
+            g = self.sig(deps=rec2)
+            self.assertEqual(self.moved(f, g), ("postal",), "a record with no recipient hydrates in every chat")
+        finally:
+            km._msg_summaries = saved
+
+    def test_opposite_outcomes_on_two_of_this_sessions_messages_move_the_postal_dependency(self):
+        """The revision folds the outcome VALUES, not a count (2026-09-18, a review find on the design): an
+        unexec on one of this session's messages beside an exec on another leaves a count where it was while
+        both cards' receipts changed. By value the two rows cannot net to no change."""
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {}
+        self.addCleanup(km._postal_index_memo.__setitem__, 0, None)
+        km._postal_index_memo[0] = None
+        try:
+            jd.MESSAGES.parent.mkdir(parents=True, exist_ok=True)
+
+            def rows(*rs):
+                with open(jd.MESSAGES, "a") as f:
+                    for r in rs:
+                        f.write(json.dumps(r) + "\n")
+            rows({"ev": "sent", "id": "m10", "from_id": SID, "to_id": PEER, "body": "ship it", "t": T0},
+                 {"ev": "sent", "id": "m12", "from_id": SID, "to_id": PEER, "body": "and the docs", "t": T0 + 1})
+            cards = [{"kind": "postal-service", "direction": "out", "peer": "api", "mid": "m10", "body": "ship it"},
+                     {"kind": "postal-service", "direction": "out", "peer": "api", "mid": "m12", "body": "and the docs"}]
+            rec = {"task_outs": [], "pl_pending": [], "pl_at": (), "pl_check": None, "postal_any": True, "postal_cards": cards}
+            a = self.sig(deps=rec)
+            rows({"ev": "exec", "id": "m10", "t": T0 + 2})
+            b = self.sig(deps=rec)
+            self.assertEqual(self.moved(a, b), ("postal",), "the first message was read")
+            rows({"ev": "unexec", "id": "m10", "t": T0 + 3}, {"ev": "exec", "id": "m12", "t": T0 + 4})
+            c = self.sig(deps=rec)
+            self.assertEqual(self.moved(b, c), ("postal",),
+                             "one receipt went back to pending and another landed: two cards changed")
+        finally:
+            km._msg_summaries = saved
+
 
 class KeyCost(_World):
     def test_the_precheck_vouches_and_a_quiet_cycle_re_resolves_nothing(self):
@@ -1712,6 +1788,37 @@ class RecordedDependencies(unittest.TestCase):
                                 "t": self.t}) + "\n")
         km._push([self.chat])
         self.assertIn("postal", self.rebuilds(c), "the log landed: the tab rebuilds under postal")
+
+    def test_mail_between_two_other_sessions_does_not_rebuild_a_tab_that_carries_a_card(self):
+        """A tab carrying a postal card depends on THIS session's revision of the log, not the log's identity
+        (2026-09-18): a message between two other sessions used to rebuild every mail-bearing tab (1862 of
+        5907 background chat rebuilds on one live kernel carried the postal label). A row addressed to this
+        session still rebuilds it."""
+        self.addCleanup(km._postal_index_memo.__setitem__, 0, None)
+        km._postal_index_memo[0] = None
+        jd.MESSAGES.parent.mkdir(parents=True, exist_ok=True)
+
+        def row(r):
+            with open(jd.MESSAGES, "a") as f:
+                f.write(json.dumps(r) + "\n")
+        row({"ev": "sent", "id": "m9", "from_id": PEER, "to_id": SID_R, "body": "the api tests are green now", "t": self.t})
+        self.append(self.turn(1))
+        u, a = self.uid(), self.uid()
+        self.append([_uline(self.tick(), "<!-- romp-msg-id: m9 -->\nthe api tests are green now", u, self.last),
+                     _aline(self.tick(), "Noted.", a, u)])
+        self.last = a
+        km._push([self.chat])
+        km._push([self.chat])                            # served: the record stands
+        m, rec, touts = self.record()
+        self.assertEqual(len([ev for ev in m["events"] if ev.get("kind") == "postal-service"]), 1, "the marker hydrated: one card")
+        c = self._chat()
+        row({"ev": "sent", "id": "m10", "from_id": OTHER_A, "to_id": OTHER_B, "body": "unrelated", "t": self.t})
+        km._push([self.chat])
+        self.assertEqual(self.rebuilds(c), {}, "mail between two other sessions moved nothing this tab renders")
+        c2 = self._chat()
+        row({"ev": "sent", "id": "m11", "from_id": PEER, "to_id": SID_R, "body": "and the docs", "t": self.t})
+        km._push([self.chat])
+        self.assertIn("postal", self.rebuilds(c2), "a record addressed to this session rebuilds it")
 
     def test_a_targeted_push_leaves_no_dependency_record_on_its_thread(self):
         """_push_session_now builds one session outside the pusher's cache and must not leave the build's
