@@ -236,18 +236,31 @@ strip is unchanged.
 2. **join a group** (append a session id to a leaf's `group`);
 3. **move** (detach a leaf/subtree and re-insert it elsewhere; a drag is move + the drop target);
 4. **resize** (re-weight a split's `ratios`; the per-axis divider of section 2);
-5. **close / open** (remove a leaf, collapsing its parent split; or add a pane at its `defaultDock`).
+5. **close / open** (PARK a leaf: remove it from the tree and collapse its parent split, but keep its
+   iframe mounted and hidden with its socket intact; or re-insert a parked or new pane at its
+   `defaultDock`). See the rail note below: a close never unmounts.
 
 No floating windows, no z-order, no minimise (the dispatch's exclusion, and coherent with the flat
 positioned layer: there is nothing to stack).
 
-**The rail toggle becomes "open at default dock".** (Correction: today `togglePane` HIDES a pane in
-place, `body.po-<x>` -> `display:none`, and the iframe stays mounted with its socket; `:60878`.) Under
-the kit, opening a pane inserts a leaf at its `defaultDock` and CLOSING removes the leaf. This is a real
-behavior change (hide-in-place -> add/remove a tree node); its cost is that closing a pane now unmounts
-its iframe (drops its socket/state) unless the kit keeps a hidden-but-mounted parking spot. Decision:
-closing REMOVES the leaf and unmounts (a closed pane is closed); re-opening remounts at the default dock.
-The lazy-mount contract (`reconcile()` copying `data-src`->`src` once) is preserved for the FIRST open.
+**The rail toggle becomes "open at default dock"; a close PARKS, it never unmounts.** (Correction:
+today `togglePane` HIDES a pane in place, `body.po-<x>` -> `display:none`, and the iframe stays mounted
+with its socket; `:60878`.) Under the kit, opening a pane inserts a leaf at its `defaultDock`; closing
+removes the leaf FROM THE TREE (so the geometry recompute stops allotting it a rectangle) but keeps its
+iframe MOUNTED in the flat pane layer, hidden, socket and state intact, exactly today's `togglePane`
+feel. Decision (recorded 2026-09-18): a close PARKS, it does not unmount. Reasons: the rail toggle is a
+glance gesture the user does often (hide the feed, bring it back), so a reload with lost scroll and a
+dropped socket on every toggle would be a felt regression the kit itself introduced; parity with the
+OFF path (byte-identical toggling) is the safest promise for an opt-in switch. The parked set is
+bookkeeping in the layout store (a `parked` list beside the tree), not chrome. The lazy FIRST mount
+stays (`reconcile()` copying `data-src`->`src` once); re-opening re-inserts the parked leaf at its
+default dock with no reload.
+
+**A chat leaf holding sessions is never closed from the rail** (today's rule, kept). A chat leaf can
+only be EMPTIED, by moving its tabs out to another leaf or a new one; an empty chat leaf then collapses.
+The busy gates (`closeBusy`, `kernel.py:60974`) and the session hand-off (section 0) exist precisely so
+a leaf holding sessions is never torn down by a close, and parking (above) preserves that guarantee for
+the dashboard panes too.
 
 **Presets and reset.** (Correction/new: no layout-preset or layout-reset precedent exists; the nearest
 shapes are the `ChatScheme` enum `settings.ts:38` for a small named set and the shortcuts modal's Reset
@@ -394,9 +407,12 @@ linked issue. The plan avoids it by keeping the old keys as the OFF-path source 
   (a kernel STATE file plus a `/version` mesh, the task-tracking model) is a separate product decision,
   not this kit.
 
-One question for the dispatcher, the only choice that would materially change the diff: **should closing
-a pane UNMOUNT its iframe (drop its socket and state), or keep it mounted-but-hidden as today's
-`togglePane` does?** Section 5 assumes unmount (a closed pane is closed, re-opened fresh at its default
-dock), which is simpler and matches "close removes its leaf"; keeping panes mounted-but-hidden would
-preserve their sockets across a close but reintroduce the hidden-chrome bookkeeping the kit is trying to
-shed. Everything else in this plan is decided.
+**Resolved (2026-09-18): a close PARKS the iframe, it does not unmount** (section 5). The open question
+this doc first carried, unmount a closed pane versus keep it mounted-but-hidden, is decided for parking:
+a close removes the leaf from the tree but keeps the iframe mounted and hidden with its socket and state,
+matching today's `togglePane` feel. The reasons: the rail toggle is a frequent glance gesture, so a
+reload with lost scroll and a dropped socket on every toggle would be a felt regression the kit itself
+introduced; a chat leaf holding sessions must never be torn down by a close (the busy gates and the
+state hand-off exist to prevent exactly that, and a chat leaf is emptied, never rail-closed); and
+byte-identical toggling is the safest parity promise for an opt-in switch. The parked set is bookkeeping
+in the layout store, not chrome. Everything else in this plan stands as written.
