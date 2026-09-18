@@ -19534,10 +19534,11 @@ def _dump_goals():
 # the request, the switch defaulting to the in-process loop) lives in kernel.py; this side is the child alone.
 #
 #   child  -> {"op":"ready","pid":<int>,"judgeVersion":<str>,"protocolVersion":<int>}          once, at start
-#   kernel -> {"op":"pass","seq":<int>,"now":<epoch>,"mayStart":<bool>}                         one per wake
+#   kernel -> {"op":"pass","seq":<int>,"mayStart":<bool>[,"now":<epoch>]}                       one per wake; `now` is the explicit
+#                                                                                               clock variant, absent by default
 #   child  -> {"op":"done","seq":<int>,"wallMs":..,"tierStarts":0|2,"tierCpuMs":..,"workerCpuMs":..,
 #              "failures":null|{"count":<int>,"first":<str>},"recovered":<bool>,
-#              "recordCache":{..},"asmCheckpoint":{..},"parses":{..},"goalIo":{..}}                    one per pass
+#              "recordCache":{..},"asmCheckpoint":{..},"parses":{..},"goalIo":{..},"tierGate":{..}}    one per pass
 #   child  -> {"op":"error","seq":<int|null>,"reason":"malformed"|"unknownOp"|"busy"}          a request it cannot take
 #   kernel -> {"op":"quit"}                                                                     (or stdin's end): exit 0
 #
@@ -19545,9 +19546,9 @@ def _dump_goals():
 # evaluated on the kernel side; the child gates on it and on nothing else, and an absent field is False. The pass body is
 # run_pass, the SAME function the in-process producer calls (round two: a copy of the producer had drifted three ways before
 # it ever ran). Every counter on the done line is a PER-PASS figure: wallMs, tierCpuMs and workerCpuMs are the pass's own,
-# and the recordCache, asmCheckpoint, parses and goalIo blocks are the differences against the previous pass's snapshot (the
+# and the recordCache, asmCheckpoint, parses, goalIo and tierGate blocks are the differences against the previous pass's snapshot (the
 # kernel feeds its /perf counters per pass) except their GAUGES (_SERVE_GAUGES: recordCache's entries, bytes, budgetBytes and
-# countCap; asmCheckpoint's asmDocMemo), which ride as current values (restoreMs accumulates since boot and is differenced like
+# countCap; asmCheckpoint's asmDocMemo; tierGate's stamps), which ride as current values (restoreMs accumulates since boot and is differenced like
 # every counter, so the line carries the pass's own restore time); `recovered` is this process's judge-module
 # recovery flag, consumed by the child
 # and acted on by the kernel (the give-up re-arm after a rate-limit storm ends). One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and
@@ -19724,13 +19725,19 @@ def _serve_counter_blocks():
     /perf) and the goal-store I/O counters (goal_io_stats)."""
     return {"recordCache": em.record_cache_stats(), "asmCheckpoint": em.asm_checkpoint_stats(),
             "parses": {"misses": int(parse_misses()), "hits": int(globals().get("parse_hits", lambda: 0)())},
-            "goalIo": goal_io_stats()}
+            "goalIo": goal_io_stats(),
+            "tierGate": tier_stats()}                 # the tiers' gate per STAGE (plan, group, close, distill, unblock, consolidate: ran, skipped,
+    #                                                    stamped, bypassed, incomplete, due_clock): the
+    #                                                    admittance the pass ran under, so a flip's call count per pass is a measured number
+    #                                                    (romp_perf's read of 2026-09-18: twice the calls a pass on the child road, no gate
+    #                                                    figure to say why); `stamps` is a gauge, the stamps held now
 
 
 _SERVE_GAUGES = {                                 # the keys of each block that are GAUGES (a current size, a cap), not counters:
     "recordCache": ("entries", "bytes", "budgetBytes", "countCap"),   #  they ride as their current values, never as a difference
     "asmCheckpoint": ("asmDocMemo",),             # (round three); restoreMs is NOT one: _restore_ms accumulates since boot, so its
-    "parses": (), "goalIo": ()}                   #  per-pass difference is the pass's own restore time (round four)
+    "parses": (), "goalIo": (),                   #  per-pass difference is the pass's own restore time (round four)
+    "tierGate": ("stamps",)}                      # the stamps held is a size, the per-tier counters are counters
 
 
 def _serve_delta(prev, cur, gauges=()):
@@ -19810,7 +19817,11 @@ def _serve_pass(req, emit):
     against the previous pass's snapshot, so the kernel feeds its /perf counters per pass (round two, the kernel head's read)."""
     _set_stage("producer")                        # the pass thread's own parses count under the producer, as the kernel's do
     seq = req.get("seq")
-    now = req.get("now")
+    now = req.get("now")                          # OPTIONAL: absent or null, the tiers read their own clock during the pass, the
+    #                                               in-process producer's behaviour and the kernel side's default (2026-09-18: a
+    #                                               `now` truncated to the second and handed to both tiers for a whole pass is a
+    #                                               different admittance input from two live clocks; it stays as the explicit
+    #                                               variant a measurement can send)
     now = int(now) if isinstance(now, (int, float)) and not isinstance(now, bool) else None
     may_start = req.get("mayStart") is True
     worker0 = judge_worker_cpu_ms()

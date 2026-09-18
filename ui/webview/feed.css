@@ -43,6 +43,9 @@
   --accent-fg: #0c1a2e;  /* dark text ON the accent (CLAUDE.md) — for the reverse-highlight on a selected toggle */
   --accent-wash: rgba(156, 210, 255, 0.12);  /* THE faint accent wash — mirrors styles.css; one alpha
                        behind every selected/hovered accent chrome */
+  --accent-tint: rgba(156, 210, 255, 0.04);  /* the very faint accent TINT (the user 2026-09-18): a region's ground,
+                       a third of the wash, so a section set apart from the rest of the feed reads as one region
+                       without competing with the cards' own washes; today the focused-session section's */
   --radius-menu: 6px;  /* the menu vocabulary (CLAUDE.md) — mirrors styles.css */
   --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.35);
   --menu-bg: var(--vscode-menu-background, #252526);   /* the menu SKIN tokens (T226) — mirror styles.css */
@@ -159,6 +162,7 @@ body.theme-light {
   --err: #B02A1C;
   --accent: #C2410C; --accent-fg: #FFF8F2;
   --accent-wash: rgba(194, 65, 12, 0.10);
+  --accent-tint: rgba(194, 65, 12, 0.04);
   --cmt-hl: #FFDF70;
   --fast: #D45500;
   --warn: #9A6A00;
@@ -421,7 +425,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    sticky heads (a miniature is short), the block furniture the board has not got — an always-on fold caret,
    a resize gutter, a focusable chip for the arrow keys — and the rule (T410). Both themes read through the
    variables. */
-#feed-focus { display: flex; flex-direction: column; gap: 8px; }
+/* the WHOLE region the focused session lives in, the head row and its columns together, on the very faint accent tint
+   (the user 2026-09-18): one region set apart from the rest of the feed, a small radius, and padding so the tint has a
+   margin around the cards; the divider, the head and the fold caret are as they were */
+#feed-focus { display: flex; flex-direction: column; gap: 8px; background: var(--accent-tint); border-radius: 8px; padding: 6px 8px 2px; }
 /* the LABEL (T410b): "Current session: <name>", the section's fold control. The board's column heads' size
    (0.72em — no new size) at the session headers' weight (600); the label text dim like the column heads, the
    name bold in its identity colour (set inline, as the session headers do); the whole row folds on click, so
