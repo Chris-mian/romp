@@ -411,6 +411,34 @@ class HostProcess(unittest.TestCase):
         self.assertEqual([r["type"] for _, r in journal], kinds, "and holds every record, in the socket's order, once the writer landed them")
         k.close()
 
+    def test_a_turn_that_folded_a_queued_message_leaves_no_open_turn_for_the_next_attach(self):
+        """The stuck-Working shape (2026-09-18): the host counted every user line fed and took one off per result, so a
+        turn that folded a second message (the real CLI answers messages typed while it works with the running turn's
+        single result) left the count at one for good, and every kernel that attached afterwards adopted it: Ready on the
+        page, Working to the drain, every send parked. One result now closes everything fed."""
+        host, sock, spec = self._start()
+        k, _ = self._attach(sock)
+        k.send({"t": "in", "data": self._user("one sleep=0.6 merge=1")})
+        k.send({"t": "in", "data": self._user("two sleep=0")})                   # queued while the turn runs; folded into it
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        self.assertEqual(sum(1 for f in k.outs() if f["data"].get("type") == "result"), 1, "one result answered both messages")
+        k.send({"t": "detach"}); k.close()
+        k2, hello = self._attach(sock, ack=-1, pid=4343)
+        self.assertEqual(hello["inflight"], 0, "no open turn after the fold's result (the base reported one: fed two, resulted one)")
+        k2.send({"t": "in", "data": self._user("three sleep=0")})                 # and the idle CLI takes the next send at once
+        k2.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result" and f["data"].get("uuid") not in
+                      {g["data"].get("uuid") for g in k.outs() if g["data"].get("type") == "result"}, timeout=15)
+        k2.close()
+
+    def test_only_a_user_line_carrying_text_opens_a_turn(self):
+        fn = getattr(sh, "_opens_turn", None)
+        self.assertIsNotNone(fn, "the host decides which user lines open a turn (the base counted every one)")
+        self.assertTrue(fn({"type": "user", "message": {"role": "user", "content": "hello"}}))
+        self.assertTrue(fn({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}}))
+        self.assertFalse(fn({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}))
+        self.assertFalse(fn({"type": "user", "message": {"role": "user", "content": ""}}))
+        self.assertFalse(fn({"type": "user"}))
+
     def test_a_detached_kernel_reattaches_and_replays_from_its_ack_while_the_turn_kept_running(self):
         host, sock, spec = self._start()
         k, _ = self._attach(sock)

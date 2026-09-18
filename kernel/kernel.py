@@ -35735,6 +35735,47 @@ def _deliver_send_batch(be, sid, run):
         be.send(sid, merged)
 
 
+_HELD_WORKING_SAID = set()   # sids whose parked queue was said to be held by the backend's working signal; cleared when the hold lifts
+
+
+def _pending_ops_held_working(sid):
+    """A parked queue skipped because the session reads working: said ONCE per hold, a stderr line and a session-events row
+    (kind pending-ops.held-working), when the backend's live signal (an open-turn count or a pending queue) is the reason
+    while the transcript shows no open turn. That pairing is a stale count, not a turn: on the user's laptop (2026-09-18) a
+    host that survived several kernel restarts handed each new kernel an open-turn count a folded turn had left high, so
+    the session read Ready on the page and Working to the drain, and three inputs sat parked for two days with no line
+    anywhere. The count is fixed at its source (the host's settle, the hello's exact adoption); this is the belt, so the
+    next such state is a row the error center shows and a line the log carries, never an infinite silent park."""
+    try:
+        be = Sessions.backend_for(sid)
+        b = be.busy(sid) if be is not None else None
+    except Exception:
+        return
+    if not b:
+        return                                            # the transcript itself shows the open turn: a real hold, nothing to say
+    try:
+        path = _path_of(sid)
+        session = (_parse_cached(path) if path else None) or {"turns": []}
+        if _session_working(session["turns"]):
+            return                                        # the transcript agrees: a real turn
+    except Exception:
+        return
+    if sid in _HELD_WORKING_SAID:
+        return
+    _HELD_WORKING_SAID.add(sid)
+    with _pending_ops_lock:
+        n = len(_pending_ops.get(sid) or [])
+    name = _name_of(sid) or sid[:8]
+    text = ("%s: %d parked input(s) held because the backend reads the session as working (an open turn or a pending "
+            "queue) while its transcript shows no open turn; a stale count, not a turn" % (name, n))
+    sys.stderr.write("pending-ops: %s\n" % text)
+    try:
+        m = sys.modules.get("romp_sdk_backend") or load_source("romp_sdk_backend", HERE / "sdk_backend.py")
+        m.problem_row(jd.STATE, text, "pending-ops.held-working", sid=sid, name=name, log=getattr(be, "_log", None), parked=n, ring=False)
+    except Exception:
+        sys.stderr.write("pending-ops row: %s\n" % traceback.format_exc())
+
+
 def _apply_pending_ops(now=None):
     """Pusher cycle: FIFO-deliver parked ops once the session is QUIET (neither compacting nor an open
     turn) — in exactly the order they were parked, which is exactly the order the chat rendered their
@@ -35848,8 +35889,12 @@ def _apply_pending_ops(now=None):
                 _drain_hold.pop(sid, None)
             if _limit_hold(sid):
                 continue                              # the account can't serve a request yet: no parse, no gates
-            if _compacting_now(sid) or _working_now(sid):
+            if _compacting_now(sid):
                 continue
+            if _working_now(sid):
+                _pending_ops_held_working(sid)            # loud when the backend alone says working (see the helper), never a silent park
+                continue
+            _HELD_WORKING_SAID.discard(sid)               # the hold lifted: the next one is said again
             changed = False                               # a real mutation below → save the mirror + wake the pusher
             try:
                 be = Sessions.backend_for(sid)
