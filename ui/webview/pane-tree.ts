@@ -77,12 +77,17 @@ export function layout(n: Node, box: Rect, gutter: number): Array<{ pane: PaneId
   const span = (horiz ? box.w : box.h) - gutter * (n.kids.length - 1);
   const avail = span > 0 ? span : 0;
   const out: Array<{ pane: PaneId; rect: Rect }> = [];
+  const far = horiz ? box.x + box.w : box.y + box.h;
   let off = horiz ? box.x : box.y;
   n.kids.forEach((kid, i) => {
     const size = avail * n.ratios[i];
+    // clamp each kid's start and end to the box: a split narrower than its gutters would otherwise advance
+    // the offset a full gutter per kid and land zero-width rects OUTSIDE the box
+    const start = off < far ? off : far;
+    const end = off + size < far ? off + size : far;
     const rect: Rect = horiz
-      ? { x: off, y: box.y, w: size, h: box.h }
-      : { x: box.x, y: off, w: box.w, h: size };
+      ? { x: start, y: box.y, w: end - start, h: box.h }
+      : { x: box.x, y: start, w: box.w, h: end - start };
     out.push(...layout(kid, rect, gutter));
     off += size + gutter;
   });
@@ -130,14 +135,17 @@ export function detach(tree: Node, pane: PaneId): { tree: Node | null; leaf: Lea
   const found = leafOf(tree, pane);
   if (!found) return { tree, leaf: null };
   if (isLeaf(tree)) return { tree: tree.pane === pane ? null : tree, leaf: tree.pane === pane ? tree : null };
-  const strip = (n: Split): Node => {
+  const strip = (n: Split): Node | null => {
     const keep: Node[] = [];
     const ratios: number[] = [];
     n.kids.forEach((k, i) => {
       if (isLeaf(k) && k.pane === pane) return;   // drop the target leaf
-      keep.push(isSplit(k) ? strip(k) : k);
+      const kept = isSplit(k) ? strip(k) : k;
+      if (kept === null) return;   // a nested split that emptied out drops with it
+      keep.push(kept);
       ratios.push(n.ratios[i]);
     });
+    if (keep.length === 0) return null;   // every kid was the target (a duplicate-id tree): an EMPTY split, not a kid-less one, so closePane's only-pane guard catches it and never blanks the dashboard
     if (keep.length === 1) return keep[0];   // collapse: the lone kid takes this split's place (and its slot ratio)
     return mkSplit(n.dir, keep, ratios);
   };
@@ -181,11 +189,15 @@ export function closePane(cur: Layout, pane: PaneId): CloseResult {
 }
 
 /** Open a pane at an edge of a target (the rail's "open at its default dock"): dock it and drop it from the
- *  parked set. A no-op refusal if it is already in the tree. */
-export function openPane(cur: Layout, pane: PaneId, target: PaneId, edge: Edge): Layout {
-  if (has(cur.tree, pane)) return cur;
-  const tree = splitAt(cur.tree, target, pane, edge);
-  return { v: 1, tree, parked: cur.parked.filter((p) => p !== pane) };
+ *  parked set. Returns the CloseResult shape (never throws, like closePane): an absent target or opening a
+ *  pane against itself is a refusal with a reason. A pane already in the tree is ok, and any STALE park of it
+ *  is dropped (the parked set must never hold a docked pane), rather than returning the layout untouched. */
+export function openPane(cur: Layout, pane: PaneId, target: PaneId, edge: Edge): CloseResult {
+  const unpark = (tree: Node): Layout => ({ v: 1, tree, parked: cur.parked.filter((p) => p !== pane) });
+  if (has(cur.tree, pane)) return { ok: true, layout: unpark(cur.tree) };   // already docked: drop any stale park, no structural change
+  if (pane === target) return { ok: false, layout: cur, reason: "a pane cannot open against itself" };
+  if (!has(cur.tree, target)) return { ok: false, layout: cur, reason: "target not in the tree" };
+  return { ok: true, layout: unpark(splitAt(cur.tree, target, pane, edge)) };
 }
 
 /** Re-weight the edge between kids `i` and `i+1` of the split at `path` (a list of kid indices from the
@@ -195,6 +207,7 @@ export function resize(tree: Node, path: number[], i: number, delta: number, min
   const at = (n: Node, p: number[]): Node => {
     if (p.length === 0) {
       if (isLeaf(n) || i < 0 || i + 1 >= n.kids.length) return n;
+      if (!Number.isFinite(delta) || !Number.isFinite(minFrac)) return n;   // a NaN/Infinity delta or min passes both clamps below and zeroes two panes; leave the edge put
       const ratios = n.ratios.slice();
       const pair = ratios[i] + ratios[i + 1];
       if (pair < 2 * minFrac) return n;   // neither side can meet the min: leave the edge where it is, never mint a negative ratio
@@ -258,5 +271,13 @@ export function parse(s: string): Layout | null {
   if (o.v !== 1) return null;
   if (!validNode(o.tree)) return null;
   if (!Array.isArray(o.parked) || !o.parked.every((p) => typeof p === "string")) return null;
-  return { v: 1, tree: o.tree as Node, parked: o.parked as PaneId[] };
+  const tree = o.tree as Node;
+  const ls = leaves(tree);
+  if (new Set(ls).size !== ls.length) return null;   // a duplicate pane id anywhere would strip to a kid-less split and blank the dashboard
+  const parked = o.parked as PaneId[];
+  if (parked.some((p) => has(tree, p))) return null;   // a pane cannot be both docked and parked
+  // normalise every split's ratios once: validNode accepts a sum within 1e-3, but layout never re-normalises
+  // (EPS 1e-6), so a stored [0.4995, 0.4996] would under-fill the box forever; mkSplit's norm() fixes it here
+  const renorm = (n: Node): Node => isLeaf(n) ? n : mkSplit(n.dir, n.kids.map(renorm), n.ratios);
+  return { v: 1, tree: renorm(tree), parked };
 }

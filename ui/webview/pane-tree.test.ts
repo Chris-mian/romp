@@ -146,12 +146,23 @@ test("closePane: PARK a plain pane; refuse a chat leaf holding sessions and the 
   assert.match(only.reason!, /only pane/);
 });
 
-test("openPane: dock a parked pane and drop it from the parked set; a present pane is a no-op", () => {
+test("openPane: dock a parked pane (CloseResult shape), drop a stale park, refuse with a reason not a throw", () => {
   const cur: Layout = { v: 1, tree: { pane: "chat" }, parked: ["feed"] };
   const opened = openPane(cur, "feed", "chat", "right");
-  assert.deepEqual(leaves(opened.tree).sort(), ["chat", "feed"]);
-  assert.deepEqual(opened.parked, [], "feed unparked");
-  assert.equal(openPane(opened, "chat", "feed", "left"), opened, "already present: unchanged reference");
+  assert.equal(opened.ok, true);
+  assert.deepEqual(leaves(opened.layout.tree).sort(), ["chat", "feed"]);
+  assert.deepEqual(opened.layout.parked, [], "feed unparked");
+  // MEDIUM 2: a pane already docked but still (stale) in parked has the park DROPPED, not the layout returned untouched
+  const stale: Layout = { v: 1, tree: { dir: "row", kids: [{ pane: "chat" }, { pane: "feed" }], ratios: [0.5, 0.5] }, parked: ["feed"] };
+  const cleaned = openPane(stale, "feed", "chat", "right");
+  assert.equal(cleaned.ok, true);
+  assert.deepEqual(cleaned.layout.parked, [], "the stale park of an already-docked pane is dropped");
+  assert.deepEqual(leaves(cleaned.layout.tree).sort(), ["chat", "feed"], "no structural change when already docked");
+  // LOW c: a reason, never a throw, for an absent target or opening a pane against itself
+  const absent = openPane(cur, "files", "nope", "left");
+  assert.equal(absent.ok, false); assert.match(absent.reason!, /target not in the tree/);
+  const selfOpen = openPane(cur, "files", "files", "left");
+  assert.equal(selfOpen.ok, false); assert.match(selfOpen.reason!, /against itself/);
 });
 
 test("resize: move an edge by a fraction, clamped so neither side drops below the min", () => {
@@ -198,4 +209,48 @@ test("serialise/parse: round-trip, and fail-closed on any bad shape", () => {
   assert.equal(parse(JSON.stringify({ v: 1, tree: { pane: "a", active: {} }, parked: [] })), null, "active must be a string");
   const withGroup: Layout = { v: 1, tree: { pane: "chat", group: ["s1", "s2"], active: "s1" }, parked: [] };
   assert.deepEqual(parse(serialise(withGroup)), withGroup, "a valid group/active round-trips");
+});
+
+// ---- round two: the read's two mediums and the lows (each red against the pre-fix module) ----
+
+test("parse refuses a duplicate pane id anywhere in the tree (MEDIUM 1: it would strip to a kid-less split and blank the dashboard)", () => {
+  const dup = JSON.stringify({ v: 1, tree: { dir: "row", kids: [{ pane: "chat" }, { pane: "chat" }], ratios: [0.5, 0.5] }, parked: [] });
+  assert.equal(parse(dup), null, "two 'chat' leaves in one split is refused");
+  const deep = JSON.stringify({ v: 1, tree: { dir: "col", kids: [{ pane: "chat" }, { dir: "row", kids: [{ pane: "feed" }, { pane: "chat" }], ratios: [0.5, 0.5] }], ratios: [0.5, 0.5] }, parked: [] });
+  assert.equal(parse(deep), null, "a duplicate nested deeper is refused too");
+});
+
+test("closePane on a duplicate-id tree is refused, never a blank dashboard (MEDIUM 1, the strip end)", () => {
+  const dup: Layout = { v: 1, tree: { dir: "row", kids: [{ pane: "chat" }, { pane: "chat" }], ratios: [0.5, 0.5] }, parked: [] };
+  const r = closePane(dup, "chat");
+  assert.equal(r.ok, false, "stripping both duplicate leaves must refuse, not leave a kid-less split");
+  assert.deepEqual(leaves(r.layout.tree), ["chat", "chat"], "the layout is untouched on the refusal");
+});
+
+test("parse refuses a pane that is both docked and parked (MEDIUM 2)", () => {
+  const both = JSON.stringify({ v: 1, tree: { pane: "chat" }, parked: ["chat"] });
+  assert.equal(parse(both), null, "chat cannot be in the tree and in parked");
+});
+
+test("resize with a non-finite delta is a no-op (LOW b: NaN passed both clamps and zeroed two panes)", () => {
+  const t: Split = { dir: "row", kids: [{ pane: "a" }, { pane: "b" }, { pane: "c" }], ratios: [0.5, 0.3, 0.2] };
+  assert.deepEqual((resize(t, [], 0, NaN, 0.1) as Split).ratios, [0.5, 0.3, 0.2], "a NaN delta leaves the ratios unchanged");
+  assert.deepEqual((resize(t, [], 0, 0.1, NaN) as Split).ratios, [0.5, 0.3, 0.2], "a NaN min leaves them unchanged too");
+});
+
+test("layout clamps rects to the box when a split is narrower than its gutters (LOW a)", () => {
+  const t: Split = { dir: "row", kids: [{ pane: "a" }, { pane: "b" }, { pane: "c" }], ratios: [1 / 3, 1 / 3, 1 / 3] };
+  const rects = layout(t, { x: 0, y: 0, w: 10, h: 20 }, 7);   // span 10-14 = negative; the old code put right edges at 0,7,14
+  for (const { pane, rect } of rects) {
+    assert.ok(rect.x >= -1e-9 && rect.x + rect.w <= 10 + 1e-9, pane + " stays within the 10px box: " + JSON.stringify(rect));
+    assert.ok(rect.w >= -1e-9, pane + " has no negative width");
+  }
+});
+
+test("parse normalises a stored ratio that sums under 1 so layout fills the box (LOW d: loose tolerance vs no re-normalise)", () => {
+  const s = JSON.stringify({ v: 1, tree: { dir: "row", kids: [{ pane: "a" }, { pane: "b" }], ratios: [0.4995, 0.4996] }, parked: [] });
+  const p = parse(s);
+  assert.ok(p, "a ratio a sliver under 1 (within tolerance) still parses");
+  const w = widthsOf(p!.tree, 1000, 100, 0);
+  assert.ok(near(w.a + w.b, 1000, 1e-6), "the two panes fill the 1000px box exactly: " + JSON.stringify(w));
 });
