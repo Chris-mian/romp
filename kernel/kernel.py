@@ -35746,18 +35746,18 @@ def _pending_ops_held_working(sid):
     the session read Ready on the page and Working to the drain, and three inputs sat parked for two days with no line
     anywhere. The count is fixed at its source (the host's settle, the hello's exact adoption); this is the belt, so the
     next such state is a row the error center shows and a line the log carries, never an infinite silent park."""
+    # Called INSIDE the drain's quiet gate, after `_compacting_now(sid) or _working_now(sid)` read true, and it reads the
+    # backend's busy() itself never: the gate's one read is the backend's (tests/test_drain_hoists.py counts it), and
+    # _working_now answers with the backend's signal whenever the backend gives one, so a skip that is not a compaction
+    # while the transcript shows no open turn IS the backend alone saying working.
     try:
-        be = Sessions.backend_for(sid)
-        b = be.busy(sid) if be is not None else None
-    except Exception:
-        return
-    if not b:
-        return                                            # the transcript itself shows the open turn: a real hold, nothing to say
-    try:
+        if _compacting_now(sid):
+            return                                        # a compaction holds the queue on its own account
         path = _path_of(sid)
         session = (_parse_cached(path) if path else None) or {"turns": []}
         if _session_working(session["turns"]):
             return                                        # the transcript agrees: a real turn
+        be = Sessions.backend_for(sid)
     except Exception:
         return
     if sid in _HELD_WORKING_SAID:
@@ -35889,10 +35889,8 @@ def _apply_pending_ops(now=None):
                 _drain_hold.pop(sid, None)
             if _limit_hold(sid):
                 continue                              # the account can't serve a request yet: no parse, no gates
-            if _compacting_now(sid):
-                continue
-            if _working_now(sid):
-                _pending_ops_held_working(sid)            # loud when the backend alone says working (see the helper), never a silent park
+            if _compacting_now(sid) or _working_now(sid):
+                _pending_ops_held_working(sid)            # said once when the backend ALONE reads working: a stale count is a row and a line
                 continue
             _HELD_WORKING_SAID.discard(sid)               # the hold lifted: the next one is said again
             changed = False                               # a real mutation below → save the mirror + wake the pusher
