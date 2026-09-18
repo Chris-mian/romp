@@ -14,6 +14,7 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 import collections
 import copy
 import gc
+import hashlib
 import math
 import tracemalloc
 import zlib
@@ -3979,7 +3980,7 @@ def _bus_send_relay(payload):
     mailbox), so a retry cannot help; a bus that could not be reached or failed (a 5xx) is not definitive. The
     response carries the bus's id and, for a far host, "parked"."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=12)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=12)
         try:                                           # UTF-8 on the wire: an escaped non-ASCII body would be six times its
             conn.request("POST", "/send", json.dumps(payload, ensure_ascii=False).encode("utf-8"),   # bytes, past the bus's
                          {"Content-Type": "application/json; charset=utf-8", "X-Romp-Token": TOKEN})   # limit the excerpt's cap
@@ -4007,7 +4008,7 @@ def _bus_recall_relay(sid, mid):
     host delivered): as the worker, by id. Returns "withdrawn" (the unread message is gone), "carried" (it left with an
     exchange and can no longer be withdrawn, or was read), or "unknown" (the bus could not be asked)."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=12)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=12)
         conn.request("POST", "/recall", json.dumps({"from_id": sid, "to": "", "id": mid}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
         resp = conn.getresponse()
@@ -4030,7 +4031,7 @@ def _bus_restore_mail(sid, mids):
     this side's say-so. Authoritative about the bus's files (an id missing from the set is gone from cur/); RAISES
     when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a quiet False
     here would be the loss this exists to end."""
-    conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=5)
+    conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=5)
     try:
         conn.request("POST", "/restore", json.dumps({"id": sid, "mids": list(mids)}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
@@ -20716,7 +20717,58 @@ def _note_tunnel_teardown(r, now):
     r["fails"] = int(r.get("fails") or 0) + 1
     r["next_try"] = now + _tunnel_backoff(r["fails"])
     return r["fails"]
-BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # this laptop's postal bus (reverse-forwarded)
+BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # the environment's word for this machine's bus port: the tunnel's
+#                                                                    local side (the -L target, the legacy -R) and the FALLBACK of _bus_port()
+_BUS_PORT_SAID = [None]                                           # the census line's memory: (port, source) said once, a change said again
+_BUS_ENSURED = [False]                                            # this kernel ENSURED its bus (the ensure exited 0): the bus whose record it may trust
+
+
+def _bus_port():
+    """The port this machine's bus BOUND, for every loopback dial of it: the bus's own record STATE/postal/postal-port ({"port",
+    "pid", "tok"}, written after its bind, removed on a clean exit; postal_service.py PORTFILE) ahead of the environment, which is
+    the fallback when the record is absent, stale (its pid no longer runs), another bus's (its token mark is not this kernel's),
+    or when this kernel ensured no bus at all (_BUS_ENSURED: client-only mode, a lab kernel, an in-process test kernel; the
+    whole test suite showed a record one world left under the shared state root redirecting a later world's dial, and the
+    ensure is the event that makes a bus this kernel's). Both processes read ROMP_POSTAL_PORT at import and
+    nothing bound them (2026-09-18): a unit or profile that set the port for one process and not the other, or a stale legacy
+    tunnel reverse-forwarding the hub's bus onto this loopback at the fixed port, had the kernel dial a bus that was not its
+    own, and a held message's approve came back "no held message" from a bus that never held it. The record is the bus's
+    answer to "which port are you on", read on every dial (a few hundred bytes, no memo: the bus may restart on another
+    port between dials); a mismatch with the environment is said once per change (_bus_port_census)."""
+    port, source = BUS_PORT, "environment"
+    try:
+        rec = json.loads((jd.STATE / "postal" / "postal-port").read_text())
+        rp, pid = int(rec.get("port") or 0), int(rec.get("pid") or 0)
+        # trusted only when it is THIS kernel's bus: this kernel ENSURED a bus (a kernel that ensured none, client-only or a
+        # lab's, dials the environment's port and no record can redirect it), its pid runs, and its token mark is this
+        # kernel's own
+        if _BUS_ENSURED[0] and rp > 0 and pid > 0 and _pid_alive(pid) and str(rec.get("tok") or "") == _bus_token_mark():
+            port, source = rp, "record"
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    _bus_port_census(port, source)
+    return port
+
+
+def _bus_token_mark():
+    """The mark the bus writes into its record (postal_service._token_mark): a sha256 prefix of the shared serve token, so a
+    kernel trusts only a record its own bus wrote (a record another bus, another state root's world or a reused pid left can
+    never redirect the dial)."""
+    try:
+        return hashlib.sha256(str(TOKEN or "").encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _bus_port_census(port, source):
+    """One boot census line, and one more per change: the bus port the kernel dials, whether the record or the environment
+    named it, and the mismatch with the environment when there is one (the operator's pointer at the pair)."""
+    cur = (int(port), source)
+    if _BUS_PORT_SAID[0] == cur:
+        return
+    _BUS_PORT_SAID[0] = cur
+    note = "" if int(port) == BUS_PORT else " (ROMP_POSTAL_PORT says %d: the environment and the bus disagree; the record wins)" % BUS_PORT
+    sys.stderr.write("romp-kernel: postal bus dialed on 127.0.0.1:%d from the %s%s\n" % (int(port), source, note))
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
 _REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port
@@ -20770,6 +20822,8 @@ def _ensure_postal_bus():
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
         if r.returncode != 0:   # the bus said no (2026-09-10: it refuses the machine's fixed port under a test): say so here, where the kernel's log is
             sys.stderr.write("postal bus ensure refused (exit %d): %s\n" % (r.returncode, (r.stderr or "").strip()[-2000:]))
+        else:
+            _BUS_ENSURED[0] = True   # the bus this kernel ensured is the one whose port record _bus_port() may trust
     except Exception:
         sys.stderr.write("postal bus ensure failed:\n%s" % traceback.format_exc())
 
@@ -20784,6 +20838,9 @@ def _revive_postal_bus():
     so a burst of refused notifies — one per tunnel per supervisor pass — coalesces into one ensure.
     A quiet hub went dark exactly this way twice on 2026-08-12: bus gone, kernel up, every /peer
     notify failing silently, cross-host mail parked until a manual ensure."""
+    if (os.environ.get("ROMP_POSTAL_CLIENT_ONLY") or "").strip().lower() in ("1", "on", "true", "yes"):
+        return   # a client-only kernel owns no bus to revive: the ensure would only ping (2026-09-18: a revive kicked on a daemon
+        #          thread by a hermetic test's refused notify outran the test's environment restore and started a real bus)
     with _bus_revive_lock:
         if _bus_reviving[0]:
             return
@@ -21133,7 +21190,7 @@ def _notify_bus_peer(host, port, up, peer_token="", trust="directed"):
     A refusal ALSO kicks _revive_postal_bus: a dead bus must not stay dead until the next kernel
     boot while the supervisor retries into it forever (the 2026-08-12 quiet-hub outage)."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up),
                                                   "token": peer_token or "", "trust": trust or "directed"}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
@@ -21152,7 +21209,7 @@ def _notify_bus_origin_trust(host, trust):
     down never breaks the caller; the supervisor re-pushes, and a restarted bus re-seeds from
     /tunnels' `known` rows. A refusal kicks _revive_postal_bus, like _notify_bus_peer's."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "trust": trust or "directed",
                                                   "originOnly": True}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
@@ -21227,7 +21284,7 @@ def _bus_peers_snap(fresh=False):
         return _via_cache["snap"]
     snap = {}
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=2)
         conn.request("GET", "/peers", None, {"X-Romp-Token": TOKEN})
         r = conn.getresponse()
         if r.status == 200:
@@ -21264,13 +21321,14 @@ def _bus_peer_tiers():
 def _bus_quarantine_act(body):
     """Proxy a quarantine verdict (approve/deny, optional edited text) to the bus, which OWNS postal
     delivery and the held-message store. On approve the bus re-runs the peer's deliver(), so an approved
-    message lands as normal postal mail. Returns (ok, error)."""
+    message lands as normal postal mail. Returns (ok, error). The body carries the recipient `sid` when the
+    pane named it, so a bus that holds nothing for a session it does not serve says so (2026-09-18)."""
     try:
         # 20s: the client half of the approve path's budget pair (2026-09-01). The bus-side approve
         # pays one checked kernel fetch (≤6s) plus the recipient's deliver push (≤12s), so a 6s cap
         # here gave up mid-approve — the delivery landed while the kernel reported the bus
         # unreachable. The halves move together (the 830 budget-pair discipline).
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=20)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=20)
         conn.request("POST", "/quarantine/act", json.dumps(body),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
         resp = conn.getresponse()
@@ -66445,6 +66503,8 @@ class Handler(BaseHTTPRequestHandler):
             # the card on the next build (event-based — no cleared.jsonl needed). Failure answers the asker by mid.
             _qmid = str(msg["mid"])
             _qbody = {"mid": _qmid, "action": str(msg.get("action") or "").strip().lower()}
+            if msg.get("sid"):                     # the recipient, stripped of its host by the route: the bus checks it serves that session
+                _qbody["sid"] = str(msg["sid"])
             if msg.get("text") is not None:
                 _qbody["text"] = str(msg["text"])
             if msg.get("feedback"):                # deny-with-note: the bus mails it back to the sender
@@ -68060,6 +68120,7 @@ def main():
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
+    _bus_port()                                    # the census line: the bus port dialed, from the record or the environment
     sys.stderr.write("romp-kernel: every request needs the serve token (loopback included) — "
                      "browser entry: `romp`\n")
     if BIND != "127.0.0.1":
