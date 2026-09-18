@@ -7652,17 +7652,27 @@ class SdkSession:
             # next, not just that a storm exists (the user 2026-07-10).
             #
             # The field names were GUESSED when this was written (number / max_retries / retry_delay_ms /
-            # error_status / retryAt) and every one of them was wrong, so `retry_info` came back all-None on
-            # every real storm and the whole detail UI below it rendered blank — the user saw a bare "API
-            # retrying" with no attempt count, no countdown and no reason, for months (the user 2026-07-29).
-            # The names are now VERIFIED against two authoritative sources rather than guessed:
-            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry) — snake_case, per the CLI's own
-            #     embedded schema: retry_in_ms / is_network_down / is_ssl_error / rate_limit_type;
-            #   * the TRANSCRIPT twin the same frame is written from (system / subtype api_error) — camelCase:
+            # error_status / retryAt) and the detail never showed: the user saw a bare "API retrying" with no
+            # attempt count, no countdown and no reason, for months (the user 2026-07-29). The names are now
+            # VERIFIED against two authoritative sources rather than guessed:
+            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry), snake_case, per the CLI's own
+            #     embedded schema: attempt / max_retries / retry_delay_ms / error_status (an int; null for a
+            #     connection error that got no HTTP response) / error (a CATEGORY string from the CLI's own
+            #     classifier: overloaded, rate_limit, authentication_failed, server_error, unknown, and a
+            #     few more) / no_response (optional: waited_ms, retry_wait_ms) / uuid / session_id;
+            #   * the TRANSCRIPT twin the wire frame is built from (system / subtype api_error), camelCase:
             #     retryAttempt / maxRetries / retryInMs / error{status,formatted,requestId,isNetworkDown,
-            #     rateLimits}.
+            #     rateLimits}. The schema entry that names retry_in_ms / is_network_down / is_ssl_error /
+            #     rate_limit_type describes THIS frame in its snake_case internal rendering; the transcript
+            #     records it camelCase.
             # We accept BOTH spellings (plus the old guesses) because the two surfaces genuinely differ and
             # either may reach us; `error` arrives as a dict on the transcript side and a string on the wire.
+            # The wire bullet above listed the transcript twin's names before, so the reads below never
+            # looked for `attempt` or the string `error`: every live storm showed the local per-frame tally as
+            # the attempt and a blank reason, and the shape diagnostic further down stayed quiet because
+            # max_retries and error_status were read. Each _pick below now leads with the wire's name; the
+            # transcript's error dict is still consulted first for the human string, its formatted text being
+            # the best of them.
             d = msg.data if isinstance(msg.data, dict) else {}
             _now = time.time()
 
@@ -7683,12 +7693,12 @@ class SdkSession:
             # The human string: the transcript's error.formatted ("529 Overloaded") is the best of these;
             # error.message carries the raw JSON envelope, so it is the last resort.
             _err = (_e.get("formatted") or _e.get("message") if _e else None) \
-                or _pick("display_message", "message", want=(str,))
+                or _pick("error", "display_message", "message", want=(str,))
             _status = _pick("status_code", "error_status", "status") \
                 or (_e.get("status") if isinstance(_e.get("status"), (int, str)) else None)
             _net = d.get("is_network_down", d.get("isNetworkDown", _e.get("isNetworkDown")))
             self.retry_info = {
-                "attempt": _pick("retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
+                "attempt": _pick("attempt", "retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
                 "max": _pick("max_retries", "maxRetries", want=(int,)),
                 "status": _status,
                 "error": _err[:300] if isinstance(_err, str) else None,
