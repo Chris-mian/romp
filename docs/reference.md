@@ -128,6 +128,10 @@ yields nothing rather than an error.
 
 `romp card --key <key> --title <text> [--body <markdown> | --body-file <path>] [--session <name>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]` posts a **notice card** to the feed: a card the kernel makes from what you hand it, with no judge involved (design: plans/notice-cards.md). Inside a session the card belongs to that session; `--session <name>` names another. The `--key` is the card's stable name and is required: a second post under the same key is a **revision** of the card (it replaces the earlier one on the board, and shows again even if you had dismissed the earlier one, since it carries new information, and its number counts the archived posts of the key too, so a dismissed card's id is never minted again); a different key is a new card. `--needs-you` files it under Blocked, else under Completed. `--attach` names an image, a PDF or a text file the card shows inline or by name; the kernel judges the path the way the file preview does (your home or the session's folder, no secrets-shaped names, the size caps) and keeps a pinned copy of an image as posted. A card leaves the board on your dismissal (Clear; Undo restores it, copying its rows back out of the archive when the retention pass has already moved them), on a revision, or at `--expires` seconds from the post. The kernel keeps every post in `notices/<session>.jsonl` under the state directory and archives dismissed, expired and superseded rows to `notices-archive/`; a session shows at most fifty live keys at once, the oldest superseded past that. The same door is `POST /notice` on the kernel (the `/watch` shape: `{"id"|"name", "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "producer"?}`), and producers inside romp use it for cards such as the messages dropped at a restart.
 
+### Card boards: your own categories
+
+`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log.
+
 ### Moving a session to another folder
 
 A session's working directory can change after it starts, so when a subproject
@@ -4271,7 +4275,10 @@ reads one `done` line from its stdout; the kernel's bookkeeping (the episode bou
 compact, the recovery re-arm, the generation bump) stands around the request in the loop's order. Absent, or anything
 but `on`, the tiers run in the kernel as before and no child starts; a file that cannot be read or decoded reads as
 off and says so once (a sync notice). Effective on the next pass; the child is ended on the pass where the switch
-turns off.
+turns off. Each request carries `now: null` by default, so the child's tiers read their own clock as the in-process
+tiers do; a second file, `judges-process-clock`, reading `request` makes the request carry the wake's time instead,
+which the child hands to both tiers truncated to the second. It is the measurement knob of the split's comparison
+(the child's gate admittance differed between the two clocks), read on every request.
 
 Bounds and counters, all on `/perf` under `judge`:
 

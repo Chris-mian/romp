@@ -42504,6 +42504,9 @@ def build_feed(now, live_map=None):
             # session name -> live judge-classified SERVICE descs (a dev server the session keeps around;
             # _bg_split) → the grouped-mode session header's neutral chip, never a waiting state (2026-07-24)
             "bgServices": bg_services,
+            # the data-defined boards (plans/card-boards.md, phase three): the definitions a producer or the user made through
+            # the door, for the renderer to merge over its code constants; fixed across builds until a define or a remove
+            "boards": _boards_data(),
             "dismissedCount": len(cleared), "showDismissed": False,
             # the ledger's ids that belong to no session of THIS kernel (review find, 2026-09-09): clears this
             # kernel took for cards another kernel owns; the merged board applies them over that host's rows
@@ -53951,10 +53954,240 @@ for _bid, _bdef in _CODE_BOARDS.items():                 # a drifted constant fa
         raise RuntimeError("code-defined board %r is not in the schema: %s" % (_bid, _berr or "its id differs from its key"))
 
 
+# THE BOARD STORE (plans/card-boards.md, phase three): a data-defined board is one JSON file, STATE/boards/<id>.json, holding a
+# definition in the schema above, written whole by define_board (the one write door behind POST /board, `romp board define`
+# and the notice producer's create-on-first-use), removed by remove_board, and read by _boards(): the directory listed and
+# every file parsed once per directory state (the directory's stat, taken BEFORE the read, the cleared ledger's rule; a
+# published file moves the directory's mtime), merged over the code-defined table with code winning on an id, which the door
+# refuses anyway. A file that fails the check is skipped and named on stderr once per (file, reason), never a raise into a
+# build. The frame carries the DATA definitions alone (`boards`); the renderer holds the code constants itself.
+_BOARDS_MEMO = {"slot": None}        # (directory stat key, {id: defn}) or None
+_BOARDS_BAD = set()                  # (path, reason) already said
+_boards_lock = threading.Lock()      # define and remove serialise their read-check-write against each other
+
+
+def _board_dir():
+    return jd.STATE / "boards"
+
+
+def _board_path(bid):
+    return _board_dir() / (str(bid) + ".json")
+
+
+def _boards_data():
+    """The data-defined boards, {id: defn}, memoized on the directory's stat AND each file's (mtime_ns, size): the door's
+    os.replace moves the directory's stat, but an in-place rewrite of boards/<id>.json (a shell redirection, an editor) moves
+    the file's alone (the 1845 read), and the handful of files make the per-file stat cheap. A moved key after the first read
+    marks the views dirty, so the edit reaches the next frame instead of waiting for the pusher's own reasons. {} when there is
+    no directory."""
+    d = _board_dir()
+    st = _stat_key(d)
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+    except OSError:
+        names = []
+    files = []
+    for n in names:
+        try:
+            fs = os.stat(d / n)
+            files.append((n, fs.st_mtime_ns, fs.st_size))
+        except OSError:
+            files.append((n, None, None))
+    key = ((str(d),) + st + tuple(files)) if st is not None else None
+    slot = _BOARDS_MEMO["slot"]
+    if key is not None and slot is not None and slot[0] == key:
+        return slot[1]
+    out = {}
+    if not names:
+        if key is not None:
+            _BOARDS_MEMO["slot"] = (key, out)
+        return out
+    for n in names:
+        fp = d / n
+        try:
+            defn = json.loads(fp.read_text())
+        except (OSError, ValueError) as e:
+            reason = "%s: %s" % (type(e).__name__, e)
+            defn, err = None, reason
+        else:
+            defn, err = _board_check(defn)
+            if not err and defn.get("id") != n[:-5]:
+                defn, err = None, "the file names board %r" % defn.get("id")
+        if err:
+            if (str(fp), err) not in _BOARDS_BAD:
+                _BOARDS_BAD.add((str(fp), err))
+                sys.stderr.write("[boards] %s skipped: %s\n" % (fp, err))
+            continue
+        out[defn["id"]] = defn
+    moved = slot is not None and key is not None and slot[0] != key
+    if key is not None:
+        _BOARDS_MEMO["slot"] = (key, out)
+    if moved:
+        _mark_views_dirty()                            # a file edited under the kernel: the next frame carries it
+    return out
+
+
+def _boards():
+    """Every board this kernel knows, {id: defn}: the code-defined table, then the data-defined files for ids the table
+    lacks (the door refuses a reserved id, so the second never shadows the first)."""
+    out = dict(_CODE_BOARDS)
+    for bid, defn in _boards_data().items():
+        out.setdefault(bid, defn)
+    return out
+
+
+def _default_board(bid, category="notes"):
+    """A first-use board's definition (the plan's section 1 defaults; ui/webview/board-def.ts defaultBoard is the same shape):
+    the id's title, one neutral category, newest first, no grouping, no bell, no badge, the notice kind."""
+    cap = lambda t: (t[:1].upper() + t[1:])[:40]
+    return {"id": bid, "title": cap(bid),
+            "categories": [{"id": category, "title": cap(category), "chip": "neutral"}],
+            "defaultCategory": category, "rules": [], "sort": {"key": "t", "dir": "desc"}, "subSorts": [],
+            "groupBy": None, "order": [], "notify": [], "needsYou": None, "kinds": ["notice"]}
+
+
+def _notice_standing_count(board_id, category_id=None):
+    """The standing notice cards filed under a board (and a category when named): the live projection of every notice file
+    under the notice directory, the owner-less home included, which already excludes retired, expired, dismissed and over-cap
+    rows. A row's board and category are read the way the card reads them (board "feed" and the needsYou mapping for a row
+    without the fields). Agreed with the notice producer's owner (2026-09-18): the store's reader, called by define_board and
+    remove_board, never a read of the files by them."""
+    n = 0
+    try:
+        sids = sorted(f[:-6] for f in os.listdir(_notice_dir()) if f.endswith(".jsonl"))
+    except OSError:
+        return 0
+    now, cleared = int(time.time()), _cleared_ids()
+    for sid in sids:
+        for r in _notice_projection(sid, now, cleared):
+            b = r.get("board") or "feed"
+            c = r.get("category") or ("needs_input" if r.get("needsYou") else "completed")
+            if b == board_id and (category_id is None or c == category_id):
+                n += 1
+    return n
+
+
+def define_board(defn):
+    """Write a data-defined board's definition whole -> (defn, error), add_watch's contract. The one validation for every door:
+    the schema (an unknown member, a bad id, a chip or a sort outside the fixed sets, each refused by name), the reserved
+    ids (the feed is code), and a definition that DROPS a category still holding standing cards (named, with the count: the
+    user dismisses or re-posts first, so no card is ever left under a category no definition has). A define replaces the
+    board; its cards keep their categories. The next frame carries it (the views marked dirty, the pusher woken)."""
+    defn, err = _board_check(defn)
+    if err:
+        return None, err
+    bid = defn["id"]
+    with _boards_lock:
+        old = _boards_data().get(bid)
+        if old is not None:
+            new_ids = {c["id"] for c in defn["categories"]}
+            for c in old.get("categories") or []:
+                if c["id"] not in new_ids:
+                    n = _notice_standing_count(bid, c["id"])
+                    if n:
+                        return None, "the definition drops category %r, which still holds %d standing card%s: dismiss or re-post them first" % (c["id"], n, "" if n == 1 else "s")
+        try:
+            _write_state_json(_board_path(bid), json.dumps(defn, sort_keys=True, indent=1) + "\n")
+        except _StateUnwritable as e:
+            return None, str(e)
+    _mark_views_dirty()
+    _push_soon()
+    return defn, None
+
+
+def remove_board(bid):
+    """Take a data-defined board away -> (True, None) or (False, error): refused for a code-defined id, for an id no file
+    defines, and while a standing card names the board (the count in the reason). The file is unlinked; the next frame
+    carries the set without it."""
+    bid = str(bid or "").strip()
+    if bid in _CODE_BOARDS:
+        return False, "board %r is code-defined and cannot be removed" % bid
+    with _boards_lock:
+        if bid not in _boards_data():
+            return False, "no board %r is defined (romp board list names them)" % bid
+        n = _notice_standing_count(bid)
+        if n:
+            return False, "%d standing card%s still name%s board %r: dismiss them first" % (n, "" if n == 1 else "s", "s" if n == 1 else "", bid)
+        try:
+            os.unlink(_board_path(bid))
+        except OSError as e:
+            return False, "the board's file could not be removed: %s" % _errno_text(e)
+    _mark_views_dirty()
+    _push_soon()
+    return True, None
+
+
+def _board_rule_matches(when, needs_you, producer, key):
+    if "needsYou" in when and bool(when["needsYou"]) != bool(needs_you):
+        return False
+    if "producer" in when and when["producer"] != (producer or ""):
+        return False
+    if "keyPrefix" in when and not str(key or "").startswith(when["keyPrefix"]):
+        return False
+    return True
+
+
+def _board_resolve_post(board, category, *, needs_you=False, producer="", key=""):
+    """Where a posted card files -> (board_id, category_id, error, pending): PURE, the plan's five-step resolution, for the
+    notice producer to call (it writes `pending`, a definition to define, only after every other check of the post has
+    passed, right before the row appends, so a refused post leaves no board behind). No board: the feed, its category from
+    needs_you, a named category accepted only if the feed has it. A known board and a known category: as named. A known
+    board and no category: the board's rules in order over {needsYou, producer, keyPrefix}, else needs_you's badge category,
+    else defaultCategory. An unknown board: CREATED on first use (pending = the defaults, the category named or "notes"). A
+    known data board and an unknown category: the category APPENDED in neutral dress (pending = the board with it); on a
+    code-defined board refused. needs_you on a board with no badge category is refused, an
+    UNKNOWN board included (its defaults would carry none), so the first post and every later one answer alike."""
+    board = str(board or "").strip()
+    category = str(category or "").strip()
+    if not board or board == "feed":
+        feed = _CODE_BOARDS["feed"]
+        ids = {c["id"] for c in feed["categories"]}
+        if category and category not in ids:
+            return None, None, "the feed has no category %r (its categories are %s)" % (category, ", ".join(sorted(ids))), None
+        return "feed", category or ("needs_input" if needs_you else "completed"), None, None
+    if not _BOARD_ID_RE.match(board):
+        return None, None, "board id must match [a-z][a-z0-9_-]{0,31}", None
+    d = _boards().get(board)
+    if d is None:
+        if needs_you:
+            # a first-use board carries no badge category (the defaults name none), so the flag is refused BEFORE the defaults
+            # are minted: the same answer the second post gets, never a first post that drops the flag silently (the 1845 read)
+            return None, None, "board %r would be created without a needs-you category: define it with needsYou first (romp board define), or post without --needs-you" % board, None
+        if category and not _BOARD_ID_RE.match(category):
+            return None, None, "category id must match [a-z][a-z0-9_-]{0,31}", None
+        pending = _default_board(board, category or "notes")
+        pending, err = _board_check(pending)
+        if err:
+            return None, None, err, None
+        return board, pending["defaultCategory"], None, pending
+    ids = {c["id"] for c in d["categories"]}
+    if needs_you and d.get("needsYou") is None:
+        return None, None, "board %r has no needs-you category (its definition names none)" % board, None
+    if category:
+        if category in ids:
+            return board, category, None, None
+        if board in _CODE_BOARDS:
+            return None, None, "board %r has no category %r (its categories are %s)" % (board, category, ", ".join(sorted(ids))), None
+        if not _BOARD_ID_RE.match(category):
+            return None, None, "category id must match [a-z][a-z0-9_-]{0,31}", None
+        pending = json.loads(json.dumps(d))
+        pending["categories"].append({"id": category, "title": (category[:1].upper() + category[1:])[:40], "chip": "neutral"})
+        pending, err = _board_check(pending)
+        if err:
+            return None, None, err, None
+        return board, category, None, pending
+    for r in d.get("rules") or []:
+        if _board_rule_matches(r.get("when") or {}, needs_you, producer, key):
+            return board, r["category"], None, None
+    if needs_you:
+        return board, d["needsYou"], None, None
+    return board, d["defaultCategory"], None, None
+
+
 def _board_def(board):
-    """The definition a card's `board` names; a card that names none, or an id this kernel does not know, reads as the feed's
-    (the default every card the kernel builds carries; a data-defined board joins the lookup in phase three)."""
-    return _CODE_BOARDS.get(board) or _CODE_BOARDS["feed"]
+    """The definition a card's `board` names: the code table, then the data store; a card that names none, or an id this
+    kernel does not know (a remote board, a removed one), reads as the feed's, the default every card the kernel builds carries."""
+    return _boards().get(board) or _CODE_BOARDS["feed"]
 
 
 def _board_notify(board):
@@ -54070,21 +54303,26 @@ def _notify_prev_load():
 
 def _notify_prev_entry(ent):
     """One store entry, checked field by field, or None for a shape none of our writers produce: sid a
-    string; column a notified column or None (the card sits in working with an announced mark);
-    announced a notified column or None; announcedAt a number or None; and at least one of column /
-    announced set, else there is nothing to remember."""
+    string; board the card's board (absent on an entry written before the boards: the feed); column a
+    category of THAT board's notify set or None (the card sits outside the set with an announced mark);
+    announced one of the same or None; announcedAt a number or None; and at least one of column /
+    announced set, else there is nothing to remember. The check reads the card's board, not the feed's
+    literal set (the 1837 round-two read): a board whose notify names a category the feed lacks would
+    otherwise announce, be written, be dropped on reload and announce again."""
     if not isinstance(ent, dict) or not isinstance(ent.get("sid"), str):
         return None
+    board = ent.get("board") if isinstance(ent.get("board"), str) and ent.get("board") else "feed"
+    allowed = _board_notify(board)
     col, ann, at = ent.get("column"), ent.get("announced"), ent.get("announcedAt")
-    if col not in _NOTIFY_COLUMNS and col is not None:
+    if col not in allowed and col is not None:
         return None
-    if ann not in _NOTIFY_COLUMNS and ann is not None:
+    if ann not in allowed and ann is not None:
         return None
     if at is not None and not isinstance(at, (int, float)):
         return None
     if col is None and ann is None:
         return None
-    return {"sid": ent["sid"], "column": col, "announced": ann, "announcedAt": int(at) if at is not None else None}
+    return {"sid": ent["sid"], "board": board, "column": col, "announced": ann, "announcedAt": int(at) if at is not None else None}
 
 
 def _notify_user_acted_since(sid, iid, since):
@@ -54247,8 +54485,9 @@ def _feed_notifications_diff(feed):
     entered = []                                     # (itemId, card, column, entry): the cards that ENTERED a column
     for iid, a in cur.items():
         col, sid, ent = a.get("category", a.get("column")), str(a.get("sid") or ""), prev.get(iid)   # the board's category; the column from an older card
-        if col in _board_notify(a.get("board")):   # the card's board's notify set (the feed's is _NOTIFY_COLUMNS)
-            e = {"sid": sid, "column": col,
+        board = a.get("board") or "feed"
+        if col in _board_notify(board):   # the card's board's notify set (the feed's is _NOTIFY_COLUMNS)
+            e = {"sid": sid, "board": board, "column": col,
                  "announced": ent.get("announced") if ent else None,
                  "announcedAt": ent.get("announcedAt") if ent else None}
             nxt[iid] = e
@@ -54258,7 +54497,7 @@ def _feed_notifications_diff(feed):
                 entered.append((iid, a, col, e))
         elif ent is not None and ent.get("announced"):
             # in working now, but announced before: the mark is what keeps a return to that column silent
-            nxt[iid] = {"sid": sid, "column": None, "announced": ent["announced"], "announcedAt": ent.get("announcedAt")}
+            nxt[iid] = {"sid": sid, "board": board, "column": None, "announced": ent["announced"], "announcedAt": ent.get("announcedAt")}
     out = []
     if not first_boot:
         cards = _notify_cards()
@@ -55816,6 +56055,10 @@ def _tiers_may_start(tracking=None):
 
 
 JUDGES_PROCESS_FILE = "judges-process"   # STATE/judges-process: the literal `on` runs the judges in a `romp-judge --serve` child
+JUDGES_PROCESS_CLOCK_FILE = "judges-process-clock"   # STATE/judges-process-clock: `request` sends the child the wake's time as the pass's
+#                                                       `now` (the second-truncated clock handed to both tiers, the comparison's explicit
+#                                                       variant); absent or anything else sends a null `now`, so the child's tiers read their
+#                                                       own clock as the in-process tiers do (the default the child's head documents, 2026-09-18)
 #                                          (plans/judges-process.md, stage three of the process split); absent, unreadable or anything
 #                                          else: the in-process tiers, today's road (rule 5: the default flips after the boot measurement)
 JUDGE_CHILD_READY_S = 60.0                 # the child's ready line bound after a start
@@ -55902,6 +56145,18 @@ def _judges_in_child():
             return False                                  # the latch stands until the switch file is written again
         _JUDGE_FALLBACK["stat"] = None                    # the file changed: the child is tried again
     return True
+
+
+def _judge_child_request_clock():
+    """The comparison's clock knob: STATE/judges-process-clock reading `request` makes the pass request carry the wake's time as
+    `now` (the child hands it, truncated to the second, to both tiers: the explicit measurement variant); absent, unreadable or
+    anything else, the request carries `now: null` and the child's tiers read their own clock, the in-process tiers' behaviour
+    and the default. Read on every request: a flip is effective on the next pass, and a read fault is the default, never a
+    raise inside the pass."""
+    try:
+        return (jd.STATE / JUDGES_PROCESS_CLOCK_FILE).read_text(encoding="utf-8").strip().lower() == "request"
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _judge_child_fallback_latch():
@@ -56138,7 +56393,8 @@ class _JudgeChild:
             self.in_pass = True
             try:
                 try:
-                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": float(now), "mayStart": bool(may_start)}) + "\n").encode())
+                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": (float(now) if _judge_child_request_clock() else None),
+                                               "mayStart": bool(may_start)}) + "\n").encode())
                     #                             one word on the wire: the gate's verdict; the child treats an absent field as False
                     p.stdin.flush()
                 except (OSError, ValueError) as e:
@@ -63992,6 +64248,11 @@ class Handler(BaseHTTPRequestHandler):
                               "records": {k: v for k, v in (nd.get("nudged") or {}).items() if mine(k)},
                               "walkGates": {k: v for k, v in (nd.get("walkGates") or {}).items() if mine(k)}},
                 }), "application/json", cache="no-cache")
+            if p == "/boards":
+                # every board this kernel knows, for `romp board list|show`: the code-defined table and the data-defined
+                # files, each marked with its source (plans/card-boards.md, phase three)
+                rows = [dict(d, source="code") for d in _CODE_BOARDS.values()] + [dict(d, source="data") for d in _boards_data().values()]
+                return self._send(200, json.dumps({"boards": rows}), "application/json", cache="no-cache")
             if p == "/watches":
                 # the registered generic watches, for `romp watch --list` — AUTHED (rows carry
                 # user-written commands; nothing here is exempt-safe like the bare /busy count)
@@ -65459,6 +65720,24 @@ class Handler(BaseHTTPRequestHandler):
                 if hint:
                     resp["hint"] = hint
                 return self._send(200, json.dumps(resp), "application/json")
+            if u.path == "/board":
+                # Define or remove a DATA-DEFINED BOARD (plans/card-boards.md, phase three): door two of define_board, in
+                # /watch's shape. Body: the definition itself (the schema's members), or {"remove": <id>}. 400 for a malformed
+                # body; 200 {"ok": false, "error"} for a definition the schema refuses, a reserved id, a dropped category still
+                # holding cards, or a remove of a board still named by a card; 200 {"ok": true, "board": <defn>} on a define
+                # and {"ok": true} on a remove.
+                b, berr = _json_object_body(raw_body)
+                if berr:
+                    return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
+                if "remove" in b:
+                    ok, err = remove_board(b.get("remove"))
+                    return self._send(200, json.dumps({"ok": True} if ok else {"ok": False, "error": err}), "application/json")
+                if not b:
+                    return self._send(400, json.dumps({"ok": False, "error": "a board definition (or {\"remove\": <id>}) required"}), "application/json")
+                defn, err = define_board(b)
+                if err:
+                    return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "board": defn}), "application/json")
             if u.path == "/notice":
                 # Post a NOTICE CARD (T370, plans/notice-cards.md): door two of post_notice, in /watch's shape. Body:
                 # {"id"|"name": <session>, "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "actions"?,
