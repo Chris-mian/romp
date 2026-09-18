@@ -124,6 +124,8 @@ def _reset_memo():
             st[k] = 0
         for k in st["miss_by"]:
             st["miss_by"][k] = 0
+        for k in st.get("row_by", {}):        # the row miss's per-position attribution (2026-09-18)
+            st["row_by"][k] = 0
         getattr(km, "_FEED_DERIVE_FAILED", {}).clear()
 
 
@@ -251,13 +253,15 @@ class _Board(unittest.TestCase):
 
     def _delta(self, fn):
         """(the memo counters' movement over fn(), fn's result): hit / miss / derived / evict and the non-zero
-        miss attributions."""
+        miss attributions, by key component (miss_by) and, for a row miss, by the row position that moved (row_by,
+        2026-09-18)."""
         b = km._feed_memo_report()
-        bm = b["miss_by"]
+        bm, br = b["miss_by"], b.get("row_by", {})
         out = fn()
         a = km._feed_memo_report()
         d = {k: a[k] - b[k] for k in ("hit", "miss", "derived", "evict")}
         d["miss_by"] = {k: v - bm.get(k, 0) for k, v in a["miss_by"].items() if v - bm.get(k, 0)}
+        d["row_by"] = {k: v - br.get(k, 0) for k, v in a.get("row_by", {}).items() if v - br.get(k, 0)}
         return d, out
 
     @staticmethod
@@ -475,11 +479,77 @@ class EveryInputMovesItsSessionOnly(_Board):
 
     def test_a_live_row_change(self):
         self._build()
-        self.live[API] = dict(self._row(), model="opus")        # the row's model badge changes
-        d, f = self._delta(self._build)
-        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        self.live[API] = dict(self._row(), state="working")     # the row's state: perm_state, the warm gate (a working row
+        d, f = self._delta(self._build)                          # with a cold parse asks for the background warm, which the
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)   # empty client set stands down)
         self.assertEqual(d["miss_by"], {"row": 1})
+        self.assertEqual(d["row_by"], {"state": 1}, "a row miss names the row position that moved (2026-09-18)")
         self.assertEqual(len(f["asks"]), 3)
+
+    def test_each_read_row_field_moves_the_row_under_its_own_position(self):
+        """The since, the billing and the subagent positions, one at a time (2026-09-18): each a row miss of the one
+        session, attributed to its own position and no other. The since case exercises no warm path."""
+        self._build()
+        self.live[API] = dict(self._row(), since=NOW - 50)      # the state's own start moved
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["miss_by"], d["row_by"]), (1, 2, {"row": 1}, {"since": 1}), d)
+        self.live[API] = dict(self.live[API], authLive="login")   # the CLI's init reported which account bills
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["miss_by"], d["row_by"]), (1, 2, {"row": 1}, {"billing": 1}), d)
+        self.live[API] = dict(self.live[API], subagents=[{"type": "general-purpose", "since": NOW - 30,
+                                                          "agentId": "a1b2c3d4e5f6"}])   # a subagent started
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["miss_by"], d["row_by"]), (1, 2, {"row": 1}, {"agents": 1}), d)
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["row_by"]), (0, 3, {}), "the moved row stands: a hit")
+
+    def test_a_background_agents_tool_call_moves_no_key(self):
+        """A background agent's every tool call rewrites its task row's lastTool; no card reads it, so the key holds
+        and the session is served (2026-09-18). Under the whole-row fold the field rode the key and the session was
+        re-derived in whatever cycle next saw the row."""
+        task = {"desc": "index the notes", "type": "local_agent", "since": NOW - 50, "toolUseId": "tu_1",
+                "lastTool": "Read", "taskId": "a1b2c3d4e5f6"}
+        self.live[API] = dict(self._row(), bgTasks=[task])
+        self._build()
+        self.live[API] = dict(self._row(), bgTasks=[dict(task, lastTool="Bash")])   # the agent called another tool
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["miss_by"]), (0, 3, {}), d)
+        self.assertEqual(len(f["asks"]), 3)
+
+    def test_a_context_count_moves_no_key(self):
+        """The context refresh after a landed turn (on connect, on a model switch) moves ctxTokens and context on
+        the row; no card reads them (2026-09-18)."""
+        self.live[API] = dict(self._row(), ctxTokens=120000, context=60)
+        self._build()
+        self.live[API] = dict(self._row(), ctxTokens=125000, context=62)   # the next context refresh
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["miss_by"]), (0, 3, {}), d)
+
+    def test_an_unread_row_field_moves_no_key(self):
+        """The model badge is the chat chip's fact (_chat_build_sig folds it), not a card's (2026-09-18)."""
+        self._build()
+        self.live[API] = dict(self._row(), model="opus")
+        d, _ = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"], d["miss_by"]), (0, 3, {}), d)
+
+    def test_a_row_miss_is_attributed_to_every_position_that_moved_and_a_shape_change_to_presence(self):
+        """_feed_memo_miss on synthetic keys (2026-09-18): two rows apart at two positions count under both (row_by's
+        sum can exceed miss_by's row); a row on one side only, or of another shape, counts under `presence`, a bucket
+        distinct from miss_by's `live` (the live tail's revision)."""
+        labels = km._FEED_MEMO_LABELS
+        i = labels.index("row")
+        base = [None] * len(labels)
+        a, b = list(base), list(base)
+        a[i] = km._feed_row_key(dict(self._row()))
+        b[i] = km._feed_row_key(dict(self._row(), state="working", authLive="login"))
+        d, labs = self._delta(lambda: km._feed_memo_miss(tuple(a), tuple(b)))
+        self.assertEqual((labs, d["miss_by"], d["row_by"]), (("row",), {"row": 1}, {"state": 1, "billing": 1}))
+        d, labs = self._delta(lambda: km._feed_memo_miss(tuple(base), tuple(a)))
+        self.assertEqual((labs, d["miss_by"], d["row_by"]), (("row",), {"row": 1}, {"presence": 1}), "the row appeared")
+        d, labs = self._delta(lambda: km._feed_memo_miss(tuple(a), tuple(base)))
+        self.assertEqual((labs, d["row_by"]), (("row",), {"presence": 1}), "the row left")
+        d, labs = self._delta(lambda: km._feed_memo_miss(tuple(a), tuple(a)))
+        self.assertEqual((labs, d["row_by"]), ((), {}), "an equal row moves nothing")
 
     def test_a_transcript_append(self):
         self._build()
@@ -816,9 +886,11 @@ class TheBoundAndTheDepartures(_Board):
         self.assertEqual(set(feed), {"cached", "built", "ms", "memo"})
         self.assertEqual(feed["memo"], km._feed_memo_report())
         self.assertEqual(set(feed["memo"]), {"hit", "miss", "evict", "entries", "bytes", "bound", "derived", "miss_by",
-                                             "failed", "failing"})   # the contained derivation faults (2026-09-17)
+                                             "failed", "failing",   # the contained derivation faults (2026-09-17)
+                                             "row_by"})            # the row miss by the row position that moved (2026-09-18)
         self.assertEqual((feed["memo"]["failed"], feed["memo"]["failing"]), (0, 0))
         self.assertEqual(set(feed["memo"]["miss_by"]), set(km._FEED_MEMO_LABELS) | {"cold"})
+        self.assertEqual(set(feed["memo"]["row_by"]), set(km._FEED_ROW_FIELDS) | {"presence"})
         self.assertEqual(feed["memo"]["derived"], 3)
         self.assertEqual(feed["memo"]["bound"], km.FEED_MEMO_BYTES)
         json.dumps(feed)                      # serializes as-is
