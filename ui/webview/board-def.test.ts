@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FEED_BOARD, FEED_KINDS, FEED_LOCAL_KEY, CHIPS, SORT_FIELDS, KIND_IDS, RESERVED_BOARD_IDS,
+import { ORDER_RULES, FEED_BOARD, FEED_KINDS, FEED_LOCAL_KEY, CHIPS, SORT_FIELDS, KIND_IDS, RESERVED_BOARD_IDS,
          kindOf, columnOf, columnTable, feedColumns, boardCheck, defaultBoard } from "./board-def";
 import { FEED_COLUMNS } from "./feed-view-state";
 
@@ -53,7 +53,7 @@ test("the sort, the grouping and the notification set equal the sources' literal
   assert.equal(FEED_BOARD.needsYou, "needs_input");
   assert.match(KERNEL, /a\.get\("column"\) == "needs_input"\)/, "_needs_you_count counts needs_input");
   assert.deepEqual([...FEED_BOARD.kinds], [...KIND_IDS]);
-  assert.deepEqual([...FEED_BOARD.rules], []); assert.deepEqual([...FEED_BOARD.order], []); assert.deepEqual([...FEED_BOARD.subSorts], []);
+  assert.deepEqual([...FEED_BOARD.rules], []); assert.deepEqual([...FEED_BOARD.order], ["ownerRank"]); assert.deepEqual([...FEED_BOARD.subSorts], []);   // the owner rank is what feed.ts applies (PR 1831)
 });
 
 test("feed.ts reads the definition at the section-4 sites and nowhere else", () => {
@@ -131,4 +131,14 @@ test("a first-use board takes the plan's defaults and passes the check", () => {
     rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [], notify: [], needsYou: null, kinds: ["notice"] });
   assert.equal(defaultBoard("scratch").categories[0].id, "notes", "no category named: one called notes");
   assert.match(BOARD_SRC, /^export function boardCheck\(/m, "one validator, the client half");
+});
+
+test("the feed board's order rule is the owner rank feed.ts applies: the definition says what the code does", () => {
+  // PR 1831: the owner-less notice run ranks before every session run (a stable sort after the time sort in both modes, and a
+  // rank before the session order in grouped mode); the definition names the rule the code applies, never a rank of its own
+  assert.deepEqual([...FEED_BOARD.order], ["ownerRank"]);
+  assert.match(FEED, /const ownerRank = \(sid: string\): number => isOwnerless\(sid\) \? 0 : 1;/, "the rank helper");
+  assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => ownerRank\(entrySid\(x\)\) - ownerRank\(entrySid\(y\)\)\);/, "applied to every column after the time sort");
+  assert.match(FEED, /return isOwnerless\(s\) \? -1 : rank\.has\(s\)/, "and before the session order in grouped mode");
+  assert.ok(ORDER_RULES.includes("ownerRank"), "the rule is one the schema names");
 });

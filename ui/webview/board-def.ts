@@ -62,7 +62,7 @@ export const FEED_BOARD: Board = {
   sort: { key: "t", dir: "asc" },             // oldest at the top (the user 2026-06-27); the newestFirst preference flips it
   subSorts: [],
   groupBy: "session",                         // grouped mode, default on (the user 2026-07-13)
-  order: [],                                  // the owner rank joins in phase three
+  order: ["ownerRank"],                       // what feed.ts does (PR 1831): the owner-less run first, then the session order, then time
   notify: ["needs_input", "completed"],       // kernel.py _NOTIFY_COLUMNS
   needsYou: "needs_input",                    // kernel.py _needs_you_count
   kinds: ["goal", "placeholder", "parked", "quarantine", "notice"],
