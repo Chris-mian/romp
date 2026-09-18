@@ -113,6 +113,9 @@ if [[ -n "${MOCK_CURL_FAIL_NEW:-}" && "$url" == */new ]]; then exit 7; fi
 if [[ -n "${MOCK_CURL_SEND_QUEUED:-}" && "$url" == */send ]]; then echo '{"ok": true, "queued": true}'; exit 0; fi
 if [[ -n "${MOCK_CURL_SEND_REFUSED:-}" && "$url" == */send ]]; then echo '{"ok": false, "error": "no running backend owns web — the message was not delivered"}'; exit 0; fi
 if [[ -n "${MOCK_CURL_NOTICE_REFUSE:-}" && "$url" == */notice ]]; then echo '{"ok": false, "error": "attachment refused: not a file"}'; exit 0; fi
+if [[ -n "${MOCK_CURL_BOARDS:-}" && "$url" == */boards ]]; then echo "$MOCK_CURL_BOARDS"; exit 0; fi
+if [[ -n "${MOCK_CURL_BOARD_REFUSE:-}" && "$url" == */board ]]; then echo "$MOCK_CURL_BOARD_REFUSE"; exit 0; fi
+if [[ -n "${MOCK_CURL_BOARD_DEFINED:-}" && "$url" == */board ]]; then echo "$MOCK_CURL_BOARD_DEFINED"; exit 0; fi
 if [[ -n "${MOCK_CURL_WATCH_PR_REFUSE:-}" && "$url" == */watch-pr ]]; then
   echo '{"ok": false, "retryable": true, "error": "the watch could not be saved ([Errno 28] No space left on device) - nothing is watching TESTORG/testrepo#7; retry once the state directory takes writes again"}'
   exit 0
@@ -2503,6 +2506,66 @@ PY
     ! grep -q 'serviceEnvHasRef\|PROVIDER_VARS' "$(dirname "$ROMP_SCRIPT")/romp-manager"
 }
 
+
+@test "board: define posts the definition to /board with the command's id, list and show read /boards, remove posts the id; usage errors exit 2; a refusal exits 1" {
+    # plans/card-boards.md, phase three: the board store's command-line door, romp watch's mechanics
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    export ROMP_KERNEL_PORT=29855
+    # define: the JSON's missing id takes the command's; the body rides -d, the token never the command line
+    local defn='{"title": "Notes", "categories": [{"id": "new", "title": "New", "chip": "neutral"}], "defaultCategory": "new", "rules": [], "sort": {"key": "t", "dir": "desc"}, "subSorts": [], "groupBy": null, "order": [], "notify": [], "needsYou": null, "kinds": ["notice"]}'
+    MOCK_CURL_BOARD_DEFINED='{"ok": true, "board": {"id": "notes", "categories": [{"id": "new"}]}}' run "$ROMP_SCRIPT" board define notes --json "$defn"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"romp board: defined notes (1 category)"* ]]
+    grep -q -- '-X POST http://127.0.0.1:29855/board' "$MOCK_LOG"
+    grep -q -- '"id": "notes"' "$MOCK_LOG"
+    grep -q -- '--config -' "$MOCK_LOG"
+    [ "$(grep -c -- "testtok" "$MOCK_LOG")" -eq 0 ]   # the token never rides the command line (a count, the ratchet's rule for negatives)
+    # …from a file too, and an id inside the JSON that disagrees with the command's is a usage error
+    printf '%s' "$defn" > "$TEST_DIR/notes.json"
+    MOCK_CURL_BOARD_DEFINED='{"ok": true, "board": {"id": "notes", "categories": [{"id": "new"}]}}' run "$ROMP_SCRIPT" board define notes --from "$TEST_DIR/notes.json"
+    [[ "$status" -eq 0 ]]
+    run "$ROMP_SCRIPT" board define notes --json '{"id": "scratch"}'
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"names id 'scratch', the command 'notes'"* ]]
+    run "$ROMP_SCRIPT" board define notes --json 'not json'
+    [[ "$status" -eq 2 ]]
+    # list and show read /boards
+    local rows='{"boards": [{"id": "feed", "title": "Feed", "categories": [{"id": "working"}, {"id": "needs_input"}, {"id": "completed"}], "source": "code"}, {"id": "notes", "title": "Notes", "categories": [{"id": "new"}], "source": "data"}]}'
+    MOCK_CURL_BOARDS="$rows" run "$ROMP_SCRIPT" board list
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"feed  Feed  working/needs_input/completed  [code]"* ]]
+    [[ "$output" == *"notes  Notes  new"* ]]
+    MOCK_CURL_BOARDS="$rows" run "$ROMP_SCRIPT" board show notes
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'"title": "Notes"'* ]]
+    [[ "$output" != *'"source"'* ]]
+    MOCK_CURL_BOARDS="$rows" run "$ROMP_SCRIPT" board show scratch
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"no board scratch"* ]]
+    MOCK_CURL_BOARDS='{"boards": [{"id": "feed", "title": "Feed", "categories": [], "source": "code"}]}' run "$ROMP_SCRIPT" board list
+    [[ "$output" == *"feed  Feed"* ]]
+    # remove posts the id; a refusal names the reason and exits 1
+    : > "$MOCK_LOG"
+    MOCK_CURL_BOARD_DEFINED='{"ok": true}' run "$ROMP_SCRIPT" board remove notes
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"romp board: removed notes"* ]]
+    grep -q -- '{"remove": "notes"}' "$MOCK_LOG"
+    MOCK_CURL_BOARD_REFUSE='{"ok": false, "error": "2 standing cards still name board '"'"'notes'"'"': dismiss them first"}' run "$ROMP_SCRIPT" board remove notes
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"romp board: refused: 2 standing cards still name board"* ]]
+    # usage: no verb, an unknown verb, define with neither source, show with no id
+    run "$ROMP_SCRIPT" board
+    [[ "$status" -eq 2 ]]
+    run "$ROMP_SCRIPT" board rename notes
+    [[ "$status" -eq 2 ]]
+    run "$ROMP_SCRIPT" board define notes
+    [[ "$status" -eq 2 ]]
+    run "$ROMP_SCRIPT" board show
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"usage: romp board define <id>"* ]]
+}
 
 @test "card: posts key, title, body and session to /notice; ROMP_SID is the default; usage errors exit 2" {
     # T370 (plans/notice-cards.md): door three of the kernel's post_notice, romp watch's mechanics

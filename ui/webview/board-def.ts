@@ -132,6 +132,33 @@ export function kindOf(card: { notice?: unknown; provisional?: unknown; blocked?
   return "goal";
 }
 
+// ── the data-defined boards the frame carries (plans/card-boards.md, phase three) ────────────────────────────────────
+// The kernel ships the definitions a producer or the user made through the door under the frame's `boards` field, data
+// boards only; the renderer holds the code constants itself and merges the two with code winning on an id (the door
+// refuses a reserved id, so the case never arises from a well-behaved kernel; a hostile file is skipped there too). Every
+// shipped definition passes the client half of the check before it is held, so a frame from an older or a foreign kernel
+// can never hand the renderer a board outside the schema.
+const dataBoards = new Map<string, Board>();
+/** Take the frame's `boards` (or a merged frame's): the map replaced whole; returns how many definitions were held. */
+export function adoptBoards(raw: unknown): number {
+  dataBoards.clear();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return 0;
+  for (const [id, defn] of Object.entries(raw as Record<string, unknown>)) {
+    if (RESERVED_BOARD_IDS.includes(id)) continue;
+    if (boardCheck(defn) !== null) continue;
+    const b = defn as Board;
+    if (b.id !== id) continue;
+    dataBoards.set(id, b);
+  }
+  return dataBoards.size;
+}
+/** Every board the renderer knows, code first. */
+export function knownBoards(): Board[] { return [FEED_BOARD, ...dataBoards.values()]; }
+/** The board a card names, or the feed's for a card naming none or an id this renderer does not know. */
+export function boardOf(card: { board?: string | null }): Board {
+  return (card.board && card.board !== FEED_BOARD.id && dataBoards.get(card.board)) || FEED_BOARD;
+}
+
 // ── the reads feed.ts makes ───────────────────────────────────────────────────────────────────────────────────────────
 
 /** The renderer's local column key for a category id; an unknown id files under the board's default category, which is
