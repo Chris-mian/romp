@@ -1,8 +1,9 @@
 """The kernel side of the shared read-only goal-store cache (kernel/judge.py load_goals_shared).
 
 kernel/judge.py's load_goals_shared serves one deep-frozen parsed store per file version; this module pins
-WHICH kernel sites load through it (the pusher's read-only sites) and which deliberately do not (every
-writer, the probe-then-write tick jobs and the feed's snapshot read), and drives the builders
+WHICH kernel sites load through it (the pusher's read-only sites, the feed's live store read among them since
+2026-09-18) and which deliberately do not (every writer and the probe-then-write tick jobs; the feed's snapshot
+branch loads nothing, it serves the pass memo's entry), and drives the builders
 over synthetic stores to show the cache in effect: each store parsed once per version across builds, the
 frozen guard reaching a wired site without taking the frame down, the compaction sweep's eviction, and
 one session's failed chat build no longer aborting the whole push. Synthetic fixtures only: placeholder
@@ -58,23 +59,22 @@ def _tm():
 # The pusher-side READ-ONLY sites, wired (kernel.py). Each reads nodes / status / seams / confirming / log
 # rows and hands nothing to rollup_status, record_verdict or save_goals (audited 2026-09-06; the deep
 # freeze would raise if one did). Five sit inside a per-session catch of their own and take the shared view
-# directly; the three builders (four sites) read it through the per-session store-fault boundary
-# (load_goals_shared_or_fault), so one session's unreadable store costs that session's goal-derived data
-# and files one row per fault episode, never the frame.
+# directly; the three builders (five sites: the feed's live store read makes the fifth, 2026-09-18) read it
+# through the per-session store-fault boundary (load_goals_shared_or_fault), so one session's unreadable
+# store costs that session's goal-derived data and files one row per fault episode, never the frame.
 WIRED = {"_open_top_goal": 1, "_deferral_sweep_tick": 1, "_session_stamp_read": 1, "_owned_yield_why": 1,
          "_msg_sum_scan_session": 1,
          "_bg_placed_tops": 1}   # the placed-launch memo: the shared view, or the store the caller hands in
-WIRED_BOUNDARY = {"_feed_session_entry": 1, "_feed_peer_facts": 1, "build_session": 2, "build_timeline": 1}   # T368: the feed's
-#   per-session body reads the origin sender's store through the boundary; its memo key's peer facts probe the same boundary
+WIRED_BOUNDARY = {"_feed_goals_keyed": 1, "_feed_session_entry": 1, "_feed_peer_facts": 1, "build_session": 2,
+                  "build_timeline": 1}   # T368: the feed's per-session body reads the origin sender's store through the
+#   boundary; its memo key's peer facts probe the same boundary. _feed_goals_keyed (2026-09-18): the feed's own store
+#   read, whose live branch (no judge pass in flight) is the shared view through the boundary; its snapshot branch
+#   serves the pass memo's entry and loads nothing, so the one load in its source is the wired one.
 # TWO-PHASE: the awaiting-lift job takes one shared PROBE (through the boundary: a fault forgets the gate so
 # the next tick retries) and one writer load only when the probe found a lift due (jd.load_goals_or_fault,
 # the same boundary around the writer's loader); the decision body (_lift_decisions) loads nothing and
 # writes nothing.
 TWO_PHASE = {"_lift_spent_awaiting": (1, 1)}
-# NOT wired, on purpose: the feed's pass snapshot has its own memo (_feed_goals_keyed, the feed's store read that
-# also reports the snapshot key it served from, stays on the writer's loader, bare or behind load_goals_or_fault;
-# _feed_goals is that read without the key).
-UNWIRED = ("_feed_goals_keyed",)
 
 
 class WiringPins(unittest.TestCase):
@@ -89,14 +89,6 @@ class WiringPins(unittest.TestCase):
             self.assertEqual(src.count("jd.load_goals_shared_or_fault("), n, "%s: shared loads through the boundary" % name)
             self.assertEqual(src.count("jd.load_goals(") + src.count("jd.load_goals_or_fault("), 0,
                              "%s: the boundary reads the shared view, not the writer's loader" % name)
-
-    def test_the_feeds_pass_snapshot_stays_on_load_goals(self):
-        for name in UNWIRED:
-            src = inspect.getsource(getattr(km, name))
-            self.assertEqual(src.count("jd.load_goals_shared(") + src.count("jd.load_goals_shared_or_fault("), 0,
-                             "%s: not wired" % name)
-            self.assertGreaterEqual(src.count("jd.load_goals(") + src.count("jd.load_goals_or_fault("), 1,
-                                    "%s: still the writer's loader, bare or behind the boundary" % name)
 
     def test_the_awaiting_lift_probes_the_shared_view_and_loads_the_writers_copy_once(self):
         for name, (shared, writer) in TWO_PHASE.items():
@@ -234,6 +226,84 @@ class SharedViewInBuilds(unittest.TestCase):
             cards = {c["itemId"]: c for c in km.build_feed(NOW, {a: _tm(), b: _tm()})["asks"]}
         self.assertIn(a, shared, "the peer's store was read through the shared boundary")
         self.assertTrue(cards[b + ":g1"]["origin"]["live"], "the peer's goal is open: the badge reads live")
+
+    def test_two_feed_builds_outside_a_pass_parse_each_store_once(self):
+        # Outside a judge pass the feed's store read (_feed_goals_keyed's live branch) takes the shared read-only
+        # view through the boundary: two builds of one board parse each alive session's store once, the writer's
+        # loader is never asked for a feed store, and the object served is the cache's own (2026-09-18). Before,
+        # the writer's loader ran once per alive non-hidden session per build, hit or miss: a fresh copy of the parse, every
+        # node wrapped, the override journal read and replayed, then the copy dropped when the card memo hit.
+        km._end_goals_pass()                             # no snapshot in place: the live branch runs
+        sessions = [{"sid": x, "name": "s%d" % i, "path": "/nonexistent/%s.jsonl" % x, "anchor": 0, "mtime": 0}
+                    for i, x in enumerate(SIDS)]
+        live = {sid: _tm() for sid in SIDS}
+        private = self._private_loads()
+        with mock.patch.object(km, "_alive_sessions", lambda now, tm: list(sessions)), \
+             mock.patch.object(km, "_warm_fleet_bg", lambda now: None):
+            f1 = km.build_feed(NOW, live)
+            f2 = km.build_feed(NOW, live)
+        self.assertEqual([s for s in private if s in SIDS], [], "the writer's loader was never asked for a feed store")
+        self.assertEqual(self._delta("miss"), len(SIDS), "one parse per store across two builds")
+        self.assertGreaterEqual(self._delta("hit"), len(SIDS), "the second build's loads are hits")
+        self.assertEqual(self._delta("poisoned"), 0)
+        self.assertEqual(jd.shared_store_stats()["off"], 0, "the feed body wrote nothing into the shared views")
+        ids = {c["itemId"] for c in f1["asks"]}
+        for sid in SIDS:
+            self.assertIn(sid + ":g1", ids, "premise: every session's open goal is a card")
+        self.assertEqual(json.dumps(f1["asks"], sort_keys=True), json.dumps(f2["asks"], sort_keys=True),
+                         "same inputs, same cards")
+        self.assertIsInstance(km._feed_goals(SIDS[0]), jd.FrozenStore, "outside a pass the feed holds the shared view")
+        self.assertIs(km._feed_goals(SIDS[0]), km._feed_goals(SIDS[0]), "one object per file version")
+
+    def test_the_store_the_feed_body_works_on_is_the_frozen_shared_view(self):
+        # The feed twin of test_the_store_a_wired_site_works_on_is_the_frozen_shared_view: the store the memo key
+        # hands the body (ctx["store"], _feed_goals_keyed's live read) is the frozen shared view, so a write from
+        # the body or any helper it hands the store to raises, files one loud row naming the writing site, and
+        # switches the cache off for the process; the frame still ships with every card, the derivations after
+        # the first served private, mutable fallback stores whose writes reach no file (2026-09-18).
+        km._end_goals_pass()
+        sessions = [{"sid": x, "name": "s%d" % i, "path": "/nonexistent/%s.jsonl" % x, "anchor": 0, "mtime": 0}
+                    for i, x in enumerate(SIDS)]
+        live = {sid: _tm() for sid in SIDS}
+        seen, raised = [], []
+        orig = km._feed_session_entry
+
+        def spy(s, ctx):
+            store, g = ctx["store"], s["sid"] + ":g1"
+            seen.append(store)
+            for attempt in (lambda: store["status"].__setitem__("x", "y"),
+                            lambda: store["nodes"][g]["log"].append({"kind": "done"}),
+                            lambda: store["nodes"][g].__setitem__("text", "edited")):
+                try:
+                    attempt()
+                except jd.FrozenStoreError:
+                    raised.append(1)
+            return orig(s, ctx)
+        km._feed_session_entry = spy
+        self.addCleanup(setattr, km, "_feed_session_entry", orig)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+             mock.patch.object(km, "_alive_sessions", lambda now, tm: list(sessions)), \
+             mock.patch.object(km, "_warm_fleet_bg", lambda now: None):
+            f = km.build_feed(NOW, live)
+        self.assertEqual(len(seen), len(SIDS), "every session derived")
+        self.assertIsInstance(seen[0], jd.FrozenStore, "the first derivation held the shared view")
+        self.assertEqual(len(raised), 3, "every nested write on the shared view raised")
+        self.assertTrue(all(type(st) is dict for st in seen[1:]), "later derivations take the fallback (private stores)")
+        rows = [r for r in self._errors() if r["err"] == "frozen-store-write"]
+        self.assertEqual(len(rows), 1, "one loud row, naming the writing site")
+        self.assertIn(os.path.basename(__file__), rows[0]["note"])
+        self.assertEqual(jd.shared_store_stats()["off"], 1, "the cache is off for the process")
+        self.assertEqual(self._delta("poisoned"), 3)
+        ids = {c["itemId"] for c in f["asks"]}
+        for sid in SIDS:
+            self.assertIn(sid + ":g1", ids, "the frame shipped with every card")
+        first = seen[0]["rompUuid"]                       # build order is the alive order, not SIDS order
+        self.assertNotIn("x", seen[0]["status"])         # nothing landed on the shared object
+        self.assertEqual(seen[0]["nodes"][first + ":g1"]["text"], "Goal %d" % SIDS.index(first))
+        self.assertEqual(seen[0]["nodes"][first + ":g1"]["log"], [])
+        self.assertEqual(jd.load_goals(SIDS[1])["nodes"][SIDS[1] + ":g1"]["text"], "Goal 1",
+                         "a write on a fallback store reached no file")
 
     def test_the_message_summary_scan_holds_the_shared_view(self):
         # _msg_sum_scan_session hands the store to _segs_seam for the seam-aware seg ids: the shared

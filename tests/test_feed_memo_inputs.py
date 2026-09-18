@@ -65,8 +65,9 @@ Further pins: every `sig` label exists in the key's label tuple; every label in 
 (no dead component); every LOCAL name is a def nested in the body; every HELPERS name resolves in the kernel to a
 callable and every MODULE_READS name to a value; a `const` read's value is of an immutable type; the label tuple
 matches the list the key builder's docstring documents, in order; the miss attribution map covers the labels plus
-`cold`. Names, not lines: the tables say what each read is, the key builder's docstring says how each component
-is taken. The census enforces ONE level, the helpers the body calls directly and the module names it reads
+`cold`. The `row` component is a projection of the live row (2026-09-18): RowFieldCensus below derives, from each
+row reader's source, the row fields it reads, and pins _feed_row_key to exactly their union. Names, not lines: the
+tables say what each read is, the key builder's docstring says how each component is taken. The census enforces ONE level, the helpers the body calls directly and the module names it reads
 directly; what each reads in turn is the classification's claim, verified by the differential cases in
 tests/test_feed_session_memo.py.
 """
@@ -113,7 +114,7 @@ HELPERS = {
     "em.turn_scalar": ("sig", ("transcript",)),
     "jd._prompt_anchor_uuid": ("sig", ("transcript",)),
     "_heal_session_tops": ("sig", ("transcript", "store")),            # the background scan over the store's tops
-    "_warm_wanted": ("sig", ("transcript", "parse")),                  # moved since boot, or working: worth a warm
+    "_warm_wanted": ("sig", ("transcript", "parse", "row")),           # moved since boot, or working (the row's state): worth a warm
     # the placeholders: their own _parse, the caption gist, the clear set, the current ask
     "_provisional_card": ("sig", ("transcript", "captions", "cleared")),
     "_blocked_placeholder": ("sig", ("transcript", "captions", "ask")),
@@ -151,7 +152,7 @@ HELPERS = {
     "_cap_switch_offer": ("sig", ("row", "usage", "offer", "auth")),   # authLive, usage.json (recorded), its cap window's crossing, the key on hand
     # pure over classified inputs
     "_awaiting_peer_items": ("pure", "over the peer identities _session_awaiting resolved (peers), nothing else"),
-    "_login_refusal_label": ("pure", "over the live row's authLogin, authLoginLive and authLabel (row) and the api error (transcript): a stored login the session's API error refused, by label (T346)"),
+    "_login_refusal_label": ("sig", ("row", "transcript")),           # the live row's authLogin, authLoginLive and authLabel, and the api error: a stored login the session's API error refused, by label (T346)
     "lg.mark_refused": ("pure", "a WRITE, not a read: the login registry's refused mark for the login the api error named (idempotent); its return enters nothing, and the label the card shows is the row's (T346)"),
 }
 
@@ -194,6 +195,38 @@ READ_KINDS = {"const", "sig", "pure"}     # MODULE_READS
 # the value types a `const` read may hold: bound once, never mutated in place
 CONST_TYPES = (int, float, str, bytes, bool, tuple, frozenset, re.Pattern, type, types.ModuleType, pathlib.PurePath,
                type(None))
+
+# ── the row readers, function -> (the name its row travels under, the top-level row fields it reads) ───────
+# Every function on the feed's path that reads the live row (2026-09-18): the body, the helpers HELPERS labels
+# `row`, _awaiting_live_rows (reached through _session_awaiting) and _interrupting (the key computes its boolean
+# into the `interrupting` component, so its two fields are that component's, not the row's). RowFieldCensus
+# derives each function's reads from its source (the rule in its docstring) and pins _feed_row_key to their union,
+# so a new `.get("field")` in any of them fails by name, and a helper newly labelled `row` must be entered here.
+# Three of them (_cap_switch_offer, _session_awaiting, _bg_live_norm) take the row off _live_map(), the cycle's
+# snapshot, not off the key's `tm`: the same map under the pusher, pre-existing, and unchanged by the projection.
+ROW_READERS = {
+    "_feed_session_entry": ("tm", {"state", "since", "authLogin"}),        # perm_state, the blocked placeholder's since, the refused-login mark
+    "_login_refusal_label": ("row", {"authLogin", "authLoginLive", "authLabel"}),
+    "_session_retrying": ("tm", {"state", "retryCount", "retryInfo"}),
+    "_cap_switch_offer": ("tm", {"authLive", "auth"}),
+    "_bg_live_norm": ("live", {"bgTasks"}),
+    "_awaiting_live_rows": ("tm", {"subagents"}),
+    "_session_awaiting": ("live", set()),                                   # `live is not None` alone: no field
+    "_warm_wanted": ("tm", {"state"}),
+    "_interrupting": ("tm", {"interrupting", "snapT"}),
+}
+INTERRUPTING_FIELDS = {"interrupting", "snapT"}    # the `interrupting` component's own reads, not the row component's
+# A merged SDK row with every field Sessions.live writes (the notes-api demo's values), for the shape pins.
+FULL_ROW = {"state": "working", "since": 1781100000, "model": "opus", "effort": "high", "modelPending": False,
+            "effortPending": False, "retryCount": 2, "retryInfo": {"max": 10, "status": 529, "networkDown": False,
+                                                                     "rateLimitType": None},
+            "connected": True, "spawning": False, "context": 60, "compactPct": None, "ctxOver": False,
+            "ctxTokens": 120000, "fast": "off", "fastReason": "", "auth": "login", "authLive": "login",
+            "authLogin": "", "authLabel": "", "authLoginLive": None, "authPickUnavailable": "", "authPending": False,
+            "color": None, "mode": "", "backend": "sdk",
+            "subagents": [{"type": "general-purpose", "since": 1781099970, "agentId": "a1b2c3d4e5f6"}],
+            "bgTasks": [{"desc": "index the notes", "type": "local_agent", "since": 1781099950, "toolUseId": "tu_1",
+                         "lastTool": "Read", "taskId": "a1b2c3d4e5f6"}]}
 
 
 def _stripped(src, strings=False):
@@ -321,6 +354,36 @@ def _reads_of(fn, module):
 
 def _ctx_reads_of(src):
     return set(re.findall(r'ctx\["([a-z_]+)"\]', _stripped(src, strings=True)))
+
+
+def _row_fields(fn, var):
+    """The fields `fn` reads off the mapping it holds under `var` (RowFieldCensus, 2026-09-18): every string constant
+    that is the first argument of `<var>.get(...)`, the slice of `<var>[...]`, or the left operand of `"k" in <var>`,
+    where `<var>` is Name(var) or an `or` whose first operand is Name(var) (the body's `(tm or {})["authLogin"]`,
+    _warm_wanted's `(tm or {}).get("state", "")`). A read through any other shape (a loop variable's, an alias's) is
+    not derived: the table names the variable, and a reader that renames its row is entered under that name. `fn` is
+    a kernel function, or a parsed def for the rule's own test."""
+    tree = fn if isinstance(fn, ast.AST) else ast.parse(textwrap.dedent(inspect.getsource(fn)))
+
+    def is_var(node):
+        if isinstance(node, ast.Name):
+            return node.id == var
+        return isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and bool(node.values) and is_var(node.values[0])
+
+    def const_str(node):
+        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+    fields = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and is_var(node.func.value) and node.args and const_str(node.args[0]):
+            fields.add(node.args[0].value)
+        elif isinstance(node, ast.Subscript) and is_var(node.value) and const_str(node.slice):
+            fields.add(node.slice.value)
+        elif isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.In) \
+                and const_str(node.left) and len(node.comparators) == 1 and is_var(node.comparators[0]):
+            fields.add(node.left.value)
+    return fields
 
 
 def _documented_labels():
@@ -467,6 +530,95 @@ class Census(unittest.TestCase):
         self.assertEqual(reads, {"jd.STATE", "_TABLE", "_STATES"})
         self.assertEqual(_calls_of(fn, module), calls)
         self.assertEqual(_reads_of(fn, module), reads)
+
+
+class RowFieldCensus(unittest.TestCase):
+    """The `row` component is a projection (2026-09-18): _feed_row_key reads the live row's fields by name, so the key
+    must name every field a reader on the feed's path reads and no field it does not. An unread field in the key
+    re-derived the session for nothing (ctxTokens and context moved on every context refresh, a background agent's
+    lastTool on its every tool call); a read field missing from it would leave a card stale until another component
+    moved. ROW_READERS says what each reader reads, _row_fields derives it from the source, and the key is pinned to
+    the union, the `interrupting` component's two fields aside."""
+
+    def test_each_reader_reads_exactly_the_fields_its_table_entry_names(self):
+        for name, (var, fields) in ROW_READERS.items():
+            self.assertEqual(_row_fields(getattr(km, name), var), fields,
+                             "%s reads other row fields than ROW_READERS says: a new read belongs in the table AND in "
+                             "_feed_row_key (or the field is not the row's)" % name)
+
+    def test_the_key_reads_every_field_a_reader_reads_and_no_other(self):
+        union = set().union(*(fields for _var, fields in ROW_READERS.values())) - INTERRUPTING_FIELDS
+        keyed = _row_fields(km._feed_row_key, "tm")
+        self.assertEqual(keyed, union,
+                         "a field a reader reads is missing from the row key (a stale card) or the key folds a field no "
+                         "reader reads (a needless derivation): %r" % sorted(keyed ^ union))
+
+    def test_every_helper_labelled_row_is_censused_by_field(self):
+        for name, (kind, what) in HELPERS.items():
+            if kind == "sig" and "row" in what:
+                self.assertIn(name, ROW_READERS, "%s reads under `row`: enter its row variable and fields in ROW_READERS" % name)
+        for name in ("_feed_session_entry", "_awaiting_live_rows", "_interrupting"):
+            self.assertIn(name, ROW_READERS, name)   # the body (CTX live_map), the reader behind _session_awaiting, the key's own
+
+    def test_the_nested_field_tuples_are_the_readers_nested_reads(self):
+        self.assertEqual(_row_fields(km._session_retrying, "info"), set(km._FEED_ROW_RETRY_FIELDS))
+        self.assertEqual(_row_fields(km._awaiting_live_rows, "sub"), set(km._FEED_ROW_AGENT_FIELDS))
+        self.assertEqual(_row_fields(km._bg_live_norm, "t"), set(km._FEED_ROW_TASK_FIELDS))
+
+    def test_the_billing_position_names_the_billing_reads(self):
+        """The billing position's fields are written as five named reads in _feed_row_key so the derivation above sees
+        them; _FEED_ROW_AUTH_FIELDS documents the position (named `billing`, not `auth`: miss_by's `auth` is the
+        machine's key on hand) and must be those same five: the billing offer's two, the refused login's three (one
+        shared with the body's mark)."""
+        auth = (ROW_READERS["_cap_switch_offer"][1] | ROW_READERS["_login_refusal_label"][1]
+                | (ROW_READERS["_feed_session_entry"][1] - {"state", "since"}))
+        self.assertEqual(set(km._FEED_ROW_AUTH_FIELDS), auth)
+        self.assertLessEqual(auth, _row_fields(km._feed_row_key, "tm"))
+
+    def test_the_key_is_none_without_a_row_and_one_value_per_position_with_one(self):
+        self.assertIsNone(km._feed_row_key(None))
+        self.assertEqual(len(km._feed_row_key({})), len(km._FEED_ROW_FIELDS), "an empty row is live: keyed, never None")
+        k = km._feed_row_key(FULL_ROW)
+        self.assertEqual(len(k), len(km._FEED_ROW_FIELDS))
+        unread = dict(FULL_ROW, ctxTokens=125000, context=62, ctxOver=True, model="sonnet", effort="low", fast="on",
+                      connected=False, spawning=True, modelPending=True,
+                      bgTasks=[dict(FULL_ROW["bgTasks"][0], lastTool="Bash")])
+        self.assertEqual(km._feed_row_key(unread), k, "the unread fields leave the key equal")
+        for field, value in (("state", "idle"), ("since", 1781100001), ("authLive", "key"), ("retryCount", 3),
+                             ("subagents", []), ("bgTasks", [])):
+            self.assertNotEqual(km._feed_row_key(dict(FULL_ROW, **{field: value})), k, field)
+        self.assertNotEqual(km._feed_row_key({k2: v for k2, v in FULL_ROW.items() if k2 != "bgTasks"}),
+                            km._feed_row_key(dict(FULL_ROW, bgTasks=[])),
+                            "a row with no task set differs from one with an empty set (_bg_live_norm's branch)")
+        self.assertNotEqual(km._feed_row_key(dict(FULL_ROW, retryInfo=dict(FULL_ROW["retryInfo"], status=500))), k)
+
+    def test_the_row_attribution_map_covers_every_position_and_presence(self):
+        self.assertEqual(set(km._FEED_MEMO_STATS["row_by"]), set(km._FEED_ROW_FIELDS) | {"presence"})
+        self.assertEqual(set(km._feed_memo_report()["row_by"]), set(km._FEED_ROW_FIELDS) | {"presence"})
+
+    def test_the_derivation_sees_every_read_shape(self):
+        """The rule on a synthetic body: a `.get` with a constant, a subscript, an `in` test, each also through an `or`
+        whose first operand is the variable; and the shapes it must NOT count: another variable's reads, a `.get` with
+        a name, a loop variable, a mention in a string."""
+        src = textwrap.dedent('''
+            def body(tm, other):
+                a = tm.get("state")
+                b = (tm or {}).get("since", "")
+                c = tm["auth"]
+                d = (tm or {})["authLogin"]
+                e = "bgTasks" in tm
+                f = "subagents" in (tm or {})
+                g = other.get("model")
+                for k in ("effort",):
+                    h = tm.get(k)
+                for t in tm.get("bgTasks") or ():
+                    i = t.get("lastTool")
+                return a, b, c, d, e, f, g, h, i, "tm.get('ctxTokens')"
+        ''')
+        fn = ast.parse(src).body[0]
+        self.assertEqual(_row_fields(fn, "tm"), {"state", "since", "auth", "authLogin", "bgTasks", "subagents"})
+        self.assertEqual(_row_fields(fn, "other"), {"model"})
+        self.assertEqual(_row_fields(fn, "t"), {"lastTool"})
 
 
 class LabelsAndDocstring(unittest.TestCase):
