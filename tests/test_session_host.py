@@ -411,6 +411,87 @@ class HostProcess(unittest.TestCase):
         self.assertEqual([r["type"] for _, r in journal], kinds, "and holds every record, in the socket's order, once the writer landed them")
         k.close()
 
+    def _reexec(self, k, version="def67890", launcher=None):
+        k.send({"t": "reexec", "python": sys.executable, "launcher": launcher or os.path.join(BIN, "romp-session-host"), "version": version})
+        return k.recv_until(lambda f: f.get("t") == "reexec", timeout=15)
+
+    def _lease_version_becomes(self, version, timeout=20):
+        deadline = time.time() + timeout
+        while time.time() < deadline:                                   # loop-ok: the event is the re-executed host's lease
+            l = self._lease()
+            if l and str(l.get("version") or "") == version and (Path(self.state) / "hosts" / (SID[:8] + ".sock")).exists():
+                return l
+            time.sleep(0.05)
+        return self._lease()
+
+    def test_a_host_re_execs_into_the_kernels_code_keeping_its_cli_journal_and_pid(self):
+        """The version-skew fix (2026-09-18): a host kept its code for its session's life, so a host bug outlived every kernel
+        deploy. Asked by a newer kernel, an idle host execs itself into the kernel's launcher on the same pid with the CLI's
+        pipes held across the exec: the same CLI pid, the same host pid, the journal continued from its files, one attach
+        after, and a send that round-trips."""
+        host, sock, spec = self._start()                                # spec version abc12345, the "old" code
+        k, hello0 = self._attach(sock)
+        k.send({"t": "in", "data": self._user("before sleep=0")})
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        n0 = len(k.outs()); cli_pid = self._lease()["pid"]
+        spec_path = Path(self.state) / "hosts" / SID / "spawn.json"
+        spec_path.write_text(json.dumps(dict(json.loads(spec_path.read_text()), version="def67890")))   # the kernel rewrites it first
+        ans = self._reexec(k)
+        self.assertEqual((ans.get("ok"), ans.get("when")), (True, "now"), "an idle host accepts at once (the base has no such frame): %r" % ans)
+        k.close()
+        lease = self._lease_version_becomes("def67890")
+        self.assertEqual(lease.get("version"), "def67890", "the lease follows the code the host now runs")
+        self.assertEqual((lease["pid"], lease["holder"]["pid"]), (cli_pid, host.pid), "the same CLI, the same host pid across the exec")
+        self.assertIsNone(host.poll(), "the host process lives on (exec, not a restart)")
+        k2, hello = self._attach(sock, ack=n0 - 1, pid=4343)
+        self.assertEqual((hello["host"]["version"], hello["cli"]["pid"], hello["journal"]["next"], hello["inflight"]),
+                         ("def67890", cli_pid, n0, 0), "the hello names the new version, the same CLI, the journal where it was, no open turn")
+        k2.send({"t": "in", "data": self._user("after sleep=0")})
+        res = k2.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        self.assertEqual(res["offset"], n0 + 1, "the journal numbering continues across the exec (assistant, then result)")
+        journal = list(sh.read_journal_dir(os.path.join(self.state, "hosts", SID)))
+        self.assertEqual([r["type"] for _, r in journal][-4:], ["assistant", "result", "assistant", "result"], "one journal, both turns")
+        log = self._hostlog()
+        self.assertEqual([r["kind"] for r in log if r["kind"] in ("reexec", "reexeced")], ["reexec", "reexeced"], "the exec and the adoption, once each")
+        self.assertEqual(sum(1 for r in log if r["kind"] == "attached"), 2, "one attach before, one after; none lost to a death")
+        self.assertFalse((Path(self.state) / "hosts" / SID / "reexec.json").exists(), "the handoff file is consumed")
+        k2.close()
+
+    def test_a_re_exec_asked_mid_turn_waits_for_the_turns_result_then_tells_the_kernel(self):
+        host, sock, spec = self._start()
+        k, _ = self._attach(sock)
+        spec_path = Path(self.state) / "hosts" / SID / "spawn.json"
+        spec_path.write_text(json.dumps(dict(json.loads(spec_path.read_text()), version="def67890")))
+        k.send({"t": "in", "data": self._user("slow sleep=1.2")})
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "assistant", timeout=15)
+        ans = self._reexec(k)
+        self.assertEqual((ans.get("ok"), ans.get("when")), (True, "at-turn-end"), "a turn is open: deferred to its result, never a timer")
+        res = k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        now = k.recv_until(lambda f: f.get("t") == "reexec-now", timeout=15)
+        self.assertTrue(now, "the kernel is told before the socket closes")
+        kinds = [f.get("t") for f in k.frames]
+        self.assertLess(kinds.index("reexec-now"), len(kinds), "the result came first, then the handover")
+        self.assertGreater(kinds.index("reexec-now"), [i for i, f in enumerate(k.frames) if f.get("t") == "out" and f["data"].get("type") == "result"][0])
+        k.close()
+        lease = self._lease_version_becomes("def67890")
+        self.assertEqual(lease.get("version"), "def67890")
+        k2, hello = self._attach(sock, ack=res["offset"], pid=4343)
+        self.assertEqual((hello["host"]["version"], hello["inflight"]), ("def67890", 0))
+        k2.send({"t": "in", "data": self._user("after sleep=0")})
+        k2.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        k2.close()
+
+    def test_a_re_exec_it_cannot_do_is_refused_and_the_host_serves_on(self):
+        host, sock, spec = self._start()
+        k, _ = self._attach(sock)
+        ans = self._reexec(k, launcher=os.path.join(self.state, "no-such-launcher"))
+        self.assertEqual((ans.get("ok"), ans.get("reason")), (False, "no such launcher"), "a bad launcher is a refusal, not an exec")
+        k.send({"t": "in", "data": self._user("still here sleep=0")})
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        self.assertEqual(self._lease().get("version"), "abc12345", "the old host, the old version, still serving")
+        self.assertEqual([r["kind"] for r in self._hostlog() if r["kind"].startswith("reexec")], ["reexec-refused"])
+        k.close()
+
     def test_a_detached_kernel_reattaches_and_replays_from_its_ack_while_the_turn_kept_running(self):
         host, sock, spec = self._start()
         k, _ = self._attach(sock)

@@ -449,6 +449,60 @@ class BackendHostRules(unittest.TestCase):
         be._on_host_hello(s2, {"host": {"pid": 1, "start": "a"}, "cli": {}, "journal": {"next": 0}, "parked": [], "inflight": 0})
         self.assertEqual((s2.inflight, fired), (1, [1]), "a lower count never lowers ours; a spawn's hello leaves the slot to the init record")
 
+    def test_a_reexec_request_reads_the_hosts_answer_and_an_older_host_as_a_refusal(self):
+        """The kernel's half of the re-exec (2026-09-18): one connection, one frame, one answer. A host that knows the frame
+        answers it; a host older than the frame answers `fault not-attached`, which reads as a refusal; a socket nobody
+        serves reads as a refusal too. Never a raise out of the connect."""
+        fn = getattr(ht, "request_reexec", None)
+        self.assertIsNotNone(fn, "the kernel can ask a host to re-exec (the base cannot)")
+        answers = {"new": {"t": "reexec", "ok": True, "when": "now"}, "old": {"t": "fault", "kind": "not-attached", "text": "attach first"}}
+        d = tempfile.mkdtemp()
+        loop = asyncio.new_event_loop()
+        async def serve(path, answer):
+            async def on_client(reader, writer):
+                fr = sh.FrameReader()
+                chunk = await reader.read(65536)
+                for f in fr.feed(chunk):
+                    if f.get("t") == "reexec":
+                        writer.write(sh.encode_frame(answer)); await writer.drain()
+                writer.close()
+            return await asyncio.start_unix_server(on_client, path=path)
+        async def run():
+            out = {}
+            for name, ans in answers.items():
+                path = os.path.join(d, name + ".sock")
+                srv = await serve(path, ans)
+                out[name] = await fn(path, sys.executable, "/bin/true", "def67890", timeout=5)
+                srv.close()
+            out["none"] = await fn(os.path.join(d, "absent.sock"), sys.executable, "/bin/true", "def67890", timeout=2)
+            return out
+        try:
+            out = loop.run_until_complete(run())
+        finally:
+            loop.close()
+        self.assertEqual((out["new"]["ok"], out["new"]["when"]), (True, "now"))
+        self.assertEqual(out["old"]["ok"], False); self.assertIn("does not know", out["old"]["reason"])
+        self.assertEqual(out["none"]["ok"], False); self.assertIn("connect", out["none"]["reason"])
+
+    def test_a_hosts_reexec_now_frame_makes_the_reconnect_planned_and_the_hello_files_the_row(self):
+        d, be = self._be()
+        s = types.SimpleNamespace(sid=SID, name="web", inflight=0, _reconnect=False, _host=None, _host_is_attach=True,
+                                  _host_reexec_from="abc12345", _host_reexec_expected=False, _fire_boot_settled=lambda: None)
+        now = getattr(be, "_on_host_reexec_now", None)
+        self.assertIsNotNone(now, "the kernel knows the host's reexec-now frame (the base does not)")
+        now(s)
+        self.assertEqual((s._reconnect, s._host_reexec_expected), (True, True), "the stream's end that follows is the planned handover")
+        t = types.SimpleNamespace(hello={}, ack_offset=5)
+        s._host = t
+        be.code_version = "def67890"
+        be._on_host_hello(s, {"host": {"pid": 1, "start": "a", "version": "def67890"}, "cli": {"pid": 2, "start": "b"}, "journal": {"next": 6}, "parked": [], "inflight": 0})
+        rows = [json.loads(l) for l in (Path(d) / "session-events.jsonl").read_text().splitlines() if l.strip()]
+        kinds = [r["kind"] for r in rows]
+        self.assertIn("host.reexeced", kinds, "the re-exec is a row of its own: %r" % kinds)
+        row = [r for r in rows if r["kind"] == "host.reexeced"][0]
+        self.assertEqual((row.get("fromVersion"), row.get("toVersion")), ("abc12345", "def67890"))
+        self.assertIsNone(s._host_reexec_from, "filed once")
+
     def test_the_hello_decides_the_fresh_cli_by_identity_and_tolerates_older_shapes(self):
         """The fresh-CLI decision at the hello (the connect loop's pins drive it through the loop; this one drives the handler):
         the hello's cli.pid:cli.start against the reg's spawnedAtCli. Equal: nothing. Different with a spawn time: the block
