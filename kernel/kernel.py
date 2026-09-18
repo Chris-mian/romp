@@ -14778,7 +14778,7 @@ def _nudge_response_ready(turns, store, rec, gid, now):
     return True, resp
 
 
-_nudge_gate_memo = {}            # sid -> (parse key, the shared view object, clears-log stat, unplanned): the gate's answer while its inputs stand
+_nudge_gate_memo = {}            # sid -> (parse key, the shared view object, episode-log stat, clears-log stat, unplanned): the gate's answer while its inputs stand
 _NUDGE_GATE_STATS = {"served": 0, "derived": 0, "failed": 0}   # /perf memos.nudgeGate: how often the walk re-derived the gate,
 #                                                                  and how often the derivation raised (the except leg answers not unplanned: nudges waved past the planner gate)
 _NUDGE_GATE_MEMO_MAX = 512
@@ -14786,19 +14786,32 @@ _NUDGE_GATE_MEMO_MAX = 512
 
 def _nudge_placement_gate(sid, turns, store):
     """The planner-placement gate's answer (is any unit of this parse still unplaced?), DERIVED ONCE per
-    (parse, store) and served while both stand (2026-09-09). The derivation re-segments every turn, applies
+    (parse, store, episode log, clears log) and served while all four stand (2026-09-09; the clears log
+    since 2026-09-18, see below). The derivation re-segments every turn, applies
     the seams, builds the plan units and normalizes every recorded placement key; on the maintainer's box it
     was 70% of the kernel's CPU, run for every idle session on every pusher cycle with nothing changed
     (py-spy: _seg_key, _placed_key, _segment_id, _mint_quote under _auto_nudge_session). Its inputs: the
-    parse, the store's bytes, and the clears log (_placed_key scopes its fuzzy match by the episode floor).
+    parse, the store's bytes, and two append-only logs. The session's EPISODE log, STATE/episodes/<sid>.jsonl:
+    _placed_key scopes its fuzzy match by the episode floor read from it. The CLEARS log, STATE/cleared.jsonl,
+    the cards cleared off the board: plan_units reads it live for the open segment's live re-plan unit
+    (_live_anchor_gone -> _cleared_under -> _view_cleared), so a clear of the card an open segment's ask sits
+    on turns an empty queue into one owing a re-plan, and an undo row turns it back, with the parse, the view
+    and the episode log all standing.
 
     Both halves are IDENTITY-bound, never stat'd after the read (review 2026-09-09: the first cut stat'd the
     store file after the walk had read the view, so a placement a judge published in between was keyed under
     the NEW file with the OLD bytes' answer and served until the store next moved). The parse half is
     parsed_session's cached object; the store half is the shared read-only view object itself, which the
     shared loader replaces whenever the store, its override journal or the archive moves, and the answer is
-    cached only when that view is STILL the current one after the derivation. The clears log's stat is taken
-    BEFORE the derivation, so a boundary appended during it leaves a key the next cycle's stat cannot match.
+    cached only when that view is STILL the current one after the derivation. Each log's stat is taken
+    BEFORE the derivation and compared on the hit path, so a row appended during it leaves a key the next
+    cycle's stat cannot match. The clears log joined the key after the episode log (2026-09-18): the walk's
+    file-keyed memo already named it as this road's input (_NUDGE_FILE_KEYED_VERDICTS) and keyed on it, and
+    every writer of it marks every session, so after a clear the look re-ran while this memo served the old
+    answer until the parse, the view or the episode log moved. The user-facing clear paths also flag the node
+    in the store, which moves the view; the term is what catches a row filed with no store write: the undo
+    path's late re-journal, a flag step skipped on a store fault, and the window between a writer's append
+    and its flag step, which the pusher's pass can enter.
     A parse the cache does not hold, or a store that is not the current shared view, is derived every time
     and never cached. The exception path is unchanged: a gate that cannot be computed answers not unplanned (the walk proceeds on the
     closer gate alone: nudges waved past the planner gate, counted under failed and said on stderr with its traceback), and is never cached."""
@@ -14806,10 +14819,11 @@ def _nudge_placement_gate(sid, turns, store):
     #                                             view stored between the walk's parse and this read: review find)
     parse_key = pk[0] if (pk is not None and pk[1] is not None and pk[1].get("turns") is turns) else None
     epi = _stat_key(jd.EPIDIR / (sid + ".jsonl")) if parse_key is not None else None
+    clr = _stat_key(jd.STATE / "cleared.jsonl") if parse_key is not None else None
     hit = _nudge_gate_memo.get(sid) if parse_key is not None else None
-    if hit is not None and hit[0] == parse_key and hit[1] is store and hit[2] == epi:
+    if hit is not None and hit[0] == parse_key and hit[1] is store and hit[2] == epi and hit[3] == clr:
         _NUDGE_GATE_STATS["served"] += 1
-        return hit[3]
+        return hit[4]
     try:
         _live = {sg["id"] for tn in turns for sg in jd._segs(tn, store)}
         unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
@@ -14829,7 +14843,7 @@ def _nudge_placement_gate(sid, turns, store):
         if current is store:                     # the view we derived from is still the store's current one
             if len(_nudge_gate_memo) > _NUDGE_GATE_MEMO_MAX:      # bounded by the session count; evict oldest-inserted
                 _nudge_gate_memo.pop(next(iter(_nudge_gate_memo)))
-            _nudge_gate_memo[sid] = (parse_key, store, epi, unplanned)
+            _nudge_gate_memo[sid] = (parse_key, store, epi, clr, unplanned)
     return unplanned
 
 
