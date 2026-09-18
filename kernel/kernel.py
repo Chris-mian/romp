@@ -24123,6 +24123,7 @@ def _notice_cards(now, cleared):
                            "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
                            "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
                 "column": "needs_input" if r.get("needsYou") else "completed",
+                "board": "feed", "category": "needs_input" if r.get("needsYou") else "completed",   # the board model's two fields (phase two)
                 "tree": []})
     out.sort(key=lambda c: (c["t"], c["itemId"]))
     return out
@@ -39855,7 +39856,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
             "t": t, "live": live, "_ageT": t,   # the tint's epoch; trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working",
+            "blocked": None, "column": "working", "board": "feed", "category": "working",
             # judging = the turn has SETTLED and the planner's classify pass is due/in flight — the swirl
             # chip says Analyzing… only then; an open turn keeps the honest Working… (the user 2026-07-12)
             "provisional": True, "judging": not turn_open, "tree": []}
@@ -39891,7 +39892,7 @@ def _awaiting_card(s, name, color, fsid, live, now, why, kind=None, since=None, 
             "t": t, "live": live, "_ageT": age_t,   # trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working",
+            "blocked": None, "column": "working", "board": "feed", "category": "working",
             # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
             # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
             # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
@@ -39960,7 +39961,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
             "blocked": {"state": perm_state,
                         "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                  else "this session is stopped awaiting your approval")},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "provisional": True, "tree": []}
 
 
@@ -42136,6 +42137,7 @@ def _feed_session_entry(s, ctx):
             "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
             "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
             "column": column,
+            "board": "feed", "category": column,   # the board model's two fields (plans/card-boards.md, phase two): the feed's category IS the column
             "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
             "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
             "judging": bool((sess_judging or _stall_inflight) and column == "working"),
@@ -42401,7 +42403,7 @@ def build_feed(now, live_map=None):
             "blocked": {"state": "parkedHandoff", "toSid": ph["toId"], "toName": ph["toName"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"
                                 % (ph["fromName"], ph["toName"])},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
     # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
     # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
@@ -44787,6 +44789,17 @@ def _postal_messages(now, alive_sids, id2name, live_sids=None):
     tanchors = _thread_anchors(alive_sids)              # {tid: (parent sid, anchorT, name)} — thread mail's home
     for mid, e in sent.items():
         f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
+        # A relayed send's row addresses the RELAY ("peer:<host>") and, since 2026-09-08, names the recipient too:
+        # to_sid its stable id, toName "<host>:<name>". The connector's far end is the RECIPIENT (the merged board
+        # stitches a bare foreign sid onto that host's lane by its uuid) and its display name carries the host, so
+        # mail to a remote twin of a local session reads "web → TESTHOST:web", never "web → peer:TESTHOST" hanging
+        # off a stub for a lane nobody has (the user 2026-09-18). The relay address keeps ONE job, the pending
+        # flag's cross-host leg below, which stays honest on it (the far end's liveness is not knowable here). A
+        # row older than the fields keeps the relay address, as before.
+        relay = isinstance(t, str) and t.startswith("peer:")
+        to_name = ""
+        if relay and e.get("to_sid"):
+            t, to_name = str(e["to_sid"]), str(e.get("toName") or "")
         # both endpoints must EXIST (bus-origin mail — bounces from the Romp Postal Service itself —
         # has no sender sid and can never draw), and at least one must be a local lane. A comment-THREAD
         # endpoint counts through its parent's lane (rewritten below) — the raw f == t self-check runs
@@ -44797,7 +44810,7 @@ def _postal_messages(now, alive_sids, id2name, live_sids=None):
         ex = execd.get(mid)
         ex_t, ex_dmid = (ex if isinstance(ex, tuple) else (ex, None))
         row = {"id": mid, "fromId": f, "toId": t,
-               "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t, ""),
+               "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t) or to_name,
                "fromOrig": e.get("from", id2name.get(f, f)),
                "sent": st, "exec": ex_t if ex_t else st, "hasExec": ex_t is not None,
                # pending = the deciding events say it can still land: never read (no exec), never
@@ -44810,10 +44823,13 @@ def _postal_messages(now, alive_sids, id2name, live_sids=None):
                "pending": (ex_t is None and mid not in ended
                            and (live_sids is None or t in live_sids
                                 or (t in tanchors and tanchors[t][0] in live_sids)
-                                or (isinstance(t, str) and t.startswith("peer:")))),
+                                or relay)),
                "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)}
         if ex_dmid:
             row["dmid"] = ex_dmid   # lets the MERGED view join a relayed connector to the remote turn's mids
+        if e.get("originMid"):
+            row["originMid"] = str(e["originMid"])   # a delivered copy names the SENDER's id: the merged board folds the
+            #                                          two kernels' rows for one message into one connector on it
         # A thread has NO lane of its own; its visual home is the comment's anchor square on the
         # parent's lane (the user 2026-08-23: the connector comes out of the square and lands back in
         # the lane where the mail arrives — and a reply arcs back into the square). Rewrite the
@@ -45022,7 +45038,7 @@ def _quarantine_cards(now, cleared):
                         "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
                                 "waiting on you — approve to deliver it to %s, or deny to drop it. Nothing "
                                 "reaches %s until you approve." % (frm, origin, to, to)},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
     out.sort(key=lambda c: c["t"])
     return out
@@ -53715,6 +53731,170 @@ def _pure_feed(now, live_map):
         return feed
 
 
+# THE BOARD TABLE (plans/card-boards.md, phase two): the code-defined boards in the one schema the renderer's
+# ui/webview/board-def.ts holds (FEED_BOARD there is this dict, field for field; tests/test_card_boards.py holds the two
+# together). A card the kernel builds names its board and its category (`board`, `category`, beside `column` until the
+# renderer reads category alone); the bell, the phone and the badge read the board's `notify` and `needsYou` here instead
+# of a literal. Data-defined boards (phase three) join through _board_check's door and never overwrite a code-defined id.
+_CODE_BOARDS = {
+    "feed": {
+        "id": "feed", "title": "Feed",
+        "categories": [{"id": "working", "title": "Working", "chip": "working"},
+                       {"id": "needs_input", "title": "Blocked", "chip": "blocked"},
+                       {"id": "completed", "title": "Completed", "chip": "completed"}],
+        "defaultCategory": "working",
+        "rules": [],                                   # the feed's category rule is code: the expression in _feed_session_entry
+        "sort": {"key": "t", "dir": "asc"},
+        "subSorts": [],
+        "groupBy": "session",
+        "order": [],                                   # the owner rank joins in phase three
+        "notify": ["needs_input", "completed"],
+        "needsYou": "needs_input",
+        "kinds": ["goal", "placeholder", "parked", "quarantine", "notice"],
+    },
+}
+_BOARD_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_BOARD_MEMBERS = ("id", "title", "categories", "defaultCategory", "rules", "sort", "subSorts", "groupBy", "order", "notify", "needsYou", "kinds")
+_BOARD_CHIPS = ("working", "blocked", "completed", "neutral")
+_BOARD_SORT_FIELDS = ("t", "session", "owner", "title")
+_BOARD_PREDICATES = ("needsYou", "producer", "keyPrefix")
+_BOARD_ORDER_RULES = ("ownerRank",)
+_BOARD_KINDS = ("goal", "placeholder", "parked", "quarantine", "notice")
+
+
+def _board_check_sort(sv, where):
+    if not isinstance(sv, dict):
+        return where + " must be an object {key, dir}"
+    for k in sv:
+        if k not in ("key", "dir"):
+            return "%s has an unknown member %r" % (where, k)
+    if sv.get("key") not in _BOARD_SORT_FIELDS:
+        return where + ".key must be one of " + ", ".join(_BOARD_SORT_FIELDS)
+    if sv.get("dir") not in ("asc", "desc"):
+        return where + ".dir must be asc or desc"
+    return None
+
+
+def _board_check(defn, allow_reserved=False):
+    """The schema check, the kernel's half (ui/webview/board-def.ts boardCheck is the renderer's, the same rules): (defn, None)
+    for a board in the schema, else (None, the refusal naming the member and the rule it broke). An unknown member refuses,
+    so a typo never silently defaults; a code-defined id is refused at the door (`allow_reserved` lets the constants pass)."""
+    if not isinstance(defn, dict):
+        return None, "a board definition must be a JSON object"
+    for k in defn:
+        if k not in _BOARD_MEMBERS:
+            return None, "unknown member %r (the schema's members are %s)" % (k, ", ".join(_BOARD_MEMBERS))
+    bid = defn.get("id")
+    if not isinstance(bid, str) or not _BOARD_ID_RE.match(bid):
+        return None, "id must match [a-z][a-z0-9_-]{0,31}"
+    if not allow_reserved and bid in _CODE_BOARDS:
+        return None, "id %r is a code-defined board and cannot be defined" % bid
+    title = defn.get("title")
+    if not isinstance(title, str) or not 1 <= len(title) <= 40:
+        return None, "title must be 1 to 40 characters"
+    cats = defn.get("categories")
+    if not isinstance(cats, list) or not 1 <= len(cats) <= 8:
+        return None, "categories must hold 1 to 8 entries"
+    ids = set()
+    for c in cats:
+        if not isinstance(c, dict):
+            return None, "each category must be an object {id, title, chip}"
+        for k in c:
+            if k not in ("id", "title", "chip"):
+                return None, "category has an unknown member %r" % k
+        cid = c.get("id")
+        if not isinstance(cid, str) or not _BOARD_ID_RE.match(cid):
+            return None, "category id must match [a-z][a-z0-9_-]{0,31}"
+        if cid in ids:
+            return None, "category id %r repeats" % cid
+        ids.add(cid)
+        ct = c.get("title")
+        if not isinstance(ct, str) or not 1 <= len(ct) <= 40:
+            return None, "category %s: title must be 1 to 40 characters" % cid
+        if c.get("chip") not in _BOARD_CHIPS:
+            return None, "category %s: chip must be one of %s" % (cid, ", ".join(_BOARD_CHIPS))
+    if defn.get("defaultCategory") not in ids:
+        return None, "defaultCategory must name one of the board's categories"
+    rules = defn.get("rules")
+    if not isinstance(rules, list) or len(rules) > 16:
+        return None, "rules must hold 0 to 16 entries"
+    for r in rules:
+        if not isinstance(r, dict) or not isinstance(r.get("when"), dict):
+            return None, "each rule must be an object {when, category}"
+        for k in r:
+            if k not in ("when", "category"):
+                return None, "rule has an unknown member %r" % k
+        when = r["when"]
+        for k in when:
+            if k not in _BOARD_PREDICATES:
+                return None, "rule predicate has an unknown member %r (the predicates are %s)" % (k, ", ".join(_BOARD_PREDICATES))
+        if not when:
+            return None, "a rule's predicate must name at least one member"
+        if "needsYou" in when and not isinstance(when["needsYou"], bool):
+            return None, "rule predicate needsYou must be a boolean"
+        for k in ("producer", "keyPrefix"):
+            if k in when and not isinstance(when[k], str):
+                return None, "rule predicate %s must be a string" % k
+        if r.get("category") not in ids:
+            return None, "a rule's category must name one of the board's categories"
+    err = _board_check_sort(defn.get("sort"), "sort")
+    if err:
+        return None, err
+    subs = defn.get("subSorts")
+    if not isinstance(subs, list) or len(subs) > 6:
+        return None, "subSorts must hold 0 to 6 entries"
+    for i, sv in enumerate(subs):
+        err = _board_check_sort(sv, "subSorts[%d]" % i)
+        if err:
+            return None, err
+    if defn.get("groupBy") not in ("session", None):
+        return None, 'groupBy must be "session" or null'
+    order = defn.get("order")
+    if not isinstance(order, list) or len(order) > 4:
+        return None, "order must hold 0 to 4 entries"
+    for o in order:
+        if o not in _BOARD_ORDER_RULES:
+            return None, "order rules must be from " + ", ".join(_BOARD_ORDER_RULES)
+    notify = defn.get("notify")
+    if not isinstance(notify, list):
+        return None, "notify must be a list of category ids"
+    for n in notify:
+        if n not in ids:
+            return None, "notify names a category the board does not have: %r" % (n,)
+    ny = defn.get("needsYou")
+    if ny is not None and ny not in ids:
+        return None, "needsYou must be one of the board's categories or null"
+    kinds = defn.get("kinds")
+    if not isinstance(kinds, list) or not kinds:
+        return None, "kinds must hold at least one entry"
+    for k in kinds:
+        if k not in _BOARD_KINDS:
+            return None, "kinds must be from " + ", ".join(_BOARD_KINDS)
+    return defn, None
+
+
+for _bid, _bdef in _CODE_BOARDS.items():                 # a drifted constant fails at import, never in a build
+    _berr = _board_check(_bdef, allow_reserved=True)[1]
+    if _berr or _bdef.get("id") != _bid:
+        raise RuntimeError("code-defined board %r is not in the schema: %s" % (_bid, _berr or "its id differs from its key"))
+
+
+def _board_def(board):
+    """The definition a card's `board` names; a card that names none, or an id this kernel does not know, reads as the feed's
+    (the default every card the kernel builds carries; a data-defined board joins the lookup in phase three)."""
+    return _CODE_BOARDS.get(board) or _CODE_BOARDS["feed"]
+
+
+def _board_notify(board):
+    """The category ids whose ENTRY announces (the bell, the phone) for a card's board."""
+    return tuple(_board_def(board)["notify"])
+
+
+def _board_needs_you(board):
+    """The category the app badge counts for a card's board, or None when the board never badges."""
+    return _board_def(board)["needsYou"]
+
+
 # ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
 # The master bell (bottom-right → notify-cards.json "*"), a session's bell (timeline lane / tab menu →
 # session-flags "notify") or a card's bell (right-click → notify-cards.json) arm OS-level notifications
@@ -53770,7 +53950,7 @@ def _pure_feed(now, live_map):
 # rule holds across a restart too. The silent first-boot seed counts as told (the user has the board).
 # The desktop notice and the phone push both iterate the list this diff returns, so the one gate covers
 # both legs; _buzz_claim's one-buzz-per-turn-end rule sits after it, unchanged.
-_NOTIFY_COLUMNS = ("needs_input", "completed")
+_NOTIFY_COLUMNS = tuple(_CODE_BOARDS["feed"]["notify"])   # the feed board's notify set, the value the snapshot entries are checked against
 # itemId -> {"sid", "column" (the notified column the card was last SEEN in, None while it sits in
 # working), "announced" (the column last announced, None if never), "announcedAt" (seconds)}; the
 # store holds a card while it is in a notified column or carries an announced mark. None = this life's
@@ -53994,8 +54174,8 @@ def _feed_notifications_diff(feed):
     now_t = int(feed.get("now") or time.time())   # the build's own moment: wall clock, like the journal's t
     entered = []                                     # (itemId, card, column, entry): the cards that ENTERED a column
     for iid, a in cur.items():
-        col, sid, ent = a.get("column"), str(a.get("sid") or ""), prev.get(iid)
-        if col in _NOTIFY_COLUMNS:
+        col, sid, ent = a.get("category", a.get("column")), str(a.get("sid") or ""), prev.get(iid)   # the board's category; the column from an older card
+        if col in _board_notify(a.get("board")):   # the card's board's notify set (the feed's is _NOTIFY_COLUMNS)
             e = {"sid": sid, "column": col,
                  "announced": ent.get("announced") if ent else None,
                  "announcedAt": ent.get("announcedAt") if ent else None}
@@ -54016,7 +54196,7 @@ def _feed_notifications_diff(feed):
             if e["announced"] == col and not _notify_user_acted_since(e["sid"], iid, e["announcedAt"]):
                 continue                             # the same (card, column), told already, nothing of the user's since
             e["announced"], e["announcedAt"] = col, now_t
-            needs_you = col == "needs_input"            # the card's column: the authoritative state, not the words
+            needs_you = col == _board_needs_you(a.get("board"))   # the board's badge category: the authoritative state, not the words (the same read as _needs_you_count)
             what = "Needs you" if needs_you else "Completed"
             txt = str(a.get("text") or "").strip()
             out.append((_notify_title(a.get("name") or "session", needs_you),
@@ -54034,7 +54214,8 @@ def _needs_you_count(feed):
     """How many real (non-provisional) cards sit in needs_input — the number the app icon wears.
     Counted from the same feed build the notifications diff, so badge and bell can never disagree."""
     return sum(1 for a in (feed.get("asks") or [])
-               if not a.get("provisional") and a.get("column") == "needs_input")
+               if not a.get("provisional") and _board_needs_you(a.get("board")) is not None
+               and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category; a board with none counts nothing
 
 
 # The count the shell clients last heard (None = nothing sent since boot). The badge moves on feed
@@ -62088,8 +62269,9 @@ def _landing():
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
-            # same treatment as the settings modal's .rs-sec section headers (10.5px/700/.08em uppercase)
-            ".rnet-khead{color:#6e7681;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
+            # same treatment as the settings modal's .rs-sec section headers (11px/600, sentence case, the accent blue;
+            # the user 2026-09-18: no all-caps delineators in the settings)
+            ".rnet-khead{color:var(--accent,#9cd2ff);font-size:11px;font-weight:600;"
             "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"

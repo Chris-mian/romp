@@ -1,6 +1,7 @@
 # Card boards: the feed as one instance of a generic card UI
 
-Status: PROPOSED (2026-09-18), phased. Landing commits: TBD per phase. Tier per phase in section 6:
+Status: IN PROGRESS (2026-09-18), phased. Landing commits: phase one 58c3ce83 (PR 1834, the definition
+extracted); phase two PR 1837 (the record fields); the rest TBD per phase. Tier per phase in section 6:
 `feature` for phases one, two, four and five; phase three (the board definition store, its door and
 its frame field) is the `major-feature` discussion point, called out there with the reasons, and the
 phasing is built so nothing before it changes a persisted record or the feed protocol.
@@ -203,7 +204,7 @@ FEED_BOARD: Board = {
     { id: "completed",   title: "Completed", chip: "completed" },
   ],
   defaultCategory: "working",
-  rules: [],                               // the feed's rule is code: _feed_category, the expression at kernel.py:41890
+  rules: [],                               // the feed's rule is code: the column expression in _feed_session_entry (kernel.py:41890)
   sort: { key: "t", dir: "asc" },          // oldest at the top (the user 2026-06-27); newestFirst flips it (:5629)
   subSorts: [],                            // none today; phase five adds them (section 5)
   groupBy: "session",                      // grouped mode, default ON (feedPrefs, :589; the user 2026-07-13)
@@ -226,8 +227,11 @@ them is a sweep of its own and not this change.
 status from the judges' verdicts (the verdict kinds recorded through `record_verdict`,
 `judge.py:10508`: `done`, `block`, `unblock`, `settle`, `reopen`, `awaiting`, the planner's and the
 closer's), and `build_feed`'s expression (`kernel.py:41890`) projects that status plus the live
-floors onto the category. That expression is the feed board's category writer; it moves to a
-function named for it (`_feed_category(col, floors)`) and changes no branch. For the kernel-made
+floors onto the category. That expression is the feed board's category writer. It stays inline in
+`_feed_session_entry` (correction at phase two: three tests pin the expression's text as the record of
+the 2026-06-29 and 2026-07-07 rulings, and naming it out would move those pins for no change of
+behaviour; a named function is phase four's if a second board ever needs to write a goal card's
+category). For the kernel-made
 families the literal each one sets today becomes the same literal under `category`. The law that
 cards move only on new information is therefore unchanged in mechanism: a category changes when a
 verdict lands, a live state changes, or the user acts, and never because a render re-evaluated a
@@ -244,8 +248,8 @@ definition names the kinds a board renders.
 - `placeholder`: `provisional`, `awaiting:<sid>` and `blocked:<sid>` cards. No sections; actions
   Clear (where the family allows it) and the bell.
 - `parked`: `blocked.state === "parkedHandoff"`; action Revive.
-- `quarantine`: `blocked.state === "quarantine"`; the held body shown in full; actions Approve,
-  Deny, Edit.
+- `quarantine`: `blocked.state === "quarantine"`; the held body shown in full; actions Approve and
+  Deny (the edit happens in the modal, not as a card action; the 1834 read, 2026-09-18).
 - `notice`: `it.notice`; the producer label, the body through the sanitizer, the attachment; actions
   the record's own `actions` list (`noticeAction`), Clear and the bell. The one kind a data-defined
   board renders.
@@ -482,8 +486,8 @@ nothing.
    Tier `feature`.
 2. **The kernel's card records carry `board` and `category`, the feed as default.** A kernel table
    `_CODE_BOARDS = {"feed": <the schema's dict>}` beside `_NOTIFY_COLUMNS`, which becomes a read of
-   it, checked by `_board_check` at import; `_feed_category()` named out of `build_feed`'s
-   expression; every family's dict gains `"board": "feed"` and `"category": <its column>`;
+   it, checked by `_board_check` at import; the column expression stays inline (section 2's
+   correction); every family's dict gains `"board": "feed"` and `"category": <its column>`;
    `_feed_notifications` and `_needs_you_count` read the table for the card's board. `column` stays
    byte-identical beside `category`. The frame gains two additive fields per card, both fixed across
    unchanged builds (the dedup holds), both per-session derived (inside the memoized entry, no new
