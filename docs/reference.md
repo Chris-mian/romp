@@ -720,7 +720,7 @@ two. Every session's tab menu offers Move to folder.
   manager and the supervised service use. Set either and the other follows; set
   both to different values and the kernel refuses to start rather than picking
   one for you.
-- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`.
+- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`. The kernel dials the port the bus actually bound, read from the bus's record `postal/postal-port` under the state directory (written after the bind, removed on a clean exit), and falls back to this variable only when the record is absent; a mismatch between the two is said once in the kernel's log. The two can disagree when a unit or profile sets the variable for one process and not the other, or when a stale legacy tunnel still reverse-forwards another machine's bus onto the fixed port: the operator's two checks when a held message's approve comes back refused.
 
 Set these if something else on the machine already holds the default. Both have
 to agree across everything that talks to the kernel, so export them where the
