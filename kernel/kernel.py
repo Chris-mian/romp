@@ -24123,6 +24123,7 @@ def _notice_cards(now, cleared):
                            "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
                            "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
                 "column": "needs_input" if r.get("needsYou") else "completed",
+                "board": "feed", "category": "needs_input" if r.get("needsYou") else "completed",   # the board model's two fields (phase two)
                 "tree": []})
     out.sort(key=lambda c: (c["t"], c["itemId"]))
     return out
@@ -35735,65 +35736,6 @@ def _deliver_send_batch(be, sid, run):
         be.send(sid, merged)
 
 
-_HELD_WORKING_SAID = set()   # sids whose parked queue was said to be held by the backend's working signal; cleared when the hold lifts
-
-
-def _pending_ops_held_working(sid):
-    """A parked queue skipped because the session reads working: said ONCE per hold, a stderr line, a session-events row
-    (kind pending-ops.held-working) and the error center's ring, when the backend's open-turn count is the reason while the
-    transcript, read authoritatively, shows no open turn (or cannot be read: said as unknown, never as idle). That pairing is a stale count, not a turn: on the user's laptop (2026-09-18) a
-    host that survived several kernel restarts handed each new kernel an open-turn count a folded turn had left high, so
-    the session read Ready on the page and Working to the drain, and three inputs sat parked for two days with no line
-    anywhere. The count is fixed at its source (the host's settle, the hello's exact adoption); this is the belt, so the
-    next such state is a row the error center shows and a line the log carries, never an infinite silent park."""
-    # Called INSIDE the drain's quiet gate, after `_compacting_now(sid) or _working_now(sid)` read true, and it reads the
-    # backend's busy() itself never: the gate's one read is the backend's (tests/test_drain_hoists.py counts it), and
-    # _working_now answers with the backend's signal whenever the backend gives one, so a skip that is not a compaction
-    # while the transcript shows no open turn IS the backend's count alone saying working. The transcript is read
-    # AUTHORITATIVELY: the cached parse first, the kernel's own parse (memoized per transcript change) on a miss, since a
-    # cache miss is not "no open turn" (round two of 1838: the cache misses on every actively written transcript and
-    # whenever no client refreshes it, and the note then blamed a real turn); an unreadable transcript is said as unknown,
-    # never as idle. A pending queue on the backend is a real hold, not a count: nothing is said for it.
-    try:
-        if _compacting_now(sid):
-            return                                        # a compaction holds the queue on its own account
-        be = Sessions.backend_for(sid)
-        pending = getattr(be, "pending_queued", None)
-        if pending is not None and pending(sid):
-            return                                        # a send queued and about to run: the backend's hold is a real one
-        path = _path_of(sid)
-        session = _parse_cached(path) if path else None
-        if session is None and path:
-            try:
-                session = _parse(path, sid, time.time())  # the authoritative read: one parse per transcript change
-            except Exception:
-                session = None
-        if session is not None and _session_working(session.get("turns") or []):
-            return                                        # the transcript agrees: a real turn
-        transcript = "no open turn" if session is not None else "unknown"
-    except Exception:
-        return
-    if sid in _HELD_WORKING_SAID:
-        return
-    _HELD_WORKING_SAID.add(sid)
-    with _pending_ops_lock:
-        n = len(_pending_ops.get(sid) or [])
-    name = _name_of(sid) or sid[:8]
-    if transcript == "unknown":
-        text = ("%s: %d parked input(s) held because the backend reads the session as working while its transcript could not "
-                "be read; the hold is unverified" % (name, n))
-    else:
-        text = ("%s: %d parked input(s) held because the backend counts an open turn while its transcript shows none; a stale "
-                "count, not a turn" % (name, n))
-    sys.stderr.write("pending-ops: %s\n" % text)
-    try:
-        m = sys.modules.get("romp_sdk_backend") or load_source("romp_sdk_backend", HERE / "sdk_backend.py")
-        m.problem_row(jd.STATE, text, "pending-ops.held-working", sid=sid, name=name, log=getattr(be, "_log", None), parked=n,
-                      transcript=transcript, ring=True)   # a decision-shaped fault: the error center shows it
-    except Exception:
-        sys.stderr.write("pending-ops row: %s\n" % traceback.format_exc())
-
-
 def _apply_pending_ops(now=None):
     """Pusher cycle: FIFO-deliver parked ops once the session is QUIET (neither compacting nor an open
     turn) — in exactly the order they were parked, which is exactly the order the chat rendered their
@@ -35908,9 +35850,7 @@ def _apply_pending_ops(now=None):
             if _limit_hold(sid):
                 continue                              # the account can't serve a request yet: no parse, no gates
             if _compacting_now(sid) or _working_now(sid):
-                _pending_ops_held_working(sid)            # said once when the backend ALONE reads working: a stale count is a row and a line
                 continue
-            _HELD_WORKING_SAID.discard(sid)               # the hold lifted: the next one is said again
             changed = False                               # a real mutation below → save the mirror + wake the pusher
             try:
                 be = Sessions.backend_for(sid)
@@ -39916,7 +39856,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
             "t": t, "live": live, "_ageT": t,   # the tint's epoch; trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working",
+            "blocked": None, "column": "working", "board": "feed", "category": "working",
             # judging = the turn has SETTLED and the planner's classify pass is due/in flight — the swirl
             # chip says Analyzing… only then; an open turn keeps the honest Working… (the user 2026-07-12)
             "provisional": True, "judging": not turn_open, "tree": []}
@@ -39952,7 +39892,7 @@ def _awaiting_card(s, name, color, fsid, live, now, why, kind=None, since=None, 
             "t": t, "live": live, "_ageT": age_t,   # trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working",
+            "blocked": None, "column": "working", "board": "feed", "category": "working",
             # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
             # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
             # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
@@ -40021,7 +39961,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
             "blocked": {"state": perm_state,
                         "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                  else "this session is stopped awaiting your approval")},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "provisional": True, "tree": []}
 
 
@@ -42197,6 +42137,7 @@ def _feed_session_entry(s, ctx):
             "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
             "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
             "column": column,
+            "board": "feed", "category": column,   # the board model's two fields (plans/card-boards.md, phase two): the feed's category IS the column
             "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
             "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
             "judging": bool((sess_judging or _stall_inflight) and column == "working"),
@@ -42462,7 +42403,7 @@ def build_feed(now, live_map=None):
             "blocked": {"state": "parkedHandoff", "toSid": ph["toId"], "toName": ph["toName"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"
                                 % (ph["fromName"], ph["toName"])},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
     # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
     # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
@@ -45083,7 +45024,7 @@ def _quarantine_cards(now, cleared):
                         "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
                                 "waiting on you — approve to deliver it to %s, or deny to drop it. Nothing "
                                 "reaches %s until you approve." % (frm, origin, to, to)},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
     out.sort(key=lambda c: c["t"])
     return out
@@ -53776,6 +53717,170 @@ def _pure_feed(now, live_map):
         return feed
 
 
+# THE BOARD TABLE (plans/card-boards.md, phase two): the code-defined boards in the one schema the renderer's
+# ui/webview/board-def.ts holds (FEED_BOARD there is this dict, field for field; tests/test_card_boards.py holds the two
+# together). A card the kernel builds names its board and its category (`board`, `category`, beside `column` until the
+# renderer reads category alone); the bell, the phone and the badge read the board's `notify` and `needsYou` here instead
+# of a literal. Data-defined boards (phase three) join through _board_check's door and never overwrite a code-defined id.
+_CODE_BOARDS = {
+    "feed": {
+        "id": "feed", "title": "Feed",
+        "categories": [{"id": "working", "title": "Working", "chip": "working"},
+                       {"id": "needs_input", "title": "Blocked", "chip": "blocked"},
+                       {"id": "completed", "title": "Completed", "chip": "completed"}],
+        "defaultCategory": "working",
+        "rules": [],                                   # the feed's category rule is code: the expression in _feed_session_entry
+        "sort": {"key": "t", "dir": "asc"},
+        "subSorts": [],
+        "groupBy": "session",
+        "order": [],                                   # the owner rank joins in phase three
+        "notify": ["needs_input", "completed"],
+        "needsYou": "needs_input",
+        "kinds": ["goal", "placeholder", "parked", "quarantine", "notice"],
+    },
+}
+_BOARD_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_BOARD_MEMBERS = ("id", "title", "categories", "defaultCategory", "rules", "sort", "subSorts", "groupBy", "order", "notify", "needsYou", "kinds")
+_BOARD_CHIPS = ("working", "blocked", "completed", "neutral")
+_BOARD_SORT_FIELDS = ("t", "session", "owner", "title")
+_BOARD_PREDICATES = ("needsYou", "producer", "keyPrefix")
+_BOARD_ORDER_RULES = ("ownerRank",)
+_BOARD_KINDS = ("goal", "placeholder", "parked", "quarantine", "notice")
+
+
+def _board_check_sort(sv, where):
+    if not isinstance(sv, dict):
+        return where + " must be an object {key, dir}"
+    for k in sv:
+        if k not in ("key", "dir"):
+            return "%s has an unknown member %r" % (where, k)
+    if sv.get("key") not in _BOARD_SORT_FIELDS:
+        return where + ".key must be one of " + ", ".join(_BOARD_SORT_FIELDS)
+    if sv.get("dir") not in ("asc", "desc"):
+        return where + ".dir must be asc or desc"
+    return None
+
+
+def _board_check(defn, allow_reserved=False):
+    """The schema check, the kernel's half (ui/webview/board-def.ts boardCheck is the renderer's, the same rules): (defn, None)
+    for a board in the schema, else (None, the refusal naming the member and the rule it broke). An unknown member refuses,
+    so a typo never silently defaults; a code-defined id is refused at the door (`allow_reserved` lets the constants pass)."""
+    if not isinstance(defn, dict):
+        return None, "a board definition must be a JSON object"
+    for k in defn:
+        if k not in _BOARD_MEMBERS:
+            return None, "unknown member %r (the schema's members are %s)" % (k, ", ".join(_BOARD_MEMBERS))
+    bid = defn.get("id")
+    if not isinstance(bid, str) or not _BOARD_ID_RE.match(bid):
+        return None, "id must match [a-z][a-z0-9_-]{0,31}"
+    if not allow_reserved and bid in _CODE_BOARDS:
+        return None, "id %r is a code-defined board and cannot be defined" % bid
+    title = defn.get("title")
+    if not isinstance(title, str) or not 1 <= len(title) <= 40:
+        return None, "title must be 1 to 40 characters"
+    cats = defn.get("categories")
+    if not isinstance(cats, list) or not 1 <= len(cats) <= 8:
+        return None, "categories must hold 1 to 8 entries"
+    ids = set()
+    for c in cats:
+        if not isinstance(c, dict):
+            return None, "each category must be an object {id, title, chip}"
+        for k in c:
+            if k not in ("id", "title", "chip"):
+                return None, "category has an unknown member %r" % k
+        cid = c.get("id")
+        if not isinstance(cid, str) or not _BOARD_ID_RE.match(cid):
+            return None, "category id must match [a-z][a-z0-9_-]{0,31}"
+        if cid in ids:
+            return None, "category id %r repeats" % cid
+        ids.add(cid)
+        ct = c.get("title")
+        if not isinstance(ct, str) or not 1 <= len(ct) <= 40:
+            return None, "category %s: title must be 1 to 40 characters" % cid
+        if c.get("chip") not in _BOARD_CHIPS:
+            return None, "category %s: chip must be one of %s" % (cid, ", ".join(_BOARD_CHIPS))
+    if defn.get("defaultCategory") not in ids:
+        return None, "defaultCategory must name one of the board's categories"
+    rules = defn.get("rules")
+    if not isinstance(rules, list) or len(rules) > 16:
+        return None, "rules must hold 0 to 16 entries"
+    for r in rules:
+        if not isinstance(r, dict) or not isinstance(r.get("when"), dict):
+            return None, "each rule must be an object {when, category}"
+        for k in r:
+            if k not in ("when", "category"):
+                return None, "rule has an unknown member %r" % k
+        when = r["when"]
+        for k in when:
+            if k not in _BOARD_PREDICATES:
+                return None, "rule predicate has an unknown member %r (the predicates are %s)" % (k, ", ".join(_BOARD_PREDICATES))
+        if not when:
+            return None, "a rule's predicate must name at least one member"
+        if "needsYou" in when and not isinstance(when["needsYou"], bool):
+            return None, "rule predicate needsYou must be a boolean"
+        for k in ("producer", "keyPrefix"):
+            if k in when and not isinstance(when[k], str):
+                return None, "rule predicate %s must be a string" % k
+        if r.get("category") not in ids:
+            return None, "a rule's category must name one of the board's categories"
+    err = _board_check_sort(defn.get("sort"), "sort")
+    if err:
+        return None, err
+    subs = defn.get("subSorts")
+    if not isinstance(subs, list) or len(subs) > 6:
+        return None, "subSorts must hold 0 to 6 entries"
+    for i, sv in enumerate(subs):
+        err = _board_check_sort(sv, "subSorts[%d]" % i)
+        if err:
+            return None, err
+    if defn.get("groupBy") not in ("session", None):
+        return None, 'groupBy must be "session" or null'
+    order = defn.get("order")
+    if not isinstance(order, list) or len(order) > 4:
+        return None, "order must hold 0 to 4 entries"
+    for o in order:
+        if o not in _BOARD_ORDER_RULES:
+            return None, "order rules must be from " + ", ".join(_BOARD_ORDER_RULES)
+    notify = defn.get("notify")
+    if not isinstance(notify, list):
+        return None, "notify must be a list of category ids"
+    for n in notify:
+        if n not in ids:
+            return None, "notify names a category the board does not have: %r" % (n,)
+    ny = defn.get("needsYou")
+    if ny is not None and ny not in ids:
+        return None, "needsYou must be one of the board's categories or null"
+    kinds = defn.get("kinds")
+    if not isinstance(kinds, list) or not kinds:
+        return None, "kinds must hold at least one entry"
+    for k in kinds:
+        if k not in _BOARD_KINDS:
+            return None, "kinds must be from " + ", ".join(_BOARD_KINDS)
+    return defn, None
+
+
+for _bid, _bdef in _CODE_BOARDS.items():                 # a drifted constant fails at import, never in a build
+    _berr = _board_check(_bdef, allow_reserved=True)[1]
+    if _berr or _bdef.get("id") != _bid:
+        raise RuntimeError("code-defined board %r is not in the schema: %s" % (_bid, _berr or "its id differs from its key"))
+
+
+def _board_def(board):
+    """The definition a card's `board` names; a card that names none, or an id this kernel does not know, reads as the feed's
+    (the default every card the kernel builds carries; a data-defined board joins the lookup in phase three)."""
+    return _CODE_BOARDS.get(board) or _CODE_BOARDS["feed"]
+
+
+def _board_notify(board):
+    """The category ids whose ENTRY announces (the bell, the phone) for a card's board."""
+    return tuple(_board_def(board)["notify"])
+
+
+def _board_needs_you(board):
+    """The category the app badge counts for a card's board, or None when the board never badges."""
+    return _board_def(board)["needsYou"]
+
+
 # ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
 # The master bell (bottom-right → notify-cards.json "*"), a session's bell (timeline lane / tab menu →
 # session-flags "notify") or a card's bell (right-click → notify-cards.json) arm OS-level notifications
@@ -53831,7 +53936,7 @@ def _pure_feed(now, live_map):
 # rule holds across a restart too. The silent first-boot seed counts as told (the user has the board).
 # The desktop notice and the phone push both iterate the list this diff returns, so the one gate covers
 # both legs; _buzz_claim's one-buzz-per-turn-end rule sits after it, unchanged.
-_NOTIFY_COLUMNS = ("needs_input", "completed")
+_NOTIFY_COLUMNS = tuple(_CODE_BOARDS["feed"]["notify"])   # the feed board's notify set, the value the snapshot entries are checked against
 # itemId -> {"sid", "column" (the notified column the card was last SEEN in, None while it sits in
 # working), "announced" (the column last announced, None if never), "announcedAt" (seconds)}; the
 # store holds a card while it is in a notified column or carries an announced mark. None = this life's
@@ -54055,8 +54160,8 @@ def _feed_notifications_diff(feed):
     now_t = int(feed.get("now") or time.time())   # the build's own moment: wall clock, like the journal's t
     entered = []                                     # (itemId, card, column, entry): the cards that ENTERED a column
     for iid, a in cur.items():
-        col, sid, ent = a.get("column"), str(a.get("sid") or ""), prev.get(iid)
-        if col in _NOTIFY_COLUMNS:
+        col, sid, ent = a.get("category", a.get("column")), str(a.get("sid") or ""), prev.get(iid)   # the board's category; the column from an older card
+        if col in _board_notify(a.get("board")):   # the card's board's notify set (the feed's is _NOTIFY_COLUMNS)
             e = {"sid": sid, "column": col,
                  "announced": ent.get("announced") if ent else None,
                  "announcedAt": ent.get("announcedAt") if ent else None}
@@ -54077,7 +54182,7 @@ def _feed_notifications_diff(feed):
             if e["announced"] == col and not _notify_user_acted_since(e["sid"], iid, e["announcedAt"]):
                 continue                             # the same (card, column), told already, nothing of the user's since
             e["announced"], e["announcedAt"] = col, now_t
-            needs_you = col == "needs_input"            # the card's column: the authoritative state, not the words
+            needs_you = col == _board_needs_you(a.get("board"))   # the board's badge category: the authoritative state, not the words (the same read as _needs_you_count)
             what = "Needs you" if needs_you else "Completed"
             txt = str(a.get("text") or "").strip()
             out.append((_notify_title(a.get("name") or "session", needs_you),
@@ -54095,7 +54200,8 @@ def _needs_you_count(feed):
     """How many real (non-provisional) cards sit in needs_input — the number the app icon wears.
     Counted from the same feed build the notifications diff, so badge and bell can never disagree."""
     return sum(1 for a in (feed.get("asks") or [])
-               if not a.get("provisional") and a.get("column") == "needs_input")
+               if not a.get("provisional") and _board_needs_you(a.get("board")) is not None
+               and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category; a board with none counts nothing
 
 
 # The count the shell clients last heard (None = nothing sent since boot). The badge moves on feed
