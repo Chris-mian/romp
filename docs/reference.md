@@ -4265,7 +4265,10 @@ reads one `done` line from its stdout; the kernel's bookkeeping (the episode bou
 compact, the recovery re-arm, the generation bump) stands around the request in the loop's order. Absent, or anything
 but `on`, the tiers run in the kernel as before and no child starts; a file that cannot be read or decoded reads as
 off and says so once (a sync notice). Effective on the next pass; the child is ended on the pass where the switch
-turns off.
+turns off. A second file, `judges-process-clock`, reading `own` makes each request carry a null `now`, so the child's
+tiers read their own clock as the in-process tiers do; absent or anything else, the request carries the wake's time.
+It is the measurement knob of the split's comparison (the child's gate admittance differed between the two clocks),
+read on every request.
 
 Bounds and counters, all on `/perf` under `judge`:
 

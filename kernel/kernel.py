@@ -55744,6 +55744,9 @@ def _tiers_may_start(tracking=None):
 
 
 JUDGES_PROCESS_FILE = "judges-process"   # STATE/judges-process: the literal `on` runs the judges in a `romp-judge --serve` child
+JUDGES_PROCESS_CLOCK_FILE = "judges-process-clock"   # STATE/judges-process-clock: `own` sends the child a null `now`, so its tiers read
+#                                                       their own clock as the in-process tiers do; absent or anything else sends the
+#                                                       request's time (the measurement knob of the process split's comparison, 2026-09-18)
 #                                          (plans/judges-process.md, stage three of the process split); absent, unreadable or anything
 #                                          else: the in-process tiers, today's road (rule 5: the default flips after the boot measurement)
 JUDGE_CHILD_READY_S = 60.0                 # the child's ready line bound after a start
@@ -55830,6 +55833,17 @@ def _judges_in_child():
             return False                                  # the latch stands until the switch file is written again
         _JUDGE_FALLBACK["stat"] = None                    # the file changed: the child is tried again
     return True
+
+
+def _judge_child_own_clock():
+    """The comparison's clock knob: STATE/judges-process-clock reading `own` makes the pass request carry `now: null`, so the
+    child's tiers read their own clock (the in-process tiers' behaviour, `now=None`); absent, unreadable or anything else,
+    the request carries the wake's time as before. Read on every request: a flip is effective on the next pass, and a read
+    fault is the default, never a raise inside the pass."""
+    try:
+        return (jd.STATE / JUDGES_PROCESS_CLOCK_FILE).read_text(encoding="utf-8").strip().lower() == "own"
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _judge_child_fallback_latch():
@@ -56066,7 +56080,8 @@ class _JudgeChild:
             self.in_pass = True
             try:
                 try:
-                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": float(now), "mayStart": bool(may_start)}) + "\n").encode())
+                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": (None if _judge_child_own_clock() else float(now)),
+                                               "mayStart": bool(may_start)}) + "\n").encode())
                     #                             one word on the wire: the gate's verdict; the child treats an absent field as False
                     p.stdin.flush()
                 except (OSError, ValueError) as e:

@@ -202,6 +202,34 @@ class ChildRoad(_Child):
         self.assertEqual(len(self._requests()), 2, "and the one child served both passes")
         self.assertEqual(self._judge()["childRestarts"], 0)
 
+    def test_the_clock_file_reading_own_sends_the_child_a_null_now(self):
+        """The comparison's clock knob (2026-09-18): the child's tiers read the request's second-truncated `now` where the
+        in-process tiers read their own clock, the one behavioural difference in the shared pass body and a candidate for
+        the child's higher gate admittance. STATE/judges-process-clock reading `own` sends `now: null`; the child treats a
+        null as its own clock; absent, the request carries the wake's time as before."""
+        km = self.km
+        self._on()
+        clock = self.jd.STATE / getattr(km, "JUDGES_PROCESS_CLOCK_FILE", "judges-process-clock")
+        try:
+            self._pass()
+            reqs = self._requests()
+            self.assertEqual(len(reqs), 1)
+            self.assertIsInstance(reqs[0].get("now"), float, "absent knob: the wake's time rides the request")
+            clock.write_text("own\n")
+            self._pass()
+            reqs = self._requests()
+            self.assertEqual(len(reqs), 2)
+            self.assertIn("now", reqs[1]); self.assertIsNone(reqs[1]["now"], "the knob reading own: a null now, the tiers' own clock (the base always sent the time)")
+            self.assertEqual(self._judge().get("passes"), 2, "both passes answered")
+            clock.write_text("request\n")
+            self._pass()
+            self.assertIsInstance(self._requests()[2].get("now"), float, "any other word: the time again")
+        finally:
+            try:
+                clock.unlink()
+            except OSError:
+                pass
+
     def test_the_default_runs_the_tiers_in_process_and_starts_no_child(self):
         km = self.km
         called = []
