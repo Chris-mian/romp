@@ -263,6 +263,98 @@ class KernelSide:
             pass
 
 
+class JournalReopenOracle(unittest.TestCase):
+    """Journal.reopen (the re-exec road) against the live journal it rebuilds: equality, not plausibility."""
+
+    @staticmethod
+    def _state(j):
+        reads = {o: [(a, b.get("n")) for a, b in j.read_from(o, o + 1)] for o in range(j.next_offset)}
+        return {"index": list(j._index), "next": j.next_offset, "segLast": dict(j._seg_last), "seg": j._seg, "pos": j._pos,
+                "gaps": set(j.gaps), "segments": j.segments(), "all": [(o, r.get("n")) for o, r in j.read_from(0)], "each": reads}
+
+    def _live(self, d, delete):
+        j = sh.Journal(d, segment_bytes=100)
+        j.append({"type": "assistant", "pad": "x" * 80, "n": 0})
+        j.append({"type": "result", "n": 1})               # past the size: the next segment starts at 2
+        j.note_gap(2)                                      # a gap at the new segment's HEAD (round two: counted at both segments)
+        j.append({"type": "assistant", "n": 3})
+        j.note_gap(4)                                      # a gap between two records
+        j.append({"type": "assistant", "pad": "y" * 80, "n": 5})
+        j.append({"type": "result", "n": 6})               # the next segment starts at 7
+        if delete:
+            j.ack(6)
+        j.append({"type": "assistant", "n": 7})
+        j.append({"type": "result", "n": 8})               # the boundary that deletes the acknowledged segments, when asked
+        j.note_gap(9)                                      # a gap after the last record
+        return j
+
+    def test_a_reopened_journal_equals_the_live_one_entry_for_entry(self):
+        """The shape the verifier drove (2026-09-18): segment_bytes 100, a rotation, a gap at the new segment's head, three
+        records. Live reads gave (3, 3), (4, 4), (5, 5); cold gave (4, 3), (5, 4): the head gap entered the index twice, so
+        every offset past it read the record before, the newest was unreachable, and appends kept the drift. Here the whole
+        state is compared: index, next offset, the per-segment last offsets, the open segment and position, the gaps, the
+        segment list, a read of everything and a read of each offset alone; with and without an early segment deleted."""
+        for delete in (False, True):
+            d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+            j = self._live(d, delete)
+            files = sorted(p.name for p in Path(d).glob("journal-*.jsonl"))
+            self.assertEqual(files, ["journal-7.jsonl"] if delete else ["journal-0.jsonl", "journal-2.jsonl", "journal-7.jsonl"])
+            live = self._state(j)
+            j.close()
+            r = sh.Journal.reopen(d, segment_bytes=100)
+            cold = self._state(r)
+            for key in live:
+                self.assertEqual(cold[key], live[key], "%s differs after the reopen (segment deleted: %r)" % (key, delete))
+            if delete:
+                self.assertEqual(live["all"], [(7, 7), (8, 8)], "a deleted segment's offsets read as nothing, live and cold alike")
+            else:
+                self.assertEqual(live["all"], [(0, 0), (1, 1), (3, 3), (5, 5), (6, 6), (7, 7), (8, 8)])
+            off = r.append({"type": "result", "n": 10})
+            self.assertEqual((off, [x for x in r.read_from(9)]), (10, [(10, {"type": "result", "n": 10})]), "and it appends where it should")
+            r.close()
+
+    def test_an_empty_directory_reopens_at_offset_zero(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        r = sh.Journal.reopen(d)
+        self.assertEqual((r.next_offset, r._index, r.segments()), (0, [], [0]))
+        r.close()
+
+
+class AdoptedCli(unittest.TestCase):
+    """The CLI a re-executed host inherits: the handoff's descriptors are trusted only once the CLI's own table agrees, and
+    an exit the new process cannot learn is unknown, never a clean zero (round two of the re-exec review)."""
+
+    def test_the_adoption_confirms_the_descriptors_against_the_clis_own_table(self):
+        if not sys.platform.startswith("linux"):
+            self.skipTest("the confirmation reads /proc")
+        match = getattr(sh, "_pipe_fds_match_cli", None)
+        self.assertIsNotNone(match, "one confirmation body for the old process and the new one (the base confirmed in the old process only)")
+        child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        def stop():
+            child.kill(); child.wait(timeout=10)
+        self.addCleanup(stop)
+        ours = {"stdin": child.stdin.fileno(), "stdout": child.stdout.fileno(), "stderr": child.stderr.fileno()}
+        self.assertTrue(match(child.pid, ours), "the child's own pipes agree")
+        r, w = os.pipe(); self.addCleanup(os.close, r); self.addCleanup(os.close, w)
+        wrong = dict(ours, stdout=r)
+        self.assertFalse(match(child.pid, wrong), "another pipe under the CLI's stdout name does not")
+        t = sh.AdoptedCliTransport({"max_buffer_size": 65536}, lambda line: None, {"cli_pid": child.pid, "fds": wrong})
+        loop = asyncio.new_event_loop()
+        try:
+            with self.assertRaises(RuntimeError, msg="the adoption refuses a handoff the CLI's table contradicts"):
+                loop.run_until_complete(t.connect())
+        finally:
+            loop.close()
+
+    def test_an_exit_the_adopted_process_cannot_learn_is_unknown_not_clean(self):
+        p = subprocess.Popen(["true"]); p.wait()           # reaped already: waitpid raises ChildProcessError
+        a = sh._AdoptedProcess(p.pid, None, None, None)
+        a._waitpid()
+        self.assertEqual((a.returncode, getattr(a, "exited", None)), (None, True),
+                         "gone with the exit unknown: returncode None (the exit frame's word for unknown), never 0")
+
+
 class HostProcess(unittest.TestCase):
     """Each test starts one host on the fake CLI in a private state root and kills everything after."""
 
@@ -454,6 +546,12 @@ class HostProcess(unittest.TestCase):
         log = self._hostlog()
         self.assertEqual([r["kind"] for r in log if r["kind"] in ("reexec", "reexeced")], ["reexec", "reexeced"], "the exec and the adoption, once each")
         self.assertEqual(sum(1 for r in log if r["kind"] == "attached"), 2, "one attach before, one after; none lost to a death")
+        self.assertEqual([r["kind"] for r in log if r["kind"] in ("reexec", "socket-ready", "reexeced")],
+                         ["socket-ready", "reexec", "socket-ready", "reexeced"],
+                         "the re-executed host serves its socket BEFORE it writes the lease and logs the adoption (round two: the lease "
+                         "came first, and a kernel that read it could connect to a path nobody served yet)")
+        ready_t = [r["t"] for r in log if r["kind"] == "socket-ready"][-1]
+        self.assertGreaterEqual(lease["t"], ready_t - 0.001, "the lease with the new version is stamped after the socket is served")
         self.assertFalse((Path(self.state) / "hosts" / SID / "reexec.json").exists(), "the handoff file is consumed")
         k2.close()
 
@@ -479,6 +577,57 @@ class HostProcess(unittest.TestCase):
         self.assertEqual((hello["host"]["version"], hello["inflight"]), ("def67890", 0))
         k2.send({"t": "in", "data": self._user("after sleep=0")})
         k2.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "result", timeout=15)
+        k2.close()
+
+    def _transcript_types(self):
+        p = Path(self.tdir) / (FSID + ".jsonl")
+        return [json.loads(l).get("type") for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+
+    def _transcript_results(self, n, timeout=25):
+        deadline = time.time() + timeout
+        types_ = self._transcript_types()
+        while time.time() < deadline and types_.count("result") < n:      # loop-ok: the event is the fake CLI's n-th result
+            time.sleep(0.02)
+            types_ = self._transcript_types()
+        return types_
+
+    def test_a_lagging_writer_and_a_queued_turn_lose_no_record_at_the_handover(self):
+        """Round two of the re-exec review (2026-09-18): the reader ran on through the handover, so with the writer lagging
+        (the spec's own seam) and a second message queued behind the first turn, the rows read after the journal flush were
+        counted in the handoff and lost with the process: the disk held three records where the hello said five, every later
+        record landed one offset below the offset the kernel was told (journal-offset-drift rows), and a replay served the
+        third turn's rows under the second turn's offsets. Now the reader is held at the handover, a turn that re-opened
+        meanwhile defers the exec to its own result, and every record read is on disk before the exec: the journal holds
+        exactly what the CLI emitted, numbered contiguously, every frame's offset is its journal offset, no drift row."""
+        host, sock, spec = self._start(_test_journal_delay_s=0.4)
+        k, _ = self._attach(sock)
+        sp = Path(self.state) / "hosts" / SID / "spawn.json"
+        sp.write_text(json.dumps(dict(json.loads(sp.read_text()), version="def67890")))
+        k.send({"t": "in", "data": self._user("first slow sleep=1.5")})
+        k.send({"t": "in", "data": self._user("second sleep=0")})
+        k.recv_until(lambda f: f.get("t") == "out" and f["data"].get("type") == "assistant", timeout=15)
+        ans = self._reexec(k)
+        self.assertEqual((ans.get("ok"), ans.get("when")), (True, "at-turn-end"))
+        k.recv_until(lambda f: f.get("t") == "reexec-now", timeout=25)
+        seen = {f["offset"]: f["data"].get("type") for f in k.outs()}
+        k.close()
+        lease = self._lease_version_becomes("def67890", timeout=25)
+        self.assertEqual(lease.get("version"), "def67890", "the exec happened")
+        d = os.path.join(self.state, "hosts", SID)
+        k2, hello = self._attach(sock, ack=-1, pid=4343)
+        k2.send({"t": "in", "data": self._user("third sleep=0")})
+        emitted = self._transcript_results(3)
+        self.assertEqual(emitted.count("result"), 3, "three turns ran: %r" % emitted)
+        last = k2.recv_until(lambda f: f.get("t") == "out" and f["offset"] == len(emitted) - 1, timeout=20)
+        self.assertEqual(last["data"].get("type"), "result", "the last frame is the third turn's result at the last offset")
+        journal = self._journal_landed(len(emitted), timeout=20)
+        self.assertEqual([r.get("type") for _, r in journal], emitted, "the journal holds every record the CLI emitted, across the exec")
+        self.assertEqual([o for o, _ in journal], list(range(len(emitted))), "numbered contiguously: nothing skipped, nothing twice")
+        by_offset = {o: r.get("type") for o, r in journal}
+        seen.update({f["offset"]: f["data"].get("type") for f in k2.outs()})
+        self.assertEqual({o: by_offset.get(o) for o in seen}, seen, "every frame the kernels saw sits at its own offset in the journal")
+        self.assertEqual([r for r in self._hostlog() if r["kind"] in ("journal-offset-drift", "journal-write-failed")], [], "no drift")
+        self.assertEqual([r["kind"] for r in self._hostlog() if r["kind"] in ("reexec", "reexeced")], ["reexec", "reexeced"], "one exec")
         k2.close()
 
     def test_a_re_exec_it_cannot_do_is_refused_and_the_host_serves_on(self):

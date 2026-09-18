@@ -10153,7 +10153,20 @@ class SdkBackend:
                                 on_stderr=sess._on_cli_stderr,
                                 on_exit=lambda ex, s=sess: self._host_ended(s, ex),
                                 on_reexec=lambda f, s=sess: self._on_host_reexec_now(s),
-                                on_fault=lambda f, s=sess: self._log("host (%s): fault %s: %s" % (s.name, f.get("kind"), f.get("text")), problem=True))
+                                on_fault=lambda f, s=sess: self._on_host_fault(s, f))
+
+    def _on_host_fault(self, sess, f: dict) -> None:
+        """A host's `fault` frame: a problem line, and for a handover that failed after the host had accepted it (`reexec-failed`:
+        the host serves on, on its old code) the `host.reexec-failed` row the refusal road files, so a failed upgrade is on
+        the ledger as a refused one is (round two of the review: a failure after the ok answer filed no row)."""
+        if f.get("kind") == "reexec-failed":
+            was = getattr(sess, "_host_reexec_from", None)
+            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s and failed before the exec "
+                        "(%s); it serves on as it was" % (sess.name, was or "unknown", self.code_version, f.get("text") or "no reason"),
+                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+            sess._host_reexec_from = None
+            return
+        self._log("host (%s): fault %s: %s" % (sess.name, f.get("kind"), f.get("text")), problem=True)
 
     async def _host_reexec_on_skew(self, sess, lease):
         """A live host on another code version than this kernel's: ask it to re-exec into this kernel's code before the
@@ -10185,31 +10198,51 @@ class SdkBackend:
                 return None
             sess._host_reexec_from = was
             if ans.get("when") == "at-turn-end":
-                sess._host_reexec_expected = True
                 self._log("host (%s): re-exec into %s deferred to the turn's end; attaching to the running host meanwhile" % (sess.name, self.code_version))
                 return None
             holder = (lease or {}).get("holder") or {}
             deadline = time.time() + ht.SOCKET_WAIT_S
             fresh = None
-            while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease (its first act)
+            while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
                 fresh = read_lease(self.state_dir, sess.sid)
                 fh = (fresh or {}).get("holder") or {}
+                # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
+                # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
+                # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
                 if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
-                        and ht.host_sock(self.state_dir, sess.sid).exists():
+                        and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
                     self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
                               % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
                     return fresh
                 await asyncio.sleep(0.05)
-            self._log("host (%s): the re-exec was accepted but the lease did not follow within %.0f s; attaching as is" % (sess.name, ht.SOCKET_WAIT_S))
+            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
+                        "served within %.0f s; attached as is" % (sess.name, was or "unknown", self.code_version, ht.SOCKET_WAIT_S),
+                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+            sess._host_reexec_from = None
             return None
         except Exception as e:
             self._log("host (%s): the re-exec request failed (%s); attaching as is" % (sess.name, type(e).__name__))
             return None
 
+    @staticmethod
+    async def _host_socket_accepts(sock) -> bool:
+        """Whether a listener accepts on the host's socket path now: one connect, closed at once (the host's client loop reads
+        end-of-file from a connection that never attached and forgets it). False on a refusal, a missing path or a slow accept."""
+        try:
+            _r, w = await asyncio.wait_for(asyncio.open_unix_connection(str(sock)), 1.0)
+        except (OSError, asyncio.TimeoutError):
+            return False
+        try:
+            w.close()
+        except Exception:
+            pass
+        return True
+
     def _on_host_reexec_now(self, sess) -> None:
         """The host says it is about to exec into this kernel's code and close the socket: the stream's end that follows is
-        the planned handover, so the session reconnects (the same lease, the new version) instead of reading a lost host."""
-        sess._host_reexec_expected = True
+        the planned handover, so the session reconnects (the same lease, the new version) instead of reading a lost host.
+        `_reconnect` is the whole of the guard: the connect loop's next pass finds the lease valid under the same holder and
+        attaches (round two of the review dropped a flag that was written here and read nowhere)."""
         sess._reconnect = True
         self._log("host (%s): re-exec at the turn's end; reconnecting to the re-executed host" % sess.name)
 
@@ -10391,7 +10424,6 @@ class SdkBackend:
             append_session_event(self.state_dir, "host.reexeced", sid=sess.sid, name=sess.name, fromVersion=sess._host_reexec_from,
                                  toVersion=self.code_version, hostPid=h.get("pid"), cliPid=c.get("pid"))
             sess._host_reexec_from = None
-            sess._host_reexec_expected = False
         append_session_event(self.state_dir, "host.attached", sid=sess.sid, name=sess.name, boot=boot,
                              hostPid=h.get("pid"), cliPid=c.get("pid"), fsid=c.get("fsid"),
                              replayFrom=int(sess._host.ack_offset) + 1 if sess._host else None, journalNext=j.get("next"),
