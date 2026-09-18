@@ -518,6 +518,19 @@ round-two lesson), and the success line prints it so a later revision can name i
 session with no `-s` the card posts owner-less; inside a session `ROMP_SID` owns it by default and `--no-session` forces
 owner-less. The usage string stays short; the reference documents the shorthand.
 
+**The card's modal, and a reply's id (2026-09-18, the read of the owner-less cards' third round).** A notice card's modal shows
+the notice: its title heads the overlay and its body is the card's own face (the producer line, the body through the sanitizer,
+the attachment, the actions as the same latching buttons), in place of the goal tree a notice never has (the tree body read "No
+work yet." and hid the title). No session gesture shows there: the kernel's follow-up road reads the session out of a GOAL id, so
+Follow up, Check status and Continue on a notice id are refused as a session no kernel has, and they hide for every notice card;
+Clear stays. An owner-less card's header name is plain text, never a session link, never struck through; the title locates
+nothing and lights no chat turn. The kernel's answer to an action reaches the modal as it reaches the card: a success on a
+dismissing card closes both, any other answer re-arms. In a federated view a NOTICE id wears its host on EVERY inbound face, a
+row's and a reply's alike (noticeActionDone, a refused bell, an err naming its request), or the answer misses the card the
+pane holds; the prefix comes off on the way out beside the sid's. The viewer's cleared overlay never touches a notice card: the
+kernel ships goal ids alone as foreign clears (the prefixed families never ride), and a notice card's dismissal is a routed
+gesture the owning kernel's ledger records under the bare id.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key

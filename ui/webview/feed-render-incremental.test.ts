@@ -21,6 +21,7 @@
 // settings modal never mounts. Synthetic only: the notes-api demo world, placeholder sids, hostname TESTHOST.
 import { test, mock, after } from "node:test";
 import * as assert from "node:assert/strict";
+import { prefixInbound } from "./federation";   // the inbound transform a remote host's frames and replies pass through (no DOM needed)
 
 // ── a DOM stand-in ─────────────────────────────────────────────────────────────────────────────────
 class Style {
@@ -1202,25 +1203,78 @@ test("a REMOTE host's owner-less card (sid host-prefixed by federation) ranks fi
   setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
 });
 
-test("two hosts' owner-less cards under one key both render (their ids differ by the host), and an owner-less title click opens the card and posts no session gesture", async () => {
-  // round three of PR 1831, medium B: federation prefixes a remote notice card's item id like its sid, so the local and the
-  // remote Notes cards under the same hand-picked key are two elements; medium A: the title click used to post showOnTimeline
-  // with sid notes and the kernel offered to revive a session that never existed
+test("two hosts' owner-less cards under ONE key both render (the inbound prefix tells their ids apart), and an owner-less title click opens the card's own modal: the notice, no session gesture", async () => {
+  // round three of PR 1831, medium B: federation prefixes a remote notice card's item id like its sid, so the local and the remote
+  // Notes cards under the same hand-picked key are two elements (the remote one arrives through prefixInbound here, with the SAME
+  // bare id as the local one: round four, low); medium A: the title click used to post showOnTimeline with sid notes and the
+  // kernel offered to revive a session that never existed. Round four, medium 2: the modal it opens shows the NOTICE (title,
+  // producer, body, actions) in place of the goal tree a notice never has, and offers no session gesture (Follow up, Check
+  // status and Continue hidden; Clear stays); every assertion is scoped to the modal element.
   const setPrefs = (v: string) => { stores.local.set("romp:settings", v); win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:settings", newValue: v })); };
   setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
-  const local = { ...cardOf("notice:notes:same:1", "notes", "Notes", "", "A local note", "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
-    notice: { producer: "cli", key: "same", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false, acted: false } }), t: 10, color: null };
-  const remote = { ...cardOf("TESTHOST:notice:notes:same:1", "TESTHOST:notes", "TESTHOST:Notes", "", "A remote note", "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
-    notice: { producer: "cli", key: "same", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false, acted: false } }), t: 11, color: null };
+  const mk = (title: string, body: string, t: number) => ({ ...cardOf("notice:notes:same:1", "notes", "Notes", "", title, "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
+    notice: { producer: "cli", key: "same", rev: 1, body, attachment: null, actions: [{ label: "Ping", route: "/send", body: { text: "ping" } }], expiresAt: null, dismissOnAction: false, acted: false } }), t, color: null });
+  const local = mk("A local note", "Remember the standup moved to half past ten.", 10);
+  const remoteIn = prefixInbound("TESTHOST", { type: "feed", asks: [mk("A remote note", "", 11)], sessions: [], working: [], awaiting: [], order: [] });
+  const remote = remoteIn.asks[0];
+  assert.equal(remote.itemId, "TESTHOST:notice:notes:same:1", "the same bare id, told apart by the host on the way in");
   await dispatch(frame([g1, local, remote], { working: ["web"] }));
   assert.ok(card("notice:notes:same:1"), "the local card"); assert.ok(card("TESTHOST:notice:notes:same:1"), "and the remote one, a second element");
   assert.equal(card("notice:notes:same:1")._title.textContent, "A local note"); assert.equal(card("TESTHOST:notice:notes:same:1")._title.textContent, "A remote note", "neither overwrote the other");
   const sent = posted.length;
   card("notice:notes:same:1")._title.onclick(ev);
   assert.equal(posted.length, sent, "the title click on an owner-less card posts nothing (no showOnTimeline, no openSession)");
-  const mbody = body.querySelector("#feed-modal-body") as any;
-  assert.ok(mbody, "it opens the card's modal instead"); assert.match(body.textContent || "", /A local note/, "the modal shows the card");
+  const modal = body.querySelector("#feed-modal") as any;
+  assert.ok(modal, "it opens the card's modal instead");
+  const q = (sel: string) => modal.querySelector(sel) as any;
+  assert.equal(q("#feed-modal-title").style.display, ""); assert.equal(q("#feed-modal-title").textContent, "A local note", "the modal's title is the card's");
+  assert.equal(q("#feed-modal-title").onclick, null, "the title locates nothing (a notice has no chat turn)");
+  const mb = q("#feed-modal-body");
+  assert.match(mb.querySelector(".fask-nbody")?.textContent ?? "", /Remember the standup moved to half past ten\./, "the body shows the notice's words");
+  assert.equal(mb.querySelector(".fask-nprod")?.textContent, "via cli", "and the producer line");
+  const mbtns = mb.querySelectorAll(".fask-nactions button");
+  assert.equal(mbtns.length, 1); assert.equal(mbtns[0].textContent, "Ping", "and the card's action");
+  assert.equal(q("#feed-modal-follow").style.display, "none", "no Follow up"); assert.equal(q("#feed-modal-status").style.display, "none", "no Check status");
+  assert.equal(q("#feed-modal-continue").style.display, "none", "no Continue"); assert.equal(q("#feed-modal-clear").style.display, "", "Clear stays");
+  const agent = q("#feed-modal-agent");
+  assert.equal(agent.onclick, null, "the header's name opens no session"); assert.ok(agent.classList.contains("fname-plain")); assert.ok(!agent.classList.contains("dead"), "and is never struck");
+  // the modal's action posts once with the card's sid, latches, and lets go on the kernel's refusal
+  const sent2 = posted.length;
+  mbtns[0].onclick(ev);
+  assert.deepEqual(posted.slice(sent2).filter((m) => m.type === "noticeAction"), [{ type: "noticeAction", itemId: "notice:notes:same:1", sid: "notes", route: "/send", body: { text: "ping" } }]);
+  assert.equal(mbtns[0].disabled, true, "latched");
+  await dispatch({ type: "noticeActionDone", itemId: "notice:notes:same:1", ok: false, error: "an owner-less card has no actions" });
+  const after = (body.querySelector("#feed-modal-body") as any).querySelectorAll(".fask-nactions button");
+  assert.equal(after.length, 1); assert.equal(after[0].disabled, false, "re-armed on the answer (the face is rebuilt)");
+  assert.ok(body.querySelector("#feed-modal"), "a refusal keeps the modal open");
+  q(".feed-modal-close").onclick(ev);
+  assert.equal(body.querySelector("#feed-modal"), null, "closed");
   setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
+});
+
+test("a REMOTE notice card's answer names the owning kernel's bare id: the inbound prefix dresses it too, so a dismissing card leaves on the answer and a refused one re-arms", async () => {
+  // round four of PR 1831, medium 1: prefixInbound covered a row's itemId and never a reply's, so a remote card's noticeActionDone
+  // missed the pane's map (keyed host:notice:...): the card stayed on the board with its button latched until the next push
+  const HOSTB = "HOSTB";
+  const rn = (key: string, dismiss: boolean) => cardOf("notice:" + WEB + ":" + key + ":1", WEB, "web", "#3366cc", "A remote figure is ready (" + key + ")", "completed", { live: false, tree: [], blocked: null,
+    notice: { producer: "figure", key, rev: 1, body: "", attachment: null, actions: [{ label: "Send again", route: "/send", body: { text: "again" } }], expiresAt: null, dismissOnAction: dismiss } });
+  const rf = prefixInbound(HOSTB, { type: "feed", asks: [rn("leaves", true), rn("stays", false)], sessions: [{ sid: WEB, name: "web", color: g1.color }], working: [], awaiting: [], stateUnknown: [], order: [WEB] });
+  const leaves = HOSTB + ":notice:" + WEB + ":leaves:1", stays = HOSTB + ":notice:" + WEB + ":stays:1";
+  assert.deepEqual(rf.asks.map((a: any) => a.itemId), [leaves, stays], "the rows' ids wear the host (round three)");
+  await dispatch(frame([g1, g2, g3, ...rf.asks], { working: ["web"], sessions: [...frame([]).sessions, ...rf.sessions] }));
+  assert.ok(card(leaves)); assert.ok(card(stays));
+  const b1 = card(leaves)._nActions.querySelectorAll("button")[0];
+  const sent = posted.length;
+  b1.onclick(ev);
+  assert.deepEqual(posted.slice(sent).filter((m) => m.type === "noticeAction").map((m) => [m.itemId, m.sid]), [[leaves, HOSTB + ":" + WEB]], "the gesture carries the prefixed ids (routeOutbound strips them)");
+  assert.equal(b1.disabled, true, "latched");
+  // the owning kernel answers with ITS id, bare; the socket's inbound transform dresses it the way it dressed the row
+  await dispatch(prefixInbound(HOSTB, { type: "noticeActionDone", itemId: "notice:" + WEB + ":leaves:1", ok: true, error: "" }));
+  assert.equal(card(leaves) === null, true, "the remote dismissing card left on the owning kernel's answer");
+  const b2 = card(stays)._nActions.querySelectorAll("button")[0];
+  b2.onclick(ev); assert.equal(b2.disabled, true);
+  await dispatch(prefixInbound(HOSTB, { type: "noticeActionDone", itemId: "notice:" + WEB + ":stays:1", ok: false, error: "no running backend owns web" }));
+  assert.ok(card(stays), "a refused card stays"); assert.equal(b2.disabled, false, "and its button let go on the answer, not on the next push");
 });
 
 // ── the predicted move on a card that carries its category (plans/card-boards.md, phase two, round two) ──────────────────

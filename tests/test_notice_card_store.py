@@ -371,12 +371,26 @@ class OwnerLess(unittest.TestCase):
 
     def test_the_reveal_road_refuses_the_reserved_key_loudly_instead_of_offering_a_revive(self):
         # round three of PR 1831, medium A: showOnTimeline with sid notes reached _reveal_or_confirm, which found notes absent from
-        # the live map and popped confirmRevive for a session that never existed
-        sent = []; client = {"send": lambda m: sent.append(json.loads(m))}
-        km._reveal_or_confirm("notes", {"type": "showOnTimeline", "itemId": "notice:notes:k:1"}, client)
-        self.assertEqual(len(sent), 1); self.assertEqual(sent[0]["type"], "err", "an error to the asking pane, never a confirmRevive")
-        self.assertIn("belongs to no session", sent[0]["text"]); self.assertIn("nothing to revive", sent[0]["text"])
-        self.assertFalse(any(m.get("type") == "confirmRevive" for m in sent))
+        # the live map and popped confirmRevive for a session that never existed. The confirm travels _reveal_chat_for ->
+        # _send_to_view (the asking window's chat), never the asking client's own send, so THAT is the stub (round four, low: an
+        # assertFalse over the client's messages could never fail); a dead real session is the control that shows the stub sees one.
+        seen = []
+        saved = (km._send_to_view, km._reaffirm_active_chat)
+        km._send_to_view = lambda app, msg, wid="": seen.append((app, msg))
+        km._reaffirm_active_chat = lambda client: None
+        try:
+            sent = []; client = {"send": lambda m: sent.append(json.loads(m)), "wid": "w1"}
+            dead = "11111111-2222-3333-4444-777777777777"
+            km._reveal_or_confirm(dead, {"type": "showOnTimeline", "itemId": "notice:%s:k:1" % dead}, client)
+            self.assertEqual([(a, m["id"]) for a, m in seen if m.get("type") == "confirmRevive"], [("chat", dead)], "a dead real session still gets the confirm, through the asking window's chat")
+            self.assertEqual(sent, [], "and no error")
+            seen.clear()
+            km._reveal_or_confirm("notes", {"type": "showOnTimeline", "itemId": "notice:notes:k:1"}, client)
+            self.assertEqual(seen, [], "nothing reaches the chat for the reserved key: no confirmRevive, no focus")
+            self.assertEqual(len(sent), 1); self.assertEqual(sent[0]["type"], "err", "an error to the asking pane instead")
+            self.assertIn("belongs to no session", sent[0]["text"]); self.assertIn("nothing to revive", sent[0]["text"])
+        finally:
+            km._send_to_view, km._reaffirm_active_chat = saved
 
     def test_owner_less_cards_ride_the_ledger_the_pass_the_index_and_undo_like_any_notice_card(self):
         km.post_notice("", "k1", "first", producer="cli", now=100, t=100)
