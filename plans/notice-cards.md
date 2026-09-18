@@ -466,6 +466,56 @@ growth stays as the reference says; the byte bound is the user's call. Known and
 not archived yet reads the whole archive (its rows are live, the tail read finds none and walks to the start), no worse
 than before the bound.
 
+## Owner-less cards and the terse command (2026-09-18)
+
+**The ask.** The user found `romp card` overly restrictive: they want cards WITHOUT a session that appear at the TOP of the
+feed, no key to manage, and the terse form `romp card -t "title" -m "some text"` to just make a card.
+
+**The home.** An owner-less card lives in the reserved file `STATE/notices/notes.jsonl`, the key `notes`
+(`NOTICE_OWNERLESS_SID`). It cannot collide with a session: the store is keyed by sid, a sid is a uuid (thirty-six
+characters of hex and hyphens), and `notes` is a word. A session NAMED notes has a uuid sid, and the kernel resolves a
+name to its sid before the store sees it, so a name no session answers to is still refused ("no session answers to"),
+never guessed owner-less: only an ABSENT session (no `id`, no `name` on the route; no `--session` and no `ROMP_SID` on the
+command line, or `--no-session` inside a session) takes the owner-less road. `post_notice` takes an empty `sid` as that
+road and `_notice_session_known` answers yes for the reserved key, which every kernel has.
+
+**Name and colour.** On the feed the owner-less run reads **Notes** (`NOTICE_OWNERLESS_NAME`) with no identity colour, since
+no session stands behind it; the card carries no session chip. In a federated view the remote host's prefix distinguishes
+one host's Notes from another's, as it does every remote card (federation prefixes a remote card's sid and name with its
+host); the kernel bakes no hostname into the card, so the repo and the state carry no machine identifier.
+
+**Item id and the ledger.** `notice:notes:<key>:<rev>`, the same shape as every notice card's; the cleared ledger already
+treats `notice:` ids as sessionless (`_CLEARED_NO_SESSION`), and Undo, the restore and the retention pass split the id the
+same way, so no reader changes.
+
+**The archive bound.** The owner-less file is one more `<sid>.jsonl` to the retention pass: dismissed, expired,
+superseded and over-cap rows move to `notices-archive/notes.jsonl`, the revision index `notes.revs.json` counts its
+revisions, the restore's tail read serves its Undo. The fifty-live-keys cap applies to the file on its own, so owner-less
+cards are capped as one session's would be.
+
+**Order: the feed board's rule.** Every kernel-built card carries two fields the board model reads (plans/card-boards.md;
+the names agreed with its author 2026-09-18): `board`, the board the card sits on, `"feed"` for every card today; and
+`category`, the card's category, which is today's raw column value (`needs_input`, `working`, `completed`), carried beside
+`column` until the renderer reads `category` alone (`column` stays byte-identical meanwhile). The owner-less cards' place
+is a SORT RULE of the feed board, not a card field and not a timestamp trick: within a category, runs order by the owner
+key, the reserved no-session key first, then the session order, then time; needs-you still decides the category, so an
+owner-less card that needs you heads the needs-you column and one that does not heads Completed. In grouped mode the Notes
+run opens each column it has cards in; in ungrouped mode the owner-less cards sort first within the column by the same key
+(a stable sort, so their own time order holds).
+
+**Actions and attachments.** An owner-less card carries no actions: `/send` needs a session to send to, so `post_notice`
+refuses actions on the owner-less road and the action runner refuses a hand-made owner-less id. An attachment is judged
+against the home directory alone (no session folder to admit).
+
+**The command.** `romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>]
+[--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, with `--title`, `--message` (`--body` stays
+as its alias), `--key` and `--session` the long forms, and the positional shorthand `romp card "title" "text"` (a bare
+first word is the title, a bare second the text; anything more is a usage error). `-k` is OPTIONAL: when absent the command
+mints a key, the first eight hex of a uuid4, never a slug of the title (an edited title must not make a second card, the
+round-two lesson), and the success line prints it so a later revision can name it (`romp card -k <key> ...`). Outside a
+session with no `-s` the card posts owner-less; inside a session `ROMP_SID` owns it by default and `--no-session` forces
+owner-less. The usage string stays short; the reference documents the shorthand.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key
