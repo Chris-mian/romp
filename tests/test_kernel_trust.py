@@ -523,6 +523,10 @@ class BusPortRecord(unittest.TestCase):
         except FileNotFoundError:
             pass
 
+    def _rec(self, port, pid=None, tok=None):
+        """A record as the bus writes it: this kernel's token mark unless a foreign one is asked for."""
+        return json.dumps({"port": port, "pid": os.getpid() if pid is None else pid, "tok": km._bus_token_mark() if tok is None else tok})
+
     def _stub_bus(self, seen):
         from http.server import BaseHTTPRequestHandler   # the module's own idiom: imported where the stub is built
         class H(BaseHTTPRequestHandler):
@@ -541,13 +545,17 @@ class BusPortRecord(unittest.TestCase):
     def test_the_record_wins_over_the_environment_and_the_environment_is_the_fallback(self):
         km.BUS_PORT = 1                                            # the environment's word: a port nothing answers on
         self.assertEqual(km._bus_port(), 1, "no record: the environment")
-        self.rec.write_text(json.dumps({"port": 45678, "pid": os.getpid()}))
-        self.assertEqual(km._bus_port(), 45678, "the record names the bound port and a live pid: it wins")
-        self.rec.write_text(json.dumps({"port": 45679, "pid": 2 ** 22 + 12345}))   # a pid that does not run: a stale record
+        self.rec.write_text(self._rec(45678))
+        self.assertEqual(km._bus_port(), 45678, "the record names the bound port, a live pid and this kernel's token mark: it wins")
+        self.rec.write_text(self._rec(45679, pid=2 ** 22 + 12345))   # a pid that does not run: a stale record
         self.assertEqual(km._bus_port(), 1, "a stale record (its pid gone) is ignored: the environment")
+        self.rec.write_text(self._rec(45680, tok="0123456789abcdef"))   # another bus's record: a token mark that is not ours
+        self.assertEqual(km._bus_port(), 1, "a foreign record (another bus, another world, a reused pid) is ignored: the environment")
+        self.rec.write_text(json.dumps({"port": 45681, "pid": os.getpid()}))   # a record with no mark (an older bus): never trusted
+        self.assertEqual(km._bus_port(), 1)
         self.rec.write_text("torn")
         self.assertEqual(km._bus_port(), 1, "a torn record: the environment, never a raise")
-        self.rec.write_text(json.dumps({"port": 0, "pid": os.getpid()}))
+        self.rec.write_text(self._rec(0))
         self.assertEqual(km._bus_port(), 1, "a record with no port: the environment")
 
     def test_the_census_line_says_the_port_and_its_source_once_and_names_a_mismatch_with_the_environment(self):
@@ -555,7 +563,7 @@ class BusPortRecord(unittest.TestCase):
         km._bus_port(); km._bus_port()
         lines = [l for l in self._err.getvalue().splitlines() if "postal bus dialed" in l]
         self.assertEqual(lines, ["romp-kernel: postal bus dialed on 127.0.0.1:25302 from the environment"], "said once, no mismatch when the environment is the source")
-        self.rec.write_text(json.dumps({"port": 45678, "pid": os.getpid()}))
+        self.rec.write_text(self._rec(45678))
         km._bus_port(); km._bus_port()
         lines = [l for l in self._err.getvalue().splitlines() if "postal bus dialed" in l]
         self.assertEqual(len(lines), 2, "a change is said again, once")
@@ -567,10 +575,22 @@ class BusPortRecord(unittest.TestCase):
         seen = []
         bus_port = self._stub_bus(seen)
         km.BUS_PORT = 1
-        self.rec.write_text(json.dumps({"port": bus_port, "pid": os.getpid()}))
+        self.rec.write_text(self._rec(bus_port))
         ok, err = km._bus_quarantine_act({"mid": "px-1.2_abc.TESTHOST", "action": "approve", "sid": "11111111-2222-3333-4444-555555555555"})
         self.assertEqual((ok, err), (True, "bus HTTP 200"), "the record's bus answered: %r" % err)
         self.assertEqual(seen[0][0], "/quarantine/act"); self.assertEqual(seen[0][1]["mid"], "px-1.2_abc.TESTHOST"); self.assertEqual(seen[0][1]["sid"], "11111111-2222-3333-4444-555555555555")
+
+    def test_a_record_another_world_left_cannot_redirect_a_dial_a_test_or_an_operator_pointed_elsewhere(self):
+        # the suite found it first (2026-09-18): every kernel test module shares one event-model state root, so a record one
+        # world wrote outlived it, and a module that pointed BUS_PORT at its own stub bus reached the machine's real bus
+        # instead ("token required"). The mark closes it: a record is trusted only when its token mark is this kernel's own.
+        seen = []
+        stub = self._stub_bus(seen)
+        km.BUS_PORT = stub
+        self.rec.write_text(json.dumps({"port": 25302, "pid": os.getpid(), "tok": "not-this-kernels-mark"}))
+        ok, err = km._bus_quarantine_act({"mid": "px-1.2_abc.TESTHOST", "action": "approve"})
+        self.assertEqual((ok, err), (True, "bus HTTP 200"), "the dial followed the override to the stub, not the foreign record")
+        self.assertEqual(seen[0][0], "/quarantine/act")
 
     def test_the_decision_op_carries_the_recipient_sid_to_the_bus(self):
         bodies = []

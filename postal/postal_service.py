@@ -3035,11 +3035,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(payload, status)
         self._send({"error": "not found"}, 404)
 
+def _token_mark():
+    """A short mark of THIS bus's serve token (a sha256 prefix, never the token), so a kernel trusts the record only when its own
+    token makes the same mark: a record left by another bus, another state root's world, or a reused pid can never redirect a
+    kernel's dial to a bus that is not its own (2026-09-18)."""
+    try:
+        return hashlib.sha256(str(SERVE_TOKEN or "").encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
 def _write_port_record(port):
-    """Publish the port this bus bound as {"port", "pid"} (PORTFILE), atomically; best-effort and said when it fails, since
+    """Publish the port this bus bound as {"port", "pid", "tok"} (PORTFILE), atomically; best-effort and said when it fails, since
     a kernel that cannot read the record falls back to the environment and a mismatch there is the fault this removes."""
     try:
-        _atomic_json_put(PORTFILE, {"port": int(port), "pid": os.getpid()})
+        _atomic_json_put(PORTFILE, {"port": int(port), "pid": os.getpid(), "tok": _token_mark()})
     except Exception as e:
         _log("the port record could not be written (%s); the kernel falls back to ROMP_POSTAL_PORT" % e)
 

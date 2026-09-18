@@ -2,6 +2,7 @@
 bind and removed on a clean exit under the pid it names, so the kernel's loopback dials read the bus's own answer ahead of
 the environment; and the decision refusal that names itself when a kernel dials a bus that does not serve the recipient.
 Hermetic: a temp state root; the bus module loaded fresh; the kernel listing stubbed."""
+import hashlib
 import json
 import os
 import tempfile
@@ -30,7 +31,9 @@ class PortRecord(unittest.TestCase):
         self.assertEqual(ps.PORTFILE, ps.STATE / "postal-port"); self.assertEqual(ps.PORTFILE.parent, ps.PIDFILE.parent)
         ps._write_port_record(41234)
         rec = json.loads(ps.PORTFILE.read_text())
-        self.assertEqual(rec, {"port": 41234, "pid": os.getpid()}, "the port the bus bound and the pid that bound it")
+        self.assertEqual(rec, {"port": 41234, "pid": os.getpid(), "tok": ps._token_mark()}, "the port the bus bound, the pid that bound it, and its token mark")
+        self.assertEqual(rec["tok"], hashlib.sha256(str(ps.SERVE_TOKEN or "").encode()).hexdigest()[:16], "the mark is a sha256 prefix of the serve token, never the token")
+        self.assertEqual(len(rec["tok"]), 16)
         self.assertEqual([p.name for p in ps.STATE.glob("postal-port.*")], [], "written atomically: no temp left beside it")
 
     def test_a_clean_exit_removes_the_record_only_when_it_names_this_process(self):

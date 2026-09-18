@@ -14,6 +14,7 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 import collections
 import copy
 import gc
+import hashlib
 import math
 import tracemalloc
 import zlib
@@ -20723,8 +20724,8 @@ _BUS_PORT_SAID = [None]                                           # the census l
 
 def _bus_port():
     """The port this machine's bus BOUND, for every loopback dial of it: the bus's own record STATE/postal/postal-port ({"port",
-    "pid"}, written after its bind, removed on a clean exit; postal_service.py PORTFILE) ahead of the environment, which is the
-    fallback when the record is absent or stale (its pid no longer runs). Both processes read ROMP_POSTAL_PORT at import and
+    "pid", "tok"}, written after its bind, removed on a clean exit; postal_service.py PORTFILE) ahead of the environment, which is
+    the fallback when the record is absent, stale (its pid no longer runs) or another bus's (its token mark is not this kernel's). Both processes read ROMP_POSTAL_PORT at import and
     nothing bound them (2026-09-18): a unit or profile that set the port for one process and not the other, or a stale legacy
     tunnel reverse-forwarding the hub's bus onto this loopback at the fixed port, had the kernel dial a bus that was not its
     own, and a held message's approve came back "no held message" from a bus that never held it. The record is the bus's
@@ -20734,7 +20735,8 @@ def _bus_port():
     try:
         rec = json.loads((jd.STATE / "postal" / "postal-port").read_text())
         rp, pid = int(rec.get("port") or 0), int(rec.get("pid") or 0)
-        if rp > 0 and pid > 0 and _pid_alive(pid):
+        # trusted only when it is THIS kernel's bus: its pid runs AND its token mark is this kernel's own
+        if rp > 0 and pid > 0 and _pid_alive(pid) and str(rec.get("tok") or "") == _bus_token_mark():
             port, source = rp, "record"
     except (OSError, ValueError, TypeError, AttributeError):
         pass
@@ -20742,16 +20744,14 @@ def _bus_port():
     return port
 
 
-def _pid_alive(pid):
+def _bus_token_mark():
+    """The mark the bus writes into its record (postal_service._token_mark): a sha256 prefix of the shared serve token, so a
+    kernel trusts only a record its own bus wrote (a record another bus, another state root's world or a reused pid left can
+    never redirect the dial)."""
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
+        return hashlib.sha256(str(TOKEN or "").encode()).hexdigest()[:16]
+    except Exception:
+        return ""
 
 
 def _bus_port_census(port, source):
