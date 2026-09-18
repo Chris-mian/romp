@@ -32,13 +32,19 @@ _OTHER_JOBS = ("_push_all", "_lift_spent_awaiting", "_death_sweep_tick", "_end_o
 
 
 class _Backend:
-    """busy() answers from a flag the test flips: the stale-count shape is busy True over a transcript with no open turn."""
+    """busy() answers from a flag the test flips: the stale-count shape is busy True over a transcript with no open turn.
+    Every busy() read is counted (the note must add none of its own); pending_queued() is the pending-queue road."""
     def __init__(self):
         self.open = True
         self.calls = []
         self.logs = []
+        self.busy_reads = 0
+        self.pending = []
     def busy(self, sid):
+        self.busy_reads += 1
         return self.open
+    def pending_queued(self, sid):
+        return list(self.pending)
     def forwards_sends(self):
         return False
     def send(self, sid, text):
@@ -48,18 +54,22 @@ class _Backend:
     def turn_seq(self, sid):
         return 0
     def _log(self, msg, problem=False, ring_text=None):
-        self.logs.append(msg)
+        self.logs.append((msg, problem, ring_text))
 
 
 class HeldOnTheBackendsWord(unittest.TestCase):
     def setUp(self):
         self.be = _Backend()
         self.turns = [{"t": 1, "end": 2, "ended": True, "atoms": [{"type": "user", "t": 1}]}]     # the last turn CLOSED: no open turn
+        self.cache_hit = True                                                                   # the cached parse answers (else a miss)
+        self.parse_raises = False                                                               # the authoritative parse fails
+        self.parses = 0
         self._patches = [
             mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: self.be)),
             mock.patch.object(km, "_compacting_now", lambda sid, **k: False),
             mock.patch.object(km, "_path_of", lambda sid: "/nonexistent/transcript.jsonl"),
-            mock.patch.object(km, "_parse_cached", lambda path: {"turns": self.turns}),
+            mock.patch.object(km, "_parse_cached", lambda path: self.cached(path)),
+            mock.patch.object(km, "_parse", lambda path, sid, now: self.parsed(path, sid, now)),
             mock.patch.object(km, "_name_of", lambda sid: "web"),
             mock.patch.object(km, "_names_snapshot", lambda: {}),
             mock.patch.object(km, "_live_map", lambda: {SID: {"state": "waiting", "backend": "sdk"}}),
@@ -81,6 +91,15 @@ class HeldOnTheBackendsWord(unittest.TestCase):
         with km._pending_ops_lock:
             km._pending_ops.clear()
 
+    def cached(self, path):
+        return {"turns": self.turns} if self.cache_hit else None
+
+    def parsed(self, path, sid, now):
+        self.parses += 1
+        if self.parse_raises:
+            raise OSError("the transcript could not be read")
+        return {"turns": self.turns}
+
     def _rows(self):
         if not self.events.exists():
             return []
@@ -96,11 +115,13 @@ class HeldOnTheBackendsWord(unittest.TestCase):
         km._park_op(SID, ("send", "hello after the restart", "human"))
         km._park_op(SID, ("send", "and a second one", "human"))
         out = self._drain() + self._drain() + self._drain()
-        self.assertEqual(out.count("pending-ops: web: 2 parked input(s) held because the backend reads the session as working"), 1,
+        self.assertEqual(out.count("pending-ops: web: 2 parked input(s) held because the backend counts an open turn while its transcript shows none"), 1,
                          "one line for the hold, not one per cycle (the base said nothing at all): %r" % out)
         rows = [r for r in self._rows() if r.get("kind") == "pending-ops.held-working"]
         self.assertEqual(len(rows), 1, "one session-events row for the hold: %r" % self._rows())
-        self.assertEqual((rows[0].get("sid"), rows[0].get("parked")), (SID, 2))
+        self.assertEqual((rows[0].get("sid"), rows[0].get("parked"), rows[0].get("transcript")), (SID, 2, "no open turn"))
+        self.assertEqual([p for _, p, _ in self.be.logs].count(True), 1, "the row rings the error center once (a decision-shaped fault)")
+        self.assertEqual(self.be.busy_reads, 3, "three cycles, three busy() reads: the gate's one per cycle, none of the note's own")
         self.assertEqual(self.be.calls, [], "the hold still holds: nothing delivered on the backend's word")
         self.be.open = False                                                      # the hold lifts (the count settled)
         self._drain()
@@ -110,6 +131,32 @@ class HeldOnTheBackendsWord(unittest.TestCase):
         km._park_op(SID, ("send", "again", "human"))
         out2 = self._drain()
         self.assertEqual(out2.count("pending-ops: web:"), 1, "a new hold is said again after a lift")
+
+    def test_a_cache_miss_is_read_authoritatively_and_never_reads_as_no_open_turn(self):
+        """Round two of 1838: _parse_cached never parses and misses on every actively written transcript (and always with
+        no client refreshing it), so a miss read as 'no open turn' blamed a real turn. On a miss the note parses the
+        transcript itself; when that parse says the turn is open, nothing is said; when it cannot read, the hold is said
+        as unverified, never as idle."""
+        self.cache_hit = False
+        self.turns = [{"t": 1, "atoms": [{"type": "user", "t": 1}]}]              # OPEN on the authoritative read
+        km._park_op(SID, ("send", "typed mid-turn", "human"))
+        out = self._drain() + self._drain()
+        self.assertEqual(self.parses, 2, "the miss is answered by the kernel's own parse, once per cycle")
+        self.assertNotIn("pending-ops:", out, "a real turn behind a cache miss says nothing (the earlier head blamed it)")
+        self.assertEqual([r for r in self._rows() if r.get("kind") == "pending-ops.held-working"], [])
+        self.parse_raises = True                                                  # the transcript cannot be read at all
+        out = self._drain()
+        self.assertIn("could not be read; the hold is unverified", out, "an unreadable transcript is said as unknown")
+        rows = [r for r in self._rows() if r.get("kind") == "pending-ops.held-working"]
+        self.assertEqual([r.get("transcript") for r in rows], ["unknown"])
+        self.assertNotIn("shows none", out, "never 'no open turn' from a miss")
+
+    def test_a_pending_queue_on_the_backend_is_a_real_hold_and_says_nothing(self):
+        self.be.pending = ["a send queued and about to run"]
+        km._park_op(SID, ("model", "opus"))
+        out = self._drain() + self._drain()
+        self.assertNotIn("pending-ops:", out, "the pending-queue road is a real hold, not a stale count")
+        self.assertEqual([r for r in self._rows() if r.get("kind") == "pending-ops.held-working"], [])
 
     def test_a_hold_the_transcript_agrees_with_says_nothing(self):
         self.turns = [{"t": 1, "atoms": [{"type": "user", "t": 1}]}]              # the last turn OPEN: a real turn

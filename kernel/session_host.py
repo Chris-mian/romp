@@ -559,7 +559,9 @@ class SessionHost:
         self.fsid = str(self.spec.get("resume") or self.spec.get("session_id") or "")
         self.attached = None            # the attached kernel's writer, or None
         self.kernel = None
-        self.inflight = 0               # user messages fed minus results seen (the idle judgement)
+        self.inflight = 0               # open turns: a text-bearing user line fed opens one; a result closes ALL of them (the CLI folds
+        #                                 queued lines into the running turn and answers with one result); an output row after the result
+        #                                 (an assistant or user row: the CLI running a queued line as its own turn) re-opens one
         self.idle_since = self.now()
         self.exit_info = None
         self.ending = None              # (deadline, cause) once `end` was requested
@@ -726,9 +728,14 @@ class SessionHost:
             # and answers them with a single result, so a fed-minus-resulted count stays above zero forever after a
             # fold (the kernel's own settle learned this on 2026-07-09; the host re-created it, and every attach then
             # adopted the stale count from the hello: a session that read Ready yet swallowed every send, 2026-09-18).
-            # A separate turn still queued in the CLI re-opens the count with its own user message.
+            # A line the CLI runs as a SEPARATE turn instead re-opens the count from the output side below: its first
+            # assistant or user row after this result (its own user line was counted before the result, so nothing on
+            # the input side can tell a fold from a queue; the output can).
             self.inflight = 0
             self.idle_since = self.now()
+        elif mt in ("assistant", "user") and self.inflight == 0:
+            self.inflight = 1                              # output arriving with no turn counted: a queued line running as its own turn
+            self.log("turn-reopened", offset=off)
         elif mt == "control_request":
             self.parked.park(msg, off, self.now(), attached=self.attached is not None)
             self.log("request-open", requestId=str(msg.get("request_id") or ""),
