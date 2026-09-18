@@ -85,7 +85,7 @@ calls, reported as ms min/median/max:
   build_session_warm:S   the same call again with everything cached (an unchanged tab's push)
   warm_all_parses        one _parse() per live session from an empty parse cache (single call)
   build_feed             build_feed with every live session's parse cached (the steady state)
-  build_feed_noparse     build_feed with the parse cache empty (the cards-first boot shape)
+  build_feed_noparse     build_feed with the parse cache and the feed's card memo empty (the cards-first boot shape)
   build_timeline_bars    build_timeline(with_bars=True)
   build_timeline_skel    build_timeline(with_bars=False) — the lanes skeleton the push sends first
   load_goals:S           jd.load_goals for each of the K largest goal stores
@@ -1029,7 +1029,7 @@ def _bench(args, state, repo, out, shadow, rec, maps):
     bench = out["benchmarks"] = {}
     profiles = out["profiles"] = {}
     iters = max(1, args.iters)
-    out["cold_caches"] = {"kernel": [n for n in COLD_KERNEL_CACHES + ("_chat_fold",) if callable(getattr(getattr(km, n, None), "clear", None))],
+    out["cold_caches"] = {"kernel": [n for n in COLD_KERNEL_CACHES + ("_chat_fold", "_feed_memo") if callable(getattr(getattr(km, n, None), "clear", None))],
                           "event_model": [n for n, _lock in COLD_EM_CACHES if isinstance(getattr(em, n, None), dict)]}
 
     def now():
@@ -1067,6 +1067,17 @@ def _bench(args, state, repo, out, shadow, rec, maps):
                     km._chat_fold.clear()
             else:
                 km._chat_fold.clear()
+        clear_feed_memo()
+
+    def clear_feed_memo():
+        """The feed's per-session card memo, which a freshly started kernel also lacks (2026-09-18). An entry the memo
+        holds under a WARM parse re-reads its parse in place when the store misses (the kernel's warm-to-stale
+        re-read), so a feed built over an emptied parse store but a warm memo parses inside the build and never
+        takes the cold branch that asks for the background warm: the cold rows and build_feed_noparse would measure
+        that re-read, not the cards-first boot they name. Dropped through the kernel's own forget (every sid gone),
+        so its counters stay right; a revision without the memo has nothing to drop."""
+        if hasattr(km, "_feed_memo_forget"):
+            km._feed_memo_forget(set())
 
     def clear_em_caches():
         """The event model's parse-layer caches, under their locks; a name this revision lacks is skipped
@@ -1236,8 +1247,11 @@ def _bench(args, state, repo, out, shadow, rec, maps):
         if args.profile:
             profiles["build_feed"] = profile_entry(lambda: km.build_feed(now(), live_map), None, repo)
             profiles["build_timeline_bars"] = profile_entry(lambda: km.build_timeline(now(), live_map, with_bars=True), None, repo)
-        # the feed with nothing parsed (cards-first boot)
-        bench["build_feed_noparse"], _ = timed(lambda: km.build_feed(now(), live_map), iters, before=km._parse_cache.clear)
+        # the feed with nothing parsed and nothing memoized (cards-first boot)
+        def noparse_before():
+            km._parse_cache.clear()
+            clear_feed_memo()
+        bench["build_feed_noparse"], _ = timed(lambda: km.build_feed(now(), live_map), iters, before=noparse_before)
         for s in sessions:
             km._parse(s["path"], s["sid"], now())
 

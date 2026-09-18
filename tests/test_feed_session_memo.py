@@ -1311,6 +1311,34 @@ class AWarmEntryIsNeverDerivedCold(_Board):
         d, f = self._delta(self._build)
         self.assertEqual((d["derived"], d["hit"]), (0, 3), d)     # no warm re-derivation: the key already read warm
 
+    def test_an_emptied_parse_store_under_a_warm_entry_re_reads_in_place_and_asks_for_no_background_warm(self):
+        """The perf bench's build_feed_noparse row (tools/perf-bench.py) tripped on this in CI (2026-09-18): it emptied
+        the parse store under a memo whose entries the steady-state row had memoized WARM, and read the warm request
+        that never came as a lost cold branch. A store emptied with no file moved (live: an eviction) is the same
+        warm-to-stale miss as an append: every warm entry re-reads its parse in place and stays exact, so there is no
+        cold session to warm; a memo that holds nothing warm (a fresh kernel's) still asks, which is why the bench
+        empties the memo with the store."""
+        calls = []
+        self.live[WEB]["state"] = "working"                    # warm-wanted on _warm_wanted's state leg, like the bench's web row
+        with mock.patch.object(km, "_warm_fleet_bg", lambda now: calls.append(now)):
+            self._build()
+            self.assertEqual(len(calls), 1, "a cold kernel's first paint asks for the background warm")
+            for sid in SIDS:
+                km._parse(str(self.tpath[sid]), sid, NOW)      # every session parsed (the bench's warm_all_parses)
+            d, _ = self._delta(self._build)                    # the steady state: every entry memoized under a warm key
+            self.assertEqual((len(calls), d["derived"]), (1, 3), d)
+            km._parse_cache.clear()                            # the store emptied, no file moved (the bench's noparse row)
+            c0 = km._feed_memo_report()
+            d, f = self._delta(self._build)
+            c1 = km._feed_memo_report()
+            self.assertEqual(len(calls), 1, "every warm entry re-read its parse in place: no cold session, no warm asked")
+            self.assertEqual(c1["coldFlip"] - c0["coldFlip"], 3, "three in-place re-reads")
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet", "and the entry stays exact")
+            km._parse_cache.clear()
+            km._feed_memo_forget(set())                        # ...and the memo emptied too: the shape of a fresh kernel
+            d, _ = self._delta(self._build)
+            self.assertEqual((len(calls), d["derived"]), (2, 3), "nothing is warm: web derives cold and asks again")
+
     def test_a_cold_kernels_first_paint_still_parses_nothing(self):
         p0 = km._PERF_STATS.parses["kernel"]
         c0 = km._feed_memo_report()
