@@ -25,7 +25,7 @@ test("the feed handles the kernel's cardPredict fan-back with the same predictio
   // a sub-goal id (per-sub follow-up target) resolves to the visible top card that carries it in its tree
   assert.match(FEED, /asks\.find\(\(a\) => a\.itemId === raw\) \?\? asks\.find\(\(a\) => a\.tree\?\.some\(\(n\) => n\.id === raw\)\)/);
   // a card already in Working needs no prediction (and no pointless revert timer)
-  assert.match(FEED, /if \(top && top\.column !== "working"\) \{ optimisticFollowMove\(top\.itemId, kind\); moved = true; \}/);
+  assert.match(FEED, /if \(top && askColumn\(top\) !== "asks"\) \{ optimisticFollowMove\(top\.itemId, kind\); moved = true; \}/);   // Working through askColumn: the category first (card boards, the 1837 round-two read)
 });
 
 test("an ANSWER prediction yields to the FIRST authoritative payload and reverts silently", () => {

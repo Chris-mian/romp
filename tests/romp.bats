@@ -2521,7 +2521,7 @@ PY
     grep -q -- '-X POST http://127.0.0.1:29855/board' "$MOCK_LOG"
     grep -q -- '"id": "notes"' "$MOCK_LOG"
     grep -q -- '--config -' "$MOCK_LOG"
-    ! grep -q -- "testtok" "$MOCK_LOG"
+    [ "$(grep -c -- "testtok" "$MOCK_LOG")" -eq 0 ]   # the token never rides the command line (a count, the ratchet's rule for negatives)
     # …from a file too, and an id inside the JSON that disagrees with the command's is a usage error
     printf '%s' "$defn" > "$TEST_DIR/notes.json"
     MOCK_CURL_BOARD_DEFINED='{"ok": true, "board": {"id": "notes", "categories": [{"id": "new"}]}}' run "$ROMP_SCRIPT" board define notes --from "$TEST_DIR/notes.json"

@@ -5701,11 +5701,11 @@ function renderBody(list: HTMLElement) {
   // reaches, not with the board.
   const gprefs = feedPrefs();
   const gate: GateEnv = {
-    boardTitle: (it) => { const b = boardOf(it); return b === FEED_BOARD ? "" : b.title; },   // a card on a data-defined board: its label reads the title
     dot: dotFor, working: (n) => workingSet.has(n),
     focusId: hoverAskId ?? pinnedAskId, pinnedId: pinnedAskId, notifyOn: cardNotifyOn,
     prefs: { grouped: gprefs.grouped, collapsed: gprefs.collapsed, colormap: gprefs.colormap },
     hostDown: hostIsDown, selfHost: feedSelfHost, repo: prRepoOf, seq: ++renderSeq,
+    boardTitle: (it) => { const b = boardOf(it); return b === FEED_BOARD ? "" : b.title; },   // a card on a data-defined board: its label reads the title
   };
   // The focused session's section above the board (T347): its own elements and caches, the same builders and
   // the same update gate. Painted BEFORE the board's FLIP capture below: the section sits above the board, so
