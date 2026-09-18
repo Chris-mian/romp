@@ -155,8 +155,13 @@ const theme = () => page.evaluate(() => {
   const d = document.querySelector("#feed-focus .feed-focus-divider"), e = document.querySelector("#feed-focus .feed-focus-empty"),
         n = document.querySelector("#feed-focus .feed-focus-head .fname"), c = document.querySelector("#feed-focus .feed-focus-fold");
   if (!d || !e || !n || !c) return null;
+  const sec = document.getElementById("feed-focus"), plainCol = document.querySelector("#feed-cols .feed-col"), card = sec.querySelector(".fitem[data-key]");
+  const cs = getComputedStyle(sec);
   return { divider: getComputedStyle(d).borderTopColor, dividerWidth: getComputedStyle(d).borderTopWidth, empty: getComputedStyle(e).color, label: getComputedStyle(c).color,
-           emptySize: getComputedStyle(e).fontSize, headSize: getComputedStyle(n).fontSize, labelSize: getComputedStyle(c).fontSize };
+           emptySize: getComputedStyle(e).fontSize, headSize: getComputedStyle(n).fontSize, labelSize: getComputedStyle(c).fontSize,
+           // the region's tint (the user 2026-09-18): the section's own ground against a plain board column's and a card's inside it
+           tint: cs.backgroundColor, radius: cs.borderRadius, padLeft: cs.paddingLeft,
+           plainCol: plainCol ? getComputedStyle(plainCol).backgroundColor : null, card: card ? getComputedStyle(card).backgroundColor : null };
 });
 // (a) the default: the switch off, no section
 const off = await survey();
@@ -368,6 +373,15 @@ class ServedFocusedSessionSection(unittest.TestCase):
         self.assertEqual(dark["divider"], "rgba(255, 255, 255, 0.22)", "dark: the 2px rule in --rule-strong (T410): %r" % dark)
         self.assertEqual(lit["divider"], "rgba(0, 0, 0, 0.22)", "light: the light theme's --rule-strong: %r" % lit)
         self.assertEqual((dark["dividerWidth"], lit["dividerWidth"]), ("2px", "2px"), "a 2px rule in both themes (T410)")
+        # the whole region on the very faint accent tint (the user 2026-09-18): the section's computed ground is the theme's
+        # --accent-tint, a plain board column carries none of it, and a card inside keeps its own ground
+        self.assertEqual(dark["tint"], "rgba(156, 210, 255, 0.04)", "dark: the section's ground is the accent tint (the base had none): %r" % dark)
+        self.assertEqual(lit["tint"], "rgba(194, 65, 12, 0.04)", "light: the light theme's own tint: %r" % lit)
+        for th, t in (("dark", dark), ("light", lit)):
+            self.assertNotEqual(t["plainCol"], t["tint"], "%s: the rest of the feed carries no tint: %r" % (th, t["plainCol"]))
+            self.assertIsNotNone(t["card"], "%s: a card inside the section" % th)
+            self.assertNotEqual(t["card"], t["tint"], "%s: the cards keep their own ground: %r" % (th, t["card"]))
+            self.assertEqual((t["radius"], t["padLeft"]), ("8px", "8px"), "%s: a small radius and a margin around the cards: %r" % (th, (t["radius"], t["padLeft"])))
         self.assertNotEqual(dark["empty"], lit["empty"], "the quiet line's colour follows --dim across themes: %r vs %r" % (dark, lit))
         self.assertNotEqual(dark["label"], lit["label"], "…and so does the label text's")
         self.assertEqual(lit["labelSize"], dark["labelSize"], "geometry is not theme: the label's size holds across themes")

@@ -6735,7 +6735,8 @@ class TimelinePanel {
                       'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none' };
       if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash (same key as the span)
       if (!arrived && !mm.toThreadT) liveRiders = true;   // an un-arrived stub spans to the live edge: the tick cannot translate that
-      plot.appendChild(el('path', attrs));
+      const stubEl = el('path', attrs); stubEl.setAttribute('data-tl-stub', String(senderVisible ? mm.toId : mm.fromId));   // the lane-less end, for the served pins
+      plot.appendChild(stubEl);
       // same affordances as a full connector: own-color highlight overlay + wide transparent hit —
       // the SAME path each, so highlight and hover cover the whole half-elbow as one unit —
       // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
