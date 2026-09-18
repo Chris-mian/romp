@@ -20838,6 +20838,9 @@ def _revive_postal_bus():
     so a burst of refused notifies — one per tunnel per supervisor pass — coalesces into one ensure.
     A quiet hub went dark exactly this way twice on 2026-08-12: bus gone, kernel up, every /peer
     notify failing silently, cross-host mail parked until a manual ensure."""
+    if (os.environ.get("ROMP_POSTAL_CLIENT_ONLY") or "").strip().lower() in ("1", "on", "true", "yes"):
+        return   # a client-only kernel owns no bus to revive: the ensure would only ping (2026-09-18: a revive kicked on a daemon
+        #          thread by a hermetic test's refused notify outran the test's environment restore and started a real bus)
     with _bus_revive_lock:
         if _bus_reviving[0]:
             return
