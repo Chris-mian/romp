@@ -43,6 +43,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
 import { inInputEvent } from "./input-event";
 import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
+import { FEED_BOARD, columnOf, columnTable, feedColumns, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
 import { wireTip, setTip, pruneTip } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
 import { listenForFrames } from "./frame-listener";
@@ -99,7 +100,7 @@ interface AskItem {
   text: string; t: number; live: boolean;
   turnId: string;
   trgb: [number, number, number];
-  column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
+  column: FeedCategory;                            // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks": that was a stale lie that silently broke `it.column === "asks"` checks.
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   followupAt?: number | null;                      // when that follow-up/continue went — the latched button's honest age (T150)
   doneConfirming?: boolean;                        // the done verdict is in, only the settle event is pending → steady "done, confirming" chip on the Working card; placement deliberately does NOT move early (no working↔done flicker) (kernel build_feed ← judge rollup confirming export; the user 2026-07-24)
@@ -490,7 +491,7 @@ function askColumn(it: AskItem): Column {
   // "working" while showing it under Blocked — it now reports needs_input directly (the user 2026-06-29). An
   // API-error card stays in its natural column (working): the kernel keeps column=working for it (a transient
   // stall, not a block), so it lands in "asks" with just the "⚠ API error" chip + Retry.
-  return it.column === "needs_input" ? "needsInput" : it.column === "completed" ? "completed" : "asks";
+  return columnOf(FEED_BOARD, it.column);   // the feed definition's own table: working → asks, needs_input → needsInput, completed → completed
 }
 
 // How opaque the recency tint is over the (black) page — low = a faint, very
@@ -4475,7 +4476,7 @@ const ROW_DEFAULT = ["asks", "needsInput", "completed"];     // the side-by-side
 // Idempotent; runs at build, per toggle, and per drag re-slot.
 function applyColStack(): void {
   const custom = colOrder.length === 3 ? colOrder : null;
-  for (const key of ["asks", "needsInput", "completed"]) {
+  for (const key of feedColumns(FEED_BOARD)) {
     // the BOARD's column, under #feed-cols: the focused-session section above it carries the same column
     // classes (T347), and a bare query would land on that copy first. The fold is the board's alone; the
     // section's blocks take their order from applyFocusLayout below (the board's, until the user drags THERE).
@@ -4508,7 +4509,7 @@ function applyFocusLayout(): void {
   if (!document.getElementById("feed-focus")) return;
   const order = focusOrder.length === 3 ? focusOrder : colOrder.length === 3 ? colOrder : null;
   const visual = (order || ROW_DEFAULT).filter((k) => !collapsedFocusCols.has(k));
-  for (const key of ["asks", "needsInput", "completed"]) {
+  for (const key of feedColumns(FEED_BOARD)) {
     const twin = document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + key);
     if (!twin) continue;
     if (order) twin.style.setProperty("--col-order", String(order.indexOf(key) + 1));
@@ -4690,7 +4691,7 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
     //                      follow-transform so a re-slot never yanks it out from under the pointer
     const applyOrderFlip = (order: string[]) => {
       const els: Array<[string, HTMLElement]> = [];
-      for (const k of ["asks", "needsInput", "completed"]) {
+      for (const k of feedColumns(FEED_BOARD)) {
         const e = slots.col(k);   // this container's element for the key, never the other container's
         if (e) els.push([k, e]);
       }
@@ -4779,7 +4780,7 @@ function ensureCols(list: HTMLElement) {
     // column holds the ones being worked — internal keys keep the old names
     // each header is a filled state chip reproducing the chat status chips
     // (styles.css .chip): working=yellow, blocked=awaiting-red, completed=ready-blue.
-    for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
+    for (const [key, label, chip] of columnTable(FEED_BOARD)) {   // the board's categories, in its order (board-def.ts)
       const col = el("div", "feed-col col-" + key);
       const head = el("div", "feed-col-head");
       // header furniture (the user 2026-08-16): a caret LEFT of the chip folds the whole category to
@@ -5017,7 +5018,7 @@ function ensureFocusSection(list: HTMLElement): HTMLElement {
     // a fold caret folds the block to its head in BOTH layouts; a gutter on the block's right edge resizes it
     // against its neighbour. Order, widths and folds are the section's own state (applyFocusLayout), never the
     // board's; a block never crosses the divider. Build-once nodes, click-safe across renders.
-    for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
+    for (const [key, label, chip] of columnTable(FEED_BOARD)) {   // the board's categories, in its order (board-def.ts)
       const col = el("div", "feed-col col-" + key);
       const h = el("div", "feed-col-head");
       // the chip: the drag handle (the board's own affordance, the grab cursor) and the keyboard's handle too, so it
@@ -5196,7 +5197,7 @@ function columnsOf(buckets: Record<Column, Entry[]>): Map<string, string> {
   }
   return m;
 }
-const FLY_COLS: ("asks" | "needsInput" | "completed")[] = ["asks", "needsInput", "completed"];
+const FLY_COLS: readonly ("asks" | "needsInput" | "completed")[] = feedColumns(FEED_BOARD);
 let flySeq = 0;   // the fly token: the element remembers the newest fly's number (see the write phase)
 function captureCardRects(cols: ReturnType<typeof ensureCols>): Map<string, FlipState> {
   const m = new Map<string, FlipState>();
@@ -6120,7 +6121,7 @@ function paintFreezeBadges(): void {
     if (!b) { b = el("span", "freeze-badge"); host.appendChild(b); }
     paintFreezeParts(b, c);
   };
-  for (const key of ["asks", "needsInput", "completed"]) {
+  for (const key of feedColumns(FEED_BOARD)) {
     put(document.querySelector("#feed-cols .feed-col.col-" + key + " .feed-col-head"), d.cols[key]);   // the board's heads, never the focused section's (T347)
   }
   const groupedNow = feedPrefs().grouped;
