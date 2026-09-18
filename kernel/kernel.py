@@ -30003,7 +30003,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     these: the judge's stamp (_latch_skill_load_anchors, off the parse's own report of the wrappers it skipped)
     marks it "machine" with askAnchorRecord {kind: skill-load, skill},
     re-stamping an older "human" latch once, so this reads the store alone, never a transcript (build_feed's
-    cold-start contract). Its why names the skill, and with no host in the store it is marked hidden
+    cold-start contract). Its why names the skill, and with no host current at its mint it is marked hidden
     (born.hidden: the feed shows no card, the session's own view keeps the work) rather than left as a root,
     and a block romp filed itself (a failed nudge, an interrupt) does not except it: the judge resolves such a top
     with romp's done verdict, and only a live floor or the agent's own question to the user (a block from the
@@ -30025,7 +30025,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     A host minted AFTER the node was never current at its mint, so a node older than every host is NOT nested:
     it keeps its card, with its face (an oldest-host fallback stood here until 2026-09-18, when a store whose
     five human-anchored hosts were all minted in one day swept two completed roots from days before into the
-    newest request's tree, as its reviewed-earlier rows: a time boundary applied across roots). Returns
+    oldest host's tree (the first request of that day), as its reviewed-earlier rows: a time boundary applied across roots). Returns
     {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no host current at its mint).
     Deterministic: a pure function of the store and the task stream. Never writes the store."""
     out = {}
@@ -30087,7 +30087,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
         if host:
             born["parentText"] = str(host[1].get("text") or "")[:120]
         elif nest and skill_of(nd):
-            born["hidden"] = True     # a skill-load top with no request in the store to sit under: the feed hides it (the
+            born["hidden"] = True     # a skill-load top with no host current at its mint to sit under: the feed hides it (the
                                       # session's own view keeps the work); a blocked one is not here, it keeps its card
         out[nid] = (host[0] if host else None, born)
     return out
@@ -42272,8 +42272,8 @@ def build_feed(now, live_map=None):
     if heal_total > _HEAL_LOG["n"]:                   #   count is named only when it is the one that rose, so a rise in
         _rose.append("%d session-started top(s) nested under the goal they ran in" % heal_total)   # one never re-says
     if hidden_total > _HEAL_LOG.get("h", 0):         #   the other's number (T333: the hidden count, a skill the harness
-        _rose.append("%d session-started top(s) hidden (rooted in a skill the harness loaded, no request in the "
-                     "store to sit under; the session's own view keeps the work)" % hidden_total)   # loaded, no host)
+        _rose.append("%d session-started top(s) hidden (rooted in a skill the harness loaded, no request current at "
+                     "its mint to sit under; the session's own view keeps the work)" % hidden_total)   # loaded, no host)
     if _rose:
         _HEAL_LOG["n"], _HEAL_LOG["h"] = max(heal_total, _HEAL_LOG["n"]), max(hidden_total, _HEAL_LOG.get("h", 0))
         sys.stderr.write("feed: %s (no request behind them; the planner nests new ones at mint time)\n" % "; ".join(_rose))

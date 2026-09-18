@@ -67,7 +67,7 @@ const node = (id, text, status, children, extra) => Object.assign({ id, kind: "a
   status, t: now - 600, last: now - 60, children }, extra || {});
 const R = cfg.root;
 const tree = [
-  node(R, "notes-api: draft the search index", "open", [R + "-a", R + "-b", R + "-e", R + "-g", R + "-f", R + "-h", R + "-c", R + "-d"]),
+  node(R, "notes-api: draft the search index", "open", [R + "-a", R + "-b", R + "-e", R + "-g", R + "-f", R + "-h", R + "-c", R + "-d", R + "-x"]),
   node(R + "-a", "index the note titles", "done", [R + "-a1"]),          // done, WITH a triangle
   node(R + "-a1", "lower-case the titles first", "done", []),
   node(R + "-b", "store the token positions", "done", []),               // done, no triangle
@@ -79,7 +79,10 @@ const tree = [
   node(R + "-h", "choose the tie-break", "question", []),                 // blocked, no triangle
   node(R + "-c", "write the index schema", "done", [R + "-c1"], { reviewedEarlier: true }),   // reviewed earlier, WITH a triangle
   node(R + "-c1", "list the schema's columns", "done", []),
-  node(R + "-d", "seed the demo notes", "done", [], { reviewedEarlier: true })];               // reviewed earlier, no triangle
+  node(R + "-d", "seed the demo notes", "done", [], { reviewedEarlier: true }),                // reviewed earlier, no triangle
+  // a reviewed HANDOFF child: delegations render in their own section, never as a checklist row, so the fold's label must not
+  // count it (2026-09-18: "3 reviewed earlier" opened to two rows)
+  node(R + "-x", "\u21aa delegated to api: review the index", "done", [], { kind: "handoff", who: "api", reviewedEarlier: true })];
 const payload = { type: "feed", asks: [{ itemId: R, sid: cfg.web, name: "web", color: { bg: "#1EA1EB", fg: "#ffffff" },
     text: "notes-api: draft the search index", t: now - 600, live: true, turnId: "turn-21", trgb: [30, 161, 235], column: "working", tree }],
   sessions: [{ sid: cfg.web, name: "web" }], order: [cfg.web] };
@@ -205,13 +208,15 @@ class ServedSubgoalMarks(unittest.TestCase):
             d = self.r["results"][dsf]
             self.assertIn("sub-goals", d["subLabel"], "%s: the button reads the direct count: %r" % (dsf, d["subLabel"]))
             self.assertEqual(d["subLabel"].strip(), "8 sub-goals", "%s: eight direct children, none a handoff" % dsf)
-            self.assertIn("2 reviewed earlier", d["folded"], "%s: the fold row carries the reviewed count" % dsf)
+            self.assertIn("2 reviewed earlier", d["folded"], "%s: the fold row counts the rows it opens to, not the reviewed handoff the walk never renders: %r" % (dsf, d["folded"]))
             self.assertEqual([r["text"] for r in d["fresh"]["rows"]],
                              ["index the note titles", "store the token positions", "rank by recency", "cap the result page",
                               "pick the stemmer", "choose the tie-break", "2 reviewed earlier"],
                              "%s: the fresh rows in tree order, then the fold row, nothing behind it yet" % dsf)
             self.assertEqual([r["text"] for r in d["opened"]["rows"]][-2:], ["write the index schema", "seed the demo notes"],
                              "%s: the fold opens in place, its two kids after it" % dsf)
+            self.assertEqual(len(d["opened"]["rows"]) - len(d["fresh"]["rows"]), 2, "%s: the open fold adds exactly the rows its label counted" % dsf)
+            self.assertFalse(any("delegated to" in r["text"] for r in d["opened"]["rows"]), "%s: the handoff is no checklist row" % dsf)
 
     def test_the_mark_sits_at_one_height_with_and_without_a_triangle_at_1x_and_2x(self):
         # per mark state, the row WITH a triangle glyph against its twin WITHOUT: the mark's top and its centre within the row
