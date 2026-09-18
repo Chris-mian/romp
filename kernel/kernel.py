@@ -32437,7 +32437,27 @@ def _feed_goals_keyed(sid):
     behaved (cleared.jsonl is read live, outside the snapshot). Replay is idempotent, but rollup_status is
     not free, so a sid re-punches only when its mark MOVES — a second gesture in the same pass must land
     too, which a plain already-done flag would have swallowed. Every replay lands on a fresh copy of the
-    snapshot entry: an object this function has served is a fixed value (COPY-ON-PUNCH below)."""
+    snapshot entry: an object this function has served is a fixed value (COPY-ON-PUNCH below).
+
+    THE LIVE READ IS THE SHARED READ-ONLY VIEW (2026-09-18): load_goals_shared's one frozen parse per file version,
+    the same object _bg_placed_tops, _session_stamp_read, build_session and build_timeline already hold, served
+    through the per-session store-fault boundary. The feed is a pure reader: _feed_session_entry and every helper it
+    hands the store or its nodes to (_segs_seam, _heal_session_tops, _agent_open_set, _parked_rows, _summary_outrun,
+    _node_anchor_uuids, _landing_inputs, _node_log_rows, _pure_delegation_top, _goal_awaiting_stamp_full,
+    _all_outstanding_delegated, _open_leaves, _handoff_peer_identities, _handoff_card_fields, _session_started_face,
+    _provisional_card, _closer_pending, jd.review_boundary, jd._done_since) write only into their own containers;
+    _apply_rewind_hold works on copies (dict(store), fresh nodes/status maps, copy-on-write re-parents, the re-roll on
+    a json deep copy) and already runs on the shared view at _provisional_ledger's and build_session's ledger sites;
+    the punch above is the snapshot branch's and replays onto a json copy of the pass memo's entry, never onto the
+    shared view. A write would be LOUD: it raises FrozenStoreError, files one `frozen-store-write` judge-errors row
+    naming the site (_shared_poison) and switches the cache off for the process (memos.shared.off; later loads are
+    served by load_goals as `fallback`), and a raise inside a derivation lands in build_feed's per-session try/except
+    (_feed_derive_complain: the `failed` count, the `failing` gauge). Before this, the writer's loader ran once per
+    alive non-hidden session per build, hit or miss: a fresh copy of the parse, every node wrapped, the override
+    journal read and replayed, _baseRev stamped, then the copy dropped whenever the session's card memo hit. Faults
+    are unchanged: the boundary wraps either loader, so a read fault is (None, exc) plus one `store-unreadable` row
+    per episode, an absent file is the fresh store, corrupt bytes still quarantine through load_goals, an unreadable
+    journal is still served uncached from load_goals, and _baseRev is present on the shared view."""
     with _goals_snap_lock:
         snap = _goals_snap[0]
         if snap is not None and sid in snap:
@@ -32465,7 +32485,7 @@ def _feed_goals_keyed(sid):
                     sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
             return _apply_rewind_hold(sid, store), snap_key   # a pending rewind's cards are hidden NOW (latched
             #                                                   at the gesture; archive lands at the branch-take)
-    store, fault = jd.load_goals_or_fault(sid)     # no pass in flight → live read, outside the lock
+    store, fault = jd.load_goals_shared_or_fault(sid)   # no pass in flight → the shared read-only view, outside the lock (2026-09-18)
     if fault is not None:
         return None, None                              # the read FAULTED (the pre-pass snapshot skips such a file
     #                                                    too): the row is filed once per episode, and build_feed
@@ -40665,7 +40685,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         closer = bool(live and ps and not who_working and not jactive
                       and _closer_pending(fsid, path, now, st if st is not None else {"nodes": {}, "status": {}}))
     ctx.update(ps=ps, who_working=who_working, interrupting=interrupting, store=st, closer=closer, hide=hide)
-    # the store component closes on the READ's outcome (st is None: the read faulted, jd.load_goals_or_fault filed it):
+    # the store component closes on the READ's outcome (st is None: the read faulted, jd.load_goals_shared_or_fault filed it):
     # an EIO or a permissions fault moves no stat, so without the bit a faulted derivation (no cards) would serve
     # on after the fault cleared, and a pre-fault entry would serve through it (tests/test_goal_store_fault_boundary)
     # The store VERSION the body's read rendered, and whether the override journal is replayed onto it (2026-09-16):
@@ -40809,7 +40829,7 @@ def _feed_session_entry(s, ctx):
     #                                          pass is mid-flight → the card's
                                              # status never shows a half-applied intermediate (atomic visibility)
     store_faulted = store is None            # this session's store could not be READ (EACCES, EIO, a directory
-    if store_faulted:                        # at the path): its row is filed (jd.load_goals_or_fault) and THIS
+    if store_faulted:                        # at the path): its row is filed (jd.load_goals_shared_or_fault) and THIS
         store = {"nodes": {}, "status": {}}  # session renders with no goal-derived content — no cards (so no
         #                                      floors and no swirl, which land only on cards) and nothing
         #                                      inferred from the absence (the provisional card is gated on the
@@ -53169,7 +53189,8 @@ def _pure_feed(now, live_map):
     persist when the living set moved, the views store's re-stamp, a fork's tag inheritance heal, and
     _warm_fleet_bg (a background parse warm that then drops the pusher's cache and wakes it), which
     runs only with a client connected and no chat/timeline client parsing; a goal store that cannot be
-    read files its fault row (load_goals_or_fault: loud by design, and only on a fault).
+    read files its fault row (load_goals_shared_or_fault, the store-fault boundary the feed's reads take since
+    2026-09-18: loud by design, and only on a fault).
     The build id IS claimed (a consumer reads buildId like any payload); the counter is monotonic and a
     card-move ack only needs the pusher's next build to outrank whatever was claimed before it.
     Counted under the route's own numbers (feedJson*, never the pusher's feed*): those read as the
