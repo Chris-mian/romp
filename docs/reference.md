@@ -2346,7 +2346,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `watch`, `subagents`, `usage`, `offer`, `auth`, `downtime`, `debug`,
   `interrupting`, `closer`, `peers`, plus `cold` for a session with no
   entry) to the re-derivations it caused; a miss with several moved
-  components counts under each. Nudge facts invalidate only entries that read
+  components counts under each. `row_by` splits the `row` misses further by
+  the live-row position that moved (`state`, `since`, `billing` (the row's
+  authLive, auth, authLogin, authLoginLive and authLabel; distinct from
+  `miss_by`'s `auth`, the machine's key on hand), `retry`, `agents`, `tasks`,
+  plus `presence` for a row that appeared, left or changed shape): the key
+  folds only the row fields a card reads, so a context refresh or a
+  background agent's tool call moves no key. Nudge facts invalidate only entries that read
   the changed node's count, failure state or displayed history. The key on hand, the
   host-suspension spans and the debug mode are board-wide inputs: a change
   to one re-derives every session. The clock is not a component of the key:
