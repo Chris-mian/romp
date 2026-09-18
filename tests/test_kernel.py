@@ -5282,7 +5282,8 @@ class ViewBuilder(unittest.TestCase):
         # as before) and is said on stderr — once per file VERSION, not per pass: the failure is
         # remembered under the same key, so a corrupt megabyte is not re-decoded and re-reported every
         # 3 s. The file's next publish is a new key and is decoded again. The first two passes take no
-        # live read on purpose: the feed's live read goes through load_goals_or_fault, which QUARANTINES
+        # live read on purpose: the feed's live read goes through load_goals_shared_or_fault, whose corrupt-bytes
+        # path is load_goals (2026-09-18), which QUARANTINES
         # an unparseable file (moves it aside), and a second pass over a vanished file would prove
         # nothing about the memo.
         path = jd.GOALDIR / (SID + ".json")
