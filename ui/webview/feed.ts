@@ -1932,12 +1932,18 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     // reviewed (kernel reviewedEarlier, from the SAME boundary the distiller scopes the takeaway with)
     // collapse behind one row, so a re-completed card presents only the new work — the old material is
     // one click away, never gone. Fresh rows first; the fold row sits below them.
-    const revKids = (root.children || []).filter((c) => !!byId.get(c)?.reviewedEarlier);
-    const freshKids = (root.children || []).filter((c) => !byId.get(c)?.reviewedEarlier);
+    // …counting what the walk RENDERS: a handoff child is skipped by walk (delegations live in their own section), so a
+    // reviewed handoff counted in the label made "3 reviewed earlier" open to two rows (the 2026-09-18 read)
+    const shown = (c: string) => { const n = byId.get(c); return !!n && n.kind !== "handoff"; };
+    const revKids = (root.children || []).filter((c) => shown(c) && !!byId.get(c)?.reviewedEarlier);
+    const freshKids = (root.children || []).filter((c) => shown(c) && !byId.get(c)?.reviewedEarlier);
     const revOpen = cardTreeExpanded.has(id + ":reviewed");
     for (const c of freshKids) walk(c, 0);
     const freshEnd = rows.length;
-    if (revOpen) for (const c of revKids) walk(c, 0);
+    // the fold's kids sit ONE level under the fold row, their visual parent (depth 1, the modal outline's indent), never
+    // flush with the fresh rows above it (the user's 2026-09-18 screenshot: the reviewed rows read as a second batch of
+    // fresh ones); their own children indent from there
+    if (revOpen) for (const c of revKids) walk(c, 1);
     const paintRow = ({ node: s, depth, repeat, expandable, collapsed }: typeof rows[number]) => {
       const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
       if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
@@ -1972,8 +1978,11 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     rows.slice(0, freshEnd).forEach(paintRow);
     if (revKids.length) {
       // the fold row: same gesture grammar as a branch triangle — click toggles, state survives
-      // re-renders via cardTreeExpanded (keyed per card), and the label carries the count
-      const row = el("div", "fcheck freviewed" + (revOpen ? " open" : ""));
+      // re-renders via cardTreeExpanded (keyed per card), and the label carries the count. Its expanded state
+      // is "expanded", NEVER "open": "open" is the not-done STATUS class (.fcheck.open .fcheck-mark draws the
+      // hollow 13px ring), so the open fold wore the ring and its ✓ glyph sat low inside it, a checkmark that
+      // moved down in its box the moment the fold was opened (the user's 2026-09-18 screenshot)
+      const row = el("div", "fcheck freviewed" + (revOpen ? " expanded" : ""));
       const tri = el("span", "fcheck-tri nav"); tri.textContent = revOpen ? "▼" : "▶";
       const mark = el("span", "fcheck-mark"); mark.textContent = "✓";
       const txt = el("span", "fcheck-text");
