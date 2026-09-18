@@ -128,6 +128,10 @@ yields nothing rather than an error.
 
 `romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, or the shorthand `romp card "title" "text"`, posts a **notice card** to the feed: a card the kernel makes from what you hand it, with no judge involved (design: plans/notice-cards.md). With no session named the card is **owner-less** and shows at the **top** of the feed under the name Notes, above every session's cards (outside a session that is the default; inside one `ROMP_SID` owns the card unless you pass `--no-session`); `-s <name>` gives it to a session. `-k` names the card: a second post under the same key is a **revision** (it replaces the earlier card on the board, and shows again even if you had dismissed the earlier one, since it carries new information, and its number counts the archived posts of the key too, so a dismissed card's id is never minted again); with no `-k` the command mints a key and prints it, so a later `romp card -k <key> ...` revises the card. The body is markdown, rendered through the chat's sanitizer; `--attach` names a file the card shows inline when it is an image (the kernel judges it as the hover preview does: your home or the session's folder, no secrets-shaped names, the size caps, and keeps a pinned copy of an image as posted; an owner-less card's attachment is judged against your home alone). A card leaves the board on your dismissal (Clear; Undo restores it, copying its rows back out of the archive when the retention pass has already moved them), on a revision, or at `--expires` seconds from the post. `--needs-you` files it under Needs you. The kernel keeps every post in `notices/<session>.jsonl` under the state directory (`notices/notes.jsonl` for owner-less cards) and archives dismissed, expired and superseded rows to `notices-archive/`; a home shows at most fifty live keys at once, the oldest superseded past that. The same door is `POST /notice` on the kernel (the `/watch` shape: `{"id"|"name", "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "producer"?}`; with neither `id` nor `name` the card is owner-less; `{"id"|"name", "expire": "<key>"}` retires a card early), and producers inside romp call the kernel's `post_notice` in process. An owner-less card carries no actions.
 
+### Card boards: your own categories
+
+`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log.
+
 ### Moving a session to another folder
 
 A session's working directory can change after it starts, so when a subproject
@@ -720,7 +724,7 @@ two. Every session's tab menu offers Move to folder.
   manager and the supervised service use. Set either and the other follows; set
   both to different values and the kernel refuses to start rather than picking
   one for you.
-- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`.
+- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`. The kernel dials the port the bus actually bound, read from the bus's record `postal/postal-port` under the state directory (written after the bind, removed on a clean exit), and falls back to this variable only when the record is absent; a mismatch between the two is said once in the kernel's log. The two can disagree when a unit or profile sets the variable for one process and not the other, or when a stale legacy tunnel still reverse-forwards another machine's bus onto the fixed port: the operator's two checks when a held message's approve comes back refused.
 
 Set these if something else on the machine already holds the default. Both have
 to agree across everything that talks to the kernel, so export them where the
@@ -2940,15 +2944,20 @@ orphan reply) carry synthetic uuids keyed by their second and ordinal.
 Stage three of the process split (plans/judges-process.md) moves the judge pass into one long-lived child, `romp-judge
 --serve`, that the kernel starts at boot and speaks to over a line protocol on the child's stdin and stdout (JSON, one
 object per line). The child announces `{"op":"ready","pid","judgeVersion","protocolVersion"}` once; the kernel sends
-`{"op":"pass","seq","now","mayStart"}` per producer wake and `{"op":"quit"}` to end; the child answers exactly one
-`{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered","recordCache","asmCheckpoint",
-"parses","goalIo"}` per pass. Every counter on it is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are the
-pass's own, `failures` its tier crashes, and the four blocks (`recordCache` and `asmCheckpoint` from the event model,
-`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes) are the DIFFERENCES
-against the previous pass's snapshot for every counter, so the kernel can feed its `/perf` counters per pass, while each
-block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes` (the cache's contents now),
-`budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document memo's size and cap);
-`parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
+`{"op":"pass","seq","mayStart"}` per producer wake, with an OPTIONAL `now`, and `{"op":"quit"}` to end; the child
+answers exactly one `{"op":"done","seq","wallMs","tierStarts","tierCpuMs","workerCpuMs","failures","recovered",
+"recordCache","asmCheckpoint","parses","goalIo","tierGate"}` per pass. The request's `now`: absent or null, the tiers read
+their own clock during the pass, the in-process producer's behaviour and the kernel's DEFAULT (it sends no `now`), so a
+measured comparison of the two roads isolates the process split from the clock semantics; a number is the explicit clock
+variant, truncated to the second and handed to both tiers for the whole pass, available for a measurement that wants it
+on its own (2026-09-18). Every counter on the done line is a PER-PASS figure: `wallMs`, `tierCpuMs` and `workerCpuMs` are
+the pass's own, `failures` its tier crashes, and the five blocks (`recordCache` and `asmCheckpoint` from the event model,
+`parses` as the parse store's misses and hits, `goalIo` as the goal-store loads, saves and writes, `tierGate` as the tiers'
+gate counters per stage (`plan`, `group`, `close`, `distill`, `unblock`, `consolidate`): `ran`, `skipped`, `stamped`,
+`bypassed`, `incomplete`, `due_clock`, the admittance the pass ran under) are the DIFFERENCES against the previous pass's snapshot for every counter, so the kernel can feed its `/perf`
+counters per pass, while each block's GAUGES ride as their current values: in `recordCache` the keys `entries`, `bytes`
+(the cache's contents now), `budgetBytes` and `countCap` (its caps); in `asmCheckpoint` the key `asmDocMemo` (the document
+memo's size and cap); in `tierGate` the key `stamps` (the stage stamps held now); `parses` and `goalIo` carry counters only. `asmCheckpoint.restoreMs` is a counter like its neighbours (the restore's parts
 since boot, as described above), so the line carries the pass's own restore time. A non-numeric value (a name) rides as
 current too. `recovered` is the child's judge-module recovery flag (the once-per-storm
 edge `consume_judge_recovery` reads), consumed by the child and acted on by the kernel, which re-arms its given-up cards on

@@ -246,6 +246,26 @@ class OnePass(Harness):
         self.assertEqual(_tree(root).keys() - {"names/" + SID}, set(), "no store written")
         c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
 
+    def test_a_request_without_a_clock_runs_the_tiers_on_their_own_clock_the_kernels_default(self):
+        """The request's `now` is optional (2026-09-18): absent or null, the tiers read their own clock during the pass, the
+        in-process producer's behaviour and the kernel side's default; a number is the explicit variant, handed to both tiers
+        truncated to the second. Green at the base too (the child never required the field), said as such: this pins the
+        contract the kernel's default now relies on, and the source that passes the clock through only when it is a number."""
+        root = self.state_root("noclock"); c = self.child(root)
+        self.assertEqual(c.line()["op"], "ready")
+        c.send({"op": "pass", "seq": 1, "mayStart": True})                                # no clock at all
+        done = c.line()
+        self.assertEqual((done["op"], done["seq"], done["tierStarts"], done["failures"]), ("done", 1, 2, None), done)
+        self.assertGreaterEqual(sum(v["ran"] for k, v in done["tierGate"].items() if k != "stamps"), 1, "the tiers ran their stages on their own clock")
+        c.send({"op": "pass", "seq": 2, "mayStart": True, "now": None})                   # an explicit null: the same
+        done2 = c.line()
+        self.assertEqual((done2["op"], done2["seq"], done2["tierStarts"]), ("done", 2, 2), done2)
+        c.send({"op": "quit"}); c.proc.wait(timeout=60); self.assertEqual(c.proc.returncode, 0)
+        import inspect
+        src = inspect.getsource(jd._serve_pass)
+        self.assertIn('now = int(now) if isinstance(now, (int, float)) and not isinstance(now, bool) else None', src, "a number is the explicit clock variant; anything else is the tiers' own clock")
+        self.assertIn("run_pass(may_start, now=now, before_tier=_serve_fault)", src)
+
     def test_the_done_lines_counter_blocks_are_per_pass_deltas(self):
         """Round two (the kernel head's read): the blocks rode as cumulative process snapshots, which the kernel could not
         feed into its per-pass counters; the child keeps the previous snapshot and emits the difference, so a pass that
@@ -268,8 +288,15 @@ class OnePass(Harness):
                     yield from numbers(v, path + k + ".")
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     yield path + k, v
-        gauges = {"recordCache": ("entries", "bytes", "budgetBytes", "countCap"), "asmCheckpoint": ("asmDocMemo",)}
-        for name in ("recordCache", "asmCheckpoint", "parses", "goalIo"):                 # the two blocks the base carried first,
+        gauges = {"recordCache": ("entries", "bytes", "budgetBytes", "countCap"), "asmCheckpoint": ("asmDocMemo",), "tierGate": ("stamps",)}
+        # the tiers' gate counters ride the line too (2026-09-18: a flip's call count per pass had no gate figure to explain it): per tier,
+        # ran/skipped/stamped/bypassed/incomplete/due_clock as deltas, the working first pass with runs, the idle second with none
+        STAGES = ["close", "consolidate", "distill", "group", "plan", "unblock"]
+        self.assertEqual(sorted(first.get("tierGate") or {}), sorted(STAGES + ["stamps"]), "the gate block, per stage, plus the stamps gauge (the base carried no tierGate)")
+        for stage in STAGES:
+            self.assertEqual(sorted(first["tierGate"][stage]), ["bypassed", "due_clock", "incomplete", "ran", "skipped", "stamped"], stage)
+        self.assertGreaterEqual(sum(first["tierGate"][st]["ran"] for st in STAGES), 1, "the working pass ran stages under the gate: %r" % first["tierGate"])
+        for name in ("recordCache", "asmCheckpoint", "parses", "goalIo", "tierGate"):     # the two blocks the base carried first,
             nonzero = [(k, v) for k, v in numbers(second.get(name) or {}) if v and k.split(".")[0] not in gauges.get(name, ())]
             self.assertEqual(nonzero, [], "%s: an idle pass reports a zero delta for every counter (the base reported the process totals)" % name)
         for name, keys in gauges.items():                                               # round three: the gauges ride as current
@@ -280,6 +307,8 @@ class OnePass(Harness):
         self.assertGreater(second["asmCheckpoint"]["asmDocMemo"]["capBytes"], 0, "a cap never reads zero on the second pass")
         for key in ("budgetBytes", "countCap"):                                          # the caps hold across a working pass too
             self.assertEqual(third["recordCache"][key], first["recordCache"][key])
+        self.assertEqual(third["tierGate"]["stamps"], second["tierGate"]["stamps"], "the stamps held is a gauge: the same count on the idle and the warm pass")
+        self.assertGreaterEqual(sum(third["tierGate"][st]["ran"] for st in STAGES), 1, "the warm third pass ran stages under the gate")
         self.assertEqual(third["asmCheckpoint"]["asmDocMemo"]["capBytes"], first["asmCheckpoint"]["asmDocMemo"]["capBytes"])
         first_restore = first["asmCheckpoint"]["restoreMs"].get("total", 0.0)
         self.assertGreater(first_restore, 0.0, "the first pass restored the fixture's document")
@@ -494,7 +523,7 @@ class Deltas(unittest.TestCase):
                          "restoreMs accumulates since boot (the read saw 10.088, 20.183, 30.277 over three restores): a counter, differenced; "
                          "asmDocMemo a gauge, current (round four: listed as a gauge, restoreMs read the boot-to-now sum)")
         self.assertNotIn("restoreMs", (gauges or {}).get("asmCheckpoint", ()), "no cumulative counter in the gauge list")
-        self.assertEqual(set(jd._SERVE_GAUGES), {"recordCache", "asmCheckpoint", "parses", "goalIo"}, "one gauge list per block")
+        self.assertEqual(set(jd._SERVE_GAUGES), {"recordCache", "asmCheckpoint", "parses", "goalIo", "tierGate"}, "one gauge list per block")
 
     def test_the_fault_knob_names_the_shape_before_the_tier(self):
         self.assertEqual(jd._serve_fault_parse("garbage")[1][:44], "not raise:<tier>, sleep:<tier>:<seconds> or ")

@@ -1247,3 +1247,31 @@ test("Continue on a category-carrying card predicts the move to Working: the pre
   await dispatch(frame([{ ...g9, column: "working", category: "working", followupPending: true, followupAt: K0 }, ...others], { working: ["web", "api"] }));
   assert.equal(colOf("g9"), "col-asks-list", "the kernel's re-filing confirms it");
 });
+
+// ── phase three of the boards: the kernel's fan-back on a category-carrying card, and a card on a data-defined board ────────
+test("the kernel's cardPredict fan-back moves a category-carrying card to Working through askColumn (the 1837 round-two read, low 1)", async () => {
+  const others = Array.from(body.querySelectorAll(".fitem")).map((c: any) => c._it).filter(Boolean).filter((it: any) => it.itemId !== "g9");
+  // the card whose category disagrees with its column (a data-defined board's, or a kernel that files by category where the
+  // column keeps the feed's word): the renderer files it by the category, so the fan-back must read the same field
+  const g10 = cardOf("g10", WEB, "web", "#3366cc", "Approve the notes-api schema change", "working", { board: "feed", category: "needs_input" });
+  await dispatch(frame([g10, ...others], { working: ["api"] }));
+  assert.equal(colOf("g10"), "col-needsInput-list", "filed by its category");
+  await dispatch({ type: "cardPredict", ids: ["g10"], flavor: "followup" });   // a reply fired in the chat: the kernel says so ahead of its rebuild
+  assert.equal(colOf("g10"), "col-asks-list", "the fan-back predicted the move: Working by the card's category, not its column");
+  await dispatch(frame([{ ...g10, column: "working", category: "working", followupPending: true, followupAt: K0 }, ...others], { working: ["web", "api"] }));
+  assert.equal(colOf("g10"), "col-asks-list");
+});
+
+test("a notice card on a data-defined board shows on the feed under the default column with its board named beside the producer, until the board has a view of its own", async () => {
+  const others = Array.from(body.querySelectorAll(".fitem")).map((c: any) => c._it).filter(Boolean);
+  const notes = { id: "notes", title: "Notes", categories: [{ id: "new", title: "New", chip: "neutral" }], defaultCategory: "new", rules: [], sort: { key: "t", dir: "desc" },
+    subSorts: [], groupBy: null, order: [], notify: ["new"], needsYou: "new", kinds: ["notice"] };
+  const n1 = cardOf("notice:" + WEB + ":sweep:1", WEB, "web", "#3366cc", "The sweep finished", "completed",
+    { board: "notes", category: "new", live: false, tree: [], notice: { producer: "cli", key: "sweep", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
+  await dispatch(frame([n1, ...others], { boards: { notes } }));
+  const c = card("notice:" + WEB + ":sweep:1");
+  assert.equal(colOf("notice:" + WEB + ":sweep:1"), "col-asks-list", "a category the feed lacks files under the feed's default column");
+  assert.equal(c._nProd.textContent, "via cli · on Notes", "the board's title beside the producer");
+  await dispatch(frame([n1, ...others], {}));   // a frame from a kernel that ships no boards: the board is unknown, the label says nothing of it
+  assert.equal(c._nProd.textContent, "via cli");
+});
