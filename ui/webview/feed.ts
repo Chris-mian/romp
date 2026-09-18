@@ -23,7 +23,7 @@ import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
 import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
-import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf, bareId } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
@@ -602,7 +602,10 @@ let sessionOrder: string[] = [];
 // top of the feed). The feed board's SORT RULE, never a card field or a timestamp trick (plans/notice-cards.md, "Owner-less
 // cards"): within a column, the owner-less run ranks before every session run, then the session order, then time.
 const NOTICE_OWNERLESS_SID = "notes";
-const ownerRank = (sid: string): number => sid === NOTICE_OWNERLESS_SID ? 0 : 1;
+// A remote host's owner-less card arrives with its sid host-prefixed (federation prefixInbound: "host:notes"), so the test
+// strips the prefix the way federation adds it: one helper for the rank, the chip and the header (round two of PR 1831)
+const isOwnerless = (sid: string | null | undefined): boolean => !!sid && bareId(sid) === NOTICE_OWNERLESS_SID;
+const ownerRank = (sid: string): number => isOwnerless(sid) ? 0 : 1;
 // The chat tab strip's sessions (sid+name+color), riding every feed push: the footer's session-filter
 // menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
 // filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
@@ -2071,7 +2074,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   setLinkedText(a._title, it.text, prRepoOf(it.sid));   // `#123` in the goal text → its PR page; keyed, so an unchanged title keeps its anchors across pushes (pr-links.ts)
   // an OWNER-LESS notice card has no session chip: no session stands behind it, so no name to open and no dot to paint; the
   // run header above it says Notes (the user 2026-09-18)
-  const ownerless = it.sid === NOTICE_OWNERLESS_SID;
+  const ownerless = isOwnerless(it.sid);
   a._name.style.display = ownerless ? "none" : "";
   if (!ownerless) {
     a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
@@ -3916,16 +3919,29 @@ function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
   // same-value write too
   if (h.getAttribute("data-fsid") !== e.sid) h.setAttribute("data-fsid", e.sid);
   if (h.getAttribute("data-fcol") !== e.col) h.setAttribute("data-fcol", e.col);
-  const nm = (h as any)._name as HTMLElement;
+  let nm = (h as any)._name as HTMLElement;
+  // the owner-less run's header name is a SPAN, no anchor at all (round two of PR 1831: an anchor offered to open or revive a
+  // session named notes that never existed); a header is keyed per (column, sid), so the swap happens once per header
+  if (isOwnerless(e.sid) !== (nm.tagName === "SPAN")) {
+    const sw = el(isOwnerless(e.sid) ? "span" : "a", isOwnerless(e.sid) ? "fname-plain" : "fname");
+    nm.replaceWith(sw); (h as any)._name = sw; (h as any)._nmSig = undefined; nm = sw;
+  }
   // the name nodes are minted only when what they show changes: headers repaint every render (they are not
   // behind the per-card update gate), and each mint is a Text-node replacement — the same reason cards are
   // gated. hostNameNodes reads the name, the sid's host prefix and whether that host's link is down.
   const nmSig = e.name + "\u0000" + e.sid + "\u0000" + (hostIsDown(e.sid) ? "d" : "");
   if ((h as any)._nmSig !== nmSig) { (h as any)._nmSig = nmSig; nm.replaceChildren(...hostNameNodes(e.name, e.sid)); }
   if (e.color) nm.style.color = e.color.bg;
-  nm.classList.toggle("dead", !e.live);
-  nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
-  setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  if (isOwnerless(e.sid)) {
+    // the owner-less run's header (Notes, or a remote host's host:Notes) is PLAIN TEXT: no session stands behind it, so no
+    // anchor to open, no title, no dead class, no revive offer, no dot
+    nm.classList.remove("dead"); nm.removeAttribute("title"); nm.onclick = null;
+  } else {
+    nm.title = "open this session";
+    nm.classList.toggle("dead", !e.live);
+    nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
+    setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  }
   // the fold caret + the "n cards" stand-in for what it hides
   const fold = (h as any)._fold as HTMLElement, foldn = (h as any)._foldn as HTMLElement;
   // per (session, COLUMN) — T263c, the user 2026-09-08: the same session folds in Blocked and stays open in
@@ -5642,8 +5658,7 @@ function renderBody(list: HTMLElement) {
   const newestFirst = feedPrefs().newestFirst;
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
   // the feed board's owner rule (stable, so each run keeps the column's time order): the owner-less cards first in every mode
-  const entryOwner = (e: Entry) => e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
-  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entryOwner(x)) - ownerRank(entryOwner(y)));
+  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entrySid(x)) - ownerRank(entrySid(y)));
   // THE FOCUSED SESSION's view of these buckets (T347), taken HERE, before grouping: the section shows one
   // session, so it carries no run headers, and a thread folded below must not empty it — the fold hides
   // cards behind a caret the section does not have, and a compact view never dead-ends (ui/CLAUDE.md).
@@ -5658,7 +5673,7 @@ function renderBody(list: HTMLElement) {
     for (const k of Object.keys(buckets) as Column[]) {
       const extra = new Map<string, number>();   // sids the order list doesn't know → after it, first-seen order
       for (const e of buckets[k]) { const s = eSid(e); if (!rank.has(s) && !extra.has(s)) extra.set(s, extra.size); }
-      const rk = (e: Entry) => { const s = eSid(e); return s === NOTICE_OWNERLESS_SID ? -1 : rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };   // the owner-less run heads the column
+      const rk = (e: Entry) => { const s = eSid(e); return isOwnerless(s) ? -1 : rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };   // the owner-less run heads the column (a remote host's too)
       buckets[k].sort((x, y) => rk(x) - rk(y));
       const withHeads: Entry[] = [];
       let cur: string | null = null;

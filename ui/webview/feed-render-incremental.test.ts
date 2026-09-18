@@ -1177,3 +1177,27 @@ test("an OWNER-LESS notice card (no session) shows no session chip and heads its
   assert.equal(order("col-completed-list").filter((k) => k.startsWith("a:")).slice(0, 2).join(" "), "a:notice:notes:old:1 a:notice:notes:new:1", "the completed column's Notes run keeps its time order under its header");
   setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
 });
+
+test("a REMOTE host's owner-less card (sid host-prefixed by federation) ranks first, hides its chip, and its Notes header is plain text with no anchor, title, dead class or click", async () => {
+  // round two of PR 1831: federation's prefixInbound hands the pane "TESTHOST:notes" and "TESTHOST:Notes"; the owner test strips
+  // the host the way federation adds it (host-prefix bareId), so the rank, the chip and the header agree across hosts; the
+  // header offered to revive a session named notes that never existed on the remote host
+  const setPrefs = (v: string) => { stores.local.set("romp:settings", v); win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:settings", newValue: v })); };
+  const remote = { ...cardOf("TESTHOST:notice:notes:r1:1", "TESTHOST:notes", "TESTHOST:Notes", "", "A note from the other machine", "needs_input", { live: false, tree: [], blocked: null, board: "feed", category: "needs_input",
+    notice: { producer: "cli", key: "r1", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false, acted: false } }), t: 7000, color: null };
+  const sAsk = { ...cardOf("s-ask2", WEB, "web", "#3366cc", "A question from the web session", "needs_input", { live: true, tree: [], blocked: null }), t: 1 };
+  setPrefs(JSON.stringify({ grouped: true, newestFirst: false }));
+  await dispatch(frame([g1, g2, g3, sAsk, remote], { working: ["web"], order: [WEB] }));
+  const c = card("TESTHOST:notice:notes:r1:1");
+  assert.ok(c, "on the board"); assert.equal(c._name.style.display, "none", "no session chip for the remote owner-less card");
+  const order = (col: string) => Array.from(body.querySelector("#" + col)!.children).filter((n: any) => n.dataset && n.dataset.key).map((n: any) => n.dataset.key as string);
+  assert.deepEqual(order("col-needsInput-list").filter((k) => k.startsWith("a:")), ["a:TESTHOST:notice:notes:r1:1", "a:s-ask2"], "the remote Notes run first, above the session's older card");
+  const heads = Array.from(body.querySelectorAll("#col-needsInput-list .feed-sess-head")).filter((h: any) => !h.classList.contains("sess-exit")) as any[];
+  assert.equal(heads[0].getAttribute("data-fsid"), "TESTHOST:notes", "its header heads the column");
+  const nm = heads[0]._name;
+  assert.equal(nm.tagName, "SPAN", "plain text: no anchor"); assert.equal(nm.className, "fname-plain");
+  assert.equal(nm.getAttribute("title"), null, "no title"); assert.ok(!nm.classList.contains("dead"), "no dead class"); assert.equal(nm.onclick, null, "no click: nothing to open or revive");
+  assert.match(nm.textContent, /Notes/, "the host-prefixed name reads through: " + nm.textContent);
+  assert.equal(heads[1]._name.tagName, "A", "a session's header keeps its anchor"); assert.equal(heads[1]._name.getAttribute("title"), "open this session");
+  setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
+});

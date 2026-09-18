@@ -44,9 +44,14 @@ test("the owner-less notice cards' owner key is one literal in the kernel and th
   assert.match(KERNEL, /^NOTICE_OWNERLESS_SID = "notes"/m, "the kernel's reserved key");
   assert.match(FEED, /const NOTICE_OWNERLESS_SID = "notes";/, "the pane's literal equals it");
   assert.match(KERNEL, /^NOTICE_OWNERLESS_NAME = "Notes"/m, "the run's name");
-  assert.match(FEED, /const ownerRank = \(sid: string\): number => sid === NOTICE_OWNERLESS_SID \? 0 : 1;/, "the owner rule as a rank, not a timestamp");
-  assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => ownerRank\(entryOwner\(x\)\) - ownerRank\(entryOwner\(y\)\)\);/, "applied after the time sort in every mode, stable");
-  assert.match(FEED, /s === NOTICE_OWNERLESS_SID \? -1 : rank\.has\(s\)/, "and before the session order in grouped mode");
-  assert.match(FEED, /const ownerless = it\.sid === NOTICE_OWNERLESS_SID;\s*\n\s*a\._name\.style\.display = ownerless \? "none" : "";/, "no session chip on the card");
+  // one helper strips a remote host's prefix the way federation adds it (round two of PR 1831), read by the rank, the chip and the header
+  assert.match(FEED, /const isOwnerless = \(sid: string \| null \| undefined\): boolean => !!sid && bareId\(sid\) === NOTICE_OWNERLESS_SID;/, "the owner test, host-prefix aware");
+  assert.match(FEED, /const ownerRank = \(sid: string\): number => isOwnerless\(sid\) \? 0 : 1;/, "the owner rule as a rank, not a timestamp");
+  assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => ownerRank\(entrySid\(x\)\) - ownerRank\(entrySid\(y\)\)\);/, "applied after the time sort in every mode, stable, on the shared entrySid");
+  assert.doesNotMatch(FEED, /const entryOwner = /, "no second copy of entrySid");
+  assert.match(FEED, /return isOwnerless\(s\) \? -1 : rank\.has\(s\)/, "and before the session order in grouped mode");
+  assert.match(FEED, /const ownerless = isOwnerless\(it\.sid\);\s*\n\s*a\._name\.style\.display = ownerless \? "none" : "";/, "no session chip on the card");
+  assert.match(FEED, /if \(isOwnerless\(e\.sid\) !== \(nm\.tagName === "SPAN"\)\) \{/, "the header's name node is a span for the owner-less run");
+  assert.match(FEED, /nm\.classList\.remove\("dead"\); nm\.removeAttribute\("title"\); nm\.onclick = null;/, "plain text: no title, no dead class, no click");
   assert.match(KERNEL, /"board": "feed", "category": column,/, "the board model's two fields on every notice card (agreed with the board design's author)");
 });

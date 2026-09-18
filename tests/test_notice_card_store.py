@@ -344,6 +344,31 @@ class OwnerLess(unittest.TestCase):
         self.assertEqual(km._notice_action("notice:notes:k1:1", "/send", {"text": "x"}), (False, "an owner-less card has no actions"))
         self.assertEqual(self.w.delivered, [], "nothing delivered")
 
+    def test_the_reserved_word_as_a_name_is_refused_and_only_an_empty_sid_takes_the_owner_less_road(self):
+        # round two of PR 1831: _sid_of hands an unresolved name back unchanged, so "notes" as a name reached post_notice as the
+        # reserved sid and the store's session check answered yes; the owner-less road is an EMPTY sid alone
+        row, err = km.post_notice("notes", "k1", "t", producer="cli", now=100)
+        self.assertEqual((row, err), (None, 'no session answers to "notes"'), "the reserved word arriving as a sid is a name no session answers to")
+        self.assertFalse(km._notice_path("notes").exists(), "nothing reached the reserved home")
+        self.assertFalse(km._notice_session_known("notes"), "the session check never answers for the key")
+        row, err = km.expire_notice("notes", "k1")
+        self.assertEqual((row, err), (None, 'no session answers to "notes"'), "the expire door too")
+        # a DEAD session actually named notes: its name resolves to no live session, so it is refused as any dead name is,
+        # and never retargets the shared home
+        dead = "11111111-2222-3333-4444-777777777777"
+        (km.jd.NAMES / dead).write_text("notes\t%s\t#B69513\tblack\n" % self.w.cwd)
+        self.assertEqual(km._sid_of("notes"), "notes", "the dead name falls through unresolved (the registry is sid-keyed)")
+        row, err = km.post_notice(km._sid_of("notes"), "k1", "t", producer="cli", now=100)
+        self.assertEqual((row, err), (None, 'no session answers to "notes"'))
+        row, err = km.post_notice(dead, "k1", "t", producer="cli", now=100)
+        self.assertEqual((err, row["sid"]), (None, dead), "by its sid the dead session takes its own home, as any session's card does")
+        self.assertFalse(km._notice_path("notes").exists())
+        # the owner-less road: an empty sid, and nothing else
+        row, err = km.post_notice("", "k1", "t", producer="cli", now=100)
+        self.assertEqual((err, row["sid"]), (None, "notes"))
+        row, err = km.post_notice(None, "k2", "t", producer="cli", now=100)
+        self.assertEqual((err, row["sid"]), (None, "notes"))
+
     def test_owner_less_cards_ride_the_ledger_the_pass_the_index_and_undo_like_any_notice_card(self):
         km.post_notice("", "k1", "first", producer="cli", now=100, t=100)
         iid = "notice:notes:k1:1"
@@ -836,6 +861,14 @@ class TheDoors(unittest.TestCase):
         # a name no session answers to is refused, never guessed owner-less (the design's rule)
         st, r = self._post({"name": "nobody", "key": "k", "title": "t"})
         self.assertEqual((st, r.get("ok"), r.get("error")), (200, False, 'no session answers to "nobody"'))
+        # the reserved word as a NAME through the route: refused like any name no session answers to (round two of PR 1831)
+        st, r = self._post({"name": "notes", "key": "k", "title": "t"})
+        self.assertEqual((st, r.get("ok"), r.get("error")), (200, False, 'no session answers to "notes"'))
+        st, r = self._post({"id": "notes", "key": "k", "title": "t"})
+        self.assertEqual((st, r.get("ok"), r.get("error")), (200, False, 'no session answers to "notes"'), "and as an id")
+        st, r = self._post({"name": "notes", "expire": "k"})
+        self.assertEqual((st, r.get("ok")), (200, False)); self.assertIn("no session answers", r.get("error", ""))
+        self.assertFalse(km._notice_path("notes").exists(), "nothing reached the reserved home by name")
         st, r = self._post({"key": "k1", "title": "Owner-less through the route", "body": "b"})
         self.assertEqual((st, r.get("ok")), (200, True), r); self.assertEqual(r["notice"]["sid"], "notes")
         self.assertEqual([c["itemId"] for c in km._notice_cards(500, set())], ["notice:notes:k1:1"])

@@ -476,8 +476,9 @@ feed, no key to manage, and the terse form `romp card -t "title" -m "some text"`
 characters of hex and hyphens), and `notes` is a word. A session NAMED notes has a uuid sid, and the kernel resolves a
 name to its sid before the store sees it, so a name no session answers to is still refused ("no session answers to"),
 never guessed owner-less: only an ABSENT session (no `id`, no `name` on the route; no `--session` and no `ROMP_SID` on the
-command line, or `--no-session` inside a session) takes the owner-less road. `post_notice` takes an empty `sid` as that
-road and `_notice_session_known` answers yes for the reserved key, which every kernel has.
+command line, or `--no-session` inside a session) takes the owner-less road. `post_notice` takes an EMPTY `sid` as that
+road and nothing else: the reserved word arriving as a sid (an unresolved name handed back by `_sid_of`) is refused as a
+name no session answers to, and the session check never answers for the key.
 
 **Name and colour.** On the feed the owner-less run reads **Notes** (`NOTICE_OWNERLESS_NAME`) with no identity colour, since
 no session stands behind it; the card carries no session chip. In a federated view the remote host's prefix distinguishes
@@ -493,10 +494,11 @@ superseded and over-cap rows move to `notices-archive/notes.jsonl`, the revision
 revisions, the restore's tail read serves its Undo. The fifty-live-keys cap applies to the file on its own, so owner-less
 cards are capped as one session's would be.
 
-**Order: the feed board's rule.** Every kernel-built card carries two fields the board model reads (plans/card-boards.md;
-the names agreed with its author 2026-09-18): `board`, the board the card sits on, `"feed"` for every card today; and
-`category`, the card's category, which is today's raw column value (`needs_input`, `working`, `completed`), carried beside
-`column` until the renderer reads `category` alone (`column` stays byte-identical meanwhile). The owner-less cards' place
+**Order: the feed board's rule.** Every NOTICE card carries two fields the board model reads (plans/card-boards.md;
+the names agreed with its author 2026-09-18): `board`, the board the card sits on, `"feed"` today; and `category`, the
+card's category, which is today's raw column value (`needs_input`, `working`, `completed`), carried beside `column` until
+the renderer reads `category` alone (`column` stays byte-identical meanwhile). The other card families write `column`
+alone; every family carrying the two fields is the boards' phase two, as the card-boards plan says. The owner-less cards' place
 is a SORT RULE of the feed board, not a card field and not a timestamp trick: within a category, runs order by the owner
 key, the reserved no-session key first, then the session order, then time; needs-you still decides the category, so an
 owner-less card that needs you heads the needs-you column and one that does not heads Completed. In grouped mode the Notes
