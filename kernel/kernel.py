@@ -33116,6 +33116,38 @@ def _chat_sig_deps(sid, deps):
     return (touts, tuple(pl), postal)
 
 
+# The liveness-row fields the chat build never reads (2026-09-18). snapT and interrupting as before (the row comment in
+# _chat_build_sig; the merged row Sessions.live emits carries neither, it copies an explicit key list and interrupting
+# is a feed-entry field, so those two matter only to hand-built test rows and are kept for them); ctxTokens, the raw
+# token count every usage report moves while the payload renders the clamped percent (context, ctxOver; its one reader
+# is the compaction-suggestion tick, _compact_suggest_tick, not a build); and, on each background-task row, lastTool,
+# which every task_progress of a background task that names a tool rewrites (sdk_backend _on_task_event) and no kernel
+# reader reads (_bg_live_norm, _bg_tasks, _agent_alive and the feed's _row_ids_sig read toolUseId, taskId, type, desc,
+# since). A field the build READS is never listed here: an unread field left in costs one byte-identical rebuild per
+# cycle it moved in, which /perf's builds.chat.bg_miss.row shows; a read field dropped would serve a stale payload
+# silently (the memo rule in _chat_build_sig's docstring). tests/test_chat_build_sig_inputs.py pins both sets and that
+# the kernel reads neither dropped field.
+_CHAT_ROW_UNKEYED = frozenset(("snapT", "interrupting", "ctxTokens"))
+_CHAT_TASK_ROW_UNKEYED = frozenset(("lastTool",))
+
+
+def _chat_row_sig(tm):
+    """The liveness row as the chat-build signature's `row` component: the row's items without _CHAT_ROW_UNKEYED,
+    each bgTasks row reduced to its sorted items without _CHAT_TASK_ROW_UNKEYED (a tuple, compared by value as the
+    dict was; a task row keeps toolUseId, taskId, type, desc and since, of which toolUseId, taskId and since are
+    static per task). The component moves exactly when a rendered row fact moves (state, since, model, effort, mode,
+    the percent and ctxOver, the badges, the retry fields), a subagent starts or stops (the subagent set), or a
+    background task starts or ends (membership by toolUseId) or learns its description or type; never on a task's
+    progress chatter or a usage report that left the percent where it was (2026-09-18). None for no row."""
+    if not tm:
+        return None
+    out = {k: v for k, v in tm.items() if k not in _CHAT_ROW_UNKEYED}
+    if "bgTasks" in out:
+        out["bgTasks"] = tuple(tuple(sorted((k, v) for k, v in t.items() if k not in _CHAT_TASK_ROW_UNKEYED))
+                               if isinstance(t, dict) else t for t in (out["bgTasks"] or ()))
+    return out
+
+
 def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
     """The chat-build cache's signature: one component per input build_session reads that can change a
     tab's payload, in _CHAT_SIG_LABELS order (tests/test_chat_build_sig_inputs.py maps every read
@@ -33209,10 +33241,12 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         sig.append(Sessions.live_rev(sid, be))
         # row: the liveness row the build reads (state, since, model, effort, mode, the badges, the live
         # subagent and task sets, spawning, retry info), minus snapT (a per-snapshot stamp that moves every
-        # cycle) and interrupting (read only through _interrupting, whose boolean is folded below); with
-        # whether the map holds anything at all (the row-missing status once turned on it — the no-tmux
-        # fallback, gone 2026-09-11 — and the key keeps it).
-        sig.append(({k: v for k, v in tm.items() if k not in ("snapT", "interrupting")} if tm else None, bool(live_map)))
+        # cycle) and interrupting (read only through _interrupting, whose boolean is folded below); minus
+        # ctxTokens (the raw count: the payload renders the percent) and each task row's lastTool (progress
+        # chatter no reader reads), both 2026-09-18, _chat_row_sig; with whether the map holds anything at
+        # all (the row-missing status once turned on it — the no-tmux fallback, gone 2026-09-11 — and the
+        # key keeps it).
+        sig.append((_chat_row_sig(tm), bool(live_map)))
         # clock: the booleans the clock decides, so the signature moves exactly at each crossing and at no
         # other tick: the interrupt stamp's 120 s cap and its settle (_interrupting, which pops the stamp
         # exactly as the build's call would), the model-switch stamp's 20 s cap (_model_pending_now), the
