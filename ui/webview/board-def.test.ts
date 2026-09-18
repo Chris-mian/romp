@@ -7,7 +7,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FEED_BOARD, FEED_KINDS, FEED_LOCAL_KEY, CHIPS, SORT_FIELDS, KIND_IDS, RESERVED_BOARD_IDS,
-         kindOf, columnOf, columnTable, feedColumns, isNeedsYou, boardCheck, defaultBoard } from "./board-def";
+         kindOf, columnOf, columnTable, feedColumns, isNeedsYou, boardCheck, defaultBoard, adoptBoards, boardOf, knownBoards } from "./board-def";
+import { mergeHostFeeds } from "./federation";
 import { FEED_COLUMNS } from "./feed-view-state";
 
 const read = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", ...p), "utf8");
@@ -67,7 +68,7 @@ test("the sort, the grouping and the notification set equal the sources' literal
 });
 
 test("feed.ts reads the definition at the section-4 sites and nowhere else", () => {
-  assert.match(FEED, /import \{ FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, type FeedCategory \} from "\.\/board-def";/);
+  assert.match(FEED, /import \{ FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, type FeedCategory \} from "\.\/board-def";/);
   assert.match(FEED, /column: FeedCategory;/, "the record's column is typed to the feed board's category ids");
   assert.match(FEED, /board\?: string;[^\n]*\n\s*category\?: string;/, "the record carries its board and category (phase two), optional for an older kernel's frame");
   assert.match(FEED, /return columnOf\(FEED_BOARD, it\.category \?\? it\.column\);/, "askColumn is the definition's table over the category, the column as the older frame's fallback");
@@ -163,4 +164,37 @@ test("a first-use board takes the plan's defaults and passes the check", () => {
     rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [], notify: [], needsYou: null, kinds: ["notice"] });
   assert.equal(defaultBoard("scratch").categories[0].id, "notes", "no category named: one called notes");
   assert.match(BOARD_SRC, /^export function boardCheck\(/m, "one validator, the client half");
+});
+
+// ── phase three: the data-defined boards the frame carries ──────────────────────────────────────────────────────────────
+const NOTES = { id: "notes", title: "Notes", categories: [{ id: "new", title: "New", chip: "neutral" }, { id: "kept", title: "Kept", chip: "working" }],
+  defaultCategory: "new", rules: [{ when: { needsYou: true }, category: "new" }], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [],
+  notify: ["new"], needsYou: "new", kinds: ["notice"] };
+
+test("the frame's boards are held only after the client half of the check; a reserved id, a refused definition or a mismatched id is skipped", () => {
+  assert.equal(adoptBoards(null), 0); assert.equal(adoptBoards([NOTES]), 0, "a list is no map");
+  const n = adoptBoards({ notes: NOTES, feed: { ...NOTES, id: "feed" }, bad: { ...NOTES, id: "bad", categories: [] }, other: { ...NOTES, id: "notes2" } });
+  assert.equal(n, 1, "notes alone: the feed is code, bad fails the check (no categories), other names another id");
+  assert.deepEqual(knownBoards().map((b) => b.id), ["feed", "notes"], "code first");
+  assert.equal(boardOf({ board: "notes" }), knownBoards()[1]);
+  assert.equal(boardOf({ board: "feed" }), FEED_BOARD); assert.equal(boardOf({}), FEED_BOARD); assert.equal(boardOf({ board: "gone" }), FEED_BOARD, "an unknown id reads as the feed's");
+  assert.equal(adoptBoards({}), 0, "the map is replaced whole: a frame without boards clears the held set");
+  assert.equal(boardOf({ board: "notes" }), FEED_BOARD);
+  assert.match(FEED, /^  adoptBoards\(m\.boards\);/m, "the frame handler's read: every frame's word, a frame without the field holding none");
+});
+
+test("the federation merge folds every host's boards, the local host's definition winning on an id", () => {
+  const remoteNotes = { ...NOTES, title: "Remote notes" };
+  const merged = mergeHostFeeds({ "": { type: "feed", now: 7, boards: { notes: NOTES } }, HOSTA: { type: "feed", now: 8, boards: { notes: remoteNotes, lab: { ...NOTES, id: "lab" } } } },
+                                ["", "HOSTA"], [], [], { "": 3, HOSTA: 9 });
+  assert.deepEqual(Object.keys(merged.boards).sort(), ["lab", "notes"]);
+  assert.equal(merged.boards.notes.title, "Notes", "the local definition wins");
+  assert.equal(merged.boards.lab.id, "lab", "a remote-only board keeps the remote's definition");
+  const bare = mergeHostFeeds({ "": { type: "feed", now: 7 } }, [""]);
+  assert.deepEqual(bare.boards, {}, "no host shipped boards: an empty map, never undefined");
+});
+
+test("the cardPredict fan-back reads the card through askColumn (the 1837 round-two read, low 1)", () => {
+  assert.match(FEED, /if \(top && askColumn\(top\) !== "asks"\) \{ optimisticFollowMove\(top\.itemId, kind\); moved = true; \}/);
+  assert.doesNotMatch(FEED, /top\.column !== "working"/);
 });

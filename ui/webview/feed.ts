@@ -43,7 +43,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
 import { inInputEvent } from "./input-event";
 import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
-import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
+import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
 import { wireTip, setTip, pruneTip } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
 import { listenForFrames } from "./frame-listener";
@@ -2651,11 +2651,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const nProd = a._nProd as HTMLElement, nBody = a._nBody as HTMLElement, nAttach = a._nAttach as HTMLElement, nActions = a._nActions as HTMLElement;
   for (const e of [nProd, nBody, nAttach, nActions]) e.style.display = nt ? "" : "none";
   if (nt) {
-    const nkey = JSON.stringify([nt.key, nt.rev, nt.producer, nt.body, nt.attachment, nt.actions, it.sid]);
+    // a card on a data-defined board shows on the feed under the feed's default column until the board has a view of its own
+    // (phase four's switch); its board's title rides the producer label so the reader knows where it belongs
+    const onBoard = boardOf(it) !== FEED_BOARD ? boardOf(it).title : "";
+    const nkey = JSON.stringify([nt.key, nt.rev, nt.producer, nt.body, nt.attachment, nt.actions, it.sid, onBoard]);
     if ((a._nKey as string | undefined) !== nkey) {
       a._nKey = nkey;
-      nProd.textContent = nt.producer ? "via " + nt.producer : "";
-      nProd.title = nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "";
+      nProd.textContent = (nt.producer ? "via " + nt.producer : "") + (onBoard ? (nt.producer ? " · " : "") + "on " + onBoard : "");
+      nProd.title = (nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "") + (onBoard ? (nt.producer ? "; " : "") + "on the " + onBoard + " board" : "");
       nBody.replaceChildren();
       if (nt.body && nt.body.trim()) nBody.append(...noticeBodyNodes(nt.body));
       nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
@@ -5698,6 +5701,7 @@ function renderBody(list: HTMLElement) {
   // reaches, not with the board.
   const gprefs = feedPrefs();
   const gate: GateEnv = {
+    boardTitle: (it) => { const b = boardOf(it); return b === FEED_BOARD ? "" : b.title; },   // a card on a data-defined board: its label reads the title
     dot: dotFor, working: (n) => workingSet.has(n),
     focusId: hoverAskId ?? pinnedAskId, pinnedId: pinnedAskId, notifyOn: cardNotifyOn,
     prefs: { grouped: gprefs.grouped, collapsed: gprefs.collapsed, colormap: gprefs.colormap },
@@ -6347,6 +6351,7 @@ function applyFeedPayload(m: any): void {
   pendingHosts = Array.isArray(m.pendingHosts) ? m.pendingHosts.filter((h: any) => typeof h === "string") : [];
   pendingDead = Array.isArray(m.pendingDead) ? m.pendingDead.filter((h: any) => typeof h === "string") : [];
   syncHostloadBackstops();
+  adoptBoards(m.boards);   // the data-defined boards the kernel ships (plans/card-boards.md, phase three), the frame's whole word: a frame without the field (an older kernel's) holds none
   if (m.views && typeof m.views === "object") feedTagViews = m.views as SessionViews;   // tag DEFINITIONS only — never `active`
   if (Array.isArray(m.sessions)) {
     sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
@@ -6603,7 +6608,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     let moved = false;
     for (const raw of m.ids.map(String)) {
       const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
-      if (top && top.column !== "working") { optimisticFollowMove(top.itemId, kind); moved = true; }
+      if (top && askColumn(top) !== "asks") { optimisticFollowMove(top.itemId, kind); moved = true; }   // Working through askColumn: the category first (the 1837 round-two read, low 1)
     }
     if (moved) render();
   } else if (m.type === "cardMoveAck" && Array.isArray(m.ids)) {

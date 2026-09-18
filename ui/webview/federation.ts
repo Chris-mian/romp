@@ -519,6 +519,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
                                arrivedAt: Record<string, number> = {}, hostsRead = true): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], stateUnknown: [], order: [], sessions: [] };
+  const boards: Record<string, any> = {};
   let anchor = typeof local.now === "number" ? LOCAL : null;
   if (anchor === null) {
     for (const h of hostSeq) {
@@ -580,6 +581,12 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
     if (Array.isArray(f.stateUnknown)) merged.stateUnknown.push(...f.stateUnknown);
     if (Array.isArray(f.order)) merged.order.push(...f.order);   // grouped-mode session rank: local first, ids pre-prefixed
     if (Array.isArray(f.sessions)) merged.sessions.push(...f.sessions);   // the tab-strip session list (footer filter menu), sid+name pre-prefixed
+    // the data-defined boards (plans/card-boards.md): every host's definitions by id, the LOCAL host's winning on a collision
+    // (a board defined on both kernels shows both hosts' cards under this dashboard's definition); a remote-only board keeps
+    // the remote's shipped definition
+    if (f.boards && typeof f.boards === "object" && !Array.isArray(f.boards)) {
+      for (const [bid, defn] of Object.entries(f.boards)) if (h === LOCAL || !(bid in boards)) boards[bid] = defn;
+    }
     if (Array.isArray(f.ledgers)) { anyLedgers = true; ledgers.push(...f.ledgers); }
     if (typeof f.dismissedCount === "number") { anyDismissed = true; dismissed += f.dismissedCount; }
     if (f.canUndoClear) canUndo = true;
@@ -605,6 +612,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   if (syncs.length) merged.syncNotices = syncs;
   else delete merged.syncNotices;
   merged.buildIds = buildIds;
+  merged.boards = boards;   // the hosts' data-defined boards, the local definition winning on an id (plans/card-boards.md)
   merged.offHosts = offHosts;
   // Hosts ATTACHED but yet to contribute a feed payload (the user 2026-08-25: after attaching, the
   // sessions land via the faster tabOrder/timeline channels while the cards trail with no cue) —
