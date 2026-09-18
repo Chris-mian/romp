@@ -34,7 +34,8 @@ test("(4) the Preview caption is a title ABOVE the box, in both sections, never 
   assert.match(SECTION, /cfg\.host\.parentNode\.insertBefore\(title, cfg\.host\.nextSibling\);\s*\n\s*cfg\.host\.parentNode\.insertBefore\(box, title\.nextSibling\);/, "the title right under the rows, the box under the title");
   assert.doesNotMatch(SECTION, /rs-preview-label|box\.appendChild\(cap\)/, "no caption inside the box");
   assert.doesNotMatch(GEAR, /rs-preview-label/, "the old class is gone from the card");
-  assert.match(GEAR_CSS, /#rsettings \.rs-preview-title \{[^}]*text-transform: uppercase;/, "the title keeps the caption's small uppercase dress");
+  assert.match(GEAR_CSS, /#rsettings \.rs-preview-title \{[^}]*color: var\(--accent, #9cd2ff\); font-size: 11px; font-weight: 600;/, "the title wears the section-label dress: sentence case, the accent, never uppercase (the user 2026-09-18)");
+  assert.doesNotMatch(GEAR_CSS, /\.rs-preview-title \{[^}]*(uppercase|letter-spacing)/);
   assert.doesNotMatch(GEAR_CSS, /rs-preview-label/, "…and the old rule is gone from the sheet");
   assert.match(GEAR_CSS, /#rsettings \.rs-preview \{ margin-top: 4px;/, "the box closes up under its title");
 });
