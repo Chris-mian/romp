@@ -62255,8 +62255,9 @@ def _landing():
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
-            # same treatment as the settings modal's .rs-sec section headers (10.5px/700/.08em uppercase)
-            ".rnet-khead{color:#6e7681;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
+            # same treatment as the settings modal's .rs-sec section headers (11px/600, sentence case, the accent blue;
+            # the user 2026-09-18: no all-caps delineators in the settings)
+            ".rnet-khead{color:var(--accent,#9cd2ff);font-size:11px;font-weight:600;"
             "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
