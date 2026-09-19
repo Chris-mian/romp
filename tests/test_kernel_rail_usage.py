@@ -150,7 +150,7 @@ class RailUsage(unittest.TestCase):
         self.assertIn("det._t=(typeof r.usage.t==='number')?r.usage.t:null", self.html,
                       "the renderer keeps each host's snapshot time")
         self.assertIn("ru-tip-age", self.html, "the tooltip carries an age footer")
-        self.assertIn("updated '+fmtAgo(d._t)", self.html, "formatted as 'updated ... ago'")
+        self.assertIn("updated '+fmtAgo(Math.min.apply(null,ts))", self.html, "formatted as 'updated ... ago'")
         self.assertIn("function fmtAgo(ep)", self.html)
 
     def test_the_fable_window_is_a_third_bar_everywhere(self):

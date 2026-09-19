@@ -177,7 +177,7 @@ test("feed.ts routes the card's swirl through spinFor and keeps no inline copy o
   assert.match(FEED, /const woDur = durNodes\(wo\.since\);/);
   // …and the ladder itself runs on the kernel's clock, like every other age on the board
   assert.match(FEED, /dCompleted, nowSec\(\)\);/);
-  assert.match(FEED, /const spin = spinFor\(it, distillPending\(/);
+  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   // the inline ladder is gone — no second, drifting copy of the rule
   assert.doesNotMatch(FEED, /spinCaption = "Analyzing…";/);

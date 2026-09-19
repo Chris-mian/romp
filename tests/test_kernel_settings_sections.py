@@ -218,8 +218,9 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("#rsettings .rs-row[hidden], #rsettings .rs-sec[hidden] { display: none; }", _gear_css_src())
 
     def test_section_header_styling_exists(self):
-        self.assertIn("#rsettings .rs-sec {", _gear_css_src())
-        self.assertIn("#rsettings .rs-sec-first { border-top: 0;", _gear_css_src())
+        self.assertIn("#rsettings .rs-sec, #rsettings .rs-widget.rs-divider { display: flex; align-items: center; justify-content: center;", _gear_css_src(),
+                      "the heads are centred titled dividers (the user 2026-09-19)")
+        self.assertIn("#rsettings .rs-sec-first { margin-top: 7px; }", _gear_css_src(), "the first head of a pane keeps only its tighter top margin: it wears the rule too")
 
     def test_oldest_first_toggle_is_gone(self):
         # the feed is always oldest-at-top now → no checkbox, no wiring (the user 2026-06-27)

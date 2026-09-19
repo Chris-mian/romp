@@ -13,7 +13,8 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("the CARD's distiller line links to it.summaryAnchorUuid (work anchor), only when shown + anchored", () => {
   // applyDistillLine returns whether the line is shown; the link wires only when shown AND there's an anchor
-  assert.match(FEED, /const distillShown = applyDistillLine\(a\._distill as HTMLElement,/);
+  // a NOTICE card has no distiller line (the user 2026-09-19): the notice branch hides the line and yields no shown text; a goal card's line is applyDistillLine's
+  assert.match(FEED, /const distillShown = it\.notice \? \(\(\(a\._distill as HTMLElement\)\.style\.display = "none"\), ""\)[^\n]*\n\s*: applyDistillLine\(a\._distill as HTMLElement, dCompleted, dBlocked, it\.summary, it\.blockSummary\);/);
   assert.match(FEED, /if \(distillShown && it\.summaryAnchorUuid\) \{/);
   assert.match(FEED, /dl\.classList\.add\("fask-distill-link"\)/);
   assert.match(FEED, /type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: it\.summaryAnchorUuid/);

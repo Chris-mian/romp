@@ -1065,6 +1065,39 @@ class Boards(unittest.TestCase):
             srv.shutdown()
 
 
+class NoJudges(unittest.TestCase):
+    """The user (2026-09-19): a card posted from the command line has nothing to distill and must trigger no judge calls."""
+    def setUp(self): self.w = World()
+    def tearDown(self): self.w.close()
+
+    def test_a_notice_post_and_its_card_reach_no_judge_and_touch_no_goal_store(self):
+        calls = []
+        saved = km.jd._judge_run
+        km.jd._judge_run = lambda *a, **kw: (calls.append((a[:1], kw.get("tier"))), None)[1]   # the one model-call funnel every tier uses
+        try:
+            r1, err = km.post_notice("", "standup", "Remember the standup moved", producer="cli", now=100, t=100)
+            self.assertIsNone(err)
+            r2, err = km.post_notice(SID, "bare", "An empty card", producer="cli", now=101, t=101)
+            self.assertIsNone(err)
+            r3, err = km.post_notice(SID, "ask", "Decide the retry policy", producer="cli", now=102, t=102, needs_you=True)
+            self.assertIsNone(err)
+            cards = km._notice_cards(200, km._cleared_ids())
+            self.assertEqual(len(cards), 3)
+        finally:
+            km.jd._judge_run = saved
+        self.assertEqual(calls, [], "no judge ran for a post or for the cards' build")
+        # the notice files live beside the goal stores, never in them: the judges' candidate walk reads goal stores alone
+        self.assertNotEqual(km._notice_dir(), km.jd.GOALDIR); self.assertFalse(str(km._notice_dir()).startswith(str(km.jd.GOALDIR)))
+        self.assertEqual([n for n in km.jd.load_goals(SID).get("nodes", {}) if "bare" in n or "ask" in n], [], "no goal node minted for a notice")
+        self.assertFalse((km.jd.STATE / "judge-usage.jsonl").exists(), "no judge usage row written")
+        # the fields the face read: a completed notice carries summary None (the old placeholder rule read that as a takeaway
+        # on its way and spun "Distilling…"); a needs-you notice blockSummary None; the pane's notice kind now decides
+        by = {c["notice"]["key"]: c for c in cards}
+        self.assertEqual((by["bare"]["column"], by["bare"]["summary"], by["bare"]["blockSummary"]), ("completed", None, None))
+        self.assertEqual((by["ask"]["column"], by["ask"]["blockSummary"]), ("needs_input", None))
+        self.assertEqual(by["bare"]["notice"]["body"], "", "an empty body is an empty body, not a pending line")
+
+
 class TheDoors(unittest.TestCase):
     """POST /notice in /watch's shape, the backend's hook, and the boot wiring pin."""
     @classmethod

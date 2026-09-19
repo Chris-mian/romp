@@ -25403,6 +25403,13 @@ def _fleet_usage():
     return rows
 
 
+def _usage_no_report():
+    """The machines attached and UP with no usage report yet (the poll has not answered, or an older kernel): the panel names
+    them beside the account blocks rather than drawing an empty column (the user 2026-09-19). Sorted, from the cache."""
+    with _remotes_lock:
+        return sorted(r["host"] for r in _remotes.values() if (r.get("status") == "up") and not r.get("usage") and r.get("host"))
+
+
 def _sha_base(s):
     """A git sha stripped of the '-dirty' suffix — so a locally-DIRTY tree (uncommitted edits on the same
     commit) doesn't read as a version mismatch against a clean remote at that same commit."""
@@ -60314,7 +60321,7 @@ var WINS=[['fiveHour',5*3600,'5 hours'],
 // ROWS is one entry per HOST whose usage is known, local first (see /usage/fleet); LAST is the per-host
 // tooltip detail for the ones drawn into the aggregate; SELF names this machine for its hover heading
 // when there is more than one host.
-var ROWS=[],LAST=[],SELF='';
+var ROWS=[],LAST=[],SELF='',NOREPORT=[];   // NOREPORT: machines attached and up with no usage report yet (named, never a column)
 // Limit / judge-degraded SIGNATURES (the user 2026-07-03; reshaped 2026-07-27): these used to gate fixed
 // top banners with a ✕ dismissal; the banners are gone — the same situations now log ONE entry each in
 // the shell's notification center (the bell, _LANDING_ERRS_JS). The stored signature means "this exact
@@ -60472,12 +60479,16 @@ return '<div class="ru-w ru-api">'
 // member takes the freshest member's window reading; each host keeps its OWN key spend — dollars
 // really are host-local. Copies stay per host, so the hover still reads per host, just agreeing.
 function shareFreshest(live){var by={};
-live.forEach(function(r){var a=r.usage&&r.usage.acct;if(a)(by[a]=by[a]||[]).push(r);});
+live.forEach(function(r){var a=r.usage&&r.usage.acct;r.ownT=(typeof r.usage.t==='number')?r.usage.t:null;r.lag=false;if(a)(by[a]=by[a]||[]).push(r);});
 Object.keys(by).forEach(function(a){var g=by[a];if(g.length<2)return;
 var best=g[0];g.forEach(function(r){
 var tb=(typeof best.usage.t==='number')?best.usage.t:-1,tr=(typeof r.usage.t==='number')?r.usage.t:-1;
 if(tr>tb)best=r;});
 g.forEach(function(r){if(r===best)return;var v={},u=r.usage,b=best.usage,k;
+// a member whose OWN reading differs from the freshest is LAGGING (the user 2026-09-19): the account's block shows the
+// freshest, and the machine is named as lagging beside its name, with its own report's age
+r.lag=['fiveHour','sevenDay','fable'].some(function(w){var x=u[w],y=b[w];
+return JSON.stringify(x?[x.pct,x.resetsAt]:null)!==JSON.stringify(y?[y.pct,y.resetsAt]:null);});
 for(k in u)v[k]=u[k];
 ['fiveHour','sevenDay','fable','t','limited','acctLabel'].forEach(function(w){
 if(b[w]!==undefined)v[w]=b[w];else delete v[w];});
@@ -60496,7 +60507,7 @@ if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 shareFreshest(live);
 LAST=live.map(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 winDet(r.usage,det);spendDet(r.usage,det);
-return {host:r.host||selfHost||'this machine',det:det};});
+return {host:r.host||selfHost||'this machine',det:det,acct:(r.usage&&r.usage.acct)||'',ownT:r.ownT,lag:!!r.lag};});
 el.innerHTML=aggBarsHTML(LAST)+apiCellHTML(LAST);
 // the API-health dot rides the readout (T301): the STABLE #rail-api node moves into the readout's slot, and back to
 // its own place in the rail when no readout renders; a move keeps its listeners, an innerHTML copy would not
@@ -60569,26 +60580,30 @@ function barRows(d){return (d.unk
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
-// LAST is one entry per HOST (the user 2026-08-08: the hover is the per-host breakdown the collapsed
-// rail no longer draws), each with the window rows it always had, the host name heading it when there
-// is more than one. A host carries BOTH sections when it has both: its login's windows and its key's
-// spend (per-session auth). EVERY string here must carry data the reader acts on (the user 2026-08-08,
-// who found the tip overly verbose): the host name alone heads a section, the spend rows label
-// themselves, and config hints live in the docs, not a hover.
-function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
-if(!keys.length)return '';
-var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
-// the account the window bars belong to, named the way the tab hover names it (the user 2026-08-09);
-// only beside actual window sections — a key-only host's spend already says whose dollars they are
-if(d._acct&&keys.length)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';
-h+=keys.map(function(k){var v=d[k];
+// ONE BLOCK PER ACCOUNT (the user 2026-09-19, whose three machines on one login drew three identical columns): the
+// windows are the ACCOUNT's allowance, so they are written once per distinct login, the account line as the block's
+// head; beneath them one line names the machines logged into it, in the panel's order, in the strip's quiet host dress,
+// a LAGGING machine (its own reading differed from the freshest, which the block shows) named as such beside its name
+// with its own report's age; 'updated N ago' once per block, the OLDEST report of the group; a machine attached but not
+// reporting is named after the blocks, never given a column. A key-only machine (no login) has no block: its dollars
+// are the spend section's. EVERY string here still carries data the reader acts on (the user 2026-08-08).
+function winsHTML(d){var keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
+return keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+'</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
-:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
-// (the per-host API-spend rows moved to the ONE fleet-level section in tipHTML — the user 2026-08-13:
-// one shared key reads as one number; each host records only its own turns, so the sum IS the number)
-h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
-return h;}
+:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');}
+function machineHTML(name){return '<span class="ru-tip-machine host-prefix">'+esc(name)+'</span>';}
+function acctBlocksHTML(sets,manyMachines){var groups=[],by={};
+sets.forEach(function(e){if(!['fiveHour','sevenDay','fable'].some(function(k){return e.det[k];}))return;
+var a=e.acct||('host:'+e.host);var g=by[a];if(!g){g={members:[]};by[a]=g;groups.push(g);}g.members.push(e);});
+return groups.map(function(g){var d=g.members[0].det,h='<div class=ru-tip-block>';
+if(d._acct)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';
+h+=winsHTML(d);
+if(manyMachines)h+='<div class=ru-tip-machines>'+g.members.map(function(e){return machineHTML(e.host)
++(e.lag?'<span class=ru-tip-lag> lagging'+(e.ownT?', updated '+fmtAgo(e.ownT):'')+'</span>':'');}).join(', ')+'</div>';
+var ts=g.members.map(function(e){return e.ownT;}).filter(function(t){return typeof t==='number';});
+if(ts.length)h+='<div class=ru-tip-age>updated '+fmtAgo(Math.min.apply(null,ts))+'</div>';
+return h+'</div>';});}
 // The ONE API-spend section for the whole hover (the user 2026-08-13): every host's windows summed —
 // one shared key is one number — plus the summed $/hour over the last 7 days as an area graph. A host
 // that ships no series (an older kernel) still joins the window sums; the graph adds only contributors.
@@ -60651,17 +60666,18 @@ if(mx>0)h+='<div class=ru-tip-row><span class=ru-tip-k>$/h \u00b7 7d</span>'
 +moneyGraph(wk,'#9cd2ff',series.h0+st);}
 if(sAt)h+='<div class=ru-tip-age>last charge recorded '+fmtAgo(sAt)+'</div>';
 return h+'</div>';}
-function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
-var many=sets.length>1;
-var blocks=sets.map(function(e){return setHTML(e,many);}).filter(function(b){return b;});
-// Hosts sit SIDE BY SIDE, one column each (the user 2026-08-08: the breakdown used to stack every
-// host into one tall pillar; columns put them beside each other so hosts compare at a glance).
-// flex-wrap folds the columns back into a stack when width runs out — the mobile Usage modal
-// reuses this exact HTML, so narrow screens degrade on their own, no second layout.
+function tipHTML(){var sets=LAST||[];if(!sets.length&&!NOREPORT.length)return '';
+var manyMachines=(sets.length+NOREPORT.length)>1;
+var blocks=acctBlocksHTML(sets,manyMachines);
+// ACCOUNTS sit SIDE BY SIDE, one column each (the columns were per host until 2026-09-19, when three machines on one
+// login drew three identical columns; the per-host story is now the machines line under each account's block).
+// flex-wrap folds the columns back into a stack when width runs out; the mobile Usage modal reuses this exact HTML,
+// so narrow screens degrade on their own, no second layout.
 // No window block anywhere (every session keyed) still renders the spend section — an early ''
 // return on empty blocks left the API cell with an EMPTY hover exactly when spend was all there
 // was to show (the user 2026-08-15).
-var h=blocks.length?(many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0]):'';
+var h=blocks.length?(blocks.length>1?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0]):'';
+if(NOREPORT.length)h+='<div class=ru-tip-machines>no usage report yet from '+NOREPORT.map(machineHTML).join(', ')+'</div>';
 // no footer hint: refresh is AUTOMATIC (the 60s pull below + the timeline's live forward), and a
 // click-me line misread on a hover surface (the user 2026-08-14) — the click stays as a manual
 // kick, it just doesn't advertise. An OPEN tip follows every data landing via renderRows.
@@ -60719,7 +60735,7 @@ var _ruBusy=false;
 // the tunnel supervisor's own cached poll, so this never dials anything). It collapses to a single row \u2014
 // today's exact rendering \u2014 whenever every machine is signed into the same login.
 function pullFleet(){return fetch('/usage/fleet',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
-.then(function(d){var rows=(d&&d.rows)||[];SELF=(d&&d.host)||SELF;
+.then(function(d){var rows=(d&&d.rows)||[];SELF=(d&&d.host)||SELF;NOREPORT=(d&&Array.isArray(d.noReport))?d.noReport:[];
 var local=rows.length?rows[0].usage:null;
 notices(local);renderRows(rows,SELF);});}
 function pull(ack){if(_ruBusy)return;_ruBusy=true;
@@ -64411,14 +64427,15 @@ def _landing():
             ".ru-tip-hint{margin-top:5px;opacity:.55;font-size:10px}"   # the hover's click affordance (T247d): the footnote's size and opacity, no rule line
             ".ru-tip-age{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);"
             "opacity:.55;font-size:10px}"
-            # (The per-host .ru-set/.ru-host rail sets are gone, the user 2026-08-08: the collapsed rail
-            # aggregates one set of bars + one API cell, and the per-host story lives in the hover, whose
-            # .ru-tip-host heading keeps the quiet lowercase-italic treatment a federated session's name
-            # wears in the chat tabs.)
-            ".ru-tip-host{font:italic 400 10px 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
-            "color:#9aa0a6;text-transform:lowercase;margin:0 0 4px}"
-            "#ru-tip .ru-tip-host:not(:first-child){margin-top:10px;padding-top:8px;"
-            "border-top:1px solid rgba(255,255,255,0.08)}"
+            # (The per-host .ru-set/.ru-host rail sets are gone, the user 2026-08-08, and the per-host .ru-tip-host
+            # columns with them, the user 2026-09-19: the hover is one BLOCK per account, and the machines logged into
+            # it are one line under its windows, each name in the strip's quiet .host-prefix dress, byte for byte the
+            # declarations ui/webview/styles.css gives a federated tab's host; a lagging machine's note in the amber
+            # the 70 percent window wears; a machine not reporting named after the blocks in the same line style.)
+            ".ru-tip-block{min-width:200px}"
+            ".ru-tip-machines{margin-top:6px;font-size:11px;color:#9aa0a6}"
+            ".ru-tip-machines .host-prefix{color:var(--dim,#9aa0a6);font-weight:400;font-style:italic;font-size:0.86em}"
+            ".ru-tip-lag{color:#d7a23a;font-size:10px}"
             # the login the window bars belong to (the user 2026-08-09) — quiet, above the sections,
             # the host heading's size without its lowercase-italic host vocabulary
             ".ru-tip-acct{font:400 10px 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
@@ -64742,6 +64759,7 @@ def _landing():
             "body.theme-light .rsp-tbl th{border-bottom-color:rgba(0,0,0,0.10)}body.theme-light .rsp-tbl td{border-bottom-color:rgba(0,0,0,0.06)}"
             "body.theme-light .rsp-tbl thead th{background:#FFFFFF}body.theme-light .rsp-tbl th{color:#5D574E}"
             "body.theme-light .rsp-name .host-prefix{color:var(--dim,#5D574E)}"
+            "body.theme-light .ru-tip-machines .host-prefix{color:var(--dim,#5D574E)}"
             "body.theme-light .rsp-btn{border-color:rgba(0,0,0,0.18);color:#1F1E1D}"
             # the PRESSED toggle's light step, written out (T247b review): `.rsp-btn.on` (0,2,0) lost to
             # `body.theme-light .rsp-btn` (0,2,1 — two classes and the body type) and painted dark text
@@ -65930,7 +65948,7 @@ class Handler(BaseHTTPRequestHandler):
                         be.refresh_usage()
                 except Exception:
                     pass
-                return self._send(200, json.dumps({"rows": _fleet_usage(), "host": _self_host()}),
+                return self._send(200, json.dumps({"rows": _fleet_usage(), "host": _self_host(), "noReport": _usage_no_report()}),
                                   "application/json", cache="no-cache")
             if p == "/spend/detail":                          # the usage MODAL's per-session breakdown (T247):
                 # who spent what and spend over time stacked by session, read from the ledger's bySid
