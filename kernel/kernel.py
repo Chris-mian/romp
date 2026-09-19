@@ -48336,6 +48336,32 @@ def _note_history_reply(client, sid, mtype, reply, nbytes, now=None, sent=True):
         pass
 
 
+# The chatFull row's outbox (2026-09-19, the review of the meter): the row is DECIDED under the client's slot lock, where the
+# send is (_send_chat_proto2 runs inside its callers' `with _client_lock(c)`), and APPENDED to disk after it. The two locked
+# entries, _send_chat_or_status (the pusher's road and the targeted push's) and _send_chat (the test-facing entry), open the
+# outbox around their lock block and file what it holds once the block has closed. Appended under the lock, on handler and
+# backend threads that wrote nothing to the state disk before the row existed, a 0.6 s stall in the append made a handler
+# thread's needFull reset (_client_reset_chat_sid) wait 0.55 s on the lock. Per thread, never nested: no entry calls the other.
+_CHAT_FULL_ROWS = threading.local()
+
+
+@contextlib.contextmanager
+def _chat_full_outbox():
+    """Open this thread's chatFull outbox for the rows a locked chat send decides, and append them to client-diag.jsonl when
+    the block closes: the locked entries wrap their `with _client_lock(c)` in it, so the append runs with the lock released.
+    Diagnostic only; the file's own failure is swallowed, as _note_history_reply's is."""
+    rows = _CHAT_FULL_ROWS.pending = []
+    try:
+        yield
+    finally:
+        _CHAT_FULL_ROWS.pending = None
+        for line in rows:
+            try:
+                _client_diag_append(jd.STATE / "client-diag.jsonl", line)
+            except Exception:
+                pass
+
+
 def _note_chat_full(client, sid, reason, change_from, total, first_held, last_held, now=None):
     """One client-diag row per proto-2 FULL session frame that LEFT for a client that HOLDS a base for the session
     (2026-09-19; called once _send_client has returned True, so a frame deduped against the client's last files nothing).
@@ -48344,17 +48370,21 @@ def _note_chat_full(client, sid, reason, change_from, total, first_held, last_he
     fulls a serving kernel counted in 20 h against 70,138 deltas could not be told apart by cause from the serving side
     (the transient-key anchor, a fork, a targeted push), only from the page's own slow-frame rows. The row names the client
     (cid, kind), the session, the reason _chat_full_reason gave, the change index and the list's length, and which base
-    edges the list still held. Numbers and identifiers only: no event text, no names. Diagnostic only; the file's own
+    edges the list still held. Numbers and identifiers only: no event text, no names. Diagnostic only; the row's own
     failure is swallowed, as _note_history_reply's is. Called under the client's slot lock (all of _send_chat_proto2 runs
-    inside its callers' `with _client_lock(c)`), unlike _note_history_reply, which its handler calls after its lock block:
-    safe, since _client_diag_append takes only its own leaf lock and takes no other inside it, so the order client lock
-    then diag lock has no reverse anywhere."""
+    inside its callers' `with _client_lock(c)`), so the row is only DECIDED here: the line is parked on the thread's
+    outbox (_chat_full_outbox) and appended by the locked entry once its lock block has closed. A thread with no outbox
+    open (a caller outside the two entries; _send_chat_locked's owners are pinned, so none in the kernel) appends at once."""
     try:
         now = time.time() if now is None else now
         data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "reason": str(reason),
                 "changeFrom": int(change_from), "total": int(total), "firstHeld": bool(first_held), "lastHeld": bool(last_held)}
-        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "chatFull",
-                                                                        "data": data}) + "\n")
+        line = json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "chatFull", "data": data}) + "\n"
+        rows = getattr(_CHAT_FULL_ROWS, "pending", None)
+        if rows is not None:
+            rows.append(line)
+        else:
+            _client_diag_append(jd.STATE / "client-diag.jsonl", line)
     except Exception:
         pass
 
@@ -49488,35 +49518,36 @@ def _send_chat_or_status(c, m, ms, change_from, led_changed):
     path fires exactly as for a never-sent session. A sid the client asked for whole (askedFull) is never a
     skeleton to this function: a set naming one is the tripwire's case (_note_needfull_status, 2026-09-19),
     said on the record and answered with the full."""
-    with _client_lock(c):
-        sid = m["id"]
-        if sid in (c.get("skeleton") or ()):
-            if sid in (c.get("askedFull") or ()):
-                # The tripwire (2026-09-19): the client asked for this sid whole (a needFull), and a strip sender listed it
-                # all the same. Unreachable by construction (the set's one writer, _resolve_reconnect, excludes an asked
-                # sid); if it fires, one client-diag row says which client and sid, and the ask is answered with the full
-                # below instead of a status frame the page's one-shot latch cannot clear (a tab a skeleton until clicked).
-                _note_needfull_status(c, sid)
-            else:
-                _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": m.get("status")})
+    with _chat_full_outbox():                    # the chatFull rows the send below decides leave for the disk once the client's lock is released (2026-09-19)
+        with _client_lock(c):
+            sid = m["id"]
+            if sid in (c.get("skeleton") or ()):
+                if sid in (c.get("askedFull") or ()):
+                    # The tripwire (2026-09-19): the client asked for this sid whole (a needFull), and a strip sender listed it
+                    # all the same. Unreachable by construction (the set's one writer, _resolve_reconnect, excludes an asked
+                    # sid); if it fires, one client-diag row says which client and sid, and the ask is answered with the full
+                    # below instead of a status frame the page's one-shot latch cannot clear (a tab a skeleton until clicked).
+                    _note_needfull_status(c, sid)
+                else:
+                    _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": m.get("status")})
+                    return ms
+            if c.get("skeletonOnReady") or c.get("reconnect"):
+                # A skeleton client BEFORE its bundle's ready (the chat split, 2026-09-11): the handshake's `reconnect` woke
+                # a pusher cycle into a document that cannot hear it yet, and the ready arm's reset re-sends whatever it
+                # held anyway, so a full sent here crossed the wire twice per open (about 95 KB on the lab board; review
+                # find 2026-09-11). The strip and the statuses above still go (cheap, and heard when the bundle won the
+                # race); the session frames wait for the connect push the ready arm makes, which is then the one full.
+                # …and a client whose `reconnect` is ARMED (2026-09-12): its set is not resolved yet, and the strip sender
+                # that pops the flag serves the active tab's full itself. The pusher's cycle was still in this loop when the
+                # ready arm's reset popped the set and re-armed the flag, and the arm's connect push rebuilds the set only at
+                # its own _resolve_reconnect, past a liveness sweep and the tab list: in that gap neither read above held and
+                # every session this loop visited went out whole, a full for a tab the column holds as a skeleton, an echat
+                # entry, and the arm's strip dropped the sid from its skeleton list as held (the second full on a new column's
+                # socket: one to six per open on a slow runner, never the active tab's, and no ask from the page;
+                # tests/test_chat_skeleton_reconnect.py test_11_d). The reset re-arms under its own lock, so no instant has
+                # neither flag.
                 return ms
-        if c.get("skeletonOnReady") or c.get("reconnect"):
-            # A skeleton client BEFORE its bundle's ready (the chat split, 2026-09-11): the handshake's `reconnect` woke
-            # a pusher cycle into a document that cannot hear it yet, and the ready arm's reset re-sends whatever it
-            # held anyway, so a full sent here crossed the wire twice per open (about 95 KB on the lab board; review
-            # find 2026-09-11). The strip and the statuses above still go (cheap, and heard when the bundle won the
-            # race); the session frames wait for the connect push the ready arm makes, which is then the one full.
-            # …and a client whose `reconnect` is ARMED (2026-09-12): its set is not resolved yet, and the strip sender
-            # that pops the flag serves the active tab's full itself. The pusher's cycle was still in this loop when the
-            # ready arm's reset popped the set and re-armed the flag, and the arm's connect push rebuilds the set only at
-            # its own _resolve_reconnect, past a liveness sweep and the tab list: in that gap neither read above held and
-            # every session this loop visited went out whole, a full for a tab the column holds as a skeleton, an echat
-            # entry, and the arm's strip dropped the sid from its skeleton list as held (the second full on a new column's
-            # socket: one to six per open on a slow runner, never the active tab's, and no ask from the page;
-            # tests/test_chat_skeleton_reconnect.py test_11_d). The reset re-arms under its own lock, so no instant has
-            # neither flag.
-            return ms
-        return _send_chat_locked(c, m, ms, change_from, led_changed)
+            return _send_chat_locked(c, m, ms, change_from, led_changed)
 
 
 # View deltas (2026-09-03). The timeline's bars and the feed used to cross the wire WHOLE on every change —
@@ -50063,9 +50094,14 @@ def _send_chat(c, m, ms, change_from, led_changed):
     full session to a renderer that holds nothing. With only the inner _send_client locked, a pusher send
     DECIDED before the reset (pc read, tail branch chosen) could land after it — the popped slot let the
     tail through and the write-back re-populated echat — and the connect push then found a held tail and
-    sent a chatTail the renderer had to refuse (needFull) and repair on a second round trip."""
-    with _client_lock(c):
-        return _send_chat_locked(c, m, ms, change_from, led_changed)
+    sent a chatTail the renderer had to refuse (needFull) and repair on a second round trip.
+
+    The test-facing locked entry (2026-09-19): no kernel road runs it since the targeted push took the pusher's
+    per-client road; _send_chat_or_status, the skeleton-aware twin, is the pusher's and the targeted push's road.
+    Both hold this lock the same way and file the chatFull rows the same way (_chat_full_outbox)."""
+    with _chat_full_outbox():                    # the chatFull rows the send below decides leave for the disk once the client's lock is released (2026-09-19)
+        with _client_lock(c):
+            return _send_chat_locked(c, m, ms, change_from, led_changed)
 
 
 _UUID_POS = {}                                   # sid → (the current events list, {key: index}); one live entry per session
@@ -50649,12 +50685,16 @@ def _gone_key_label(key):
 
 def _chat_full_reason(pc, pf, pl, change_from, total):
     """The reason a proto-2 send fell through to the full frame, from what the sender saw (pusher.chatFullWhy, 2026-09-19):
-    `noBase` (no base held: a first send, a ready or needFull reset), `empty` (a list with no events), `baseGone` (neither
-    edge in the list: a fork, a rewind, a /clear), `lastGone:<label>` (the first edge held, the last not: the shape the
-    transient-key anchor produced, labeled by _gone_key_label), `inverted` (the last edge before the first),
-    `changeAt0` (a change at the list's first event against a held base: _push_session_now's targeted push and a genuine
-    first-event change, not told apart without a caller's mark), `changeBelowFirst` (a change before the held first edge).
-    `pf` and `pl` are the edges' indexes as the delta branch read them (a first edge before the floor'd list is 0)."""
+    `noBase` (no base held: a first send, a ready or needFull reset, and the repost of an empty list or the first content
+    frame after one, since an empty list records no base), `empty` (a list with no events, sent to a client that holds a
+    base for the session), `baseGone` (neither edge in the list: a fork, a rewind, a /clear), `lastGone:<label>` (the first
+    edge held, the last not: the shape the transient-key anchor produced, labeled by _gone_key_label), `inverted` (the last
+    edge before the first), `changeAt0` (a change at the list's first event against a held base: a genuine first-event change
+    or a no-baseline send, by whichever sender; the pusher's cycle, the connect push and _push_session_now compute the change
+    the same way, and `sends.full.chat.targeted` is what tells the senders apart), `changeBelowFirst` (a change at or before
+    the held first edge), `other` (no known shape reaches the full frame past these: counted, never raised; the collector
+    folds the overflow past SLOTS labels under the same name). `pf` and `pl` are the edges' indexes as the delta branch read
+    them (a first edge before the floor'd list is 0)."""
     if not isinstance(pc, dict):
         return "noBase"
     if not total:
@@ -50685,7 +50725,8 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     `pusher.chatFullWhy`, and one that leaves for a client that HOLDS a base files one `chatFull` client-diag row
     (2026-09-19, _chat_full_reason and _note_chat_full, once _send_client says the frame went; a frame it deduped is
     neither): the steady state owes such a client deltas only, and the page treats a full for a session it holds as a
-    reconnect repair, a whole-window rebuild."""
+    reconnect repair, a whole-window rebuild. An EMPTY list records no base (the write at the end): a session built with
+    zero events is re-sent whole, `noBase`, once per client per repost window until it has content, and files nothing."""
     sid = m["id"]
     evs = m.get("events") or []
     total = len(evs)
@@ -50763,7 +50804,23 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
         _PERF_STATS.chat_full_why(reason)
         if isinstance(pc, dict):
             _note_chat_full(c, sid, reason, change_from, total, held_first, pl is not None)
-    st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
+    # An EMPTY list records no base (2026-09-19, the review of the meter): the base is the tail run's two edges, and a list
+    # with no events has none. Written as {first: None, last: None}, the entry made every later send to this client read as
+    # one to a base holder: the pusher's repost of the identical empty frame, once per client per _DEDUP_REPOST_S (a
+    # just-created SDK session, registered before its first send and built with zero events, is this case for as long as
+    # it stays empty), was counted `empty` and filed a chatFull row with no event behind it (180 rows an hour for one idle
+    # fresh session with three tabs open), and the first content frame found neither edge in the list and was counted
+    # `baseGone` with a row. With no entry both are noBase fulls, filed nowhere, and the frame after the first content one
+    # is a delta. The entry's presence is read by the reconnect-only readers of the echat key set (the cold-tab gate in
+    # _held_as_skeleton_by_all, the resolve in _resolve_reconnect), and neither sees this pop: both read a client only while
+    # its `reconnect` or `skeletonOnReady` is armed, and an armed client holds no base for any session, empty or not (the
+    # ready reset clears echat under the lock that re-arms the flag, a redial's client starts empty, and
+    # _send_chat_or_status withholds every session frame while armed), so a stat-able but empty transcript is skeletoned
+    # for a reconnecting client exactly as before. A reader of the key set on an unarmed client would be the first to see it.
+    if total:
+        st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
+    else:
+        st.pop(sid, None)
     return ms
 
 
