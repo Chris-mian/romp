@@ -45,10 +45,17 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsver { white-space: pre-line; }
 /* subsection headers (Chat / Feed / Sessions / Debug) so the settings group by surface. Sentence case in the accent blue,
    no uppercase and no letter-spacing (the user 2026-09-18: the all-caps dress read as shouting; a delineator is told apart
-   from a heading by its size and colour, never by capitals): 11px/600 against the 14px/600 card title and the 12px rows. */
-#rsettings .rs-sec { font-size: 11px; font-weight: 600; color: var(--accent, #9cd2ff);
-  margin: 15px 0 5px; border-top: 1px solid #333; padding-top: 11px; }
-#rsettings .rs-sec-first { border-top: 0; margin-top: 7px; padding-top: 0; }
+   from a heading by its size and colour, never by capitals). A TITLED DIVIDER since 2026-09-19 (the user, from the look):
+   the head sits IN the horizontal rule rather than above it, the rule running on both sides of the title in the hairline
+   token, the title CENTRED so it reads as a title and not a row, and one step up the size ladder from the 13px rows that
+   live under it: 14px/600, the card title's size, in the accent (no new size). The same shape for every head, the first of a
+   pane included (it lost its bare rule-less form), and for the tab widgets' .rs-divider, which already had the shape. */
+#rsettings .rs-sec, #rsettings .rs-widget.rs-divider { display: flex; align-items: center; justify-content: center; gap: 10px; text-align: center;
+  font-size: 14px; font-weight: 600; color: var(--accent, #9cd2ff); margin: 14px 0 6px; padding: 0; }
+#rsettings .rs-sec::before, #rsettings .rs-sec::after, #rsettings .rs-widget.rs-divider::before, #rsettings .rs-widget.rs-divider::after {
+  content: ""; flex: 1 1 0; min-width: 12px; height: 1px; background: var(--hairline, #3a3a3a); }
+/* (the divider's selector carries .rs-widget so this dress outranks the widget rows' grid rule below, which follows it in the sheet) */
+#rsettings .rs-sec-first { margin-top: 7px; }
 #rsettings .rs-row { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0 6px; cursor: pointer; position: relative; }
 #rsettings .rs-row input { margin: 3px 0 0; flex: 0 0 auto; cursor: pointer; }
 /* a hidden row or section header (the Panes section off the dashboard's own page): the author display
@@ -319,8 +326,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget.rs-dragging { opacity: 0.7; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 6px; }
 #rsettings .rs-widget.rs-dragging .rs-grip { cursor: grabbing; }
 #rsettings .rs-grip-none { width: 18px; height: 22px; }   /* a section that does not reorder (the rings, 2026-09-14): the grip's cell, empty, keeps the grid's columns */
-#rsettings .rs-divider { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; padding: 6px 0; border-bottom: 0; color: var(--accent, #9cd2ff); font-size: 11px; font-weight: 600; }
-#rsettings .rs-divider::before, #rsettings .rs-divider::after { content: ""; flex: 1 1 auto; height: 2px; background: var(--hairline); border-radius: 1px; }
+#rsettings .rs-divider { grid-column: 1 / -1; border-bottom: 0; }   /* its dress is the heads' (the titled-divider rule beside .rs-sec above) */
 /* the caption is a TITLE above the box (T415 part two): the word Preview never sits inside the previewed thing */
 #rsettings .rs-preview-title { margin-top: 10px; color: var(--accent, #9cd2ff); font-size: 11px; font-weight: 600; }   /* the section-label dress (.rs-sec) */
 #rsettings .rs-preview { margin-top: 4px; padding: 8px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--bg); display: flex; align-items: center; gap: 12px; }

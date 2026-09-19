@@ -116,8 +116,11 @@ test("the Tab widgets divider is a separator named for the session name's place,
   assert.match(SECTION, /dividerRow\.setAttribute\('role', 'separator'\); dividerRow\.setAttribute\('aria-label', cfg\.divider\.label\);/);
   assert.match(SECTION, /lbl\.className = 'rs-divider-label'; lbl\.textContent = cfg\.divider\.label;/);
   assert.doesNotMatch(SECTION, /dividerRow\.appendChild\(grip\)|rs-divider[^\n]*rs-switch/, "no grip and no switch on the divider: it is not a widget");
-  assert.match(GEAR_CSS, /#rsettings \.rs-divider::before, #rsettings \.rs-divider::after \{ content: ""; flex: 1 1 auto; height: 2px; background: var\(--hairline\);/, "a thicker line either side of the words");
-  assert.match(GEAR_CSS, /#rsettings \.rs-divider \{[^}]*color: var\(--accent, #9cd2ff\); font-size: 11px; font-weight: 600;/, "small text in the section-label dress, not a rendered name");
+  // the divider wears the section heads' titled-divider dress since 2026-09-19 (one rule beside .rs-sec in gear.css)
+  assert.match(GEAR_CSS, /#rsettings \.rs-sec::before, #rsettings \.rs-sec::after, #rsettings \.rs-widget\.rs-divider::before, #rsettings \.rs-widget\.rs-divider::after \{\s*\n\s*content: ""; flex: 1 1 0; min-width: 12px; height: 1px; background: var\(--hairline, #3a3a3a\); \}/,
+    "the rule segments both sides of the title, a hairline in the rule's token");
+  assert.match(GEAR_CSS, /#rsettings \.rs-divider \{ grid-column: 1 \/ -1; border-bottom: 0; \}/, "the divider keeps only its grid placement of its own");
+  assert.match(GEAR_CSS, /#rsettings \.rs-sec, #rsettings \.rs-widget\.rs-divider \{[^}]*font-size: 14px; font-weight: 600; color: var\(--accent, #9cd2ff\);/, "the section heads' dress (a step above the rows since 2026-09-19), not a rendered name; the widget class so it outranks the rows' grid");
   assert.doesNotMatch(GEAR_CSS, /\.rs-divider \{[^}]*(uppercase|letter-spacing)/);
 });
 
