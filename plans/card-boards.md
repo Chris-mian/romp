@@ -600,8 +600,9 @@ one board at a time, chosen from the View menu, so a data board's cards sit unde
 and the feed itself renders byte-identically when the switch is on the feed (plans/card-boards.md, section 4 road 1 and
 section 6 phase 4).
 
-**The switch.** The View menu gains a Board group: one `menuitemradio` row per definition the frame carries (the feed
-first, then the data boards in id order), the current one checked; the pick is the feed pane's own view state
+**The switch.** The View menu gains a Board group once a second board exists (with the feed alone the menu
+is exactly what it was): one `menuitemradio` row per definition the frame carries (the feed first, then the data
+boards in id order), the current one checked; the pick is the feed pane's own view state
 (`FeedViewState.board`, prune-exempt like `cols` and `order`, absent or "feed" meaning the feed) and survives a reload.
 A board created by `romp card -b` appears in the menu on the next frame with no reload (the frame's `boards` field);
 a pick that names a board the frame no longer carries (removed, or a remote host gone) falls back to the feed and says

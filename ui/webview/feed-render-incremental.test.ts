@@ -1277,29 +1277,89 @@ test("a REMOTE notice card's answer names the owning kernel's bare id: the inbou
   assert.ok(card(stays), "a refused card stays"); assert.equal(b2.disabled, false, "and its button let go on the answer, not on the next push");
 });
 
-test("a data board's needs-you card passes a tag lens its session is outside of (the card's OWN board decides), while a plain card of that session is hidden", async () => {
+test("on a data board, its needs-you card passes a tag lens its session is outside of (the card's OWN board decides), while a plain card of that session is hidden", async () => {
   // the 1861 read (medium): the lens read isNeedsYou against the FEED board, so a card in a data board's needs-you category was
-  // dropped from the pane under a tag lens while the app badge still said one card needs you; the lens now asks the card's own
-  // board. The card keeps the feed's default column (Working) on the feed until phase four's view switch (the 1845 pane rule).
+  // dropped under a tag lens while the app badge still said one card needs you; the lens asks the card's own board. Since phase
+  // four the board's cards show on the board's own view, so the lens is exercised there (the menu's Board row picks it).
   const HOT = { id: "urgent", title: "Urgent", categories: [{ id: "hot", title: "Hot", chip: "blocked" }, { id: "cool", title: "Cool", chip: "neutral" }],
     defaultCategory: "cool", rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [], notify: ["hot"], needsYou: "hot", kinds: ["notice"] };
   const hot = cardOf("notice:" + API + ":decide:1", API, "api", "#cc6633", "Decide the retry policy", "needs_input", { live: false, tree: [], blocked: null, board: "urgent", category: "hot",
     notice: { producer: "cli", key: "decide", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
-  const plain = cardOf("notice:" + API + ":plain:1", API, "api", "#cc6633", "A plain note", "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
-    notice: { producer: "cli", key: "plain", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
+  const cool = cardOf("notice:" + API + ":later:1", API, "api", "#cc6633", "A cool note", "completed", { live: false, tree: [], blocked: null, board: "urgent", category: "cool",
+    notice: { producer: "cli", key: "later", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
   const views = { tags: [{ id: "t1", name: "infra", members: [WEB] }] };   // web is tagged infra; api is outside every tag
-  await dispatch(frame([g1, hot, plain], { boards: { urgent: HOT }, views }));
-  assert.ok(card("notice:" + API + ":decide:1")); assert.ok(card("notice:" + API + ":plain:1"), "both on the board under All");
-  // the infra lens: api's plain card hides, api's hot card (its board's needs-you category) stays
+  await dispatch(frame([g1, hot, cool], { boards: { urgent: HOT }, views }));
+  (body.querySelector("#feed-viewbtn") as any).onclick(ev);
+  const row = (body.querySelector(".feed-viewmenu") as any).querySelectorAll('[role="menuitemradio"]').find((x: any) => x.dataset.board === "urgent"); assert.ok(row, "the Urgent row");
+  row.onclick(ev); await settle();
+  assert.equal(colOf("notice:" + API + ":decide:1"), "col-hot-list"); assert.equal(colOf("notice:" + API + ":later:1"), "col-cool-list", "both on the board under All");
   win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:feedTags-set", newValue: JSON.stringify({ lens: { tags: ["infra"] }, t: 1 }) }));
   await settle();
-  assert.equal(card("notice:" + API + ":plain:1"), null, "the lens hides a plain card of a session outside it");
+  assert.equal(card("notice:" + API + ":later:1"), null, "the lens hides a plain card of a session outside it");
   assert.ok(card("notice:" + API + ":decide:1"), "the needs-you card of the same session stays: its OWN board's badge category passes every lens");
-  assert.equal(colOf("notice:" + API + ":decide:1"), "col-asks-list", "under the feed's default column, as the 1845 rule files a category the feed lacks");
-  // back to All: both again
   win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:feedTags-set", newValue: JSON.stringify({ lens: { all: true }, t: 2 }) }));
   await settle();
-  assert.ok(card("notice:" + API + ":plain:1")); assert.ok(card("notice:" + API + ":decide:1"));
+  assert.ok(card("notice:" + API + ":later:1")); assert.ok(card("notice:" + API + ":decide:1"));
+  (body.querySelector("#feed-viewbtn") as any).onclick(ev);
+  (body.querySelector(".feed-viewmenu") as any).querySelectorAll('[role="menuitemradio"]').find((x: any) => x.dataset.board === "feed").onclick(ev); await settle();
+  await dispatch(frame([g1, g2, g3]));
+});
+
+// ── the board view switch (plans/card-boards.md, phase four, section 8) ─────────────────────────────────────────────
+const FIG_BOARD = { id: "figures", title: "Figures", categories: [{ id: "new", title: "New", chip: "neutral" }, { id: "kept", title: "Kept", chip: "working" }],
+  defaultCategory: "new", rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [], notify: [], needsYou: null, kinds: ["notice"] };
+const figCard = (key: string, title: string, category: string, t: number, board = "figures") =>
+  ({ ...cardOf("notice:" + WEB + ":" + key + ":1", WEB, "web", "#3366cc", title, "completed", { live: false, tree: [], blocked: null, board, category,
+    notice: { producer: "figure", key, rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } }), t });
+const viewBtn = () => body.querySelector("#feed-viewbtn") as any;
+const openMenu = () => { viewBtn().onclick(ev); return body.querySelector(".feed-viewmenu") as any; };
+const radios = (menu: any) => menu.querySelectorAll('[role="menuitemradio"]').map((r: any) => [r.dataset.board, r.getAttribute("aria-checked")]);
+const pick = (menu: any, id: string) => { const r = menu.querySelectorAll('[role="menuitemradio"]').find((x: any) => x.dataset.board === id); assert.ok(r, "a row for " + id); r.onclick(ev); };
+const colsRoot = () => body.querySelector("#feed-cols") as any;
+const viewBoard = () => JSON.parse(stores.local.get("romp:feedview") || "{}").board;
+
+test("the View menu's Board rows show one board at a time: a data board's cards under its own categories in its own order, the feed's cards off it, the pick persisted, and the feed back byte-for-byte", async () => {
+  const f1 = figCard("fig1", "The accuracy figure", "new", K0 - 100), f2 = figCard("fig2", "The loss figure", "kept", K0 - 50), f3 = figCard("fig3", "The newest figure", "new", K0 - 10);
+  const lost = { ...figCard("lost", "A card naming a board nobody knows", "x", K0 - 30, "gone"), sid: API, name: "api" };
+  await dispatch(frame([g1, g2, f1, f2, f3, lost], { boards: { figures: FIG_BOARD } }));
+  // the View menu: the four view rows, then a radio per board the frame carries, the feed current
+  let menu = openMenu(); assert.ok(menu, "the menu opened");
+  assert.deepEqual(radios(menu), [["feed", "true"], ["figures", "false"]], "a Board row per board the frame carries, the feed current");
+  assert.equal(menu.querySelectorAll(".ctx-item").filter((r: any) => !r.classList.contains("ctx-board")).length, 4, "the four view rows stand");   // (the stand-in's selector engine has no :not)
+  // on the feed (the default): the data board's cards are OFF the feed (their board's view shows them); a card naming a board nobody knows is the feed's, loudly
+  assert.equal(colsRoot().dataset.board, "feed", "the columns root names the board it shows");
+  assert.equal(card(f1.itemId), null, "a Figures card is not on the feed"); assert.equal(card(f2.itemId), null); assert.equal(card(f3.itemId), null);
+  assert.equal(colOf(lost.itemId), "col-asks-list", "an unknown board's card files under the feed's default column"); assert.equal(card(lost.itemId)._nProd.textContent, "via figure · on an unknown board (gone)", "never a silent drop");
+  // pick Figures: the columns come down and rebuild as the board's; its cards sit under their categories, newest first (its sort); no feed card, no unknown-board card
+  pick(menu, "figures"); await settle();
+  assert.equal(body.querySelector(".feed-viewmenu"), null, "a pick closes the menu");
+  assert.equal(colsRoot().dataset.board, "figures");
+  assert.equal(body.querySelector("#col-asks-list"), null, "the feed's columns are gone"); assert.ok(body.querySelector("#col-new-list")); assert.ok(body.querySelector("#col-kept-list"));
+  assert.deepEqual(body.querySelectorAll("#feed-cols .feed-col-name").map((h: any) => [h.textContent, h.className]),
+    [["New", "feed-col-name fcol-chip fcol-chip-neutral"], ["Kept", "feed-col-name fcol-chip fcol-chip-working"]], "the board's titles and chips, in its order");
+  assert.deepEqual((body.querySelector("#col-new-list") as any).children.map((c: any) => c.dataset.key), ["a:" + f3.itemId, "a:" + f1.itemId], "newest first: the board's sort, not the feed's preference");
+  assert.equal(colOf(f2.itemId), "col-kept-list");
+  assert.equal(card("g1"), null, "a feed card is not on the Figures board"); assert.equal(card(lost.itemId), null, "nor a card of an unknown board");
+  assert.equal(body.querySelectorAll("#feed-cols .feed-sess-head").length, 0, "no session runs: the board groups nothing");
+  assert.equal(viewBoard(), "figures", "the pick persists in the feed's own view state");
+  assert.match(viewBtn().title, /showing the Figures board/);
+  // back to the feed: the three columns return with every feed card, the pick cleared
+  menu = openMenu(); assert.deepEqual(radios(menu), [["feed", "false"], ["figures", "true"]]);
+  pick(menu, "feed"); await settle();
+  assert.equal(colsRoot().dataset.board, "feed"); assert.ok(card("g1")); assert.ok(card("g2")); assert.equal(card(f1.itemId), null); assert.equal(colOf("g1"), "col-asks-list");
+  assert.equal(viewBoard(), ""); assert.doesNotMatch(viewBtn().title, /board/);
+  // a pick the frame cannot honour: the next frame carries no boards, the feed shows, the button says so, and the pick stands
+  menu = openMenu(); pick(menu, "figures"); await settle(); assert.equal(colsRoot().dataset.board, "figures");
+  await dispatch(frame([g1, g2, f1, f2, f3, lost], {}));
+  assert.equal(colsRoot().dataset.board, "feed", "the feed shows"); assert.ok(card("g1"));
+  assert.match(viewBtn().title, /board figures is not on this frame, so the feed shows/);
+  assert.equal(card(f1.itemId)._nProd.textContent, "via figure · on an unknown board (figures)", "its cards read as an unknown board's until the frame carries it");
+  assert.equal(viewBoard(), "figures", "the pick stands: the board comes back on its own");
+  menu = openMenu(); assert.equal(menu.querySelectorAll('[role="menuitemradio"]').length, 0, "with the feed alone the menu is exactly what it was"); viewBtn().onclick(ev);
+  await dispatch(frame([g1, g2, f1, f2, f3, lost], { boards: { figures: FIG_BOARD } }));
+  assert.equal(colsRoot().dataset.board, "figures", "back on the next frame carrying it");
+  // restore the feed for the tests below
+  menu = openMenu(); pick(menu, "feed"); await settle(); assert.equal(colsRoot().dataset.board, "feed");
   await dispatch(frame([g1, g2, g3]));
 });
 
@@ -1342,16 +1402,15 @@ test("the kernel's cardPredict fan-back moves a category-carrying card to Workin
   assert.equal(colOf("g10"), "col-asks-list");
 });
 
-test("a notice card on a data-defined board shows on the feed under the default column with its board named beside the producer, until the board has a view of its own", async () => {
-  const others = Array.from(body.querySelectorAll(".fitem")).map((c: any) => c._it).filter(Boolean);
-  const notes = { id: "notes", title: "Notes", categories: [{ id: "new", title: "New", chip: "neutral" }], defaultCategory: "new", rules: [], sort: { key: "t", dir: "desc" },
-    subSorts: [], groupBy: null, order: [], notify: ["new"], needsYou: "new", kinds: ["notice"] };
-  const n1 = cardOf("notice:" + WEB + ":sweep:1", WEB, "web", "#3366cc", "The sweep finished", "completed",
-    { board: "notes", category: "new", live: false, tree: [], notice: { producer: "cli", key: "sweep", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
-  await dispatch(frame([n1, ...others], { boards: { notes } }));
-  const c = card("notice:" + WEB + ":sweep:1");
-  assert.equal(colOf("notice:" + WEB + ":sweep:1"), "col-asks-list", "a category the feed lacks files under the feed's default column");
-  assert.equal(c._nProd.textContent, "via cli · on Notes", "the board's title beside the producer");
-  await dispatch(frame([n1, ...others], {}));   // a frame from a kernel that ships no boards: the board is unknown, the label says nothing of it
-  assert.equal(c._nProd.textContent, "via cli");
+test("a notice card on a data-defined board is not on the feed: its own board's view shows it (phase four); a card naming a board nobody knows is the feed's, loudly", async () => {
+  const FIG = { id: "figures", title: "Figures", categories: [{ id: "new", title: "New", chip: "neutral" }], defaultCategory: "new", rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [], notify: [], needsYou: null, kinds: ["notice"] };
+  const onFig = cardOf("notice:" + WEB + ":sweep:1", WEB, "web", "#3366cc", "The sweep finished", "completed", { live: false, tree: [], blocked: null, board: "figures", category: "new",
+    notice: { producer: "figure", key: "sweep", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
+  const lost = cardOf("notice:" + WEB + ":lost:1", WEB, "web", "#3366cc", "A card of a board nobody knows", "completed", { live: false, tree: [], blocked: null, board: "gone", category: "x",
+    notice: { producer: "figure", key: "lost", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
+  await dispatch(frame([g1, onFig, lost], { boards: { figures: FIG } }));
+  assert.equal(card("notice:" + WEB + ":sweep:1"), null, "a data board's card is off the feed (phase four): its board's view shows it");
+  assert.equal(colOf("notice:" + WEB + ":lost:1"), "col-asks-list", "an unknown board's card files under the feed's default column");
+  assert.equal(card("notice:" + WEB + ":lost:1")._nProd.textContent, "via figure · on an unknown board (gone)", "and says so beside the producer, never a silent drop");
+  await dispatch(frame([g1, g2, g3]));
 });

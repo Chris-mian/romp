@@ -49,7 +49,7 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   // the feed shows every session's cards (the user's 2026-08-25 ruling — the 2026-08-24 view gate
   // retired); the session filter / satellite split is the board's own first stage
   assert.ok(FEED.includes("let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);"));
-  assert.ok(FEED.includes("let shown = viewFiltered(asks);"), "render reads the shared view");
+  assert.ok(FEED.includes("let shown = viewFiltered(asks).filter((a) => boardOf(a) === board);"), "render reads the shared view (then keeps the active board's cards, phase four)");
   // (`let`, since 2026-08-23: the SEARCH filter composes onto the same render-side view — see feed-search.test.ts)
   assert.ok(FEED.includes("for (const a of shown) {"), "the group-fold loop reads the filtered view");
   assert.ok(FEED.includes("for (const a of shown) { if (grouped.has(a.itemId)) continue;"), "…and the singles loop");

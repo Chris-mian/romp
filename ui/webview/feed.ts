@@ -43,7 +43,7 @@ import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
 import { inInputEvent } from "./input-event";
 import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
-import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
+import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, boardById, knownBoards, type Board, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
 import { wireTip, setTip, pruneTip } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
 import { listenForFrames } from "./frame-listener";
@@ -488,7 +488,7 @@ const groupEls = new Map<string, HTMLElement>();
 
 // The three columns. The HOST decides each ask's column by DAG path accounting
 // (completed only when every subgraph node is DONE); we just map its snake_case.
-type Column = "asks" | "needsInput" | "completed";
+type Column = string;   // the ACTIVE board's local column keys: the feed's three CSS names, a data board's category ids (plans/card-boards.md, phase four)
 function askColumn(it: AskItem): Column {
   // it.column is AUTHORITATIVE — the kernel already floors a live permission/picker block to needs_input (and
   // parked handoffs / placeholders set it too), so the client just maps its snake_case. We no longer re-route
@@ -496,7 +496,7 @@ function askColumn(it: AskItem): Column {
   // "working" while showing it under Blocked — it now reports needs_input directly (the user 2026-06-29). An
   // API-error card stays in its natural column (working): the kernel keeps column=working for it (a transient
   // stall, not a block), so it lands in "asks" with just the "⚠ API error" chip + Retry.
-  return columnOf(FEED_BOARD, it.category ?? it.column);   // the feed definition's own table (the category since phase two; column from an older kernel)
+  return columnOf(boardOf(it), it.category ?? it.column);   // the card's OWN board's table (the category since phase two; column from an older kernel): a feed card keeps its feed key whatever board is shown
 }
 
 // How opaque the recency tint is over the (black) page — low = a faint, very
@@ -1667,6 +1667,45 @@ const collapsedFocusCols = new Set<string>();
 // with the rest, prune-exempt; painted by paintFocusFold.
 let focusFolded = false;
 
+// ── the board view switch (plans/card-boards.md, phase four, section 8) ─────────────────────────────────────────
+// ONE board shows at a time: the feed, or a data-defined board the frame carries. The pick is the feed pane's own view
+// state (FeedViewState.board, prune-exempt) from the View menu's Board rows, or the page's ?board= query (the docking
+// kit's hook: that pick is the page's, never written to the view state, and the Board rows hide). A pick naming a board
+// the frame does not carry (removed, a remote host gone) shows the feed and says so once, never a blank pane; the pick
+// stands, so the board comes back on its own when the frame carries it again.
+let activeBoardId = "";
+let boardQuery = "";
+try { boardQuery = new URLSearchParams(window.location.search).get("board") || ""; } catch { boardQuery = ""; }
+let boardFallbackSaid = "";
+function activeBoard(): Board {
+  const want = boardQuery || activeBoardId;
+  if (!want || want === FEED_BOARD.id) return FEED_BOARD;
+  const b = boardById(want);
+  if (b) return b;
+  if (boardFallbackSaid !== want) { boardFallbackSaid = want; try { feedToast("Board " + want + " is not on this frame: showing the feed"); } catch { /* before the footer exists */ } }
+  return FEED_BOARD;
+}
+const activeCols = (): readonly Column[] => feedColumns(activeBoard());
+/** An order the user dragged applies only when it names every column of the ACTIVE board once (the feed's stored order
+ *  means nothing on a data board's columns, and a board's order nothing on the feed). */
+const orderComplete = (o: readonly string[]): boolean => { const cols = activeCols(); return o.length === cols.length && cols.every((k) => o.includes(k)); };
+/** The side-by-side default order: the feed's literal (the build order, pinned), a data board's categories in its order. */
+const rowDefault = (): string[] => (activeBoard() === FEED_BOARD ? ROW_DEFAULT : [...activeCols()]);
+/** Beside a card's producer: "on an unknown board (<id>)" for a card naming a board this renderer does not know (it renders on
+ *  the feed under the default category: the loud fallback, never a silent drop); nothing otherwise. A data board's cards render
+ *  on their own board since phase four, so a known board's title never needs saying here (phase three's "on <title>" went). */
+function boardLabelOf(it: { board?: string | null }): string {
+  return it.board && it.board !== FEED_BOARD.id && boardOf(it) === FEED_BOARD ? "an unknown board (" + it.board + ")" : "";
+}
+function setActiveBoard(id: string): void {
+  const next = id === FEED_BOARD.id ? "" : id;
+  if (next === activeBoardId) return;
+  activeBoardId = next;
+  skipFlipOnce = true; prevCols = new Map();   // a switch is a new board, not cards moving: nothing glides
+  persistViewState();
+  render();
+}
+
 (function hydrateViewState() {
   let st;
   try { st = parseViewState(localStorage.getItem(VIEW_STATE_KEY)); } catch { return; }   // private mode / blocked storage → run without it
@@ -1683,6 +1722,7 @@ let focusFolded = false;
   focusW = { ...st.focusW };
   for (const k of st.focusCols) collapsedFocusCols.add(k);
   focusFolded = st.focusFolded;   // the section's fold (T410b); a blob saved before it reads unfolded
+  activeBoardId = st.board;   // the board pick (phase four); a blob saved before it, or naming the feed, reads as the feed
 })();
 
 function currentViewState(): FeedViewState {
@@ -1691,7 +1731,7 @@ function currentViewState(): FeedViewState {
   return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen],
            asks: [...expandedAsks], threads: [...collapsedThreads], cols: [...collapsedCols],
            order: colOrder.slice(), focused: showFocused,
-           focusOrder: focusOrder.slice(), focusW: { ...focusW }, focusCols: [...collapsedFocusCols], focusFolded };
+           focusOrder: focusOrder.slice(), focusW: { ...focusW }, focusCols: [...collapsedFocusCols], focusFolded, board: activeBoardId };
 }
 
 // Written at the END of every render rather than from each toggle handler: the feed re-renders on every
@@ -2082,7 +2122,7 @@ function renderNoticeModalBody(host: HTMLElement, it: AskItem, nt: NonNullable<A
   host.innerHTML = ""; (host as any)._sig = "";
   const wrap = el("div", "feed-modal-notice");
   const prod = el("div", "fask-nprod feed-modal-nprod"), nb = el("div", "fask-nbody"), na = el("div", "fask-nattach"), nac = el("div", "fask-nactions");
-  fillNoticeFace(it, nt, boardOf(it) !== FEED_BOARD ? boardOf(it).title : "", prod, nb, na, nac);
+  fillNoticeFace(it, nt, boardLabelOf(it), prod, nb, na, nac);
   wrap.append(prod, nb, na, nac);
   host.appendChild(wrap);
   (host as any)._nActions = nac;   // the answer handler re-arms or closes through the modal's own buttons
@@ -2720,7 +2760,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (nt) {
     // a card on a data-defined board shows on the feed under the feed's default column until the board has a view of its own
     // (phase four's switch); its board's title rides the producer label so the reader knows where it belongs
-    const onBoard = boardOf(it) !== FEED_BOARD ? boardOf(it).title : "";
+    const onBoard = boardLabelOf(it);
     const nkey = JSON.stringify([nt.key, nt.rev, nt.producer, nt.body, nt.attachment, nt.actions, it.sid, onBoard]);
     if ((a._nKey as string | undefined) !== nkey) {
       a._nKey = nkey;
@@ -4252,11 +4292,30 @@ function buildViewMenu(menu: HTMLElement): void {
   // view state (FeedViewState.focused, OFF by default), never romp:settings, so the gear and the other panes
   // have nothing to read — and the click re-renders directly, the way the fold carets do.
   mk(true, () => { showFocused = !showFocused; persistViewState(); render(); });
+  // the BOARD rows (plans/card-boards.md, phase four): one menuitemradio per board the frame carries, the feed first,
+  // shown once a second board exists (with the feed alone the menu is exactly what it was); hidden under a ?board= page
+  // (that pick is the page's). A board created by `romp card -b` is a row on the next open, no reload.
+  const boards = knownBoards();
+  if (!boardQuery && boards.length > 1) {
+    const cur = activeBoard();
+    for (const b of boards) {
+      const r = el("button", "ctx-item ctx-board");
+      (r as HTMLButtonElement).type = "button";
+      r.setAttribute("role", "menuitemradio");
+      r.setAttribute("aria-checked", b === cur ? "true" : "false");
+      r.classList.toggle("current", b === cur);
+      r.dataset.board = b.id;
+      r.textContent = "Board: " + b.title;
+      r.title = b === cur ? "the board shown now" : "show the " + b.title + " board (its cards under its own categories)";
+      r.onclick = (ev) => { ev.stopPropagation(); setActiveBoard(b.id); closeViewMenu(); };
+      menu.appendChild(r);
+    }
+  }
 }
 // Sync the four rows to the CURRENT prefs — labels, ✓s, the forced state — without rebuilding them.
 function paintViewMenu(menu: HTMLElement): void {
   const p = feedPrefs();
-  const rows = menu.querySelectorAll(".ctx-item");
+  const rows = menu.querySelectorAll(".ctx-item:not(.ctx-board)");   // the four view rows; the Board radios below them paint at build (a pick closes the menu)
   if (rows.length !== 4) return;
   const set = (i: number, label: string, opts: { current: boolean; forced?: boolean; title: string }) => {
     const r = rows[i] as HTMLElement;
@@ -4560,8 +4619,8 @@ const ROW_DEFAULT = ["asks", "needsInput", "completed"];     // the side-by-side
 // by side: Working→Blocked→Completed, the build order). Also each section's fold (stacked-only CSS).
 // Idempotent; runs at build, per toggle, and per drag re-slot.
 function applyColStack(): void {
-  const custom = colOrder.length === 3 ? colOrder : null;
-  for (const key of feedColumns(FEED_BOARD)) {
+  const custom = orderComplete(colOrder) ? colOrder : null;
+  for (const key of activeCols()) {
     // the BOARD's column, under #feed-cols: the focused-session section above it carries the same column
     // classes (T347), and a bare query would land on that copy first. The fold is the board's alone; the
     // section's blocks take their order from applyFocusLayout below (the board's, until the user drags THERE).
@@ -4592,9 +4651,9 @@ function applyColStack(): void {
 // grows with what the focused session holds. Idempotent; runs at build, per fold, per drag re-slot, per resize.
 function applyFocusLayout(): void {
   if (!document.getElementById("feed-focus")) return;
-  const order = focusOrder.length === 3 ? focusOrder : colOrder.length === 3 ? colOrder : null;
-  const visual = (order || ROW_DEFAULT).filter((k) => !collapsedFocusCols.has(k));
-  for (const key of feedColumns(FEED_BOARD)) {
+  const order = orderComplete(focusOrder) ? focusOrder : orderComplete(colOrder) ? colOrder : null;
+  const visual = (order || rowDefault()).filter((k) => !collapsedFocusCols.has(k));
+  for (const key of activeCols()) {
     const twin = document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + key);
     if (!twin) continue;
     if (order) twin.style.setProperty("--col-order", String(order.indexOf(key) + 1));
@@ -4621,7 +4680,7 @@ function applyFocusLayout(): void {
 function wireFocusGutter(gutter: HTMLElement, key: string): void {
   gutter.addEventListener("pointerdown", (down) => {
     const col = FOCUS_SLOTS.col(key);
-    const order = focusOrder.length === 3 ? focusOrder : colOrder.length === 3 ? colOrder : ROW_DEFAULT;
+    const order = orderComplete(focusOrder) ? focusOrder : orderComplete(colOrder) ? colOrder : rowDefault();
     const visual = order.filter((k) => !collapsedFocusCols.has(k));
     const next = visual[visual.indexOf(key) + 1];
     const other = next ? FOCUS_SLOTS.col(next) : null;
@@ -4669,7 +4728,7 @@ function wireBlockKeys(chip: HTMLElement, key: string): void {
     const vertical = getComputedStyle(colsEl).flexDirection === "column";
     const cur = FOCUS_SLOTS.get();
     const fallback = FOCUS_SLOTS.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);
-    const hadCustom = cur.length === 3;
+    const hadCustom = orderComplete(cur);
     const order = (hadCustom ? cur : fallback).slice();
     // one slot among the blocks ON SCREEN (visibleKeys): a hidden neighbour is skipped, never swapped behind
     const visible = visibleKeys(order, FOCUS_SLOTS.col);
@@ -4727,7 +4786,7 @@ const FOCUS_SLOTS: SlotDrag = {
   col: (k) => document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + k),
   get: () => focusOrder,
   set: (o) => { focusOrder = o; applyFocusLayout(); },
-  fallback: (d) => (colOrder.length === 3 ? colOrder : d),   // the section follows the board until it has an order of its own
+  fallback: (d) => (orderComplete(colOrder) ? colOrder : d),   // the section follows the board until it has an order of its own
 };
 // A re-slot walks VISIBLE blocks only (T410 review round two): in the single-column layout a focused block whose
 // category has no cards is display: none (col-empty), and its rect is all zeros, so a midpoint walk over every key
@@ -4770,13 +4829,13 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
     const midOf = (r: DOMRect) => (vertical ? r.top + r.height / 2 : r.left + r.width / 2);
     const translate = (d: number) => (vertical ? "translateY(" + d + "px)" : "translateX(" + d + "px)");
     const fallback = slots.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);   // each layout's own default, or what the container follows
-    const hadCustom = slots.get().length === 3;   // for the no-trace rule in up()
+    const hadCustom = orderComplete(slots.get());   // for the no-trace rule in up()
     const start = pos(down);
     let slotShift = 0;   // the dragged section's own accumulated slot movement — folded into its
     //                      follow-transform so a re-slot never yanks it out from under the pointer
     const applyOrderFlip = (order: string[]) => {
       const els: Array<[string, HTMLElement]> = [];
-      for (const k of feedColumns(FEED_BOARD)) {
+      for (const k of activeCols()) {
         const e = slots.col(k);   // this container's element for the key, never the other container's
         if (e) els.push([k, e]);
       }
@@ -4792,7 +4851,7 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
     };
     const move = (ev: PointerEvent) => {
       const cur = slots.get();
-      const order = (cur.length === 3 ? cur : fallback).slice();
+      const order = (orderComplete(cur) ? cur : fallback).slice();
       // the slot whose axis midpoint the pointer is past — walk the OTHER VISIBLE sections' rects (visibleKeys: a
       // block the single-column layout hides has a zero rect and no slot to offer)
       const visible = visibleKeys(order, slots.col);
@@ -4838,7 +4897,7 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
       // order — that would silently re-arrange the OTHER layout, which keeps a different default (and in
       // the section, dropping back on the board's arrangement keeps FOLLOWING the board rather than pinning it)
       const cur = slots.get();
-      if (!hadCustom && cur.length === 3 && cur.join() === fallback.join()) slots.set([]);
+      if (!hadCustom && orderComplete(cur) && cur.join() === fallback.join()) slots.set([]);
       // the keys' provenance flag drops only when this gesture CHANGED a stored order (T410 review round three): a
       // section drag that landed elsewhere pinned its order by drag, a board drag that landed elsewhere changed what
       // the section follows; a click, and a there-and-back drag, leave a key-minted order walkable back
@@ -4852,9 +4911,12 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
 }
 
 function ensureCols(list: HTMLElement) {
+  const board = activeBoard();
+  const stale = document.getElementById("feed-cols");
+  if (stale && stale.dataset.board !== board.id) { stale.remove(); removeFocusSection(); }   // the view switch (phase four): another board's columns come down whole
   if (!document.getElementById("feed-cols")) {
     list.innerHTML = "";
-    const cols = el("div", "feed-cols"); cols.id = "feed-cols";
+    const cols = el("div", "feed-cols"); cols.id = "feed-cols"; cols.dataset.board = board.id;
     // Header actions ride the STABLE columns root (the click-safety rule): the header nodes under it are
     // re-homed and re-rendered on every push, and a native click needs mousedown and mouseup on one element.
     // delegate() also flashes the pressed control (.romp-acted), the instant acknowledgement.
@@ -4865,7 +4927,7 @@ function ensureCols(list: HTMLElement) {
     // column holds the ones being worked — internal keys keep the old names
     // each header is a filled state chip reproducing the chat status chips
     // (styles.css .chip): working=yellow, blocked=awaiting-red, completed=ready-blue.
-    for (const [key, label, chip] of columnTable(FEED_BOARD)) {   // the board's categories, in its order (board-def.ts)
+    for (const [key, label, chip] of columnTable(activeBoard())) {   // the board's categories, in its order (board-def.ts)
       const col = el("div", "feed-col col-" + key);
       const head = el("div", "feed-col-head");
       // header furniture (the user 2026-08-16): a caret LEFT of the chip folds the whole category to
@@ -4894,14 +4956,9 @@ function ensureCols(list: HTMLElement) {
     list.appendChild(cols);
     applyColStack();
   }
-  return {
-    asks: document.getElementById("col-asks-list")!,
-    needsInput: document.getElementById("col-needsInput-list")!,
-    completed: document.getElementById("col-completed-list")!,
-    asksCount: document.getElementById("col-asks-count")!,
-    needsInputCount: document.getElementById("col-needsInput-count")!,
-    completedCount: document.getElementById("col-completed-count")!,
-  };
+  const lists: Record<Column, HTMLElement> = {}, counts: Record<Column, HTMLElement> = {};
+  for (const key of activeCols()) { lists[key] = document.getElementById("col-" + key + "-list")!; counts[key] = document.getElementById("col-" + key + "-count")!; }
+  return { lists, counts };
 }
 
 // Keyed in-place reconcile of ONE column (mixes ask + standalone cards; a card
@@ -5103,7 +5160,7 @@ function ensureFocusSection(list: HTMLElement): HTMLElement {
     // a fold caret folds the block to its head in BOTH layouts; a gutter on the block's right edge resizes it
     // against its neighbour. Order, widths and folds are the section's own state (applyFocusLayout), never the
     // board's; a block never crosses the divider. Build-once nodes, click-safe across renders.
-    for (const [key, label, chip] of columnTable(FEED_BOARD)) {   // the board's categories, in its order (board-def.ts)
+    for (const [key, label, chip] of columnTable(activeBoard())) {   // the board's categories, in its order (board-def.ts)
       const col = el("div", "feed-col col-" + key);
       const h = el("div", "feed-col-head");
       // the chip: the drag handle (the board's own affordance, the grab cursor) and the keyboard's handle too, so it
@@ -5287,12 +5344,12 @@ function columnsOf(buckets: Record<Column, Entry[]>): Map<string, string> {
   }
   return m;
 }
-const FLY_COLS: readonly ("asks" | "needsInput" | "completed")[] = feedColumns(FEED_BOARD);
+// the fly walks the ACTIVE board's columns (activeCols); the constant that named the feed's three went with phase four
 let flySeq = 0;   // the fly token: the element remembers the newest fly's number (see the write phase)
 function captureCardRects(cols: ReturnType<typeof ensureCols>): Map<string, FlipState> {
   const m = new Map<string, FlipState>();
-  for (const key of FLY_COLS) {
-    const colEl = cols[key];
+  for (const key of activeCols()) {
+    const colEl = cols.lists[key];
     for (const c of Array.from(colEl.children) as HTMLElement[]) {
       if (c.dataset.key) m.set(c.dataset.key, { rect: c.getBoundingClientRect(), col: colEl.id });
     }
@@ -5306,8 +5363,8 @@ function flyColumnChanges(first: Map<string, FlipState>, cols: ReturnType<typeof
   // layout, so the next read forces a fresh layout of the whole document — one per card, 155 times per
   // feed frame (measured 2026-09-04: the largest single cost on the main thread the chat pane's clicks share).
   const moves: { c: HTMLElement; dx: number; dy: number; crossed: boolean }[] = [];
-  for (const key of FLY_COLS) {
-    const colEl = cols[key];
+  for (const key of activeCols()) {
+    const colEl = cols.lists[key];
     for (const c of Array.from(colEl.children) as HTMLElement[]) {
       const k = c.dataset.key; if (!k) continue;
       const prev = first.get(k);
@@ -5672,6 +5729,9 @@ function renderBody(list: HTMLElement) {
   ensureViewMenuBtn().style.display = showCA ? "" : "none";       // sort + layout menu (the user 2026-08-24)
   ensureTagLensBtn().style.display = showCA ? "" : "none";        // the feed-local tag lens (the user 2026-08-25, T70)
   ensureSessionBox().style.display = showCA ? "" : "none";        // session combobox: type-or-pick filter (the user 2026-08-24)
+  { const b = activeBoard(); const want = boardQuery || activeBoardId;   // the board shown, and a pick the frame cannot honour, said on the View button (phase four)
+    ensureViewMenuBtn().title = "view options: sort direction, single column, group by session, the focused session on top"
+      + (b !== FEED_BOARD ? "; showing the " + b.title + " board" : want && want !== FEED_BOARD.id ? "; board " + want + " is not on this frame, so the feed shows" : ""); }
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -5700,10 +5760,14 @@ function renderBody(list: HTMLElement) {
   }
 
   const cols = ensureCols(list);
-  const buckets: Record<Column, Entry[]> = { asks: [], needsInput: [], completed: [] };
+  const board = activeBoard();
+  const buckets: Record<Column, Entry[]> = {};
+  for (const k of activeCols()) buckets[k] = [];
   // The display-side view filters (session filter + search), shared with the hover-freeze badge
   // painter so the deferred-churn hint counts exactly what the user would see move (viewFiltered).
-  let shown = viewFiltered(asks);
+  // The ACTIVE board's cards alone (phase four): a card names its board; one naming an id this renderer does not know
+  // is the feed's, under the feed's default category with its producer line saying so (boardLabelOf).
+  let shown = viewFiltered(asks).filter((a) => boardOf(a) === board);
   // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId) — turnGroups, the rule the
   // jump-unfold reads too, so what renders as a group and what unfolds as one can never disagree (T263e).
   const byTurn = turnGroups(shown);
@@ -5717,19 +5781,20 @@ function renderBody(list: HTMLElement) {
   // Oldest-at-top by default (the user 2026-06-27): the newest work sits at the BOTTOM of each column, and
   // new/moved cards stack onto the bottom (matches the fly animation). The footer "Newest first" toggle
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
-  const newestFirst = feedPrefs().newestFirst;
+  // the feed: the user's direction preference; a data board: its definition's sort direction (its key is time until phase five's sub-sorts)
+  const newestFirst = board === FEED_BOARD ? feedPrefs().newestFirst : board.sort.dir === "desc";
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
-  // the feed board's owner rule (stable, so each run keeps the column's time order): the owner-less cards first in every mode
-  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entrySid(x)) - ownerRank(entrySid(y)));
+  // the board's owner rule (stable, so each run keeps the column's time order): the owner-less cards first in every mode, on a board whose order names it
+  if (board.order.includes("ownerRank")) for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entrySid(x)) - ownerRank(entrySid(y)));
   // THE FOCUSED SESSION's view of these buckets (T347), taken HERE, before grouping: the section shows one
   // session, so it carries no run headers, and a thread folded below must not empty it — the fold hides
   // cards behind a caret the section does not have, and a compact view never dead-ends (ui/CLAUDE.md).
-  const focusBuckets = showFocused ? focusedEntries(buckets, focusedSid, entrySid) : null;
+  const focusBuckets = showFocused && board.groupBy === "session" ? focusedEntries(buckets, focusedSid, entrySid) : null;   // a board without session runs has no focused section (phase four)
   // GROUPED mode (the user 2026-07-13): within each column, cards gather by SESSION — session order = the
   // kernel's session-order list (the same order the chat tabs + timeline lanes hold; sessions the list
   // doesn't know keep their time order after it) — with a name+dot header entry opening each run. The sort
   // is stable, so per-session cards keep the column's newest/oldest order. Headers only where a run exists.
-  if (feedPrefs().grouped) {
+  if (feedPrefs().grouped && board.groupBy === "session") {   // grouping is the BOARD's to offer (phase four: the notes board groups nothing)
     const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
     const eSid = (e: Entry) => e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
     for (const k of Object.keys(buckets) as Column[]) {
@@ -5780,7 +5845,7 @@ function renderBody(list: HTMLElement) {
     focusId: hoverAskId ?? pinnedAskId, pinnedId: pinnedAskId, notifyOn: cardNotifyOn,
     prefs: { grouped: gprefs.grouped, collapsed: gprefs.collapsed, colormap: gprefs.colormap },
     hostDown: hostIsDown, selfHost: feedSelfHost, repo: prRepoOf, seq: ++renderSeq,
-    boardTitle: (it) => { const b = boardOf(it); return b === FEED_BOARD ? "" : b.title; },   // a card on a data-defined board: its label reads the title
+    boardTitle: (it) => boardLabelOf(it),   // a card on a data-defined board: its label reads the title
   };
   // The focused session's section above the board (T347): its own elements and caches, the same builders and
   // the same update gate. Painted BEFORE the board's FLIP capture below: the section sits above the board, so
@@ -5805,9 +5870,7 @@ function renderBody(list: HTMLElement) {
   const flipFirst = needFlip ? captureCardRects(cols) : new Map<string, FlipState>();
 
   const desired = new Set<string>();
-  reconcileCol(cols.asks, buckets.asks, desired, gate);
-  reconcileCol(cols.needsInput, buckets.needsInput, desired, gate);
-  reconcileCol(cols.completed, buckets.completed, desired, gate);
+  for (const k of activeCols()) reconcileCol(cols.lists[k], buckets[k], desired, gate);
   // the count chip shows the number only when there ARE cards; an empty column shows nothing — not "0"
   // (the user 2026-06-25). Empty string collapses the chip (it has no padding/background of its own).
   const setCount = (elc: HTMLElement, n: number) => { elc.textContent = n ? String(n) : ""; elc.style.display = n ? "" : "none"; };
@@ -5818,9 +5881,7 @@ function renderBody(list: HTMLElement) {
   // (entryCards, which the fold accumulator uses too) — so a section's number cannot move on any fold or
   // grouping, only when cards actually enter or leave the column.
   const nCards = (es: Entry[]) => es.reduce((n, e) => n + entryCards(e), 0);
-  setCount(cols.asksCount, nCards(buckets.asks));
-  setCount(cols.needsInputCount, nCards(buckets.needsInput));
-  setCount(cols.completedCount, nCards(buckets.completed));
+  for (const k of activeCols()) setCount(cols.counts[k], nCards(buckets[k]));
 
   // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
   // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).
@@ -6214,7 +6275,7 @@ function paintFreezeBadges(): void {
     if (!b) { b = el("span", "freeze-badge"); host.appendChild(b); }
     paintFreezeParts(b, c);
   };
-  for (const key of feedColumns(FEED_BOARD)) {
+  for (const key of activeCols()) {
     put(document.querySelector("#feed-cols .feed-col.col-" + key + " .feed-col-head"), d.cols[key]);   // the board's heads, never the focused section's (T347)
   }
   const groupedNow = feedPrefs().grouped;

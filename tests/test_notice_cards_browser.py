@@ -163,8 +163,7 @@ const byName = await post({ name: "notes", key: "k", title: "t" });
 // first use, the frame carries its definition, and the pane names the board beside the producer until phase four's view
 const r8 = await post({ id: cfg.sid, key: "figboard", title: "A figure on its own board", producer: "cli", board: "figures", category: "new" });
 const id8 = "notice:" + cfg.sid + ":figboard:" + (r8.notice || {}).rev;
-await page.waitForSelector(sel(id8), { state: "attached", timeout: 60000 }).catch(() => {});
-await page.waitForFunction((s) => { const c = document.querySelector(s); return !!c && /on Figures/.test((c.querySelector(".fask-nprod") || {}).textContent || ""); }, sel(id8), { timeout: 30000 }).catch(() => {});
+await page.waitForFunction(() => (window.__feedNotices || []).some((f) => f.some((k) => k.includes(":figboard:"))), null, { timeout: 30000 }).catch(() => {});   // the frame carries the card, the feed shows it not (phase four)
 const onBoard = { post: r8, card: await cardFacts(id8) };
 process.stdout.write("RESULT:" + JSON.stringify({ first, second, latched, done2, stillThere, toasts, rearmed, afterClear, undone, revision, expiry, refused, errors, diag, r7, ownerless, byName, onBoard }) + "\n");
 await browser.close();
@@ -317,10 +316,7 @@ class NoticeCardsServed(unittest.TestCase):
         ob = r["onBoard"]
         self.assertTrue(ob["post"].get("ok"), ob["post"])
         self.assertEqual((ob["post"]["notice"]["board"], ob["post"]["notice"]["category"], ob["post"]["notice"].get("created")), ("figures", "new", "board"))
-        c = ob["card"]
-        self.assertIsNotNone(c, "the card is on the board")
-        self.assertEqual(c["col"], "col-asks-list", "the pane files a category the feed lacks under the feed's default column (Working) until phase four's view; the kernel's column stays the needsYou mapping for an older pane")
-        self.assertEqual(c["prod"], "via cli · on Figures", "the board's title beside the producer: %r" % c)
+        self.assertIsNone(ob["card"], "a card on a board of yours is not on the feed: the board's own view shows it (phase four; tests/test_board_view_served.py drives that view)")
 
     def test_an_expired_notice_leaves_at_the_next_build_and_a_disallowed_action_is_refused_at_the_door(self):
         r = self._result()

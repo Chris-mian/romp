@@ -52,6 +52,11 @@ export interface FeedViewState {
   // blocks and their cards hidden under it. A view switch like `focused`: prune-EXEMPT, not counted by the cap,
   // false by default, and only the literal `true` folds it.
   focusFolded: boolean;
+  // The BOARD the feed pane shows (plans/card-boards.md, phase four): "" is the feed, else a data-defined board's id, picked
+  // from the View menu's Board rows. A view switch like `focused`: prune-EXEMPT, not counted by the cap; an id outside the
+  // board grammar reads as the feed. A pick naming a board the frame no longer carries KEEPS its id here (the renderer
+  // shows the feed and says so), so the board comes back on its own when the frame carries it again.
+  board: string;
 }
 
 export const VIEW_STATE_KEY = "romp:feedview";
@@ -61,7 +66,7 @@ export const FEED_COLUMNS = ["asks", "needsInput", "completed"] as const;
 export type FeedColumn = typeof FEED_COLUMNS[number];
 const THREAD_SEP = "\u0000";   // a sid is a uuid (or host:uuid) and never carries a NUL
 /** The persisted key for one session's run in one column (T263c). */
-export function threadKey(sid: string, col: FeedColumn): string { return sid + THREAD_SEP + col; }
+export function threadKey(sid: string, col: string): string { return sid + THREAD_SEP + col; }   // the column key: the feed's three, or a data board's category id (phase four)
 /** The keys a STORED entry stands for: a (sid, column) key is itself; a bare sid — the pre-T263c spelling,
  *  when a fold covered the session everywhere — is every column, so an old fold keeps folding until the
  *  user opens a column. */
@@ -73,7 +78,7 @@ export function threadKeys(stored: string): string[] {
 export const VIEW_STATE_CAP = 4000;
 
 export function emptyViewState(): FeedViewState {
-  return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [],
+  return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [], board: "",
            focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false };
 }
 
@@ -114,7 +119,8 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
     return { v: 1, sec, tree: arr(o.tree), nodes: arr(o.nodes), logs: arr(o.logs), asks: arr(o.asks),
              threads: arr(o.threads), cols: col(o.cols), order: col(o.order), focused: o.focused === true,
              focusOrder: col(o.focusOrder), focusW: weights(o.focusW), focusCols: col(o.focusCols),
-             focusFolded: o.focusFolded === true };
+             focusFolded: o.focusFolded === true,
+             board: typeof o.board === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(o.board) && o.board !== "feed" ? o.board : "" };
   } catch {
     return emptyViewState();
   }
@@ -168,7 +174,7 @@ export function pruneViewState(s: FeedViewState, liveIds: Set<string>): FeedView
   return capViewState({ v: 1, sec, tree: keep(s.tree), nodes: keep(s.nodes), logs: keep(s.logs),
                         asks: keep(s.asks), threads: s.threads, cols: s.cols, order: s.order,
                         focused: s.focused, focusOrder: s.focusOrder, focusW: s.focusW, focusCols: s.focusCols,
-                        focusFolded: s.focusFolded });
+                        focusFolded: s.focusFolded, board: s.board });
 }
 
 // `cols`/`order`/`focusOrder`/`focusCols` (three known keys each), `focusW` (three weights) and `focused` /
