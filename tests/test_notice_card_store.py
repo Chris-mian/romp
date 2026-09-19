@@ -919,6 +919,14 @@ class TheDoors(unittest.TestCase):
         Bare.on_notice = staticmethod(lambda *a, **k: 1 / 0)
         self.assertIn("could not be posted", be.post_notice(SID, "k", "t", producer="x")[1])
         self.assertIn("type(_sdk_backend).on_notice = staticmethod(post_notice)", KSRC, "the boot wiring, beside the model-fallback hook")
+        # ...and the boot-road call AFTER that wiring: the constructor's boot echo reseed PARKED the dropped-sends cards for the
+        # door it did not have yet, and this call is the only road that posts them, so the three lines (the getattr, the guard,
+        # the call) are pinned here by text and in tests/test_api_health_hover.py by execution (a recorder backend through the
+        # real _sdk_locked); a call placed before the wiring finds no door
+        wired = KSRC.index("type(_sdk_backend).on_notice = staticmethod(post_notice)")
+        call = re.search(r'_post_boot = getattr\(_sdk_backend, "post_boot_notices", None\)\n\s*if _post_boot:\n\s*_post_boot\(\)', KSRC)
+        self.assertIsNotNone(call, "the kernel asks the backend for its boot-road post: the getattr, the guard and the call, in order")
+        self.assertGreater(call.start(), wired, "...after the on_notice wiring, never before it")
         self.assertIn('asks.extend(_notice_cards(now, cleared))', KSRC, "the feed attaches the family after the quarantine cards")
         self.assertIn('("notices", _notice_memo_report)', KSRC, "/perf reports the memo")
         self.assertIn('_nmoved = _compact_notices()', KSRC, "the retention pass runs beside the goal-store sweep")

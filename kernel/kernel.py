@@ -18426,6 +18426,15 @@ def _sdk_locked():
             # a producer inside the backend posts a NOTICE CARD through the same door every producer takes (T370,
             # plans/notice-cards.md): the backend resolves it with getattr, so its tests' bare stand-ins carry no hook
             type(_sdk_backend).on_notice = staticmethod(post_notice)
+            # ...and the dropped-sends cards the constructor's boot echo reseed PARKED for this door: the reseed runs inside
+            # __init__, before the line above, so a post from there found no door, the held sends past the age line were
+            # flagged with no card, and the flags took them out of every later boot's selection. The backend posts them on
+            # a thread of its own: this runs under _sdk_lock, and post_notice's session check re-enters it (Sessions.live()
+            # through _sdk()), so a synchronous post here would deadlock the boot; the thread waits the lock out.
+            # getattr-guarded like the probes below: a backend without the affordance still constructs.
+            _post_boot = getattr(_sdk_backend, "post_boot_notices", None)
+            if _post_boot:
+                _post_boot()
             # a SAFEGUARDS refusal the CLI retried on a fallback model (T279): the same wiring shape —
             # the backend observes the frame (and names the capacity card this turn's learn minted for
             # the swap), the judge store files the refusal and folds that card into it, the kernel

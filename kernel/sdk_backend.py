@@ -9799,6 +9799,16 @@ class SdkBackend:
         for reg in regs:
             if reg.get("alive") and not self._lease_survives(reg["sid"]):
                 self._heal_stale_awaiting(reg["sid"])
+        # The dropped-sends notice cards the reseed below has to post have no door yet: the kernel wires on_notice on
+        # this CLASS after the constructor returns (type(_sdk_backend).on_notice = staticmethod(post_notice)), so a post
+        # from inside __init__ found no door, the held sends past the age line were flagged dropped and stale with no
+        # card, and the flags took them out of every later boot's selection: on the boot road the card was never posted.
+        # The reseed PARKS each card here (the flag writes, the queue re-add and the mirror write stay synchronous, as
+        # before) and the kernel posts them through post_boot_notices() once the door is wired. The door is not a
+        # constructor argument on purpose: its session check re-enters the kernel's construction lock (Sessions.live()
+        # through _sdk()), which the boot thread holds through this constructor, so a synchronous post from here would
+        # deadlock the boot.
+        self._boot_notices: list | None = []
         self._reseed_echoes(regs)   # unlanded input echoes survive the restart (reg['echoes'] mirror)
         # Boot reconcile (reconcile=True: the KERNEL passes it at boot; tests and ad-hoc constructions
         # opt in explicitly): recover what the previous kernel's death left behind — reap orphaned
@@ -13108,11 +13118,14 @@ class SdkBackend:
                 _texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
                 try:
                     self._mark_dropped_echoes(reg["sid"], [{"md": t, "qid": (m or {}).get("qid")}
-                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))])
+                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))],
+                                              park=getattr(self, "_boot_notices", None))   # the boot road: the card waits for
+                    #                        the door (post_boot_notices). getattr like the forget_fed guard above: a stand-in
+                    #                        that never ran __init__ has no slot and keeps the synchronous post
                 except Exception as e:                   # bookkeeping over the live tail, as at the spawn half: said, never a
                     self._log("dropped-echo marking (%s) failed: %s: %s" % (reg["sid"][:8], type(e).__name__, e))   # boot fault
 
-    def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True) -> None:
+    def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True, park: list | None = None) -> None:
         """A fresh CLI is spawning for this sid, or the kernel just booted: whatever process held any
         earlier send is gone. An input echo whose text is neither in the surviving queue (about to be
         delivered to the new CLI) nor landed in the transcript has no holder left — its send is provably
@@ -13141,7 +13154,12 @@ class SdkBackend:
         re-feed would land the message a second time in a conversation that genuinely kept the first,
         exactly the duplicate that branch refuses by design. The loss still surfaces in full (the dropped
         flag); only the queue re-add is withheld. Boot and dead-spawn callers keep the default: no client
-        survived there to be writing anything."""
+        survived there to be writing anything.
+
+        `park` (the boot reseed, from inside __init__): a list the notice card's POST is appended to as a
+        zero-argument callable instead of being posted here, because the kernel wires the door on this class
+        only after the constructor returns; post_boot_notices posts them then. Everything else (the flags,
+        the queue re-add, the mirror write, the wake) runs here as for every other caller."""
         # The surviving queue, by identity where it has one (T252c, third review): `queued_texts` is the queue's
         # copies as {"md", "qid"} (a caller with texts alone gives id-less copies). An echo whose uuid a queued
         # copy wears is queued; an echo whose text is queued only under OTHER ids is not — by text alone, the
@@ -13307,18 +13325,26 @@ class SdkBackend:
                     reg = read_reg(self.state_dir, sid)
                 name = str((reg or {}).get("name") or "")
             title, body, acts = dropped_sends_card(name, stale, now, REDELIVER_MAX_AGE_S)
-            post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
-            if callable(post):
-                row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
-                                actions=acts, dismiss_on_action=True, t=int(now))
+            count = len(stale)
+
+            def post_card():
+                """The POST and the problem row that says its outcome: run here, or parked for the kernel (`park`)."""
+                post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
+                if callable(post):
+                    row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
+                                    actions=acts, dismiss_on_action=True, t=int(now))
+                else:
+                    row, err = None, "no notice door on this backend"
+                self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
+                          "oldest was from %s; kept in the chat as never-delivered and %s"
+                          % (sid[:8], count, _gap_text(int(REDELIVER_MAX_AGE_S)),
+                             time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
+                             ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
+                             ("the card offering them back could not be posted: %s" % err)), problem=True)
+            if park is not None:
+                park.append(post_card)                    # the boot reseed, inside __init__: no door yet (post_boot_notices)
             else:
-                row, err = None, "no notice door on this backend"
-            self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
-                      "oldest was from %s; kept in the chat as never-delivered and %s"
-                      % (sid[:8], len(stale), _gap_text(int(REDELIVER_MAX_AGE_S)),
-                         time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
-                         ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
-                         ("the card offering them back could not be posted: %s" % err)), problem=True)
+                post_card()
         self._persist_echoes(sid)
         self._wake_push()
 
@@ -15185,6 +15211,30 @@ class SdkBackend:
             return door(sid, key, title, body, **kw)
         except Exception as e:                       # a producer's post never takes the backend down with it
             return None, "the notice could not be posted (%s)" % e
+
+    def post_boot_notices(self):
+        """The kernel's call once it has wired the notice door (on_notice) on this class: post the notice cards the boot
+        echo reseed PARKED (_reseed_echoes runs inside __init__, before the door exists; _mark_dropped_echoes' `park`),
+        each with the problem row that says its outcome. On a thread of its own, because the kernel calls this while it
+        still holds its construction lock and the door's session check can re-enter that lock (post_notice's
+        Sessions.live() through _sdk()): the thread waits the lock out where a synchronous post would deadlock the boot
+        (the shape of _push_session's sdk-push-session thread around a kernel callback). A post that raises is one
+        problem row, never the thread's death. The parked list is taken whole and the slot cleared, so a second call
+        posts nothing; a backend with nothing parked starts no thread. Returns the thread, or None (the kernel ignores
+        it; a test joins it)."""
+        parked, self._boot_notices = list(getattr(self, "_boot_notices", None) or []), None
+        if not parked:
+            return None
+
+        def run():
+            for post in parked:
+                try:
+                    post()
+                except Exception as e:
+                    self._log("dropped-sends card: the boot post failed: %s: %s" % (type(e).__name__, e), problem=True)
+        th = threading.Thread(target=run, name="sdk-boot-notices", daemon=True)
+        th.start()
+        return th
 
     def _emit_ask(self, sess: SdkSession, ask: dict):
         # STORE the ask (not just a bool): the kernel's _ask_poll replays it to chat clients each tick, so a
