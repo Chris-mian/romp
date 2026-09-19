@@ -16,7 +16,7 @@
 //     (updateAskCard stashes `_it`).
 //   - every board-level input updateAskCard reads OUTSIDE the ask object: cardInputsKey folds them into
 //     one string, computed from an env the render builds once. The list below is the complete set (a
-//     source scan of updateAskCard, applySections, quarWho, dotFor and prRepoOf); a missed input shows as
+//     source scan of updateAskCard, applySections, dotFor and prRepoOf); a missed input shows as
 //     a stale badge on an unchanged card, so keep it complete.
 //   - a local gesture (a section toggle, the bell, hover/pin): its handler writes the DOM directly and,
 //     where a column could change, calls render(); hover/pin are also in the key.

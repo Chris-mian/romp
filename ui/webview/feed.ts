@@ -23,7 +23,7 @@ import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
 import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
-import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf, bareId } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostOf, bareId } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
@@ -125,7 +125,7 @@ interface AskItem {
               refusal?: boolean;   // apiError: the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — deterministic on the same input, the user 2026-08-15)
               mode?: string; login?: string; since?: number;   // judgeAuth adds these: which billing its judges ride ('key'|'login') + the first refusal time — romp can't analyze the session until the credential is fixed (the user 2026-08-12)
               capOffer?: { resetsAt: number; window?: string };   // apiError: login-billed session dead on the account's cap + a key on hand → the explicit switch OFFER; the pick is yours alone, both directions (2026-08-30)
-              toName?: string; toSid?: string };  // parkedHandoff adds to* (the held-mail flavour left 2026-09-19: a notice card now) the compact card line
+              toName?: string; toSid?: string };  // parkedHandoff adds to* (the held-mail flavour left 2026-09-19: a notice card now)
   // a NOTICE CARD (T370, plans/notice-cards.md): a producer's card the kernel made without a judge; the flavour object
   // discriminates the family the way blocked.state does the kernel-made ones. The face shows the title (text), the producer
   // beside the session, the body (markdown through the sanitizer), the attachment (an image inline, pinned as posted), and
@@ -724,9 +724,9 @@ function focusEcho(sid: string): void {
 }
 let workingSet = new Set<string>();
 // This machine's own name (kernel _self_host, on every feed payload) and the identity colour of every
-// session the feed knows, keyed "host:name" for a remote one and plain for a local one. Held mail names
-// BOTH ends of the exchange, and a session's colour is its identity everywhere else, so the card has to
-// be able to look one up by name — the quarantine record carries names, not sids (the user 2026-07-29).
+// session the feed knows, keyed "host:name" for a remote one and plain for a local one: a session's colour is
+// its identity everywhere else, so a renderer holding only a name can look one up (first built for the held
+// mail's route line, the user 2026-07-29; that line is a notice card's body since 2026-09-19).
 let feedSelfHost = "";
 const sessionColors = new Map<string, string>();
 // session name -> live background-process descriptions the JUDGE classified as services (kernel bgServices:
@@ -4885,10 +4885,10 @@ function dressHeaderIfLast(card: HTMLElement, sid: string): void {
 }
 
 // What a Clear may take: not a PLACEHOLDER (provisional / awaiting / blocked stand-ins carry no goal to
-// curate — the kernel keeps listing them, so a clear would only suppress them on this page until reload)
-// and not a QUARANTINE hold (a held peer message is approved or denied, never cleared — clearing would
-// hide its only surface while the held file stayed undelivered). The card-level Clear hides itself for
-// both; the session Clear must not reach around that (the review of the session Clear, 2026-09-08).
+// curate: the kernel keeps listing them, so a clear would only suppress them on this page until reload).
+// The card-level Clear hides itself for those; the session Clear must not reach around that (the review of
+// the session Clear, 2026-09-08). A held message's card is a notice card since 2026-09-19: Clear dismisses
+// it as any card's, and the held file stays the bus's to decide.
 function clearable(it: AskItem): boolean {
   return !it.provisional;   // (a held message's card is a notice card since 2026-09-19: Clear dismisses it as any card, the held file stays)
 }

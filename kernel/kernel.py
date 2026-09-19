@@ -21427,7 +21427,9 @@ def _bus_quarantine_act(body):
         data = resp.read()
         conn.close()
         j = json.loads(data.decode() or "{}")
-        return bool(j.get("ok")), (j.get("error") or ("bus HTTP %s" % resp.status))
+        ok = bool(j.get("ok"))
+        err = str(j.get("error") or "")
+        return ok, (err if (err or ok) else "bus HTTP %s" % resp.status)   # an empty error on a success (the review of PR 1885, low 2)
     except Exception as e:
         return False, "postal bus unreachable: %s" % e
 
@@ -24108,7 +24110,7 @@ def _notice_action_body_check(kind, body):
     return "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
 
 
-def _notice_actions_check(actions):
+def _notice_actions_check(actions, owner=None):
     """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, kind, body} entries (an older {label, route, body}
     read by its route's kind), the kind in the kernel's table and the body in the kind's shape, refused by name otherwise.
     Stored as {label, kind, body}. (list, "") or (None, why)."""
@@ -24135,6 +24137,13 @@ def _notice_actions_check(actions):
         err = _notice_action_body_check(kind, a.get("body"))
         if err:
             return None, err
+        if kind == "quarantine" and owner:
+            # the message must be held FOR the card's owner (the manager's review of PR 1885, medium): a producer's card under
+            # one session's name and colour must never route the user's click at another session's mail, the same hole the
+            # send kind closes by refusing a target in the body; a file that is absent is the bus's to refuse at the click
+            rec = _held_mail_record(a["body"].get("mid"))
+            if rec is not None and str(rec.get("toId") or "") != str(owner):
+                return None, "a quarantine action's message is held for another session, not this card's owner"
         out.append({"label": label, "kind": kind, "body": a.get("body")})
     return out, ""
 
@@ -24175,7 +24184,7 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
             return None, "expiresAt must be epoch seconds"
         if exp <= now:
             return None, "expiresAt is already past"
-    acts, aerr = _notice_actions_check(actions)
+    acts, aerr = _notice_actions_check(actions, owner=None if sid == NOTICE_OWNERLESS_SID else sid)
     if aerr:
         return None, aerr
     if acts and sid == NOTICE_OWNERLESS_SID:
@@ -24351,6 +24360,19 @@ def _held_mail_actions(mid):
             {"label": "Deny", "kind": "quarantine", "body": {"mid": mid, "verdict": "deny"}}]
 
 
+def _held_mail_record(mid):
+    """The bus's held file for `mid` as a dict, or None: nothing held under that id, an id that is no path component, or a file
+    that cannot be read. The kernel and the bus share the state root, so this is the record the bus decides on; the kind's
+    owner check reads its recipient (toId) at the post and at the click (the manager's review of PR 1885, medium)."""
+    mid = str(mid or "")
+    if not _safe_id(mid):
+        return None
+    try:
+        return json.loads((_held_mail_dir() / (mid + ".json")).read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def _held_mail_backfill():
     """Post a notice for every held message that has none yet; returns how many were posted. Idempotent by (recipient, key):
     a key with a live post row or an archived revision is never posted again (a decided, expired or dismissed card stays
@@ -24379,10 +24401,24 @@ def _held_mail_backfill():
         to_id = str(rec.get("toId") or "")
         known = bool(to_id) and to_id != NOTICE_OWNERLESS_SID and _notice_session_known(to_id)
         sid = to_id if known else NOTICE_OWNERLESS_SID
+        # the key's standing in EVERY home it could have been posted to (the manager's review of PR 1885, low 1: a hold posted
+        # owner-less while its recipient was unknown was posted again under the recipient once the names entry existed). A
+        # live row in the chosen home or an archived revision in any home (decided, dismissed, expired) means no new card; a
+        # live row in another home stands (the recipient's card while its name is gone); a live OWNER-LESS row for a recipient
+        # known now is re-homed: the actionable card is posted under the recipient and the informational one expired
+        homes = [sid] + [h for h in (NOTICE_OWNERLESS_SID, to_id) if h and h != sid and (h == NOTICE_OWNERLESS_SID or _safe_id(h))]
+        skip, rehome = False, []
         with _notice_lock:
-            live = any(r.get("op") == "post" and r.get("key") == mid for r in _notice_rows_unlocked(sid))
-            arch, aerr = _notice_archive_rev_unlocked(sid, mid)
-        if live or aerr or arch > 0:
+            for h in homes:
+                live_rows = [r for r in _notice_rows_unlocked(h) if r.get("op") == "post" and r.get("key") == mid]
+                arch, aerr = _notice_archive_rev_unlocked(h, mid)
+                if aerr or arch > 0 or (live_rows and h == sid):
+                    skip = True
+                elif live_rows and h == NOTICE_OWNERLESS_SID and known:
+                    rehome = live_rows
+                elif live_rows:
+                    skip = True
+        if skip:
             continue
         title = _held_mail_title(rec) if known else "New message from %s for %s" % (rec.get("frm") or "?", rec.get("to") or "?")
         row, err = post_notice(to_id if known else "", mid, title, _held_mail_body(rec), producer=HELD_MAIL_PRODUCER,
@@ -24395,6 +24431,11 @@ def _held_mail_backfill():
                 sys.stderr.write("[notice] held message %s: no card (%s)\n" % (mid, err))
             continue
         posted += 1
+        if rehome:
+            with _notice_lock:                        # the owner-less card leaves: the decision now has one surface, the recipient's
+                for r in rehome:
+                    _notice_append(NOTICE_OWNERLESS_SID, {"op": "expire", "t": int(time.time()), "key": mid,
+                                                          "rev": int(r.get("rev") or 0), "sid": NOTICE_OWNERLESS_SID})
     _HELD_MAIL_MEMO["slot"] = key
     return posted
 
@@ -24519,7 +24560,13 @@ def _notice_action_run(m, item_id, kind, body, inp):
             return False, "the action could not be delivered (%s)" % e
     elif kind == "quarantine":
         # the verdict on a held message, by the bus that owns delivery and the held file, with the card's OWNER as the
-        # recipient (the bus checks it serves that session, 2026-09-18); a deny's note rides as the bus's feedback
+        # recipient (the bus checks it serves that session, 2026-09-18); a deny's note rides as the bus's feedback. The held
+        # file's recipient must BE the card's owner (the manager's review of PR 1885, medium: the bus's own check reaches
+        # only a hold it does not have, so a mid that is held was decided whatever session the card wore); a file that is
+        # gone is the bus's to refuse
+        rec = _held_mail_record(body.get("mid"))
+        if rec is not None and str(rec.get("toId") or "") != str(row.get("sid") or sid):
+            return False, "that message is held for another session, not this card's owner"
         qbody = {"mid": str(body.get("mid") or ""), "action": str(body.get("verdict") or ""), "sid": str(row.get("sid") or sid)}
         note = " ".join(str(inp.get("note") or "").split())
         if note:
