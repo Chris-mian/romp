@@ -74,7 +74,7 @@ class _CodexFake:
         self.calls.append(("send", text))
         return True
 
-    def clear(self, sid):
+    def clear(self, sid, text="/clear"):
         self.calls.append(("clear", sid))              # the native clear's verb; never reached by a refusal
         return ""
 
