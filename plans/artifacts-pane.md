@@ -52,7 +52,9 @@ never fetched: the pane shows what the thread named, and the route decides what 
   not, its size, its mtime); a path that no longer exists (deleted since, or written on another machine) stays in the
   list with a "missing" mark and no thumbnail. Hiding it would silently drop a fact the thread states.
 - Each entry: `{path, name, t, via, exists, size, mtime, kind, refused}`; `kind` is the file route's view kind
-  (`image`, `pdf`, `markdown`, `code`, or `other`), the pane's grid rule below reads it.
+  (`image`, `pdf`, `markdown`, `code`, or `other`), the pane's grid rule below reads it. A drop's `name` is the name the
+  user dropped (the saved file's millisecond prefix stripped), and a drop is the user's own file: allowed wherever the
+  state directory lives, the secrets rule and the kind rule still applying.
 - The list is capped at the newest 500 entries (a session that writes thousands of files is a build, not a thread of
   artifacts); the cap is stated on the page when it binds, like the notice store's live-keys cap.
 
