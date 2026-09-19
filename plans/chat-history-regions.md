@@ -192,6 +192,52 @@ held run and whether to withhold deltas. With the tail always resident:
 - The pusher's floor decision (`_chat_floor0_of`) and the per-client protocol are untouched; `reattachKeys` and the
   "reattach" full-frame reason retire; `fullFrameMerges` keeps only its change-driven replace meaning.
 
+### A full frame honors the client's held tail (follow-on to PR 1860, 2026-09-19)
+
+PR 1860 shipped the page-side containment (guard 3): a full frame whose numeric tailLo lands inside or below a run
+the page holds, and whose events do not re-carry that run, is refused and a placeable frame asked for, so no held
+turn is dropped. This section is the kernel-side complement, so the owning kernel stops emitting that frame at all.
+It is designed here and the code waits for the user's word; the containment is already in place.
+
+Why the kernel emits it (diagnosed by execution on a hermetic two-kernel relay, 2026-09-19; frames in the diagnosis
+record): tailLo is re-derived on every full frame as the turn at `head_from = max(0, total - WIRE_TAIL)` over the
+kernel's CURRENT event list, and nothing on that path consults what the client holds (`_send_chat_proto2`,
+`_tail_run_start`). So when the sid's current transcript is SHORTER in turns than when the page minted its resident
+tail run, the cut maps to a lower turn and the frame carries only the new, short tail. Executed producers: a live
+shrink from 600 to 250 turns re-derived tailLo 475 to 125 on one kernel; a fork or resume that re-points the sid to a
+shorter transcript is the same shape (the older turns still sit on disk in the pre-fork file, absent from the current
+one). Executed NON-producers: a compaction only moves the render floor (`cutTurn`), it does not renumber turns, so
+tailLo tracked the growth up to 481 and never fell below the held run; a plain floor rise keeps the cut WIRE_TAIL
+turns from the unchanged end. The vehicle is not a re-dial (a healthy relay holds one socket, the keepalive traverses
+the splice every 10 s): the shrink itself makes the client's held base uuids stop mapping, so `_chat_full_reason`
+returns `baseGone` or `noBase` and a full frame is pushed to the STILL-CONNECTED page; a genuine reconnect (a slept
+laptop, a deploy restart, a network drop past the 30 s stale bound) is a secondary vehicle.
+
+The wire field. On `ready` and on `needFull` the page sends `heldTailFirst`: the event key of its resident tail run's
+FIRST event, the older edge of what it believes is the live tail. A page holding no regions (a fresh load) omits it.
+
+The kernel read. In `_send_chat_proto2`'s full-frame path, after computing `head_from` and `tail_lo`, the kernel
+resolves `heldTailFirst` in the current list. If it maps at an index below `head_from`, the cut moves down to it
+(`head_from = min(head_from, that index)`) and `tail_lo` becomes the turn there: the frame's [tailLo, end) is then a
+SUPERSET of the run the page holds, so guard 3's `split.before` is empty and the frame applies with no drop and no
+ask. If `heldTailFirst` does NOT map (the current transcript no longer carries it: a fork, a resume, a rewind), the
+held turns are genuinely not part of the current session; the frame carries an explicit `rebased: true`, so the page
+drops the stale run cleanly under the one landing notice, instead of guard 3 holding the stale content across a
+refused-frame latch until a reload.
+
+The fallback for an older page. A page that sends no `heldTailFirst` (an older bundle) gets exactly today's behavior:
+the kernel emits its WIRE_TAIL frame and guard 3 on the page contains any bad shape. The field is additive and the
+kernel reads it only when present, so an old page and a new kernel, and a new page and an old kernel, interoperate.
+
+The tests (shapes named from execution, 2026-09-19). Kernel-side, over a synthetic parse: (1) a client whose
+`heldTailFirst` maps below the WIRE_TAIL cut is served from its held base, and the emitted tailLo equals the held
+run's lo (the frame is a superset); (2) the live shrink 600 to 250, `heldTailFirst` no longer mapping, emits
+`rebased: true` and not a silent low-tailLo frame; (3) a fork or resume to a shorter transcript, the same shape as
+(2); (4) a compaction, the driven non-producer, still applies with no rebase, tailLo tracking the current end; (5) the
+discover-window cold boot with tailLo null keeps 1877's regions-less landing. Page-side (served): a `rebased` frame
+drops the stale run under the notice and asks no full; a superset frame fills the hole with no ask; an older page
+with no `heldTailFirst` still runs guard 3.
+
 ### The memory bound
 
 **Stage 3 waits for a measurement** (the user 2026-09-12, deferring to the performance thread): before any fold rule, the
