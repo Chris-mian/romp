@@ -25,6 +25,9 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # Hermetic state BEFORE the loads (they resolve their state root at import time)
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
+os.makedirs(os.path.join(os.environ["XDG_STATE_HOME"], "romp"), exist_ok=True)
+with open(os.path.join(os.environ["XDG_STATE_HOME"], "romp", "session-hosts"), "w") as _f:
+    _f.write("off")                                                  # a minted state root pins the per-session hosts off (the repo rule)
 load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
@@ -206,6 +209,9 @@ class HeldWorking(unittest.TestCase):
         fn = getattr(sb.SdkBackend, "count_says_open", None)
         self.assertIsNotNone(fn, "the backend exposes the count alone (the base had only the composite busy())")
         d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, True))
+        with open(os.path.join(d, "session-hosts"), "w") as f:
+            f.write("off")                                            # this backend's own state root: hosts off (the repo rule)
         be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None, log=lambda *a, **k: None)
         mk = lambda inflight, pending: types.SimpleNamespace(inflight=inflight, _pending=list(pending), _lock=threading.Lock())
         for inflight, pending, want in ((1, [], True), (0, ["queued"], False), (1, ["queued"], False), (0, [], False)):
@@ -254,6 +260,29 @@ class HeldWorking(unittest.TestCase):
                          "no parse on the drain's road, by source")
         self.assertIn("_job_stage('heldWorking', lambda: _held_working_pass(now))", inspect.getsource(km._jobs_pass),
                       "the belt is a job of the jobs pass, after the others")
+
+    def test_a_hold_that_lifts_during_the_parse_files_nothing_and_leaves_no_orphan(self):
+        """Round three of the review: the pass read the count at the top of a sid, parsed with no lock for tens of
+        milliseconds, and filed with no re-check, so a hold that lifted mid-parse (the turn settling and the drain delivering
+        and popping both dicts, or the user cancelling the chip) still got a row saying '0 parked items wait', never retracted
+        (the retraction arm reads an entry that no longer exists), with a said mark on an orphaned entry. The decision and the
+        write now run under the queue lock against the live queue and the live entry."""
+        for lift in ("delivered", "cancelled"):
+            km._pending_ops.clear(); getattr(km, "_held_working", {}).clear(); self.parses = 0
+            km._pending_ops[SID] = [("send", "typed while the count was stale")]
+            def parse(path, sid, now, lift=lift):
+                self.parses += 1
+                if lift == "delivered":                              # the other thread: the turn settled, the drain delivered and popped
+                    km._pending_ops.pop(SID, None); getattr(km, "_held_working", {}).pop(SID, None)
+                else:                                                # the other thread: the user cancelled the chip
+                    km._cancel_parked(SID, 0, "typed while the count was stale")
+                return {"turns": list(self.turns)}
+            km._parse = parse
+            self._cycle(1000); self._cycle(1001)                     # the second pass parses; the hold lifts inside the parse
+            self.assertEqual(self.parses, 1, lift)
+            self.assertEqual(self._kinds(), [], "%s: a hold that lifted mid-parse files no row" % lift)
+            self.assertEqual(dict(getattr(km, "_held_working", {})), {}, "%s: and leaves no orphaned entry" % lift)
+            self.assertNotIn(SID, km._pending_ops)
 
 
 if __name__ == "__main__":

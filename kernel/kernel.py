@@ -35203,20 +35203,31 @@ def _held_working_pass(now):
             if not turns:
                 continue                                  # a parse that yields nothing is no verdict
             open_turn = _session_working(turns)
+            if says(sid) is not True:
+                continue                                  # the count cleared during the parse: nothing to say
             row = _session_row(sid, now) or {}
             name = row.get("name") or sid[:8]
-            queued = len(_pending_ops.get(sid) or [])
-            if not open_turn and not h["said"]:
-                h["said"] = True
-                _spend_guard_row(HELD_WORKING_KIND,
-                                 "%s's queue is held: the kernel counts a turn open in this session while its transcript shows the last "
-                                 "turn closed; %s. If it stays, ending and reviving the session replaces the count."
-                                 % (name, "1 parked item waits" if queued == 1 else "%d parked items wait" % queued), sid, name, be, queued=queued)
-            elif open_turn and h["said"]:
-                h["said"] = False
-                _spend_guard_row(HELD_WORKING_RETRACTED_KIND,
-                                 "%s's transcript now shows a turn open: the hold on its queue is the turn's, not a stale count."
-                                 % name, sid, name, be, queued=queued)
+            # THE WRITE MOMENT (round three of the review): the parse ran with no lock and took tens of milliseconds, and the
+            # hold can lift meanwhile (the turn settles and the drain delivers and pops both dicts, or the user cancels the
+            # chip); a row written then named a hold that no longer stood, with nothing to retract it, and a `said` mark
+            # landed on an orphaned entry. So the decision and the write run under the queue lock against the LIVE queue and
+            # the live entry: the hold must still stand, or nothing is filed and nothing is left behind.
+            with _pending_ops_lock:
+                ops = _pending_ops.get(sid) or []
+                if _held_working.get(sid) is not h or not ops:
+                    continue                              # the hold lifted mid-parse: no row, no orphan
+                queued = len(ops)
+                if not open_turn and not h["said"]:
+                    h["said"] = True
+                    _spend_guard_row(HELD_WORKING_KIND,
+                                     "%s's queue is held: the kernel counts a turn open in this session while its transcript shows the last "
+                                     "turn closed; %s. If it stays, ending and reviving the session replaces the count."
+                                     % (name, "1 parked item waits" if queued == 1 else "%d parked items wait" % queued), sid, name, be, queued=queued)
+                elif open_turn and h["said"]:
+                    h["said"] = False
+                    _spend_guard_row(HELD_WORKING_RETRACTED_KIND,
+                                     "%s's transcript now shows a turn open: the hold on its queue is the turn's, not a stale count."
+                                     % name, sid, name, be, queued=queued)
         except Exception:
             sys.stderr.write("held-working belt: %s\n" % traceback.format_exc())
 
