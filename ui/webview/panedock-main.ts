@@ -147,6 +147,7 @@ class Engine {
       layout: () => (this.lay ? parse(serialise(this.lay)) : null),
       rects: () => this.viewportRects(),
       dragging: () => !!(this.press && this.press.armed),
+      pressed: () => !!this.press,
       zone: () => (this.press ? this.press.zone : null),
     };
   }
@@ -373,6 +374,11 @@ class Engine {
       if (st) st.remove();
       if (d) d.documentElement.style.cursor = "";
       if (d && d.body) d.body.classList.remove(PANE_DOCKING_CLASS, "pd-grab-hover");   // the grab detector reads this: off, it is inert
+      // the kit's nodes in the pane document go with it (the plan: byte-identical off pages): the detector's tag, its
+      // style and its window global; the listeners it bound stay, answering only to the class, and re-injection never
+      // binds them twice (the detector's own wired flag)
+      for (const id of [GRAB_SCRIPT_ID, "pd-grab-css"]) { const n = d && d.getElementById(id); if (n) n.remove(); }
+      if (d && d.defaultView) { try { delete (d.defaultView as any).__rompPaneGrab; } catch { /* fine */ } }
     } catch { /* gone */ }
   }
 
@@ -400,7 +406,14 @@ class Engine {
    *  moves through its window as it does for Option-drag. */
   private onGrabMessage(e: MessageEvent): void {
     const m = e.data;
-    if (!m || m.romp !== "paneGrab" || !this.on || this.press || this.div) return;
+    if (!m || !this.on) return;
+    if (m.romp === "paneGrabEnd") {
+      // the page's release: a press the shell heard only after the pointer was already up (its message task ran after
+      // the pointerup, before this engine's own listeners existed) must not stand with no button held
+      if (this.press && !this.press.armed) this.cancelPress();
+      return;
+    }
+    if (m.romp !== "paneGrab" || this.press || this.div) return;
     const f = this.allFrames().find((x) => x.contentWindow === e.source);
     if (!f || !f.contentWindow) return;
     const paneNode = f.closest(".pane") as HTMLElement | null;
@@ -481,6 +494,7 @@ class Engine {
   private onPressMove(e: PointerEvent, win: Window, frame: HTMLIFrameElement | null): void {
     const p = this.press;
     if (!p) return;
+    if (e.buttons === 0) { this.cancelPress(); return; }   // no button held: a release this engine never heard; nothing may arm or drop on it
     const pt = this.shellPoint(e, win, frame);
     if (!p.armed) {
       if (!crossedSlop(pt.x - p.x0, pt.y - p.y0)) return;
