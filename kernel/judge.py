@@ -19546,7 +19546,15 @@ def _dump_goals():
 # recovery flag, consumed by the child
 # and acted on by the kernel (the give-up re-arm after a rate-limit storm ends). One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and
 # DROPPED, never queued, so a stuck tier cannot pile requests behind the kernel's bound (the kernel sends one per wake; this
-# is the fail-safe). Every stderr line of the process carries the prefix `romp-judge: ` so the kernel can attribute the
+# is the fail-safe). The gate is the DONE LINE itself, cleared in the emit that writes it, rather than the pass thread's
+# liveness: a thread is alive through its teardown after its last statement, and on a free-threaded interpreter, with no GIL
+# holding the loop's thread behind the exiting one, that teardown outlives the done line by more than a request's round
+# trip, so a gate on liveness answered the request that followed a done line with `busy`, and the kernel kills a child that
+# answers anything but the pass's done. Liveness stays as the gate's second clause for a pass whose thread died short of its
+# done line (an exception out of the pass body): its dead thread frees the child for the next pass, or the child would read
+# busy for life. Only a done line clears the gate: an error line written while a pass runs (busy, unknownOp, malformed)
+# leaves it set, so the child runs one pass at a time however the request stream misbehaves.
+# Every stderr line of the process carries the prefix `romp-judge: ` so the kernel can attribute the
 # child's diagnostics when it drains the pipe; file descriptor 1 is dup2'd onto stderr for the whole process and the protocol
 # goes to the saved descriptor, so no print, os.write or child process can reach the channel.
 PROTOCOL_VERSION = 1
@@ -19851,9 +19859,15 @@ def serve(inp=None, out=None):
     if swept:
         sys.stderr.write("serve: swept %d stale temp file%s beside the stores\n" % (swept, "" if swept == 1 else "s"))
     emit_lock = threading.Lock()
+    inflight = [False]                            # a pass between its request and its done line, read and written under emit_lock
+                                                  #  alone: the loop sets it as it starts a pass, the emit of the done line clears it
 
     def emit(obj):
         with emit_lock:
+            if obj.get("op") == "done":
+                inflight[0] = False               # the pass ends HERE, in the hold that writes its done line, before the line leaves
+                                                  #  the process: the request that follows the line never finds the pass in flight,
+                                                  #  whatever its thread is still doing (the thread's exit is no event of the protocol)
             real_out.write(json.dumps(obj, separators=(",", ":")) + "\n")
             real_out.flush()
 
@@ -19876,7 +19890,11 @@ def serve(inp=None, out=None):
         if req["op"] != "pass":
             emit({"op": "error", "seq": seq, "reason": "unknownOp"})
             continue
-        if running[0] is not None and running[0].is_alive():
+        with emit_lock:                           # busy: a pass short of its done line whose thread still runs (a thread that died
+            busy = inflight[0] and running[0] is not None and running[0].is_alive()   #  short of its done frees the child)
+            if not busy:
+                inflight[0] = True                # read and set in one hold, so the loop's step and the done line's are ordered
+        if busy:                                  # answered outside the hold: emit takes the same Lock, which does not re-enter
             emit({"op": "error", "seq": seq, "reason": "busy"})   # dropped, never queued
             continue
         running[0] = threading.Thread(target=_serve_pass, args=(req, emit), name="serve-pass")
