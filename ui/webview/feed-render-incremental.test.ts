@@ -1277,6 +1277,32 @@ test("a REMOTE notice card's answer names the owning kernel's bare id: the inbou
   assert.ok(card(stays), "a refused card stays"); assert.equal(b2.disabled, false, "and its button let go on the answer, not on the next push");
 });
 
+test("a data board's needs-you card passes a tag lens its session is outside of (the card's OWN board decides), while a plain card of that session is hidden", async () => {
+  // the 1861 read (medium): the lens read isNeedsYou against the FEED board, so a card in a data board's needs-you category was
+  // dropped from the pane under a tag lens while the app badge still said one card needs you; the lens now asks the card's own
+  // board. The card keeps the feed's default column (Working) on the feed until phase four's view switch (the 1845 pane rule).
+  const HOT = { id: "urgent", title: "Urgent", categories: [{ id: "hot", title: "Hot", chip: "blocked" }, { id: "cool", title: "Cool", chip: "neutral" }],
+    defaultCategory: "cool", rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: null, order: [], notify: ["hot"], needsYou: "hot", kinds: ["notice"] };
+  const hot = cardOf("notice:" + API + ":decide:1", API, "api", "#cc6633", "Decide the retry policy", "needs_input", { live: false, tree: [], blocked: null, board: "urgent", category: "hot",
+    notice: { producer: "cli", key: "decide", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
+  const plain = cardOf("notice:" + API + ":plain:1", API, "api", "#cc6633", "A plain note", "completed", { live: false, tree: [], blocked: null, board: "feed", category: "completed",
+    notice: { producer: "cli", key: "plain", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } });
+  const views = { tags: [{ id: "t1", name: "infra", members: [WEB] }] };   // web is tagged infra; api is outside every tag
+  await dispatch(frame([g1, hot, plain], { boards: { urgent: HOT }, views }));
+  assert.ok(card("notice:" + API + ":decide:1")); assert.ok(card("notice:" + API + ":plain:1"), "both on the board under All");
+  // the infra lens: api's plain card hides, api's hot card (its board's needs-you category) stays
+  win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:feedTags-set", newValue: JSON.stringify({ lens: { tags: ["infra"] }, t: 1 }) }));
+  await settle();
+  assert.equal(card("notice:" + API + ":plain:1"), null, "the lens hides a plain card of a session outside it");
+  assert.ok(card("notice:" + API + ":decide:1"), "the needs-you card of the same session stays: its OWN board's badge category passes every lens");
+  assert.equal(colOf("notice:" + API + ":decide:1"), "col-asks-list", "under the feed's default column, as the 1845 rule files a category the feed lacks");
+  // back to All: both again
+  win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:feedTags-set", newValue: JSON.stringify({ lens: { all: true }, t: 2 }) }));
+  await settle();
+  assert.ok(card("notice:" + API + ":plain:1")); assert.ok(card("notice:" + API + ":decide:1"));
+  await dispatch(frame([g1, g2, g3]));
+});
+
 // ── the predicted move on a card that carries its category (plans/card-boards.md, phase two, round two) ──────────────────
 // Every card the kernel builds carries `category` since phase two and askColumn reads it first; the optimistic follow-up
 // move predicted `column` alone, so a Continue, a reply or a Check status left the card in Blocked (with the re-check

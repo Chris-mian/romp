@@ -5129,16 +5129,20 @@ function ensureFocusSection(list: HTMLElement): HTMLElement {
       cols.appendChild(col);
       lists[key] = body; counts[key] = count;
     }
+    // the rule is the section's SIBLING, placed right after it below (the user 2026-09-19: the divider under the tinted
+    // box, not inside it, so the box's rounded bottom edge closes above the rule); it leaves with the section
     const rule = el("hr", "feed-focus-divider");
-    sec.append(head, empty, cols, rule);
+    sec.append(head, empty, cols);
+    (sec as any)._rule = rule;
     (sec as any)._head = head; (sec as any)._name = nm; (sec as any)._empty = empty; (sec as any)._cols = cols;
     (sec as any)._fold = fold; (sec as any)._caret = caret; (sec as any)._count = ncount;
     (sec as any)._lists = lists; (sec as any)._counts = counts;
   }
-  // directly above the board, every render: right before #feed-cols (the host loading strip, which announces
-  // what is coming, keeps the very top while it shows). A fresh section takes the board's column order at once.
-  const board = document.getElementById("feed-cols");
-  if (board && sec.nextSibling !== board) { list.insertBefore(sec, board); applyColStack(); }
+  // directly above the board, every render: the section, then its rule, right before #feed-cols (the host loading
+  // strip, which announces what is coming, keeps the very top while it shows). A fresh section takes the board's
+  // column order at once.
+  const board = document.getElementById("feed-cols"), rule = (sec as any)._rule as HTMLElement;
+  if (board && (sec.nextSibling !== rule || rule.nextSibling !== board)) { list.insertBefore(sec, board); list.insertBefore(rule, board); applyColStack(); }
   return sec;
 }
 /** How the section names the focused session: this pane's session list (the chat's tab set, relayed per
@@ -5258,7 +5262,8 @@ function paintFocusFold(): void {
   count.style.display = folded && total ? "" : "none";
 }
 function removeFocusSection(): void {
-  document.getElementById("feed-focus")?.remove();
+  const sec = document.getElementById("feed-focus") as any;
+  if (sec) { (sec._rule as HTMLElement | undefined)?.remove(); sec.remove(); }   // the rule is the section's sibling
   fsAskEls.clear(); fsGroupEls.clear();
 }
 
@@ -5560,7 +5565,7 @@ function viewBase(list: AskItem[]): AskItem[] {
   const s = viewScope(list);
   if (lensAll(feedLens)) return s;   // default All = today's board, byte-identical
   const u = lensUnions(feedTagViews);
-  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(FEED_BOARD, a.category ?? a.column));   // the board's badge category passes every lens
+  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(boardOf(a), a.category ?? a.column));   // the card's OWN board's badge category passes every lens (the 1861 read: a data board's needs-you card was dropped while the badge counted it)
 }
 
 // The disclosure count: what the TAG LENS alone hides (breakthroughs already show; counting them
