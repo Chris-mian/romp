@@ -69,7 +69,8 @@ await page.click('.rail-btn[data-pane="artifacts"]');
 await page.waitForFunction(() => document.body.classList.contains("po-artifacts"), null, { timeout: 10000 }).catch(() => {});
 const frame = async () => { for (let i = 0; i < 100; i++) { const f = page.frames().find((fr) => /\/artifacts(\?|$)/.test(fr.url())); if (f) return f; await page.waitForTimeout(200); } return null; };
 const fr = await frame();
-out.shown = { poClass: await page.evaluate(() => document.body.classList.contains("po-artifacts")), frame: !!fr, url: fr ? fr.url().replace(/\?.*$/, "") : null };
+out.shown = { poClass: await page.evaluate(() => document.body.classList.contains("po-artifacts")), frame: !!fr, url: fr ? fr.url().replace(/\?.*$/, "") : null,
+  iframeSrc: await page.evaluate(() => { const f = document.getElementById("f-artifacts"); return f ? (f.getAttribute("src") || null) : "absent"; }) };
 if (fr) {
   await fr.waitForSelector("#art-session", { timeout: 30000 }).catch(() => {});
   await fr.waitForFunction((sid) => Array.from(document.querySelectorAll("#art-session option")).some((o) => o.value === sid), cfg.sid, { timeout: 30000 }).catch(() => {});
@@ -219,8 +220,9 @@ class ArtifactsPaneServed(unittest.TestCase):
     def test_the_control_on_shows_the_toggle_and_the_toggle_shows_the_pane_which_lists_the_threads_files_newest_first(self):
         r = self._result()
         self.assertTrue(r["ctlOn"]["railShown"], "the control on: the rail toggle shows"); self.assertFalse(r["ctlOn"]["poClass"], "the pane stays off until toggled")
-        self.assertEqual(r["ctlOn"]["iframeSrc"], "/artifacts", "the control on loads the page once (data-src to src)")
+        self.assertIsNone(r["ctlOn"]["iframeSrc"], "the control on loads nothing while the pane is off: no document, no listing walk on a dashboard load (round two, M2)")
         self.assertTrue(r["shown"]["poClass"]); self.assertTrue(r["shown"]["frame"], "the pane's document is up")
+        self.assertEqual(r["shown"]["iframeSrc"], "/artifacts", "the toggle loads the page once (data-src to src, the optional panes' rule)")
         self.assertIn(SID, r["selector"]["options"], "the selector names the session")
         rows = r["list"]["rows"]
         self.assertEqual([(x["name"], x["via"], x["missing"]) for x in rows],
@@ -235,7 +237,6 @@ class ArtifactsPaneServed(unittest.TestCase):
         self.assertTrue(all(t["loaded"] for t in thumbs), "both decoded from the file route: %r" % thumbs)
         self.assertTrue(all("/file?path=" in t["src"] and "&sid=" + SID in t["src"] for t in thumbs), "the token-authed file route with the session's sid")
         L = r["large"]
-        self.assertEqual(L["first"], thumbs[0]["src"].split("path=")[1].split("&")[0].replace("%2F", "/") if False else L["first"], "the large view opened")
         self.assertIsNotNone(L["first"]); self.assertTrue(L["first"].endswith("sketch.png"), L["first"])
         self.assertTrue(L["second"]["alt"].endswith("accuracy.png"), "ArrowRight steps to the next picture: %r" % L["second"])
         self.assertIn("2/2", L["second"]["cue"] or "", "the position cue")

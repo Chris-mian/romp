@@ -14,6 +14,7 @@ font-size:13px;display:flex;flex-direction:column;overflow:hidden}
 .art-btn{font:inherit;font-size:0.86em;cursor:pointer;padding:3px 10px;border-radius:6px;border:1px solid var(--box-border,#333);background:transparent;color:inherit}
 .art-btn:hover{border-color:var(--accent,#9cd2ff);color:var(--accent,#9cd2ff)}
 .art-count{margin-left:auto;opacity:.6;font-size:0.86em}
+.art-note{margin-left:12px;opacity:.7;font-size:0.86em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%}   /* what the last click could not do, beside the count */
 .art-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:10px 12px}
 /* the empty states and the loader's line */
 .art-empty{opacity:.65;text-align:center;line-height:1.5;padding:26px 14px}

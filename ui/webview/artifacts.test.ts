@@ -53,4 +53,7 @@ test("the pieces outside the kernel: the fresh setting read like the Files contr
   assert.match(ART, /window\.parent\.postMessage\(\{ romp: "viewFile", path: p, sid: selected, pane: "pane", frag: null \}, "\*"\);/, "the shell's existing relay sends a picture to the Files pane");
   assert.match(ART, /img\.src = fileUrl\(it\.path, selected\);/, "thumbnails through the token-authed file route with the session's sid");
   assert.doesNotMatch(ART, /new WebSocket|fetch\(/, "no file server of its own, no fetch: the route and the socket the shim gives it");
+  // round two (2026-09-19): the cap says the newest of more, once; a kind the viewer does not show is listed plain and a click says so
+  assert.match(ART, /count\.textContent = listing\.capped \? "the newest " \+ listing\.max \+ " files of more" : listing\.items\.length \+ \(listing\.items\.length === 1 \? " file" : " files"\);/);
+  assert.match(ART, /if \(it\.kind === "other"\) \{ note\("The viewer cannot show " \+ it\.name \+ ": not a kind it renders\."\); return; \}/);
 });

@@ -59648,7 +59648,11 @@ def _artifacts_items(mentions, sid):
     """The listing from the walk's mentions: one entry per path with the LATEST mention winning (its time, its rule),
     newest first, capped at ARTIFACTS_MAX; each stat'd (a missing file is listed and marked, never hidden) and judged by
     the file route's own rule (a secrets-shaped name, a path outside the session's folder and the home: `refused` names
-    the reason, and the page fetches nothing for it). Returns (items, capped)."""
+    the reason, and the page fetches nothing for it), with two rules of the pane's own: a path under the Claude
+    configuration directory is refused as such (a thread names its own transcripts and task stores, and they are not its
+    files; the shared route's confinement is the chat's contract for path links and is not widened here, plans/artifacts-pane.md
+    section 1), and a kind the preview does not show is an ordinary kind of the listing, `other`, listed plain and judged by
+    the route's other rules (the design's section 2). Returns (items, capped)."""
     latest = {}
     for ap, t, via in mentions:
         cur = latest.get(ap)
@@ -59658,9 +59662,10 @@ def _artifacts_items(mentions, sid):
     capped = len(items) > ARTIFACTS_MAX
     items = items[:ARTIFACTS_MAX]
     drops = str(jd.STATE / "drops") + os.sep
+    claude = os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")) + os.sep
     for it in items:
         it["name"] = os.path.basename(it["path"]) or it["path"]
-        if it["via"] == "drop":                            # the saved file wears a millisecond prefix (_save_dropped_file); the row wears the name the user dropped
+        if it["path"].startswith(drops):                   # the saved file wears a millisecond prefix (_save_dropped_file); the row wears the name the user dropped, whichever rule named it last
             it["name"] = re.sub(r"^\d{10,}-", "", it["name"]) or it["name"]
         it["kind"] = _slice_kind(it["path"]) or "other"
         try:
@@ -59672,25 +59677,35 @@ def _artifacts_items(mentions, sid):
             it["exists"], it["size"], it["mtime"] = False, None, None
         why = ""
         if it["exists"]:
-            kind, why = _slice_allowed(it["path"], sid)
-            if kind:
-                why = ""
-            elif it["path"].startswith(drops) and why.startswith("outside"):
-                why = ""                                    # a drop is the user's own file, saved by the kernel wherever the state directory lives
+            if os.path.realpath(it["path"]).startswith(claude):
+                why = "under the Claude configuration directory"
+            else:
+                kind, why = _slice_allowed(it["path"], sid)
+                if kind:
+                    why = ""
+                elif why == "not a kind the preview shows":   # kind other: plain, unless the route's confinement would refuse it
+                    why = "" if (_slice_confined(it["path"], sid) or it["path"].startswith(drops)) else "outside the session's folder and your home"
+                elif it["path"].startswith(drops) and why.startswith("outside"):
+                    why = ""                                # a drop is the user's own file, saved by the kernel wherever the state directory lives
         it["refused"] = why
     return items, capped
 
 
 def _artifacts_list(sid, now=None):
-    """The listArtifacts answer for `sid`: (body, error). The parse comes through the existing store: the cached parse
-    under the live key when there is one (_parse_cached: never a parse), else one parsed_session into the same shared
-    cache every other reader uses, so the next request and the chat's own build find it warm. Nothing is written."""
+    """The listArtifacts answer for `sid`: (body, error). The session resolves through _session_row, the one-sid API (the
+    picker's selector offers thirty days of sessions while _sessions reaches back discover's 48-hour window, so a session
+    idle two days was offered and answered "no transcript"; the verifier of 2026-09-19 executed it with a five-day-old
+    transcript). The parse comes through the existing store: the cached parse under the live key when there is one
+    (_parse_cached: never a parse), else one parsed_session under the SAME key inputs the chat's build and _parse_cached
+    use (the states log, the display's sdk_human), so the next request and the chat's own build find it warm: written
+    under another key, the first write never satisfied the first read and every request re-parsed. Nothing is written."""
     now = int(now if now is not None else time.time())
-    row = next((s for s in _sessions(now, None, forks=False) if s.get("sid") == sid), None)
+    row = _session_row(sid, now)
     if row is None:
         return None, "no session with that id has a transcript here"
     try:
-        ps = _parse_cached(row["path"]) or jd.parsed_session(sid, [row["path"]], now)
+        ps = _parse_cached(row["path"]) or jd.parsed_session(sid, [row["path"]], now, states=str(jd.STATE / "states" / (sid + ".jsonl")),
+                                                             sdk_human=_display_sdk_human(sid))
     except Exception as e:
         return None, "the session's transcript could not be read (%s)" % e
     items, capped = _artifacts_items(_artifacts_walk((ps or {}).get("turns") or [], sid), sid)
@@ -62541,6 +62556,7 @@ function artifactsCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settin
 function show(p){if(p==='files'&&!filesCtlM())p='chat';if(p==='artifacts'&&!artifactsCtlM())p='chat';   // the Files tab is hidden while its control is off: the chat shows instead
 if(!F[p])return;for(var i=0;i<B.length;i++)if(B[i].getAttribute('data-pane')===p&&B[i].hidden)return;   // a tab the controller hid (its pane is off in the gear's Panes section) is not a place to go
 document.body.setAttribute('data-tab',p);for(var k in F)if(F[k])F[k].classList.toggle('m-on',k===p);   // a pane this shell lacks is skipped, never a TypeError
+if(p==='artifacts'){var af=document.getElementById('f-artifacts');if(af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));}   // a phone shows the pane by its tab, not by po: its iframe loads once, here
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}
 // a tab switch changes what is on screen: re-tell the panes (the collapse script's broadcast; absent only
@@ -63141,9 +63157,11 @@ _LANDING_COLLAPSE_JS = """
     document.body.classList.toggle('no-files-control',!ctl);
     var actl=artifactsCtl();
     document.body.classList.toggle('no-artifacts-control',!actl);
-    // the Artifacts pane's iframe is served with data-src (never loaded while its control is off: no document, no socket); the
-    // control coming on loads it ONCE, and an open pane closes on the same apply when the control goes
-    var af=document.getElementById('f-artifacts');if(actl&&af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));
+    // the Artifacts pane's iframe is served with data-src (never loaded while its control is off OR the pane is off: no document,
+    // no socket, no listing walk of the remembered session on a dashboard load, the verifier's find of 2026-09-19); the pane
+    // coming on screen with the control on loads it ONCE (the optional panes' rule), and an open pane closes on the same
+    // apply when the control goes
+    var af=document.getElementById('f-artifacts');if(actl&&po.artifacts&&af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));
     if(!actl&&po.artifacts){po.artifacts=false;if(qp===null)saveP();}
     if(!actl&&window.__rompMobileOn&&window.__rompMobileOn()&&document.body.getAttribute('data-tab')==='artifacts'){try{window.__rompMobileTab&&window.__rompMobileTab('chat');}catch(e){}}
     var tt=taskTracking();

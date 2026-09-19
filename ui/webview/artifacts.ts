@@ -67,8 +67,9 @@ function paint(): void {
   sel.onchange = () => selectSession(sel.value || null);
   const refresh = el("button", "art-btn") as HTMLButtonElement; refresh.textContent = "Refresh"; refresh.dataset.act = "art-refresh"; refresh.title = "read the thread again";
   const count = el("span", "art-count");
-  if (listing && !listing.error) count.textContent = listing.items.length + (listing.items.length === 1 ? " file" : " files") + (listing.capped ? " (the newest " + listing.max + ")" : "");
-  bar.append(dot, sel, refresh, count);
+  if (listing && !listing.error) count.textContent = listing.capped ? "the newest " + listing.max + " files of more" : listing.items.length + (listing.items.length === 1 ? " file" : " files");
+  const noteEl = el("span", "art-note"); noteEl.id = "art-note";   // what the last click could not do (a kind the viewer does not show); cleared by the next render
+  bar.append(dot, sel, refresh, count, noteEl);
   const body = el("div", "art-body");
   if (!selected) { const e = el("div", "art-empty"); e.textContent = "Pick a session to see the files its thread wrote, showed and received."; body.appendChild(e); }
   else if (loading && !listing) { const e = el("div", "art-empty"); e.textContent = "Reading the thread…"; body.appendChild(e); }
@@ -118,9 +119,11 @@ function openLarge(i: number): void {
     }
   }
 }
+function note(text: string): void { const n = document.getElementById("art-note"); if (n) n.textContent = text; }
 function openRow(i: number): void {
   if (!listing || !selected) return;
   const it = listing.items[i]; if (!it || it.refused) return;
+  if (it.kind === "other") { note("The viewer cannot show " + it.name + ": not a kind it renders."); return; }   // an ordinary kind of the listing, no viewer for it (the design's section 2)
   if (it.kind === "image" && it.exists && canPreview()) { openLarge(gridItems(listing.items).findIndex((g) => g.path === it.path)); return; }
   if (rowRoute(window.parent !== window, panesOn, panesAvail) === "pane") window.parent.postMessage({ romp: "viewFile", path: it.path, sid: selected, pane: "pane", frag: null }, "*");
   else openFileView(it.path, selected, {});

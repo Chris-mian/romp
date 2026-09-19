@@ -201,7 +201,7 @@ class Shell(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_pane_is_in_the_one_ordering_last(self):
+    def test_the_pane_is_in_the_one_ordering_second_to_last_before_artifacts(self):
         self.assertEqual(km._PANE_ORDER[-2], ("files", "Files"))   # the Artifacts pane sits after it since 2026-09-19 (plans/artifacts-pane.md)
         _has(self, "<div class=rail-btn data-pane=files>Files</div>", self.html)
         _has(self, "<button data-pane=files>Files</button>", self.html)

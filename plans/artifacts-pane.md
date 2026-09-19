@@ -39,9 +39,13 @@ parses; nothing new is written anywhere.
    put in, attributed to the turn that carries it.
 
 Every rule yields `(path, t, via)`: the path, the time of the turn that mentioned it, and which rule (`write`, `edit`,
-`multiedit`, `notebook`, `rendered`, `drop`). A path under `~/.claude/`, a secrets-shaped name, or a path outside the
-session's folder and the user's home is listed but marked `refused` with the file route's own reason (`_slice_allowed`),
-never fetched: the pane shows what the thread named, and the route decides what it will serve, as it does for the chat.
+`multiedit`, `notebook`, `rendered`, `drop`). A secrets-shaped name or a path outside the session's folder and the user's
+home is listed but marked `refused` with the file route's own reason (`_slice_allowed`), never fetched: the pane shows
+what the thread named, and the route decides what it will serve, as it does for the chat. A path under the Claude
+configuration directory (`CLAUDE_CONFIG_DIR`, else `~/.claude/`) is marked `refused` by the pane's own rule ("under the
+Claude configuration directory"): a thread names its own transcripts, task stores and settings, and they are not its
+files. The shared route does not refuse them (home is a confinement root) and is not widened here: its confinement is
+the chat's contract for every path link, and changing it is the user's call, not this pane's (round two, 2026-09-19).
 
 ## 2. The list
 
@@ -122,7 +126,9 @@ so today's toggle control shows and hides it with no new mechanism:
   `LBL` word; the pane-set broadcast carries the key from `_PANE_ORDER` for free. The docking engine
   (`ui/webview/pane-dock.ts`, on only under the gear's docking switch) lists the four dashboard panes by name today, so
   this pane shows, hides and orders through the shipped flex path and becomes a leaf of the docking tree only when the
-  registry PR reads the pane set from `_PANE_ORDER`; that is the registry's change, not this one's.
+  registry PR reads the pane set from `_PANE_ORDER`; that is the registry's change, not this one's. Under the docking
+  switch today the pane element is not in the tree, so it renders at 0 by 0 while its toggle reads on (no throw, no
+  broken layout; the registry's phase two lifts it).
 - **Self-contained by protocol.** The page and the shell exchange only the pane protocol: inbound `{romp:'panes', on,
   avail}` (the shell's broadcast, so the pane knows whether the Files pane is on screen and whether its control
   exists) and outbound `{romp:'viewFile', ...}` (the existing relay). Its kernel traffic rides its own shim socket
