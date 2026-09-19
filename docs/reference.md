@@ -2055,16 +2055,26 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   uuid-anchored chat wire sent, counted once the frame has left, so a frame the
   per-client dedup swallowed is no more one here than under `sends`; by the
   reason the sender had for it: `noBase`
-  for a first send, a reset, or the repost of a session whose built list is
+  for a first send, a reset, the repost of a session whose built list is
   empty and the first content frame after it (an empty list records no base,
   so a just-created session is re-sent whole once per client per repost
   window until it has content; the reconnect-only reads of the held set are
   unaffected, since a client whose redial is unresolved holds no base for any
-  session); `baseGone` for a fork or a rewind;
-  `lastGone:<family>` for a held last edge the next list no longer carried;
-  `changeAt0` for a change at the list's first event against a held base, a
-  genuine first-event change or a no-baseline send, by whichever sender
-  (`sends.full.chat.targeted` below tells the senders apart);
+  session), and the re-entry of a tab that left the strip (the pusher forgets
+  every client's base for it along with its baseline, since the page tore the
+  tab down when the strip stopped listing it); `baseGone` for a fork or a
+  rewind; `lastGone:<family>` for a held last edge the next list no longer
+  carried; `changeAt0` for a change at the list's first event against a held
+  base: a genuine first-event change (a floor advance that moved the list's
+  first event reads here too), or the cycle's repair after two whole-frame
+  senders raced on a baseline-less sid (a sid's first whole frame seeds the
+  shared baseline, whichever sender sent it, so its later senders diff against
+  it instead of re-sending the whole session; two senders that both read it
+  absent leave none and mark the session, no single-client push re-seeds it in
+  between, and the next cycle's full repairs every client and clears the mark;
+  in the
+  `chatFull` row below the racing shape has `changeFrom` 0 with both edges
+  held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
   `inverted` for a base whose last edge sits before its first; `empty` for a
   list with no events sent to a client holding a base; and `other` for a

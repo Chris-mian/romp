@@ -24,6 +24,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unittest
 from romp_load import load_source
 from pathlib import Path
@@ -134,6 +135,7 @@ class SkeletonReconnect(unittest.TestCase):
         km._built_chat.clear()
         km._prev_chat_events.clear()
         km._prev_chat_ledger.clear()
+        km._chat_baseline_raced.clear()   # the detector's mark (tests 23 to 26) is not left for the next test
         del km._clients[:]
         km._pusher_wake.clear()
 
@@ -145,6 +147,7 @@ class SkeletonReconnect(unittest.TestCase):
         km._built_chat.clear()
         km._prev_chat_events.clear()
         km._prev_chat_ledger.clear()
+        km._chat_baseline_raced.clear()   # the detector's mark (tests 23 to 26) is not left for the next test
 
     # ── helpers ──
     def _client(self, **kw):
@@ -1226,6 +1229,298 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertEqual(self._statuses(c), [], "and no status for it: the client holds no set yet")
         self.assertNotIn(("chat", S3), c["sent"])
         self.assertNotIn(("status", S3), c["sent"])
+
+    # ── the startup baseline (2026-09-19): a sid's first whole frame establishes the shared baseline, never advances it ──
+    def _why(self):
+        """The proto-2 full frames' reason map on /perf (pusher.chatFullWhy), as the collector holds it now."""
+        return km._PERF_STATS.snapshot()["pusher"]["chatFullWhy"]
+
+    @staticmethod
+    def _u3(c):
+        """(frame type, u3's text) for every S1 frame that carried the u3 card, in arrival order: which build of that
+        card the client holds is the last entry."""
+        out = []
+        for f in c["_frames"]:
+            if f.get("id") != S1:
+                continue
+            for e in f.get("events") or []:
+                if e.get("uuid") == "u3":
+                    out.append((f["type"], e["md"]))
+        return out
+
+    def _strip_without(self, sid, fn):
+        """Run fn with `sid` dropped from the tab strip (the session ended or was hidden): the test_00b shape."""
+        orig = km._chat_tab_sessions
+        km._chat_tab_sessions = lambda now, live_map: [s for s in orig(now, live_map) if s["sid"] != sid]
+        try:
+            fn()
+        finally:
+            km._chat_tab_sessions = orig
+
+    def test_18_a_connect_push_seeds_the_baseline_so_the_targeted_push_and_the_first_cycle_send_tails_not_fulls(self):
+        # The shared baseline (_prev_chat_events) had ONE writer, the pusher's non-connect cycle, so a sid whose first
+        # whole frame since the boot came from a connect push (the redial's watched tab, then every tab the page's idle
+        # prefetch releases) left its clients holding a base and the kernel holding no baseline. _chat_diff reads 0 with
+        # none, and 0 against a held base is the full road: every targeted push for the sid (the SDK handshake, a Codex
+        # stream event) and the cycle's own first build re-sent the whole session, counted changeAt0 and filed as a
+        # chatFull row with both edges held, a repaint the page treats as a reconnect repair (42 of them in the three
+        # minutes after a restart with 22 sessions and a dashboard, none after; 2026-09-19). The first whole frame now
+        # seeds the baseline when none exists, whichever sender sent it; the cycle's write-after-deliver advance stands.
+        # Each step flips the status first: an identical frame would dedup on its slot and hide the full (the review).
+        km._PERF_STATS.reset()
+        c = self._client(active=S1, proto=2)
+        km._clients.append(c)
+        km._push([c], connect=True)                      # the ready arm's connect push: every tab whole, noBase
+        self.assertEqual(km._prev_chat_events.get(S1), self.SESS[S1]["events"],
+                         "the first whole frame establishes the baseline (the connect push wrote none before)")
+        self.assertNotIn(S4, km._prev_chat_events, "an empty list records no baseline, as it records no base")
+        self.assertEqual(self._diag_rows("chatFull"), [], "a fresh client holds no base: nothing filed")
+        c["_frames"].clear()
+        self.SESS[S1]["status"]["state"] = "waiting"     # the flip the handshake push exists for
+        km._push_session_now(S1)                         # the handshake
+        self.assertEqual(self._sessions(c), [], "the handshake push sends a tail, not a whole session frame")
+        self.assertEqual([(t["id"], t["afterUuid"], t["events"], t["status"]["state"]) for t in self._frames(c, "chatTail")],
+                         [(S1, "u4", [], "waiting")], "the empty-suffix tail carries the flip")
+        self.assertNotIn("changeAt0", self._why(), "no full counted against the seeded baseline")
+        self.assertEqual(self._diag_rows("chatFull"), [], "and no chatFull row for the base holder")
+        c["_frames"].clear()
+        self.SESS[S1]["status"]["state"] = "working"     # flipped again, so the cycle's frame is not the handshake's
+        km._built_chat.clear()                           # the pusher's first build of the sid since the boot
+        km._push([c])
+        self.assertEqual(self._sessions(c), [], "the cycle's first build is a tail too, not the changeAt0 full")
+        self.assertEqual([(t["afterUuid"], t["events"], t["status"]["state"]) for t in self._frames(c, "chatTail") if t["id"] == S1],
+                         [("u4", [], "working")])
+        self.assertNotIn("changeAt0", self._why())
+        self.assertEqual(self._diag_rows("chatFull"), [])
+        self.assertEqual(km._prev_chat_events[S1], self.SESS[S1]["events"], "the cycle's own write, as before")
+
+    def test_19_the_seed_never_moves_a_present_baseline(self):
+        # The guard the seed lives under: only a push that reaches EVERY client may ADVANCE the baseline (the 2026-07-28
+        # stranded-delta lesson, test_chat_delta_resync). A connect push over a grown list finds a baseline present and
+        # leaves it byte for byte, so the next cycle's tail to the older client carries what it lacks. Green before the
+        # seed and after it: the pin that seeding when absent is not advancing.
+        c = self._client(active=S1, proto=2)
+        km._clients.append(c)
+        km._push([c])                                    # the cycle: the baseline is u0..u4
+        baseline = km._prev_chat_events[S1]
+        before = json.loads(json.dumps(baseline))
+        self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})
+        km._built_chat.clear()
+        d = self._client(active=S1, proto=2)             # a second page opens: its connect push builds the grown list
+        km._clients.append(d)
+        km._push([d], connect=True)
+        self.assertEqual(self._sessions(d).count(S1), 1, "the fresh client got its full")
+        self.assertIs(km._prev_chat_events[S1], baseline, "a present baseline is never replaced by a whole-frame send")
+        self.assertEqual(km._prev_chat_events[S1], before)
+        c["_frames"].clear(); d["_frames"].clear()
+        km._push([c, d])                                 # the next cycle
+        self.assertEqual([(t["afterUuid"], [e["uuid"] for e in t["events"]]) for t in self._frames(c, "chatTail") if t["id"] == S1],
+                         [("u4", ["u5"])], "the older client is served what it lacks: the baseline was not moved past it")
+        self.assertEqual([(t["afterUuid"], [e["uuid"] for e in t["events"]]) for t in self._frames(d, "chatTail") if t["id"] == S1],
+                         [("u4", ["u5"])], "the fresh client re-applies the overlap since the baseline, idempotently")
+
+    def test_20_a_content_frame_replaces_an_empty_baseline(self):
+        # A transcript-less session's cycle build writes [] as its baseline, and an empty list records no base on any
+        # client (the empty-frame rule), so nothing is stranded by reading it as absent: the first content frame, from
+        # whichever sender, becomes the baseline, and the targeted push after it sends a tail.
+        km._prev_chat_events[S4] = []                    # the pusher's transcript-less build, by hand
+        km._prev_chat_ledger[S4] = None
+        self.SESS[S4]["events"] = [{"kind": "user", "uuid": "u0", "md": "m0"}, {"kind": "assistant", "uuid": "u1", "md": "m1"}]
+        c = self._client(active=S4, proto=2)
+        km._clients.append(c)
+        km._push([c], connect=True)
+        self.assertEqual(km._prev_chat_events.get(S4), self.SESS[S4]["events"], "content replaces the empty baseline")
+        c["_frames"].clear()
+        self.SESS[S4]["status"]["state"] = "working"
+        km._push_session_now(S4)
+        self.assertEqual(self._sessions(c), [], "the targeted push after it is a tail")
+        self.assertEqual([(t["afterUuid"], t["events"], t["status"]["state"]) for t in self._frames(c, "chatTail") if t["id"] == S4],
+                         [("u1", [], "working")])
+
+    def test_21_a_tab_that_left_the_strip_leaves_every_clients_base_and_the_baseline(self):
+        # The pusher popped the baseline of a tab the strip stopped listing, and only for a sid its build cache held,
+        # while every client's echat kept the base. With the seed, a re-entering tab's first whole frame would have
+        # seeded a baseline while clients held an older base: the 2026-07-28 shape. The page tears a tab down when the
+        # strip stops listing it (applyTabOrder), so the kernel's belief that a socket still holds it is false from that
+        # moment: the eviction walks the union of the build cache and the baseline map now, and forgets every alive chat
+        # client's base and dedup slot for the gone sid (2026-09-19). A tab that left is a never-seeded one again (no
+        # client's base, no baseline, no mark), and the re-entry is a noBase full for everyone, with no row.
+        km._PERF_STATS.reset()
+        c = self._client(active=S1, proto=2)
+        d = self._client(active=S3, proto=2)
+        km._clients.extend([c, d])
+        km._push([c, d])                                 # both hold S3 whole; the baseline has it
+        for cl in (c, d):
+            self.assertIn(S3, cl["echat"])
+            self.assertIn(("chat", S3), cl["sent"])
+        self.assertIn(S3, km._prev_chat_events)
+        km._built_chat.pop(S3, None)                     # no cache entry for it: a baseline a targeted push seeded has none
+        self._strip_without(S3, lambda: km._push([c, d]))
+        for cl in (c, d):
+            self.assertNotIn(S3, cl["echat"], "the base for a tab the page tore down is forgotten")
+            self.assertNotIn(("chat", S3), cl["sent"], "and its dedup slot with it")
+        self.assertNotIn(S3, km._prev_chat_events, "the baseline goes, with a cache entry or without one")
+        self.assertNotIn(S3, km._prev_chat_ledger)
+        c["_frames"].clear(); d["_frames"].clear()
+        km._push([c, d])                                 # the tab re-enters the strip
+        for cl in (c, d):
+            self.assertEqual(self._sessions(cl), [S3], "a noBase full for everyone")
+        self.assertNotIn("changeAt0", self._why())
+        self.assertEqual(self._diag_rows("chatFull"), [], "no client held a base for it: nothing filed")
+
+    def test_22_an_empty_build_after_a_seeded_full_takes_the_stand_in_road(self):
+        # _empty_build_regresses reads the baseline as what the clients hold with content. Before the seed a connect
+        # push's content full left none, so a transcript read that came back empty on the next cycle was no regression
+        # against nothing: the empty frame went, counted `empty`, filed a row and blanked the pane. Seeded, the empty
+        # build is the failed read it is: nothing sent for the sid, the episode said once on stderr.
+        km._PERF_STATS.reset()
+        km._EMPTY_BUILD_NOTED.discard(S1)
+        c = self._client(active=S1, proto=2)
+        km._clients.append(c)
+        km._push([c], connect=True)                      # S1 content, whole
+        c["_frames"].clear()
+        self.SESS[S1]["events"] = []                     # the next read comes back empty
+        km._built_chat.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            km._push([c])
+        self.assertEqual([f for f in self._frames(c, "session") if f["id"] == S1], [], "no empty session frame reaches the client")
+        self.assertNotIn("empty", self._why(), "no full counted as `empty`")
+        self.assertEqual(self._diag_rows("chatFull"), [])
+        self.assertIn("came back EMPTY", err.getvalue(), "the failed read is said on stderr")
+
+    def _race(self, first, second_inside_first_send_to):
+        """Two whole-frame senders on a baseline-less sid, delivered to client b in the inverted order: `first` runs and
+        reads the baseline absent; while it sends S1 to `second_inside_first_send_to`, the u3 card fills and `second`
+        (the closure) runs whole, sends its newer full and seeds; then the first sender's OLDER full lands on b."""
+        a = self._client(active=S1, proto=2)
+        b = self._client(active=S1, proto=2)
+        km._clients.extend([a, b])
+        real = km._send_chat_or_status
+        fired = []
+        target = {"a": a, "b": b}[second_inside_first_send_to]
+
+        def hook(cl, m, ms, change_from, led_changed):
+            if m["id"] == S1 and cl is target and not fired:
+                fired.append(1)
+                self.SESS[S1]["events"][3]["md"] = "m3 filled"   # the card filled after the first sender's build
+                km._send_chat_or_status = real
+                try:
+                    first["second"](b)
+                finally:
+                    km._send_chat_or_status = hook
+            return real(cl, m, ms, change_from, led_changed)
+        km._send_chat_or_status = hook
+        try:
+            first["first"](b)
+        finally:
+            km._send_chat_or_status = real
+        self.assertEqual(fired, [1], "the second sender ran inside the first one's send loop")
+        self.assertEqual(self._u3(b)[-1], ("session", "m3"), "b's last frame from the race is the OLDER full")
+        return a, b
+
+    def _the_cycle_repairs(self, a, b):
+        """After the next cycle, the u3 card every client last received is the filled one (the frames are not cleared: a
+        client that already held the filled build is served nothing new, its identical full dedups, and stands repaired)."""
+        km._built_chat.clear()
+        km._push([a, b])                                 # the next cycle builds the filled list
+        for cl in (a, b):
+            self.assertEqual(self._u3(cl)[-1], ("session", "m3 filled"), "the cycle's full repairs every client")
+        self.assertEqual(km._prev_chat_events[S1], self.SESS[S1]["events"], "and the cycle's write establishes the baseline")
+
+    def test_23_two_whole_frame_senders_racing_on_a_baseline_less_sid_keep_no_baseline_and_the_cycle_repairs_both(self):
+        # Order one (the correctness review of the seed, 2026-09-19): the targeted push T builds the list with the u3
+        # card pending and reads the baseline absent; while it sends a, a connect push C for page b builds the list with
+        # u3 filled, hands b that full and seeds; then T's older full lands on a and on b, and b ends holding the OLDER
+        # card. A seed that only wrote when absent left the newer list as the baseline: the next cycle diffed filled
+        # against filled and nothing re-sent u3 to b short of a reconnect. The seed reads back the baseline it diffed
+        # against: absent then and a DIFFERENT list now means a racing whole-frame sender wrote, per-client delivery
+        # order is whichever thread reached each client's lock first, and no one list describes every base holder, so
+        # the seed POPS the entry (and marks the sid, test 25) and the next cycle's full repairs every client, as it did
+        # before the seed.
+        a, b = self._race({"first": lambda b: km._push_session_now(S1),
+                           "second": lambda b: km._push([b], connect=True)}, "a")
+        self.assertNotIn(S1, km._prev_chat_events, "two whole-frame senders raced: no list describes every base holder, none is kept")
+        self.assertNotIn(S1, km._prev_chat_ledger)
+        self._the_cycle_repairs(a, b)
+
+    def test_24_the_other_order_an_older_connect_push_landing_after_the_newer_targeted_push_keeps_no_baseline_either(self):
+        # Order two: the connect push C for page b (u3 pending) has read the baseline absent and is about to send b;
+        # the targeted push T (u3 filled) runs whole in that gap, fulls to a and b, seeds; then C's older full lands on
+        # b. C's own seed finds a list other than the one it read and pops it.
+        a, b = self._race({"first": lambda b: km._push([b], connect=True),
+                           "second": lambda b: km._push_session_now(S1)}, "b")
+        self.assertNotIn(S1, km._prev_chat_events, "the connect push's seed found a racing sender's list and kept none")
+        self.assertNotIn(S1, km._prev_chat_ledger)
+        self._the_cycle_repairs(a, b)
+
+    def test_25_a_single_client_push_between_the_race_and_the_cycle_re_seeds_nothing_and_the_cycle_still_repairs(self):
+        # The detector's pop (tests 23 and 24) leaves clients holding bases with NO baseline, the state a never-seeded sid
+        # is in too, and a seed that could not tell them apart was undone by the next single-client push (the review of
+        # the detector, 2026-09-19): a needFull, or the idle prefetch releasing any tab on any page (one connect push per
+        # released tab at a boot, while a cold cycle takes 30-84 s), read the baseline absent, sent ITS client a
+        # changeAt0 full (repairing that one) and seeded from its build, so the cycle diffed equal lists and handed the
+        # other holder of the older build an empty-suffix tail: a card that filled between the two racing builds stayed
+        # stale until a reconnect, with no chatFull row. On the stock kernel the same sequence self-healed, the cycle's
+        # full reaching everyone. The pop now MARKS the sid (_chat_baseline_raced): no seed writes while the mark stands,
+        # and the cycle's write-after-deliver, which reaches every alive chat client, clears it with the write.
+        km._PERF_STATS.reset()
+        a, b = self._race({"first": lambda b: km._push_session_now(S1),
+                           "second": lambda b: km._push([b], connect=True)}, "a")
+        self.assertNotIn(S1, km._prev_chat_events)
+        self.assertEqual(self._u3(a)[-1], ("session", "m3"), "a holds the older build too: the targeted push's full landed on both")
+        rows0 = len(self._diag_rows("chatFull"))
+        km._push([b], connect=True)                      # a needFull or an idle-prefetch release for page b, before any cycle
+        self.assertEqual(self._u3(b)[-1], ("session", "m3 filled"), "b's own full repairs b, as before the seed")
+        self.assertEqual(len(self._diag_rows("chatFull")) - rows0, 1, "b held a base: its full is a changeAt0 with a row")
+        self.assertNotIn(S1, km._prev_chat_events,
+                         "a single-client push after the race re-seeds nothing: a still holds the older build")
+        self.assertIn(S1, km._chat_baseline_raced, "the pop is on record until an every-client sender writes")
+        rows1 = len(self._diag_rows("chatFull"))
+        self._the_cycle_repairs(a, b)                    # every client's last u3 is the filled one; the baseline re-established
+        self.assertNotIn(S1, km._chat_baseline_raced, "the cycle reached every client: the mark clears with its write")
+        rows = [r["data"] for r in self._diag_rows("chatFull")[rows1:]]
+        self.assertEqual([(r["reason"], r["changeFrom"], r["firstHeld"], r["lastHeld"]) for r in rows],
+                         [("changeAt0", 0, True, True)],
+                         "the stale holder got the cycle's changeAt0 full, with its row; b's identical full deduped on its slot")
+
+    def test_26_two_seeds_that_both_read_the_baseline_absent_cannot_both_write(self):
+        # The seed's read-back and write were two steps under no lock (the review, 2026-09-19): two whole-frame senders
+        # whose loops ended close together could both read the map absent before either assigned, both write, the last
+        # writer win, and the detector never fire, so a client holding the first writer's list was stranded exactly as
+        # under a seed with no detector. The read-back and the write are one step under _chat_baseline_lock now. Driven
+        # over the real seed with the map's `get` parked on its first call: the second seed must wait for the lock, then
+        # read the first's list, differ, and pop it.
+        older = {"id": S1, "events": json.loads(json.dumps(self.SESS[S1]["events"])), "ledger": None}
+        self.SESS[S1]["events"][3]["md"] = "m3 filled"
+        newer = {"id": S1, "events": json.loads(json.dumps(self.SESS[S1]["events"])), "ledger": None}
+        parked, gate = threading.Event(), threading.Event()
+        real = km._prev_chat_events
+
+        class Parking(dict):
+            def get(self, key, default=None):
+                if not parked.is_set():                  # the FIRST seed's read-back: parked between its read and its write
+                    parked.set()
+                    gate.wait(10)
+                return dict.get(self, key, default)
+        km._prev_chat_events = Parking()
+        try:
+            first = threading.Thread(target=km._seed_chat_baseline, args=(S1, older, None))
+            first.start()
+            self.assertTrue(parked.wait(10), "the first seed parked at its read-back")
+            second = threading.Thread(target=km._seed_chat_baseline, args=(S1, newer, None))
+            second.start()
+            second.join(0.5)
+            self.assertTrue(second.is_alive(), "the second seed waits for the lock while the first is between its read and its write")
+            gate.set()
+            first.join(10)
+            second.join(10)
+            self.assertFalse(first.is_alive() or second.is_alive(), "both seeds ran to the end")
+            self.assertNotIn(S1, km._prev_chat_events, "the second seed read the first's list, differed, and popped it")
+            self.assertIn(S1, km._chat_baseline_raced, "...and marked the sid: the race is on record")
+        finally:
+            gate.set()
+            km._prev_chat_events = real
 
 
 class RestartDiet(unittest.TestCase):

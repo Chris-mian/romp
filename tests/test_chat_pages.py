@@ -1002,8 +1002,9 @@ class Proto2Wire(Harness):
         self.assertEqual(why(), {"noBase": 1, "baseGone": 1})
         self.assertEqual(self._diag_reasons(), ["baseGone"])
         m5 = self._with(m4, [{"kind": "assistant", "md": "z", "uuid": "z3"}])   # the fork grew by a reply: unlike the last frame sent
-        km._send_chat(c, m5, None, 0, False)                           # a change at the list's first event against a held base: a
-        self.assertEqual(sent[-1]["type"], "session")                  # genuine first-event change or a no-baseline send, by whichever sender
+        km._send_chat(c, m5, None, 0, False)                           # a change at the list's first event against a held base, change_from 0
+        self.assertEqual(sent[-1]["type"], "session")                  # handed in: the shape a sender with no baseline computed before the
+        #                                                                 seed (2026-09-19), or the racing pair's repair after it
         self.assertEqual(why(), {"noBase": 1, "baseGone": 1, "changeAt0": 1})
         self.assertEqual(self._diag_reasons(), ["baseGone", "changeAt0"])
         row = self._diag_rows()[-1]

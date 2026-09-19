@@ -96,13 +96,18 @@ def test_connect_push_does_not_advance_the_shared_baseline():
     """A connect push targets ONE client. If it advanced the shared diff baseline, every OTHER connected
     client would never be sent the events in that window — the next diff would start past them.
 
-    Drives the real guard in _push's build loop: the baseline write is gated on `not connect`.
+    Drives the real guard in _push's build loop: the ADVANCE is gated on `not connect`. The else branch that
+    follows the two gated lines is not an advance (2026-09-19): a first-full seed for a sid with NO baseline, which
+    no client can hold a base for that the seed does not cover (_seed_chat_baseline; the skeleton-reconnect module's
+    tests 18 to 26 drive it), so the regex below stops at the ledger line and leaves the branch to them. The write and
+    the clear of the seed's raced mark are one step under _chat_baseline_lock (2026-09-19), so the regex admits that
+    `with` line between the gate and the two writes.
     """
     src = inspect.getsource(km._push)
     # the baseline writes must be reachable ONLY when the push is not a connect push
     assert "_prev_chat_events[m[\"id\"]]" in src, "baseline write moved — re-pin this test"
-    gate = re.search(r"if not connect:\s*\n\s*_prev_chat_events\[m\[\"id\"\]\] = .*\n\s*_prev_chat_ledger\[m\[\"id\"\]\] = ",
-                     src)
+    gate = re.search(r"if not connect:\s*\n\s*with _chat_baseline_lock:\s*\n"
+                     r"\s*_prev_chat_events\[m\[\"id\"\]\] = .*\n\s*_prev_chat_ledger\[m\[\"id\"\]\] = ", src)
     assert gate, "the shared diff baseline must be advanced only by a push that reaches every client"
 
 
