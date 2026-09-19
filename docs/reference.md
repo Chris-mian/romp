@@ -126,7 +126,7 @@ yields nothing rather than an error.
 
 ### Notice cards: a feed card without a judge
 
-`romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, or the shorthand `romp card "title" "text"`, posts a **notice card** to the feed: a card the kernel makes from what you hand it, with no judge involved (design: plans/notice-cards.md). With no session named the card is **owner-less** and shows at the **top** of the feed under the name Notes, above every session's cards (outside a session that is the default; inside one `ROMP_SID` owns the card unless you pass `--no-session`); `-s <name>` gives it to a session. `-k` names the card: a second post under the same key is a **revision** (it replaces the earlier card on the board, and shows again even if you had dismissed the earlier one, since it carries new information, and its number counts the archived posts of the key too, so a dismissed card's id is never minted again); with no `-k` the command mints a key and prints it, so a later `romp card -k <key> ...` revises the card. The body is markdown, rendered through the chat's sanitizer; `--attach` names a file the card shows inline when it is an image (the kernel judges it as the hover preview does: your home or the session's folder, no secrets-shaped names, the size caps, and keeps a pinned copy of an image as posted; an owner-less card's attachment is judged against your home alone). A card leaves the board on your dismissal (Clear; Undo restores it, copying its rows back out of the archive when the retention pass has already moved them), on a revision, or at `--expires` seconds from the post. `--needs-you` files it under Needs you. The kernel keeps every post in `notices/<session>.jsonl` under the state directory (`notices/notes.jsonl` for owner-less cards) and archives dismissed, expired and superseded rows to `notices-archive/`; a home shows at most fifty live keys at once, the oldest superseded past that. The same door is `POST /notice` on the kernel (the `/watch` shape: `{"id"|"name", "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "producer"?}`; with neither `id` nor `name` the card is owner-less; `{"id"|"name", "expire": "<key>"}` retires a card early), and producers inside romp call the kernel's `post_notice` in process. An owner-less card carries no actions.
+`romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>] [--body-file <path>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, or the shorthand `romp card "title" "text"`, posts a **notice card** to the feed: a card the kernel makes from what you hand it, with no judge involved (design: plans/notice-cards.md). With no session named the card is **owner-less** and shows at the **top** of the feed under the name Notes, above every session's cards (outside a session that is the default; inside one `ROMP_SID` owns the card unless you pass `--no-session`); `-s <name>` gives it to a session. `-k` names the card: a second post under the same key is a **revision** (it replaces the earlier card on the board, and shows again even if you had dismissed the earlier one, since it carries new information, and its number counts the archived posts of the key too, so a dismissed card's id is never minted again); with no `-k` the command mints a key and prints it, so a later `romp card -k <key> ...` revises the card. The body is markdown, rendered through the chat's sanitizer; `--attach` names a file the card shows inline when it is an image (the kernel judges it as the hover preview does: your home or the session's folder, no secrets-shaped names, the size caps, and keeps a pinned copy of an image as posted; an owner-less card's attachment is judged against your home alone). A card leaves the board on your dismissal (Clear; Undo restores it, copying its rows back out of the archive when the retention pass has already moved them), on a revision, or at `--expires` seconds from the post. `--needs-you` files it under Needs you. The kernel keeps every post in `notices/<session>.jsonl` under the state directory (`notices/notes.jsonl` for owner-less cards) and archives dismissed, expired and superseded rows to `notices-archive/`; a home shows at most fifty live keys at once, the oldest superseded past that. The same door is `POST /notice` on the kernel (the `/watch` shape: `{"id"|"name", "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "producer"?}`; with neither `id` nor `name` the card is owner-less; `{"id"|"name", "expire": "<key>"}` retires a card early), and producers inside romp call the kernel's `post_notice` in process. An owner-less card carries no actions. `-b <board>` files the card on a board of yours (`plans/card-boards.md`): an unknown board is created on first use with the category `-c` names (or `notes`), a category unknown to your board is added to it, and the posted line names the board and says when the post created it, so a typo in `-b` is a new board you can see at once (`romp board list` names it, `romp board remove` takes it away while no card stands on it). `-c` alone names a feed category (`working`, `needs_input`, `completed`). `--needs-you` on a board is that board's needs-you category, and is refused when its definition names none.
 
 ### Card boards: your own categories
 
@@ -293,6 +293,42 @@ switch to a fast-capable one, which the chat shows as the command's own
 confirmation. If the CLI refuses the toggle (for example, the account has
 extra usage turned off), a toast says why and the pick reverts to off;
 the control never silently disappears.
+
+### Always fast, and retrying an upgrade after a downgrade
+
+Two switches under **Settings**, **Automation**, **Model**, both off by default, both
+kernel-side (stored on the kernel like the judges' Fast mode boxes, stamped, and
+following to every connected machine's kernel):
+
+- **Always fast** runs every session in fast mode whenever its model allows it
+  (Opus-only, billed at a premium). The kernel arms the CLI's fast-mode opt-in at
+  each connect for a session whose model is Opus, and when a session lands on Opus
+  later, by a pick or by an automatic fallback, it reconnects to arm it as soon as
+  the session is quiet: no turn in flight, queued, or opened by the CLI itself (a
+  background task's notification starts one), no question waiting on you, no
+  subagent, no background task, so
+  nothing is cut (the wait is said once in the kernel log, with what is running;
+  the kernel looks once more the instant before the reconnect and stands down if
+  the CLI has started work since); turning the switch on or off reaches every
+  running session the same way. A session you set to **Slow** from its
+  statusline stays slow until you set it to **Fast** again, and a comment thread
+  launched slow, or forked from a slow session, counts as such a pick. If the CLI refuses fast mode for a
+  session with a reason (extra usage off, an organisation gate), the kernel log
+  says so once and that session runs at normal speed until the reason clears (the
+  CLI reporting fast on for it, or your own Fast or Slow pick on it); the switch is
+  never the literal `/fast on`, which on a non-Opus session would make the CLI
+  change model.
+- **Retry upgrades after downgrades** acts when a session's model changes to a
+  lower tier without a pick, the automatic fallback the Completed card reports
+  (`Model changed automatically: … → …`). Every ten minutes the kernel asks for
+  the picked model again by reconnecting the session as soon as it is quiet, the
+  same rule as above, so nothing is cut; a fresh CLI starts on the pick
+  (or the account default when nothing is picked). A session that already sits
+  below its pick when you turn the switch on is taken up at once. A fallback that
+  happens again is logged once per attempt; its card follows the board's usual
+  rule, nothing new while the swap's card stands, a fresh one once you cleared it. When a turn is served on the picked tier, a second
+  Completed card says the session is back (`Model back on …`) and the retry ends.
+  A pick of your own ends it too, as does turning the switch off.
 
 ### Per-session billing (login vs API key)
 
@@ -1546,30 +1582,53 @@ its version). The host answers at once: `ok` with `when` `now` when its CLI is
 idle, `at-turn-end` when a turn is open (the exec waits for that turn's
 `result`, the event, never a timer), or `ok` false with a reason when it cannot
 hand its descriptors over, in which case the kernel attaches to the old host as
-before and files a `host.reexec-refused` row. To re-exec, the host drains its
-stdin pump and its journal writer, writes a handoff file
+before and files a `host.reexec-refused` row. To re-exec, the host holds its
+stdout reader (no further record is taken off the CLI; bytes not yet read stay
+in the pipe, which survives the exec), drains its stdin pump and its journal
+writer, drains the attached kernel's socket backlog to the last byte (five
+seconds at most), and then decides with nothing awaited between the decision
+and the exec: the CLI is quiet, meaning no turn re-opened and the reader's
+stream buffer holds no bytes, or the exec is deferred to the next `result`,
+the event, and the reader runs on meanwhile (a `reexec-deferred` line names
+the reason: output arriving, or a kernel that did not drain in time). Quiet, it
+writes any record read during the drains to the journal itself so the count
+it hands over and the journal agree, writes a handoff file
 (`hosts/<sid>/reexec.json`: the CLI's pid, start time, spawn time and
-conversation id, the three pipe descriptors, the read count, the open requests
-and the acknowledged offset), marks the descriptors inheritable, closes its
-socket, tells an attached kernel `reexec-now`, and calls `execv` on the same
-pid: the CLI stays its child, the pipes stay open (descriptors survive an
-execve), the lease holder's pid and start time are unchanged, so `hostAck`
-still names this host and the replay offset holds, and the journal is
-reopened from its segment files (the index rebuilt from the files, the next
-offset from the last record). The new host adopts the CLI through the pipe
-transport over the inherited descriptors (on Linux it confirms them against
-the CLI's own `/proc` descriptors before trusting the handoff), re-serves the
-socket, writes the lease with the new version, and waits for the kernel's
-attach; the kernel, told `reexec-now`, treats the socket's close as the
-planned handover, not a host death: no `host.died` row, no orphan replay, no
-resume, one re-attach from the same acknowledged offset, and a
-`host.reexeced` row. A re-exec that fails before the exec leaves the old host
-running and says so (a `reexec-failed` line in the host's log, the refusal row
-from the kernel); one that fails inside the new process, on a handoff that does
-not check out, makes the new host exit with the CLI still running, which the
-kernel's existing orphan road handles as a host death: the CLI finishes its
-turn on end-of-file and the session resumes from the transcript. The worst
-case is the pre-host behaviour for one session, never a dead one.
+conversation id, the three pipe descriptors, the read count, the open turns,
+the open requests and the acknowledged offset), marks the descriptors
+inheritable, writes `reexec-now` to the kernel (its backlog empty, the frame
+reaches the socket at once; a kernel whose socket is full at that instant
+misses it and reads the close as unplanned, the lease holding for its next
+connect), closes its socket, and calls `execv` on the same pid: the CLI stays
+its child, the pipes stay open (descriptors survive an execve), the lease
+holder's pid and start time are unchanged, so `hostAck` still names this host
+and the replay offset holds, and the journal is reopened from its segment
+files (the index rebuilt from the files entry for entry as the live one held
+it, the next offset from the last record, a deleted segment's offsets
+unreadable). The new host confirms the inherited descriptors against the
+CLI's own `/proc` descriptors on Linux before trusting the handoff, adopts the
+CLI through the pipe transport over them, re-serves the socket, writes the
+lease with the new version (in that order, so a kernel that reads the new
+version finds a listener; the kernel's wait for the re-executed host also
+connects before it trusts the lease), and waits for the kernel's attach; the
+kernel, told `reexec-now`, treats the socket's close as the planned handover,
+not a host death: no `host.died` row, no orphan replay, no resume, one
+re-attach from the same acknowledged offset, and a `host.reexeced` row. A
+re-exec that fails before the exec leaves the old host running and says so (a
+`reexec-failed` line in the host's log; a `fault` to an attached kernel, which
+files a `host.reexec-failed` row, as does a kernel whose wait for the
+re-executed host runs out); one that fails inside the new process, on a
+handoff that does not check out, makes the new host exit with the CLI still
+running, which the kernel's existing orphan road handles as a host death: the
+CLI finishes its turn on end-of-file and the session resumes from the
+transcript. The worst case is the pre-host behaviour for one session, never a
+dead one. What the guarantee covers: every record parsed off the CLI before
+the exec is in the journal, numbered as the kernel was told; every byte still
+in the pipe reaches the new host. What it cannot cover is a line the SDK's
+reader has split across two chunks (its framer holds the first part between
+reads), which with the stream buffer empty at the check is a record the CLI
+is mid-write on at that instant, outside any turn: lost to the journal only,
+never to the CLI.
 
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
@@ -1959,7 +2018,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (cycles that set no wake, sent no payload and saved no goal store: what a
   longer wait between cycles would have skipped; a conservative undercount,
   since a wake set by another thread or a periodic repost of an unchanged
-  frame marks a cycle busy).
+  frame marks a cycle busy), and `chatFullWhy` (every whole session frame the
+  uuid-anchored chat wire sent, counted once the frame has left, so a frame the
+  per-client dedup swallowed is no more one here than under `sends`; by the
+  reason the sender had for it: `noBase`
+  for a first send or a reset, `baseGone` for a fork or a rewind,
+  `lastGone:<family>` for a held last edge the next list no longer carried,
+  `changeAt0` for a change at the list's first event, the targeted push's
+  shape, `changeBelowFirst`, `inverted`, `empty`; a caught-up client is owed
+  deltas, so `lastGone` is the recurrence meter for a base anchored on a key
+  that vanished, an input echo's or the command chip's).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
   split and the newest cycles' splits, each `{s, t, stages, gc}` (`gc` is the
   cycle's own collections, described under `gc` above) with, per stage,
@@ -2410,7 +2478,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rebuilt one would.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
-  was built and compared, then not sent.
+  was built and compared, then not sent. Every frame the targeted one-session
+  push sent (the SDK connect handshake, the Codex backend's stream events, a
+  create, a fork or a promote; the `push.session` stage above), its tab strip
+  and the cold-tab gate's status included, is counted under its slot with a
+  `.targeted` suffix (`chat.targeted`, `status.targeted`, `taborder.targeted`),
+  so a full from that road reads apart from the pusher's cycle.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
   loader (`load_goals`) and `save_goals`; the pusher's read-only loads go
   through the shared store cache and show under `memos.shared`, not here. A
@@ -2920,7 +2993,11 @@ announces `chatProto2` in its `caps`:
   no row on screen re-windows once around the named point;
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
-  reader in older history; a reconnect's `ready` starts a fresh base. A run whose
+  reader in older history; a reconnect's `ready` starts a fresh base. The base's
+  `last` skips the live overlay cards and the kernel's transient keys (an input
+  echo, the command chip), which ride the suffix of the deltas after them like
+  the overlays: the landing that replaces an echo with its record is a delta
+  after the record before it, never a full frame. A run whose
   edges left the transcript (a `/clear`, a fork, a rewind) gets a full frame; a
   `missing` reply on a held key is a gap the page answers with `needFull`. A
   reply that reaches the head carries the head cards first.
@@ -3242,6 +3319,14 @@ frames it received is measured in the panes themselves, by
   cannot be written is said on stderr once, since the reading rule holds only while
   writes succeed. A planned per-app split of the connect push (perf work) will read
   the same `kind`.
+- The kernel files one `chatFull` row (surface `kernel`) per whole session frame
+  the uuid-anchored chat wire sends to a client that already holds a base for the
+  session, filed once the frame has left (a frame the per-client dedup swallowed
+  files nothing): such a client is owed deltas, and the page treats a full for a
+  held session as a reconnect repair. The row carries the client's `cid` and `kind`, the
+  session, the `reason` (the `chatFullWhy` label under `/perf`), the change index,
+  the list's length, and which base edges the list still held; a first send files
+  nothing.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about

@@ -33,6 +33,7 @@ BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
 import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
+from test_live_paused_window_browser import R3_CHECK   # noqa: E402  the shared bottom assertion (the client merge guard, 2026-09-19)
 
 SID = "aaaaaaaa-1111-2222-3333-444444444444"
 TURNS = 320   # 640 events: past the wire tail, so older history stays on the server and the page's run is a tail
@@ -92,6 +93,7 @@ const older = (k0, k1) => Array.from({ length: k1 - k0 }, (_, i) => k0 + i).flat
   { uuid: "11111111-2222-3333-4444-" + pad(2 * k), kind: "user", md: "question number " + k + " about the notes api", ts: new Date((cfg.base + 2 * k) * 1000).toISOString() },
   { uuid: "22222222-3333-4444-5555-" + pad(2 * k + 1), kind: "assistant", md: "Answer " + k + ": the handler reads the note by id and returns it.", ts: new Date((cfg.base + 2 * k + 1) * 1000).toISOString() }]);
 """
+DRIVER_HEAD = DRIVER_HEAD + R3_CHECK
 
 
 # the verifier's road: the head page filled into place (T386 stage 2: the gap asks for its page when its edge meets the viewport), a
@@ -132,7 +134,8 @@ reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "f
 reloaded.saved = saved;
 reloaded.savedRow = savedRow;
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
-fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded }) + "\n");
+const r3 = await bottomCheck(cfg.lastUuid, transcriptOrder());   // R3 (2026-09-19), the last measurement: the bottom of the view is the transcript's newest row, in the file's order
+fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded, r3 }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -173,7 +176,8 @@ reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "f
 reloaded.savedRow = savedRow;
 reloaded.stripText = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return n ? n.textContent : ""; });
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, needFull: window.__sent.filter((m) => m.type === "needFull").length }));
-fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, atHead, reloaded }) + "\n");
+const r3 = await bottomCheck(cfg.lastUuid, transcriptOrder());   // R3 (2026-09-19), the last measurement: the bottom of the view is the transcript's newest row, in the file's order
+fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, atHead, reloaded, r3 }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -223,7 +227,8 @@ reloaded.saved = saved;
 reloaded.savedRow = savedRow;
 reloaded.trail = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));
 reloaded.asks = await page.evaluate(() => ({ loadAround: window.__sent.filter((m) => m.type === "loadAround").length, loadOlder: window.__sent.filter((m) => m.type === "loadOlder").length, needFull: window.__sent.filter((m) => m.type === "needFull").length, ready: window.__sent.filter((m) => m.type === "ready").length }));
-fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded }) + "\n");
+const r3 = await bottomCheck(cfg.lastUuid, transcriptOrder());   // R3 (2026-09-19), the last measurement: the bottom of the view is the transcript's newest row, in the file's order
+fs.writeSync(1, "RESULT:" + JSON.stringify({ boot, settled, reloaded, r3 }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -271,6 +276,8 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
                                      "content": [{"type": "text", "text": "Answer %d: the handler reads the note by id and returns it." % k}]}})
             prev = a
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        cls.transcript = os.path.join(proj, SID + ".jsonl")      # the bottom assertion reads the file's record order (R3)
+        cls.last_uuid = "22222222-3333-4444-5555-%012d" % (2 * TURNS - 1)   # the transcript's newest row
         cls.deep_uuid = "11111111-2222-3333-4444-%012d" % 20   # the eleventh question: far above the tail the page holds
         cls.deep_t = base + 20                                     # …and its time, as a card's focus frame carries it
         cls.base = base
@@ -303,6 +310,7 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID,
                        "deepUuid": self.deep_uuid, "deepT": self.deep_t, "base": self.base,
+                       "transcript": self.transcript, "lastUuid": self.last_uuid,
                        "shots": os.environ.get("RELOAD_MIDRUN_SHOTS", "")}, f)
         driver = os.path.join(self.lab, name + ".mjs")
         with open(driver, "w") as f:
@@ -316,9 +324,19 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         return json.loads(line[len("RESULT:"):])
 
+    def _assert_bottom(self, b):
+        """R3 (the client merge guard, 2026-09-19): scrolled to the bottom after the restore, the last rendered row is the transcript's
+        newest, the view is at the bottom, and the rendered rows stand in the file's record order (a window placed with no regions put
+        older content at the bottom)."""
+        self.assertEqual(b["last"], b["newest"], "the bottom of the view is the transcript's newest row: %r" % b)
+        self.assertTrue(b["atBottom"], "…and the view is at the bottom: %r" % b)
+        self.assertTrue(b["ordered"], "the rendered rows stand in transcript order (misordered at %r): %r" % (b["misordered"], b))
+        self.assertTrue(b["runsOrdered"], "the runs are ordered by lo with the open-ended run last: %r" % b["regions"])
+
     def test_a_reload_lands_the_reader_on_their_saved_row_mid_run_through_one_window_ask(self):
         r = self._drive(DRIVER_RESTORE, "restore")
         print("RESULT:" + json.dumps(r), file=sys.stderr)
+        self._assert_bottom(r["r3"])
         st, rl = r["settled"], r["reloaded"]
         self.assertIsNotNone(rl["savedRow"], "a row sat under the viewport top before the reload: %r" % st)
         self.assertIsNotNone(rl["saved"], "the shell's hook saved the record: %r" % rl)
@@ -332,6 +350,7 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
         # (proto absent); the restore must wait for the kernel's answer to the ready and land the saved row through ONE window ask, as the
         # fast case does, never through the older wire (the mid-run red on CI: a reload-restore write, then loadOlder, loadAround 0)
         r = self._drive(DRIVER_RESTORE_LATEREADY, "restore-lateready")
+        self._assert_bottom(r["r3"])
         rl = r["reloaded"]
         self.assertIsNotNone(rl["savedRow"], "a row sat under the viewport top when the page was persisted")
         self.assertGreaterEqual(rl["early"]["delayed"], 1, "the page's ready was parked for three seconds: %r" % rl["early"])
@@ -343,6 +362,7 @@ class ServedReloadRestoreMidRun(unittest.TestCase):
     def test_a_reload_from_the_transcript_head_lands_the_saved_row_at_offset_zero_and_pauses_nothing(self):
         r = self._drive(DRIVER_RESTORE_HEAD, "restore-head")
         print("RESULT:" + json.dumps(r), file=sys.stderr)
+        self._assert_bottom(r["r3"])
         rl = r["reloaded"]
         self.assertIsNotNone(rl["savedRow"], "a row sat at the viewport top before the reload: %r" % r["atHead"])
         self.assertTrue(rl["landed"], "the saved row is not back at offset 0 after the reload: %r" % {k: rl[k] for k in ("top", "sh", "asks", "strip", "stripText")})

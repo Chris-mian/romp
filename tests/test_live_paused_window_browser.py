@@ -105,6 +105,56 @@ const older = (k0, k1) => Array.from({ length: k1 - k0 }, (_, i) => k0 + i).flat
   { uuid: "22222222-3333-4444-5555-" + pad(2 * k + 1), kind: "assistant", md: "Answer " + k + ": the handler reads the note by id and returns it.", ts: new Date((cfg.base + 2 * k + 1) * 1000).toISOString() }]);
 """
 
+# R3, the shared bottom assertion (the client merge guard, 2026-09-19), appended to the driver head so every window lab and the reload
+# lab run the same check as their LAST measurement: after any history action the bottom of the view is the transcript's newest row.
+R3_CHECK = r"""
+// the transcript's record uuids in file order (plus whatever rows a lab appended or injected live, which it concatenates itself)
+const transcriptOrder = () => fs.readFileSync(cfg.transcript, "utf8").split("\n").flatMap((ln) => { try { const r = JSON.parse(ln); return r && r.uuid ? [r.uuid] : []; } catch (e) { return []; } });
+// R3 (2026-09-19): scrollTop is written to the bottom until two consecutive scrollHeight reads agree (the re-window runs in an animation
+// frame) and, bounded, until the last rendered row is `newest`; then: the last rendered 36-char uuid, the distance to the bottom (at the
+// bottom within 2px), and whether the rendered uuids stand in TRANSCRIPT order: with `order` (transcriptOrder() and any rows the lab
+// added) they must be a subsequence of it; without one the 12-digit suffix the labs' synthetic uuids encode the record index in must
+// rise. The last unit is assumed a plain turn: a folded tool group stamps its FIRST tool uuid and an overlay card carries a word, so a
+// lab whose transcript ends in a tool call must name its own `newest`. The regions are read as a model check (runs ordered by lo, the
+// open-ended run last), which one merged run satisfies trivially.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const inOrder = (us, ord) => {
+  let misordered = null;
+  if (Array.isArray(ord) && ord.length) { const pos = new Map(ord.map((u, i) => [u, i])); let p = -1; for (const u of us) { const i = pos.has(u) ? pos.get(u) : -1; if (i <= p) { misordered = u; break; } p = i; } }
+  else { let p = -1; for (const u of us) { const k = Number(u.slice(-12)); if (!(k > p)) { misordered = u; break; } p = k; } }
+  return { ordered: misordered === null, misordered };
+};
+// the rendered transcript rows as they stand (no scroll), checked against the order: a seam's reading
+const renderedOrder = (order) => page.evaluate(([ord, src]) => {
+  const inOrderFn = new Function("return " + src)();
+  const us = Array.from(document.querySelectorAll("#content .turn[data-uuid]")).map((t) => t.dataset.uuid).filter((u) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u));
+  return Object.assign({ rendered: us.length, first: us[0] || null, last: us.length ? us[us.length - 1] : null }, inOrderFn(us, ord));
+}, [order || null, inOrder.toString()]);
+const bottomCheck = (newest, order) => page.evaluate(([nu, ord, src]) => new Promise((done) => {
+  const inOrderFn = new Function("return " + src)();
+  const c = document.getElementById("content");
+  const rendered = () => Array.from(document.querySelectorAll("#content .turn[data-uuid]")).map((t) => t.dataset.uuid).filter((u) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u));
+  let lastSh = -1, same = 0, passes = 0;
+  const finish = (us) => {
+    const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null;
+    const runs = rs ? rs.filter((r) => r.kind === "run") : [];
+    const runsOrdered = runs.every((r, i) => i === 0 || r.lo >= runs[i - 1].lo) && (!runs.length || runs[runs.length - 1].hi == null);
+    const dist = c.scrollHeight - c.scrollTop - c.clientHeight;
+    done(Object.assign({ last: us.length ? us[us.length - 1] : null, newest: nu, dist, atBottom: dist <= 2, rendered: us.length, runsOrdered, regions: rs, passes }, inOrderFn(us, ord)));
+  };
+  const step = () => {
+    c.scrollTop = c.scrollHeight;
+    passes++;
+    const sh = c.scrollHeight, us = rendered();
+    if (sh === lastSh) same++; else { same = 0; lastSh = sh; }
+    if ((same >= 2 && ((us.length && us[us.length - 1] === nu) || passes > 200)) || passes > 300) return finish(us);   // a landing's settle re-lands its anchor under this write for a moment (land-realign): the wait outlasts it and ends as soon as the newest row is last
+    requestAnimationFrame(step);
+  };
+  step();
+}), [newest, order || null, inOrder.toString()]);
+"""
+DRIVER_HEAD = DRIVER_HEAD + R3_CHECK
+
 # road 1 and road 2 in one page: the unasked window first (the reader attached, above the bottom), then the deep link
 class WindowLab(unittest.TestCase):
     """The boot: a hermetic kernel over a synthetic transcript longer than the wire tail, the real /chat page served
