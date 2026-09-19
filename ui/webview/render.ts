@@ -17180,7 +17180,10 @@ function upsert(msg: any) {
       emptyFrameDiagSent.add(msg.id + ":" + desyncWhy);
       vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync", data: { id: msg.id, why: desyncWhy, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
     }
-    requestFullSession(msg.id, "gap");   // ask for a frame that upsert can place; the held regions stand until it lands
+    // A no-tailLo / non-proto-2 frame is the keepResidentEvents shape: keep the held regions, let the gaps fill on
+    // scroll (the tail stands), ask no full -- exactly as an empty status frame asks none. A LYING tailLo (at or below a
+    // held run the frame does not re-carry) is a true desync: ask for a frame upsert can place, the held runs standing.
+    if (desyncWhy === "taillo-below-held") requestFullSession(msg.id, "gap");
   }
   // T386 stage 2: a proto-2 full frame is the TAIL run (the kernel names its first turn, tailLo); history runs the page holds whose
   // spans end at or before it stay, and s.events is the runs' events in turn order. No full frame merges by reason any more: the
