@@ -2,7 +2,9 @@
 // estimated height, the page a gap asks for at either edge, the anchor's place inside a gap, the one notice's words, the cancel.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_TURN_PX, gapAt, gapFraction, gapHeight, insertRun, landingCancel, landingNotice, pagesToAsk, regionsFromRuns, runsOf, turnsBeforeTail, type Region, type Run } from "./chat-regions";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { DEFAULT_TURN_PX, OVERLAY_KINDS, gapAt, gapFraction, gapHeight, insertRun, landingCancel, landingNotice, pagesToAsk, regionsFromRuns, runsOf, splitHeldAgainstFrame, turnsBeforeTail, type Ev, type Region, type Run } from "./chat-regions";
 
 const ev = (k: string) => ({ uuid: k });
 const run = (lo: number, hi: number | null, keys: string[]): Run => ({ kind: "run", lo, hi, events: keys.map(ev) });
@@ -93,4 +95,45 @@ test("the gap a turn falls in", () => {
   assert.deepEqual(gapAt(rs, 150), { kind: "gap", lo: 128, hi: 200 });
   assert.equal(gapAt(rs, 100), null, "a turn in a run is in no gap");
   assert.equal(gapAt(rs, 250), null, "the tail is in no gap");
+});
+
+// ── a full frame against a held run (the client merge guard, 2026-09-19) ─────────────────────────────────────────────────────
+const H = (ks: string[]) => ks.map((k) => ({ uuid: k, kind: "user" })) as Ev[];
+const keys = (es: readonly Ev[]) => es.map((e) => e.uuid);
+const transcript = (e: Ev) => !OVERLAY_KINDS.has(String(e.kind)) && !String(e.uuid).startsWith("optimistic:") && !String(e.uuid).startsWith("held:");
+
+test("the mirrored overlay set is the kernel's own (_OVERLAY_KINDS), member for member", () => {
+  const kernel = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  const m = /_OVERLAY_KINDS = frozenset\(\(([^)]*)\)\)/.exec(kernel);
+  assert.ok(m, "the kernel names its overlay kinds in one frozenset");
+  const kinds = Array.from(m![1].matchAll(/"([^"]+)"/g), (x) => x[1]).sort();
+  assert.deepEqual(Array.from(OVERLAY_KINDS).sort(), kinds, "the client skips exactly the cards the kernel's anchor rule skips");
+});
+
+test("a held run against a frame's tail: the prefix before the first shared key stays above, what the frame lacks from that key on goes, and no shared key keeps the whole run", () => {
+  let r = splitHeldAgainstFrame(H(["h1", "h2", "t1", "t2", "x", "t3"]), H(["t1", "t2", "t3", "t4"]), transcript);
+  assert.deepEqual(keys(r.before), ["h1", "h2"], "history the frame did not carry");
+  assert.deepEqual(keys(r.dropped), ["x"], "a resident row inside the frame's span the frame lacks: retracted");
+  assert.equal(r.behind, false, "the frame carries t4 past the last shared key: it is newer than the page, not behind");
+  r = splitHeldAgainstFrame(H(["t1", "t2"]), H(["live1", "live2"]), transcript);
+  assert.deepEqual(keys(r.before), ["t1", "t2"], "no shared key: the whole held run is history above the frame (the floor-cut shape)");
+  assert.deepEqual([keys(r.dropped), r.behind], [[], false]);
+});
+
+test("behind: the frame's last transcript key is resident and a transcript row the page holds sits after it", () => {
+  let r = splitHeldAgainstFrame(H(["t1", "t2", "t3"]), H(["t1", "t2"]), transcript);
+  assert.deepEqual([keys(r.before), keys(r.dropped), r.behind, r.afterLast], [[], ["t3"], true, 1], "a same-list stale full: the newest row is missing from it");
+  r = splitHeldAgainstFrame(H(["t1", "t2", "t3"]), [...H(["t1", "t2"]), { uuid: "todo:9", kind: "todo" }], transcript);
+  assert.equal(r.behind, true, "a frame ending in an overlay card whose key is not resident reads its last TRANSCRIPT key (the kernel's anchor rule), so the behind frame is still seen");
+  r = splitHeldAgainstFrame([...H(["t1", "t2"]), { uuid: "apiError:1", kind: "apiError" }], H(["t1", "t2"]), transcript);
+  assert.deepEqual([keys(r.dropped), r.behind], [["apiError:1"], false], "a dropped overlay card is no evidence: those come and go between builds");
+  r = splitHeldAgainstFrame([...H(["t1", "t2"]), { uuid: "optimistic:5", kind: "queued" }], H(["t1", "t2"]), transcript);
+  assert.deepEqual([keys(r.dropped), r.behind], [["optimistic:5"], false], "the client's own bubble is no evidence either");
+});
+
+test("the echo landing: the held echo after the last shared key is dropped, not filed above, and the frame carrying the record and the reply is not behind", () => {
+  const r = splitHeldAgainstFrame(H(["t1", "t2", "t3", "echo:x"]), H(["t3", "rec", "reply"]), transcript);
+  assert.deepEqual(keys(r.before), ["t1", "t2"]);
+  assert.deepEqual(keys(r.dropped), ["echo:x"], "the echo the record replaced leaves with the frame");
+  assert.equal(r.behind, false);
 });

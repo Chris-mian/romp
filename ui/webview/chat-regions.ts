@@ -50,6 +50,50 @@ export function insertRun(regions: readonly Region[], run: Run): Region[] {
   return regionsFromRuns(kept);
 }
 
+/** The kernel's live overlay cards (its _OVERLAY_KINDS, mirrored 2026-09-19): a to-do box, a compacting or clearing notice, a
+ *  reconnecting or retrying notice, the queued group, an api-error card. They come and go between builds and ride every frame's
+ *  suffix, so the kernel anchors a client's base on the last TRANSCRIPT event, never on one of these (its _last_anchor), and the
+ *  frame-recency reading below skips them the same way. */
+export const OVERLAY_KINDS: ReadonlySet<string> = new Set(["todo", "compacting", "clearing", "reconnecting", "retrying", "queued", "apiError"]);
+
+export interface HeldSplit {
+  before: Ev[];      // the held events positioned BEFORE the frame's first shared key: history the frame did not carry, kept above it
+  dropped: Ev[];     // the held events at or after that key whose key the frame lacks: covered by the frame's span and missing from it
+  behind: boolean;   // the frame's last transcript key is resident and a transcript row the client holds sits after it: the frame is older than what the page shows
+  afterLast: number; // how many dropped transcript rows sit after the frame's last transcript key (the behind reading's evidence)
+}
+
+/** What a proto-2 FULL frame's open-ended tail run does to a held run it overlaps (2026-09-19). The frame is authoritative for
+ *  [tailLo, end): every event from its first turn to the transcript's end. A held event is placed by POSITION, never by key
+ *  absence alone: one positioned before the frame's first shared key is history the frame did not carry (`before`, kept above
+ *  the frame as a run ending at tailLo); one at or after it and absent from the frame is covered by the frame's span and
+ *  missing from it (`dropped`): retracted (a rewind, a canceled queued message, an echo replaced by its record, a retired live
+ *  atom, a bubble the client injected) or the frame is BEHIND (a full built from an older list). Filing the absent ones above
+ *  the frame by key absence put the newest row above older ones (t3,t1,t2), the bottom of the view then showed older content
+ *  and the next delta duplicated the row. `behind` reads the frame's last TRANSCRIPT key (the kernel's own anchor rule,
+ *  OVERLAY_KINDS skipped: a frame ending in a to-do card whose key is not resident must not hide a behind frame): resident, and
+ *  a held transcript row (`transcript`: not an overlay card, not a client-injected group) dropped after it. A frame carrying
+ *  events PAST the last shared key (the echo landing: the record and the reply after the held echo) is therefore not behind;
+ *  a same-list stale full is. No shared key at all: the whole held run is `before` (the floor-cut shape). */
+export function splitHeldAgainstFrame(held: readonly Ev[], frame: readonly Ev[], transcript: (e: Ev) => boolean): HeldSplit {
+  const frameKeys = new Set<string>();
+  for (const e of frame) { const k = keyOf(e); if (k) frameKeys.add(k); }
+  let at = -1;
+  for (let i = 0; i < held.length; i++) { const k = keyOf(held[i]); if (k && frameKeys.has(k)) { at = i; break; } }
+  if (at < 0) return { before: held.slice(), dropped: [], behind: false, afterLast: 0 };
+  const before = held.slice(0, at);
+  const dropped: Ev[] = [];
+  for (let i = at; i < held.length; i++) { const k = keyOf(held[i]); if (!k || !frameKeys.has(k)) dropped.push(held[i]); }
+  let frameLast: string | undefined;
+  for (let i = frame.length - 1; i >= 0; i--) { if (transcript(frame[i])) { frameLast = keyOf(frame[i]); break; } }
+  if (frameLast === undefined && frame.length) frameLast = keyOf(frame[frame.length - 1]);
+  let lastAt = -1;
+  if (frameLast) for (let i = 0; i < held.length; i++) if (keyOf(held[i]) === frameLast) { lastAt = i; break; }
+  let afterLast = 0;
+  if (lastAt >= 0) for (let i = lastAt + 1; i < held.length; i++) { const k = keyOf(held[i]); if ((!k || !frameKeys.has(k)) && transcript(held[i])) afterLast++; }
+  return { before, dropped, behind: afterLast > 0, afterLast };
+}
+
 function touches(a: Run, b: Run): boolean {
   const aHi = a.hi ?? Infinity, bHi = b.hi ?? Infinity;
   return b.lo <= aHi && a.lo <= bHi;
