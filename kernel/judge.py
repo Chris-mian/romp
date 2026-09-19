@@ -7382,14 +7382,6 @@ def _overlap(a, b):
     return len(ta & tb) / float(min(len(ta), len(tb)))
 
 
-def _top_of(nodes, nid):
-    seen = set()
-    while nid in nodes and nodes[nid].get("parentId") and nid not in seen:
-        seen.add(nid)
-        nid = nodes[nid]["parentId"]
-    return nid if nid in nodes else None
-
-
 def _seg_trigger_author(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
@@ -7429,8 +7421,9 @@ def _demote_session_mints(ops, seg, store, menu, p_target, human):
     seam_top = (seg.get("seamOf") or {}).get("top") if isinstance(seg.get("seamOf"), dict) else None
     for cand in (seam_top, p_target, (store.get("placements") or {}).get(seg.get("id") or "")):
         if isinstance(cand, str) and cand in nodes:
-            parent = _top_of(nodes, cand)
-            break
+            top = _top_of(nodes, cand)                 # the last id the walk reached: the dangling parent id when
+            parent = top if top in nodes else None     #   the chain dead-ends, read here as no placement, the way
+            break                                      #   the rule's other callers read it (nodes.get(top) or {})
     open_tops = [m["id"] for m in menu if m.get("id") in nodes and nodes[m["id"]].get("parentId") is None
                  and not nodes[m["id"]].get("nodeComplete") and not nodes[m["id"]].get("cleared")]
     def launch_match(o):                               # the launch's words in the mint's TEXT only
