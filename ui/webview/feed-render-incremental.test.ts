@@ -1108,6 +1108,9 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   const c = card("notice:" + WEB + ":figure:2");
   assert.ok(c, "the card is on the board"); assert.equal(colOf("notice:" + WEB + ":figure:2"), "col-completed-list", "an informational notice files under Completed");
   assert.equal(c._nProd.textContent, "via figure"); assert.equal(c._nProd.style.display, "");
+  // the user 2026-09-19: a notice card never wears the distiller's "Distilling…" placeholder (a completed card with a null summary
+  // is a goal awaiting its takeaway; a notice has nothing to distill: its body IS its text) nor the distiller line
+  assert.equal(c._awaitSpin.style.display, "none", "no swirl on a notice card"); assert.equal(c._distill.style.display, "none", "no distiller line");
   assert.match(c._nBody.textContent, /Regenerated after the sweep on \*{0,2}tests\*{0,2} finished\./, "the body says its words (under the document stand-in the sanitizer has no DOM, so the plain-text fall-back; the served lab reads the rendered markdown)");
   assert.equal(c._nBody.querySelectorAll("img").length, 0, "no image element is ever adopted from the body");
   // the document stand-in has no location, so canPreview() cannot say http: the attachment shows as its file name (no
@@ -1160,6 +1163,7 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   const c2 = card("notice:" + API + ":dropped-sends:1");
   assert.equal(colOf("notice:" + API + ":dropped-sends:1"), "col-needsInput-list", "needsYou files under Blocked");
   assert.equal(c2._nBody.style.display, "none"); assert.equal(c2._nAttach.style.display, "none"); assert.equal(c2._nActions.style.display, "none");
+  assert.equal(c2._awaitSpin.style.display, "none", "an EMPTY needs-you notice: no swirl either (its null blockSummary is no brief on its way)"); assert.equal(c2._distill.style.display, "none");
   assert.equal(c2._nProd.textContent, "via dropped-sends");
   // Clear on a notice card is the ordinary askClear with the sid
   const sent2 = posted.length;
