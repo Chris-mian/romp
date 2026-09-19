@@ -15,6 +15,17 @@ the view is at the bottom, and the rendered rows stand in transcript order.
   count). Now they leave the model (the frame is authoritative for its span), one frame-behind row names it, and a real turn appended
   to the transcript afterwards lands as the newest row at the bottom.
 
+The older wire's wait (the follow-up of 2026-09-19, the note on PR 1877): R1 also reads the wait state while its older ask is parked
+(the window road's landing notice, which this wire never showed), the notice gone once the row landed, and the pointer-exact row's
+anchorT (chatHead's re-arm carried neither the time nor the kind, so the row of every regions-less navigation filed without them).
+A fourth road, on a fresh page and last, kills the socket with a landing waiting on the older wire: onWireDown counts a live landing
+by the notice or a gapped window ask, and this wire set neither, so the death lost the jump silently; now it files its wsdown-lost
+word and toasts, as a window landing's death does.
+A fifth road (the review of 2026-09-19, round two; a fresh page, before the socket death) clicks that notice with the older ask parked:
+the click's row must name the landing it canceled (the anchor and the click's time, which the page's wait state holds only in the fetch's
+mark), and the released chunk must arrive as a pure prepend re-anchored on the reader's own row, the canceled target never landing and
+the notice staying down.
+
 Synthetic fixtures only (placeholder uuids, invented prose); hostname TESTHOST.
 """
 import json
@@ -84,6 +95,7 @@ await page.evaluate(() => { window.__hold.add("loadOlder"); });
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep1, anchorT: cfg.base + 2 * 100 });
 await painted();
 const trail1 = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));   // the FIRST attempt's trail: which wire it armed, read while its ask is parked
+const notice1 = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return { shown: !!n && getComputedStyle(n).display !== "none", text: n ? n.textContent : null }; });   // the wait state while the older ask is parked (the follow-up of 2026-09-19): the window road's notice
 const releasedOlder1 = await page.evaluate(() => { window.__hold.delete("loadOlder"); const held = window.__heldRaw || []; const isOlder = (d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } };
   window.__heldRaw = held.filter(isOlder); const n = window.__release(); window.__heldRaw = held.filter((d) => !isOlder(d)); return n; });   // the parked older ask alone goes out; the parked window, page and full asks stay parked
 const landedOnOlder1 = await visible(deep1, 20000);   // the older wire's chunks land it (re-attempting until resident); a parked window never does
@@ -95,6 +107,9 @@ const released1 = await page.evaluate(() => { window.__hold.delete("loadAround")
 const landed1 = landedOnOlder1 || await visible(deep1, 15000);
 const settled1 = await page.waitForFunction((u) => window.__sent.some((m) => m.type === "locateDiag" && m.anchor === u && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-exact"), deep1, { timeout: 15000 }).then(() => true).catch(() => false);   // the landing's settle ended: its exact row is filed then, and land-realign stops re-landing the anchor under the bottom check
 const target1 = await onScreen(deep1);
+// the exact row's datum (the follow-up of 2026-09-19): the click's time rides the older wire to the landing, as the window ask's record carries it
+const exactRow1 = await page.evaluate((u) => { const m = window.__sent.filter((m) => m.type === "locateDiag" && m.anchor === u && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-exact").pop(); return m ? { ok: m.ok, anchorT: m.anchorT === undefined ? null : m.anchorT, kind: m.kind === undefined ? null : m.kind } : null; }, deep1);
+const noticeAfter1 = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; });
 const regionsLanded1 = await regions();
 const r3a = await bottomCheck(cfg.lastUuid, transcriptOrder());   // read while the kernel's frames are still parked: what the page itself made of the landing
 const heldIn1 = await releaseIn();
@@ -166,9 +181,69 @@ const liveArrived3 = await page.waitForFunction(([u, n0]) => { const rs = typeof
 await painted();
 const r3c = await bottomCheck(cfg.liveA, transcriptOrder());
 const asks3 = await page.evaluate(() => ({ needFull: window.__sent.filter((m) => m.type === "needFull").map((m) => m.why) }));
+// ROAD 5 (the review of 2026-09-19, round two; a fresh page, before the socket death): the notice's click on the older wire's landing is an
+// honest cancel. The boot frame re-posted with tailLo null (no regions), the kernel's frames parked at the page, the page's asks parked at
+// the socket; a focus landing on a deep row waits on the older wire with its one older ask parked; the notice is clicked (the landing-notice
+// lab's click); the parked older ask alone is released. The click's row names the landing (the anchor and the click's time, which the page's
+// wait state holds only in the fetch's mark: landActive nulled the pending fields at the end of the pass that armed the wait), the chunk
+// arrives as a pure prepend re-anchored on the reader's own row (a keep-offset landing, filed at once), the canceled target does not land (no
+// pointer-exact row for it, no second older ask), and the notice stays down.
+await reboot();
+await page.evaluate(() => { window.__hold.add("needFull"); window.__hold.add("loadAround"); window.__hold.add("loadTurns"); window.__hold.add("loadOlder"); });
+await holdIn();
+const frame5 = await page.evaluate(() => window.__bootFrame ? Object.assign({}, window.__bootFrame, { tailLo: null, headKnown: false, __lab: true }) : null);
+await page.evaluate((f) => { if (f) window.postMessage(f, "*"); }, frame5);
+await painted();
+const regions5 = await regions();
+const sentAt5 = await page.evaluate(() => window.__sent.length);
+const deep5 = "11111111-2222-3333-4444-" + pad(2 * 90);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 90 });
+await painted();
+const wait5 = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return { notice: !!n && getComputedStyle(n).display !== "none", trail: (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null),
+  parkedOlder: (window.__heldRaw || []).filter((d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } }).length }; });
+await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });   // click to STAY: the landing is canceled, the reader kept at the tail
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+const cancelled5 = await page.evaluate((n) => { const rows = window.__sent.slice(n).filter((m) => m.type === "locateDiag"); const c = rows.find((m) => m.cancelled); const e = document.querySelector(".tx-landing-notice");
+  return { notice: !!e && getComputedStyle(e).display !== "none", rows: rows.length, row: c ? { anchor: c.anchor === undefined ? null : c.anchor, anchorT: c.anchorT === undefined ? null : c.anchorT, kind: c.kind === undefined ? null : c.kind, trail: c.trail } : null }; }, sentAt5);
+// the parked older ask alone goes out (as road 1 releases it): the chunk arrives on a claim the cancel released
+const releasedOlder5 = await page.evaluate(() => { window.__hold.delete("loadOlder"); const held = window.__heldRaw || []; const isOlder = (d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } };
+  window.__heldRaw = held.filter(isOlder); const n = window.__release(); window.__heldRaw = held.filter((d) => !isOlder(d)); return n; });
+// the chunk's arrival: the keep-offset landing on the reader's own row files its row at once (a keep restore is never settled), so that row is the evidence the prepend happened on the released claim
+const landedKeep5 = await page.waitForFunction((n) => window.__sent.slice(n).some((m) => m.type === "locateDiag" && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-keep-offset"), sentAt5, { timeout: 15000 }).then(() => true).catch(() => false);
+await painted();   // the deferred build pass (compact mode) has run: a re-arm of the canceled target would have shown the notice and asked again by now
+const after5 = await page.evaluate(([n, u]) => { const rows = window.__sent.slice(n).filter((m) => m.type === "locateDiag"); const e = document.querySelector(".tx-landing-notice"); const tt = document.querySelector(".locate-toast");
+  return { notice: !!e && getComputedStyle(e).display !== "none", trails: rows.map((m) => (m.trail || []).slice(-3)), exactForAnchor: rows.filter((m) => m.anchor === u && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-exact").length,
+           keepRows: rows.filter((m) => m.keep && Array.isArray(m.trail) && m.trail[m.trail.length - 1] === "pointer-keep-offset").length, older: window.__sent.slice(n).filter((m) => m.type === "loadOlder").length, toast: tt ? tt.textContent : null }; }, [sentAt5, deep5]);
+const target5 = await onScreen(deep5);
+const r3d = await bottomCheck(cfg.liveA, transcriptOrder());   // the transcript's newest row is road 3's live reply (appended to the file before this road)
+const heldIn5 = await releaseIn();
+await page.evaluate(() => { window.__hold.delete("needFull"); window.__hold.delete("loadTurns"); window.__hold.delete("loadAround"); window.__heldRaw = []; });
+// ROAD 4 (the follow-up of 2026-09-19; a fresh page, last so its socket death touches no other road): the boot frame re-posted with tailLo
+// null (no regions), the kernel's frames parked at the page and the page's asks parked at the socket; a focus landing on a deep row waits on
+// the older wire (its one older ask parked), and the socket is killed with that landing in flight. onWireDown counts a live landing by the
+// notice or a gapped window ask: before the fix the older wire set neither, so the death lost the jump silently (no wsdown-lost word, no toast).
+await reboot();
+await page.evaluate(() => { window.__hold.add("needFull"); window.__hold.add("loadAround"); window.__hold.add("loadTurns"); window.__hold.add("loadOlder"); });
+await holdIn();
+const frame4 = await page.evaluate(() => window.__bootFrame ? Object.assign({}, window.__bootFrame, { tailLo: null, headKnown: false, __lab: true }) : null);
+await page.evaluate((f) => { if (f) window.postMessage(f, "*"); }, frame4);
+await painted();
+const regions4 = await regions();
+const deep4 = "11111111-2222-3333-4444-" + pad(2 * 90);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep4, anchorT: cfg.base + 2 * 90 });
+await painted();
+const wait4 = await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return { notice: !!n && getComputedStyle(n).display !== "none", trail: (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null),
+  parkedOlder: (window.__heldRaw || []).filter((d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } }).length, toast: !!document.querySelector(".locate-toast") }; });
+// the parked ask dropped and the socket closed with the landing in flight (the landing-notice lab's road 5 does the same to a window landing)
+await page.evaluate(() => { window.__heldRaw = []; if (window.__ws) window.__ws.close(); });
+// sampled in the SAME evaluation that sees the notice down: the redial's re-arm may follow within milliseconds and show it again
+const down4 = await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); if (n && getComputedStyle(n).display !== "none") return false; const tt = document.querySelector(".locate-toast");
+  return { notice: false, trail: (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null), toast: tt ? tt.textContent : null }; }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({
-  r1: { boot: boot1, hadFrame: !!frame1, regions: regions1, dropped: dropped1, landedOnOlder: landedOnOlder1, trail: trail1, releasedOlder: releasedOlder1, asks: asks1, released: released1, landed: landed1, settled: settled1, target: target1, regionsLanded: regionsLanded1, heldIn: heldIn1, r3: r3a },
+  r1: { boot: boot1, hadFrame: !!frame1, regions: regions1, dropped: dropped1, landedOnOlder: landedOnOlder1, trail: trail1, notice: notice1, releasedOlder: releasedOlder1, asks: asks1, released: released1, landed: landed1, settled: settled1, target: target1, exactRow: exactRow1, anchorTExpected: cfg.base + 2 * 100, noticeAfter: noticeAfter1, regionsLanded: regionsLanded1, heldIn: heldIn1, r3: r3a },
+  wsdown: { hadFrame: !!frame4, regions: regions4, wait: wait4, down: down4 },
+  cancel: { hadFrame: !!frame5, regions: regions5, anchor: deep5, anchorTExpected: cfg.base + 2 * 90, wait: wait5, cancelled: cancelled5, releasedOlder: releasedOlder5, landedKeep: landedKeep5, after: after5, target: target5, heldIn: heldIn5, r3: r3d },
   echo: { boot: { proto: boot2.proto, n: boot2.events.length, tailLo: boot2.tailLo }, tail: tail2, records: records2.length, echoHeld: echoHeld2, idx: idx2, frameEvents: events2.length, tailAfter: tailAfter2, behindRows: behindRows2, r3: r3b, echoBubbles: echoBubbles2, seam: seam2 },
   behind: { boot: { proto: boot3.proto, n: boot3.events.length, tailLo: boot3.tailLo }, tail: tail3, idx: idx3, frameEvents: events3.length, kept: kept3.length, overlay: overlay3.length, newest: newest3, frameLast: frame3.lastUuid, tailAfter: tailAfter3, behindRows: behindRows3, after: after3, newestInDom: newestInDom3, seam: seam3, heldIn: heldIn3, liveArrived: liveArrived3, r3: r3c, asks: asks3 } }) + "\n");
 """
@@ -205,6 +280,48 @@ class ServedClientMergeGuard(WindowLab):
         self.assertEqual(r["releasedOlder"], 1, "the first attempt's one older ask was the frame parked for the trail read: %r" % r["releasedOlder"])
         self.assertTrue(r["landedOnOlder"], "the older wire landed the deep row on screen (asks %r, trail %r): %r" % (r["asks"], r["trail"], r["target"]))
         self._assert_bottom(r["r3"], "after the landing")
+        # the follow-up of 2026-09-19: the wait state, gone at the landing, and the click's time on the exact row
+        self.assertTrue(r["notice"]["shown"], "the wait state shows while the older ask is on the wire (the window road's notice; before the fix this wire showed nothing): %r" % r["notice"])
+        self.assertIn("click to stay here", r["notice"]["text"] or "", "…the one landing notice, with its cancel: %r" % r["notice"])
+        self.assertFalse(r["noticeAfter"], "the notice is gone once the row landed")
+        self.assertIsNotNone(r["exactRow"], "the pointer-exact row was filed for the landing (settled %r)" % r["settled"])
+        self.assertEqual(r["exactRow"]["anchorT"], r["anchorTExpected"], "the exact row carries the click's time through chatHead's re-arm (before the fix it re-armed with null): %r" % r["exactRow"])
+
+    def test_a_socket_death_with_a_landing_waiting_on_the_older_wire_says_the_jump_was_lost_as_a_window_landings_death_does(self):
+        r = self._result()["wsdown"]
+        self.assertTrue(r["hadFrame"], "the boot frame was captured for the re-post")
+        self.assertIn(r["regions"], (None, []), "the tailLo-null frame left the page with no regions: %r" % r["regions"])
+        w = r["wait"]
+        self.assertIn("pointer-fetch-older", w["trail"] or [], "the landing waited on the older wire: %r" % w)
+        self.assertGreaterEqual(w["parkedOlder"], 1, "its older ask was parked at the socket when the socket died: %r" % w)
+        self.assertFalse(w["toast"], "no toast before the death: %r" % w)
+        self.assertIsNotNone(r["down"], "the death was seen (the notice down, or none showing)")
+        self.assertIn("wsdown-lost", r["down"]["trail"] or [], "the death filed its word in the trail (before the fix the older wire's landing counted as no landing and the jump was lost silently): %r" % r["down"])
+        self.assertIn("connection dropped before the jump", r["down"]["toast"] or "", "…and the reader was told, as a window landing's death tells them: %r" % r["down"])
+        self.assertTrue(w["notice"], "the wait state showed on the older wire before the death (the window road's notice, which is how onWireDown counts the landing): %r" % w)
+
+    def test_the_notices_click_on_the_older_wires_landing_is_an_honest_cancel_that_names_its_landing_and_the_chunk_lands_as_a_pure_prepend(self):
+        r = self._result()["cancel"]
+        self.assertTrue(r["hadFrame"], "the boot frame was captured for the re-post")
+        self.assertIn(r["regions"], (None, []), "the tailLo-null frame left the page with no regions: %r" % r["regions"])
+        w = r["wait"]
+        self.assertTrue(w["notice"], "the wait state showed on the older wire (the notice the click cancels): %r" % w)
+        self.assertIn("pointer-fetch-older", w["trail"] or [], "the landing waited on the older wire: %r" % w)
+        self.assertGreaterEqual(w["parkedOlder"], 1, "its older ask was parked at the socket when the notice was clicked: %r" % w)
+        c = r["cancelled"]
+        self.assertFalse(c["notice"], "the click brought the notice down: %r" % c)
+        self.assertIsNotNone(c["row"], "the click filed its row (%d locateDiag rows since the focus): %r" % (c["rows"], c))
+        self.assertEqual((c["row"]["trail"] or [])[-2:], ["pointer-fetch-older", "cancelled"], "the row's trail: the older wire armed, then the cancel: %r" % c["row"])
+        self.assertEqual((c["row"]["anchor"], c["row"]["anchorT"]), (r["anchor"], r["anchorTExpected"]),
+                         "the row names the landing it canceled, the anchor and the click's time, from the fetch's mark (the pending fields are null at the click, so before the fold the row carried neither): %r" % c["row"])
+        self.assertEqual(r["releasedOlder"], 1, "the one parked older ask went out after the cancel: %r" % r["releasedOlder"])
+        a = r["after"]
+        self.assertTrue(r["landedKeep"], "the chunk arrived as a keep-offset landing on the reader's own row, the claim the cancel released (rows %r): %r" % (a["trails"], a))
+        self.assertEqual(a["exactForAnchor"], 0, "the canceled target did not land (no pointer-exact row for it): %r" % a)
+        self.assertEqual(a["older"], 1, "no second older ask: the canceled landing was not re-armed by the chunk: %r" % a)
+        self.assertFalse(a["notice"], "the notice stays down after the chunk: %r" % a)
+        self.assertFalse(bool(r["target"] and r["target"]["visible"]), "the reader was not moved to the canceled target: %r" % r["target"])
+        self._assert_bottom(r["r3"], "after the canceled landing's chunk")
 
     def test_the_echo_landing_drops_the_held_echo_with_the_frame_never_a_phantom_bubble_above_its_tail_and_files_no_behind_row(self):
         r = self._result()["echo"]
