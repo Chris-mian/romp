@@ -244,14 +244,49 @@ try {
     if (e && e.name === "TimeoutError") throw new Error("no drop zone: dragstart fired but the shell did not mount #chat-pane > .col-drop.col-drop-bottom within 20s (mountZones ran late, or the pane lost its zone under load)");
     throw e;
   }
-  const bz = await page.evaluate(() => { const z = document.querySelector("#chat-pane > .col-drop.col-drop-bottom"); const r = z.getBoundingClientRect(); const p = z.parentElement.getBoundingClientRect(); return { col: z.getAttribute("data-col"), top: Math.round(r.top), height: Math.round(r.height), x: r.left + r.width / 2, y: r.top + r.height / 2, paneTop: Math.round(p.top), paneHeight: Math.round(p.height) }; });
-  out.bottomZone = bz;
-  // move the pointer over the bottom zone: the ghost shows the pane's BOTTOM half with the dragged session's name
-  await page.mouse.move(bz.x, bz.y, { steps: 8 });
-  await page.waitForFunction(() => document.getElementById("col-ghost").classList.contains("on"), null, { timeout: 10000 }).catch(() => {});
-  out.ghost = await page.evaluate(() => { const g = document.getElementById("col-ghost"); const r = g.getBoundingClientRect(); const p = document.getElementById("chat-pane").getBoundingClientRect(); return { cls: g.className, text: g.textContent, left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), paneTop: Math.round(p.top), paneHeight: Math.round(p.height), paneLeft: Math.round(p.left), paneWidth: Math.round(p.width) }; });   // the pane rect AT GHOST TIME (the layout settles as the sessions load)
-  // the drop: the column splits into a top and a bottom pane, a place:'below' entry keyed on parent 1
-  await page.mouse.up();
+  // The bottom drop zone is anchored to the pane's BOTTOM (col-drop-bottom is position:absolute; bottom:0; height set
+  // inline), so when the split's sessions load and GROW the pane (#chat-pane is flex:60 1 0; 533 -> 686 px in CI) the
+  // zone rides DOWN. A pointer placed from a rect read BEFORE that growth ends up ABOVE the shifted zone, over the column
+  // zone -- the ghost never lights and the drop lands as a column move, so the post-mouse.up wait for a place:'below'
+  // entry times out (the four cases' shared death, 2026-09-19). The lab makes that growth DETERMINISTIC and then survives
+  // it. No fixed sleeps: a rAF gates each layout read.
+  const readZone = () => page.evaluate(() => { const z = document.querySelector("#chat-pane > .col-drop.col-drop-bottom"); if (!z) return null; const r = z.getBoundingClientRect(); const p = z.parentElement.getBoundingClientRect(); return { col: z.getAttribute("data-col"), top: Math.round(r.top), height: Math.round(r.height), x: r.left + r.width / 2, y: r.top + r.height / 2, paneTop: Math.round(p.top), paneHeight: Math.round(p.height) }; });
+  const raf = () => page.evaluate(() => new Promise((res) => requestAnimationFrame(() => res(true))));
+  const ghostRead = () => page.evaluate(() => { const g = document.getElementById("col-ghost"); const r = g.getBoundingClientRect(); const p = document.getElementById("chat-pane").getBoundingClientRect(); return { cls: g.className, text: g.textContent, left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), paneTop: Math.round(p.top), paneHeight: Math.round(p.height), paneLeft: Math.round(p.left), paneWidth: Math.round(p.width) }; });
+  // FORCE the shift the flake rides on: pin #chat-pane SHORT (the bottom zone rides to the short bottom), record where a
+  // single-read drive would aim, then release the pin so the pane springs to its real height and the zone drops well
+  // below that point -- the mid-drag growth made reliable, a style toggle, no sleep.
+  await page.evaluate(() => { const p = document.getElementById("chat-pane"); if (p) { p.style.setProperty("align-self", "flex-start", "important"); p.style.setProperty("height", "360px", "important"); } });
+  await raf();
+  const zShort = await readZone();
+  out.shiftFrom = zShort ? zShort.y : null;   // the pre-growth read point a stale drive would release at
+  await page.evaluate(() => { const p = document.getElementById("chat-pane"); if (p) { p.style.removeProperty("align-self"); p.style.removeProperty("height"); } });
+  await raf();
+  out.shiftTo = ((await readZone()) || {}).y ?? null;   // the zone's live centre once the pane has grown
+  if (cfg.staleDrop) {
+    // the OLD single-read drive (for the red): aim at the pre-growth point. The zone has ridden below it, so the pointer
+    // sits over the column zone; the ghost never lights and the drop is a column move -- the place:'below' wait times out.
+    out.bottomZone = zShort;
+    if (zShort) await page.mouse.move(zShort.x, zShort.y, { steps: 4 });
+    out.ghost = await ghostRead();
+    await page.mouse.up();
+  } else {
+    // the FIX: track the LIVE zone the way a user does -- read it, move onto it, and repeat until the pane stops growing
+    // AND the ghost is lit, then release THERE (a final re-read guards a last reflow). rAF-paced, bounded.
+    let bz = await readZone();
+    for (let i = 0; i < 60 && bz; i++) {
+      await page.mouse.move(bz.x, bz.y, { steps: 4 });
+      const next = await readZone();
+      const ghostOn = await page.evaluate(() => { const g = document.getElementById("col-ghost"); return !!g && g.classList.contains("on"); });
+      if (next && next.paneHeight === bz.paneHeight && ghostOn) { bz = next; break; }   // the pane stopped growing and the ghost is lit over the live zone: settled
+      bz = next; await raf();
+    }
+    out.bottomZone = bz;
+    out.ghost = await ghostRead();
+    const drop = (await readZone()) || bz;
+    await page.mouse.move(drop.x, drop.y, { steps: 2 });
+    await page.mouse.up();
+  }
   await page.waitForFunction(() => { const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); return (cc.cols || []).some((c) => c.place === "below"); }, null, { timeout: 20000 });
   // wait for the bottom pane's iframe to be BUILT (event-based), not a fixed settle, so afterDrop reads its id under load
   await page.waitForFunction(() => !!document.querySelector(".pane.split-v .chat-sub iframe"), null, { timeout: 20000 }).catch(() => {});
@@ -368,7 +403,8 @@ class _VSplitLab(unittest.TestCase):
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
                 json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (self.port, self.token),
-                           "top": SID_TOP, "bot": SID_BOT}, f)
+                           "top": SID_TOP, "bot": SID_BOT,
+                           "staleDrop": bool(os.environ.get("VSPLIT_STALE_DROP"))}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             Path(driver).write_text(type(self).DRIVER_JS)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
@@ -516,6 +552,20 @@ class VSplitDrag(_VSplitLab):
         r = self._result()
         self.assertTrue((r.get("botFill") or {}).get("filled"),
                         "the dragged-down session's bottom pane fills to turn 0 (the wall lesson): %r" % r.get("botFill"))
+
+    def test_5_the_drop_survives_the_mid_drag_pane_growth_that_rides_the_zone_down(self):
+        # The regression's shape, forced deterministically: the driver pins the pane short, notes where a single-read
+        # drive would aim (shiftFrom), then lets the pane spring to its real height so the bottom-anchored zone rides down
+        # (shiftTo). The zone moving well below the read point is what makes a stale release miss; the drive must track it.
+        r = self._result()
+        sf, st = r.get("shiftFrom"), r.get("shiftTo")
+        self.assertIsNotNone(sf); self.assertIsNotNone(st)
+        self.assertGreater(st - sf, 50, "the forced growth rode the bottom zone DOWN past the read point (else the red is vacuous): from=%r to=%r" % (sf, st))
+        bz = r.get("bottomZone") or {}
+        self.assertGreater(sf, 0)
+        self.assertLess(sf, bz.get("top", 0), "the pre-growth read point now sits ABOVE the grown zone, so a stale release would miss it (the bug); the live-tracking drive lands anyway: read=%r grownZoneTop=%r" % (sf, bz.get("top")))
+        # and, tracking the live zone, the drop DID land below (the driver would have died on the place:'below' wait otherwise)
+        self.assertIn('"place":"below"', (r.get("afterDrop") or {}).get("cols") or "", "the drop landed below despite the shift: %r" % (r.get("afterDrop") or {}).get("cols"))
 
 
 if __name__ == "__main__":
