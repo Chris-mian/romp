@@ -213,11 +213,18 @@ the splice every 10 s): the shrink itself makes the client's held base uuids sto
 returns `baseGone` or `noBase` and a full frame is pushed to the STILL-CONNECTED page; a genuine reconnect (a slept
 laptop, a deploy restart, a network drop past the 30 s stale bound) is a secondary vehicle.
 
-The wire field. On `ready` and on `needFull` the page sends `heldTailFirst`: the event key of its resident tail run's
-FIRST event, the older edge of what it believes is the live tail. A page holding no regions (a fresh load) omits it.
+The wire field. The page sends `heldTailFirst`, the event key of its resident tail run's FIRST event (the older edge
+of the live tail), on its `needFull`; a page holding no regions (a fresh load) omits it. It rides the `needFull` and
+NOT a reconnect's `ready`, because a redial sends no `ready` (federation.ts: the `reconnect=1` URL is the handshake, and
+a `ready` there would re-run the remote's ready reset). A connected client whose base went away needs no wire field at
+all: the kernel already holds its tail run's older edge as the echat base's `first`, and reads that. On the reconnect
+vehicle this costs one extra round trip, as a fact: the redial's first plain frame would drop the held run, so guard 3
+refuses it and fires the `needFull` carrying `heldTailFirst`, and the repair full then serves from the held base or sets
+it aside; nothing is dropped in between (guard 3 holds the rows across the round trip).
 
 The kernel read. In `_send_chat_proto2`'s full-frame path, after computing `head_from` and `tail_lo`, the kernel
-resolves `heldTailFirst` in the current list. If it maps at an index below `head_from`, the cut moves down to it
+resolves the client's held tail run first key (`heldTailFirst` from the `needFull`, else the echat base's `first` for a
+connected client) in the current list. If it maps at an index below `head_from`, the cut moves down to it
 (`head_from = min(head_from, that index)`) and `tail_lo` becomes the turn there: the frame's [tailLo, end) is then a
 SUPERSET of the run the page holds, so guard 3's `split.before` is empty and the frame applies with no drop and no
 ask. If `heldTailFirst` does NOT map (the current transcript no longer carries it: a fork, a resume, a rewind), the
