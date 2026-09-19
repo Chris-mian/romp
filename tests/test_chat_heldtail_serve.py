@@ -135,11 +135,11 @@ class HeldTailServe(unittest.TestCase):
         """The frame's tail run first key = its firstUuid (the page's resident tail run older edge)."""
         return fr.get("firstUuid")
 
-    def _bust(self, state, p, cwd, turns_text):
+    def _rewrite_bust(self, state, p, cwd, turns_text):
         Path(p).write_text(turns_text(cwd))
-        Path(os.path.dirname(p), "_bust_%d" % int(time.time() * 1000)).write_text("x")   # a dir entry: busts the discover fingerprint
+        Path(os.path.dirname(p), "_bust_%d" % int(time.time() * 1000)).write_text("x")   # a dir entry: busts the discover fingerprint (keyed on dir entries)
         Path(state, "names", "_bust").write_text("x")
-        time.sleep(4)   # let a pusher cycle re-discover and rebuild
+        # NO sleep: the caller waits for the re-read EVENT (the proactive frame), never a fixed moment (K2's flake, 2026-09-19 round two)
 
     def _repair_full(self, c, held_first, with_key=True):
         """Send a needFull (carrying heldTailFirst unless with_key is False), return the repair full frame."""
@@ -150,33 +150,33 @@ class HeldTailServe(unittest.TestCase):
         return self._first_full(c)
 
     # ── K1: served from the held base when the key maps BELOW the cut (grow), tailLo == the held run's lo ──
-    def test_k1_served_from_held_base_on_a_grown_session(self):
-        port, tok, p, cwd, state = self._boot("grow", lambda cwd: _turns_text(cwd, 0, 600))
+    def test_k1_served_from_held_base_when_the_key_maps_below_the_cut(self):
+        # deterministic: an 800-turn session, a needFull naming the held tail run at turn 475 (BELOW the ~675 WIRE_TAIL
+        # cut). The repair is served from 475, a SUPERSET, tailLo the held lo, no ask. The premise is the held key's
+        # position, not a timed transcript rewrite.
+        port, tok, p, cwd, state = self._boot("serve", lambda cwd: _turns_text(cwd, 0, 800))
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
-        full1 = self._first_full(c)
-        held = self._tail_first_key(full1)                       # U(475) for 600 turns (WIRE_TAIL from the end)
-        self.assertEqual((full1.get("tailLo"), held), (475, U(475)), "premise: the held tail run begins at 475: %r" % full1.get("tailLo"))
-        self._bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 800))   # grow to 800: the WIRE_TAIL cut is now ~675
-        full2 = self._repair_full(c, held)
-        self.assertEqual(full2.get("tailLo"), 475,
-                         "the repair full is served from the held base (a superset), NOT re-cut at ~675: tailLo=%r firstUuid=%r n=%d"
-                         % (full2.get("tailLo"), full2.get("firstUuid"), len(full2.get("events") or [])))
-        self.assertEqual(full2.get("firstUuid"), U(475))
-        self.assertNotIn("rebased", full2, "a grown session is served, never set aside: %r" % {k: full2.get(k) for k in ("tailLo", "rebased")})
+        self._first_full(c)
+        full = self._repair_full(c, U(475))
+        self.assertEqual((full.get("tailLo"), full.get("firstUuid")), (475, U(475)),
+                         "served from the held base at 475 (below the ~675 cut), not re-cut: tailLo=%r firstUuid=%r" % (full.get("tailLo"), full.get("firstUuid")))
+        self.assertGreater(len(full.get("events") or []), 251, "a superset: it carries the held run and the growth, more than one WIRE_TAIL: n=%d" % len(full.get("events") or []))
+        self.assertNotIn("rebased", full, "the held base maps: served, never set aside: %r" % {k: full.get(k) for k in ("tailLo", "rebased")})
 
-    # ── K2: a shrink (fork / rewind) that drops the held tail from the transcript emits `rebased`, not a silent low frame ──
-    def test_k2_a_shrink_that_drops_the_held_tail_rebases(self):
-        port, tok, p, cwd, state = self._boot("shrink", lambda cwd: _turns_text(cwd, 0, 600))
+    # ── K2: a needFull whose held key the CURRENT (shorter) session lacks -- a fork, a rewind -- rebases ──
+    def test_k2_a_needfull_whose_held_key_the_session_lacks_rebases(self):
+        # deterministic: a 250-turn session and a needFull naming U(475), a turn this session never had (the shrink's END
+        # STATE without a timed rewrite). The held key is not in the current transcript, so the repair carries rebased and
+        # the page sets the stale run aside, not a silent low-tailLo drop.
+        port, tok, p, cwd, state = self._boot("gone", lambda cwd: _turns_text(cwd, 0, 250))
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
-        full1 = self._first_full(c)
-        held = self._tail_first_key(full1)                       # api-u475
-        self._bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # rewind: turns 250..599 gone from the transcript
-        full2 = self._repair_full(c, held)
-        self.assertTrue(full2.get("rebased") is True,
-                        "the held tail is gone from the transcript: the frame carries rebased so the page sets it aside, not a silent low-tailLo drop: %r"
-                        % {k: full2.get(k) for k in ("tailLo", "rebased", "firstUuid")})
+        self._first_full(c)
+        full = self._repair_full(c, U(475))
+        self.assertTrue(full.get("rebased") is True,
+                        "the held key is not in the current transcript: rebased, so the page sets the stale run aside: %r"
+                        % {k: full.get(k) for k in ("tailLo", "rebased", "firstUuid")})
 
     # ── K3: the needFull WIRE field serves from the held base (pc is cleared by the needFull, so this is not pc["first"]) ──
     def test_k3_a_needfull_with_the_held_key_serves_from_it(self):
@@ -197,15 +197,15 @@ class HeldTailServe(unittest.TestCase):
 
     # ── K4: a compaction is NOT a producer (it floors the head, does not renumber): no rebased, tailLo tracks the current end ──
     def test_k4_a_compaction_does_not_rebase(self):
-        port, tok, p, cwd, state = self._boot("compact", lambda cwd: _turns_text(cwd, 0, 600))
+        # deterministic: boot the compacted transcript directly (a compact_boundary at turn 600 + 5 turns). A compaction
+        # floors the head, it does not renumber, so the held tail key (turn 475, still present) is served, never rebased.
+        port, tok, p, cwd, state = self._boot("compact", lambda cwd: _turns_text(cwd, 0, 606, boundary_at=600))
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
-        full1 = self._first_full(c)
-        held = self._tail_first_key(full1)
-        self._bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 606, boundary_at=600))   # a compaction near the tail + 5 turns
-        full2 = self._repair_full(c, held)
-        self.assertNotIn("rebased", full2, "a compaction floors the head, it is not a shorter tail: never rebased: %r" % {k: full2.get(k) for k in ("tailLo", "rebased")})
-        self.assertIsNotNone(full2.get("tailLo"), "a compaction keeps a numeric tailLo (the head floor, not a renumber): %r" % full2.get("tailLo"))
+        self._first_full(c)
+        full = self._repair_full(c, U(475))
+        self.assertNotIn("rebased", full, "a compaction is not a shorter tail: the held key is present, never rebased: %r" % {k: full.get(k) for k in ("tailLo", "rebased")})
+        self.assertIsNotNone(full.get("tailLo"), "a compaction keeps a numeric tailLo (a head floor, not a renumber): %r" % full.get("tailLo"))
 
     # ── K5: a session outside the discover window ships tailLo null (1877's regions-less landing), unchanged ──
     def test_k5_a_cold_session_outside_the_window_ships_tailLo_null(self):
@@ -278,11 +278,14 @@ class HeldTailServe(unittest.TestCase):
         port, tok, p, cwd, state = self._boot("m2", lambda cwd: _turns_text(cwd, 0, 600))
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
-        self._first_full(c)                                      # sets the client's echat base
-        self._bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # shrink: the base no longer maps -> a proactive baseGone full
-        for fr in c.frames(20):                                  # drain the proactive full so its chatFull row is filed
-            if fr.get("type") == "session" and fr.get("id") == SID:
-                break
+        full1 = self._first_full(c)                              # sets the client's echat base
+        held = self._tail_first_key(full1)
+        self._rewrite_bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # shrink: the base no longer maps -> a proactive baseGone full
+        got = None
+        for fr in c.frames(45):                                  # WAIT for the re-read EVENT: the proactive baseGone full (its chatFull row is filed when it leaves)
+            if fr.get("type") == "session" and fr.get("id") == SID and (fr.get("rebased") or fr.get("firstUuid") != held):
+                got = fr; break
+        self.assertIsNotNone(got, "the kernel re-read the shrink and pushed a baseGone full within 45 s")
         rows = [r for r in self._chatfull_rows(state) if r["data"].get("reason") in ("baseGone", "noBase")]
         self.assertTrue(rows, "a baseGone/noBase chatFull row was filed: %r" % self._chatfull_rows(state))
         self.assertFalse(any(r["data"].get("firstHeld") for r in rows),
