@@ -4211,8 +4211,25 @@ gesture-stamped setting uses, and an applied flip is echoed to the socket that m
 when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is
 told on the same socket instead (a `settingStale` frame naming the fault and the kept value), so the gear snaps back to
 the kernel's value and the rail and the panes stay as they were. It is one value across attached machines: the click
-reaches every attached kernel, and a kernel attached later adopts the newest stamp, the road Auto Nudge, Suggest
-/compact and file editing take.
+reaches every attached kernel; a kernel attached later, or polling one, used to adopt the newest stamp, the road Auto
+Nudge, Suggest /compact and file editing took. Since phase one A of plans/settings-across-machines.md (2026-09-18) a remote
+machine's newer value is a PROPOSAL, never a silent apply: the polling kernel (and a kernel a hub pushes to over
+`/mesh-settings`) writes a record under `settings-proposals.json` (the host, the value, the peer's stamp, the local value
+at the time) and applies nothing; the same value under a newer stamp lifts the local stamp only; a pinned store raises
+none; the record drops when the values come to equal or the peer's stamp is no longer newer. The user answers through
+`POST /setting-proposal` (`{"store", "gt", "answer": "apply" | "keep" | "pin"}`, this kernel's own record only, the stamp
+checked): Apply runs the store's own gt-gated setter under the peer's stamp, Keep drops the record and remembers the stamp
+as answered so it is not proposed again, Pin sets the machine's pin and drops the record. The pin (`settings-pins.json`, set
+from this dashboard's own kernel by `setSettingPin`, never broadcast) keeps this machine's value against every remote input:
+a proposal is never raised for a pinned store, and a gear click that reaches this kernel from a dashboard attached to
+another machine (the broadcast carries `origin`, `local` or `remote`; a message without it is read as remote) stands down
+with a `settingStale` frame whose `why` is pinned and the kept value named, while this machine's own dashboard's click
+applies as ever. `/version` carries `settingsPinned` (the pinned stores) and `settingsProposals` (the pending records), both
+additive; the gear draws the pending proposal under the affected row (which machine, from what to what) with Apply and Keep
+mine, and a pinned store's note; until the owner-less notice card of phase one B lands, a raised or refreshed proposal is a
+sync notice in the bell, in the user's terms. A peer that reports a store pinned is not pushed our value for it. A MIXED
+mesh: an older kernel without this change still adopts the value a one-A kernel pushes to it and still applies our poll's
+value on its side, so the two converge one way (toward the newer kernel's proposals being answered) until it updates.
 
 **Across attached machines** the browser merges every host's feed frame into one. A host whose frame is the off stand-in
 is named in the merged frame (`offHosts`, beside the per-host build counters), a host that is attached but has not yet

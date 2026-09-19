@@ -1573,7 +1573,7 @@ function initGear(post, opts) {
   // kernel) reads as no value, and the copy and the label take their value-less form.
   function staleRefused(m) {
     if (!m.gesture || typeof m.gesture !== 'object' || STALE_TYPE[m.setting] !== m.gesture.type) return '';
-    var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type'; });
+    var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type' && k !== 'origin'; });   // origin rides every broadcast copy (one A); the value is the other key
     return keys.length === 1 ? staleWord(m.gesture[keys[0]], m.setting) : '';
   }
   // One toast per refused GESTURE, not per refusing kernel: a dashboard's broadcast reaches every
@@ -1787,10 +1787,60 @@ function initGear(post, opts) {
       mark.hidden = false;
     });
   }
+  // Settings across machines, phase one A (plans/settings-across-machines.md; the user 2026-09-18): a remote machine's
+  // newer pick is never applied here on its own. The kernel keeps it as a PROPOSAL and /version carries the pending ones
+  // (settingsProposals: host, value, gt, current) and this machine's pins (settingsPinned). Under the affected row the
+  // gear draws a SECOND LINE, "TESTHOST proposes off; this machine is on", with Apply and Keep mine, both posting the
+  // user's answer to /setting-proposal with the proposal's stamp (the kernel refuses a stamp the peer has since moved
+  // past, and the re-fill shows the new one). A pinned store says so under its row. Rows: one per synchronized store.
+  var PROPOSAL_ROWS = { 'auto-nudge': 'rs-autonudge', 'compact-suggest': 'rs-suggestcompact', 'file-editing': 'rs-fileedit', 'task-tracking': 'rs-tasktrack' };
+  function proposalHost(store) {
+    var box = document.getElementById(PROPOSAL_ROWS[store]);
+    var row = box && box.closest ? (box.closest('label') || box.closest('.rs-row')) : null;
+    return row || null;
+  }
+  function clearProposalLines() {
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-proposal, #rsettings .rs-pinned'), function (el) { el.parentNode.removeChild(el); });
+  }
+  function answerProposal(store, gt, answer) {
+    return fetch(ku('/setting-proposal'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ store: store, gt: gt, answer: answer }) })
+      .then(function (r) { return r.json(); }).catch(function () { return null; })
+      .then(function (res) { if (res && res.ok === false && res.error) staleToast(res.error); fill(); });
+  }
+  function fillProposals(v) {
+    clearProposalLines();
+    var props = (v && v.settingsProposals) || {}, pins = (v && v.settingsPinned) || {};
+    Object.keys(PROPOSAL_ROWS).forEach(function (store) {
+      var row = proposalHost(store);
+      if (!row) return;
+      var p = props[store];
+      if (p && typeof p.value === 'boolean') {
+        var line = document.createElement('div');
+        line.className = 'rs-proposal'; line.setAttribute('data-store', store); line.setAttribute('role', 'status');
+        var txt = document.createElement('span'); txt.className = 'rs-proposal-msg';
+        txt.textContent = (p.host || 'Another machine') + ' proposes ' + (p.value ? 'on' : 'off') + '; this machine is ' + (p.current ? 'on' : 'off') + '.';
+        var apply = document.createElement('button'); apply.type = 'button'; apply.className = 'rs-proposal-act'; apply.textContent = 'Apply';
+        apply.title = 'Take ' + (p.host || 'the other machine') + "'s value on this machine";
+        var keep = document.createElement('button'); keep.type = 'button'; keep.className = 'rs-proposal-act'; keep.textContent = 'Keep mine';
+        keep.title = 'Keep this machine\'s value; the same proposal is not raised again';
+        apply.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.gt, 'apply'); });
+        keep.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.gt, 'keep'); });
+        line.appendChild(txt); line.appendChild(apply); line.appendChild(keep);
+        row.parentNode.insertBefore(line, row.nextSibling);
+      } else if (pins[store]) {
+        var pin = document.createElement('div');
+        pin.className = 'rs-pinned'; pin.setAttribute('data-store', store);
+        pin.textContent = 'Pinned on this machine: other machines\' picks are not applied here.';
+        row.parentNode.insertBefore(pin, row.nextSibling);
+      }
+    });
+  }
   // setShow — fill()'s write path for every kernel-backed select below — sits beside paintChoices, which
   // shares it.
   function fill() { fillChoices().then(function () { return fetch(ku('/version'), { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
     gclock.learnAll(v.settingsGt);   // each store's last-applied stamp: the clock climbs above them (an older kernel sends none)
+    fillProposals(v);   // the pending proposals and this machine's pins under their rows (one A)
     // ONE /tunnels fetch feeds every cross-machine comparison: the autoNudge box and the select marks.
     // A failed /tunnels leaves the local answers standing, unmarked — same fallback as before.
     fetch(ku('/tunnels'), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {

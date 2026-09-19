@@ -82,7 +82,7 @@ test("the toast's copy names the setting, the refused value, the hosts and the k
   // the kernel echoes it without gt), read only for the setting the frame names — the whitelist Apply
   // anyway uses — and any other shape reads as no value
   assert.match(GEAR, /function staleRefused\(m\)/, "the refused value is read off the echo");
-  assert.ok(GEAR.includes("var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type'; });"), "…as the one key beside type");
+  assert.ok(GEAR.includes("var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type' && k !== 'origin'; });"), "…as the one key beside type and the broadcast's origin (one A)");
 });
 
 test("Apply anyway re-issues the echoed gesture with a fresh stamp, and only for the setting the frame names", () => {

@@ -215,6 +215,16 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
   background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc); white-space: nowrap; }
 .rs-stale-toast-act:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff);
   background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+/* a pending PROPOSAL from another machine under its row (plans/settings-across-machines.md, one A): the row's own line
+   size (11px, the rs-hint's), the two answers in the toast's action dress; a pinned store's note beside it */
+#rsettings .rs-proposal { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -2px 0 8px 26px; font-size: 11px; color: var(--text-muted, #9aa0a6); }
+#rsettings .rs-proposal-msg { flex: 1 1 auto; min-width: 0; }
+#rsettings .rs-proposal-act { flex: 0 0 auto; cursor: pointer; font: inherit; font-size: 11px; line-height: 1.4;
+  padding: 2px 8px; border-radius: 5px; border: 1px solid var(--hairline, #3a3a3a);
+  background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc); white-space: nowrap; }
+#rsettings .rs-proposal-act:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff);
+  background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+#rsettings .rs-pinned { margin: -2px 0 8px 26px; font-size: 11px; color: var(--text-muted, #9aa0a6); }
 .rs-stale-toast.fade { opacity: 0; }
 
 /* the login paste-code MODAL (the user 2026-08-30): the panel treatment — centered card over a
