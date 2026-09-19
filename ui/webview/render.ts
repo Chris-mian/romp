@@ -326,7 +326,11 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // the add flow could read for a stored one), `why` the reason it is greyed when `available` is false
 interface AuthLogin { id?: string; value?: string; label?: string; machine?: boolean; available?: boolean; why?: string; expiresSoon?: boolean }
 interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean; logins?: AuthLogin[] }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+// A row of the chat's approval box (#notices): a needs-you notice with actions, as build_session ships status.notices
+// (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
+interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string;
+                       actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
+interface Status { notices?: ChatNotice[] | null; state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -13107,6 +13111,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
   renderLedger();  // swap in the active session's digest box (or hide if none)
   renderLiveAsk(); // swap in the active session's pending picker (or hide if none)
   renderBgTasks(); // swap in the active session's background-task box (or hide if none)
+  renderNotices(); // swap in the active session's approval box (or hide if none)
   let empty = document.getElementById("empty-state");
   // A SECTION AT A GLANCE: while snapView names a section, the pane shows its sessions instead of any
   // transcript: every view hidden, the composer disabled with a placeholder that says what to do (a message
@@ -14583,6 +14588,60 @@ function renderSubHead(): void {
     const note = el("div", "sub-head-note");
     note.textContent = "earlier part not shown";
     host.appendChild(note);
+  }
+}
+
+// The APPROVAL BOX (#notices; plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): the active session's
+// standing needs-you notices that carry actions, one row each, ABOVE the background box so a decision only the user can make
+// sits nearest the composer. Today that is a message a DIRECTED peer sent this session, held by the postal bus: Approve
+// delivers and Deny drops, both actions of the quarantine kind the kernel runs through the bus's act road (the same
+// noticeAction wire the feed card posts; the kernel answers noticeActionDone by the row's id). The rows are status.notices,
+// so the box vanishes on the decision with the frame that drops the row, and the tab's ask ring (status.needsYou) goes with
+// it. Rebuilt on every status change like renderBgTasks (awaitKey carries the rows); the buttons latch on a click and let go
+// on the kernel's answer. A Deny first opens the optional note back to the sender, inline (the feed card asks in a prompt).
+function renderNotices(): void {
+  const host = document.getElementById("notices");
+  if (!host) return;
+  host.replaceChildren();
+  const s = activeId && !snapView ? liveSession(activeId) : null;
+  const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
+  if (!s || !activeId || !rows.length) { host.style.display = "none"; return; }
+  host.style.display = "";
+  const sid = activeId;
+  for (const n of rows) {
+    const row = document.createElement("div"); row.className = "ntc-row"; row.dataset.item = n.itemId;
+    const title = document.createElement("div"); title.className = "ntc-title"; title.textContent = n.title || "Needs you";
+    const body = document.createElement("div"); body.className = "ntc-body"; body.textContent = n.body || ""; body.title = n.body || "";
+    const note = document.createElement("textarea"); note.className = "ntc-note"; note.placeholder = "optional: tell the sender why (delivered to them as postal mail)"; note.style.display = "none";
+    const acts = document.createElement("div"); acts.className = "ntc-actions";
+    const err = document.createElement("div"); err.className = "ntc-err"; err.style.display = "none";
+    const button = (label: string, cls: string): HTMLButtonElement => { const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label; return b; };
+    const latch = (clicked: HTMLButtonElement, label: string) => { for (const b of Array.from(acts.querySelectorAll("button")) as HTMLButtonElement[]) b.disabled = true; clicked.textContent = label + "…"; err.style.display = "none"; };
+    const go = (act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
+      const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
+      vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid, kind, body: act.body, ...(input ? { input } : {}) });
+      latch(clicked, act.label);
+    };
+    const plain = () => {
+      acts.replaceChildren(); note.style.display = "none";
+      for (const act of n.actions || []) {
+        const deny = act.kind === "quarantine" && !!act.body && (act.body as any).verdict === "deny";
+        const b = button(act.label, deny ? "ntc-deny" : "ntc-ok");
+        b.onclick = (ev) => { ev.stopPropagation(); if (deny) denyStep(act); else go(act, b); };
+        acts.appendChild(b);
+      }
+    };
+    const denyStep = (act: ChatNotice["actions"][number]) => {
+      // the note back to the sender is the one click-time input the quarantine kind takes: two choices and a way back
+      acts.replaceChildren(); note.style.display = ""; note.focus();
+      const withNote = button("Deny & send note", "ntc-deny"); withNote.onclick = (ev) => { ev.stopPropagation(); const t = note.value.trim(); go(act, withNote, t ? { note: t } : undefined); };
+      const bare = button("Deny without note", "ntc-deny"); bare.onclick = (ev) => { ev.stopPropagation(); go(act, bare); };
+      const back = button("Back", "ntc-back"); back.onclick = (ev) => { ev.stopPropagation(); plain(); };
+      acts.append(withNote, bare, back);
+    };
+    plain();
+    row.append(title, body, note, acts, err);
+    host.appendChild(row);
   }
 }
 
@@ -17319,6 +17378,7 @@ function upsert(msg: any) {
       }
     }
     renderBgTasks();
+    renderNotices();
   } else if (!activeId) {
     // no tab is active (the awaited tab after a reload, the unfocused pane): the arriving view stays hidden and the
     // body paints its line over the boot loader — nothing adopted it above (T357)
@@ -18068,6 +18128,7 @@ function chatWindow(msg: any) {
 // active real session (renderBgTasks reads activeId), so calling it for a viewer tab is a no-op.
 function awaitChanged(sid: string): void {
   if (sid === activeId) renderBgTasks();
+  if (sid === activeId) renderNotices();   // the approval box rides the same status key (its rows are part of awaitKey)
   const a = activeId ? liveSession(activeId) : null;
   if (a && a.sub && a.sub.parentId === sid) renderSubHead();
 }
@@ -18076,7 +18137,8 @@ function awaitKey(st: Status | undefined): string {
   if (!st) return "";
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
                          st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
-                         (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""])]);
+                         (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""]),
+                         (st.notices || []).map((n) => n.itemId + "/" + (n.actions || []).length)]);   // the approval box's rows (2026-09-19)
 }
 
 function statusOnly(msg: any) {
@@ -18578,6 +18640,19 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // 2026-07-29). A modal is the interrupt; the bell is the durable record you can come back to — the same
   // split the card-badge mirror already makes. Dismissing the dialog must not erase the fact that a message
   // of yours never landed.
+  // the kernel's answer to an approval-box click (renderNotices), by the row's id: a refusal re-arms the row's buttons and
+  // says why in the row; a success drops the row at once (the next status frame confirms: the notice expired or was dismissed)
+  else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
+    const row = document.querySelector<HTMLElement>('#notices .ntc-row[data-item="' + m.itemId.replace(/["\\]/g, "\\$&") + '"]');
+    if (row) {
+      if (m.ok) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
+      else {
+        for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+        const e = row.querySelector<HTMLElement>(".ntc-err");
+        if (e) { e.textContent = "Refused: " + String(m.error || "the kernel did not say why"); e.style.display = ""; }
+      }
+    }
+  }
   else if (m.type === "err" && typeof m.text === "string" && m.text) {
     const copy = typeof m.copy === "string" ? m.copy : "";
     const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
