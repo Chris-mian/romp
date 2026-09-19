@@ -410,38 +410,67 @@ test("the grouped pref is a paint input through feedPrefs: grouping off repaints
   assert.deepEqual(nameRebuilds(), { g1: before.g1 + 2, g2: before.g2 + 2, g3: before.g3 + 2 });
 });
 
-test("a quarantine card never skips: its sender's colour, looked up by name in the per-frame colour map, follows a re-coloured sender card although its own object is unchanged", async () => {
-  const q1 = cardOf("q1", WEB, "web", "#3366cc", "New message", "needs_input",
-    { blocked: { state: "quarantine", mid: "m1", frm: "api", origin: "", to: "web", body: "the README draft is ready for a look", gist: "the README draft is ready" } });
+test("a HELD-MAIL notice card (plans/notice-cards.md, action kinds): Approve posts noticeAction of kind quarantine with the stored body and the card's sid, latches, and re-arms on the kernel's refusal with the reason toasted", async () => {
+  // the kernel's card for a message held from a DIRECTED peer (_held_mail_backfill): a notice under the RECIPIENT, key = the
+  // message id, producer postal, two stored actions of the quarantine kind
+  const held = { key: "m1", rev: 1, producer: "postal", body: "from TESTHOST:api to web, held because peer TESTHOST is DIRECTED\n\nthe README draft is ready for a look", attachment: null,
+    actions: [{ label: "Approve", kind: "quarantine", body: { mid: "m1", verdict: "approve" } }, { label: "Deny", kind: "quarantine", body: { mid: "m1", verdict: "deny" } }],
+    expiresAt: null, dismissOnAction: true };
+  const q1 = cardOf("notice:" + WEB + ":m1:1", WEB, "web", "#3366cc", "New message from api", "needs_input", { live: true, tree: [], blocked: null, notice: held });
   await dispatch(frame([g1, card("g2")._it, g3, q1], { working: ["web"] }));
-  const sender = () => card("q1")._qBody.querySelectorAll(".fq-name")[0];
-  assert.equal(sender().textContent, "api");
-  assert.equal(sender().style.color, card("g2")._it.color.bg, "the sender's identity colour, read from api's card");
-  const recoloured = { ...card("g2")._it, color: { bg: "#112233", fg: "#ffffff" } };
-  await dispatch(frame([g1, recoloured, g3, q1], { working: ["web"] }));   // q1 is the very same object
-  assert.equal(sender().style.color, "#112233", "the held-mail card repainted although nothing of its own changed");
-  await dispatch(frame([g1, { ...recoloured, color: g2.color }, g3], { working: ["web"] }));   // decided elsewhere; api's colour as before
-  assert.ok(!card("q1"));
-});
-
-test("Approve and Deny latch on the click and re-arm on the kernel's quarantineRefused for that held message, the reason toasted; another message's refusal leaves them", async () => {
-  const q1 = cardOf("q1", WEB, "web", "#3366cc", "New message", "needs_input",
-    { blocked: { state: "quarantine", mid: "m1", frm: "api", origin: "", to: "web", body: "the README draft is ready for a look", gist: "the README draft is ready" } });
-  await dispatch(frame([g1, card("g2")._it, g3, q1], { working: ["web"] }));
-  const approve = card("q1")._qApprove, deny = card("q1")._qDeny;
-  assert.deepEqual([approve.disabled, deny.disabled, approve.textContent, deny.textContent], [false, false, "Approve", "Deny"]);
+  const c = card("notice:" + WEB + ":m1:1");
+  assert.ok(c, "the card is on the board"); assert.equal(colOf("notice:" + WEB + ":m1:1"), "col-needsInput-list", "a held message needs you");
+  assert.equal(c._nProd.textContent, "via postal");
+  assert.match(c._nBody.textContent, /held because peer TESTHOST is DIRECTED/); assert.match(c._nBody.textContent, /the README draft is ready for a look/, "the message text is the body");
+  assert.equal(c._blocked.style.display, "none", "no block chip: the card's own actions carry the decision");
+  const [approve, deny] = Array.from(c._nActions.querySelectorAll("button")) as any[];
+  assert.deepEqual([approve.textContent, deny.textContent, approve.disabled, deny.disabled], ["Approve", "Deny", false, false]);
   const sent = posted.length;
   approve.onclick(ev);
-  assert.deepEqual(posted.slice(sent).filter((m) => m.type === "quarantineDecision").map((m) => [m.mid, m.action, m.sid]), [["m1", "approve", WEB]]);
-  assert.deepEqual([approve.disabled, deny.disabled, approve.textContent], [true, true, "Delivering…"], "both latch; the one clicked says what it is doing");
-  await dispatch({ type: "quarantineRefused", mid: "m2", text: "quarantine: not that one" });
-  assert.equal(approve.disabled, true, "another held message's refusal is not this card's reply");
-  await dispatch({ type: "quarantineRefused", mid: "m1", text: "quarantine: the recipient is no longer live" });
-  assert.deepEqual([approve.disabled, deny.disabled, approve.textContent, deny.textContent], [false, false, "Approve", "Deny"],
-    "the kernel's reply for this message re-arms both");
-  assert.equal(body.querySelector(".feed-toast")?.textContent, "quarantine: the recipient is no longer live", "…and says why (the bare warn it replaced had no handler here)");
-  await dispatch(frame([g1, card("g2")._it, g3], { working: ["web"] }));
-  assert.ok(!card("q1"));
+  assert.deepEqual(posted.slice(sent).filter((m) => m.type === "noticeAction"),
+    [{ type: "noticeAction", itemId: "notice:" + WEB + ":m1:1", sid: WEB, kind: "quarantine", body: { mid: "m1", verdict: "approve" } }],
+    "the KIND rides the wire with the stored body, never a route; no input on an approve");
+  assert.deepEqual([approve.disabled, approve.textContent, deny.disabled, deny.textContent], [true, "Approve…", true, "Deny"], "both latch on the click (one decision per message); the one clicked says what it is doing");
+  assert.equal(body.byId("quar-dialog"), null, "an approve asks nothing");
+  await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":m1:1", ok: false, error: "postal bus unreachable" });
+  assert.deepEqual([approve.disabled, approve.textContent, deny.disabled], [false, "Approve", false], "the kernel's answer for this card re-arms both");
+  assert.match(body.querySelector(".feed-toast")?.textContent ?? "", /refused: postal bus unreachable/, "…and says why");
+  approve.onclick(ev);
+  await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":m1:1", ok: true, error: "" });
+  assert.equal(card("notice:" + WEB + ":m1:1"), null, "delivered: the dismissing card left at once");
+});
+
+test("the held-mail card's Deny asks for the optional note first, on the document body: without a note posts the bare verdict, with one posts input.note, and the backdrop closes with no decision", async () => {
+  const held = { key: "m2", rev: 1, producer: "postal", body: "from TESTHOST:api to web, held because peer TESTHOST is DIRECTED\n\nplease bump the parser", attachment: null,
+    actions: [{ label: "Approve", kind: "quarantine", body: { mid: "m2", verdict: "approve" } }, { label: "Deny", kind: "quarantine", body: { mid: "m2", verdict: "deny" } }],
+    expiresAt: null, dismissOnAction: true };
+  const q2 = cardOf("notice:" + WEB + ":m2:1", WEB, "web", "#3366cc", "New message from api", "needs_input", { live: true, tree: [], blocked: null, notice: held });
+  await dispatch(frame([g1, card("g2")._it, g3, q2], { working: ["web"] }));
+  const deny = card("notice:" + WEB + ":m2:1")._nActions.querySelectorAll("button")[1] as any;
+  const acts = () => posted.filter((m) => m.type === "noticeAction" && m.itemId === "notice:" + WEB + ":m2:1");
+  // the backdrop: no decision, the message stays held, the button never latched
+  deny.onclick(ev);
+  let dlg = body.byId("quar-dialog") as any;
+  assert.ok(dlg, "the note prompt is on the document body, outside the re-rendered feed root");
+  assert.equal(acts().length, 0, "nothing posted before the prompt answers"); assert.equal(deny.disabled, false, "Deny latches only on the decision");
+  const btns = () => Array.from(dlg.querySelectorAll("button")).map((b: any) => b.textContent);
+  assert.deepEqual(btns(), ["Deny & send note", "Deny without note"], "two choices, no Cancel (the user 2026-07-26)");
+  dlg.onclick({ target: dlg });
+  assert.equal(body.byId("quar-dialog"), null, "the backdrop closed it"); assert.equal(acts().length, 0, "…and decided nothing");
+  // without a note: the bare verdict
+  deny.onclick(ev); dlg = body.byId("quar-dialog");
+  (dlg.querySelectorAll("button")[1] as any).onclick();
+  assert.deepEqual(acts(), [{ type: "noticeAction", itemId: "notice:" + WEB + ":m2:1", sid: WEB, kind: "quarantine", body: { mid: "m2", verdict: "deny" } }], "no input member at all");
+  assert.deepEqual([deny.disabled, deny.textContent, body.byId("quar-dialog")], [true, "Deny…", null], "latched on the decision, the prompt gone");
+  await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":m2:1", ok: false, error: "the recipient is no longer live" });
+  assert.equal(deny.disabled, false, "re-armed on the refusal");
+  // with a note: the one click-time input the kind takes
+  deny.onclick(ev); dlg = body.byId("quar-dialog");
+  (dlg.querySelector("textarea") as any).value = "  not now, ask after the release  ";
+  (dlg.querySelectorAll("button")[0] as any).onclick();
+  assert.deepEqual(acts()[1], { type: "noticeAction", itemId: "notice:" + WEB + ":m2:1", sid: WEB, kind: "quarantine", body: { mid: "m2", verdict: "deny" }, input: { note: "not now, ask after the release" } }, "the note rides as input, trimmed");
+  await dispatch({ type: "noticeActionDone", itemId: "notice:" + WEB + ":m2:1", ok: true, error: "" });
+  assert.equal(card("notice:" + WEB + ":m2:1"), null, "dropped: the card left");
 });
 
 test("a handoff recipient's working state is a paint input: the delegating card repaints and its delegation line appears when the recipient starts working; an idle session's card does not repaint", async () => {
@@ -1091,7 +1120,7 @@ test("a NOTICE CARD (T370) renders its producer, body, pinned image and action b
   const sent = posted.length;
   btns[0].onclick(ev);
   assert.deepEqual(posted.slice(sent).filter((m) => m.type === "noticeAction"),
-    [{ type: "noticeAction", itemId: "notice:" + WEB + ":figure:2", sid: WEB, route: "/send", body: { text: "please regenerate" } }], "the gesture carries the sid: federation routes by it");
+    [{ type: "noticeAction", itemId: "notice:" + WEB + ":figure:2", sid: WEB, kind: "send", body: { text: "please regenerate" } }], "the gesture carries the sid (federation routes by it) and the action's KIND (an older frame's route read as send)");
   assert.equal(btns[0].disabled, true); assert.equal(btns[0].textContent, "Send again…", "latched on the click");
   // a click on a down socket is dropped and never answered (a kernel restart): the next push, identical or not, lets the latch
   // go, so the button never reads "Send again…" for good (the review of PR 1757, medium 2)
@@ -1241,7 +1270,7 @@ test("two hosts' owner-less cards under ONE key both render (the inbound prefix 
   // the modal's action posts once with the card's sid, latches, and lets go on the kernel's refusal
   const sent2 = posted.length;
   mbtns[0].onclick(ev);
-  assert.deepEqual(posted.slice(sent2).filter((m) => m.type === "noticeAction"), [{ type: "noticeAction", itemId: "notice:notes:same:1", sid: "notes", route: "/send", body: { text: "ping" } }]);
+  assert.deepEqual(posted.slice(sent2).filter((m) => m.type === "noticeAction"), [{ type: "noticeAction", itemId: "notice:notes:same:1", sid: "notes", kind: "send", body: { text: "ping" } }]);
   assert.equal(mbtns[0].disabled, true, "latched");
   await dispatch({ type: "noticeActionDone", itemId: "notice:notes:same:1", ok: false, error: "an owner-less card has no actions" });
   const after = (body.querySelector("#feed-modal-body") as any).querySelectorAll(".fask-nactions button");

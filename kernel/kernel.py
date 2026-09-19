@@ -21468,7 +21468,9 @@ def _bus_quarantine_act(body):
         data = resp.read()
         conn.close()
         j = json.loads(data.decode() or "{}")
-        return bool(j.get("ok")), (j.get("error") or ("bus HTTP %s" % resp.status))
+        ok = bool(j.get("ok"))
+        err = str(j.get("error") or "")
+        return ok, (err if (err or ok) else "bus HTTP %s" % resp.status)   # an empty error on a success (the review of PR 1885, low 2)
     except Exception as e:
         return False, "postal bus unreachable: %s" % e
 
@@ -23992,7 +23994,18 @@ NOTICE_TITLE_MAX = 200
 NOTICE_BODY_MAX = 64 * 1024
 NOTICE_ACTIONS_MAX = 4
 NOTICE_ACTION_LABEL_MAX = 60
-NOTICE_ACTION_ROUTES = ("/send",)          # each further route needs its own argument for why a button may call it
+# ACTION KINDS (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): a stored action is {label, kind,
+# body}; the kernel's table names each kind's route, its body shape and the one click-time input a kind may take, validates
+# the body at the post (an unknown kind, or a body outside the shape, refused by name) and matches the click to the stored
+# action exactly. The allowlist IS the table: a producer can route the user's click only where a kind allows, never to a bare
+# route. A row written before the kinds ({label, route: "/send", body}) reads as kind send, so no store is rewritten.
+#   send        the plain-message door (_deliver_text) to the card's OWN session; body {text}; no click input
+#   quarantine  the bus's /quarantine/act through _bus_quarantine_act with the card's OWNER as the recipient; body {mid,
+#               verdict: approve | deny}; click input on a deny: an optional {note} the bus parks for the sender; no Edit
+# The settings plan's kind (its three answers against /setting-proposal) is added here by its own phase one.
+NOTICE_ACTION_KINDS = ("send", "quarantine")
+_NOTICE_ROUTE_KINDS = {"/send": "send"}    # the older stored shape and the older pane's wire, read as their kind
+NOTICE_ACTION_ROUTES = tuple(_NOTICE_ROUTE_KINDS)   # kept as a name: the routes the older shape may carry
 NOTICE_OWNERLESS_SID = "notes"             # the owner-less notice cards' home under STATE/notices (the user 2026-09-18: a card with no session,
                                            # shown at the top of the feed): a word, so it can never be a sid (a uuid is hex and hyphens)
 NOTICE_OWNERLESS_NAME = "Notes"            # the run's name on the feed; no identity colour (no session stands behind it)
@@ -24103,41 +24116,76 @@ def _notice_attachment(fp, sid):
     return {"path": fp, "kind": kind, "allowed": True, "why": "", "pin": pin}
 
 
-def _notice_actions_check(actions):
-    """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, route, body} entries, the route in the allowlist,
-    the body an object; a /send body names the text to deliver. Two refusals guard the user's click (the review of PR 1757):
-    a /send body may not name a target (no id, no name: the notice's own session receives it), and its text may not begin
-    with a slash (a stored action is a message, never a typed command). (list, "") or (None, why)."""
+def _notice_action_kind(a):
+    """An action's kind: its `kind` member, or the kind its older `route` reads as; "" when neither names one."""
+    kind = str((a or {}).get("kind") or "").strip()
+    if not kind:
+        kind = _NOTICE_ROUTE_KINDS.get(str((a or {}).get("route") or "").strip(), "")
+    return kind
+
+
+def _notice_action_body_check(kind, body):
+    """The body of an action of `kind` against the kind's shape: "" or the refusal."""
+    if not isinstance(body, dict):
+        return "an action's body must be an object"
+    if kind == "send":
+        # the notice's OWN session is the target, always (the review of PR 1757, high): a body that names one would let a
+        # producer route the user's click at another session under this card's name and colour
+        if "id" in body or "name" in body:
+            return "an action's body names no target: the notice's own session receives it"
+        text = str(body.get("text") or "")
+        if not text.strip():
+            return "a send action's body needs text"
+        if text.lstrip().startswith("/"):
+            return "an action's text is a message, never a command (it may not begin with a slash)"
+        return ""
+    if kind == "quarantine":
+        for k in body:
+            if k not in ("mid", "verdict"):
+                return "a quarantine action's body is {mid, verdict}; %r is not a member" % k
+        if not _safe_id(str(body.get("mid") or "")):
+            return "a quarantine action's body needs the held message's id"
+        if body.get("verdict") not in ("approve", "deny"):
+            return "a quarantine action's verdict is approve or deny (a user never edits held mail)"
+        return ""
+    return "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
+
+
+def _notice_actions_check(actions, owner=None):
+    """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, kind, body} entries (an older {label, route, body}
+    read by its route's kind), the kind in the kernel's table and the body in the kind's shape, refused by name otherwise.
+    Stored as {label, kind, body}. (list, "") or (None, why)."""
     if actions is None:
         return [], ""
     if not isinstance(actions, list):
-        return None, "actions must be a list of {label, route, body}"
+        return None, "actions must be a list of {label, kind, body}"
     if len(actions) > NOTICE_ACTIONS_MAX:
         return None, "at most %d actions on one notice" % NOTICE_ACTIONS_MAX
     out = []
     for a in actions:
         if not isinstance(a, dict):
-            return None, "an action is {label, route, body}"
+            return None, "an action is {label, kind, body}"
         label = str(a.get("label") or "").strip()
-        route = str(a.get("route") or "").strip()
-        body = a.get("body")
         if not label or len(label) > NOTICE_ACTION_LABEL_MAX:
             return None, "an action needs a label (up to %d characters)" % NOTICE_ACTION_LABEL_MAX
-        if route not in NOTICE_ACTION_ROUTES:
-            return None, "action route %r is not allowed (allowed: %s)" % (route, ", ".join(NOTICE_ACTION_ROUTES))
-        if not isinstance(body, dict):
-            return None, "an action's body must be an object"
-        if route == "/send":
-            # the notice's OWN session is the target, always (the review of PR 1757, high): a body that names one would let a
-            # producer route the user's click at another session under this card's name and colour
-            if "id" in body or "name" in body:
-                return None, "an action's body names no target: the notice's own session receives it"
-            text = str(body.get("text") or "")
-            if not text.strip():
-                return None, "a /send action's body needs text"
-            if text.lstrip().startswith("/"):
-                return None, "an action's text is a message, never a command (it may not begin with a slash)"
-        out.append({"label": label, "route": route, "body": body})
+        kind = _notice_action_kind(a)
+        if not kind:
+            if a.get("route"):
+                return None, "action route %r is not allowed: actions are of a kind (%s)" % (a.get("route"), ", ".join(NOTICE_ACTION_KINDS))
+            return None, "an action needs a kind (%s)" % ", ".join(NOTICE_ACTION_KINDS)
+        if kind not in NOTICE_ACTION_KINDS:
+            return None, "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
+        err = _notice_action_body_check(kind, a.get("body"))
+        if err:
+            return None, err
+        if kind == "quarantine" and owner:
+            # the message must be held FOR the card's owner (the manager's review of PR 1885, medium): a producer's card under
+            # one session's name and colour must never route the user's click at another session's mail, the same hole the
+            # send kind closes by refusing a target in the body; a file that is absent is the bus's to refuse at the click
+            rec = _held_mail_record(a["body"].get("mid"))
+            if rec is not None and str(rec.get("toId") or "") != str(owner):
+                return None, "a quarantine action's message is held for another session, not this card's owner"
+        out.append({"label": label, "kind": kind, "body": a.get("body")})
     return out, ""
 
 
@@ -24177,7 +24225,7 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
             return None, "expiresAt must be epoch seconds"
         if exp <= now:
             return None, "expiresAt is already past"
-    acts, aerr = _notice_actions_check(actions)
+    acts, aerr = _notice_actions_check(actions, owner=None if sid == NOTICE_OWNERLESS_SID else sid)
     if aerr:
         return None, aerr
     if acts and sid == NOTICE_OWNERLESS_SID:
@@ -24323,15 +24371,132 @@ def _notice_item_id(sid, key, rev):
     return "notice:%s:%s:%d" % (sid, key, int(rev))
 
 
-def _notice_cards(now, cleared):
+# THE HELD-MAIL CARD (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): a message the bus HOLDS for a
+# human decision (mail from a DIRECTED peer, per-host trust) is a notice card the kernel posts, keyed by the message id, owned
+# by the recipient, needs-you, Approve and Deny of kind quarantine, dismissOnAction. The kernel BACKFILLS at every notice
+# attach: each held file under STATE/postal/quarantine whose id has no notice under the recipient's key, in the live rows or
+# the revision index, gets one post, so a boot, a first build and a hold that landed while the kernel was down are covered
+# and a decided or dismissed card is never re-posted. The directory's stat keys the check (the bus publishes a hold by
+# rename, which moves it); a held file whose recipient this kernel does not know posts to the owner-less home with the
+# recipient's name in the title and no actions (a verdict needs a live recipient).
+_HELD_MAIL_MEMO = {"slot": None}         # the quarantine directory's stat at the last backfill
+HELD_MAIL_PRODUCER = "postal"
+
+
+def _held_mail_dir():
+    return jd.STATE / "postal" / "quarantine"
+
+
+def _held_mail_title(rec):
+    return "New message from %s" % (rec.get("frm") or "?")
+
+
+def _held_mail_body(rec):
+    frm, to, origin = rec.get("frm") or "?", rec.get("to") or "?", rec.get("origin") or "?"
+    return "from %s:%s to %s, held because peer %s is DIRECTED\n\n%s" % (origin, frm, to, origin, str(rec.get("body") or ""))
+
+
+def _held_mail_actions(mid):
+    return [{"label": "Approve", "kind": "quarantine", "body": {"mid": mid, "verdict": "approve"}},
+            {"label": "Deny", "kind": "quarantine", "body": {"mid": mid, "verdict": "deny"}}]
+
+
+def _held_mail_record(mid):
+    """The bus's held file for `mid` as a dict, or None: nothing held under that id, an id that is no path component, or a file
+    that cannot be read. The kernel and the bus share the state root, so this is the record the bus decides on; the kind's
+    owner check reads its recipient (toId) at the post and at the click (the manager's review of PR 1885, medium)."""
+    mid = str(mid or "")
+    if not _safe_id(mid):
+        return None
+    try:
+        return json.loads((_held_mail_dir() / (mid + ".json")).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _held_mail_backfill():
+    """Post a notice for every held message that has none yet; returns how many were posted. Idempotent by (recipient, key):
+    a key with a live post row or an archived revision is never posted again (a decided, expired or dismissed card stays
+    decided). Memoized on the directory's stat, so a build with no new hold lists nothing. Best-effort: a hold whose post the
+    door refuses is said on stderr once per (id, reason) and tried again when the directory moves."""
+    d = _held_mail_dir()
+    st = _stat_key(d)
+    if st is None:
+        return 0
+    key = (str(d),) + st
+    if _HELD_MAIL_MEMO["slot"] == key:
+        return 0
+    posted = 0
+    try:
+        files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
+    except OSError:
+        return 0
+    for f in files:
+        try:
+            rec = json.loads((d / f).read_text())
+        except (OSError, ValueError):
+            continue
+        mid = str(rec.get("mid") or "")
+        if not mid or not NOTICE_KEY_RE.match(mid):
+            continue
+        to_id = str(rec.get("toId") or "")
+        known = bool(to_id) and to_id != NOTICE_OWNERLESS_SID and _notice_session_known(to_id)
+        sid = to_id if known else NOTICE_OWNERLESS_SID
+        # the key's standing in EVERY home it could have been posted to (the manager's review of PR 1885, low 1: a hold posted
+        # owner-less while its recipient was unknown was posted again under the recipient once the names entry existed). A
+        # live row in the chosen home or an archived revision in any home (decided, dismissed, expired) means no new card; a
+        # live row in another home stands (the recipient's card while its name is gone); a live OWNER-LESS row for a recipient
+        # known now is re-homed: the actionable card is posted under the recipient and the informational one expired
+        homes = [sid] + [h for h in (NOTICE_OWNERLESS_SID, to_id) if h and h != sid and (h == NOTICE_OWNERLESS_SID or _safe_id(h))]
+        skip, rehome = False, []
+        with _notice_lock:
+            for h in homes:
+                live_rows = [r for r in _notice_rows_unlocked(h) if r.get("op") == "post" and r.get("key") == mid]
+                arch, aerr = _notice_archive_rev_unlocked(h, mid)
+                if aerr or arch > 0 or (live_rows and h == sid):
+                    skip = True
+                elif live_rows and h == NOTICE_OWNERLESS_SID and known:
+                    rehome = live_rows
+                elif live_rows:
+                    skip = True
+        if skip:
+            continue
+        title = _held_mail_title(rec) if known else "New message from %s for %s" % (rec.get("frm") or "?", rec.get("to") or "?")
+        row, err = post_notice(to_id if known else "", mid, title, _held_mail_body(rec), producer=HELD_MAIL_PRODUCER,
+                               needs_you=known, actions=_held_mail_actions(mid) if known else None,
+                               dismiss_on_action=known, t=int(rec.get("at") or 0) or None)
+        if err:
+            mark = (mid, err)
+            if mark not in _HELD_MAIL_SAID:
+                _HELD_MAIL_SAID.add(mark)
+                sys.stderr.write("[notice] held message %s: no card (%s)\n" % (mid, err))
+            continue
+        posted += 1
+        if rehome:
+            with _notice_lock:                        # the owner-less card leaves: the decision now has one surface, the recipient's
+                for r in rehome:
+                    _notice_append(NOTICE_OWNERLESS_SID, {"op": "expire", "t": int(time.time()), "key": mid,
+                                                          "rev": int(r.get("rev") or 0), "sid": NOTICE_OWNERLESS_SID})
+    _HELD_MAIL_MEMO["slot"] = key
+    return posted
+
+
+_HELD_MAIL_SAID = set()
+
+
+def _notice_cards(now, cleared, alive_sids=None):
     """The notice cards for build_feed: every session with a notice file, its standing newest revision per key, minus the
     cleared item ids, as AskItem-shaped cards under notice:<sid>:<key>:<rev>. Every field but the fold's age colour is a
-    function of the row alone, so the per-client dedup holds across unchanged builds. Best-effort []."""
+    function of the row alone, so the per-client dedup holds across unchanged builds. `alive_sids` is the build's alive
+    roster: a card's `live` is its owner's (2026-09-19: every notice card said False, and the card modal's header struck
+    the recipient's name through as a dead session's). Best-effort []."""
     out = []
+    _held_mail_backfill()                                 # the held messages first, so this build carries their cards
     try:
         sids = sorted(n[:-6] for n in os.listdir(_notice_dir()) if n.endswith(".jsonl"))
     except OSError:
         return out
+    alive_sids = set(alive_sids or ())
     for sid in sids:
         ownerless = sid == NOTICE_OWNERLESS_SID           # the reserved home: no session's name or colour (the user 2026-09-18)
         for r in _notice_projection(sid, now, cleared):
@@ -24351,7 +24516,7 @@ def _notice_cards(now, cleared):
                 "itemId": item_id, "sid": sid,
                 "name": NOTICE_OWNERLESS_NAME if ownerless else (_name_of(sid) or sid[:8]),
                 "color": None if ownerless else _name_color(sid),
-                "text": r.get("title") or "", "t": t, "live": False,
+                "text": r.get("title") or "", "t": t, "live": (not ownerless) and sid in alive_sids,
                 # the board model's fields (plans/card-boards.md; the names agreed with its author 2026-09-18) on the NOTICE
                 # family: the board the card sits on today and its category, today's column, carried beside it (the other
                 # builders write column alone until the boards' phase two); the owner-less run's place at the top is the feed
@@ -24364,7 +24529,8 @@ def _notice_cards(now, cleared):
                 "nudged": None, "blocked": None,
                 "notice": {"producer": r.get("producer") or "", "key": r.get("key"), "rev": int(r.get("rev") or 0),
                            "body": r.get("body") or "", "attachment": r.get("attachment"),
-                           "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
+                           # each action with its kind (an older row's route read as its kind), so the pane posts the kind
+                           "actions": [dict(a, kind=_notice_action_kind(a)) for a in (r.get("actions") or [])], "expiresAt": r.get("expiresAt"),
                            "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
                 "column": column,
                 "tree": []})
@@ -24372,41 +24538,50 @@ def _notice_cards(now, cleared):
     return out
 
 
-_notice_inflight = set()                   # (item id, route, body json) of the actions running right now: one delivery per click
+_notice_inflight = set()                   # (item id, kind, body json) of the actions running right now: one delivery per click
 
 
-def _notice_action(item_id, route, body):
-    """Execute one STORED action of a notice card on the user's gesture: (ok, error). The action must match one the card's
-    revision carries exactly (route and body), its route in the allowlist; a card is never a way to issue an arbitrary
-    request. /send delivers through the same door POST /send takes. With dismissOnAction a success clears the card. One
+def _notice_action(item_id, kind, body, inp=None):
+    """Execute one STORED action of a notice card on the user's gesture: (ok, error). `kind` is the action's kind (an older
+    pane's route reads as its kind); the action must match one the card's revision carries exactly (kind and body), and the
+    click may add only the input the kind names (`inp`, a dict: a deny's optional note); a card is never a way to issue an
+    arbitrary request. The kind's runner does the rest: send delivers through the same door POST /send takes, quarantine asks
+    the bus for the verdict with the card's owner as the recipient. With dismissOnAction a success clears the card. One
     delivery per click (round three, low c): the pane re-arms its button on every push, and a push the delivery itself
     causes can land before the answer, so a second click while the first is in flight is refused here rather than delivered
     twice."""
     m = re.match(r"^notice:([^:]+):([^:]+):(\d+)$", str(item_id or ""))
     if not m:
         return False, "not a notice card"
-    _fk = (str(item_id), str(route), json.dumps(body, sort_keys=True, default=str))
+    kind = str(kind or "").strip()
+    kind = _NOTICE_ROUTE_KINDS.get(kind, kind)
+    _fk = (str(item_id), kind, json.dumps(body, sort_keys=True, default=str))
     with _notice_lock:
         if _fk in _notice_inflight:
             return False, "that action is already in flight"
         _notice_inflight.add(_fk)
     try:
-        return _notice_action_run(m, item_id, route, body)
+        return _notice_action_run(m, item_id, kind, body, inp if isinstance(inp, dict) else {})
     finally:
         with _notice_lock:
             _notice_inflight.discard(_fk)
 
 
-def _notice_action_run(m, item_id, route, body):
+def _notice_action_run(m, item_id, kind, body, inp):
     sid, key, rev = m.group(1), m.group(2), int(m.group(3))
     if sid == NOTICE_OWNERLESS_SID:
         return False, "an owner-less card has no actions"   # refused at the post too; the second door for a hand-made id
     row = next((r for r in _notice_rows(sid) if r.get("op") == "post" and r.get("key") == key and int(r.get("rev") or 0) == rev), None)
     if row is None:
         return False, "that notice is gone"
-    act = next((a for a in (row.get("actions") or []) if a.get("route") == route and a.get("body") == body), None)
-    if act is None or route not in NOTICE_ACTION_ROUTES:
+    act = next((a for a in (row.get("actions") or []) if _notice_action_kind(a) == kind and a.get("body") == body), None)
+    if act is None or kind not in NOTICE_ACTION_KINDS:
         return False, "no such action on that card"
+    # the click's input: only what the kind names (a deny's optional note), never a field the producer did not store
+    allowed = ("note",) if (kind == "quarantine" and body.get("verdict") == "deny") else ()
+    for k in inp:
+        if k not in allowed:
+            return False, "the action takes no %r from the click" % k
     if row.get("dismissOnAction"):
         # the one-shot mark is the store's own acted row (round five): the cleared ledger's Undo restores the card, and a
         # refusal keyed on the ledger let the restored card deliver the words a second time. A card that does not dismiss
@@ -24415,7 +24590,7 @@ def _notice_action_run(m, item_id, route, body):
             return False, "that card's action ran already"
         if item_id in _cleared_ids():
             return False, "that card was dismissed"
-    if route == "/send":
+    if kind == "send":
         # the target is the notice's OWN session, read from the row, whatever the stored body says (the check refuses a body
         # naming one; an older row's is ignored), and the text takes the plain-message door: no typed-command routing, so a
         # stored action can never change a session's model, effort or mode (the review of PR 1757, high)
@@ -24424,11 +24599,31 @@ def _notice_action_run(m, item_id, route, body):
             ok, err, _queued = _deliver_text(target, str(body.get("text") or ""), plain=True)
         except Exception as e:                         # a delivery fault is the answer, never the socket's death
             return False, "the action could not be delivered (%s)" % e
+    elif kind == "quarantine":
+        # the verdict on a held message, by the bus that owns delivery and the held file, with the card's OWNER as the
+        # recipient (the bus checks it serves that session, 2026-09-18); a deny's note rides as the bus's feedback. The held
+        # file's recipient must BE the card's owner (the manager's review of PR 1885, medium: the bus's own check reaches
+        # only a hold it does not have, so a mid that is held was decided whatever session the card wore); a file that is
+        # gone is the bus's to refuse
+        rec = _held_mail_record(body.get("mid"))
+        if rec is not None and str(rec.get("toId") or "") != str(row.get("sid") or sid):
+            return False, "that message is held for another session, not this card's owner"
+        qbody = {"mid": str(body.get("mid") or ""), "action": str(body.get("verdict") or ""), "sid": str(row.get("sid") or sid)}
+        note = " ".join(str(inp.get("note") or "").split())
+        if note:
+            qbody["feedback"] = note
+        try:
+            ok, err = _bus_quarantine_act(qbody)
+        except Exception as e:
+            return False, "the verdict could not reach the postal bus (%s)" % e
+        if ok:
+            with _notice_lock:                          # the decision retires the card whatever the ledger later says
+                _notice_append(sid, {"op": "expire", "t": int(time.time()), "key": key, "rev": rev, "sid": sid})
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
         with _notice_lock:                              # the acted mark first, then the dismissal: a crash between the two leaves
-            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "route": route})   # a spent card, never a re-runnable one
+            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
         _clear_ask(item_id)
         _mark_views_dirty()
     return ok, err
@@ -39422,7 +39617,7 @@ _CLEARED_STATS = {"served": 0, "derived": 0}   # bumped from the pusher AND sock
 # clearAll handler) clears every ask build_feed lists, these included, so their rows arrive live and, the log being
 # append-only, accumulate. An explicit list rather than a shape test on the stem: the goals/ stems are the ground
 # truth for a session id and any uuid text is a valid one; a new family that keys no session is added here.
-_CLEARED_NO_SESSION = ("parked:", "quarantine:", "provisional:", "awaiting:", "blocked:", "notice:")   # notice: T370, plans/notice-cards.md
+_CLEARED_NO_SESSION = ("parked:", "quarantine:", "provisional:", "awaiting:", "blocked:", "notice:")   # notice: T370, plans/notice-cards.md; quarantine: an older clear log's held-mail ids (a notice card since 2026-09-19)
 
 
 def _cleared_foreign(cleared):
@@ -42817,12 +43012,11 @@ def build_feed(now, live_map=None):
                                 % (ph["fromName"], ph["toName"])},
             "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
-    # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
-    # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
-    asks.extend(_quarantine_cards(now, cleared))
+    # (the quarantined peer mail's own card family left on 2026-09-19: a held message is a notice card the kernel posts,
+    # plans/notice-cards.md "Action kinds and the held-mail card"; the backfill runs inside the notice attach below)
     # NOTICE CARDS (T370, plans/notice-cards.md): a producer's card, posted without the judges; read live from the
     # per-session notice files (a stat-keyed, byte-bounded memo), the newest revision per key, minus the cleared ids
-    asks.extend(_notice_cards(now, cleared))
+    asks.extend(_notice_cards(now, cleared, {s["sid"] for s in alive}))   # the alive roster: a card's live is its owner's
     # per-card bell (the user 2026-07-28): one pass over the FINAL ask list — goal cards, placeholders,
     # parked handoffs and quarantine cards alike — so every card's right-click menu reflects its armed
     # state, EFFECTIVE (card override > session override > the master default, 2026-08-09) — with the
@@ -45407,56 +45601,7 @@ def _parked_handoffs(now, alive_sids):
     return out
 
 
-def _quarantine_cards(now, cleared):
-    """Inbound mail from a DIRECTED federated host (per-host trust model), HELD for a human decision:
-    approve (deliver, optionally after editing), or deny (drop). Never auto-injects the peer's content
-    — that IS the point of directed trust. Reads the bus's quarantine dir directly (plain JSON files,
-    so it works even if the bus is momentarily down); itemId 'quarantine:<mid>' rides cleared.jsonl so
-    a Clear dismisses the card (the held file stays until an explicit approve/deny). Best-effort []."""
-    qdir = jd.STATE / "postal" / "quarantine"
-    out = []
-    try:
-        files = sorted(qdir.glob("*.json"))
-    except OSError:
-        return out
-    for f in files:
-        try:
-            rec = json.loads(f.read_text())
-        except (OSError, ValueError):
-            continue
-        mid = rec.get("mid") or ""
-        if not mid:
-            continue
-        item_id = "quarantine:" + mid
-        if item_id in cleared:
-            continue
-        frm, to, origin = rec.get("frm") or "?", rec.get("to") or "?", rec.get("origin") or "?"
-        t = int(rec.get("at") or now)
-        # COMPACT card (the user 2026-07-26): what you're approving is a delivery to THIS session, so
-        # the card reads as one line under the recipient's name — "New message" + a dim sender/gist
-        # line — and the full body lives in the click-through decision modal. The gist is the same
-        # 90-char collapse the federation gossip uses (there is no courier summary at hold time: the
-        # courier only judges mail AFTER delivery, which is exactly what hasn't happened yet).
-        out.append({
-            "itemId": item_id, "sid": rec.get("toId") or "", "name": to,
-            "color": _name_color(rec.get("toId") or ""),
-            "text": "New message",
-            "t": t, "live": False,
-            "trgb": list(cm.age_rgb(now - t, _colormap())),
-            "turnId": item_id, "origin": None,
-            "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
-            "nudged": None,
-            "blocked": {"state": "quarantine", "mid": mid, "frm": frm, "to": to, "origin": origin,
-                        "body": rec.get("body") or "",
-                        "gist": " ".join(str(rec.get("body") or "").split())[:90],
-                        "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
-                                "waiting on you — approve to deliver it to %s, or deny to drop it. Nothing "
-                                "reaches %s until you approve." % (frm, origin, to, to)},
-            "column": "needs_input", "board": "feed", "category": "needs_input",
-            "tree": []})
-    out.sort(key=lambda c: c["t"])
-    return out
+# (the quarantine card builder left on 2026-09-19: the held-mail card is a notice card, _held_mail_backfill above)
 
 
 def _seg_anchors(atoms):
@@ -54406,7 +54551,7 @@ _CODE_BOARDS = {
         "order": ["ownerRank"],                        # what feed.ts does (PR 1831): the owner-less notice run first, then the session order, then time
         "notify": ["needs_input", "completed"],
         "needsYou": "needs_input",
-        "kinds": ["goal", "placeholder", "parked", "quarantine", "notice"],
+        "kinds": ["goal", "placeholder", "parked", "notice"],   # the quarantine card is a notice card since 2026-09-19
     },
 }
 _BOARD_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -54415,7 +54560,7 @@ _BOARD_CHIPS = ("working", "blocked", "completed", "neutral")
 _BOARD_SORT_FIELDS = ("t", "session", "owner", "title")
 _BOARD_PREDICATES = ("needsYou", "producer", "keyPrefix")
 _BOARD_ORDER_RULES = ("ownerRank",)
-_BOARD_KINDS = ("goal", "placeholder", "parked", "quarantine", "notice")
+_BOARD_KINDS = ("goal", "placeholder", "parked", "notice")
 
 
 def _board_check_sort(sv, where):
@@ -67391,33 +67536,12 @@ class Handler(BaseHTTPRequestHandler):
             # in the allowlist, matched exactly) and answers the asking pane by the card's item id, so the feed re-arms the
             # button on a refusal and the next push drops the card when dismissOnAction cleared it
             try:
-                _nok, _nerr = _notice_action(str(msg["itemId"]), str(msg.get("route") or ""), msg.get("body") if isinstance(msg.get("body"), dict) else {})
+                _nok, _nerr = _notice_action(str(msg["itemId"]), str(msg.get("kind") or msg.get("route") or ""),
+                                             msg.get("body") if isinstance(msg.get("body"), dict) else {},
+                                             msg.get("input") if isinstance(msg.get("input"), dict) else {})
             except Exception as e:                     # said to the asking pane; the socket lives on
                 _nok, _nerr = False, "the action failed (%s)" % e
             client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}))
-        elif msg and msg.get("type") == "quarantineDecision" and msg.get("mid"):
-            # Human verdict on a DIRECTED peer's held message (per-host trust): approve delivers it
-            # (optionally with human-edited text), deny drops it. The bus owns delivery + the held-message
-            # store, so proxy there; on success the bus removes the held file, so _quarantine_cards drops
-            # the card on the next build (event-based — no cleared.jsonl needed). Failure answers the asker by mid.
-            _qmid = str(msg["mid"])
-            _qbody = {"mid": _qmid, "action": str(msg.get("action") or "").strip().lower()}
-            if msg.get("sid"):                     # the recipient, stripped of its host by the route: the bus checks it serves that session
-                _qbody["sid"] = str(msg["sid"])
-            if msg.get("text") is not None:
-                _qbody["text"] = str(msg["text"])
-            if msg.get("feedback"):                # deny-with-note: the bus mails it back to the sender
-                _qbody["feedback"] = str(msg["feedback"])
-            _qok, _qerr = _bus_quarantine_act(_qbody)
-            if _qok:
-                _mark_views_dirty()
-            else:
-                # the refusal answers the asking pane BY THE MESSAGE it was about (review find, 2026-09-08): the
-                # feed latched Approve/Deny ("Delivering…") on the click and re-arms them on this reply, matched
-                # by mid. It was a bare `warn` before, which the feed never handled, so a refused verdict left
-                # both buttons disabled until the card was re-sent, and a card the bus refused to act on is
-                # exactly the one that is never re-sent. The feed is the only poster of this op.
-                client["send"](json.dumps({"type": "quarantineRefused", "mid": _qmid, "text": "quarantine: " + _qerr}))
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the

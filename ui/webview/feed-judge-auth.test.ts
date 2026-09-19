@@ -27,7 +27,7 @@ test("the judge-auth chip is built once, rides the session-state row, and keys o
 test("the chip names WHICH credential is refused, and the ⏸ picker chip stands down", () => {
   assert.match(FEED, /"⚠ Can't analyze · API key" : "⚠ Can't analyze · login"/,
     "mode 'key' vs 'login' — the label says what to go fix");
-  assert.match(FEED, /!isApiErr && !isJudgeAuth && it\.blocked\.state !== "quarantine"/,
+  assert.match(FEED, /const showBlk = !!it\.blocked && !isApiErr && !isJudgeAuth;/,
     "the generic ⏸ approval/picker chip must not misread a judgeAuth block as a picker");
 });
 
