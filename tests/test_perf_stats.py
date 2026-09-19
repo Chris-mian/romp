@@ -119,6 +119,7 @@ class Collector(unittest.TestCase):
             self.assertEqual(p[k], 0.0, k)
         self.assertEqual(p["ring_n"], 0)
         self.assertEqual(set(snap["stages_ms"]), set(km._PerfStats.STAGES))
+        self.assertEqual(p["chatFullWhy"], {}, "the proto-2 full frames' reason map (2026-09-19) starts empty")
         self.assertEqual(set(snap["builds"]), {"chat", "feed", "timeline", "feedJson", "thread"})   # thread: the comment popover's build (2026-09-08)
         self.assertEqual(set(snap["sends"]), {"full", "delta", "deduped"})
         self.assertEqual(snap["judge"]["ms_mean"], 0.0, "no passes: the mean is 0, not a division error")
@@ -247,6 +248,24 @@ class Collector(unittest.TestCase):
         self.assertAlmostEqual(p["cycle_ms_last"], 20.0)
         self.assertEqual(p["ring_n"], 3)
 
+    def test_the_chat_full_reasons_are_counted_under_the_lock_capped_and_copied(self):
+        """The proto-2 full frames' reason map (2026-09-19): a `pusher` sub-key, not a sends kind and not a top-level key;
+        capped at SLOTS labels the way the sends map is, the rest under "other"; the snapshot hands out a copy (the pusher
+        dict's shallow copy would share it); a reset empties it."""
+        self.st.chat_full_why("noBase"); self.st.chat_full_why("noBase"); self.st.chat_full_why("lastGone:echo")
+        snap = self.st.snapshot()
+        self.assertEqual(snap["pusher"]["chatFullWhy"], {"noBase": 2, "lastGone:echo": 1})
+        self.assertEqual(set(snap["sends"]), {"full", "delta", "deduped"}, "not a sends kind")
+        self.assertEqual(set(snap), TOP_KEYS, "not a top-level key")
+        snap["pusher"]["chatFullWhy"]["planted"] = 1
+        self.assertNotIn("planted", self.st.snapshot()["pusher"]["chatFullWhy"], "the snapshot's map is a copy")
+        for i in range(self.st.SLOTS + 5):
+            self.st.chat_full_why("lastGone:k%d" % i)
+        d = self.st.snapshot()["pusher"]["chatFullWhy"]
+        self.assertEqual((len(d), d["other"]), (self.st.SLOTS + 1, 7), "SLOTS labels, the rest under other")
+        self.st.reset()
+        self.assertEqual(self.st.snapshot()["pusher"]["chatFullWhy"], {})
+
     def test_ring_percentiles_and_max_come_from_the_last_256_cycles(self):
         self.st.cycle(5.0)                                   # one slow boot cycle: 5000 ms
         for i in range(300):                                 # 0..299 ms; the ring keeps 44..299
@@ -321,6 +340,18 @@ class Collector(unittest.TestCase):
         self.assertEqual(s["deduped"], {"chat": {"count": 1, "bytes": 1000}})
         self.assertEqual(s["delta"], {"feed": {"count": 1, "bytes": 20}})
 
+    def test_sends_from_the_targeted_push_read_under_their_own_slot(self):
+        # the sender's road (2026-09-19): the one-session push's frames are counted under `<slot>.targeted`, apart from the
+        # pusher's, so a full from that road is attributable in one read of /perf instead of a journal reconstruction
+        self.st.send(("chat", SID), "full", 1000, road="targeted")
+        self.st.send(("chat", SID), "delta", 100, road="targeted")
+        self.st.send(("status", SID), "full", 50, road="targeted")
+        self.st.send(("chat", SID), "full", 1000)                    # the pusher's: no road
+        s = self.st.snapshot()["sends"]
+        self.assertEqual(s["full"], {"chat.targeted": {"count": 1, "bytes": 1000}, "status.targeted": {"count": 1, "bytes": 50},
+                                     "chat": {"count": 1, "bytes": 1000}})
+        self.assertEqual(s["delta"], {"chat.targeted": {"count": 1, "bytes": 100}})
+
     def test_send_slots_are_capped(self):
         for i in range(40):
             self.st.send(("slot%d" % i,), "full", 1)
@@ -389,7 +420,7 @@ class Collector(unittest.TestCase):
     def test_writers_are_thread_safe(self):
         def hammer():
             for _ in range(2000):
-                self.st.wake(); self.st.send(("chat", SID), "full", 1); self.st.http_request("GET /p", 0.0)
+                self.st.wake(); self.st.send(("chat", SID), "full", 1); self.st.http_request("GET /p", 0.0); self.st.chat_full_why("noBase")
         ts = [threading.Thread(target=hammer) for _ in range(8)]
         for t in ts:
             t.start()
@@ -398,6 +429,7 @@ class Collector(unittest.TestCase):
         snap = self.st.snapshot()
         self.assertEqual(snap["pusher"]["wakes"], 16000)
         self.assertEqual(snap["sends"]["full"]["chat"]["count"], 16000)
+        self.assertEqual(snap["pusher"]["chatFullWhy"], {"noBase": 16000})
         self.assertEqual(snap["http"]["GET /p"]["count"], 16000)
 
 

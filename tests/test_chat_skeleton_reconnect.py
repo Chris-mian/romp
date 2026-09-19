@@ -484,21 +484,27 @@ class SkeletonReconnect(unittest.TestCase):
             self.assertIn(tok, src[j:j + 1200], tok + " within the 1200-character window from the def")
 
     # ── item 5 ──
-    def test_05_a_push_session_now_full_releases(self):
+    def test_05_a_push_session_now_for_a_skeleton_tab_sends_its_status_only_and_keeps_the_skeleton(self):
+        # Until 2026-09-19 this push handed EVERY client a full (change_from forced to 0), which loaded a skeleton tab the
+        # page never asked for; it goes through the pusher's per-client road now, so a tab the page holds as a skeleton
+        # gets the status frame the pusher would send it and stays a skeleton until the click or the prefetch
         c = self._client(active=S1, reconnect=True)
         km._push([c])
         c["_frames"].clear()
         km._clients.append(c)
+        self.SESS[S3]["status"]["state"] = "working"   # the flip the push exists for (an unchanged status dedups on its slot)
         km._push_session_now(S3)                       # a create / handshake for a tab the page holds as skeleton
-        self.assertEqual(self._sessions(c), [S3], "the full went (change_from 0 → always the full form)")
-        self.assertEqual(c["skeleton"], {S2}, "…and released S3 through _send_chat_locked")
-        self.assertIn(("chat", S3), c["sent"])
-        self.assertNotIn(("status", S3), c["sent"])
+        self.assertEqual(self._sessions(c), [], "no full for a tab the page holds as a skeleton")
+        self.assertEqual(self._statuses(c), [(S3, {"state": "working", "sinceEpoch": None})], "its status instead")
+        self.assertEqual(c["skeleton"], {S2, S3}, "still a skeleton: the click or the prefetch releases it")
+        self.assertIn(("status", S3), c["sent"])
+        self.assertNotIn(("chat", S3), c["sent"])
         self.assertEqual(self._tab_orders(c), [], "its strip was identical to the one already held → deduped")
         c["_frames"].clear()
+        c["sent"].pop(("taborder",))                   # the slot popped so the next strip is visible
         km._push([c])
-        self.assertEqual(self._tab_orders(c)[0]["skeleton"], [S2], "the next cycle's strip says so")
-        self.assertEqual(self._sessions(c), [], "S3 is now an ordinary held tab: no re-send")
+        self.assertEqual(self._tab_orders(c)[0]["skeleton"], [S3, S2], "the next cycle's strip still lists both")
+        self.assertEqual(self._sessions(c), [], "and hands over no full either")
 
     # ── item 6 ──
     def test_06_a_fresh_client_is_unchanged(self):
@@ -1027,7 +1033,8 @@ class SkeletonReconnect(unittest.TestCase):
             with contextlib.redirect_stderr(trail):
                 km._push_session_now(S3)
             self._assert_landed_behind_the_first_strip(c, trail, "link")
-            self.assertEqual(self._sessions(c), [S3], "the push's own full still follows")
+            self.assertEqual(self._sessions(c), [], "no full follows for a tab the redialed page holds as a skeleton")
+            self.assertEqual(self._statuses(c), [(S3, {"state": "waiting", "sinceEpoch": None})], "its status does")
         finally:
             km._PENDING_REVEAL[0] = None
 
@@ -1055,6 +1062,160 @@ class SkeletonReconnect(unittest.TestCase):
             km._PENDING_REVEAL[0] = None
 
 
+
+    # ── the targeted push serves each client from the base it holds (2026-09-19) ──
+    def _targeted_sends(self):
+        """(fulls, deltas) the targeted road has sent so far, from /perf's sends map: its frames read apart from the pusher's."""
+        snap = km._PERF_STATS.snapshot()["sends"]
+        return tuple((snap[k].get("chat.targeted") or {}).get("count", 0) for k in ("full", "delta"))
+
+    def test_13_a_caught_up_client_gets_no_full_from_the_per_session_push(self):
+        # Every targeted push (the SDK connect handshake, the Codex backend's stream events, a create, a fork) used to
+        # send EVERY client a full {type:"session"} (change_from forced to 0), which a page holding the tab whole treats
+        # as a reconnect repair: the window rebuilt and the reader's place re-derived, some 450 times a day live. It
+        # goes through the pusher's per-client road now: a caught-up client gets a chatTail, empty when nothing changed
+        # against the shared baseline, and a client with no base still gets the full it needs.
+        c = self._client(active=S1, proto=2)
+        km._clients.append(c)
+        km._push([c])                                    # the cycle: every tab whole, the baseline advanced
+        self.assertEqual(sorted(self._sessions(c)), sorted(TAB_ORDER))
+        baseline = list(km._prev_chat_events[S1])
+        sends0 = self._targeted_sends()
+        c["_frames"].clear()
+        km._push_session_now(S1)                         # the handshake (or any targeted) push for a tab it holds whole
+        # (the no-full assertion is green on the unchanged kernel too, whose identical full was deduped on the slot; the
+        # empty-suffix tail asserted right after it is the first red one, that kernel having no tail road for this push;
+        # the status flip below is the user-visible symptom: a whole session frame as soon as anything differed)
+        self.assertEqual(self._sessions(c), [], "a client that holds the tab whole gets no full frame")
+        self.assertEqual([(t["id"], t["afterUuid"], t["events"]) for t in self._frames(c, "chatTail")], [(S1, "u4", [])],
+                         "one empty-suffix tail: nothing changed against the baseline")
+        # the flip the push exists for still lands: the status rides the tail
+        self.SESS[S1]["status"]["state"] = "waiting"
+        c["_frames"].clear()
+        km._push_session_now(S1)
+        self.assertEqual(self._sessions(c), [], "a status change is a tail, not a full")
+        tails = self._frames(c, "chatTail")
+        self.assertEqual([(t["afterUuid"], t["events"], t["status"]["state"]) for t in tails], [("u4", [], "waiting")])
+        # new content arrives as the suffix after what it holds
+        self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})
+        c["_frames"].clear()
+        km._push_session_now(S1)
+        self.assertEqual(self._sessions(c), [])
+        tails = self._frames(c, "chatTail")
+        self.assertEqual([(t["afterUuid"], [e["uuid"] for e in t["events"]]) for t in tails], [("u4", ["u5"])])
+        # a change below its last (a tool fill) re-sends from the change
+        self.SESS[S1]["events"][3]["md"] = "m3 filled"
+        c["_frames"].clear()
+        km._push_session_now(S1)
+        self.assertEqual(self._sessions(c), [])
+        tails = self._frames(c, "chatTail")
+        self.assertEqual([(t["afterUuid"], [e["uuid"] for e in t["events"]]) for t in tails], [("u2", ["u3", "u4", "u5"])])
+        # a client with no base still gets the full it needs; the shared baseline is left alone throughout
+        fresh = self._client(active=S1, proto=2)
+        km._clients.append(fresh)
+        km._push_session_now(S1)
+        self.assertEqual(self._sessions(fresh), [S1])
+        self.assertEqual(self._frames(fresh, "chatTail"), [])
+        self.assertEqual(km._prev_chat_events[S1], baseline, "only a push that reaches every client advances the baseline")
+        # /perf reads this road's frames apart from the pusher's: the four tails and the one full above
+        fulls, deltas = self._targeted_sends()
+        self.assertEqual((fulls - sends0[0], deltas - sends0[1]), (1, 4), "sends.<kind>.chat.targeted counts the targeted road")
+
+    def test_14_a_skeleton_holder_gets_its_status_only_and_stays_a_skeleton(self):
+        c = self._client(active=S1, reconnect=True, proto=2)
+        km._push([c])                                    # the redial's set resolves: S3 and S2 are skeletons
+        self.assertEqual(c["skeleton"], {S2, S3})
+        km._clients.append(c)
+        b = self._client(active=S3, proto=2)             # another page holds S3 whole
+        km._clients.append(b)
+        km._push([b])
+        self.SESS[S3]["status"]["state"] = "working"     # the flip
+        c["_frames"].clear(); b["_frames"].clear()
+        km._push_session_now(S3)
+        self.assertEqual(self._sessions(c), [], "no full for a tab the page holds as a skeleton")
+        self.assertEqual(self._statuses(c), [(S3, {"state": "working", "sinceEpoch": None})])
+        self.assertEqual(c["skeleton"], {S2, S3}, "still a skeleton: the click or the prefetch releases it")
+        self.assertNotIn(("chat", S3), c["sent"])
+        self.assertEqual(self._sessions(b), [], "the page holding it whole gets no full either")
+        self.assertEqual([(t["afterUuid"], t["events"], t["status"]["state"]) for t in self._frames(b, "chatTail")],
+                         [("u2", [], "working")])
+
+    def test_15_a_targeted_push_landing_mid_cycle_anchors_no_tail_past_what_a_client_holds(self):
+        # The pusher wrote the shared baseline BEFORE serving its clients, and the targeted push reads that baseline on
+        # another thread (the Codex pump, the SDK handshake) with nothing ordering the two. Landing in the write-to-send
+        # gap, the push diffed its build against an equal baseline and anchored an EMPTY tail at the list's last event,
+        # one the racing client did not hold yet; the page reads a tail past what it holds as a gap and asks for a full,
+        # the very frame the routing removed (review find, 2026-09-19). Two rules close it: the baseline advances only
+        # AFTER the cycle's sends, so a push in the gap reads the older one and re-sends the overlap (both wires); and
+        # the proto-2 no-change tail anchors at the client's held last, not the list's (test_16, the sender's side).
+        c = self._client(active=S1, proto=2)                 # the uuid-anchored wire
+        d = self._client(active=S1)                          # the index wire
+        km._clients.extend([c, d])
+        km._push([c, d])                                     # the cycle: both hold u0..u4 whole; the baseline is u0..u4
+        self.assertEqual(sorted(self._sessions(c)), sorted(TAB_ORDER))
+        self.assertEqual(sorted(self._sessions(d)), sorted(TAB_ORDER))
+        self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})   # grown since the baseline
+        km._built_chat.clear()                               # the next cycle rebuilds and sees the growth
+        c["_frames"].clear(); d["_frames"].clear()
+        real = km._send_chat_or_status
+        fired = []
+
+        def racing(cl, m, ms, change_from, led_changed):
+            """The cycle's first per-client send for S1: the targeted push lands on its own thread right here, after the
+            cycle computed its diff and (before the change) wrote the baseline, before it served anyone."""
+            if m["id"] == S1 and not fired:
+                fired.append(1)
+                km._push_session_now(S1)
+            return real(cl, m, ms, change_from, led_changed)
+        km._send_chat_or_status = racing
+        try:
+            km._push([c, d])
+        finally:
+            km._send_chat_or_status = real
+        self.assertEqual(fired, [1], "the targeted push ran inside the cycle's per-client loop")
+        held = {"u0", "u1", "u2", "u3", "u4"}
+        for cl in (c, d):
+            self.assertEqual(self._sessions(cl), [], "no full: nothing asked for a repair")
+        tails = [t for t in self._frames(c, "chatTail") if t["id"] == S1]   # the other tabs' empty-suffix tails are the rebuild's, not this race's
+        self.assertTrue(tails, "the proto-2 client was served")
+        for t in tails:
+            self.assertIn(t["afterUuid"], held, "a tail anchored at an event the client does not hold is a gap ask: %r" % t["afterUuid"])
+            self.assertEqual([e["uuid"] for e in t["events"]], ["u5"], "the missing event, from the anchor it holds")
+        tails = [t for t in self._frames(d, "chatTail") if t["id"] == S1]
+        self.assertTrue(tails, "the index client was served")
+        for t in tails:
+            self.assertLessEqual(t["from"], len(held), "a tail from past what the client holds is a gap ask: from %r" % t["from"])
+            self.assertEqual([e["uuid"] for e in t["events"]], ["u5"])
+
+    def test_16_the_no_change_tail_anchors_at_the_clients_held_last_not_the_lists(self):
+        # The proto-2 no-change branch (nothing moved against the baseline) anchored its empty tail at the LIST's last
+        # event. A client behind that list, the cycle that advanced the baseline not having reached it yet (test_15's
+        # race seen from the sender's side), received a tail anchored past what it holds: a gap ask, then a full. It is
+        # anchored at the client's held last now and carries the events the client lacks (2026-09-19).
+        c = self._client(active=S1, proto=2)
+        km._clients.append(c)
+        km._push([c])                                        # holds u0..u4
+        self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})
+        km._prev_chat_events[S1] = json.loads(json.dumps(self.SESS[S1]["events"]))   # a baseline one event AHEAD of the client, by hand
+        c["_frames"].clear()
+        km._push_session_now(S1)
+        self.assertEqual(self._sessions(c), [])
+        self.assertEqual([(t["afterUuid"], [e["uuid"] for e in t["events"]]) for t in self._frames(c, "chatTail")], [("u4", ["u5"])],
+                         "anchored at ITS held last and carrying the missing event, not an empty tail anchored past it")
+
+    def test_17_a_client_armed_for_the_ready_arms_connect_push_gets_no_session_frame_from_the_targeted_push(self):
+        # A later chat column before its bundle's ready (skeletonOnReady armed, the split 2026-09-11): the pusher's loop
+        # withholds its session frames and the ready arm's connect push is the one full (test_11_d). The targeted push
+        # bypassed that guard and handed it a full it could not hear; through the pusher's road it gets the strip and
+        # nothing else here. Pinned for this road too (review find, 2026-09-19): the guard had owners for the pusher's loop only.
+        c = self._client(active=S1, skeletonOnReady=True)
+        km._clients.append(c)
+        km._push_session_now(S3)
+        self.assertEqual(len(self._tab_orders(c)), 1, "the strip goes: cheap, and heard once the bundle wins the race")
+        self.assertEqual(self._sessions(c), [], "no session frame: the ready arm's connect push is the one full")
+        self.assertEqual(self._statuses(c), [], "and no status for it: the client holds no set yet")
+        self.assertNotIn(("chat", S3), c["sent"])
+        self.assertNotIn(("status", S3), c["sent"])
 
 
 class RestartDiet(unittest.TestCase):

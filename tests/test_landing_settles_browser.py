@@ -297,8 +297,11 @@ const dom2 = await page.evaluate((u) => {
 }, cfg.toolUuid);
 const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
+// R3 (the client merge guard, 2026-09-19), the last measurement: after every landing and the live turn, the bottom of the view is the
+// transcript's newest row (the live reply appended to the file) and the rendered rows stand in the file's record order
+const r3 = await bottomCheck(cfg.liveA, transcriptOrder());
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
+process.stdout.write("RESULT:" + JSON.stringify({ r3, o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
   words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, linkInView12, writes12, rows12, landed13, after13, live13, units13, tailEnd13, writes13, rows13, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
@@ -350,6 +353,16 @@ class ServedLandingSettles(WindowLab):
         self.assertEqual(strangers, [], "a write other than the landing's moved the view after it: %s" % moved)
         self.assertEqual([w["writer"] for w in r["writes"] if w["writer"] == "anchor-restore"], ["anchor-restore"] if r["liveArrived"] else [],
                          "the live turn's append restores the reader's row exactly once when it arrived (T386 stage 2): %s" % moved)
+
+    def test_after_every_landing_and_the_live_turn_the_bottom_of_the_view_is_the_transcripts_newest_row(self):
+        # R3 (the client merge guard, 2026-09-19): scrolled to the bottom, the last rendered row is the live reply (the file's newest record),
+        # the view is at the bottom, and the rendered rows stand in the file's record order
+        r = self._result()
+        b = r["r3"]
+        self.assertEqual(b["last"], b["newest"], "the bottom of the view is the transcript's newest row: %r" % b)
+        self.assertTrue(b["atBottom"], "…and the view is at the bottom: %r" % b)
+        self.assertTrue(b["ordered"], "the rendered rows stand in transcript order (misordered at %r): %r" % (b["misordered"], b))
+        self.assertTrue(b["runsOrdered"], "the runs are ordered by lo with the open-ended run last: %r" % b["regions"])
 
     def test_a_card_anchored_on_a_tool_call_lands_on_the_words_it_quotes_not_on_the_tool_group(self):
         r = self._result()

@@ -664,6 +664,12 @@ class AwaitingWake(unittest.TestCase):
         km.jd.NAMES.mkdir(parents=True, exist_ok=True)
         (km.jd.NAMES / SID).write_text("web\t~/notes-api\t#3355aa\t#ffffff\n")
         self.addCleanup(lambda: (km.jd.NAMES / SID).unlink())
+        # The SDK registry directory must read for "no registry row" to mean anything: the kernel's boot
+        # pass creates sdk/ (_death_boot_pass), so a running kernel never lacks it, and a missing sdk/
+        # beside a names entry reads to _sdk_records_blind as blindness (a registry moved aside), on
+        # which the corroborator stands down instead of converting. An empty, readable sdk/ is the
+        # booted kernel's shape for a sid no backend holds (the idiom of tests/test_dead_wait_block.py).
+        km.jd.SDKDIR.mkdir(parents=True, exist_ok=True)
         now = 1_000_000
         self._seed(at=now - 7 * 3600)
         (km.jd.STATE / "states").mkdir(parents=True, exist_ok=True)

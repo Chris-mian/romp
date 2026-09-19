@@ -41,9 +41,9 @@ generic model has to reach:
   `:5020`). The user docs say the same three (`docs/guide.md:319`).
 - **Every kernel-made card family sets its column by hand.** The provisional placeholder
   (`kernel.py:39773`, `working`), the awaiting card (`:39809`, `working`), the blocked placeholder
-  (`:39878`, `needs_input`), the parked handoff (`:42319`, `needs_input`), the quarantined peer mail
-  (`:44940`, `needs_input`) and the notice card (`:24125`, `needs_input` when the producer said the user
-  must act, else `completed`). `blocked.state` discriminates the families; there is no `kind` field.
+  (`:39878`, `needs_input`), the parked handoff (`:42319`, `needs_input`) and the notice card (`:24125`,
+  `needs_input` when the producer said the user must act, else `completed`; since 2026-09-19 the held
+  peer mail is a notice card too, `plans/notice-cards.md`). `blocked.state` discriminates the families; there is no `kind` field.
 - **The notification set is a kernel literal.** `_NOTIFY_COLUMNS = ("needs_input", "completed")`
   (`kernel.py:53688`) is the set whose entry rings the bell and the phone (`_feed_notifications`,
   `:53871`), and `_needs_you_count` (`:53948`) counts `needs_input` cards for the app badge.
@@ -55,8 +55,8 @@ generic model has to reach:
   Continue (`:1205` to `:1237`, rows two and three), the bell (`cardNotify`), the right-click menu's
   Notify me and Browse files (`showCardMenu`, on the shared menu builder since v0.16.0), and the
   modal's Follow up, Check status, Clear and Continue (`:3591` to `:3602`). Each posts its own wire
-  message (`askClear`, `askClearMany`, `askFollowUp`, `apiRetry`, `reviveSession`,
-  `quarantineDecision`, `noticeAction`, `cardNotify`, `showAskPath`, `showOnTimeline`, `openSession`).
+  message (`askClear`, `askClearMany`, `askFollowUp`, `apiRetry`, `reviveSession`, `noticeAction`,
+  `cardNotify`, `showAskPath`, `showOnTimeline`, `openSession`; `quarantineDecision` left 2026-09-19).
 - **The sorts are inline.** Each bucket sorts by `t` in the direction of the `newestFirst` preference
   (`feed.ts:5629`), then grouped mode re-sorts by the kernel's session order with a header per run
   (`:5640` to `:5665`). The View menu (`buildViewMenu`, `:4147`) offers exactly four rows: the sort
@@ -129,7 +129,7 @@ Rule      { when: Predicate; category: string /* one of the board's ids */ }
 Predicate { needsYou?: boolean; producer?: string; keyPrefix?: string }       // every present member must hold (AND);
                                                                //   the fixed set; a fourth predicate is a release
 OrderRule = "ownerRank"                                        // the fixed set; today's one entry (section 3)
-Kind      = "goal" | "placeholder" | "parked" | "quarantine" | "notice"   // the code's families (section 2); a data-defined
+Kind      = "goal" | "placeholder" | "parked" | "notice"   // the code's families (section 2; quarantine left 2026-09-19); a data-defined
                                                                //   board may name "notice" alone, since only a producer's
                                                                //   card can be posted to it
 ```
@@ -211,7 +211,7 @@ FEED_BOARD: Board = {
   order: [],                               // the owner rank joins here in phase three (section 3)
   notify: ["needs_input", "completed"],    // _NOTIFY_COLUMNS, kernel.py:53688
   needsYou: "needs_input",                 // _needs_you_count, kernel.py:53948
-  kinds: ["goal", "placeholder", "parked", "quarantine", "notice"],
+  kinds: ["goal", "placeholder", "parked", "notice"],
 }
 ```
 
@@ -248,8 +248,8 @@ definition names the kinds a board renders.
 - `placeholder`: `provisional`, `awaiting:<sid>` and `blocked:<sid>` cards. No sections; actions
   Clear (where the family allows it) and the bell.
 - `parked`: `blocked.state === "parkedHandoff"`; action Revive.
-- `quarantine`: `blocked.state === "quarantine"`; the held body shown in full; actions Approve and
-  Deny (the edit happens in the modal, not as a card action; the 1834 read, 2026-09-18).
+- (the `quarantine` kind left on 2026-09-19: a held message is a notice card, `plans/notice-cards.md`
+  "Action kinds and the held-mail card"; its Approve and Deny are the notice kind's stored actions.)
 - `notice`: `it.notice`; the producer label, the body through the sanitizer, the attachment; actions
   the record's own `actions` list (`noticeAction`), Clear and the bell. The one kind a data-defined
   board renders.
@@ -264,7 +264,7 @@ definition and nothing else (section 4 says which reads).
 
 **What a card must carry to belong to a board and a category.** The two fields of section 1,
 `board` and `category`, plus what it carries today: `itemId` (namespaced for a non-goal family, the
-`parked:`, `quarantine:`, `notice:<sid>:<key>:<rev>` pattern, so federation's unprefixed ids never
+`parked:`, `notice:<sid>:<key>:<rev>` pattern (and `quarantine:` in older clear logs), so federation's unprefixed ids never
 collide), `sid` and `name` (the session that routes the card's gestures and colours its chip; the
 owner-less case below), `text`, `t` (fixed at the post, never the clock), `live`, `turnId`, `tree`
 (empty for a non-goal), `column` (until phase two's transition ends), and the flavour object that
@@ -324,8 +324,8 @@ was filed under (an additive persisted field: the phase-three call-out in sectio
 `_notice_cards` copies them onto the card; a row from before the fields reads as `feed` and its
 `needsYou` mapping, so no migration touches a file.
 
-The producers inside the kernel that build cards by hand (the placeholders, the parked handoff, the
-quarantine) write `board: "feed"` and their category literal directly; they have no reason to name
+The producers inside the kernel that build cards by hand (the placeholders, the parked handoff)
+write `board: "feed"` and their category literal directly; they have no reason to name
 another board.
 
 **Owner-less cards.** romp_cards' current design (a notice with no session, mail of 2026-09-18) puts

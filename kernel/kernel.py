@@ -395,7 +395,10 @@ class _PerfStats:
                                    cycle_ms_p50 / cycle_ms_p90 / cycle_ms_ring_max / ring_n from a
                                    ring of the last RING cycle durations; sends (every client payload);
                                    idle_cycles / idle_ms_sum / idle_cpu_ms_sum (cycles that set no wake,
-                                   sent no payload and saved no store: what a longer wait would skip)
+                                   sent no payload and saved no store: what a longer wait would skip);
+                                   chatFullWhy (every proto-2 full session frame by the reason the sender
+                                   had for it, _chat_full_reason: a recurrence meter for a base the next
+                                   push could not map, 2026-09-19)
       stages_ms                    jobs: the cycle's tick jobs outside _push_all; push: _push_all as
                                    the cycle calls it; push.chat (the tab strip, the build_session
                                    loop and the chat sends), push.feed (the view signature,
@@ -502,6 +505,10 @@ class _PerfStats:
             # a fresh client's full push on its handler thread (2026-09-14): the browser's own first draw after a reload or a
             # restart, per app; the pusher's cycles never see it, so the restart's logo phase had no number before this
             self.connect_push_stats = {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0, "byApp": {}}
+            # the proto-2 full session frames by the reason the sender had (2026-09-19), copied into the snapshot's pusher as
+            # chatFullWhy: its own attribute, since snapshot()'s dict(self.pusher) is a shallow copy that would share a nested
+            # map with every reader; see chat_full_why
+            self.chat_full_why_stats = {}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -600,6 +607,19 @@ class _PerfStats:
             a["count"] += 1; a["ms_sum"] += ms; a["ms_last"] = ms
             if ms > a["ms_max"]:
                 a["ms_max"] = ms
+
+    def chat_full_why(self, reason):
+        """One proto-2 full session frame that WENT, counted by the reason the sender had for it (_chat_full_reason, 2026-09-19;
+        the sender counts after _send_client says the frame left, so a deduped frame is not one here, as under `sends`). The
+        steady state sends a caught-up client deltas only, so this map is the recurrence meter for the transient-key anchor
+        defect (a non-zero lastGone:<family>) and the census of the other producers (noBase, baseGone, changeAt0, ...).
+        Under the lock: _push_session_now sends on handler and backend threads concurrently with the pusher's cycle. Capped
+        at SLOTS labels the way the sends map is, the rest under "other", so no label family can grow it."""
+        with self.lock:
+            d = self.chat_full_why_stats
+            if reason not in d and len(d) >= self.SLOTS:
+                reason = "other"
+            d[reason] = d.get(reason, 0) + 1
 
     def cycle_failed(self):
         """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
@@ -946,8 +966,12 @@ class _PerfStats:
         with self.lock:
             self.builds["chat"]["moved"] += 1
 
-    def send(self, key, kind, nbytes):
+    def send(self, key, kind, nbytes, road=None):
         slot = key[0] if isinstance(key, tuple) else key
+        if road:
+            slot = "%s.%s" % (slot, road)         # the sender's road when it names one (2026-09-19): `chat.targeted` is the
+        #                                           one-session push's frame (_push_session_now), read apart from the pusher's
+        #                                           `chat`, so a full from that road is attributable in one read of /perf
         with self.lock:
             if kind != "deduped":
                 self.pusher["sends"] += 1             # a payload that went to a client; a deduped frame (built,
@@ -1032,6 +1056,7 @@ class _PerfStats:
             pusher = dict(self.pusher)
             pusher["connectPush"] = {k: (dict(v) if k != "byApp" else {a: dict(row) for a, row in v.items()}) if isinstance(v, dict) else v
                                      for k, v in self.connect_push_stats.items()}
+            pusher["chatFullWhy"] = dict(self.chat_full_why_stats)   # the proto-2 full frames by reason (2026-09-19): a copy, its own map
             pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
             sr = list(self.stage_ring) if self.stage_ring is not None else []                           #  first cycle's split
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
@@ -9530,7 +9555,13 @@ def _rebuild_dist():
     kernel left up: _dist_ver() stats per page render so the fresh ?v= token flows on the next paint,
     and the extension's newer-build prompt keys off the dv keepalive. (ok, err_tail)."""
     try:
-        r = subprocess.run(["node", "esbuild.js"], cwd=str(ROOT / "vscode-extension"),
+        # --production (minified, no sourcemaps) unless ROMP_EXT_DEV_BUILD is set: the same profile and the
+        # same knob as _ensure_bundles and vscode-extension/install.sh. A bare `node esbuild.js` here served
+        # unminified bundles with sourcemaps after every fast-forward, and _ensure_bundles never re-minified
+        # them: its staleness test is mtime against dist/render.js, not profile, so the bundles a converge
+        # wrote stayed current to the next boot until an unrelated source change.
+        argv = ["node", "esbuild.js"] + ([] if os.environ.get("ROMP_EXT_DEV_BUILD") else ["--production"])
+        r = subprocess.run(argv, cwd=str(ROOT / "vscode-extension"),
                            capture_output=True, text=True, timeout=180)
         return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
     except Exception as e:
@@ -16392,7 +16423,10 @@ def _apply_new_session_prefs(sid, body):
     sanctioned door. On a FRESH spawn the env was already born into the reg (_create_sdk_session), so
     the env leg here is the unchanged re-assert set_env skips the reconnect for — the echo still comes
     back. The handler validated env at the door and refused non-SDK targets, so the hasattr guard is only
-    the backstop for direct callers."""
+    the backstop for direct callers. A level the backend REFUSES (a Codex model whose catalog does not
+    offer it, an SDK level outside its list) is echoed as `refused`, the setter's own sentence, never as
+    `effort`: the setter's verdict used to be dropped here, so `romp new --effort` printed the level as
+    applied and exited 0 while nothing changed."""
     out = {}
     m = str((body or {}).get("model") or "").strip()
     e = str((body or {}).get("effort") or "").strip()
@@ -16412,8 +16446,15 @@ def _apply_new_session_prefs(sid, body):
         _set_model_or_park(be, str(sid), m)
         out["model"] = m
     if e:
-        _set_effort_or_park(be, str(sid), e)
-        out["effort"] = e
+        took, _parked = _set_effort_or_park(be, str(sid), e)
+        if took:
+            out["effort"] = e
+        else:
+            # refused (a Codex model whose catalog does not offer the level or a catalog the backend could not
+            # read, an SDK level outside its list): the echo carries the refusal in place of the level, so the
+            # caller is loud, and stderr says so once, as the typed route does, with the door named
+            out["refused"] = _effort_refusal(be, e)
+            sys.stderr.write("effort %r for %s refused by %s (POST /new)\n" % (e, sid, type(be).__name__))
     if ev is not None and hasattr(be, "set_env"):
         _set_env_or_park(be, str(sid), dict(ev))
         out["env"] = dict(ev)
@@ -21427,7 +21468,9 @@ def _bus_quarantine_act(body):
         data = resp.read()
         conn.close()
         j = json.loads(data.decode() or "{}")
-        return bool(j.get("ok")), (j.get("error") or ("bus HTTP %s" % resp.status))
+        ok = bool(j.get("ok"))
+        err = str(j.get("error") or "")
+        return ok, (err if (err or ok) else "bus HTTP %s" % resp.status)   # an empty error on a success (the review of PR 1885, low 2)
     except Exception as e:
         return False, "postal bus unreachable: %s" % e
 
@@ -23951,7 +23994,18 @@ NOTICE_TITLE_MAX = 200
 NOTICE_BODY_MAX = 64 * 1024
 NOTICE_ACTIONS_MAX = 4
 NOTICE_ACTION_LABEL_MAX = 60
-NOTICE_ACTION_ROUTES = ("/send",)          # each further route needs its own argument for why a button may call it
+# ACTION KINDS (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): a stored action is {label, kind,
+# body}; the kernel's table names each kind's route, its body shape and the one click-time input a kind may take, validates
+# the body at the post (an unknown kind, or a body outside the shape, refused by name) and matches the click to the stored
+# action exactly. The allowlist IS the table: a producer can route the user's click only where a kind allows, never to a bare
+# route. A row written before the kinds ({label, route: "/send", body}) reads as kind send, so no store is rewritten.
+#   send        the plain-message door (_deliver_text) to the card's OWN session; body {text}; no click input
+#   quarantine  the bus's /quarantine/act through _bus_quarantine_act with the card's OWNER as the recipient; body {mid,
+#               verdict: approve | deny}; click input on a deny: an optional {note} the bus parks for the sender; no Edit
+# The settings plan's kind (its three answers against /setting-proposal) is added here by its own phase one.
+NOTICE_ACTION_KINDS = ("send", "quarantine")
+_NOTICE_ROUTE_KINDS = {"/send": "send"}    # the older stored shape and the older pane's wire, read as their kind
+NOTICE_ACTION_ROUTES = tuple(_NOTICE_ROUTE_KINDS)   # kept as a name: the routes the older shape may carry
 NOTICE_OWNERLESS_SID = "notes"             # the owner-less notice cards' home under STATE/notices (the user 2026-09-18: a card with no session,
                                            # shown at the top of the feed): a word, so it can never be a sid (a uuid is hex and hyphens)
 NOTICE_OWNERLESS_NAME = "Notes"            # the run's name on the feed; no identity colour (no session stands behind it)
@@ -24062,41 +24116,76 @@ def _notice_attachment(fp, sid):
     return {"path": fp, "kind": kind, "allowed": True, "why": "", "pin": pin}
 
 
-def _notice_actions_check(actions):
-    """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, route, body} entries, the route in the allowlist,
-    the body an object; a /send body names the text to deliver. Two refusals guard the user's click (the review of PR 1757):
-    a /send body may not name a target (no id, no name: the notice's own session receives it), and its text may not begin
-    with a slash (a stored action is a message, never a typed command). (list, "") or (None, why)."""
+def _notice_action_kind(a):
+    """An action's kind: its `kind` member, or the kind its older `route` reads as; "" when neither names one."""
+    kind = str((a or {}).get("kind") or "").strip()
+    if not kind:
+        kind = _NOTICE_ROUTE_KINDS.get(str((a or {}).get("route") or "").strip(), "")
+    return kind
+
+
+def _notice_action_body_check(kind, body):
+    """The body of an action of `kind` against the kind's shape: "" or the refusal."""
+    if not isinstance(body, dict):
+        return "an action's body must be an object"
+    if kind == "send":
+        # the notice's OWN session is the target, always (the review of PR 1757, high): a body that names one would let a
+        # producer route the user's click at another session under this card's name and colour
+        if "id" in body or "name" in body:
+            return "an action's body names no target: the notice's own session receives it"
+        text = str(body.get("text") or "")
+        if not text.strip():
+            return "a send action's body needs text"
+        if text.lstrip().startswith("/"):
+            return "an action's text is a message, never a command (it may not begin with a slash)"
+        return ""
+    if kind == "quarantine":
+        for k in body:
+            if k not in ("mid", "verdict"):
+                return "a quarantine action's body is {mid, verdict}; %r is not a member" % k
+        if not _safe_id(str(body.get("mid") or "")):
+            return "a quarantine action's body needs the held message's id"
+        if body.get("verdict") not in ("approve", "deny"):
+            return "a quarantine action's verdict is approve or deny (a user never edits held mail)"
+        return ""
+    return "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
+
+
+def _notice_actions_check(actions, owner=None):
+    """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, kind, body} entries (an older {label, route, body}
+    read by its route's kind), the kind in the kernel's table and the body in the kind's shape, refused by name otherwise.
+    Stored as {label, kind, body}. (list, "") or (None, why)."""
     if actions is None:
         return [], ""
     if not isinstance(actions, list):
-        return None, "actions must be a list of {label, route, body}"
+        return None, "actions must be a list of {label, kind, body}"
     if len(actions) > NOTICE_ACTIONS_MAX:
         return None, "at most %d actions on one notice" % NOTICE_ACTIONS_MAX
     out = []
     for a in actions:
         if not isinstance(a, dict):
-            return None, "an action is {label, route, body}"
+            return None, "an action is {label, kind, body}"
         label = str(a.get("label") or "").strip()
-        route = str(a.get("route") or "").strip()
-        body = a.get("body")
         if not label or len(label) > NOTICE_ACTION_LABEL_MAX:
             return None, "an action needs a label (up to %d characters)" % NOTICE_ACTION_LABEL_MAX
-        if route not in NOTICE_ACTION_ROUTES:
-            return None, "action route %r is not allowed (allowed: %s)" % (route, ", ".join(NOTICE_ACTION_ROUTES))
-        if not isinstance(body, dict):
-            return None, "an action's body must be an object"
-        if route == "/send":
-            # the notice's OWN session is the target, always (the review of PR 1757, high): a body that names one would let a
-            # producer route the user's click at another session under this card's name and colour
-            if "id" in body or "name" in body:
-                return None, "an action's body names no target: the notice's own session receives it"
-            text = str(body.get("text") or "")
-            if not text.strip():
-                return None, "a /send action's body needs text"
-            if text.lstrip().startswith("/"):
-                return None, "an action's text is a message, never a command (it may not begin with a slash)"
-        out.append({"label": label, "route": route, "body": body})
+        kind = _notice_action_kind(a)
+        if not kind:
+            if a.get("route"):
+                return None, "action route %r is not allowed: actions are of a kind (%s)" % (a.get("route"), ", ".join(NOTICE_ACTION_KINDS))
+            return None, "an action needs a kind (%s)" % ", ".join(NOTICE_ACTION_KINDS)
+        if kind not in NOTICE_ACTION_KINDS:
+            return None, "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
+        err = _notice_action_body_check(kind, a.get("body"))
+        if err:
+            return None, err
+        if kind == "quarantine" and owner:
+            # the message must be held FOR the card's owner (the manager's review of PR 1885, medium): a producer's card under
+            # one session's name and colour must never route the user's click at another session's mail, the same hole the
+            # send kind closes by refusing a target in the body; a file that is absent is the bus's to refuse at the click
+            rec = _held_mail_record(a["body"].get("mid"))
+            if rec is not None and str(rec.get("toId") or "") != str(owner):
+                return None, "a quarantine action's message is held for another session, not this card's owner"
+        out.append({"label": label, "kind": kind, "body": a.get("body")})
     return out, ""
 
 
@@ -24136,7 +24225,7 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
             return None, "expiresAt must be epoch seconds"
         if exp <= now:
             return None, "expiresAt is already past"
-    acts, aerr = _notice_actions_check(actions)
+    acts, aerr = _notice_actions_check(actions, owner=None if sid == NOTICE_OWNERLESS_SID else sid)
     if aerr:
         return None, aerr
     if acts and sid == NOTICE_OWNERLESS_SID:
@@ -24282,15 +24371,132 @@ def _notice_item_id(sid, key, rev):
     return "notice:%s:%s:%d" % (sid, key, int(rev))
 
 
-def _notice_cards(now, cleared):
+# THE HELD-MAIL CARD (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): a message the bus HOLDS for a
+# human decision (mail from a DIRECTED peer, per-host trust) is a notice card the kernel posts, keyed by the message id, owned
+# by the recipient, needs-you, Approve and Deny of kind quarantine, dismissOnAction. The kernel BACKFILLS at every notice
+# attach: each held file under STATE/postal/quarantine whose id has no notice under the recipient's key, in the live rows or
+# the revision index, gets one post, so a boot, a first build and a hold that landed while the kernel was down are covered
+# and a decided or dismissed card is never re-posted. The directory's stat keys the check (the bus publishes a hold by
+# rename, which moves it); a held file whose recipient this kernel does not know posts to the owner-less home with the
+# recipient's name in the title and no actions (a verdict needs a live recipient).
+_HELD_MAIL_MEMO = {"slot": None}         # the quarantine directory's stat at the last backfill
+HELD_MAIL_PRODUCER = "postal"
+
+
+def _held_mail_dir():
+    return jd.STATE / "postal" / "quarantine"
+
+
+def _held_mail_title(rec):
+    return "New message from %s" % (rec.get("frm") or "?")
+
+
+def _held_mail_body(rec):
+    frm, to, origin = rec.get("frm") or "?", rec.get("to") or "?", rec.get("origin") or "?"
+    return "from %s:%s to %s, held because peer %s is DIRECTED\n\n%s" % (origin, frm, to, origin, str(rec.get("body") or ""))
+
+
+def _held_mail_actions(mid):
+    return [{"label": "Approve", "kind": "quarantine", "body": {"mid": mid, "verdict": "approve"}},
+            {"label": "Deny", "kind": "quarantine", "body": {"mid": mid, "verdict": "deny"}}]
+
+
+def _held_mail_record(mid):
+    """The bus's held file for `mid` as a dict, or None: nothing held under that id, an id that is no path component, or a file
+    that cannot be read. The kernel and the bus share the state root, so this is the record the bus decides on; the kind's
+    owner check reads its recipient (toId) at the post and at the click (the manager's review of PR 1885, medium)."""
+    mid = str(mid or "")
+    if not _safe_id(mid):
+        return None
+    try:
+        return json.loads((_held_mail_dir() / (mid + ".json")).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _held_mail_backfill():
+    """Post a notice for every held message that has none yet; returns how many were posted. Idempotent by (recipient, key):
+    a key with a live post row or an archived revision is never posted again (a decided, expired or dismissed card stays
+    decided). Memoized on the directory's stat, so a build with no new hold lists nothing. Best-effort: a hold whose post the
+    door refuses is said on stderr once per (id, reason) and tried again when the directory moves."""
+    d = _held_mail_dir()
+    st = _stat_key(d)
+    if st is None:
+        return 0
+    key = (str(d),) + st
+    if _HELD_MAIL_MEMO["slot"] == key:
+        return 0
+    posted = 0
+    try:
+        files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
+    except OSError:
+        return 0
+    for f in files:
+        try:
+            rec = json.loads((d / f).read_text())
+        except (OSError, ValueError):
+            continue
+        mid = str(rec.get("mid") or "")
+        if not mid or not NOTICE_KEY_RE.match(mid):
+            continue
+        to_id = str(rec.get("toId") or "")
+        known = bool(to_id) and to_id != NOTICE_OWNERLESS_SID and _notice_session_known(to_id)
+        sid = to_id if known else NOTICE_OWNERLESS_SID
+        # the key's standing in EVERY home it could have been posted to (the manager's review of PR 1885, low 1: a hold posted
+        # owner-less while its recipient was unknown was posted again under the recipient once the names entry existed). A
+        # live row in the chosen home or an archived revision in any home (decided, dismissed, expired) means no new card; a
+        # live row in another home stands (the recipient's card while its name is gone); a live OWNER-LESS row for a recipient
+        # known now is re-homed: the actionable card is posted under the recipient and the informational one expired
+        homes = [sid] + [h for h in (NOTICE_OWNERLESS_SID, to_id) if h and h != sid and (h == NOTICE_OWNERLESS_SID or _safe_id(h))]
+        skip, rehome = False, []
+        with _notice_lock:
+            for h in homes:
+                live_rows = [r for r in _notice_rows_unlocked(h) if r.get("op") == "post" and r.get("key") == mid]
+                arch, aerr = _notice_archive_rev_unlocked(h, mid)
+                if aerr or arch > 0 or (live_rows and h == sid):
+                    skip = True
+                elif live_rows and h == NOTICE_OWNERLESS_SID and known:
+                    rehome = live_rows
+                elif live_rows:
+                    skip = True
+        if skip:
+            continue
+        title = _held_mail_title(rec) if known else "New message from %s for %s" % (rec.get("frm") or "?", rec.get("to") or "?")
+        row, err = post_notice(to_id if known else "", mid, title, _held_mail_body(rec), producer=HELD_MAIL_PRODUCER,
+                               needs_you=known, actions=_held_mail_actions(mid) if known else None,
+                               dismiss_on_action=known, t=int(rec.get("at") or 0) or None)
+        if err:
+            mark = (mid, err)
+            if mark not in _HELD_MAIL_SAID:
+                _HELD_MAIL_SAID.add(mark)
+                sys.stderr.write("[notice] held message %s: no card (%s)\n" % (mid, err))
+            continue
+        posted += 1
+        if rehome:
+            with _notice_lock:                        # the owner-less card leaves: the decision now has one surface, the recipient's
+                for r in rehome:
+                    _notice_append(NOTICE_OWNERLESS_SID, {"op": "expire", "t": int(time.time()), "key": mid,
+                                                          "rev": int(r.get("rev") or 0), "sid": NOTICE_OWNERLESS_SID})
+    _HELD_MAIL_MEMO["slot"] = key
+    return posted
+
+
+_HELD_MAIL_SAID = set()
+
+
+def _notice_cards(now, cleared, alive_sids=None):
     """The notice cards for build_feed: every session with a notice file, its standing newest revision per key, minus the
     cleared item ids, as AskItem-shaped cards under notice:<sid>:<key>:<rev>. Every field but the fold's age colour is a
-    function of the row alone, so the per-client dedup holds across unchanged builds. Best-effort []."""
+    function of the row alone, so the per-client dedup holds across unchanged builds. `alive_sids` is the build's alive
+    roster: a card's `live` is its owner's (2026-09-19: every notice card said False, and the card modal's header struck
+    the recipient's name through as a dead session's). Best-effort []."""
     out = []
+    _held_mail_backfill()                                 # the held messages first, so this build carries their cards
     try:
         sids = sorted(n[:-6] for n in os.listdir(_notice_dir()) if n.endswith(".jsonl"))
     except OSError:
         return out
+    alive_sids = set(alive_sids or ())
     for sid in sids:
         ownerless = sid == NOTICE_OWNERLESS_SID           # the reserved home: no session's name or colour (the user 2026-09-18)
         for r in _notice_projection(sid, now, cleared):
@@ -24310,7 +24516,7 @@ def _notice_cards(now, cleared):
                 "itemId": item_id, "sid": sid,
                 "name": NOTICE_OWNERLESS_NAME if ownerless else (_name_of(sid) or sid[:8]),
                 "color": None if ownerless else _name_color(sid),
-                "text": r.get("title") or "", "t": t, "live": False,
+                "text": r.get("title") or "", "t": t, "live": (not ownerless) and sid in alive_sids,
                 # the board model's fields (plans/card-boards.md; the names agreed with its author 2026-09-18) on the NOTICE
                 # family: the board the card sits on today and its category, today's column, carried beside it (the other
                 # builders write column alone until the boards' phase two); the owner-less run's place at the top is the feed
@@ -24323,7 +24529,8 @@ def _notice_cards(now, cleared):
                 "nudged": None, "blocked": None,
                 "notice": {"producer": r.get("producer") or "", "key": r.get("key"), "rev": int(r.get("rev") or 0),
                            "body": r.get("body") or "", "attachment": r.get("attachment"),
-                           "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
+                           # each action with its kind (an older row's route read as its kind), so the pane posts the kind
+                           "actions": [dict(a, kind=_notice_action_kind(a)) for a in (r.get("actions") or [])], "expiresAt": r.get("expiresAt"),
                            "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
                 "column": column,
                 "tree": []})
@@ -24331,41 +24538,50 @@ def _notice_cards(now, cleared):
     return out
 
 
-_notice_inflight = set()                   # (item id, route, body json) of the actions running right now: one delivery per click
+_notice_inflight = set()                   # (item id, kind, body json) of the actions running right now: one delivery per click
 
 
-def _notice_action(item_id, route, body):
-    """Execute one STORED action of a notice card on the user's gesture: (ok, error). The action must match one the card's
-    revision carries exactly (route and body), its route in the allowlist; a card is never a way to issue an arbitrary
-    request. /send delivers through the same door POST /send takes. With dismissOnAction a success clears the card. One
+def _notice_action(item_id, kind, body, inp=None):
+    """Execute one STORED action of a notice card on the user's gesture: (ok, error). `kind` is the action's kind (an older
+    pane's route reads as its kind); the action must match one the card's revision carries exactly (kind and body), and the
+    click may add only the input the kind names (`inp`, a dict: a deny's optional note); a card is never a way to issue an
+    arbitrary request. The kind's runner does the rest: send delivers through the same door POST /send takes, quarantine asks
+    the bus for the verdict with the card's owner as the recipient. With dismissOnAction a success clears the card. One
     delivery per click (round three, low c): the pane re-arms its button on every push, and a push the delivery itself
     causes can land before the answer, so a second click while the first is in flight is refused here rather than delivered
     twice."""
     m = re.match(r"^notice:([^:]+):([^:]+):(\d+)$", str(item_id or ""))
     if not m:
         return False, "not a notice card"
-    _fk = (str(item_id), str(route), json.dumps(body, sort_keys=True, default=str))
+    kind = str(kind or "").strip()
+    kind = _NOTICE_ROUTE_KINDS.get(kind, kind)
+    _fk = (str(item_id), kind, json.dumps(body, sort_keys=True, default=str))
     with _notice_lock:
         if _fk in _notice_inflight:
             return False, "that action is already in flight"
         _notice_inflight.add(_fk)
     try:
-        return _notice_action_run(m, item_id, route, body)
+        return _notice_action_run(m, item_id, kind, body, inp if isinstance(inp, dict) else {})
     finally:
         with _notice_lock:
             _notice_inflight.discard(_fk)
 
 
-def _notice_action_run(m, item_id, route, body):
+def _notice_action_run(m, item_id, kind, body, inp):
     sid, key, rev = m.group(1), m.group(2), int(m.group(3))
     if sid == NOTICE_OWNERLESS_SID:
         return False, "an owner-less card has no actions"   # refused at the post too; the second door for a hand-made id
     row = next((r for r in _notice_rows(sid) if r.get("op") == "post" and r.get("key") == key and int(r.get("rev") or 0) == rev), None)
     if row is None:
         return False, "that notice is gone"
-    act = next((a for a in (row.get("actions") or []) if a.get("route") == route and a.get("body") == body), None)
-    if act is None or route not in NOTICE_ACTION_ROUTES:
+    act = next((a for a in (row.get("actions") or []) if _notice_action_kind(a) == kind and a.get("body") == body), None)
+    if act is None or kind not in NOTICE_ACTION_KINDS:
         return False, "no such action on that card"
+    # the click's input: only what the kind names (a deny's optional note), never a field the producer did not store
+    allowed = ("note",) if (kind == "quarantine" and body.get("verdict") == "deny") else ()
+    for k in inp:
+        if k not in allowed:
+            return False, "the action takes no %r from the click" % k
     if row.get("dismissOnAction"):
         # the one-shot mark is the store's own acted row (round five): the cleared ledger's Undo restores the card, and a
         # refusal keyed on the ledger let the restored card deliver the words a second time. A card that does not dismiss
@@ -24374,7 +24590,7 @@ def _notice_action_run(m, item_id, route, body):
             return False, "that card's action ran already"
         if item_id in _cleared_ids():
             return False, "that card was dismissed"
-    if route == "/send":
+    if kind == "send":
         # the target is the notice's OWN session, read from the row, whatever the stored body says (the check refuses a body
         # naming one; an older row's is ignored), and the text takes the plain-message door: no typed-command routing, so a
         # stored action can never change a session's model, effort or mode (the review of PR 1757, high)
@@ -24383,11 +24599,31 @@ def _notice_action_run(m, item_id, route, body):
             ok, err, _queued = _deliver_text(target, str(body.get("text") or ""), plain=True)
         except Exception as e:                         # a delivery fault is the answer, never the socket's death
             return False, "the action could not be delivered (%s)" % e
+    elif kind == "quarantine":
+        # the verdict on a held message, by the bus that owns delivery and the held file, with the card's OWNER as the
+        # recipient (the bus checks it serves that session, 2026-09-18); a deny's note rides as the bus's feedback. The held
+        # file's recipient must BE the card's owner (the manager's review of PR 1885, medium: the bus's own check reaches
+        # only a hold it does not have, so a mid that is held was decided whatever session the card wore); a file that is
+        # gone is the bus's to refuse
+        rec = _held_mail_record(body.get("mid"))
+        if rec is not None and str(rec.get("toId") or "") != str(row.get("sid") or sid):
+            return False, "that message is held for another session, not this card's owner"
+        qbody = {"mid": str(body.get("mid") or ""), "action": str(body.get("verdict") or ""), "sid": str(row.get("sid") or sid)}
+        note = " ".join(str(inp.get("note") or "").split())
+        if note:
+            qbody["feedback"] = note
+        try:
+            ok, err = _bus_quarantine_act(qbody)
+        except Exception as e:
+            return False, "the verdict could not reach the postal bus (%s)" % e
+        if ok:
+            with _notice_lock:                          # the decision retires the card whatever the ledger later says
+                _notice_append(sid, {"op": "expire", "t": int(time.time()), "key": key, "rev": rev, "sid": sid})
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
         with _notice_lock:                              # the acted mark first, then the dismissal: a crash between the two leaves
-            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "route": route})   # a spent card, never a re-runnable one
+            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
         _clear_ask(item_id)
         _mark_views_dirty()
     return ok, err
@@ -32884,6 +33120,31 @@ def _branch_marker(sid, events):
 
 
 _OVERLAY_KINDS = frozenset(("todo", "compacting", "clearing", "reconnecting", "retrying", "queued", "apiError"))   # the live overlay cards
+# The kernel's TRANSIENT live-tail keys (2026-09-19): each names an event that a durable record or note under a DIFFERENT key
+# replaces the moment it lands or retires, so the key is in no later built list. The SDK backend's input echo is "echo:<hex>"
+# (SdkBackend.send mints it, or takes the client's id in that same form, admitted by _CLIENT_QID_RE through _wire_qid;
+# SdkBackend._reseed_echoes keeps it across a restart, or re-mints it in the same form for a mirror entry that carried no uuid);
+# the Codex backend's echo is "echo-<hex>" (CodexBackend.send); the /model, /effort and /auth acknowledgement chip is "cmd:<t>:<name>"
+# (_ack_cmd_chip), retired by prune_live's stale_cmd or by text, after which build_session's durable cmdGesture note
+# "cmdg:<t>:<n>" takes its slot. A proto-2 base whose `last` was one of these could not be mapped by the next push (the delta
+# branch needs both edges in the list), so the pusher sent a whole session frame to every caught-up client on every send
+# into an idle session, a nudge, a postal delivery and a manager dispatch included; measured on a serving kernel 2026-09-18:
+# 1022 full chat frames, 644 MB, against 70,138 deltas, 581 MB, in 20 h. _last_anchor skips them the way it skips the
+# overlay cards, so they ride the suffix of the deltas after them. The client's twin is send-pending.ts stableUuid, which
+# excludes isKernelEchoUuid and OVERLAY_KINDS from the anchors a send may take; its echo rule names "echo:" alone, so a Codex
+# echo is never hidden behind the sender's bubble there (a client sibling's to close). A prefix rule, not a stamp on the
+# event, so a fifth live-tail key minted outside the tuple would re-open the defect: tests/test_send_pending_overlay_kinds.py
+# pins the four mint sites (the SDK send, the boot reseed, the chip, the Codex echo) and the client-id gate to the tuple, and a
+# full sent for a vanished key is counted on /perf under
+# pusher.chatFullWhy["lastGone:<family>"], where a recurrence reads as a non-zero label. NOT folded into _OVERLAY_KINDS: that
+# is a list of KINDS, twinned with the client's and pinned equal; these are key prefixes, and the events keep their wire shape.
+_TRANSIENT_KEY_PREFIXES = ("echo:", "echo-", "cmd:")
+
+
+def _transient_key(key):
+    """Whether `key` (an _event_key: a str, or None for a uuid-less hand-built event) is one of the kernel's transient
+    live-tail keys (_TRANSIENT_KEY_PREFIXES, 2026-09-19); a `uuid#n` key of one matches by its prefix too."""
+    return isinstance(key, str) and key.startswith(_TRANSIENT_KEY_PREFIXES)
 
 
 def _event_key(ev):
@@ -35781,10 +36042,11 @@ def _set_effort_or_park(be, sid, value):
 
 
 def _effort_refusal(be, value):
-    """The sentence a refused effort pick is answered with (fail loudly, never a silent no-op), the
-    setEffort op's and _route_meta_command's alike: a Codex session's model does not advertise the level
-    in its catalog (or the catalog could not be read); any other backend refused it outright (an SDK
-    session it holds no row for; the unowned route refuses before a setter is reached)."""
+    """The sentence a refused effort pick is answered with (fail loudly, never a silent no-op), the same
+    one for every door that asks the setter (the setEffort op, _route_meta_command's typed /effort, the
+    drain of a parked pick in _apply_pending_ops, POST /new's prefs pass): a Codex session's model does
+    not advertise the level in its catalog (or the catalog could not be read); any other backend refused
+    it outright (an SDK session it holds no row for; the unowned route refuses before a setter is reached)."""
     if be is not None and be is _codex():
         return "Couldn't set effort '%s': this model's Codex catalog does not offer it." % value
     return "Couldn't set effort '%s': the session's backend refused it." % value
@@ -36052,7 +36314,9 @@ def _apply_pending_ops(now=None):
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes, plus
     _limit_hold's account gate — a queue held by a usage limit drains on the cycle after the API's own
     reset stamp passes, so the whole sequence goes in at the reset in the order it was typed); a dead
-    session's queue is dropped (fails once, logged), never retried.
+    session's queue is dropped (fails once, logged), never retried. An effort level or fast toggle the
+    backend refuses when it fires here is reported (the walk's stderr line, a settingRefused frame to the
+    chat), not popped silently.
 
     ONE LOCK, HELD FOR THE MUTATIONS ONLY (2026-09-05): every writer of _pending_ops — a handler's park or
     cancel, the move thread's head re-insert, this walk — takes _pending_ops_lock, and this walk takes it
@@ -36210,9 +36474,15 @@ def _apply_pending_ops(now=None):
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
-                        be.set_effort(sid, op[1])
+                        # the verdict is READ, as the command and compact arms read theirs: a level the backend refuses
+                        # at fire time (a Codex model whose catalog does not offer it after a model change under the
+                        # park, a session the backend holds no row for) is reported below, where the live setEffort op
+                        # would have said so; dropped, the queued chip retired as if the level had landed, with no
+                        # stderr line and no reply. Strict `is False`: the SessionBackend contract is a bool and every
+                        # shipped setter keeps it, so a setter answering None is not read as a refusal.
+                        refused = be.set_effort(sid, op[1]) is False
                     elif op[0] == "fast":
-                        be.set_fast(sid, op[1])
+                        refused = be.set_fast(sid, op[1]) is False   # its bool was dropped the same way
                     elif op[0] == "auth":
                         be.set_auth(sid, op[1])
                     elif op[0] == "env":
@@ -36251,6 +36521,23 @@ def _apply_pending_ops(now=None):
                             _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
+                    if op[0] in ("effort", "fast") and refused:
+                        # the backend refused the parked level or toggle when it fired (a Codex model whose catalog does
+                        # not offer the level, a session the backend holds no row for, a Codex session's fast toggle: it
+                        # has no fast mode): the same stderr line the command and compact arms write, and the refusal
+                        # to the chat on the settingRefused frame the live setEffort and setFast ops answer with (gesture
+                        # command, the sid, the flag), so the chip's retirement is not read as the pick landing. A bare
+                        # warn is not the shape here: the chat reads one arriving during a create as that create's
+                        # verdict. Said whether or not `took`: a same-kind replacement delivering next does not unsay
+                        # this one's refusal. No client is at hand here (the pusher thread runs the drain), so the chat
+                        # page is the addressee, as the command and compact arms chose. Nothing applies early and nothing
+                        # is retried: the gate lift is still what fires the op, and it is popped once, above.
+                        what = "/%s %s" % (op[0], op[1])
+                        why = (_effort_refusal(be, op[1]) if op[0] == "effort"
+                               else "Couldn't toggle fast mode: the session's backend refused it.")
+                        sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
+                        _send_to_app("chat", {"type": "settingRefused", "gesture": "command", "sid": sid,
+                                              "flag": op[0], "text": why})
                     # a settings op (or an unknown kind): delivery continues. `took` False means a same-kind pick
                     # replaced the head in place while it was with the backend — the replacement delivers next
             except Exception:
@@ -39330,7 +39617,7 @@ _CLEARED_STATS = {"served": 0, "derived": 0}   # bumped from the pusher AND sock
 # clearAll handler) clears every ask build_feed lists, these included, so their rows arrive live and, the log being
 # append-only, accumulate. An explicit list rather than a shape test on the stem: the goals/ stems are the ground
 # truth for a session id and any uuid text is a valid one; a new family that keys no session is added here.
-_CLEARED_NO_SESSION = ("parked:", "quarantine:", "provisional:", "awaiting:", "blocked:", "notice:")   # notice: T370, plans/notice-cards.md
+_CLEARED_NO_SESSION = ("parked:", "quarantine:", "provisional:", "awaiting:", "blocked:", "notice:")   # notice: T370, plans/notice-cards.md; quarantine: an older clear log's held-mail ids (a notice card since 2026-09-19)
 
 
 def _cleared_foreign(cleared):
@@ -42725,12 +43012,11 @@ def build_feed(now, live_map=None):
                                 % (ph["fromName"], ph["toName"])},
             "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
-    # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
-    # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
-    asks.extend(_quarantine_cards(now, cleared))
+    # (the quarantined peer mail's own card family left on 2026-09-19: a held message is a notice card the kernel posts,
+    # plans/notice-cards.md "Action kinds and the held-mail card"; the backfill runs inside the notice attach below)
     # NOTICE CARDS (T370, plans/notice-cards.md): a producer's card, posted without the judges; read live from the
     # per-session notice files (a stat-keyed, byte-bounded memo), the newest revision per key, minus the cleared ids
-    asks.extend(_notice_cards(now, cleared))
+    asks.extend(_notice_cards(now, cleared, {s["sid"] for s in alive}))   # the alive roster: a card's live is its owner's
     # per-card bell (the user 2026-07-28): one pass over the FINAL ask list — goal cards, placeholders,
     # parked handoffs and quarantine cards alike — so every card's right-click menu reflects its armed
     # state, EFFECTIVE (card override > session override > the master default, 2026-08-09) — with the
@@ -45315,56 +45601,7 @@ def _parked_handoffs(now, alive_sids):
     return out
 
 
-def _quarantine_cards(now, cleared):
-    """Inbound mail from a DIRECTED federated host (per-host trust model), HELD for a human decision:
-    approve (deliver, optionally after editing), or deny (drop). Never auto-injects the peer's content
-    — that IS the point of directed trust. Reads the bus's quarantine dir directly (plain JSON files,
-    so it works even if the bus is momentarily down); itemId 'quarantine:<mid>' rides cleared.jsonl so
-    a Clear dismisses the card (the held file stays until an explicit approve/deny). Best-effort []."""
-    qdir = jd.STATE / "postal" / "quarantine"
-    out = []
-    try:
-        files = sorted(qdir.glob("*.json"))
-    except OSError:
-        return out
-    for f in files:
-        try:
-            rec = json.loads(f.read_text())
-        except (OSError, ValueError):
-            continue
-        mid = rec.get("mid") or ""
-        if not mid:
-            continue
-        item_id = "quarantine:" + mid
-        if item_id in cleared:
-            continue
-        frm, to, origin = rec.get("frm") or "?", rec.get("to") or "?", rec.get("origin") or "?"
-        t = int(rec.get("at") or now)
-        # COMPACT card (the user 2026-07-26): what you're approving is a delivery to THIS session, so
-        # the card reads as one line under the recipient's name — "New message" + a dim sender/gist
-        # line — and the full body lives in the click-through decision modal. The gist is the same
-        # 90-char collapse the federation gossip uses (there is no courier summary at hold time: the
-        # courier only judges mail AFTER delivery, which is exactly what hasn't happened yet).
-        out.append({
-            "itemId": item_id, "sid": rec.get("toId") or "", "name": to,
-            "color": _name_color(rec.get("toId") or ""),
-            "text": "New message",
-            "t": t, "live": False,
-            "trgb": list(cm.age_rgb(now - t, _colormap())),
-            "turnId": item_id, "origin": None,
-            "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
-            "nudged": None,
-            "blocked": {"state": "quarantine", "mid": mid, "frm": frm, "to": to, "origin": origin,
-                        "body": rec.get("body") or "",
-                        "gist": " ".join(str(rec.get("body") or "").split())[:90],
-                        "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
-                                "waiting on you — approve to deliver it to %s, or deny to drop it. Nothing "
-                                "reaches %s until you approve." % (frm, origin, to, to)},
-            "column": "needs_input", "board": "feed", "category": "needs_input",
-            "tree": []})
-    out.sort(key=lambda c: c["t"])
-    return out
+# (the quarantine card builder left on 2026-09-19: the held-mail card is a notice card, _held_mail_backfill above)
 
 
 def _seg_anchors(atoms):
@@ -46457,7 +46694,7 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
                 # with every default OMITTED (a false flag, an empty list or caption, the "typed" source):
                 # 8,577 bars carried 1.1 MB of key names and 0.9 MB of defaults in a 12 MB frame. The view
                 # expands a bar once at its boundary (expandBars in ui/romp-timeline-view.js, the twin of
-                # _BAR_WIRE below, drift-guarded by tests) so every reader keeps its long names.
+                # _BAR_WIRE above, drift-guarded by tests) so every reader keeps its long names.
                 # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a chat
                 # message-hover lights only the dot and a work-hover only the bar (dotLit/barLit in the view).
                 # The wire prompt (T278b): the first line, capped; the tip shows 90 chars of it and nothing
@@ -47941,6 +48178,29 @@ def _note_history_reply(client, sid, mtype, reply, nbytes, now=None, sent=True):
         pass
 
 
+def _note_chat_full(client, sid, reason, change_from, total, first_held, last_held, now=None):
+    """One client-diag row per proto-2 FULL session frame that LEFT for a client that HOLDS a base for the session
+    (2026-09-19; called once _send_client has returned True, so a frame deduped against the client's last files nothing).
+    The pusher's steady state owes such a client deltas only, and the page treats a full for a session it holds as a
+    reconnect repair (a whole-window rebuild, the reader's place re-derived); the kernel filed nothing for it, so the 1022
+    fulls a serving kernel counted in 20 h against 70,138 deltas could not be told apart by cause from the serving side
+    (the transient-key anchor, a fork, a targeted push), only from the page's own slow-frame rows. The row names the client
+    (cid, kind), the session, the reason _chat_full_reason gave, the change index and the list's length, and which base
+    edges the list still held. Numbers and identifiers only: no event text, no names. Diagnostic only; the file's own
+    failure is swallowed, as _note_history_reply's is. Called under the client's slot lock (all of _send_chat_proto2 runs
+    inside its callers' `with _client_lock(c)`), unlike _note_history_reply, which its handler calls after its lock block:
+    safe, since _client_diag_append takes only its own leaf lock and takes no other inside it, so the order client lock
+    then diag lock has no reverse anywhere."""
+    try:
+        now = time.time() if now is None else now
+        data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "reason": str(reason),
+                "changeFrom": int(change_from), "total": int(total), "firstHeld": bool(first_held), "lastHeld": bool(last_held)}
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "chatFull",
+                                                                        "data": data}) + "\n")
+    except Exception:
+        pass
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -49062,7 +49322,8 @@ def _note_needfull_status(c, sid):
 
 
 def _send_chat_or_status(c, m, ms, change_from, led_changed):
-    """_send_chat for the pusher's per-client loop: a sid the client holds as a skeleton gets a ~400 B status
+    """_send_chat for the pusher's per-client loop (and, since 2026-09-19, the targeted one-session push's, which
+    used to hand every client a full): a sid the client holds as a skeleton gets a ~400 B status
     frame on its own ("status", sid) slot (deduped, so an unchanged status costs nothing) instead of its chat,
     and the lazy full serialization stays unmaterialized. A skeleton sid never reaches _send_chat_locked, so
     echat has no entry and `sent` no ("chat", sid) slot for it — the moment it is released the existing full
@@ -49548,6 +49809,14 @@ def _note_unknown_op(msg, client):
     _reply(client, reply)
 
 
+# The sender's road for /perf's sends split (2026-09-19): _push_session_now names its whole body `targeted` on this
+# thread-local, and _send_client hands the name to the counter, so EVERY frame of the targeted one-session push (the SDK
+# connect handshake, the Codex backend's stream events, a create, a fork), its tab strip, the cold-tab gate's status, the
+# session frame or a skeleton holder's status, is counted under `<slot>.targeted` apart from the pusher's cycle. Nothing
+# else reads it; a thread outside that body has no name set.
+_SEND_ROAD = threading.local()
+
+
 def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
@@ -49570,7 +49839,12 @@ def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
     whole frame) or "delta" for a caller whose frame is a suffix or a diff (_send_chat's chatTail).
 
     `pre` may also be a _LazyWire (the feed, the bars): its bytes are produced only if the frame GOES — a
-    deduped frame costs its size() and nothing else."""
+    deduped frame costs its size() and nothing else.
+
+    Returns whether the frame WENT (2026-09-19): True once _client_send accepted it, False when it was deduped against
+    the client's last frame or the socket refused it. _send_chat_proto2 reads it to count and file a whole chat frame
+    only when one left: a meter that fired on the decision counted, and filed a client-diag row for, fulls the client
+    never received (the review of the anchor fix). Every other caller ignores it."""
     if pre is None:
         s = json.dumps(msg)
     elif isinstance(pre, str):
@@ -49589,21 +49863,22 @@ def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
         sq = _views_seq_of(msg)
         if sq is not None:
             seqs.append(sq)
+    road = getattr(_SEND_ROAD, "name", None)         # the targeted push's frames read apart on /perf (see _SEND_ROAD)
     with _client_lock(c):    # the dedup dict is shared with the handler thread's `ready`
         prev = c.setdefault("sent", {}).get(key)      # reset (_client_reset_chat_base) — one writer at a time
         now = time.time()
         if prev is not None and prev[0] == sig and (now - prev[1]) < _DEDUP_REPOST_S:
             n = len(s) if s is not None else pre.size()   # deduped: the length only; a lazy frame stays unserialized
             _perf("send", slot=_perf_slot(key), bytes=n, deduped=1)
-            _PERF_STATS.send(key, "deduped", n)
-            return
+            _PERF_STATS.send(key, "deduped", n, road=road)
+            return False
         if s is None:
             s = pre.text()                            # the frame goes: the build's one whole encode (the cell keeps it) —
             #                                           BEFORE the slot is written, so a raise here leaves it for a retry
         c["sent"][key] = (sig, now)
         _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=0)
-        _PERF_STATS.send(key, kind, len(s))
-        _client_send(c, s, key)                       # enqueue only (never blocks): the lock is held for microseconds,
+        _PERF_STATS.send(key, kind, len(s), road=road)
+        return _client_send(c, s, key)                # enqueue only (never blocks): the lock is held for microseconds,
         #                                               or for the one whole encode when a lazy frame goes
 
 
@@ -50177,13 +50452,68 @@ def _snap_turn_end(tix, q):
 
 
 def _last_anchor(evs):
-    """The uuid a proto-2 client's base ends on: the last TRANSCRIPT event, never a trailing overlay card (a todo, a
-    queued or api-error notice comes and goes between builds; anchoring on one left the next push unable to map the
-    base and sent a full frame). The overlay cards ride every delta's suffix instead."""
+    """The uuid a proto-2 client's base ends on: the last event that is neither a trailing overlay card (a todo, a queued
+    or api-error notice comes and goes between builds) nor one of the kernel's transient live-tail keys (an input echo, the
+    command chip: _transient_key, 2026-09-19). Anchoring on either left the next push unable to map the base and sent a
+    full frame; both ride every later delta's suffix instead, so the landing that replaces an echo with the CLI's record is
+    a chatTail after the record before the echo, the road proto-1 clients take. Known, accepted residue: a list of nothing
+    but such events (a transcript-less session whose only event is its first echo) still anchors on its last event and
+    sends one full at that first landing, once per session creation; and the base's FIRST edge can still sit on a transient
+    key when the tail-run cut lands on a placed dropped echo, which takes the existing road for a first edge the list no
+    longer holds (the list's first event is inside what the client holds)."""
     for e in reversed(evs):
-        if e.get("kind") not in _OVERLAY_KINDS:
-            return _event_key(e)
+        if e.get("kind") in _OVERLAY_KINDS or _transient_key(_event_key(e)):
+            continue
+        return _event_key(e)
     return _event_key(evs[-1]) if evs else None
+
+
+def _gone_key_label(key):
+    """The bounded label under which a proto-2 full frame is counted when the held base's last edge is a key the new list no
+    longer carries (the `lastGone:<label>` reason, 2026-09-19): a transient key names its prefix without the colon (echo,
+    echo-, cmd), so a recurrence of the anchor defect names the family that caused it; another colon-keyed key names its
+    family too (the kernel's synthesized notes: cmdg, orphan, retried, gaveup, effort, branch, clear, system, ev; a bounded
+    set); a bare overlay kind is `overlay`; anything else, a record uuid above all, is `record`, so a rewind or a fork that
+    cuts the held last never mints a label per uuid (the map is capped besides, _PerfStats.chat_full_why). A `uuid#n` key
+    is read by its uuid; an empty key is `none`."""
+    k = str(key or "").split("#", 1)[0]
+    if not k:
+        return "none"
+    for p in _TRANSIENT_KEY_PREFIXES:
+        if k.startswith(p):
+            return p if p.endswith("-") else p[:-1]
+    if k in _OVERLAY_KINDS:
+        return "overlay"
+    if ":" in k:
+        return k.split(":", 1)[0]
+    return "record"
+
+
+def _chat_full_reason(pc, pf, pl, change_from, total):
+    """The reason a proto-2 send fell through to the full frame, from what the sender saw (pusher.chatFullWhy, 2026-09-19):
+    `noBase` (no base held: a first send, a ready or needFull reset), `empty` (a list with no events), `baseGone` (neither
+    edge in the list: a fork, a rewind, a /clear), `lastGone:<label>` (the first edge held, the last not: the shape the
+    transient-key anchor produced, labeled by _gone_key_label), `inverted` (the last edge before the first),
+    `changeAt0` (a change at the list's first event against a held base: _push_session_now's targeted push and a genuine
+    first-event change, not told apart without a caller's mark), `changeBelowFirst` (a change before the held first edge).
+    `pf` and `pl` are the edges' indexes as the delta branch read them (a first edge before the floor'd list is 0)."""
+    if not isinstance(pc, dict):
+        return "noBase"
+    if not total:
+        return "empty"
+    if pf is None and pl is None:
+        return "baseGone"
+    if pl is None:
+        return "lastGone:" + _gone_key_label(pc.get("last"))
+    if pf is None:
+        pf = 0
+    if pf > pl:
+        return "inverted"
+    if change_from <= 0:
+        return "changeAt0"
+    if change_from <= pf:
+        return "changeBelowFirst"
+    return "other"                                    # no known shape reaches the full frame past these: counted, never raised
 
 
 def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
@@ -50193,19 +50523,36 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     change inside or right after what it holds is a chatTail {afterUuid, events}: it truncates after afterUuid and
     appends; a change before its first event, a base the new list no longer holds (a fork, a rewind), or no base is a
     full session frame carrying the list's tail with firstUuid/lastUuid, headKnown, headTotal and tailLo (the turn the
-    tail run begins at, so the page can size its head gap)."""
+    tail run begins at, so the page can size its head gap). Every full that LEAVES is counted by its reason under /perf
+    `pusher.chatFullWhy`, and one that leaves for a client that HOLDS a base files one `chatFull` client-diag row
+    (2026-09-19, _chat_full_reason and _note_chat_full, once _send_client says the frame went; a frame it deduped is
+    neither): the steady state owes such a client deltas only, and the page treats a full for a session it holds as a
+    reconnect repair, a whole-window rebuild."""
     sid = m["id"]
     evs = m.get("events") or []
     total = len(evs)
+    pf = pl = None
+    held_first = False
     if isinstance(pc, dict) and total:
         pos = _uuid_positions(evs, sid)
         pf, pl = pos.get(pc.get("first")), pos.get(pc.get("last"))
+        held_first = pf is not None
         if pf is None and pl is not None:
             pf = 0                                        # the client's run begins before the floor'd list (pages it scrolled
         #                                                    into): the list's first event is inside what it holds
         if pf is not None and pl is not None and pf <= pl:
             if change_from >= total:
-                start = total                             # nothing changed: a status-only tail with an empty suffix
+                tx = pos.get(_last_anchor(evs))           # the list's last transcript event: the anchor a caught-up base ends on
+                if tx is None or pl >= tx:
+                    start = total                         # nothing changed: a status-only tail with an empty suffix (the trailing
+                    #                                       overlay cards, held since the last suffix, do not ride it again)
+                else:
+                    start = pl + 1                        # ...but a client BEHIND the list's transcript is served from after its
+                    #                                       own held last (2026-09-19): the cycle that advanced the baseline had
+                    #                                       not reached it yet when a targeted push read that baseline, or its
+                    #                                       base came from an older build. Anchored at the list's last, the tail
+                    #                                       sat past what the client held, which the page reads as a gap and
+                    #                                       answers with a full ask, the frame the targeted push stopped sending
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
             if start > pf:                                #  last record (the overlay cards after it ride the suffix)
@@ -50248,7 +50595,16 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     m_send["lastUuid"] = _event_key(evs[-1]) if total else None
     m_send["tailLo"] = 0 if head_known else tail_lo   # the tail run's first turn (T386 stage 2), the turn the frame now begins with
     m_send["pageTurns"] = PAGE_TURNS                  # the page the gaps ask by (chat-regions.ts pagesToAsk)
-    _send_client(c, ("chat", sid), m_send)
+    # The full frame, counted by reason and filed when the client held a base it was owed deltas on: AFTER the send, and only
+    # when the frame LEFT (2026-09-19, the review of the anchor fix). _send_client dedupes a frame the client already holds byte
+    # for byte within _DEDUP_REPOST_S (a targeted push repeated on one build, the connect handshake's second push) and hands
+    # the client nothing; a meter that fired on the decision counted those, filed a client-diag row for a frame nobody received,
+    # and its total outran sends.full, which never counts a deduped frame either.
+    if _send_client(c, ("chat", sid), m_send):
+        reason = _chat_full_reason(pc, pf, pl, change_from, total)
+        _PERF_STATS.chat_full_why(reason)
+        if isinstance(pc, dict):
+            _note_chat_full(c, sid, reason, change_from, total, held_first, pl is not None)
     st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
     return ms
 
@@ -53059,6 +53415,11 @@ def _push(targets, connect=False, live_map=None):
                 # drops from the whole events array to just what changed.
                 change_from = _chat_diff(_prev_chat_events.get(m["id"]), m.get("events") or [])
                 led_changed = m.get("ledger") != _prev_chat_ledger.get(m["id"])
+                for c in chat_clients:
+                    # flush as built → the active tab lands first; a full send materializes the lazy
+                    # serialization ONCE and every later client (and the cache below) reuses it. A tab the
+                    # client holds as a skeleton gets only its status (2026-09-07)
+                    ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
                 # The baseline is SHARED by every client, so only a push that reaches them all may advance it.
                 # A connect push targets ONE client (_push_one → _push([client], connect=True)); when it moved
                 # the baseline, everything written since the last full push fell BELOW the next diff's
@@ -53066,15 +53427,20 @@ def _push(targets, connect=False, live_map=None):
                 # delta and froze (the user 2026-07-28: opening or reloading any pane could silently strand the
                 # others). Leaving the baseline alone costs only a slightly longer next suffix, which every
                 # client — including the one that just connected — applies idempotently (truncate at `from`,
-                # re-append). The fresh client is already served its own full session directly below.
+                # re-append). The fresh client was served its own full session directly above.
+                # And it advances AFTER the sends above, never before (2026-09-19): the targeted one-session push
+                # (_push_session_now) reads this baseline on another thread to serve each client from the base it
+                # holds, and must never see one this cycle has not yet delivered to every client. Written before
+                # the loop, a targeted push landing in the write-to-send gap diffed its build against an equal
+                # baseline and anchored an empty tail at the list's last event, one the racing client did not hold
+                # yet; the page reads a tail past what it holds as a gap and asks for a full, the very frame that
+                # push stopped sending. An OLDER baseline only re-sends the overlap, which the client applies
+                # idempotently; a NEWER one anchors a tail past what the client holds. (A send that raises now
+                # leaves the baseline where it was, so the next cycle re-sends the overlap rather than stranding
+                # the clients the loop had not reached.)
                 if not connect:
                     _prev_chat_events[m["id"]] = m.get("events") or []
                     _prev_chat_ledger[m["id"]] = m.get("ledger")
-                for c in chat_clients:
-                    # flush as built → the active tab lands first; a full send materializes the lazy
-                    # serialization ONCE and every later client (and the cache below) reuses it. A tab the
-                    # client holds as a skeleton gets only its status (2026-09-07)
-                    ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
                 # cache AFTER the sends, so a serialization a full send just paid for is kept — the next
                 # connect-push for this unchanged tab reuses it instead of dumping again
                 if sig is not None:
@@ -53471,10 +53837,42 @@ def _push_session_now(sid):
     is near-free — and sends the tab strip plus that payload directly; the next full cycle re-sends both
     idempotently (per-client dedup absorbs the overlap).
 
-    Deliberately NOT touched here: the shared delta baseline (_prev_chat_events) — only a push that
-    reaches every client may advance it (the 2026-07-28 stranded-delta lesson), and change_from=0 below
-    always takes the full-session form so no client's tail state can be left ahead of the baseline; and
-    the build cache/_last_tab_order bookkeeping, which belong to the pusher. Never a fleet build (the
+    Each client is served from the base IT holds, through the pusher's per-client road (2026-09-19). Until then
+    the send loop handed every client a full session frame, change_from forced to 0, on the reasoning that no
+    client's tail state could then be left ahead of the shared baseline. That frame is the one a page treats as
+    a reconnect repair: a tab it held whole rebuilt its window and re-derived the reader's place, and a tab it
+    held as a skeleton was force-loaded, on every SDK connect handshake, every Codex stream event, every create
+    and fork (measured live 2026-09-18: 426 targeted builds in 20 h across 22 sessions; 973 full chat frames
+    against 68,377 deltas, 133 of the fulls connect pushes). Now a caught-up client gets a chatTail whose
+    suffix begins at the change against the baseline, or right after what it holds, and is empty when nothing
+    moved (the status flip this push exists for rides it; an identical tail is deduped on its slot within the
+    repost window, _DEDUP_REPOST_S, and re-sent as a no-op after it); a client holding the tab as a skeleton
+    gets its status on the status slot and keeps the skeleton (the click or the prefetch releases it, as with
+    the pusher); a client with no base (a fresh socket, a redial's watched tab, a needFull reset) gets the full
+    as before; a client armed for the ready arm's connect push gets nothing here, the pusher's rule. The tail
+    needs a baseline: _chat_diff reads 0 with none, and 0 is the full road for a based client too, so a sid the
+    pusher has not built yet (a create, then its handshake seconds later; a new Codex session's first-turn
+    notifications before the pusher's first cycle), one whose only cycle build was transcript-less (an empty
+    baseline reads as none), or one that left and re-entered the strip (the pusher pops the baseline of a tab no
+    longer shown) still gets the full from every targeted push until a cycle has built it. Safe without the
+    forced full: for proto 2 the next tail starts at min(change_from, held last + 1), the no-change tail
+    included (anchored at the client's held last when that lies before the list's last transcript event, so a
+    client behind this build gets the events it lacks rather than a tail past what it holds; a caught-up client's
+    stays the empty suffix), so a client ahead of the baseline is never skipped, only re-sent the overlap since
+    the LAST PUSHER CYCLE, which it applies idempotently (truncate at the anchor, re-append), the state every
+    ready-arm connect push already leaves; the pusher advances that baseline only AFTER its cycle has delivered
+    to every client, so a push landing mid-cycle reads the older baseline and re-sends the overlap, never a
+    suffix anchored past what a racing client holds (with the write before the sends, a push in that gap diffed
+    an equal list and anchored an empty tail at an event the client did not hold yet: a gap ask, and the very
+    full this routing removed); an index-wire client left BEHIND the baseline (this build shorter than it) asks
+    for the gap itself (a tail past what it holds → needFull), the road every connect push relies on. The
+    residual, shared with the connect push and not new: a client ahead of the baseline whose held event at some
+    index differs from both the baseline and the next build while the next build equals the baseline there is
+    re-sent by neither sender until a full; no builder produces such a flap today.
+
+    Deliberately NOT touched here: the shared delta baseline (_prev_chat_events, _prev_chat_ledger) — only a
+    push that reaches every client may advance it (the 2026-07-28 stranded-delta lesson); and the build
+    cache/_last_tab_order bookkeeping, which belong to the pusher. Never a build of every session (the
     push-architecture rule, 2026-07-05): callers sit on WS-handler / spawn / backend threads."""
     sid = str(sid)
     with _clients_lock:
@@ -53482,6 +53880,9 @@ def _push_session_now(sid):
     if not targets:
         return
     try:
+        _SEND_ROAD.name = "targeted"                 # every frame this push sends (the strip, the cold-tab gate's status, the
+        #                                              session frame or a skeleton holder's status) reads apart on /perf as
+        #                                              `<slot>.targeted` (2026-09-19; see _SEND_ROAD); reset in the finally below
         now = int(time.time())
         live_map = _live_map()
         chat_list = _chat_tab_sessions(now, live_map)
@@ -53534,11 +53935,19 @@ def _push_session_now(sid):
             _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None),
                               len(_prev_chat_events.get(sid) or ()))
             return                                   # the periodic pusher owns the sid until content returns
+        # the pusher's diff against the shared baseline, the baseline itself left where it is (2026-09-19; the docstring):
+        # each client is served from the base it holds, exactly as the pusher's per-client loop serves it. The pusher
+        # advances that baseline only AFTER its cycle has delivered to every client, so a read here mid-cycle sees the
+        # older one and re-sends the overlap, never a suffix anchored past what a racing client holds
+        change_from = _chat_diff(_prev_chat_events.get(sid), m.get("events") or [])
+        led_changed = m.get("ledger") != _prev_chat_ledger.get(sid)
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
         for c in targets:                            # the strip went above, before the gate; here the session frame
-            ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form (…and releases a skeleton)
+            ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
+    finally:
+        _SEND_ROAD.name = None
 
 
 # ───────────────────────── producer + push threads ─────────────────────────
@@ -54142,7 +54551,7 @@ _CODE_BOARDS = {
         "order": ["ownerRank"],                        # what feed.ts does (PR 1831): the owner-less notice run first, then the session order, then time
         "notify": ["needs_input", "completed"],
         "needsYou": "needs_input",
-        "kinds": ["goal", "placeholder", "parked", "quarantine", "notice"],
+        "kinds": ["goal", "placeholder", "parked", "notice"],   # the quarantine card is a notice card since 2026-09-19
     },
 }
 _BOARD_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -54151,7 +54560,7 @@ _BOARD_CHIPS = ("working", "blocked", "completed", "neutral")
 _BOARD_SORT_FIELDS = ("t", "session", "owner", "title")
 _BOARD_PREDICATES = ("needsYou", "producer", "keyPrefix")
 _BOARD_ORDER_RULES = ("ownerRank",)
-_BOARD_KINDS = ("goal", "placeholder", "parked", "quarantine", "notice")
+_BOARD_KINDS = ("goal", "placeholder", "parked", "notice")
 
 
 def _board_check_sort(sv, where):
@@ -63868,6 +64277,9 @@ def _landing():
             # a dist bundle (ui/webview/palette-main.ts) like age-color-global above. Loaded last —
             # it reads the __romp* globals lazily, at command run time, so order is cosmetic.
             + ("<script src=/dist/palette-main.js?v=%d></script>" % v)
+            # the pane docking engine (ui/webview/panedock-main.ts, plans/pane-docking.md): inert unless
+            # the gear's paneDocking switch is on, so with it off the shipped pane layout above is untouched
+            + ("<script src=/dist/panedock-main.js?v=%d></script>" % v)
             + _stale_block(v) + _update_block() + _rdrift_block() +
             "</body></html>")
 
@@ -67124,33 +67536,12 @@ class Handler(BaseHTTPRequestHandler):
             # in the allowlist, matched exactly) and answers the asking pane by the card's item id, so the feed re-arms the
             # button on a refusal and the next push drops the card when dismissOnAction cleared it
             try:
-                _nok, _nerr = _notice_action(str(msg["itemId"]), str(msg.get("route") or ""), msg.get("body") if isinstance(msg.get("body"), dict) else {})
+                _nok, _nerr = _notice_action(str(msg["itemId"]), str(msg.get("kind") or msg.get("route") or ""),
+                                             msg.get("body") if isinstance(msg.get("body"), dict) else {},
+                                             msg.get("input") if isinstance(msg.get("input"), dict) else {})
             except Exception as e:                     # said to the asking pane; the socket lives on
                 _nok, _nerr = False, "the action failed (%s)" % e
             client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}))
-        elif msg and msg.get("type") == "quarantineDecision" and msg.get("mid"):
-            # Human verdict on a DIRECTED peer's held message (per-host trust): approve delivers it
-            # (optionally with human-edited text), deny drops it. The bus owns delivery + the held-message
-            # store, so proxy there; on success the bus removes the held file, so _quarantine_cards drops
-            # the card on the next build (event-based — no cleared.jsonl needed). Failure answers the asker by mid.
-            _qmid = str(msg["mid"])
-            _qbody = {"mid": _qmid, "action": str(msg.get("action") or "").strip().lower()}
-            if msg.get("sid"):                     # the recipient, stripped of its host by the route: the bus checks it serves that session
-                _qbody["sid"] = str(msg["sid"])
-            if msg.get("text") is not None:
-                _qbody["text"] = str(msg["text"])
-            if msg.get("feedback"):                # deny-with-note: the bus mails it back to the sender
-                _qbody["feedback"] = str(msg["feedback"])
-            _qok, _qerr = _bus_quarantine_act(_qbody)
-            if _qok:
-                _mark_views_dirty()
-            else:
-                # the refusal answers the asking pane BY THE MESSAGE it was about (review find, 2026-09-08): the
-                # feed latched Approve/Deny ("Delivering…") on the click and re-arms them on this reply, matched
-                # by mid. It was a bare `warn` before, which the feed never handled, so a refused verdict left
-                # both buttons disabled until the card was re-sent, and a card the bus refused to act on is
-                # exactly the one that is never re-sent. The feed is the only poster of this op.
-                client["send"](json.dumps({"type": "quarantineRefused", "mid": _qmid, "text": "quarantine: " + _qerr}))
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the

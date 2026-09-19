@@ -14,7 +14,7 @@ import { openContextMenu, CtxItem } from "./ctx-menu";   // the one menu builder
 import { flipNeeded } from "./feed-flip";
 import { delegate } from "./actions";
 import { paintHeld, paintReleased, publishPaneHidden } from "./paint-gate";
-import { linkifyPrRefs, setLinkedText, senderPrRepo, installPrLinkOpener } from "./pr-links";
+import { linkifyPrRefs, setLinkedText, installPrLinkOpener } from "./pr-links";
 import { cardInputsKey, cardNeedsUpdate, type GateEnv } from "./feed-card-gate";
 import { spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
@@ -23,7 +23,7 @@ import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
 import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
-import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf, bareId } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostOf, bareId } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
@@ -125,15 +125,14 @@ interface AskItem {
               refusal?: boolean;   // apiError: the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — deterministic on the same input, the user 2026-08-15)
               mode?: string; login?: string; since?: number;   // judgeAuth adds these: which billing its judges ride ('key'|'login') + the first refusal time — romp can't analyze the session until the credential is fixed (the user 2026-08-12)
               capOffer?: { resetsAt: number; window?: string };   // apiError: login-billed session dead on the account's cap + a key on hand → the explicit switch OFFER; the pick is yours alone, both directions (2026-08-30)
-              toName?: string; toSid?: string;    // parkedHandoff adds to*
-              mid?: string; frm?: string; to?: string; origin?: string; body?: string; gist?: string };   // quarantine (held peer mail) adds these; gist = the bus's 90-char collapse for the compact card line
+              toName?: string; toSid?: string };  // parkedHandoff adds to* (the held-mail flavour left 2026-09-19: a notice card now)
   // a NOTICE CARD (T370, plans/notice-cards.md): a producer's card the kernel made without a judge; the flavour object
   // discriminates the family the way blocked.state does the kernel-made ones. The face shows the title (text), the producer
   // beside the session, the body (markdown through the sanitizer), the attachment (an image inline, pinned as posted), and
   // the action buttons the kernel executes against its allowlist; Clear dismisses it through cleared.jsonl like every card
   notice?: { producer: string; key: string; rev: number; body: string;
              attachment: { path: string; kind: string | null; allowed: boolean; why: string; pin: string | null } | null;
-             actions: { label: string; route: string; body: Record<string, unknown> }[];
+             actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[];   // of a KIND the kernel defines (send, quarantine); route: an older frame's spelling of send
              expiresAt: number | null; dismissOnAction: boolean; acted?: boolean } | null;   // acted: the one-shot action ran (a card back from Undo carries no actions)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
@@ -531,17 +530,8 @@ const vscodeApi = hostApi ? { postMessage: (m: any) => { noteOwnJump(m); hostApi
 // openExternal via `openLink` (view-routing.ts; extension.ts opens it for the feed panel). Once, on the
 // stable document, keyed off the anchor's href across the press (the click-safety rule: the anchors
 // themselves are rebuilt by pushes).
+
 installPrLinkOpener(document, vscodeApi ? (m) => vscodeApi.postMessage(m) : undefined);
-function linkifyPrRefsIn<T extends HTMLElement>(elm: T, repo: string | null): T { linkifyPrRefs(elm, repo); return elm; }
-// A held message was written by its SENDER (blocked.frm, on host blocked.origin), so its `#123` means
-// the sender's repository — the one the frame's session rows name for that session, never the
-// recipient card's own (pr-links.ts senderPrRepo: a wrong link is worse than none). The origin is the
-// viewing kernel's own host → a local row; another host → its federated row; unknown ("?") → any row
-// by bare name, if exactly one answers to it.
-function prRepoOfSender(frm: string | undefined, origin: string | undefined): string | null {
-  const host = !origin || origin === "?" ? undefined : origin === feedSelfHost ? "" : origin;
-  return senderPrRepo(sessionsMeta, frm || "", host);
-}
 
 // The settings gear (the ⛭ modal + analytics) rides THIS bundle for VS Code's feed panel: gear.js
 // builds its DOM here and rides our one kernel channel, opened by a {romp:'openSettings'} window
@@ -734,9 +724,9 @@ function focusEcho(sid: string): void {
 }
 let workingSet = new Set<string>();
 // This machine's own name (kernel _self_host, on every feed payload) and the identity colour of every
-// session the feed knows, keyed "host:name" for a remote one and plain for a local one. Held mail names
-// BOTH ends of the exchange, and a session's colour is its identity everywhere else, so the card has to
-// be able to look one up by name — the quarantine record carries names, not sids (the user 2026-07-29).
+// session the feed knows, keyed "host:name" for a remote one and plain for a local one: a session's colour is
+// its identity everywhere else, so a renderer holding only a name can look one up (first built for the held
+// mail's route line, the user 2026-07-29; that line is a notice card's body since 2026-09-19).
 let feedSelfHost = "";
 const sessionColors = new Map<string, string>();
 // session name -> live background-process descriptions the JUDGE classified as services (kernel bgServices:
@@ -803,8 +793,6 @@ let canUndoClear = false;   // host: cleared.jsonl has rows → the UndoClear bu
 // node) can't slide it and it would pop. We map the new card back to its predecessor's old rect so it slides
 // from there instead of appearing from nowhere. Rebuilt every render.
 let prevItemKey = new Map<string, string>();
-// Counts renders: the per-card update gate's key for a quarantine card carries it, so those cards never skip.
-let renderSeq = 0;
 
 // ONE builder for every Clear on the feed (the user 2026-09-08): the card's, the turn-group's and the
 // session header's wear the same element, class set, label and hover, so they cannot drift apart. Callers
@@ -1074,7 +1062,7 @@ function setCardNotify(card: HTMLElement, it: AskItem, value: boolean): void {
 // gate repaints a card only when the kernel re-sends it, the reply IS the event on a refusal (a success
 // re-sends the card, and that repaint re-arms it). Every refusal names the request it answers, and only the
 // latch that made that request lets go: `reviveFailed` names the revived id (the parked card's sid IS that id,
-// and its blocked.toSid), `retryRefused` and an `err` whose op is apiRetry name the session, `quarantineRefused`
+// and its blocked.toSid), `retryRefused` and an `err` whose op is apiRetry name the session
 // names the held message's mid, an `err` whose op is askFollowUp names the card. A reply that names a session
 // but no request (an `err` from a kernel older than the op field) releases the session's Retry and Revive, as
 // it did before; one that names neither releases nothing: it answers no request, so every latch stays a
@@ -1083,7 +1071,6 @@ function setCardNotify(card: HTMLElement, it: AskItem, value: boolean): void {
 type LatchReply =
   | { kind: "revive"; id: string }
   | { kind: "retry"; sid: string }
-  | { kind: "quarantine"; mid: string }
   | { kind: "followup"; itemId: string }
   | { kind: "session"; sid: string };
 function rearmLatches(reply: LatchReply): number {
@@ -1099,7 +1086,6 @@ function rearmLatches(reply: LatchReply): number {
     switch (reply.kind) {
       case "revive": if ((it.blocked?.toSid || it.sid) === reply.id) arm(a._revive, reviveIdle()); break;
       case "retry": if (it.sid === reply.sid) arm(a._apiRetry, "Retry"); break;
-      case "quarantine": if (it.blocked?.mid === reply.mid) { arm(a._qApprove, "Approve"); arm(a._qDeny, "Deny"); } break;
       case "followup":
         if (it.itemId === reply.itemId && a._cont && (a._cont as HTMLButtonElement).disabled) {
           arm(a._cont, "Continue");
@@ -1236,8 +1222,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   // QUARANTINE buttons (per-host trust): a held message from a DIRECTED peer — Approve delivers it,
   // Edit opens the modal to change the text before delivering, Deny drops it. Human-in-the-loop is the
   // whole point of directed trust, so nothing reaches the session until one of these is clicked.
-  const qApprove = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; qApprove.textContent = "Approve"; qApprove.title = "deliver this message to the recipient session"; qApprove.style.display = "none";
-  const qDeny = el("button", "fdismiss fq fq-no") as HTMLButtonElement; qDeny.textContent = "Deny"; qDeny.title = "drop this message — with the option of a note back to the sender"; qDeny.style.display = "none";
   // The header "awaiting" chip was REMOVED (the user 2026-07-04): it duplicated the "Awaiting background
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
@@ -1278,7 +1262,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
-  actions.append(revive, qApprove, qDeny);
+  actions.append(revive);   // (the held-mail Approve and Deny left this row 2026-09-19: a notice card's stored actions now)
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -1369,11 +1353,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
   const awaitWhy = el("span", "fask-awaiting-why");
   awaitSpin.append(awaitGlyph, awaitWhy);
-  // QUARANTINE body: a held message from a DIRECTED peer, shown IN FULL, read-only (peer content, never
-  // auto-run; the human is deciding on it, so clipping it works against the decision — the user
-  // 2026-07-26). Editing happens in the Edit modal, never inline. Only on a quarantine card.
-  const qbody = el("div", "fask-qbody");
-  qbody.style.display = "none";
   // NOTICE CARD (T370): the producer label beside the session name, then the body, the attachment and the actions, all
   // hidden until updateAskCard finds it.notice. The body is the sanitizer's inert DOM adopted (never innerHTML), the
   // attachment an image the kernel already judged and pinned, the actions buttons the kernel executes (noticeAction).
@@ -1382,7 +1361,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const nbody = el("div", "fask-nbody"); nbody.style.display = "none";
   const nattach = el("div", "fask-nattach"); nattach.style.display = "none";
   const nactions = el("div", "fask-nactions"); nactions.style.display = "none";
-  main.append(row1, row2, row3, secs, qbody, nbody, nattach, nactions, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
+  main.append(row1, row2, row3, secs, nbody, nattach, nactions, awaitSpin, checklist, delegations);   // no expand button: body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -1522,7 +1501,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._capLine = capLine; a._capBtn = capBtn;
   a._jauthBadge = jauthBadge;
   a._cont = cont;
-  a._qApprove = qApprove; a._qDeny = qDeny; a._qBody = qbody;
   a._nProd = nprod; a._nBody = nbody; a._nAttach = nattach; a._nActions = nactions;
   a._delegations = delegations;
   a._checklist = checklist;
@@ -2113,8 +2091,18 @@ function fillNoticeFace(it: AskItem, nt: NonNullable<AskItem["notice"]>, onBoard
     b.textContent = act.label; (b as any)._idle = act.label;
     b.onclick = (ev: Event) => {
       ev.stopPropagation();
-      vscodeApi?.postMessage({ type: "noticeAction", itemId: it.itemId, sid: it.sid, route: act.route, body: act.body });
-      b.disabled = true; b.textContent = act.label + "…";
+      // the action's KIND rides the wire (an older frame's route reads as send); the click may add only the input the kind
+      // names: a held-mail Deny asks for the optional note first, every other action goes at once
+      const kind = act.kind || (act.route === "/send" ? "send" : "");
+      const go = (input?: Record<string, unknown>) => {
+        vscodeApi?.postMessage({ type: "noticeAction", itemId: it.itemId, sid: it.sid, kind, body: act.body, ...(input ? { input } : {}) });
+        b.disabled = true; b.textContent = act.label + "…";
+        // a card that dismisses on its action resolves on ONE of them (a held message's Approve or Deny): its other buttons
+        // latch too until the kernel answers, so a second decision cannot race the first; rearmNoticeButtons lets every one go
+        if (nt.dismissOnAction) for (const o of Array.from(nActions.querySelectorAll("button")) as HTMLButtonElement[]) o.disabled = true;
+      };
+      if (kind === "quarantine" && act.body && (act.body as any).verdict === "deny") showDenyNoteDialog((note) => go(note ? { note } : undefined));
+      else go();
     };
     nActions.appendChild(b);
   }
@@ -2433,7 +2421,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const isJudgeAuth = it.blocked?.state === "judgeAuth";
   // the resume-gate card carries its own explanatory text + Proceed/Compact/Skip buttons, so the ⏸ chip
   // (which only speaks permission/picker) would just misread — suppress it there (the user 2026-07-21).
-  const showBlk = !!it.blocked && !isApiErr && !isJudgeAuth && it.blocked.state !== "quarantine";
+  const showBlk = !!it.blocked && !isApiErr && !isJudgeAuth;
   a._blocked.style.display = showBlk ? "" : "none";
   if (showBlk && it.blocked) {
     // live prompts only — the paused-stall badge retired with the floor (2026-07-07; a failed nudge now
@@ -2773,44 +2761,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       fillNoticeFace(it, nt, onBoard, nProd, nBody, nAttach, nActions);
     }
     // re-armed from the payload on EVERY update (the review of PR 1757, medium 2): a click on a down socket is dropped and
-    // never answered, so a latch that waited for noticeActionDone alone read "Send again…" for good; the quarantine card's
-    // shape, disabled = false on every update, and the kernel's answer or the next push both let go
+        // shape, disabled = false on every update, and the kernel's answer or the next push both let go
   } else {
     a._nKey = undefined;
   }
-  const isQuar = it.blocked?.state === "quarantine";
-  const qBody = a._qBody as HTMLElement;
-  qBody.style.display = isQuar ? "" : "none";
-  for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.style.display = isQuar ? "" : "none";
-  if (isQuar && it.blocked) {
-    const mid = it.blocked.mid || "";
-    // WHO to WHO, then what it says (the user 2026-07-29). Held mail is a delivery between two named
-    // sessions on two named machines, and the card used to render that as one grey run of text with the
-    // recipient missing entirely — you could not tell which of your sessions was about to receive it.
-    // Hosts stay quiet metadata (the same .host-prefix every surface uses), session names wear their
-    // identity colours, and the gist gets its own line under the route.
-    const toHost = (it.sid && it.sid.indexOf(":") > 0) ? it.sid.slice(0, it.sid.indexOf(":")) : feedSelfHost;
-    qBody.replaceChildren(
-      quarWho(it.blocked.origin || "", it.blocked.frm || "?"),
-      Object.assign(el("span", "fq-arrow"), { textContent: "\u2192" }),
-      quarWho(toHost, it.blocked.to || it.name || "?", it.color?.bg),
-      linkifyPrRefsIn(Object.assign(el("div", "fq-gist"), { textContent: it.blocked.gist || it.blocked.body || "" }), prRepoOfSender(it.blocked.frm, it.blocked.origin)));
-    qBody.title = "click to read the whole message and decide";
-    a._qApprove.disabled = false; a._qApprove.textContent = "Approve";
-    a._qDeny.disabled = false; a._qDeny.textContent = "Deny";
-    const decide = (action: string, busy: string, text: string, feedback?: string) => {
-      vscodeApi?.postMessage({ type: "quarantineDecision", mid, action, text, sid: it.sid, feedback });
-      for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.disabled = true;
-      (action === "deny" ? a._qDeny : a._qApprove).textContent = busy;
-    };
-    const ends = (): [QuarEnd, QuarEnd] => [
-      { host: it.blocked!.origin || "", name: it.blocked!.frm || "?" },
-      { host: toHost, name: it.blocked!.to || it.name || "?", color: it.color?.bg }];
-    qBody.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(...ends(), it.blocked!.body || "", decide, false); };
-    a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…", it.blocked!.body || ""); };
-    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(...ends(), it.blocked!.body || "", decide, true); };
-  }
-  (a._clr as HTMLElement).style.display = isQuar ? "none" : "";
+  (a._clr as HTMLElement).style.display = "";   // (a held message is a notice card since 2026-09-19: its Approve and Deny are stored actions, its Clear as every card's)
 
   // (Follow-up is modal-only now — no card button; the body click opens the modal. the user 2026-06-16.)
   // the user's handoff spec (2026-06-10): every session this ask was handed to,
@@ -2854,22 +2809,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
 // One end of a held message's route: "host:" as quiet metadata, the session name in its identity
 // colour. The colour is looked up by the name a peer addresses (sessionColors, filled per payload) and
 // simply absent when that session has no cards here — an invented colour would be a lie about identity.
-// A host romp cannot currently reach wears the same struck mark its tabs and lanes do.
-function quarWho(host: string, name: string, known?: string): HTMLElement {
-  const who = el("span", "fq-who");
-  if (host) {
-    const h = el("span", "host-prefix");
-    h.textContent = host + ":";
-    if (hostIsDown(host + ":x")) { h.classList.add("off"); h.title = hostDownNote(host + ":x"); }
-    who.appendChild(h);
-  }
-  const n = el("span", "fq-name");
-  n.textContent = name;
-  const color = known || sessionColors.get(host ? host + ":" + name : name) || sessionColors.get(name);
-  if (color) n.style.color = color;
-  who.appendChild(n);
-  return who;
-}
 
 // Resolve a focus key (set on hoverAskId/pinnedAskId) to the itemId the timeline
 // path-preview understands: a raw ask id maps to itself; a group key "g:<turnId>"
@@ -5009,12 +4948,12 @@ function dressHeaderIfLast(card: HTMLElement, sid: string): void {
 }
 
 // What a Clear may take: not a PLACEHOLDER (provisional / awaiting / blocked stand-ins carry no goal to
-// curate — the kernel keeps listing them, so a clear would only suppress them on this page until reload)
-// and not a QUARANTINE hold (a held peer message is approved or denied, never cleared — clearing would
-// hide its only surface while the held file stayed undelivered). The card-level Clear hides itself for
-// both; the session Clear must not reach around that (the review of the session Clear, 2026-09-08).
+// curate: the kernel keeps listing them, so a clear would only suppress them on this page until reload).
+// The card-level Clear hides itself for those; the session Clear must not reach around that (the review of
+// the session Clear, 2026-09-08). A held message's card is a notice card since 2026-09-19: Clear dismisses
+// it as any card's, and the held file stays the bus's to decide.
 function clearable(it: AskItem): boolean {
-  return !it.provisional && it.blocked?.state !== "quarantine";
+  return !it.provisional;   // (a held message's card is a notice card since 2026-09-19: Clear dismisses it as any card, the held file stays)
 }
 // Every CLEARABLE card a session has in the CURRENT view (the same filters render reads: scope, lens,
 // `#only=`), across every column, folded-under-the-header ones included — the set the header's Clear removes.
@@ -5850,7 +5789,7 @@ function renderBody(list: HTMLElement) {
     dot: dotFor, working: (n) => workingSet.has(n),
     focusId: hoverAskId ?? pinnedAskId, pinnedId: pinnedAskId, notifyOn: cardNotifyOn,
     prefs: { grouped: gprefs.grouped, collapsed: gprefs.collapsed, colormap: gprefs.colormap },
-    hostDown: hostIsDown, selfHost: feedSelfHost, repo: prRepoOf, seq: ++renderSeq,
+    hostDown: hostIsDown, selfHost: feedSelfHost, repo: prRepoOf,
     boardTitle: (it) => boardLabelOf(it),   // a card on a data-defined board: its label reads the title
   };
   // The focused session's section above the board (T347): its own elements and caches, the same builders and
@@ -6706,11 +6645,6 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
-  } else if (m.type === "quarantineRefused" && typeof m.mid === "string" && m.mid) {
-    // the bus refused a verdict on a held message: that card's Approve and Deny let go, and the reason is said
-    // (this was a bare `warn` before, which this page never handled). The feed is the only poster of verdicts.
-    rearmLatches({ kind: "quarantine", mid: m.mid });
-    feedToast(String(m.text || "the held message could not be acted on"));
   } else if (m.type === "err" && typeof m.text === "string" && m.text) {
     // the dialog interrupts; the bell KEEPS it (the user 2026-07-29) — dismissing the modal must not erase
     // the fact that a message never landed. Same {romp:'notify'} bridge the card-badge mirror below uses.
@@ -6771,67 +6705,31 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
   }
 }));
 
-// ---- quarantine decision dialog (the user 2026-07-26): the card is compact, so THIS is where the
-// whole held message is read and decided. Step 1: the full body, read-only (peer content, never
-// auto-run; editing was cut from the flow), with Approve / Deny / Cancel. Deny flips the SAME dialog
-// to step 2: an optional note back to the sender ("Deny & send note" / "Deny" / Cancel) — the bus
-// mails it to the origin host so the sender's agent learns why instead of waiting forever. Lives on
-// document.body OUTSIDE the re-rendered feed root, so a kernel push mid-decision can't eat the note.
-// `decide` is the owning card's decision closure — it carries the mid + sid and flips the card buttons.
-interface QuarEnd { host: string; name: string; color?: string }
-
-function showQuarantineDialog(from: QuarEnd, to: QuarEnd, body: string,
-                              decide: (action: string, busy: string, text: string, feedback?: string) => void,
-                              denyFirst: boolean) {
+// ---- the deny-note prompt (the held-mail card's Deny, a notice action of kind quarantine): the one click-time input any
+// action kind takes (plans/notice-cards.md, "Action kinds"): an optional note back to the sender, which the bus mails to
+// the origin host so the sender's agent learns why instead of waiting forever (the user 2026-07-26). No Cancel button
+// (the user: two choices, deny with a note or without); the backdrop closes without deciding and the message stays held.
+// Lives on document.body outside the re-rendered feed root, so a kernel push mid-decision cannot eat the note.
+function showDenyNoteDialog(onDeny: (note?: string) => void): void {
   document.getElementById("quar-dialog")?.remove();
   const overlay = el("div", "pickdlg-overlay"); overlay.id = "quar-dialog";
   const box = el("div", "pickdlg-box qdlg-box");
-  const title = el("div", "pickdlg-title");
-  // the SAME route the card shows, so opening the message doesn't re-word who it is between
-  const sender = `${from.host}:${from.name}`;
-  const route = () => title.replaceChildren(
-    Object.assign(el("span", "qdlg-lead"), { textContent: "New message" }),
-    quarWho(from.host, from.name, from.color),
-    Object.assign(el("span", "fq-arrow"), { textContent: "\u2192" }),
-    quarWho(to.host, to.name, to.color));
-  route();
-  const view = el("div", "qdlg-view");
-  view.textContent = body;
+  const title = el("div", "pickdlg-title"); title.textContent = "Deny this message. Send a note back to the sender?";
+  const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
+  ta.placeholder = "optional: tell the sender why (delivered to them as postal mail)";
   const row = el("div", "qdlg-actions");
-  box.append(title, view, row);
-
-  // No Cancel button (the user 2026-07-26: two choices, approve or deny — this gate is only there to
-  // catch something malicious). Clicking the backdrop still closes without deciding; the message
-  // stays held either way.
-  const denyStep = () => {
-    title.replaceChildren(document.createTextNode(`Deny the message from ${sender}. Send a note back?`));
-    const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
-    ta.placeholder = "optional: tell the sender why (delivered to them as postal mail)";
-    row.replaceChildren();
-    const withNote = el("button", "fdismiss fq fq-no") as HTMLButtonElement; withNote.textContent = "Deny & send note";
-    withNote.title = "drop the message and mail your note back to the sender";
-    withNote.onclick = () => { decide("deny", "Denying…", body, ta.value.trim() || undefined); overlay.remove(); };
-    const bare = el("button", "fdismiss fq") as HTMLButtonElement; bare.textContent = "Deny without note";
-    bare.title = "drop the message — nothing is sent back";
-    bare.onclick = () => { decide("deny", "Denying…", body); overlay.remove(); };
-    row.append(withNote, bare);
-    box.insertBefore(ta, row);
-    ta.focus();
-  };
-
-  if (denyFirst) {
-    denyStep();
-  } else {
-    const ok = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; ok.textContent = "Approve";
-    ok.title = "deliver this message to the recipient session";
-    ok.onclick = () => { decide("approve", "Delivering…", body); overlay.remove(); };
-    const no = el("button", "fdismiss fq fq-no") as HTMLButtonElement; no.textContent = "Deny";
-    no.title = "drop this message — with the option of a note back to the sender";
-    no.onclick = () => denyStep();
-    row.append(ok, no);
-  }
+  const withNote = el("button", "fdismiss fq fq-no") as HTMLButtonElement; withNote.textContent = "Deny & send note";
+  withNote.title = "drop the message and mail your note back to the sender";
+  withNote.onclick = () => { const note = ta.value.trim(); overlay.remove(); onDeny(note || undefined); };
+  const bare = el("button", "fdismiss fq") as HTMLButtonElement; bare.textContent = "Deny without note";
+  bare.title = "drop the message; nothing is sent back";
+  bare.onclick = () => { overlay.remove(); onDeny(undefined); };
+  row.append(withNote, bare);
+  box.append(title, ta, row);
+  overlay.appendChild(box);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   document.body.appendChild(overlay);
+  ta.focus();
 }
 
 // ---- in-page resume-picker dialog (the answerPicker flow, no native QuickPick) ----

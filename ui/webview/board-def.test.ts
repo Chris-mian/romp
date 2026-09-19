@@ -106,7 +106,6 @@ const KIND_TABLE: Record<string, { sections: string[]; actions: string[]; menu: 
   goal: { sections: ["bg", "summary", "subgoals", "stall", "tasks"], actions: ["clear", "followUp", "checkStatus", "continue", "retry", "login", "capSwitch", "bell"], menu: ["notify", "browse"] },
   placeholder: { sections: ["tasks"], actions: ["clear", "bell"], menu: ["notify", "browse"] },
   parked: { sections: [], actions: ["clear", "revive", "bell"], menu: ["notify", "browse"] },
-  quarantine: { sections: [], actions: ["approve", "deny", "bell"], menu: ["notify", "browse"] },
   notice: { sections: ["body", "attachment"], actions: ["stored", "clear", "bell"], menu: ["notify", "browse"] },
 };
 // a top-level function's own source: from its declaration to the next top-level declaration
@@ -137,7 +136,7 @@ test("the kinds describe the card builder: each kind lists exactly the reviewed 
 
 test("kindOf discriminates by the flavour, as the renderer does", () => {
   assert.equal(kindOf({ notice: { producer: "cli" } }), "notice");
-  assert.equal(kindOf({ blocked: { state: "quarantine" } }), "quarantine");
+  assert.equal(kindOf({ blocked: { state: "quarantine" } }), "goal", "no quarantine kind since 2026-09-19: a held message is a notice card (an old flavour reads as the default)");
   assert.equal(kindOf({ blocked: { state: "parkedHandoff" } }), "parked");
   assert.equal(kindOf({ provisional: true }), "placeholder");
   assert.equal(kindOf({ blocked: { state: "apiError" } }), "goal", "an API error is a goal card with a chip, never a kind");
