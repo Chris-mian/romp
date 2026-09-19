@@ -4090,7 +4090,7 @@ def _codex_postal_tools_on():
     return jd._state_str("codex-postal-tools", "").strip().lower() != "off"
 
 
-_CODEX_POSTAL_SAID = set()       # the Codex postal tools' bus faults said once per fault spell, keyed by cause ("unreachable",
+_CODEX_POSTAL_SAID = set()       # the Codex postal tools' bus faults said once per cause per fault spell ("unreachable",
 #                                  "no-answer"): the next answer of any status clears the set
 
 
@@ -4103,8 +4103,10 @@ def _codex_postal_log(tool, sid, cause, once=None):
     the same way until the bus answers again, and _codex_postal_http clears the set on its next answer. One boolean
     for both causes (the second review of 2026-09-19) let a bus that refused and then hung, with no answer between,
     log only the refusal, so the log read "could not be reached" while requests were being written and left
-    unanswered. A store raise is no spell and is said every time. The write is wrapped: a stderr that cannot be
-    written (ENOSPC) must not turn the per-fault sentence the session gets into the generic one."""
+    unanswered. The suffix names that grain too (the third review, 2026-09-19): saying "once per fault spell" while
+    the latch was per cause made a refuse-then-hang spell's two lines each claim to be the spell's one. A store raise
+    is no spell and is said every time. The write is wrapped: a stderr that cannot be written (ENOSPC) must not turn
+    the per-fault sentence the session gets into the generic one."""
     if once:
         if once in _CODEX_POSTAL_SAID:
             return
@@ -4112,7 +4114,8 @@ def _codex_postal_log(tool, sid, cause, once=None):
     try:
         sys.stderr.write("codex postal tool %s for session %s: %s%s\n"
                          % (tool or "?", sid or "?", cause,
-                            " (said once per fault spell; re-armed when the mail service answers again)" if once else ""))
+                            " (said once per cause per fault spell; re-armed when the mail service answers again)"
+                            if once else ""))
     except Exception:
         pass
 

@@ -539,16 +539,31 @@ class TheKernelLogNamesAFault(unittest.TestCase):
         self.assertIn("no answer came", lines[1])
         self.assertIn("check_sent", lines[1])
         self.assertNotIn("list_agents", "\n".join(lines), "the second hang of the spell adds no line")
-        # an answer of any status ends the spell for both causes: the next refusal is said again
+        for line in lines:
+            # the suffix names the latch's grain (the third review, 2026-09-19): with the latch per cause, a suffix
+            # claiming "once per fault spell" made the two lines of one spell each claim to be the spell's one
+            self.assertIn("said once per cause per fault spell", line)
+        # an answer of any status ends the spell for BOTH causes: the next refusal and the next hang are each said
+        # again (the third review, 2026-09-19: asserting only the refusal's re-arm let a kernel that clears only the
+        # unreachable cause on an answer pass the module)
         with bus({"status": 200, "body": {"agents": []}}):
             call("list_agents", {})
 
-        def refused_again():
+        def refused_then_hung_again():
             with bus({"refuse": True}):
-                return call("check_inbox", {})
-        _, lines = self._stderr_of(refused_again)
-        self.assertEqual(len(lines), 1, lines)
+                a = call("check_inbox", {})
+            with bus({"hang": True}):
+                return a, call("check_sent", {})
+        (a, b), lines = self._stderr_of(refused_then_hung_again)
+        self.assertEqual((a[0], b[0]), (False, False))
+        self.assertEqual(len(lines), 2, "both causes re-armed by the answer, one no-answer line beside the re-said "
+                                        "refusal: %r" % lines)
         self.assertIn("could not be reached", lines[0])
+        self.assertIn("check_inbox", lines[0])
+        self.assertIn("no answer came", lines[1])
+        self.assertIn("check_sent", lines[1])
+        for line in lines:
+            self.assertIn("said once per cause per fault spell", line)
 
 
 class TheBusNamesTheToolForCodex(unittest.TestCase):
