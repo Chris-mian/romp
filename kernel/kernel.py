@@ -24034,8 +24034,15 @@ NOTICE_ACTION_LABEL_MAX = 60
 #   send        the plain-message door (_deliver_text) to the card's OWN session; body {text}; no click input
 #   quarantine  the bus's /quarantine/act through _bus_quarantine_act with the card's OWNER as the recipient; body {mid,
 #               verdict: approve | deny}; click input on a deny: an optional {note} the bus parks for the sender; no Edit
-# The settings plan's kind (its three answers against /setting-proposal) is added here by its own phase one.
-NOTICE_ACTION_KINDS = ("send", "quarantine")
+#   setting-proposal  the settings plan's kind (plans/settings-across-machines.md, phase one B): this kernel's own proposal
+#               record answered through _answer_setting_proposal; body {store, host, gt, answer: apply | keep | pin}; no click
+#               input; posted by the KERNEL alone (never the route or the command: a label on a button whose body answers a
+#               pending proposal must be the kernel's); needs no owner, so the owner-less home admits it
+NOTICE_ACTION_KINDS = ("send", "quarantine", "setting-proposal")
+# whether a kind's runner acts on the card's OWNER (send: its session; quarantine: the recipient of the held message): the
+# owner-less home refuses those at the post and at the click, as it always has, and admits a kind that names no session
+NOTICE_ACTION_KIND_OWNER = {"send": True, "quarantine": True, "setting-proposal": False}
+NOTICE_ACTION_KINDS_INTERNAL = ("setting-proposal",)   # post_notice(..., internal=True) alone may carry these
 _NOTICE_ROUTE_KINDS = {"/send": "send"}    # the older stored shape and the older pane's wire, read as their kind
 NOTICE_ACTION_ROUTES = tuple(_NOTICE_ROUTE_KINDS)   # kept as a name: the routes the older shape may carry
 NOTICE_OWNERLESS_SID = "notes"             # the owner-less notice cards' home under STATE/notices (the user 2026-09-18: a card with no session,
@@ -24180,10 +24187,25 @@ def _notice_action_body_check(kind, body):
         if body.get("verdict") not in ("approve", "deny"):
             return "a quarantine action's verdict is approve or deny (a user never edits held mail)"
         return ""
+    if kind == "setting-proposal":
+        # the /setting-proposal body, exactly: the route re-checks every member at the click (the store known, the machine's
+        # record present, the stamp current), so the post's check is the shape alone
+        for k in body:
+            if k not in ("store", "host", "gt", "answer"):
+                return "a setting-proposal action's body is {store, host, gt, answer}; %r is not a member" % k
+        if body.get("store") not in _SETTINGS_STORES:
+            return "a setting-proposal action names a synchronized setting"
+        if not isinstance(body.get("host"), str) or not body.get("host"):
+            return "a setting-proposal action names the proposing machine"
+        if isinstance(body.get("gt"), bool) or not isinstance(body.get("gt"), int) or body.get("gt") <= 0:
+            return "a setting-proposal action carries the proposal's stamp"
+        if body.get("answer") not in ("apply", "keep", "pin"):
+            return "a setting-proposal action's answer is apply, keep or pin"
+        return ""
     return "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
 
 
-def _notice_actions_check(actions, owner=None):
+def _notice_actions_check(actions, owner=None, internal=False):
     """The producer's actions, validated: up to NOTICE_ACTIONS_MAX {label, kind, body} entries (an older {label, route, body}
     read by its route's kind), the kind in the kernel's table and the body in the kind's shape, refused by name otherwise.
     Stored as {label, kind, body}. (list, "") or (None, why)."""
@@ -24207,6 +24229,8 @@ def _notice_actions_check(actions, owner=None):
             return None, "an action needs a kind (%s)" % ", ".join(NOTICE_ACTION_KINDS)
         if kind not in NOTICE_ACTION_KINDS:
             return None, "action kind %r is not one the kernel knows (the kinds: %s)" % (kind, ", ".join(NOTICE_ACTION_KINDS))
+        if kind in NOTICE_ACTION_KINDS_INTERNAL and not internal:
+            return None, "action kind %r is posted by the kernel alone" % kind
         err = _notice_action_body_check(kind, a.get("body"))
         if err:
             return None, err
@@ -24222,14 +24246,16 @@ def _notice_actions_check(actions, owner=None):
 
 
 def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_you=False, expires_at=None, actions=None,
-                dismiss_on_action=False, t=None, now=None, board="", category=""):
-    """Post a notice card for session `sid` (plans/notice-cards.md). Returns (row, error): the appended row on success, else a
+                dismiss_on_action=False, t=None, now=None, board="", category="", internal=False):
+    """Post a notice card for session `sid` (plans/notice-cards.md). `internal` marks a post from inside the kernel: the one
+    door for the action kinds in NOTICE_ACTION_KINDS_INTERNAL (the route and the command never set it). Returns (row, error): the appended row on success, else a
     human-readable refusal, never a silent drop (add_watch's contract). One validation for every door: the key's grammar,
     the title and body caps, the producer label, the session known to this kernel, the attachment's verdict (a refusal
     carries its why), the actions' allowlist and cap. The kernel assigns `rev`, the revision count for the key in the
     session across the live file and the archive (an id the cleared ledger holds is never minted again), stamps `at`, appends under the lock, marks the views dirty and wakes the pusher.
     An empty `sid` posts an OWNER-LESS card (the user 2026-09-18): its home is the reserved file NOTICE_OWNERLESS_SID under
-    STATE/notices, it shows at the top of the feed under the name Notes with no colour, and it carries no actions."""
+    STATE/notices, it shows at the top of the feed under the name Notes with no colour, and it carries no action that needs an
+    owner (NOTICE_ACTION_KIND_OWNER; the settings plan's kind, which acts on this kernel's own record, is admitted)."""
     now = int(now if now is not None else time.time())
     ownerless = not str(sid or "").strip()             # no session named: the owner-less home (the user 2026-09-18)
     sid = NOTICE_OWNERLESS_SID if ownerless else str(sid).strip()
@@ -24257,10 +24283,10 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
             return None, "expiresAt must be epoch seconds"
         if exp <= now:
             return None, "expiresAt is already past"
-    acts, aerr = _notice_actions_check(actions, owner=None if sid == NOTICE_OWNERLESS_SID else sid)
+    acts, aerr = _notice_actions_check(actions, owner=None if sid == NOTICE_OWNERLESS_SID else sid, internal=internal)
     if aerr:
         return None, aerr
-    if acts and sid == NOTICE_OWNERLESS_SID:
+    if sid == NOTICE_OWNERLESS_SID and any(NOTICE_ACTION_KIND_OWNER.get(a["kind"], True) for a in acts):
         return None, "an owner-less card has no session to send to: actions need a session"
     att = None
     if attachment:
@@ -24601,8 +24627,9 @@ def _notice_action(item_id, kind, body, inp=None):
 
 def _notice_action_run(m, item_id, kind, body, inp):
     sid, key, rev = m.group(1), m.group(2), int(m.group(3))
-    if sid == NOTICE_OWNERLESS_SID:
-        return False, "an owner-less card has no actions"   # refused at the post too; the second door for a hand-made id
+    if sid == NOTICE_OWNERLESS_SID and NOTICE_ACTION_KIND_OWNER.get(kind, True):
+        return False, "an owner-less card has no actions"   # refused at the post too; the second door for a hand-made id (a kind
+        #                                                     that needs no owner, the settings plan's, runs on the owner-less home)
     row = next((r for r in _notice_rows(sid) if r.get("op") == "post" and r.get("key") == key and int(r.get("rev") or 0) == rev), None)
     if row is None:
         return False, "that notice is gone"
@@ -24651,6 +24678,15 @@ def _notice_action_run(m, item_id, kind, body, inp):
         if ok:
             with _notice_lock:                          # the decision retires the card whatever the ledger later says
                 _notice_append(sid, {"op": "expire", "t": int(time.time()), "key": key, "rev": rev, "sid": sid})
+    elif kind == "setting-proposal":
+        # the stored body IS the route's body (plans/settings-across-machines.md, phase one B): every check of
+        # /setting-proposal holds on the card as in the gear, the answer's words are the route's, and the record's drop
+        # expires the card itself (the proposals writer keeps the cards following the records)
+        try:
+            ack = _answer_setting_proposal(dict(body))
+        except Exception as e:
+            return False, "the answer could not be applied (%s)" % e
+        ok, err = bool(ack.get("ok")), str(ack.get("error") or "")
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
@@ -51541,11 +51577,58 @@ def _settings_proposals():
 
 
 def _proposals_write(recs):
+    """The one writer of the records; the CARDS follow the write (phase one B): a machine's record raised or moved posts its
+    card (a new revision under the same key), a record gone, for whatever reason, expires it."""
     recs = {s: r for s, r in recs.items() if r.get("hosts") or r.get("answered")}
+    before = _settings_proposals()
     try:
         _atomic_write(jd.STATE / SETTINGS_PROPOSALS_FILE, json.dumps(recs))
     except OSError as e:
         sys.stderr.write("settings proposals: write failed (%s)\n" % e)
+        return
+    _proposal_cards_follow(before, recs)
+
+
+def _proposal_card_key(store, host):
+    """proposal.<store>.<machine>: the machine's part made safe for the key grammar, the whole inside its 64 characters."""
+    return ("proposal.%s.%s" % (store, re.sub(r"[^A-Za-z0-9_.-]", "-", str(host))))[:64]
+
+
+def _proposal_cards_follow(before, after):
+    """Post the card of every (store, machine) record that is new or moved (its value or stamp), expire the card of every record
+    that is gone. Best-effort: a card that cannot post or expire is said on stderr and the record stands."""
+    for store in sorted(set(before) | set(after)):
+        b = (before.get(store) or {}).get("hosts") or {}
+        a = (after.get(store) or {}).get("hosts") or {}
+        for host in sorted(set(b) | set(a)):
+            key = _proposal_card_key(store, host)
+            if host not in a:
+                _row, err = expire_notice("", key)
+                if err and "no notice with key" not in err:
+                    sys.stderr.write("setting %s: the proposal card from %s could not be retired (%s)\n" % (store, host, err))
+            elif host not in b or (b[host].get("value"), _gt_int(b[host].get("gt"))) != (a[host].get("value"), _gt_int(a[host].get("gt"))):
+                _proposal_card_post(store, host, a[host])
+
+
+def _proposal_card_post(store, host, rec):
+    """The proposal's card on the owner-less home (plans/settings-across-machines.md, phase one B): the producer `settings`, a
+    needs-you card, in the user's terms, with the three answers as actions of the setting-proposal kind against this kernel's
+    own record; dismissed by its action (the record's drop expires it too)."""
+    label = _SETTINGS_LABELS.get(store, store)
+    val, cur = ("on" if rec.get("value") else "off"), ("on" if rec.get("current") else "off")
+    gt = _gt_int(rec.get("gt"))
+    title = "%s: %s proposes %s; this machine is %s" % (label[:1].upper() + label[1:], host, val, cur)
+    body = ("%s turned %s %s under a newer click than this machine's last, which left it %s. Nothing changed here.\n\n"
+            "Apply takes %s's value on this machine. Keep mine keeps %s and asks no more about this click. "
+            "Keep mine and pin this machine keeps %s against every other machine until you unpin it in Settings. "
+            "The same line waits under the setting in Settings." % (host, label, val, cur, host, cur, cur))
+    acts = [{"label": "Apply", "kind": "setting-proposal", "body": {"store": store, "host": host, "gt": gt, "answer": "apply"}},
+            {"label": "Keep mine", "kind": "setting-proposal", "body": {"store": store, "host": host, "gt": gt, "answer": "keep"}},
+            {"label": "Keep mine and pin this machine", "kind": "setting-proposal", "body": {"store": store, "host": host, "gt": gt, "answer": "pin"}}]
+    _row, err = post_notice("", _proposal_card_key(store, host), title, body, producer="settings", needs_you=True, actions=acts,
+                            dismiss_on_action=True, internal=True)
+    if err:
+        sys.stderr.write("setting %s: the proposal card from %s could not be posted (%s)\n" % (store, host, err))
 
 
 def _proposal_drop(store, host=None, answered_gt=None):
@@ -51584,13 +51667,7 @@ def _settings_proposals_map():
     return out
 
 
-def _proposal_notice(store, host, rec, refreshed):
-    """The interim alert (one A): one sync notice per proposal RECORD revision (a record is per machine), in the user's terms,
-    naming the machine, the setting and the two values; the owner-less notice card of one B replaces it."""
-    label = _SETTINGS_LABELS.get(store, store)
-    _sync_notice("%s proposes turning %s %s (this machine has it %s); Apply or Keep mine in Settings%s"
-                 % (host or "another machine", label, "on" if rec.get("value") else "off",
-                    "on" if rec.get("current") else "off", " (the proposal moved)" if refreshed else ""), ok=True, kind="sync")
+# The interim alert of one A (a sync notice per record revision) retired with the card of one B: two alerts for one event is noise.
 
 
 def _propose_peer_settings(host, rver):
@@ -51645,9 +51722,8 @@ def _propose_peer_settings(host, rver):
             rec["hosts"][host] = {"value": val, "gt": pgt, "seen": int(time.time()), "current": mine}
             rec["answered"].pop(host, None)
             recs[store] = rec; changed = True; pending.append(store)
-            sys.stderr.write("setting %s: %s proposes %s under gesture %d (this machine has %s); nothing applied, the user answers\n"
-                             % (store, host, val, pgt, mine))
-            _proposal_notice(store, host, rec["hosts"][host], refreshed)
+            sys.stderr.write("setting %s: %s proposes %s under gesture %d (this machine has %s); nothing applied, the user answers%s\n"
+                             % (store, host, val, pgt, mine, " (the proposal moved)" if refreshed else ""))
         if changed:
             _proposals_write(recs)
     return pending
