@@ -135,7 +135,7 @@ class SkeletonReconnect(unittest.TestCase):
         km._built_chat.clear()
         km._prev_chat_events.clear()
         km._prev_chat_ledger.clear()
-        km._chat_baseline_raced.clear()   # the detector's mark (tests 23 to 26) is not left for the next test
+        km._chat_baseline_raced.clear()   # the detector's mark (tests 23 to 27) is not left for the next test
         del km._clients[:]
         km._pusher_wake.clear()
 
@@ -147,7 +147,7 @@ class SkeletonReconnect(unittest.TestCase):
         km._built_chat.clear()
         km._prev_chat_events.clear()
         km._prev_chat_ledger.clear()
-        km._chat_baseline_raced.clear()   # the detector's mark (tests 23 to 26) is not left for the next test
+        km._chat_baseline_raced.clear()   # the detector's mark (tests 23 to 27) is not left for the next test
 
     # ── helpers ──
     def _client(self, **kw):
@@ -1521,6 +1521,76 @@ class SkeletonReconnect(unittest.TestCase):
         finally:
             gate.set()
             km._prev_chat_events = real
+
+    def test_27_a_cycle_that_sent_tails_leaves_a_mark_set_during_its_loop_standing_and_the_next_cycle_repairs(self):
+        # The cycle's write-after-deliver cleared the sid's raced mark with its write unconditionally, on the grounds that
+        # the cycle reached every alive chat client. That holds only when the cycle read the baseline ABSENT (change 0:
+        # a full to every base holder). Read PRESENT, the loop sends tails, anchored at the change or the client's held
+        # last, and a tail never re-sends an event below its anchor. The interleaving, on a baseline-less sid at a boot:
+        # the targeted push T reads the baseline absent, builds the list with the u3 card pending and hands a its full;
+        # a connect push C for page b builds the list with u3 filled, hands b its full and seeds it; the cycle reads that
+        # seed as present, builds the list grown by u5 and hands a a tail from u4; then T's own seed step runs, finds a
+        # list it did not write, pops it and marks the sid; the cycle's write re-established the list and CLEARED the
+        # mark, so nothing re-sent u3 to a until a reconnect (on the merge base, with no seed, the cycle read the baseline
+        # absent and its change-0 full repaired a). A cycle whose loop sent tails now leaves a mark set during that loop
+        # standing and writes nothing; the next cycle reads the baseline absent, sends every base holder the full, then
+        # writes and clears. T's seed step is held back from T's own run and replayed, with T's arguments, at the cycle's
+        # first send: T between its send loop and its seed while the cycle has read the baseline and is delivering.
+        a = self._client(active=S1, proto=2)
+        b = self._client(active=S1, proto=2)
+        km._clients.extend([a, b])
+        real_seed = km._seed_chat_baseline
+        held = []
+
+        def hold_first(sid, m, seen):
+            if not held:                                 # T's seed step, held back
+                held.append((sid, m, seen))
+                return
+            real_seed(sid, m, seen)
+        km._seed_chat_baseline = hold_first
+        try:
+            km._push_session_now(S1)                     # T: the baseline absent, u3 pending, a full to a (and to b)
+            self.assertEqual([h[2] for h in held], [None], "T read the baseline absent; its seed step is held")
+            self.assertEqual(self._u3(a)[-1], ("session", "m3"))
+            self.assertNotIn(S1, km._prev_chat_events)
+            self.SESS[S1]["events"][3]["md"] = "m3 filled"   # the card fills after T's build
+            km._push([b], connect=True)                  # C: b's full with u3 filled, and the seed
+            self.assertEqual(km._prev_chat_events.get(S1), self.SESS[S1]["events"], "C seeded the filled list")
+            self.assertEqual(self._u3(b)[-1], ("session", "m3 filled"))
+            self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})   # grown before the cycle builds
+            km._built_chat.clear()
+            real_send = km._send_chat_or_status
+            fired = []
+
+            def at_first_send(cl, m, ms, change_from, led_changed):
+                """The cycle's first per-client send for S1: the cycle has read the baseline present and diffed against it,
+                and T's seed step lands here, on its own thread in the live kernel."""
+                if m["id"] == S1 and not fired:
+                    fired.append(1)
+                    real_seed(*held[0])
+                    self.assertNotIn(S1, km._prev_chat_events, "T's seed found C's list, not its own, and popped it")
+                    self.assertIn(S1, km._chat_baseline_raced, "...and marked the sid")
+                return real_send(cl, m, ms, change_from, led_changed)
+            km._send_chat_or_status = at_first_send
+            try:
+                km._push([a, b])                         # the cycle
+            finally:
+                km._send_chat_or_status = real_send
+        finally:
+            km._seed_chat_baseline = real_seed
+        self.assertEqual(fired, [1], "T's seed step ran inside the cycle's per-client loop")
+        self.assertEqual(self._sessions(a).count(S1), 1, "the cycle sent a no full for the sid: it diffed against the seeded list")
+        self.assertEqual([(t["afterUuid"], [e["uuid"] for e in t["events"]]) for t in self._frames(a, "chatTail") if t["id"] == S1],
+                         [("u4", ["u5"])], "a's tail starts after its held last: u3 sits below the anchor and is not re-sent")
+        self.assertEqual(self._u3(a)[-1], ("session", "m3"), "a still holds the pending card")
+        self.assertIn(S1, km._chat_baseline_raced, "a cycle that sent tails leaves the mark standing")
+        self.assertNotIn(S1, km._prev_chat_events, "and writes no baseline over the pop")
+        self.assertNotIn(S1, km._prev_chat_ledger)
+        km._push([a, b])                                 # the next cycle: no baseline, so every base holder gets the full
+        self.assertEqual(self._sessions(a).count(S1), 2, "the next cycle sends a the whole session")
+        self.assertEqual(self._u3(a)[-1], ("session", "m3 filled"), "...which repairs the card")
+        self.assertNotIn(S1, km._chat_baseline_raced, "the cycle that sent the fulls clears the mark")
+        self.assertEqual(km._prev_chat_events[S1], self.SESS[S1]["events"], "and writes the baseline")
 
 
 class RestartDiet(unittest.TestCase):

@@ -33184,9 +33184,11 @@ _chat_baseline_raced = set()                     # sids whose baseline the detec
 #                                                  release: one per released tab at a boot, while a cold cycle takes 30-84 s), so
 #                                                  the cycle diffed equal lists and the other holders of the older build kept a
 #                                                  stale card, with no row. While a sid is marked no seed writes; the cycle's
-#                                                  write-after-deliver clears it (that cycle reached every alive chat client), and
-#                                                  so does the eviction of a tab that left the strip (no client holds a base then).
-#                                                  Every touch under _chat_baseline_lock; tests 25 and 26 of the skeleton-reconnect module.
+#                                                  write-after-deliver clears it when that cycle read the baseline absent (a full to
+#                                                  every base holder), and leaves it standing when it sent tails, since a tail never
+#                                                  re-sends an event below its anchor; the eviction of a tab that left the strip
+#                                                  clears it too (no client holds a base then). Every touch under
+#                                                  _chat_baseline_lock; tests 25 to 27 of the skeleton-reconnect module.
 # ── the chat-payload FOLD (issue 903, 2026-09-03) ──────────────────────────────────────────────────
 # build_session reshaped a working session's WHOLE event list on every push (0.3-1 ms/event; 26k
 # events = 26 s per cycle, 60-75 s push cadence on an 11-session install). The reshape of an ENDED
@@ -54137,14 +54139,21 @@ def _push(targets, connect=False, live_map=None):
                 # idempotently; a NEWER one anchors a tail past what the client holds. (A send that raises now
                 # leaves the baseline where it was, so the next cycle re-sends the overlap rather than stranding
                 # the clients the loop had not reached.)
-                # The write and the raced mark's clear are ONE step under _chat_baseline_lock (2026-09-19): this cycle reached
-                # every alive chat client, so a pop the detector made (_seed_chat_baseline) is repaired here and its mark comes
-                # off with the write; a pop landing between an unlocked write and the clear would have been undone by the clear.
+                # The write and the raced mark's clear are ONE step under _chat_baseline_lock (2026-09-19), and the clear is
+                # earned only by a loop that sent every base holder a FULL: with `_seen` absent the diff read 0 and the loop
+                # above did exactly that, so a pop the detector made (_seed_chat_baseline) is repaired here and its mark comes
+                # off with the write. With `_seen` PRESENT the loop sent tails, anchored at each client's held last or the
+                # change, which never re-send an event below the anchor; a mark set for the sid while this loop ran (a racing
+                # sender's seed step, the sender's older full already on some client) names a client this cycle did not
+                # repair, so the write and the clear are both skipped: the next cycle reads the baseline absent, sends every
+                # base holder the full, writes and clears then. Cleared here unconditionally, the mark was lost and the
+                # stale holder kept its older card until a reconnect, with no row.
                 if not connect:
                     with _chat_baseline_lock:
-                        _prev_chat_events[m["id"]] = m.get("events") or []
-                        _prev_chat_ledger[m["id"]] = m.get("ledger")
-                        _chat_baseline_raced.discard(m["id"])
+                        if not (_seen and m["id"] in _chat_baseline_raced):
+                            _prev_chat_events[m["id"]] = m.get("events") or []
+                            _prev_chat_ledger[m["id"]] = m.get("ledger")
+                            _chat_baseline_raced.discard(m["id"])
                 else:
                     # A connect push does not ADVANCE the baseline (above); it ESTABLISHES one when none exists (2026-09-19,
                     # _seed_chat_baseline). A sid whose first whole frame since the boot came from this road (the redial's
