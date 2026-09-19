@@ -1,5 +1,5 @@
 // The per-card update gate (feed-card-gate.ts), EXECUTED: every board-level input updateAskCard reads
-// outside the ask object must flip the key, equal inputs must give equal keys, a quarantine card must
+// outside the ask object must flip the key, equal inputs must give equal keys, and a card
 // never skip, and cardNeedsUpdate must fire on a new object OR a new key. A missed input here is a stale
 // badge on an unchanged card, so the test walks the inputs one at a time. The gate's premise — an unchanged
 // card keeps its OBJECT through the delivery path — is run against the pane shim's delta reassembly in the
@@ -32,7 +32,6 @@ const env = (over: Partial<GateEnv> = {}): GateEnv => ({
   hostDown: () => false,
   selfHost: "TESTHOST",
   repo: () => null,
-  seq: 1,
   boardTitle: () => "",   // the feed's cards name no data-defined board (card boards, phase three)
   ...over,
 });
@@ -40,8 +39,6 @@ const env = (over: Partial<GateEnv> = {}): GateEnv => ({
 test("identical inputs give an identical key, across renders and across a fresh env object", () => {
   const it = card();
   assert.equal(cardInputsKey(it, env()), cardInputsKey(it, env()));
-  assert.equal(cardInputsKey(it, env({ seq: 7 })), cardInputsKey(it, env({ seq: 9 })),
-    "the per-render counter reaches only quarantine cards");
 });
 
 test("each board-level input flips the key on its own", () => {
@@ -93,15 +90,6 @@ test("the colour echo's in-place write reaches the gate through the key (the obj
     "same object, echoed colour: the card repaints");
 });
 
-test("a quarantine card never yields an equal key across renders", () => {
-  const q = card({ blocked: { state: "quarantine" } });
-  assert.notEqual(cardInputsKey(q, env({ seq: 1 })), cardInputsKey(q, env({ seq: 2 })));
-  assert.equal(cardInputsKey(q, env({ seq: 3 })), cardInputsKey(q, env({ seq: 3 })),
-    "…within one render it is stable (the counter is per render, not per call)");
-  const plain = card({ blocked: { state: "permission" } });
-  assert.equal(cardInputsKey(plain, env({ seq: 1 })), cardInputsKey(plain, env({ seq: 2 })),
-    "an ordinary block reads no per-name colour map: it skips like any card");
-});
 
 test("cardNeedsUpdate: false for the same object under the same key; true for a copy, or for a new key", () => {
   const it = card();

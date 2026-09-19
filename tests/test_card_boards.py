@@ -105,17 +105,16 @@ class BoardTable(unittest.TestCase):
 
 class CardsCarryTheirBoard(unittest.TestCase):
     def test_every_card_family_stamps_board_and_category_beside_column(self):
-        # the seven builders, by their source: each carries "board": "feed" and a category equal to its column literal
+        # the six builders (the quarantine card is a notice card since 2026-09-19), by their source: each carries "board": "feed" and a category equal to its column literal
         fams = {"_feed_session_entry": '"board": "feed", "category": column,',
                 "_provisional_card": '"column": "working", "board": "feed", "category": "working",',
                 "_awaiting_card": '"column": "working", "board": "feed", "category": "working",',
                 "_blocked_placeholder": '"column": "needs_input", "board": "feed", "category": "needs_input",',
                 "build_feed": '"column": "needs_input", "board": "feed", "category": "needs_input",',   # the parked handoff
-                "_quarantine_cards": '"column": "needs_input", "board": "feed", "category": "needs_input",',
                 "_notice_cards": '"board": "feed", "category": column,'}   # the column computed once (PR 1831), the same value
         for fn, lit in fams.items():
             self.assertIn(lit, inspect.getsource(getattr(km, fn)), fn)
-        self.assertEqual(KSRC.count('"board": "feed"'), 7, "seven families, no eighth card built by hand without its board")
+        self.assertEqual(KSRC.count('"board": "feed"'), 6, "six families (the quarantine card is a notice card since 2026-09-19), no seventh built by hand without its board")
         # the column expression itself is untouched: the record of the 2026-06-29 and 2026-07-07 rulings its pins hold
         self.assertIn('column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top', inspect.getsource(km._feed_session_entry))
 
