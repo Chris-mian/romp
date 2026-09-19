@@ -51,7 +51,8 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const renderBgTasks = () => { H.bgRenders++; };
     const awaitChanged = (_sid) => { H.bgRenders++; };   // 2026-09-10: the tail calls this (box + a viewer's header); it counts as the box render
     const schedulePrebuild = () => { H.prebuilds++; };
-    const regionsAbsorbTail = () => {};                  // the tail run's regions follow the events (T386 stage 2); this slice holds no regions
+    const keyOf = (e) => (e && (e.uuid || e.key)) || null;   // the anchor path resolves inside the tail run by key (the dropped-history guard, 2026-09-19)
+    const regionsAbsorbTail = () => true;                // the tail run's regions follow the events (T386 stage 2); returns whether it could (a short store refuses); this slice holds no regions, so always true
   `;
   const epilogue = `
     return { chatTail, set: (p) => { if (p.sessions) sessions = p.sessions; if (p.views) views = p.views; if ("activeId" in p) activeId = p.activeId; } };
