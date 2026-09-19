@@ -114,7 +114,7 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
   parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "makeAskCard" }, BELL], menu: MENU },
   notice: {
     id: "notice",
-    sections: [{ id: "body", label: null, via: "noticeBodyNodes" }, { id: "attachment", label: null, via: "updateAskCard" }],
+    sections: [{ id: "body", label: null, via: "fillNoticeFace" }, { id: "attachment", label: null, via: "fillNoticeFace" }],   // the face's parts render in notice-face.ts, called from here
     actions: [{ id: "stored", label: null, via: "updateAskCard" }, CLEAR, BELL],   // the record's own actions (noticeAction)
     menu: MENU,
   },

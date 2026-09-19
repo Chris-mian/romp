@@ -16,7 +16,7 @@ const NOTICE_FACE = fs.readFileSync(path.join(UI, "notice-face.ts"), "utf8");
 const fn = (name: string) => { const i = RENDER.indexOf("function " + name + "("); assert.ok(i >= 0, name); return RENDER.slice(i, RENDER.indexOf("\n}\n", i) + 3); };
 
 test("the status carries the rows and the box renders on every status change beside the background box", () => {
-  assert.match(RENDER, /interface Status \{ notices\?: ChatNotice\[\] \| null; state: ChipState;/);
+  assert.match(RENDER, /interface Status \{ state: ChipState; sinceEpoch: number \| null; modelFallback\?: ModelFallback \| null; notices\?: ChatNotice\[\] \| null;/, "the slice on the status, after main's model-fallback field");
   assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\] \}/, "the row carries the feed card's attachment too (low e)");
   // awaitKey is the status key every status-carrying frame compares (the T225 pins): the rows are part of it, so a hold or a
   // decision repaints the box through the same awaitChanged road as the background box
