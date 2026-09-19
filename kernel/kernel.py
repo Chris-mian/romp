@@ -36820,7 +36820,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
     with the head is refused in words). A registered head stays in the known set, so that shape and a parked copy
     of it still meet the refusal by the one predicate, while a whole-message copy parked by a road that skips the
-    route runs as the clear at the drain (_CODEX_CLEAR_HEADS). `qid` is the press-minted copy id (the sendMessage
+    route runs as the clear at the drain (_parked_clear_op). `qid` is the press-minted copy id (the sendMessage
     arm's _wire_qid), carried on the refusal frame so the chat retires the bubble it drew. The
     Claude Code and unowned routes are unchanged and take the setter body directly: a dead Codex session routes
     to _UNOWNED (CodexBackend.owns is False once dead) and keeps the unowned refusal, so the identity test is
@@ -36865,7 +36865,7 @@ _CODEX_SETTER_HEADS = ("/model", "/effort")
 # built-in outside this set (/init, /cost) typed at a Codex session reaches the model as text; docs/codex.md says so.
 # A head added here is refused on the route and at the drain at once (_codex_refuses). A native handler registered in
 # _CODEX_SLASH_HANDLERS takes precedence for a whole-message head (_slash_alone) on the route, and at the drain for a
-# one-line parked command op (_CODEX_CLEAR_HEADS), while the head stays listed here: the list is the census of what the
+# one-line parked command op (_parked_clear_op), while the head stays listed here: the list is the census of what the
 # app-server has no parser for, and a registered head with more lines than the command meets the refusal by it (2026-09-19).
 _CODEX_REFUSED_HEADS = ("/clear", "/compact", "/new", "/fast", "/autocompact", "/help", "/mcp")
 
@@ -36923,7 +36923,7 @@ def _codex_clear_command(be, sid, text, client=None, state=None, qid=None):
 # head -> handler(be, sid, text, client, state, qid) -> bool. A head registered here takes the text instead of the
 # guard's refusal: /clear and /new are the native clear (2026-09-19); a native /compact registers next.
 _CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command}
-_CODEX_CLEAR_HEADS = ("/clear", "/new")   # the drain reads a ("command", …) op parked before the registration by these
+_CODEX_CLEAR_HEADS = ("/clear", "/new")   # the heads _parked_clear_op reads a ("command", …) op by
 _CODEX_VALUE_EXAMPLE = {"/model": "/model gpt-5", "/effort": "/effort high"}
 
 
@@ -36934,10 +36934,31 @@ def _codex_refuses(text):
     the route parked as text). Read by the route (_route_meta_command) and the parked-op drain (_apply_pending_ops)
     alike, so the live road and the parked road refuse the same texts by construction. False for empty text and
     for every other head, which is prose to a Codex session (2026-09-19). Both callers consult the handler table
-    first (the route for a whole-message head, the drain through _CODEX_CLEAR_HEADS), so a registered head reads True
+    first (the route for a whole-message head, the drain through _parked_clear_op), so a registered head reads True
     here and is refused only in the shape the handler does not take: more lines than the command."""
     parts = (text or "").strip().split()
     return bool(parts) and (parts[0] in _CODEX_REFUSED_HEADS or parts[0] in _CODEX_SETTER_HEADS)
+
+
+def _parked_clear_op(op, be):
+    """Is this parked op a native clear: the ONE rule the drain's arm (_apply_pending_ops) and the chat's clearing
+    fold (build_session) read (review find, 2026-09-19). True for a ("clear", …) op of any length (the route parks
+    it; a mirror written before the text slot existed holds ("clear",)), or for a one-line ("command", …) op whose
+    head is one of _CODEX_CLEAR_HEADS when `be` is the Codex backend. Such a command op reaches the drain by roads
+    that skip the route into _send_or_park (a pending-ops.json written before the heads registered, a notice card's
+    plain action, a follow-up with no item id) and the drain runs it as a clear, so the fold that hides the queued
+    chip under the live "Clearing conversation…" element must call it one too: keyed on the kind "clear" or the
+    literal "/clear", it let that op's chip draw beside the element. The whole-message rule is the route's
+    (_slash_alone): a command op with a second line under the head is the guard's refusal, never a clear. A
+    ("command", "/clear") op on any other backend is that backend's own command (the SDK's CLI executes it), not
+    this verb, so the backend identity is part of the rule."""
+    if op[0] == "clear":
+        return True
+    if op[0] != "command" or len(op) < 2:
+        return False
+    text = str(op[1] or "").strip()
+    head = text.split()[0] if text else ""
+    return head in _CODEX_CLEAR_HEADS and _slash_alone(text) and be is not None and be is _codex()
 
 
 def _codex_slash_refusal(head):
@@ -37154,12 +37175,13 @@ def _apply_pending_ops(now=None):
                             _inflight_ops[sid] = op       # (a move hands nothing over below: not recorded)
                     refused = False
                     said = False                          # the refusal was worded already (the Codex arm below): no generic toast, no backend blamed
-                    # a parked native clear (2026-09-19): the ("clear", text) op the route parks, or a ("command", "/clear" | "/new")
-                    # op a Codex session parked before the head registered (pending-ops.json survives a restart) — the same
-                    # verb, not the guard's refusal; the copy's id rides a refusal so the chat retires its bubble
-                    is_clear = op[0] == "clear" or (op[0] == "command" and be is not None and be is _codex()
-                                                    and str(op[1]).strip().split()[0] in _CODEX_CLEAR_HEADS
-                                                    and _slash_alone(op[1]))   # the route's rule: the whole message
+                    # a parked native clear (2026-09-19): the ("clear", text) op the route parks, or a one-line ("command",
+                    # "/clear" | "/new") op a Codex session parked by a road that skips the route (pending-ops.json survives a
+                    # restart; a notice card's plain action; a follow-up with no item id) — the same verb, not the guard's
+                    # refusal; the copy's id rides a refusal so the chat retires its bubble. ONE rule, shared with the chat's
+                    # clearing fold in build_session (_parked_clear_op; review find, 2026-09-19): the fold's own copy of it
+                    # missed the command op, so that op's queued chip drew beside the live "Clearing conversation…" element
+                    is_clear = _parked_clear_op(op, be)
                     clear_why = ""
                     if op[0] == "send":
                         changed = True
@@ -39862,9 +39884,12 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         # romp-owned on EVERY backend — `park` is the op's _pending_ops position, and the body doubles as
         # the ✕ handshake (_parked_md/_cancel_parked verify it so a shifted queue never drops the wrong op).
         _clear_chips = []                                 # a parked native clear's chip, by identity: the clearing fold below
-        for j, op in enumerate(pending_ops):              # keys on the op's KIND, not on the words it renders as
+        for j, op in enumerate(pending_ops):              # keys on the drain's own rule for the op, not on the words it renders as
             m = {"md": _parked_md(op), "park": j, "cancelable": True, **(_queued_romp_flags(op[1]) if op[0] == "send" else {})}
-            if op[0] == "clear":
+            if _parked_clear_op(op, _cbe):
+                # the ONE predicate the drain runs a clear by (review find, 2026-09-19): a ("clear", …) op, or a one-line
+                # Codex ("command", "/clear" | "/new") op parked by a road that skips the route; keyed on the kind "clear"
+                # alone, the command op's chip drew beside the live "Clearing conversation…" element the drain then earned
                 _clear_chips.append(m)
             # a PARKED copy's identity is the id the client minted at the press, when one rode the park (the
             # op's fourth slot, _send_or_park): the chat's bubble and its ✕ name the copy by it before the
@@ -39895,10 +39920,12 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                 if (m.get("md") or "").strip() == "/compact":
                     del qmsgs[i]
                     break
-        # Same fold for a running /clear: the live "Clearing conversation…" element already represents it. Keyed on the
-        # op's KIND for a parked native clear (2026-09-19): it renders as the words it was typed with ("/new", "/clear
-        # now"), which the text match missed, so the queued chip drew beside the live element; the SDK's running /clear
-        # is a ("command", "/clear") head and keeps the text match.
+        # Same fold for a running /clear: the live "Clearing conversation…" element already represents it. A parked op
+        # folds when the drain's own predicate calls it a clear (_parked_clear_op, collected above by identity; 2026-09-19:
+        # it renders as the words it was typed with, "/new", "/clear now", which a text match missed, and keyed on the
+        # kind "clear" alone a ("command", "/new") op the drain runs as a clear was missed too, so the queued chip drew
+        # beside the live element). The text match stays for the SDK's own queued "/clear": a text in the backend's
+        # _pending, not a parked op, under which SdkSession._clearing is already lit.
         if clearing_now:
             for i, m in enumerate(qmsgs):
                 if any(m is c for c in _clear_chips) or (m.get("md") or "").strip() == "/clear":
