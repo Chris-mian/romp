@@ -16417,7 +16417,10 @@ def _apply_new_session_prefs(sid, body):
     sanctioned door. On a FRESH spawn the env was already born into the reg (_create_sdk_session), so
     the env leg here is the unchanged re-assert set_env skips the reconnect for — the echo still comes
     back. The handler validated env at the door and refused non-SDK targets, so the hasattr guard is only
-    the backstop for direct callers."""
+    the backstop for direct callers. A level the backend REFUSES (a Codex model whose catalog does not
+    offer it, an SDK level outside its list) is echoed as `refused`, the setter's own sentence, never as
+    `effort`: the setter's verdict used to be dropped here, so `romp new --effort` printed the level as
+    applied and exited 0 while nothing changed."""
     out = {}
     m = str((body or {}).get("model") or "").strip()
     e = str((body or {}).get("effort") or "").strip()
@@ -16437,8 +16440,15 @@ def _apply_new_session_prefs(sid, body):
         _set_model_or_park(be, str(sid), m)
         out["model"] = m
     if e:
-        _set_effort_or_park(be, str(sid), e)
-        out["effort"] = e
+        took, _parked = _set_effort_or_park(be, str(sid), e)
+        if took:
+            out["effort"] = e
+        else:
+            # refused (a Codex model whose catalog does not offer the level or a catalog the backend could not
+            # read, an SDK level outside its list): the echo carries the refusal in place of the level, so the
+            # caller is loud, and stderr says so once, as the typed route does, with the door named
+            out["refused"] = _effort_refusal(be, e)
+            sys.stderr.write("effort %r for %s refused by %s (POST /new)\n" % (e, sid, type(be).__name__))
     if ev is not None and hasattr(be, "set_env"):
         _set_env_or_park(be, str(sid), dict(ev))
         out["env"] = dict(ev)
@@ -35831,10 +35841,11 @@ def _set_effort_or_park(be, sid, value):
 
 
 def _effort_refusal(be, value):
-    """The sentence a refused effort pick is answered with (fail loudly, never a silent no-op), the
-    setEffort op's and _route_meta_command's alike: a Codex session's model does not advertise the level
-    in its catalog (or the catalog could not be read); any other backend refused it outright (an SDK
-    session it holds no row for; the unowned route refuses before a setter is reached)."""
+    """The sentence a refused effort pick is answered with (fail loudly, never a silent no-op), the same
+    one for every door that asks the setter (the setEffort op, _route_meta_command's typed /effort, the
+    drain of a parked pick in _apply_pending_ops, POST /new's prefs pass): a Codex session's model does
+    not advertise the level in its catalog (or the catalog could not be read); any other backend refused
+    it outright (an SDK session it holds no row for; the unowned route refuses before a setter is reached)."""
     if be is not None and be is _codex():
         return "Couldn't set effort '%s': this model's Codex catalog does not offer it." % value
     return "Couldn't set effort '%s': the session's backend refused it." % value
