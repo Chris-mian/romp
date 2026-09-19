@@ -168,7 +168,10 @@ class RefusalReachesTheClient(unittest.TestCase):
     head's word, and the parked-op drain (_apply_pending_ops), which fires a pick the gate parked once the
     session is quiet: no client is at hand there, so it addresses the chat page through _send_to_app, and it
     writes the walk's own `pending ops apply: ... refused` stderr line, as the command and compact arms do.
-    POST /send (_deliver_text) has no socket and answers ok False with the words instead.
+    POST /send (_deliver_text) has no socket and answers ok False with the words instead. The stub is vouched as
+    the Codex backend for the effort cases ("ultra" is admitted only for a Codex session); the /fast cases route
+    un-vouched, since a live Codex session's /fast is refused above the setter by the Codex slash guard (#1864),
+    so the fast arm's client is an SDK or unowned session.
     Synthetic only: a placeholder sid, an invented level."""
 
     def setUp(self):
@@ -227,11 +230,14 @@ class RefusalReachesTheClient(unittest.TestCase):
         self.assertNotIn(SID, km._pending_ops, "a refusal parks nothing")
 
     def test_the_command_route_answers_a_refused_fast_toggle_on_the_same_frame(self):
-        # the effort arm's frame is pinned above (a level the catalog does not offer); this is the /fast arm's
+        # the effort arm's frame is pinned above (a level the catalog does not offer); this is the /fast arm's.
+        # Not vouched as a Codex session for this call: a live Codex session's /fast is refused above the setter
+        # by the Codex slash guard (#1864), so the fast arm's client is an SDK or unowned session.
         self.be.set_fast = lambda sid, v: False
         client, sent = self._client()
         state = {}
-        self.assertTrue(km._route_meta_command(self.be, SID, "/fast on", client, state=state))
+        with mock.patch.object(km, "_codex", lambda: None):
+            self.assertTrue(km._route_meta_command(self.be, SID, "/fast on", client, state=state))
         self.assertIs(state["queued"], False)
         self.assertEqual([tuple(m.get(k) for k in ("type", "gesture", "sid", "flag")) for m in sent],
                          [("settingRefused", "command", SID, "fast")], sent)
@@ -263,12 +269,15 @@ class RefusalReachesTheClient(unittest.TestCase):
     # (a Codex model whose catalog does not offer it after a model change under the park) was popped with no
     # frame, no stderr line and no reply, and the queued chip retired as if the level had landed. The drain has
     # no client at hand (the pusher thread runs it), so the frame goes to the chat page through _send_to_app.
-    def _park_then_drain(self, text):
+    def _park_then_drain(self, text, codex=True):
         """Park `text` through the route under a gate that says busy, then lift the gate and run the drain once
-        (bare, as the pusher calls it). Returns what the drain wrote to stderr."""
+        (bare, as the pusher calls it). Returns what the drain wrote to stderr. `codex` False lifts the class's
+        vouch for the ROUTE call alone (a /fast on a Codex session is refused above the setter, #1864: see the
+        class docstring); the drain runs as is, its effort and fast arms consult no vouch."""
         self.verdict = True
         state = {}
-        self.assertTrue(km._route_meta_command(self.be, SID, text, state=state), text)
+        with mock.patch.object(km, "_codex", lambda: self.be if codex else None):   # the class's vouch, or none
+            self.assertTrue(km._route_meta_command(self.be, SID, text, state=state), text)
         self.assertIs(state["queued"], True, "the gate parked it")
         self.assertEqual(self.be.calls, [], "nothing applies before the gate lifts")
         self.verdict = False
@@ -288,7 +297,7 @@ class RefusalReachesTheClient(unittest.TestCase):
 
     def test_a_parked_fast_toggle_the_backend_refuses_at_the_drain_is_said_the_same_way(self):
         self.be.set_fast = lambda sid, v: False          # a Codex session has no fast mode; an SDK session the backend
-        err = self._park_then_drain("/fast on")          # holds no row for
+        err = self._park_then_drain("/fast on", codex=False)   # holds no row for. Routed as an SDK session (the helper)
         self.assertEqual([(a, m["type"], m["gesture"], m["sid"], m["flag"]) for a, m in self.frames],
                          [("chat", "settingRefused", "command", SID, "fast")], self.frames)
         self.assertIn("fast mode", self.frames[0][1]["text"])
@@ -333,7 +342,7 @@ class RefusalReachesTheClient(unittest.TestCase):
         err = self._park_then_drain("/effort ultra")
         self.assertEqual(self.be.calls, [("effort", "ultra")])
         self.be.calls.clear()
-        err += self._park_then_drain("/fast on")
+        err += self._park_then_drain("/fast on", codex=False)
         self.assertEqual(self.be.calls, [("fast", "on")])
         self.assertEqual(self.frames, [], "None is not False: nothing is said")
         self.assertEqual(err, "", "and no stderr line")
