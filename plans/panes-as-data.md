@@ -132,12 +132,13 @@ in `ui/webview/chat-split.test.ts`) and a pin in this design's tests asserts out
   rail button and tab appear after Files; an experimental pane gets no phone tab (section 1).
 - **The baked constants leave import time.** `PN` (the bell's label map), `KEYS` (the broadcast keys),
   `PANE` and `COLS` (the focus map) are built into module-level strings at import from `_PANE_ORDER`. They
-  read one JSON the landing emits ONCE per request as an attribute, `<body data-panes='[...]'>` (the list
-  of `{id, title, protocol, experimental}`), and the inline scripts parse it (`JSON.parse(document.body.
-  dataset.panes)`). An attribute, not a script: the inline count pin stays at 21 and no inline JS is added
-  (the docking plan's section 10 rule). The three module-level strings become per-request builders (a
-  function returning the string), or keep their shape and read the attribute; either way their pinned
-  substrings stay literal.
+  read one JSON the landing emits as an attribute, `<body data-panes='[...]'>` (the list of `{id, title,
+  protocol, experimental, on}` for the DATA panes), and the inline scripts parse it (`JSON.parse(document.
+  body.dataset.panes)`) and EXTEND their baked five with it. The attribute is emitted only when the registry
+  holds a pane, so with an empty registry the landing is byte-identical to today's (phase one's first pin);
+  an attribute, not a script, so the inline count pin stays at 21 and no inline JS is added (the docking
+  plan's section 10 rule). The three module-level strings keep their shape and their pinned substrings
+  literal (the executed harnesses read them as constants); each gains a line that reads the attribute.
 - **The markup and the CSS are generated from the list.** For each pane not among the code five, `_landing`
   emits `<div class=pane id=<id>-pane><iframe id=f-<id> data-src=<served source>></iframe></div>` after
   the Files pane (always `data-src`: a data pane loads when shown, the optional panes' rule; a URL source's

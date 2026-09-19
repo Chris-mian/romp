@@ -117,6 +117,9 @@ if [[ -n "${MOCK_CURL_NOTICE_OK:-}" && "$url" == */notice ]]; then echo "$MOCK_C
 if [[ -n "${MOCK_CURL_BOARDS:-}" && "$url" == */boards ]]; then echo "$MOCK_CURL_BOARDS"; exit 0; fi
 if [[ -n "${MOCK_CURL_BOARD_REFUSE:-}" && "$url" == */board ]]; then echo "$MOCK_CURL_BOARD_REFUSE"; exit 0; fi
 if [[ -n "${MOCK_CURL_BOARD_DEFINED:-}" && "$url" == */board ]]; then echo "$MOCK_CURL_BOARD_DEFINED"; exit 0; fi
+if [[ -n "${MOCK_CURL_PANES:-}" && "$url" == */panes ]]; then echo "$MOCK_CURL_PANES"; exit 0; fi
+if [[ -n "${MOCK_CURL_PANE_REFUSE:-}" && "$url" == */pane ]]; then echo "$MOCK_CURL_PANE_REFUSE"; exit 0; fi
+if [[ -n "${MOCK_CURL_PANE_DEFINED:-}" && "$url" == */pane ]]; then echo "$MOCK_CURL_PANE_DEFINED"; exit 0; fi
 if [[ -n "${MOCK_CURL_WATCH_PR_REFUSE:-}" && "$url" == */watch-pr ]]; then
   echo '{"ok": false, "retryable": true, "error": "the watch could not be saved ([Errno 28] No space left on device) - nothing is watching TESTORG/testrepo#7; retry once the state directory takes writes again"}'
   exit 0
@@ -2629,6 +2632,67 @@ PY
     run "$ROMP_SCRIPT" board show
     [[ "$status" -eq 2 ]]
     [[ "$output" == *"usage: romp board define <id>"* ]]
+}
+
+@test "pane: define posts the definition to /pane with the command's id, list and show read /panes, remove posts the id; usage errors exit 2; a refusal exits 1" {
+    # plans/panes-as-data.md, phase one: the pane registry's command-line door, the board door's twin
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    export ROMP_KERNEL_PORT=29855
+    # define: the JSON's missing id takes the command's; the body rides -d, the token never the command line
+    local defn='{"title": "Notes", "source": "pane:notes", "on": true}'
+    MOCK_CURL_PANE_DEFINED='{"ok": true, "pane": {"id": "notes", "title": "Notes", "source": "pane:notes", "on": true, "experimental": false, "protocol": "romp"}, "rev": "abc123"}' run "$ROMP_SCRIPT" pane define notes --json "$defn"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"romp pane: defined notes (pane:notes): open dashboards offer a reload; the pane shows on their next load"* ]]
+    grep -q -- '-X POST http://127.0.0.1:29855/pane' "$MOCK_LOG"
+    grep -q -- '"id": "notes"' "$MOCK_LOG"
+    grep -q -- '"source": "pane:notes"' "$MOCK_LOG"
+    grep -q -- '--config -' "$MOCK_LOG"
+    [ "$(grep -c -- "testtok" "$MOCK_LOG")" -eq 0 ]   # the token never rides the command line (a count, the ratchet's rule for negatives)
+    # ...from a file too, and an id inside the JSON that disagrees with the command's is a usage error
+    printf '%s' "$defn" > "$TEST_DIR/notes-pane.json"
+    MOCK_CURL_PANE_DEFINED='{"ok": true, "pane": {"id": "notes", "source": "pane:notes"}}' run "$ROMP_SCRIPT" pane define notes --from "$TEST_DIR/notes-pane.json"
+    [[ "$status" -eq 0 ]]
+    run "$ROMP_SCRIPT" pane define notes --json '{"id": "scratch"}'
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"names id 'scratch', the command 'notes'"* ]]
+    run "$ROMP_SCRIPT" pane define notes --json 'not json'
+    [[ "$status" -eq 2 ]]
+    # list and show read /panes: the shipped panes wear [builtin], an experimental one says so, show strips the flag
+    local rows='{"panes": [{"id": "chat", "title": "Chat", "source": "/chat", "on": true, "experimental": false, "protocol": "romp", "builtin": true}, {"id": "notes", "title": "Notes", "source": "pane:notes", "on": true, "experimental": true, "protocol": "romp", "builtin": false}], "rev": "abc123"}'
+    MOCK_CURL_PANES="$rows" run "$ROMP_SCRIPT" pane list
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"chat  Chat  /chat  romp  [builtin]"* ]]
+    [[ "$output" == *"notes  Notes  pane:notes  romp  experimental"* ]]
+    MOCK_CURL_PANES="$rows" run "$ROMP_SCRIPT" pane show notes
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'"source": "pane:notes"'* ]]
+    [[ "$output" != *'"builtin"'* ]]
+    MOCK_CURL_PANES="$rows" run "$ROMP_SCRIPT" pane show scratch
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"no pane scratch"* ]]
+    MOCK_CURL_PANES='{"panes": [], "rev": "0"}' run "$ROMP_SCRIPT" pane list
+    [[ "$output" == *"no panes defined"* ]]
+    # remove posts the id; a refusal names the reason and exits 1
+    : > "$MOCK_LOG"
+    MOCK_CURL_PANE_DEFINED='{"ok": true, "rev": "0"}' run "$ROMP_SCRIPT" pane remove notes
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"romp pane: removed notes"* ]]
+    grep -q -- '{"remove": "notes"}' "$MOCK_LOG"
+    MOCK_CURL_PANE_REFUSE='{"ok": false, "error": "id '"'"'feed'"'"' is a shipped pane'"'"'s and is reserved"}' run "$ROMP_SCRIPT" pane define feed --json '{"source": "/feed"}'
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *"romp pane: refused: id 'feed' is a shipped pane's and is reserved"* ]]
+    # usage: no verb, an unknown verb, define with neither source, show with no id
+    run "$ROMP_SCRIPT" pane
+    [[ "$status" -eq 2 ]]
+    run "$ROMP_SCRIPT" pane rename notes
+    [[ "$status" -eq 2 ]]
+    run "$ROMP_SCRIPT" pane define notes
+    [[ "$status" -eq 2 ]]
+    run "$ROMP_SCRIPT" pane show
+    [[ "$status" -eq 2 ]]
+    [[ "$output" == *"usage: romp pane define <id>"* ]]
 }
 
 @test "card: -t/-m post title, text and the session to /notice; ROMP_SID is the default; -k names the card; usage errors exit 2" {

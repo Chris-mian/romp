@@ -42,9 +42,11 @@ function shimJs(app: string, noStale = false, core = ""): string {
   // the label slot: _pane_label's word for the key (kernel.py _PANE_ORDER), the capitalised key outside that list
   const LABELS: Record<string, string> = { chat: "Chat", timeline: "Sessions", fleet: "Outline", feed: "Feed", files: "Files" };
   const label = LABELS[app] || app.charAt(0).toUpperCase() + app.slice(1);
+  // the pane-set revision slot (plans/panes-as-data.md): a JSON string the shim compares against the keepalive's pv
+  const pv = slice.includes("var LOADEDPV=%s;") ? ['"0"'] : [];
   const args = slice.includes('var LABEL="%s"')
-    ? [core, "var RESTART_DIET=false;", app, label, "5", noStale ? "true" : "false", app, app]
-    : [core, "var RESTART_DIET=false;", app, "5", noStale ? "true" : "false", app, app];
+    ? [core, "var RESTART_DIET=false;", app, label, "5", noStale ? "true" : "false", ...pv, app, app]
+    : [core, "var RESTART_DIET=false;", app, "5", noStale ? "true" : "false", ...pv, app, app];
   let i = 0;
   return slice.replace(/%[sd]/g, () => args[i++]).replace(/%%/g, "%");
 }

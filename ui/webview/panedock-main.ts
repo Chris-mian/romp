@@ -50,6 +50,13 @@ const BAND_MIN = 48;     // the band's floor (the shipped #gh clamp)
 /** Whether the gear's per-browser `paneDocking` switch is on, from the raw `romp:settings` JSON. Only the
  *  literal `true` turns it on: a store from before the key, a missing value, or any other type reads OFF
  *  (the fail-safe default for an opt-in that gates a whole layout engine). Pure; never throws. */
+/** Whether a pane frame speaks the pane protocol (plans/panes-as-data.md, section 3): every pane does unless the shell
+ *  marked its iframe `data-protocol=none` (a URL-source pane: a foreign, sandboxed document). The kit's mark, its detector
+ *  and its message handling are for protocol panes only; the pure read, so the exclusion is pinned without a DOM. */
+export function speaksProtocol(f: { getAttribute(name: string): string | null }): boolean {
+  return f.getAttribute("data-protocol") !== "none";
+}
+
 export function isPaneDockingOn(rawSettings: string | null): boolean {
   try {
     const o = JSON.parse(rawSettings || "{}");
@@ -396,6 +403,7 @@ class Engine {
    *  (dist/pane-grab.js, the plan's section 3: the inner page detects a press on its own empty background and forwards
    *  it here), injected once per document; the chat is skipped (its grab surface stays the strip's empty run). */
   private markDoc(d: Document, f: HTMLIFrameElement): void {
+    if (!speaksProtocol(f)) return;   // a URL-source pane: a foreign, sandboxed document; it gets no mark and no detector (and could not be read anyway)
     if (!d.body) return;
     d.body.classList.add(PANE_DOCKING_CLASS);
     if (f.id === "f-chat" || f.id.indexOf("f-chat-") === 0 || d.getElementById(GRAB_SCRIPT_ID)) return;
@@ -414,9 +422,19 @@ class Engine {
   /** A pane page's forwarded press ({romp:"paneGrab"}, pane-grab.ts): the page captured the pointer on its own empty
    *  background and hands the press here; the shell arms exactly the drag the ring arms, hearing the frame's captured
    *  moves through its window as it does for Option-drag. */
+  /** A pane message counts only from a same-origin frame of this document whose pane speaks the protocol: a
+   *  URL-source pane (data-protocol none, sandboxed) can still post to its parent, and is ignored here as it is by
+   *  every shell handler (plans/panes-as-data.md section 5). */
+  private protocolFrame(e: MessageEvent): HTMLIFrameElement | null {
+    if (!e.source || e.source === window || e.origin !== location.origin) return null;
+    const f = this.allFrames().find((x) => x.contentWindow === e.source) || null;
+    return f && speaksProtocol(f) ? f : null;
+  }
+
   private onGrabMessage(e: MessageEvent): void {
     const m = e.data;
     if (!m || !this.on) return;
+    if (!this.protocolFrame(e)) return;
     if (m.romp === "paneGrabEnd") {
       // the page's release: a press the shell heard only after the pointer was already up (its message task ran after
       // the pointerup, before this engine's own listeners existed) must not stand with no button held
@@ -425,7 +443,7 @@ class Engine {
     }
     if (m.romp === "tabDrag") { if (m.on) this.startTabDrag(e.source, m); else this.endTabDrag(); return; }
     if (m.romp !== "paneGrab" || this.press || this.div) return;
-    const f = this.allFrames().find((x) => x.contentWindow === e.source);
+    const f = this.protocolFrame(e);
     if (!f || !f.contentWindow) return;
     const paneNode = f.closest(".pane") as HTMLElement | null;
     if (!paneNode || !this.lay || !has(this.lay.tree, paneNode.id)) return;
@@ -585,7 +603,7 @@ class Engine {
    *  SOURCE pane's strip stays uncovered, so the page's own live reorder keeps its dragover. */
   private startTabDrag(source: MessageEventSource | null, m: any): void {
     if (this.press || this.div || !this.lay || typeof m.sid !== "string" || !m.sid) return;
-    const f = this.allFrames().find((x) => x.contentWindow === source);
+    const f = this.allFrames().find((x) => x.contentWindow === source && speaksProtocol(x));
     const fromPane = f ? (f.closest(".pane") as HTMLElement | null) : null;
     this.endTabDrag();
     this.tab = { sid: m.sid, name: typeof m.name === "string" ? m.name : "", from: fromPane ? fromPane.id : null, stripH: Math.max(0, Number(m.stripH) || 0) };

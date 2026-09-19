@@ -41,8 +41,9 @@ class Keepalive(unittest.TestCase):
         ]
         km._keepalive_all()
         dv = km._dist_ver()
-        self.assertEqual([json.loads(x) for x in got_a], [{"type": "ka", "dv": dv}], "feed client got one keepalive")
-        self.assertEqual([json.loads(x) for x in got_b], [{"type": "ka", "dv": dv}], "timeline client too — every app, not just one")
+        pv = km._panes_rev()   # the pane set's revision rides beside dv (plans/panes-as-data.md)
+        self.assertEqual([json.loads(x) for x in got_a], [{"type": "ka", "dv": dv, "pv": pv}], "feed client got one keepalive")
+        self.assertEqual([json.loads(x) for x in got_b], [{"type": "ka", "dv": dv, "pv": pv}], "timeline client too — every app, not just one")
 
     def test_keepalive_marks_a_broken_client_not_alive(self):
         def boom(_s):

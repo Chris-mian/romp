@@ -83,6 +83,7 @@ EOF
     _romp_cmd "romp login add|list|remove <label>" -    "The stored Claude logins a session can be billed to beside the machine's own: add records a COMMAND that prints the login's setup-token on demand (--cmd '<shell line>'; how the token is kept is the user's); list and remove print labels only, never a token"
     _romp_cmd "romp watch --cmd '<pred>' [...]" -       "One mail when the command exits 0 (or the timeout passes) — kernel-owned like watch-pr, for ANY background wait (--every Ns --timeout Ns --note '...' | --list | --cancel <id>)"
     _romp_cmd "romp board define|list|show|remove <id>" - "The card boards a producer or you can make (plans/card-boards.md): define <id> --from <file> | --json <text> writes a board's definition (categories, sort, bell, badge); list and show read them; remove takes one away once no card stands on it"
+    _romp_cmd "romp pane define|list|show|remove <id>" - "The dashboard panes as data (plans/panes-as-data.md): define <id> --from <file>|--json <text> (id, title, source, on, experimental, protocol), list, show, remove; a shipped pane's id is refused."
     _romp_cmd "romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>]" - "Post a NOTICE CARD to the feed (no judge): with no session (none named outside one, or --no-session inside one) it shows at the TOP under Notes; -k names the card (a second post under it revises it; absent, a key is minted and printed); romp card \"title\" \"text\" is the shorthand; --body-file, --attach <path>, --needs-you, --expires <s>, --producer; the card moves only on your dismissal, a new revision or its expiry; a home shows at most fifty live cards, the oldest superseded past that"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
@@ -1203,6 +1204,93 @@ print(json.dumps(d))' "$_b_id" "$_b_json")" || exit 2
     fi
     _err="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error") or sys.argv[1])' "$_resp" 2>/dev/null || printf '%s' "$_resp")"
     echo "romp board: refused: $_err" >&2
+    exit 1
+fi
+
+# `romp pane define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` (plans/panes-as-data.md, phase one): the
+# pane registry's command-line door, the board door's twin. A definition is one JSON object in the pane schema (id, title,
+# source, on, experimental, protocol); the kernel validates it (POST /pane, the one validator behind every door) and stores it
+# under the state root; the dashboards offer a reload on their next keepalive and render it on their next load. `define`
+# replaces a pane's definition whole (a missing id inside the JSON takes the command's); a shipped pane's id (chat, timeline,
+# fleet, feed, files, settings) and a definition outside the schema are refused with the reason. `romp watch`'s mechanics: the token through _romp_token_cfg, one `romp pane: ...` line, a `refused`
+# line naming the error and exit 1, usage errors exit 2.
+if [[ "${1:-}" == "pane" ]]; then
+    shift
+    _pn_usage="usage: romp pane define <id> (--from <path> | --json <text>)
+       romp pane list
+       romp pane show <id>
+       romp pane remove <id>"
+    _pn_verb="${1:-}"; [[ -n "$_pn_verb" ]] && shift
+    case "$_pn_verb" in define|list|show|remove) ;; *) echo "$_pn_usage" >&2; exit 2 ;; esac
+    _pn_id=""; _pn_from=""; _pn_json=""
+    if [[ "$_pn_verb" != "list" ]]; then
+        [[ $# -eq 0 || -z "$1" || "$1" == -* ]] && { echo "$_pn_usage" >&2; exit 2; }
+        _pn_id="$1"; shift
+    fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --from) shift; [[ $# -eq 0 || ! -f "$1" ]] && { echo "$_pn_usage" >&2; exit 2; }; _pn_from="$1"; shift ;;
+            --json) shift; [[ $# -eq 0 || -z "$1" ]] && { echo "$_pn_usage" >&2; exit 2; }; _pn_json="$1"; shift ;;
+            *)      echo "$_pn_usage" >&2; exit 2 ;;
+        esac
+    done
+    if [[ "$_pn_verb" == "define" ]]; then
+        [[ -z "$_pn_from" && -z "$_pn_json" ]] && { echo "$_pn_usage" >&2; exit 2; }
+        [[ -n "$_pn_from" && -n "$_pn_json" ]] && { echo "$_pn_usage" >&2; exit 2; }
+        [[ -n "$_pn_from" ]] && _pn_json="$(cat "$_pn_from")"
+    fi
+    _tok="$(_romp_token)"
+    _kport="${ROMP_KERNEL_PORT:-29855}"
+    if [[ -z "$_tok" ]]; then
+        echo "romp pane: the kernel isn't running (no serve token). Start romp first." >&2
+        exit 1
+    fi
+    if [[ "$_pn_verb" == "list" || "$_pn_verb" == "show" ]]; then
+        _resp="$(_romp_token_cfg | curl -sf -m 15 --config - "http://127.0.0.1:$_kport/panes")" \
+            || { echo "romp pane: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+        if [[ "$_pn_verb" == "list" ]]; then
+            printf '%s' "$_resp" | python3 -c 'import json,sys
+rows = json.load(sys.stdin).get("panes") or []
+if not rows: print("romp pane: no panes defined (the five shipped panes are built in)"); raise SystemExit
+for b in rows:
+    print("%s  %s  %s  %s%s%s" % (b.get("id", ""), b.get("title", ""), b.get("source", ""), b.get("protocol", ""), "  experimental" if b.get("experimental") else "", "  [builtin]" if b.get("builtin") else ""))'
+            exit 0
+        fi
+        printf '%s' "$_resp" | python3 -c 'import json,sys
+rows = json.load(sys.stdin).get("panes") or []
+hit = next((b for b in rows if b.get("id") == sys.argv[1]), None)
+if hit is None:
+    print("romp pane: no pane %s (romp pane list names them)" % sys.argv[1], file=sys.stderr); raise SystemExit(1)
+print(json.dumps({k: v for k, v in hit.items() if k != "builtin"}, indent=2, sort_keys=True))' "$_pn_id"
+        exit $?
+    fi
+    if [[ "$_pn_verb" == "remove" ]]; then
+        _payload="$(python3 -c 'import json,sys; print(json.dumps({"remove": sys.argv[1]}))' "$_pn_id")"
+    else
+        _payload="$(python3 -c 'import json,sys
+try:
+    d = json.loads(sys.argv[2])
+except ValueError as e:
+    print("romp pane: the definition is not JSON (%s)" % e, file=sys.stderr); raise SystemExit(2)
+if not isinstance(d, dict):
+    print("romp pane: the definition must be a JSON object", file=sys.stderr); raise SystemExit(2)
+d.setdefault("id", sys.argv[1])
+if d["id"] != sys.argv[1]:
+    print("romp pane: the definition names id %r, the command %r" % (d["id"], sys.argv[1]), file=sys.stderr); raise SystemExit(2)
+print(json.dumps(d))' "$_pn_id" "$_pn_json")" || exit 2
+    fi
+    _resp="$(_romp_token_cfg | curl -sf -m 15 --config - -X POST "http://127.0.0.1:$_kport/pane" \
+                  -H 'Content-Type: application/json' -d "$_payload")" \
+        || { echo "romp pane: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+    if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
+        if [[ "$_pn_verb" == "remove" ]]; then echo "romp pane: removed $_pn_id"; else
+            _pnn="$(python3 -c 'import json,sys; b = json.loads(sys.argv[1]).get("pane") or {}; print("%s (%s)" % (b.get("id"), b.get("source")))' "$_resp" 2>/dev/null || true)"
+            echo "romp pane: defined ${_pnn:-$_pn_id}: open dashboards offer a reload; the pane shows on their next load"
+        fi
+        exit 0
+    fi
+    _err="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error") or sys.argv[1])' "$_resp" 2>/dev/null || printf '%s' "$_resp")"
+    echo "romp pane: refused: $_err" >&2
     exit 1
 fi
 
