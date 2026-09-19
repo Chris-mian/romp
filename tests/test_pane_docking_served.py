@@ -144,6 +144,13 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   o.bodyClass = await page.evaluate(() => document.body.className);
   o.rects0 = await rectsOf(page);
   o.store0 = await store(page);
+  // no engine (the base, or a build without the bundle): measure what is there and stop, so every test reports the
+  // absence through its own assertion instead of the driver dying on an undefined rectangle
+  if (!ready || !o.rects0["feed-pane"] || !o.rects0["fleet-pane"] || !o.rects0["chat-pane"]) {
+    o.absent = true;
+    if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/pane-docking-on.png" }); }
+    await ctx.close();
+  } else {
   o.tl = await page.evaluate(() => { const c = document.querySelector(".col"); return { tl: getComputedStyle(c).getPropertyValue("--tl").trim(), rowBottom: document.querySelector(".row").getBoundingClientRect().bottom, colBottom: c.getBoundingClientRect().bottom }; });
   // cursors at rest: the ring, the shell body, the chat strip's empty run and a tab in it
   const cf = chatFrame(page);
@@ -185,6 +192,7 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   o.final = { rects: await rectsOf(page), store: await store(page), tl: await page.evaluate(() => getComputedStyle(document.querySelector(".col")).getPropertyValue("--tl").trim()) };
   if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/pane-docking-on.png" }); }
   await ctx.close();
+  }
 }
 
 // ── OFF ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -340,8 +348,13 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(lay["tree"]["dir"], "col"); self.assertEqual(lay["tree"]["fixed"][1], tl, "the band is the fixed kid of the root column")
         self.assertEqual(self._leaves(lay["tree"]), ["chat-pane", "fleet-pane", "feed-pane", "tl-pane"])
 
-    def test_2_cursors_the_open_hand_over_the_ring_and_the_strips_empty_run_and_under_option_the_closed_hand_while_held(self):
+    def _on(self):
         o = self.r["on"]
+        self.assertFalse(o.get("absent"), "the engine never came on (no bundle, no switch, or no rects): %r" % {k: o.get(k) for k in ("ready", "bodyClass", "rects0")})
+        return o
+
+    def test_2_cursors_the_open_hand_over_the_ring_and_the_strips_empty_run_and_under_option_the_closed_hand_while_held(self):
+        o = self._on()
         c = o["cursors"]
         self.assertEqual(c["feedRing"], "grab", "the pane's ring wears the open hand: %r" % c)
         self.assertEqual(c["tabbar"], "grab", "the chat strip's empty run wears the open hand: %r" % c)
@@ -359,7 +372,7 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(d["armed"]["paneCursor"], "grabbing")
 
     def test_3_the_outline_follows_the_pointer_across_two_half_zones_of_one_pane(self):
-        d = self.r["on"]["drag1"]
+        d = self._on()["drag1"]
         top, bottom = d["way"][0], d["way"][1]
         fl = top["rects"]["fleet-pane"]
         self.assertEqual(top["zone"], {"target": "fleet-pane", "edge": "top"}, top["zone"])
@@ -375,7 +388,7 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertGreater(bottom["outline"]["y"], top["outline"]["y"] + 10, "the outline moved with the pointer")
 
     def test_4_a_pane_dropped_into_each_half_zone_lands_there_and_the_store_follows(self):
-        o = self.r["on"]
+        o = self._on()
         # 1: the feed below the outline (the outline's bottom half)
         a = o["drag1"]["after"]
         self.assertFalse(a["dragging"]); self.assertFalse(a["outlineOn"], "the outline goes at the drop")
@@ -405,7 +418,7 @@ class ServedPaneDocking(unittest.TestCase):
             self.assertLess(d["rects"][k]["y"] + d["rects"][k]["h"], band["y"] + 1, "%s above the band" % k)
 
     def test_5_escape_cancels_a_lifted_drag_and_a_press_under_the_slop_is_a_click(self):
-        o = self.r["on"]
+        o = self._on()
         e = o["esc"]
         self.assertTrue(e["armed"]["dragging"], "lifted before Escape")
         self.assertFalse(e["afterEscape"]["dragging"], "Escape drops the pane where it was")
@@ -415,7 +428,7 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(o["click"]["store"]["layout"], o["storeBeforeEsc"]["layout"])
 
     def test_6_the_shipped_stores_are_read_and_never_written(self):
-        o = self.r["on"]
+        o = self._on()
         self.assertEqual(o["final"]["store"]["grow"], o["store0"]["grow"], "romp-pane-grow untouched by four drops")
         self.assertEqual(o["final"]["store"]["panes"], o["store0"]["panes"], "romp-panes untouched")
         self.assertEqual(json.loads(o["store0"]["panes"]), {"chat": True, "fleet": True, "feed": True, "timeline": True, "files": False})
