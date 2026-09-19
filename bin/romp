@@ -83,7 +83,7 @@ EOF
     _romp_cmd "romp login add|list|remove <label>" -    "The stored Claude logins a session can be billed to beside the machine's own: add records a COMMAND that prints the login's setup-token on demand (--cmd '<shell line>'; how the token is kept is the user's); list and remove print labels only, never a token"
     _romp_cmd "romp watch --cmd '<pred>' [...]" -       "One mail when the command exits 0 (or the timeout passes) — kernel-owned like watch-pr, for ANY background wait (--every Ns --timeout Ns --note '...' | --list | --cancel <id>)"
     _romp_cmd "romp board define|list|show|remove <id>" - "The card boards a producer or you can make (plans/card-boards.md): define <id> --from <file> | --json <text> writes a board's definition (categories, sort, bell, badge); list and show read them; remove takes one away once no card stands on it"
-    _romp_cmd "romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session]" - "Post a NOTICE CARD to the feed (no judge): with no session (none named outside one, or --no-session inside one) it shows at the TOP under Notes; -k names the card (a second post under it revises it; absent, a key is minted and printed); romp card \"title\" \"text\" is the shorthand; --body-file, --attach <path>, --needs-you, --expires <s>, --producer; the card moves only on your dismissal, a new revision or its expiry; a home shows at most fifty live cards, the oldest superseded past that"
+    _romp_cmd "romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>]" - "Post a NOTICE CARD to the feed (no judge): with no session (none named outside one, or --no-session inside one) it shows at the TOP under Notes; -k names the card (a second post under it revises it; absent, a key is minted and printed); romp card \"title\" \"text\" is the shorthand; --body-file, --attach <path>, --needs-you, --expires <s>, --producer; the card moves only on your dismissal, a new revision or its expiry; a home shows at most fifty live cards, the oldest superseded past that"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
     _romp_cmd "romp compact <session> [--wait]" -       "Compact a session's context in place (Claude's /compact) — queued safely if a turn is open; --wait blocks until it finishes (--timeout <s>, default 600)"
@@ -1206,7 +1206,7 @@ print(json.dumps(d))' "$_b_id" "$_b_json")" || exit 2
     exit 1
 fi
 
-# `romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>] [--attach <path>]
+# `romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>] [--body-file <path>] [--attach <path>]
 #             [--needs-you] [--expires <seconds>] [--producer <label>]`, or `romp card "title" "text"` (T370,
 # plans/notice-cards.md, "Owner-less cards and the terse command"): door three of the kernel's post_notice, following
 # `romp watch`'s mechanics: the session is $ROMP_SID under body key id, -s sends name, and NEITHER (outside a session, or
@@ -1218,12 +1218,13 @@ fi
 # actions are for producers inside romp, against the kernel's allowlist, and an owner-less card carries none).
 if [[ "${1:-}" == "card" ]]; then
     shift
-    _c_usage="usage: romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>]
-       [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]
+    _c_usage="usage: romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>]
+       [--body-file <path>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]
        romp card \"title\" \"text\"
   -k names the card: a second post under the same key REVISES it; absent, a key is minted and printed
-  no -s and no ROMP_SID (or --no-session): an owner-less card, shown at the top of the feed"
-    _c_title=""; _c_body=""; _c_bodyfile=""; _c_sess=""; _c_attach=""; _c_key=""; _c_needs=0; _c_expires=""; _c_prod="cli"; _c_nosess=0; _c_pos=0
+  no -s and no ROMP_SID (or --no-session): an owner-less card, shown at the top of the feed
+  -b files the card on a board of yours (created on first use); -c names its category (on the feed: working, needs_input, completed)"
+    _c_title=""; _c_body=""; _c_bodyfile=""; _c_sess=""; _c_attach=""; _c_key=""; _c_needs=0; _c_expires=""; _c_prod="cli"; _c_nosess=0; _c_pos=0; _c_board=""; _c_cat=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--title)          shift; [[ $# -eq 0 || -z "$1" ]] && { echo "$_c_usage" >&2; exit 2; }; _c_title="$1"; shift ;;
@@ -1236,6 +1237,8 @@ if [[ "${1:-}" == "card" ]]; then
             --needs-you)         _c_needs=1; shift ;;
             --expires)           shift; [[ $# -eq 0 || ! "$1" =~ ^[0-9]+$ ]] && { echo "$_c_usage" >&2; exit 2; }; _c_expires="$1"; shift ;;
             --producer)          shift; [[ $# -eq 0 || -z "$1" ]] && { echo "$_c_usage" >&2; exit 2; }; _c_prod="$1"; shift ;;
+            -b|--board)          shift; [[ $# -eq 0 || -z "$1" || "$1" == -* ]] && { echo "$_c_usage" >&2; exit 2; }; _c_board="$1"; shift ;;
+            -c|--category)       shift; [[ $# -eq 0 || -z "$1" || "$1" == -* ]] && { echo "$_c_usage" >&2; exit 2; }; _c_cat="$1"; shift ;;
             -*)                  echo "$_c_usage" >&2; exit 2 ;;
             *)                   # the positional shorthand: a bare first word is the title, a bare second the text, a third a usage error
                                  _c_pos=$((_c_pos + 1))
@@ -1269,13 +1272,25 @@ if sys.argv[5]: b["body"] = sys.argv[5]
 if sys.argv[6]: b["attachment"] = sys.argv[6]
 if sys.argv[7] == "1": b["needsYou"] = True
 if sys.argv[9]: b["expiresAt"] = int(time.time()) + int(sys.argv[9])
-print(json.dumps(b))' "$_c_key_name" "$_c_who" "$_c_key" "$_c_title" "$_c_body" "$_c_attach" "$_c_needs" "$_c_prod" "$_c_expires")"
+if sys.argv[10]: b["board"] = sys.argv[10]
+if sys.argv[11]: b["category"] = sys.argv[11]
+print(json.dumps(b))' "$_c_key_name" "$_c_who" "$_c_key" "$_c_title" "$_c_body" "$_c_attach" "$_c_needs" "$_c_prod" "$_c_expires" "$_c_board" "$_c_cat")"
     _resp="$(_romp_token_cfg | curl -sf -m 15 --config - -X POST "http://127.0.0.1:$_kport/notice" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
         || { echo "romp card: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
         _crev="$(python3 -c 'import json,sys; n = json.loads(sys.argv[1]).get("notice") or {}; print(n.get("rev") or "")' "$_resp" 2>/dev/null || true)"
         _cwhere="on the feed"; [[ -z "$_c_who" ]] && _cwhere="at the top of the feed (no session)"
+        # a card on a board of yours: the line names the board and its category as the kernel resolved them, and says when
+        # this post CREATED the board or the category (a typo in -b is a new board, visible at once, never a silent one)
+        _cboard="$(python3 -c 'import json,sys
+n = json.loads(sys.argv[1]).get("notice") or {}
+b, c, made = n.get("board") or "feed", n.get("category") or "", n.get("created") or ""
+if b == "feed": print("")
+else:
+    note = {"board": " (board %s created with category %s)" % (b, c), "category": " (category %s added to board %s)" % (c, b)}.get(made, "")
+    print("on board %s/%s%s" % (b, c, note))' "$_resp" 2>/dev/null || true)"
+        [[ -n "$_cboard" ]] && _cwhere="$_cboard"
         echo "romp card: posted (key $_c_key${_crev:+, rev $_crev}) $_cwhere: it shows until you dismiss it, a post with -k $_c_key revises it, or it expires"
         exit 0
     fi

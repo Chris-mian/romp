@@ -829,6 +829,102 @@ class Retention(unittest.TestCase):
             km.NOTICE_MEMO_BYTES = saved_bound
 
 
+NOTES_BOARD = {"id": "notes", "title": "Notes",
+               "categories": [{"id": "new", "title": "New", "chip": "neutral"}, {"id": "kept", "title": "Kept", "chip": "working"}],
+               "defaultCategory": "new", "rules": [{"when": {"producer": "figure"}, "category": "kept"}],
+               "sort": {"key": "t", "dir": "desc"}, "subSorts": [], "groupBy": None, "order": [], "notify": ["new"], "needsYou": "new", "kinds": ["notice"]}
+
+
+class Boards(unittest.TestCase):
+    """The card names its board (plans/notice-cards.md, "The card command names its board"; card boards phase three, the
+    producer's half): post_notice resolves where the card files through the pure resolver AFTER every other check, writes a
+    first-use board or an appended category right before the row appends, stores the two fields on the row, and the card
+    builder copies them; the answer says when the post created the board or the category."""
+    def setUp(self): self.w = World()
+    def tearDown(self): self.w.close()
+
+    def test_an_unknown_board_is_created_on_first_use_and_the_row_and_the_card_carry_the_fields(self):
+        row, err = km.post_notice(SID, "fig", "The figure", producer="cli", now=100, t=100, board="figures", category="new")
+        self.assertIsNone(err)
+        self.assertEqual((row["board"], row["category"], row["created"]), ("figures", "new", "board"), "the answer names the board and says the post created it")
+        stored = [r for r in _rows(SID) if r["op"] == "post"][-1]
+        self.assertEqual((stored["board"], stored["category"]), ("figures", "new")); self.assertNotIn("created", stored, "the created word is the answer's alone")
+        self.assertEqual(km._boards_data()["figures"], km._default_board("figures", "new"), "the defaults with the named category, on disk")
+        self.assertTrue(km._board_path("figures").exists())
+        # a second post onto it reuses the definition: no created word, no rewrite
+        st = km._board_path("figures").stat().st_mtime_ns
+        row2, err = km.post_notice(SID, "fig2", "Another", producer="cli", now=110, t=110, board="figures")
+        self.assertIsNone(err); self.assertEqual((row2["board"], row2["category"]), ("figures", "new")); self.assertNotIn("created", row2)
+        self.assertEqual(km._board_path("figures").stat().st_mtime_ns, st, "the file stands as written")
+        # the card copies the row's fields; its feed column stays the needsYou mapping until phase four's view switch
+        cards = {c["itemId"]: c for c in km._notice_cards(200, km._cleared_ids())}
+        c = cards["notice:%s:fig:1" % SID]
+        self.assertEqual((c["board"], c["category"], c["column"]), ("figures", "new", "completed"))
+        self.assertEqual(km._notice_standing_count("figures"), 2); self.assertEqual(km._notice_standing_count("figures", "new"), 2)
+
+    def test_a_category_unknown_to_a_data_board_is_appended_in_neutral_dress_and_said(self):
+        km.define_board(dict(NOTES_BOARD))
+        row, err = km.post_notice(SID, "k", "t", producer="cli", now=100, t=100, board="notes", category="later")
+        self.assertIsNone(err); self.assertEqual((row["board"], row["category"], row["created"]), ("notes", "later", "category"))
+        cats = km._boards_data()["notes"]["categories"]
+        self.assertEqual(cats[-1], {"id": "later", "title": "Later", "chip": "neutral"}); self.assertEqual(len(cats), 3)
+        # a known category as named; no category: the board's rules, then needs-you's badge, then the default
+        self.assertEqual(km.post_notice(SID, "k2", "t", producer="cli", now=101, t=101, board="notes", category="kept")[0]["category"], "kept")
+        self.assertEqual(km.post_notice(SID, "k3", "t", producer="figure", now=102, t=102, board="notes")[0]["category"], "kept", "the producer rule")
+        self.assertEqual(km.post_notice(SID, "k4", "t", producer="cli", now=103, t=103, board="notes", needs_you=True)[0]["category"], "new", "the badge category")
+        self.assertEqual(km.post_notice(SID, "k5", "t", producer="cli", now=104, t=104, board="notes")[0]["category"], "new", "the default")
+
+    def test_refusals_carry_the_resolvers_words_and_a_refused_post_leaves_no_board_behind(self):
+        for kw, why in ((dict(category="done"), r"the feed has no category 'done'"),
+                        (dict(board="Bad Board"), r"board id must match"),
+                        (dict(board="scratch", needs_you=True), r"board 'scratch' would be created without a needs-you category"),
+                        (dict(board="feed", category="later"), r"the feed has no category 'later'")):
+            row, err = km.post_notice(SID, "k", "t", producer="cli", now=100, **kw)
+            self.assertIsNone(row); self.assertRegex(err, why)
+        self.assertEqual(km._boards_data(), {}, "no board minted by a refused resolution")
+        # the resolver runs LAST: a post refused by an earlier check (a bad key, a refused attachment) mints no board either
+        row, err = km.post_notice(SID, "bad key", "t", producer="cli", now=100, board="scratch")
+        self.assertRegex(err, r"the key must match"); self.assertFalse(km._board_path("scratch").exists())
+        row, err = km.post_notice(SID, "k", "t", producer="cli", now=100, board="scratch", attachment="/nowhere.png")
+        self.assertRegex(err, r"attachment refused"); self.assertFalse(km._board_path("scratch").exists())
+        row, err = km.post_notice("99999999-2222-3333-4444-555555555555", "k", "t", producer="cli", now=100, board="scratch")
+        self.assertRegex(err, r"no session answers"); self.assertFalse(km._board_path("scratch").exists())
+        # a defined board with no badge category refuses --needs-you by name
+        km.define_board(dict(NOTES_BOARD, needsYou=None, notify=[], rules=[]))
+        row, err = km.post_notice(SID, "k", "t", producer="cli", now=100, board="notes", needs_you=True)
+        self.assertRegex(err, r"board 'notes' has no needs-you category")
+
+    def test_a_row_without_the_fields_reads_as_the_feeds_with_the_needs_you_mapping(self):
+        # rows posted before this change carry neither field: the card and the standing count read them the phase-two way
+        km.post_notice(SID, "old", "t", producer="cli", now=100, t=100)
+        rows = _rows(SID); rows[-1].pop("board"); rows[-1].pop("category"); rows[-1]["needsYou"] = True
+        km._notice_path(SID).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        km._NOTICE_MEMO.clear()
+        c = km._notice_cards(200, km._cleared_ids())[0]
+        self.assertEqual((c["board"], c["category"], c["column"]), ("feed", "needs_input", "needs_input"))
+        self.assertEqual(km._notice_standing_count("feed", "needs_input"), 1)
+
+    def test_the_route_hands_the_two_members_through(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler); port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            def post(body):
+                req = urllib.request.Request("http://127.0.0.1:%d/notice" % port, data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json", "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return json.loads(r.read().decode() or "{}")
+            r = post({"id": SID, "key": "fig", "title": "t", "board": "figures", "category": "new"})
+            self.assertTrue(r["ok"]); self.assertEqual((r["notice"]["board"], r["notice"]["category"], r["notice"]["created"]), ("figures", "new", "board"))
+            r = post({"id": SID, "key": "w", "title": "t", "category": "working"})
+            self.assertTrue(r["ok"]); self.assertEqual((r["notice"]["board"], r["notice"]["category"]), ("feed", "working")); self.assertNotIn("created", r["notice"])
+            r = post({"id": SID, "key": "x", "title": "t", "board": "figures", "needsYou": True})
+            self.assertFalse(r["ok"]); self.assertRegex(r["error"], r"has no needs-you category")
+            r = post({"key": "o", "title": "owner-less on a board", "board": "figures"})
+            self.assertTrue(r["ok"]); self.assertEqual((r["notice"]["sid"], r["notice"]["board"]), ("notes", "figures"), "the owner-less road takes a board too")
+        finally:
+            srv.shutdown()
+
+
 class TheDoors(unittest.TestCase):
     """POST /notice in /watch's shape, the backend's hook, and the boot wiring pin."""
     @classmethod
