@@ -19,6 +19,7 @@ import contextlib
 import inspect
 import io
 import json
+import types
 import os
 import tempfile
 import threading
@@ -358,7 +359,8 @@ class ThePinGate(unittest.TestCase):
             self.assertIn('_pinned_stand_down("%s", gt, enabled, ' % store, src, store)
             self.assertLess(src.index("_pinned_stand_down("), src.index('_setting_stale("%s"' % store), store + ": the pin before the stale check")
             self.assertGreater(src.index("_pinned_stand_down("), src.index("_gesture_echo("), store + ": after the echo (an echo is nothing to refuse)")
-        self.assertIn('if origin == "local" or not _setting_pinned(store):\n        return False', inspect.getsource(km._pinned_stand_down))
+        self.assertIn('if origin == "local" or scope == "pinned" or not _setting_pinned(store):\n        return False', inspect.getsource(km._pinned_stand_down),
+                      "the gate passes a local click and an explicitly SCOPED one (phase two: the selector picked this machine)")
 
     def test_the_pin_itself_is_gt_gated_and_never_broadcast(self):
         with self.a:
@@ -378,9 +380,10 @@ class ThePinGate(unittest.TestCase):
             self.assertIn("this machine's own dashboard alone", err.getvalue())
             self.assertIsNone(km._set_setting_pin("judge-model", True, gt=1_300, origin="local"), "only a synchronized store pins")
         self.assertIn('msg.get("type") == "setSettingPin"', KERNEL_SRC)
-        self.assertIn('_set_setting_pin(str(msg.get("store")), pinned, gt=_gesture_ms(msg), origin=msg.get("origin"))', KERNEL_SRC, "the arm hands the origin over")
-        self.assertIn('if (msg.type === "setSettingPin") return [{ host: LOCAL, msg: { ...msg, origin: "local" } }];',
-                      open(os.path.join(os.path.dirname(BIN), "ui", "webview", "federation.ts")).read(), "federation stamps the pin local, to the local kernel alone")
+        self.assertIn('_set_setting_pin(str(msg.get("store")), pinned, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))', KERNEL_SRC, "the arm hands the origin and the scope over")
+        fed = open(os.path.join(os.path.dirname(BIN), "ui", "webview", "federation.ts")).read()
+        self.assertIn('const targets: string[] = Array.isArray(hosts) && hosts.length ? hosts : [LOCAL];', fed, "federation addresses the pin to the picked kernels, else the local one alone (phase two)")
+        self.assertIn('...(Array.isArray(hosts) && hosts.length ? { scope: "pinned" } : {})', fed, "…with the scope only when kernels were picked")
         self.assertNotIn("setSettingPin", open(os.path.join(os.path.dirname(BIN), "ui", "webview", "federation.ts")).read().split("const KERNEL_SETTING")[1].split(");")[0],
                          "a pin is per machine: never a KERNEL_SETTING")
 
@@ -733,6 +736,155 @@ class TheCard(unittest.TestCase):
         self.assertEqual(self.a.cards(), {}, "gone with the row")
 
 
+class PhaseTwo(unittest.TestCase):
+    """The machine selector's kernel side (plans/settings-across-machines.md, phase two): `scope` "pinned" beside `origin` passes
+    the pin gate and pins the store under the gesture's stamp at the arm; the pin arm takes a scoped pin or un-pin from another
+    machine's dashboard; an un-pin returns the row to the synchronized value from this kernel's own per-machine records, which a
+    pinned store keeps as HELD (no card, not in the map, not pending); the tunnels row serves a peer's stamps and pins."""
+
+    def setUp(self):
+        self.a, self.b = _Kernel(), _Kernel()
+        with km._remotes_lock:
+            self._rows = dict(km._remotes); km._remotes.clear()
+            km._remotes["TESTHOSTB"] = {"host": "TESTHOSTB", "status": "up", "local_port": 1, "token": "t", "trust": "directed"}   # B is ATTACHED (the un-pin reads attached machines' records)
+        self.a.set("task-tracking", True, 1_000)
+
+    def tearDown(self):
+        with km._remotes_lock:
+            km._remotes.clear(); km._remotes.update(self._rows)
+        self.a.close(); self.b.close()
+
+    def _arm(self, msg):
+        """The WS arm as the socket runs it: the frames it sent back."""
+        sent = []
+        client = {"send": lambda s: sent.append(json.loads(s)), "alive": True}
+        with self.a:
+            with contextlib.redirect_stderr(io.StringIO()):
+                km.Handler._dispatch_ws(types.SimpleNamespace(), msg, client)
+        return sent
+
+    def test_a_scoped_remote_gesture_passes_the_pin_gate_and_the_arm_pins_the_store_under_its_stamp(self):
+        self.a.pin("task-tracking", True, 1_100)
+        with self.a:
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertIsNone(km._set_task_tracking(False, gt=5_000, origin="remote"), "a broadcast copy stands down on the pin (one A)")
+                km._pop_refused_notice()
+        self._arm({"type": "setTaskTracking", "enabled": False, "gt": 5_001, "origin": "remote", "scope": "pinned"})   # the arm, so the base reds on the store, not a keyword
+        self.assertEqual(self.a.read("task-tracking"), (False, 5_001), "the scoped intent passes the gate (the base stood it down: (True, 1000))")
+        self.a.set("task-tracking", True, 6_000)
+        self.assertEqual(self.a.pin("task-tracking", False, 6_100), 6_100)
+        sent = self._arm({"type": "setTaskTracking", "enabled": False, "gt": 7_000, "origin": "remote", "scope": "pinned"})
+        self.assertEqual([f["type"] for f in sent if f["type"] == "settingStale"], [], "applied: no stale frame (the switch's own taskTracking frame rides as ever)")
+        self.assertEqual(self.a.read("task-tracking"), (False, 7_000), "the scoped pick applied here")
+        self.assertEqual(self.a.pins(), {"task-tracking": True}, "…and PINNED here: a per-machine value that differs from the synchronized one is a pin")
+        with self.a:
+            self.assertEqual(km._settings_pins()["task-tracking"]["gt"], 7_000, "under the gesture's own stamp")
+        sent = self._arm({"type": "setTaskTracking", "enabled": True, "gt": 6_500, "origin": "remote", "scope": "pinned"})
+        self.assertEqual([f["type"] for f in sent], ["settingStale"], "an older scoped gesture stands down on the store's own stamp")
+        self.assertEqual(self.a.read("task-tracking"), (False, 7_000))
+        sent = self._arm({"type": "setTaskTracking", "enabled": True, "gt": 8_000, "origin": "remote"})
+        self.assertEqual([(f["type"], f.get("pinned")) for f in sent], [("settingStale", True)], "a broadcast copy without the scope stands down on the pin")
+
+    def test_the_pin_arm_takes_a_scoped_pin_or_un_pin_from_another_machines_dashboard_and_a_local_one_as_ever(self):
+        sent = self._arm({"type": "setSettingPin", "store": "task-tracking", "pinned": True, "gt": 2_000, "origin": "remote"})
+        self.assertEqual(self.a.pins(), {}, "a remote-origin pin without the scope: nothing (one A)")
+        self.assertEqual(sent, [], "…and no frame: pin:<store> is outside the gear's vocabulary")
+        self._arm({"type": "setSettingPin", "store": "task-tracking", "pinned": True, "gt": 2_001, "origin": "remote", "scope": "pinned"})
+        self.assertEqual(self.a.pins(), {"task-tracking": True}, "the scoped pin from another machine's dashboard applies")
+        self._arm({"type": "setSettingPin", "store": "task-tracking", "pinned": False, "gt": 2_002, "origin": "local"})
+        self.assertEqual(self.a.pins(), {}, "a local un-pin as ever")
+
+    def test_a_pinned_store_keeps_the_peers_newer_value_as_a_held_record_with_no_card_and_the_un_pin_returns_to_it(self):
+        self.a.pin("task-tracking", True, 1_100)
+        self.b.set("task-tracking", False, 2_000)
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], [], "pinned: not pending")
+        rec = self.a.records()["task-tracking"]["hosts"]["TESTHOSTB"]
+        self.assertEqual((rec["value"], rec["gt"], rec["held"]), (False, 2_000, True), "the peer's newer value is RECORDED as held")
+        self.assertEqual(self.a.proposals(), {}, "…not in the gear's map")
+        self.assertEqual(self.a.cards(), {}, "…and no card")
+        self.assertEqual(self.a.posted(), [])
+        self.assertFalse(self.a.answer({"store": "task-tracking", "host": "TESTHOSTB", "gt": 2_000, "answer": "apply"})["ok"], "a held record is not answerable")
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.posted(), [], "a second poll: still nothing said")
+        # the un-pin (the glyph clicked, or a scoped un-pin from another dashboard): the store returns to the synchronized value,
+        # the newest across the machines, from the record, under that machine's stamp, through the setter
+        sent = self._arm({"type": "setSettingPin", "store": "task-tracking", "pinned": False, "gt": 3_000, "origin": "local"})
+        self.assertEqual(sent, [])
+        self.assertEqual(self.a.pins(), {})
+        self.assertEqual(self.a.read("task-tracking"), (False, 2_000), "back to the synchronized value under B's stamp: one value, one stamp")
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], [], "the values agree: nothing proposed, the record drops")
+        self.assertEqual(self.a.records().get("task-tracking", {}).get("hosts", {}), {})
+        self.assertEqual(self.a.cards(), {})
+
+    def test_the_un_pin_takes_the_newest_stamp_among_attached_machines_and_a_lifted_pin_lets_a_held_record_become_a_proposal(self):
+        # B off@2000 and C off@3000 both attached, D off@4000 gone from the mesh (no row): three held records under the pin; the
+        # un-pin takes the NEWEST stamp among ATTACHED machines, C's (the mesh's rule; the base, with no records, left (True, 1000))
+        c = _Kernel(); c.set("task-tracking", False, 3_000)
+        d = _Kernel(); d.set("task-tracking", False, 4_000)
+        with km._remotes_lock:
+            km._remotes["TESTHOSTC"] = {"host": "TESTHOSTC", "status": "up", "local_port": 1, "token": "t", "trust": "directed"}
+        try:
+            self.a.pin("task-tracking", True, 1_100)
+            self.b.set("task-tracking", False, 2_000)
+            self.a.propose("TESTHOSTB", self.b.version()); self.a.propose("TESTHOSTC", c.version()); self.a.propose("TESTHOSTD", d.version())
+            self.assertEqual(sorted(self.a.records()["task-tracking"]["hosts"]), ["TESTHOSTB", "TESTHOSTC", "TESTHOSTD"], "three held records")
+            self._arm({"type": "setSettingPin", "store": "task-tracking", "pinned": False, "gt": 1_200, "origin": "local"})
+            self.assertEqual(self.a.read("task-tracking"), (False, 3_000), "C's value under C's stamp, the newest among the attached; D's newer stamp is a machine that left")
+        finally:
+            c.close(); d.close()
+        # a held record under a pin that is lifted by the plain un-pin path BEFORE the next poll, then the poll raises the card
+        self.a.pin("task-tracking", True, 3_100)
+        self.b.set("task-tracking", True, 4_000)        # B differs again under a newer stamp than the 3000 this machine now holds
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.cards(), {})
+        with self.a:
+            km._set_setting_pin("task-tracking", False, gt=3_200, origin="local")   # the pin store alone (no arm): no return to the value
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], ["task-tracking"], "unpinned: the held record becomes a proposal")
+        self.assertEqual(sorted(self.a.cards()), ["proposal.task-tracking.TESTHOSTB"], "…with its card, said once")
+        self.assertEqual(len(self.a.posted()), 1)
+
+    def test_a_peers_pinned_store_raises_no_proposal_here_and_drops_an_open_one(self):
+        # the verifier's HIGH (round two): from A the user scoped B and flipped a store; B applied and pinned; A's next poll read B's
+        # newer stamp and raised a proposal whose Apply would undo the scoping. A PEER's pinned store is no proposal here.
+        self.b.set("task-tracking", False, 2_000)
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], ["task-tracking"], "unpinned there: a proposal, as ever")
+        self.assertEqual(sorted(self.a.cards()), ["proposal.task-tracking.TESTHOSTB"])
+        self.b.pin("task-tracking", True, 2_100)
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], [], "pinned there: nothing pending here")
+        self.assertEqual(self.a.records().get("task-tracking", {}).get("hosts", {}), {}, "the open record dropped: B's value stands there by its user's word")
+        self.assertEqual(self.a.cards(), {}, "…and the card expired")
+        self.assertEqual(len(self.a.posted()), 1, "nothing said again")
+        self.assertEqual(self.a.read("task-tracking"), (True, 1_000))
+        # the push leg: a store THIS machine pins is not the mesh's to receive
+        self.a.pin("task-tracking", True, 1_100)
+        self.a.set("compact-suggest", True, 5_000)
+        with self.a:
+            older = km._older_peer_settings({"settings": {"taskTracking": False, "compactSuggest": False}, "settingsGt": {"task-tracking": 0, "compact-suggest": 0}})
+        self.assertEqual([s for s, _b in older], ["compact-suggest"], "the pinned store is kept to this machine; the other still pushes")
+
+    def test_an_unnamed_answer_counts_open_records_alone(self):
+        self.a.pin("compact-suggest", True, 900)
+        self.b.set("task-tracking", False, 2_000); self.b.set("compact-suggest", True, 2_000)
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.a.set("compact-suggest", False, 950)   # (the local value, so B's newer compact-suggest is a HELD record under the pin)
+        with self.a:
+            km._set_setting_pin("compact-suggest", True, gt=960, origin="local")
+        self.a.propose("TESTHOSTB", self.b.version())
+        ack = self.a.answer({"store": "task-tracking", "gt": 2_000, "answer": "keep"})
+        self.assertTrue(ack["ok"], "one open record for the store: the machine need not be named (round two, low d)")
+
+    def test_the_tunnels_row_serves_the_peers_stamps_and_pins_from_the_same_poll(self):
+        with km._remotes_lock:
+            km._remotes["TESTHOSTB"] = {"host": "TESTHOSTB", "kernel_port": 1, "local_port": 1, "status": "up", "trust": "directed", "proc": None, "sids": [],
+                                        "settings": {"taskTracking": False}, "settingsGt": {"task-tracking": 2_000}, "settingsPinned": {"task-tracking": True}}
+        with self.a:
+            rows = km.list_remotes()
+        row = [r for r in rows if r.get("host") == "TESTHOSTB"][0]
+        self.assertEqual((row.get("settings"), row.get("settingsGt"), row.get("settingsPinned")), ({"taskTracking": False}, {"task-tracking": 2_000}, {"task-tracking": True}),
+                         "the row serves the stamps and the pins beside the settings (the base served settings alone)")
+        self.assertIn('r["settingsPinned"] = (rver or {}).get("settingsPinned")', KERNEL_SRC, "the supervisor keeps the peer's pins on the row")
+
+
 class _FakePeer(BaseHTTPRequestHandler):
     """A stand-in peer kernel: /version answers with whatever PAYLOAD holds (the loopback shape
     tests/test_auto_nudge_every_kernel.py uses)."""
@@ -781,10 +933,10 @@ class ThroughTheRealPoll(unittest.TestCase):
         rver = self._poll({"kernel_sha": "abc1234", "settings": {"compactSuggest": True, "autoNudge": True, "fileEditing": True},
                            "settingsGt": {"compact-suggest": 2_000, "file-editing": 2_000}, "settingsPinned": {"file-editing": True}})
         self.assertEqual(rver["settingsPinned"], {"file-editing": True}, "the poll lifts the peer's pins")
-        self.assertEqual(sorted(self.a.propose("TESTHOST", rver)[0]), ["compact-suggest", "file-editing"])
+        self.assertEqual(sorted(self.a.propose("TESTHOST", rver)[0]), ["compact-suggest"], "the peer PINNED file-editing: its value stands there, no proposal here (phase two, round two)")
         self.assertEqual(self.a.read("compact-suggest")[0], False, "nothing applied (the base wrote True under 2000)")
         self.assertEqual(self.a.read("file-editing")[0], False)
-        self.assertEqual(sorted(self.a.proposals()), ["compact-suggest", "file-editing"])
+        self.assertEqual(sorted(self.a.proposals()), ["compact-suggest"])
         self.assertEqual(self.a.read("auto-nudge")[1], 0, "no stamp for it in the peer's dict: untouched")
 
 

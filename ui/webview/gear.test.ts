@@ -250,7 +250,7 @@ test("the /compact suggestion is a real settings checkbox beside Auto Nudge (the
   assert.ok(GEAR.indexOf("id=rs-autonudge") < at && at < next,
     "…directly after Auto Nudge, where the user asked for it");
   assert.ok(/csg\.addEventListener\('change'/.test(GEAR)
-    && GEAR.includes("post({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') })"),
+    && GEAR.includes("post(scoped({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') }))"),   // scoped(): the machine selector's pick rides along (phase two)
     "the click posts the kernel's designed setCompactSuggest message — gesture-stamped, like "
     + "every kernel-side setting the gear emits");
   assert.ok(GEAR.includes("csg.checked = !!v.compactSuggest"),

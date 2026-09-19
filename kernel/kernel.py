@@ -8516,7 +8516,7 @@ def _write_auto_nudge(d):
                                 _auto_nudge_normalize)
 
 
-def _set_auto_nudge(enabled, gt=None, origin=None):
+def _set_auto_nudge(enabled, gt=None, origin=None, scope=None):
     """Returns the applied gesture stamp (epoch ms), or None when a stale `gt` stood down —
     see the gesture-time ordering block above _NUDGE_LOCK — or the store write failed (OSError:
     said once per fault episode by the writer, nothing applied, and the delivering socket hears
@@ -8531,7 +8531,7 @@ def _set_auto_nudge(enabled, gt=None, origin=None):
         d = dict(_auto_nudge_data())
         if _gesture_echo(gt, _gt_int(d.get("gt")), bool(d.get("enabled")) == bool(enabled)):
             return None                                # the same pick again: quietly nothing to do
-        if _pinned_stand_down("auto-nudge", gt, enabled, d, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+        if _pinned_stand_down("auto-nudge", gt, enabled, d, origin, scope):   # the pin (plans/settings-across-machines.md, one A): a remote
             return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("auto-nudge", gt, _gt_int(d.get("gt"))):
             return None
@@ -8558,7 +8558,7 @@ def _compact_suggest_on():
     return bool(_auto_nudge_data().get("compactSuggestEnabled"))
 
 
-def _set_compact_suggest(enabled, gt=None, origin=None):
+def _set_compact_suggest(enabled, gt=None, origin=None, scope=None):
     """Returns the applied gesture stamp (epoch ms), or None when a stale `gt` stood down or the
     store write failed (OSError: said once per fault episode by the writer, nothing applied, nothing
     ticked, and the delivering socket hears the refusal) —
@@ -8570,7 +8570,7 @@ def _set_compact_suggest(enabled, gt=None, origin=None):
         d = dict(_auto_nudge_data())
         if _gesture_echo(gt, _gt_int(d.get("compactSuggestGt")), bool(d.get("compactSuggestEnabled")) == bool(enabled)):
             return None
-        if _pinned_stand_down("compact-suggest", gt, enabled, d, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+        if _pinned_stand_down("compact-suggest", gt, enabled, d, origin, scope):   # the pin (plans/settings-across-machines.md, one A): a remote
             return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("compact-suggest", gt, _gt_int(d.get("compactSuggestGt"))):
             return None
@@ -8601,7 +8601,7 @@ def _file_editing_on():
         return False
 
 
-def _set_file_editing(enabled, gt=None, origin=None):
+def _set_file_editing(enabled, gt=None, origin=None, scope=None):
     """Returns the applied gesture stamp (epoch ms), or None when a stale `gt` stood down —
     see the gesture-time ordering block above _NUDGE_LOCK — or the store write failed (OSError:
     loud on stderr, nothing applied; caught HERE like _set_update_mode's, because a raised OSError
@@ -8618,7 +8618,7 @@ def _set_file_editing(enabled, gt=None, origin=None):
         prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
         if _gesture_echo(gt, prev_gt, isinstance(prev, dict) and bool(prev.get("enabled")) == bool(enabled)):
             return None
-        if _pinned_stand_down("file-editing", gt, enabled, {}, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+        if _pinned_stand_down("file-editing", gt, enabled, {}, origin, scope):   # the pin (plans/settings-across-machines.md, one A): a remote
             return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("file-editing", gt, prev_gt):
             return None
@@ -8840,7 +8840,7 @@ def _task_tracking_on():
     return on
 
 
-def _set_task_tracking(enabled, gt=None, origin=None):
+def _set_task_tracking(enabled, gt=None, origin=None, scope=None):
     """Returns the applied gesture stamp (epoch ms), or None when the gesture was its own echo (an equal
     stamp carrying the stored value), a stale `gt` stood down (the gesture-time ordering block above
     _NUDGE_LOCK; the delivering socket hears it through _setting_stale's notice), or the write failed
@@ -8855,7 +8855,7 @@ def _set_task_tracking(enabled, gt=None, origin=None):
         prev_on = _tracking_value(prev)[0]           # the one reader (round five, low 3); an unproved prior reads on, as the display does
         if _gesture_echo(gt, prev_gt, prev_on == bool(enabled)):
             return None
-        if _pinned_stand_down("task-tracking", gt, enabled, {}, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+        if _pinned_stand_down("task-tracking", gt, enabled, {}, origin, scope):   # the pin (plans/settings-across-machines.md, one A): a remote
             return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("task-tracking", gt, prev_gt):
             return None
@@ -22521,6 +22521,10 @@ def _remote_public(r):
             # reported one (an older kernel): unknown, left out of the mixed calc — never read as a
             # disagreement to click away, exactly the autoNudge rule generalized.
             "settings": r.get("settings") if isinstance(r.get("settings"), dict) else None,
+            # the same poll's stamps and pins (phase two, plans/settings-across-machines.md): the settings' machine selector
+            # shows a picked machine's values and which of its stores it pinned
+            "settingsGt": r.get("settingsGt") if isinstance(r.get("settingsGt"), dict) else None,
+            "settingsPinned": r.get("settingsPinned") if isinstance(r.get("settingsPinned"), dict) else None,
             # fastForward: a push here would only ADD commits (the remote's is an ancestor of ours) — the
             # exact condition the automatic update fires on, so the row can say why it will or won't.
             # autoPush: that host's live phase (pushing / waiting / failed) → the popover's progress line and
@@ -27610,6 +27614,7 @@ def _tunnel_supervisor():
                         r["auto_nudge"] = (rver or {}).get("autoNudge")   # None = that kernel didn't say
                         r["settings"] = (rver or {}).get("settings")      # its whole kernel-side dict (None = older kernel)
                         r["settingsGt"] = (rver or {}).get("settingsGt")  # each store's last-applied stamp (T248b: the adopt seam)
+                        r["settingsPinned"] = (rver or {}).get("settingsPinned")   # its pinned stores (phase two: the gear's scoped view)
                     if ruse is not None:
                         # {} = the host ANSWERED with nothing to show → clear; None = no answer (blip/
                         # rate-gate) → keep the last reading (see _poll_remote_usage)
@@ -51430,6 +51435,8 @@ def _older_peer_settings(rver):
             continue
         if pinned.get(store):
             continue                                   # the peer pinned it: its value stands there by its user's word (one A)
+        if _setting_pinned(store):
+            continue                                   # WE pinned it (phase two): a per-machine value is not the mesh's to receive
         if mine > int(pgt):
             out.append((store, {key: values[key], "gt": mine, "host": _self_host()}))   # the host, for the peer's proposal record
     return out
@@ -51521,7 +51528,7 @@ def _settings_pinned_map():
     return {s: True for s, v in _settings_pins().items() if v.get("pinned")}
 
 
-def _set_setting_pin(store, pinned, gt=None, origin=None):
+def _set_setting_pin(store, pinned, gt=None, origin=None, scope=None):
     """Pin (or unpin) `store` on THIS machine: gt-gated like every setting (a stale gesture stands down, an equal stamp with
     the same state is an echo), written atomically under _SETTINGS_LOCK. A pin drops the store's pending proposals (the pin
     is the standing answer). Returns the applied stamp, or None. Per machine by definition: set only by this kernel's own
@@ -51530,9 +51537,9 @@ def _set_setting_pin(store, pinned, gt=None, origin=None):
     settingStale frame: `pin:<store>` is outside the gear's vocabulary, and a frame it cannot name is worse than none."""
     if store not in _SETTINGS_STORES:
         return None
-    if origin != "local":
+    if origin != "local" and scope != "pinned":
         sys.stderr.write("setting pin %s: a pin is set by this machine's own dashboard alone (origin %r); nothing applied\n" % (store, origin))
-        return None
+        return None                                    # (phase two: an explicit scoped pin or un-pin from another machine's dashboard passes)
     with _SETTINGS_LOCK:
         _stale_seen.last = None
         _stale_seen.refused = None                         # nothing for the arm's _tell_stale_gesture to pop: no frame
@@ -51556,12 +51563,52 @@ def _set_setting_pin(store, pinned, gt=None, origin=None):
         return stamp
 
 
-def _pinned_stand_down(store, gt, enabled, snap, origin):
+def _scoped_pin_after(msg, store, stamp):
+    """A setting gesture that carried `scope` "pinned" (the settings' machine selector picked this machine, phase two) pins
+    the store under the gesture's own stamp once the value applied: a per-machine value that differs from the synchronized
+    one IS a pin. The pin store's gt gate applies (an older scoped gesture pins nothing new). A broadcast carries no scope."""
+    if isinstance(msg, dict) and msg.get("scope") == "pinned":
+        _set_setting_pin(store, True, gt=stamp, origin="local", scope="pinned")
+
+
+def _unpin_to_synchronized(store, gt):
+    """After an un-pin (phase two): the row returns to the SYNCHRONIZED value, the newest stamp across the attached machines,
+    read from this kernel's own per-(store, machine) records (`_propose_peer_settings` keeps a pinned store's as held) for the
+    machines still ATTACHED (a row in _remotes), never a dial at click time. The newest stamp wins, as the mesh's rule has it:
+    a different value applies, the same value lifts the stamp. Applied through the store's own gt-gated setter under that
+    machine's stamp with the local origin (the user's own act here), so the two machines then hold one stamp and nothing is
+    proposed back. Returns the (host, value, stamp) applied, or None when no attached machine holds a newer stamp."""
+    setter = dict((s, f) for _k, s, f in _MESH_ADOPTED_SETTINGS).get(store)
+    key = dict((s, k) for k, s, _f in _MESH_ADOPTED_SETTINGS).get(store)
+    if setter is None:
+        return None
+    values, stamps = _mesh_settings_snapshot()
+    mine, mine_gt = values.get(key), stamps.get(store) or 0
+    with _remotes_lock:
+        attached = set(_remotes)                       # a record from a machine that has LEFT the mesh is not the mesh's value
+    best = None
+    for host, r in ((_settings_proposals().get(store) or {}).get("hosts") or {}).items():
+        rgt = _gt_int(r.get("gt"))
+        if host in attached and isinstance(r.get("value"), bool) and rgt > mine_gt and (best is None or rgt > best[2]):
+            best = (host, r["value"], rgt)             # the NEWEST stamp wins, as the mesh's rule has it: the same value lifts the stamp
+    if best is None:
+        return None
+    if setter(best[1], gt=best[2], origin="local") is None:
+        return None
+    _pop_stale_notice(); _pop_refused_notice()
+    sys.stderr.write("setting %s: un-pinned; back to the synchronized value (%s, %s's gesture %d)\n" % (store, best[1], best[0], best[2]))
+    return best
+
+
+def _pinned_stand_down(store, gt, enabled, snap, origin, scope=None):
     """The setters' pin gate, read BEFORE the stale check and only for a gesture whose origin is not this machine's own
     dashboard (`origin` "local"; the field is set by federation.ts on the broadcast, and a message without it is read as
     remote, the conservative reading for a dashboard from before this change). A refused click is told to the delivering
-    socket the way a refused write is (a settingStale frame, `why` pinned, the kept value named), never a silent refusal."""
-    if origin == "local" or not _setting_pinned(store):
+    socket the way a refused write is (a settingStale frame, `why` pinned, the kept value named), never a silent refusal.
+    `scope` "pinned" (phase two, plans/settings-across-machines.md): the user picked THIS machine in the settings' machine
+    selector, so the gesture is an explicit, scoped intent, never a broadcast: it passes the gate (and the arm pins the store
+    under the gesture's stamp); a broadcast never carries the scope."""
+    if origin == "local" or scope == "pinned" or not _setting_pinned(store):
         return False
     _note_refused_gesture(store, gt, enabled, snap if isinstance(snap, dict) else {}, why="pinned on this machine", known=True, pinned=True)
     sys.stderr.write("setting %s: a remote machine's pick (%s) stood down: pinned on this machine\n" % (store, "on" if enabled else "off"))
@@ -51686,11 +51733,11 @@ def _proposal_cards_follow(before, after):
         a = (after.get(store) or {}).get("hosts") or {}
         for host in sorted(set(b) | set(a)):
             key = _proposal_card_key(store, host)
-            if host not in a:
+            if host not in a or a[host].get("held"):             # gone, or held (a pinned store's record: no card)
                 _row, err = expire_notice("", key)
                 if err and "no notice with key" not in err:
                     sys.stderr.write("setting %s: the proposal card from %s could not be retired (%s)\n" % (store, host, err))
-            elif host not in b or (b[host].get("value"), _gt_int(b[host].get("gt"))) != (a[host].get("value"), _gt_int(a[host].get("gt"))):
+            elif host not in b or b[host].get("held") or (b[host].get("value"), _gt_int(b[host].get("gt"))) != (a[host].get("value"), _gt_int(a[host].get("gt"))):
                 _proposal_card_post(store, host, a[host])
 
 
@@ -51745,7 +51792,7 @@ def _settings_proposals_map():
     out = {}
     for s, rec in _settings_proposals().items():
         rows = [{"host": h, "value": r.get("value"), "gt": _gt_int(r.get("gt")), "current": values.get(key_of.get(s))}
-                for h, r in rec["hosts"].items()]
+                for h, r in rec["hosts"].items() if not r.get("held")]   # a held record (a pinned store's) is no proposal
         if rows:
             out[s] = sorted(rows, key=lambda r: -r["gt"])
     return out
@@ -51780,6 +51827,13 @@ def _propose_peer_settings(host, rver):
             pgt = int(pgt)
             mine, mine_gt = values.get(key), stamps.get(store) or 0
             rec = recs.get(store) or {"hosts": {}, "answered": {}}
+            if (rver.get("settingsPinned") or {}).get(store) if isinstance(rver.get("settingsPinned"), dict) else False:
+                # the PEER pinned this store (phase two's round two): its value stands there by its user's word (a scoped change
+                # from this very dashboard, as often as not), so it is no proposal here: no record, no card, no notice; the
+                # "differs" flag is the surface that says the machines disagree. An open record from it drops.
+                if host in rec["hosts"]:
+                    rec["hosts"].pop(host, None); recs[store] = rec; changed = True
+                continue
             for h in list(rec["hosts"]):                       # a record is a DIFFERENT value under a NEWER stamp, whoever
                 r = rec["hosts"][h]                            # raised it: ours now, or outranked by a later local click, it drops
                 if r.get("value") == mine or _gt_int(r.get("gt")) <= mine_gt:
@@ -51795,14 +51849,21 @@ def _propose_peer_settings(host, rver):
                     #                              its record's) is not news and drops nothing
                 continue
             if _setting_pinned(store):
-                if rec["hosts"]:
-                    rec["hosts"] = {}; recs[store] = rec; changed = True
+                # a PINNED store raises no proposal (no card, not in the gear's map, not pending), but the peer's newer value is
+                # still RECORDED per machine as HELD (phase two): the un-pin returns the row to the newest value across the
+                # attached machines from these records, never a dial at click time. A held record gets no notice.
+                if mine_rec.get("value") != val or _gt_int(mine_rec.get("gt")) != pgt or not mine_rec.get("held"):
+                    for h in list(rec["hosts"]):
+                        if not rec["hosts"][h].get("held"):
+                            rec["hosts"].pop(h, None)              # the pin dropped the open proposals; only held records stand
+                    rec["hosts"][host] = {"value": val, "gt": pgt, "seen": int(time.time()), "current": mine, "held": True}
+                    recs[store] = rec; changed = True
                 continue
             if rec["answered"].get(host) == pgt:           # the user kept theirs against this very stamp from this machine
                 continue
-            if mine_rec.get("value") == val and _gt_int(mine_rec.get("gt")) == pgt:
+            if mine_rec.get("value") == val and _gt_int(mine_rec.get("gt")) == pgt and not mine_rec.get("held"):
                 pending.append(store); continue            # standing, unchanged: nothing said
-            refreshed = bool(mine_rec)
+            refreshed = bool(mine_rec) and not mine_rec.get("held")   # a held record becoming a proposal (the pin lifted) is a fresh raise
             rec["hosts"][host] = {"value": val, "gt": pgt, "seen": int(time.time()), "current": mine}
             rec["answered"].pop(host, None)
             recs[store] = rec; changed = True; pending.append(store)
@@ -51840,12 +51901,13 @@ def _answer_setting_proposal(body):
     rec = _settings_proposals().get(store) or {"hosts": {}, "answered": {}}
     host = body.get("host")
     if not isinstance(host, str) or not host:
-        if len(rec["hosts"]) != 1:
-            return out(False, "no proposal is pending for %s" % store if not rec["hosts"]
+        open_hosts = [h for h, r in rec["hosts"].items() if not r.get("held")]   # a held record (a pinned store's) is no proposal
+        if len(open_hosts) != 1:
+            return out(False, "no proposal is pending for %s" % store if not open_hosts
                        else "name the machine whose proposal you are answering")
-        host = next(iter(rec["hosts"]))
+        host = open_hosts[0]
     prop = rec["hosts"].get(host)
-    if prop is None:
+    if prop is None or prop.get("held"):
         return out(False, "no proposal is pending for %s from %s" % (store, host))
     pgt = _gt_int(prop.get("gt"))
     if _gt_int(body.get("gt")) != pgt:
@@ -61731,6 +61793,9 @@ if(!keep){_cfg=[];_cfgRead=false;fillHosts();}});}   // the flag goes with the l
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
 // Before this, those strings were concatenated into markup as they came (2026-09-08).
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c==='"'?'&quot;':'&#39;';});}
+// a PINNED machine (plans/settings-across-machines.md, phase two): the stores it keeps against the mesh, from its /tunnels row
+function pinnedStores(t){var p=(t&&t.settingsPinned)||{};return Object.keys(p).filter(function(k){return !!p[k];});}
+function pinMark(t,th){var ps=pinnedStores(t);return ps.length?' <span class=rnet-pin title=\"'+th+' keeps its own value for '+esc(ps.join(', '))+': other machines\u2019 picks are not applied there (Settings, the machine selector).\">pinned</span>':'';}
 var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',restarting:'restarting after update\\u2026',down:'reconnecting\\u2026',error:'error'};
 // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
 var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
@@ -62037,7 +62102,7 @@ row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||
 // A host mid-attach gets the romp loader inline (the user 2026-07-29): the swirl glyph spinning beside
 // the status word, so "connecting" reads as something HAPPENING rather than a label that might be stuck.
 // The repo's loading rule spelled small: same glyph, same reverse spin as the composer's slash spinner.
-'<span class=nm><b>'+th+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(busyStatus(t.status)?spin():'')+(LBL[t.status]||esc(t.status))+((t.status==='up'&&pendingIn(t.host))?' \\u00b7 <span class=rnet-pend title=\"The tunnel is up; this dashboard is still loading '+th+'\\u2019s sessions. They appear the moment its first payload lands.\">'+spin()+'loading sessions\\u2026</span>':'')+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.hasToken?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
+'<span class=nm><b>'+th+'</b>'+pinMark(t,th)+' <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(busyStatus(t.status)?spin():'')+(LBL[t.status]||esc(t.status))+((t.status==='up'&&pendingIn(t.host))?' \\u00b7 <span class=rnet-pend title=\"The tunnel is up; this dashboard is still loading '+th+'\\u2019s sessions. They appear the moment its first payload lands.\">'+spin()+'loading sessions\\u2026</span>':'')+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.hasToken?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
 retry+pull+ask+upd+strt+'<button data-h=\"'+th+'\" title=\"Close the ssh tunnel to '+th+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>'+
 // ITS CONNECTIONS toggle — the keyed expand (progressive disclosure): compact row by default,
 // that machine's own attached list one click deeper, fetched on the click, never the poll.
@@ -63968,6 +64033,8 @@ def _landing():
             # 11px matches every other annotation on the row (fonts: reuse, don't multiply)
             ".rnet-trust.rnet-applying{border-color:var(--accent);opacity:0.8}"
             ".rnet-pend{color:var(--accent);font-size:11px;margin-left:4px}"
+            # a PINNED machine's mark in the Remote kernels popover (phase two): the quiet chip vocabulary, the accent's outline
+            ".rnet-pin{margin-left:6px;padding:0 6px;border-radius:9px;border:1px solid var(--accent,#9cd2ff);color:var(--accent,#9cd2ff);font-size:10px;font-weight:400;line-height:1.5;white-space:nowrap}"
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
@@ -68076,7 +68143,9 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_auto_nudge(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is not None:
+            _st = _set_auto_nudge(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))
+            if _st is not None:
+                _scoped_pin_after(msg, "auto-nudge", _st)   # phase two: a scoped pick pins the store here
                 # turn-ON acts at once instead of waiting out the pusher's 0.5 s backstop; turning off
                 # has nothing to act on (the tick is a no-op when off, so this also spares the WS
                 # thread the listing fork). The single-flight rule, the dead-wait sweep skip and the
@@ -68097,7 +68166,9 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_compact_suggest(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is not None:
+            _st = _set_compact_suggest(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))
+            if _st is not None:
+                _scoped_pin_after(msg, "compact-suggest", _st)
                 _ws_act_now_tick()
             else:
                 _tell_stale_gesture(client, msg)
@@ -68113,8 +68184,11 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_file_editing(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is None:
+            _st = _set_file_editing(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))
+            if _st is None:
                 _tell_stale_gesture(client, msg)
+            else:
+                _scoped_pin_after(msg, "file-editing", _st)
         elif msg and msg.get("type") == "setThinkingSummaries" and msg.get("enabled") is not None:
             # The gear's Thinking summaries checkbox (2026-09-01) — kernel-side like setFileEditing but
             # PER-INSTALL (not a KERNEL_SETTING: nothing to propagate), gt-gated all the same; the SDK
@@ -68141,8 +68215,11 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "pinned", msg.get("pinned"))
                 return
-            if _set_setting_pin(str(msg.get("store")), pinned, gt=_gesture_ms(msg), origin=msg.get("origin")) is None:
+            _pst = _set_setting_pin(str(msg.get("store")), pinned, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))
+            if _pst is None:
                 _tell_stale_gesture(client, msg)
+            elif not pinned:
+                _unpin_to_synchronized(str(msg.get("store")), _pst)   # phase two: the row returns to the synchronized value
         elif msg and msg.get("type") == "setTaskTracking" and msg.get("enabled") is not None:
             # The gear's Task tracking master switch (T404): kernel-side, gt-gated like its siblings, a
             # KERNEL_SETTING in federation. Applied, the producer is woken so the tiers stop or start at the
@@ -68151,10 +68228,11 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            stamp = _set_task_tracking(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"))
+            stamp = _set_task_tracking(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))
             if stamp is None:
                 _tell_stale_gesture(client, msg)       # a stale stand-down or a refused write, told on this socket
             else:
+                _scoped_pin_after(msg, "task-tracking", stamp)   # phase two: a scoped pick pins the store here
                 _views_dirty[0] = time.time()          # the feed cache serves its warmed build while the view signature stands: the flip is
                 _drop_pure_feed()                      # a kernel-side mutation the signature cannot see, so it marks the views dirty (the
                 _producer_wake.set()                   # optimistic-mutation door) and drops the GET copy; the next push builds the off frame
