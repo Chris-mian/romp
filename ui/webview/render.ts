@@ -16171,6 +16171,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   refreshSettledPreviews();
   reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
   reaskOutstandingGaps(Array.from(gapLoading), h);   // …and re-send every loadTurns still outstanding for that host: a relay drop fires no romp:wsdown, so gapLoading kept its keys and, with the guard now correct, the gap would stay suppressed until a reload (2026-09-15)
+  clearAsksForHost(h);   // …and that host's parked full asks (2026-09-19): an ask sent on the relay socket that died, or one the kernel answered with a status frame where a full was owed, is never answered on this road, and latched it would refuse every later delta for its tab until a reload (clearAsksForHost says why a flushed ask is cleared too)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
   // one with no active tab at all. Its pusher builds and flushes a client's active tab first; every tab is
@@ -17371,7 +17372,8 @@ function notifyShell(kind: string, text: string, sid?: string): void {
 
 // Sessions we've asked the kernel to re-send in full after a delta gap. ONE ask per desync: the pusher runs
 // every 0.5-3s and would otherwise re-ask on every rejected delta until the reply lands. Cleared in upsert(),
-// so the next gap can ask again.
+// so the next gap can ask again; by dismissSession for a tab that left the strip (no answer is coming for it); and
+// by the relay's reopen for that host's sids (clearAsksForHost, below) (2026-09-19).
 const awaitingFull = new Set<string>();
 const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked (kept for the reconnect's diagnostics; every full frame merges into the held runs, T386 stage 2)
 const emptyFrameDiagSent = new Set<string>();   // sids whose empty session frame was filed once (see upsert / frame-merge.ts)
@@ -17381,10 +17383,33 @@ const emptyFrameDiagSent = new Set<string>();   // sids whose empty session fram
 // counts asks by it — a nobase on a reconnect row means the skeleton branch missed a frame type.
 type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta";   // (reattach retired with the detached client, T386 stage 2)
 function requestFullSession(id: string, why: NeedFullWhy): void {
-  if (!id || awaitingFull.has(id)) return;
+  if (!id) return;
+  if (awaitingFull.has(id)) {
+    // Refused while the sid is latched (2026-09-19). One ask per desync stands, but the refusal was invisible: a latch whose
+    // answer never comes (a status frame where a full was owed, a tab that left the strip, a relay that dropped) held the tab
+    // at its last applied content until a reload, and the journal had no row to show it. One row per refused DELTA names the
+    // sid and the reason; a repeated click's or the idle chain's dedup is by design and files nothing. Observability only.
+    if (why === "gap" || why === "nobase" || why === "skeleton-delta") vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "delta-refused", data: { sid: id, why } });
+    return;
+  }
   awaitingFull.add(id);
   vscodeApi?.postMessage({ type: "needFull", id, why });
   pendingFullWhy.set(id, why);   // the reason, for upsert's merge-or-replace decision when the answer lands (round 2, item 3)
+}
+// A relay's reopen (romp:hostRelayUp) releases that host's parked full asks (2026-09-19). After it the remote kernel holds a
+// fresh client for this page, so whatever the page asks next is answered with a full; left latched, an ask that will never
+// be answered would refuse every later delta for its tab until a reload. Two asks are in that state: one sent on the relay
+// socket that died (its answer went with the socket), and one the kernel answered with a status frame where a full was owed
+// (the sibling kernel fix). A third kind IS answered: an ask federation held as bookkeeping while the relay was down and
+// flushed onto the fresh socket just before this event fires (flushPending, then the dispatch). It is cleared with the
+// others, which can cost one duplicate full (the idle chain may pick that tab again before the flushed answer lands);
+// accepted for parity with the local road, whose shim flushes its queue before firing romp:wsup and whose whole-store
+// clears below run after that flush. That host's sids only: an empty host is the local kernel, whose event is romp:wsup,
+// and the local socket's reopen already releases EVERY ask, remote hosts' included (the clears below, unchanged here). A
+// detach dismisses the host's tabs (closed frames stamped hostDrop), and their latches go with them through dismissSession.
+function clearAsksForHost(h: string): void {
+  if (!h) return;
+  for (const sid of Array.from(awaitingFull)) if (hostOf(sid) === h) { awaitingFull.delete(sid); pendingFullWhy.delete(sid); }
 }
 // A reconnect mints a FRESH kernel-side client (its echat starts empty, so full frames are already
 // guaranteed) — but an ask parked against the dead socket would gag the new socket's repair path
@@ -18223,6 +18248,7 @@ function dismissSession(id: string, why: DismissWhy, doomed?: ReadonlySet<string
   if (wasActive) stashActiveDraft(id);   // FIRST: what is on screen belongs to this id, whatever happens next
   sessions.delete(id);
   onDismiss(skeletonTabs, id);   // a tab that left the strip (✕, the kernel's omission, a host drop) has nothing left to load (2026-09-07)
+  awaitingFull.delete(id); pendingFullWhy.delete(id);   // …and its parked full ask goes with it (2026-09-19): a tab that left the strip gets no answer, and a latch outliving the tab is an ask nothing will answer
   liveAsks.delete(id);
   ledgers.delete(id);
   if (why === "close" || why === "end") {
