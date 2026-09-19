@@ -1293,7 +1293,8 @@ def _agent_rows(sessions):
         row = {"name": s.get("name") or sid[:8], "id": sid, "remote": False,
                "working": s.get("working", ""), "dir": s.get("dir", ""),
                "lastSid": s.get("lastSid", ""),   # the session's CURRENT transcript fsid (self-identity join)
-               "state": s.get("state", "")}   # state: working/idle/waiting/... → working-note freshness
+               "state": s.get("state", ""),   # state: working/idle/waiting/... → working-note freshness
+               "backend": s.get("backend", "")}   # sdk | codex: _push words the banner's reply hint by it (2026-09-19)
         if s.get("thread"):
             row["thread"] = True
             row["parent"] = s.get("parent") or ""
@@ -2372,7 +2373,10 @@ def _hhmm(iso):
         return iso[11:16]
     return datetime.now().astimezone().strftime("%H:%M")
 
-def format_push(msgs):
+def format_push(msgs, reply_tool=False):
+    """The banner a wake delivers. `reply_tool` names the send_message TOOL in the reply hint instead of the shell
+    command (2026-09-19): a Codex session mails through kernel-serviced tool calls, and `romp mail send` inside its
+    sandbox is refused by design (the hint used to send Codex threads chasing an out-of-sandbox escalation)."""
     bar = PUSH_SENTINEL
     out = []
     for m in msgs:
@@ -2384,18 +2388,22 @@ def format_push(msgs):
         if m.get("kind"):
             out.append("<!-- romp-msg-kind: %s -->" % m["kind"])   # sender-declared kind, read by the courier
         out.append(bar)
-    out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
-               % msgs[0].get("from", ""))
+    if reply_tool:
+        out.append("(to reply, only if substantive: the send_message tool, kind delegate|coordinate|question, to %s)"
+                   % msgs[0].get("from", ""))
+    else:
+        out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
+                   % msgs[0].get("from", ""))
     return "\n".join(out)
 
-def _deliver_body_bytes(sid, msgs):
+def _deliver_body_bytes(sid, msgs, reply_tool=False):
     """The exact wire size of the /deliver POST carrying `msgs`: the banner in its JSON envelope,
     serialized as _kernel_post serializes it (ensure_ascii on, so non-ASCII text and every newline
     inflate past the banner's own length)."""
-    return len(json.dumps({"id": sid, "text": format_push(msgs)}).encode("utf-8"))
+    return len(json.dumps({"id": sid, "text": format_push(msgs, reply_tool)}).encode("utf-8"))
 
 
-def _push_chunks(sid, msgs):
+def _push_chunks(sid, msgs, reply_tool=False):
     """Split a recipient's pending mail into /deliver bodies that fit under _PUSH_MAX_BYTES, oldest
     first -> (chunks, oversize). Each chunk is a non-empty run of consecutive messages whose whole body
     fits; `oversize` are the messages whose body ALONE does not, which no chunk can carry. The banner
@@ -2403,13 +2411,13 @@ def _push_chunks(sid, msgs):
     refused, and the refusal re-posted on every retry pass."""
     chunks, cur, oversize = [], [], []
     for m in msgs:
-        if cur and _deliver_body_bytes(sid, cur + [m]) <= _PUSH_MAX_BYTES:
+        if cur and _deliver_body_bytes(sid, cur + [m], reply_tool) <= _PUSH_MAX_BYTES:
             cur.append(m)
             continue
         if cur:
             chunks.append(cur)
             cur = []
-        if _deliver_body_bytes(sid, [m]) <= _PUSH_MAX_BYTES:
+        if _deliver_body_bytes(sid, [m], reply_tool) <= _PUSH_MAX_BYTES:
             cur = [m]
         else:
             oversize.append(m)
@@ -2513,12 +2521,13 @@ def _push(sid, agent):
         msgs = res.get("messages", [])
         if not msgs:
             return False                                      # nothing, or loop-guard paused
-        chunks, oversize = _push_chunks(sid, msgs)
+        reply_tool = agent.get("backend") == "codex"      # a Codex recipient replies through its send_message tool
+        chunks, oversize = _push_chunks(sid, msgs, reply_tool)
         for m in oversize:
             _bounce_oversize(sid, m)
         landed, held, cause = 0, [], ""
         for i, chunk in enumerate(chunks):
-            resp = _kernel_post("/deliver", {"id": sid, "text": format_push(chunk)}, timeout=12)
+            resp = _kernel_post("/deliver", {"id": sid, "text": format_push(chunk, reply_tool)}, timeout=12)
             if resp and resp.get("injected"):
                 landed += len(chunk)
                 continue
@@ -5718,7 +5727,8 @@ def cli_send(argv):
             sys.stderr.write("[romp mail] %s\n[romp mail] cannot send: no session identity resolved (the reason "
                              "above). This shell belongs to a Codex session, so the mail is refused, --from included: "
                              "a label would sign a session's mail as a script's and hide the bug. Surface this to the "
-                             "user as a session-identity bug.\n" % why)
+                             "user as a session-identity bug. A Codex session mails through its send_message tool, "
+                             "not this command (inside its sandbox this command is refused by design).\n" % why)
             return 1
     if frm_label:
         me, mid = frm_label, "ext:" + frm_label
