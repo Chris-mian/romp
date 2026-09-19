@@ -325,7 +325,7 @@ def _heap_stats():
 _CHAT_SIG_LABELS = ("transcript", "states", "store", "hold", "archive", "episodes", "reg", "gone", "tasks", "cut",
                     "live", "row", "clock", "backend", "ops", "limit", "retry", "bg", "watch", "stamp", "anchors",
                     "downtime", "names", "flags", "ncards", "colormap", "acct", "cleared", "host",
-                    "cwd", "claudemd", "fork", "note", "needs", "floor",
+                    "cwd", "claudemd", "fork", "note", "needs", "notices", "floor",
                     "taskout", "pathlink", "postal")
 _CHAT_SIG_DEPS = ("taskout", "pathlink", "postal")
 
@@ -24403,6 +24403,28 @@ def _notice_item_id(sid, key, rev):
     return "notice:%s:%s:%d" % (sid, key, int(rev))
 
 
+def _chat_notices(sid):
+    """The chat page's approval box (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): this session's
+    standing needs-you notices that carry actions, as the box lists them (today a held peer message with its Approve and Deny).
+    The same projection the feed card reads, the cleared ledger applied, each action with its kind; a decision (the expire row)
+    or a Clear drops the row with the next frame. None before the first feed build since start, as needsYou (the review of PR
+    1890, low d: the box never shows before the ring); [] for a session with none, and on any fault."""
+    if _feed_needs_input[0] is None:
+        return None
+    try:
+        out = []
+        for r in _notice_projection(sid, int(time.time()), _cleared_ids()):
+            if not r.get("needsYou") or not r.get("actions"):
+                continue
+            out.append({"itemId": _notice_item_id(sid, r.get("key"), r.get("rev") or 0), "key": r.get("key"), "rev": int(r.get("rev") or 0),
+                        "title": r.get("title") or "", "body": r.get("body") or "", "producer": r.get("producer") or "",
+                        "attachment": r.get("attachment"),          # the feed card's pinned picture, on the row too (one face)
+                        "actions": [dict(a, kind=_notice_action_kind(a)) for a in (r.get("actions") or [])]})
+        return out
+    except Exception:
+        return []
+
+
 # THE HELD-MAIL CARD (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): a message the bus HOLDS for a
 # human decision (mail from a DIRECTED peer, per-host trust) is a notice card the kernel posts, keyed by the message id, owned
 # by the recipient, needs-you, Approve and Deny of kind quarantine, dismissOnAction. The kernel BACKFILLS at every notice
@@ -34039,6 +34061,8 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # every tab a None on the first push and a False on the next: one whole-strip rebuild for a value the
         # row reads the same (needsInput === true). Only True is a verdict.
         sig.append(_feed_needs_input_of(sid) is True)
+        # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
+        sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -39531,6 +39555,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # feed build that moves the set wakes the pusher (_cached_feed), so the ring trails the
                   # card by one build, not a backstop tick.
                   "needsYou": needs_you,
+                  # the APPROVAL BOX's rows (2026-09-19): this session's needs-you notices with actions (a held peer message's
+                  # Approve and Deny), on the status so a status-only delta carries a decision's disappearance like the ring's
+                  "notices": _chat_notices(sid),
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -59504,6 +59531,7 @@ def _chat_body():
             # the live-ask picker lives INSIDE #content (the user 2026-06-27) so it flows at the bottom of the
             # transcript and scrolls WITH the chat history, instead of a fixed mini-window below it.
             '<div id="content"><div id="live-ask" style="display:none"></div></div>'
+            '<div id="notices" style="display:none"></div>'    # the approval box (2026-09-19): decisions only the user can make, above the background box
             '<div id="bg-tasks" style="display:none"></div>'   # background-task box: sits between the transcript and the composer
             '<div id="footer">'
             '<div id="composer-resize" title="Drag to resize the message box"></div>'   # drag the divider to grow/shrink the message box (the user 2026-07-07)

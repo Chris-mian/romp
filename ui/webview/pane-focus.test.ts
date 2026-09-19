@@ -95,7 +95,7 @@ test("the wiring: the dismiss branch, the unfocused body, the composer, the rest
   // the reload road (the review's HIGH): the persisted tab is awaited at boot, the body names it, nothing adopts
   assert.match(RENDER, /^let wantActiveName: string = /m);
   assert.match(fn("paintEmptyState"), /const awaited = !vanishedId && wantActive \? wantActive : null;/);
-  assert.match(RENDER, /renderBgTasks\(\);\s*\n\s*\} else if \(!activeId\) \{[\s\S]{0,300}?showActive\(\);\s*\n\s*\}/, "a frame landing on an unfocused pane paints the body, adopting nothing");
+  assert.match(RENDER, /renderBgTasks\(\);\s*\n\s*renderNotices\(\);\s*\n\s*\} else if \(!activeId\) \{[\s\S]{0,300}?showActive\(\);\s*\n\s*\}/, "a frame landing on an unfocused pane paints the body, adopting nothing (the approval box renders beside the background box, 2026-09-19)");
   assert.match(fn("paintEmptyState"), /why: "awaited" as const, dialing: hostIsDialing\(awaited\)/);
   assert.match(fn("paintEmptyState"), /const nameOf = \(id: string, carried = ""\) => carried \|\| wantActiveName \|\| tabMeta\.get\(id\)\?\.name \|\| sessions\.get\(id\)\?\.name \|\| "a session";/, "never a raw sid in the body, on any branch");
   assert.match(RENDER, /if \(wantActive && \(isSubId\(wantActive\) \|\| isProvisionalId\(wantActive\)\)\) \{ wantActiveGone = wantActive; wantActive = null; \}/, "an id that can never be listed again is not awaited");

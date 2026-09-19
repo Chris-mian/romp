@@ -221,7 +221,7 @@ test("every ACTIVE-tab display path reads through liveSession; only name reads a
   for (const r of raw) assert.match(r, /\?\.name|showForkPrompt\(activeId/);
   const live = RENDER.split("liveSession(activeId)").length - 1;
   assert.ok(live >= 17, `the sweep covers the display paths (${live} sites)`);
-  for (const f of ["updateStatusline", "renderBgTasks", "renderSubHead", "paintScrollMarks", "updateCommentRail", "landNearestMoment", "virtualizeToViewport", "updateJumpBtn", "updateReplyChips"]) {
+  for (const f of ["updateStatusline", "renderBgTasks", "renderNotices", "renderSubHead", "paintScrollMarks", "updateCommentRail", "landNearestMoment", "virtualizeToViewport", "updateJumpBtn", "updateReplyChips"]) {
     assert.match(fn(f), /liveSession\(activeId\)/, f + " reads the gated session");
   }
   assert.match(fn("renderLiveAsk"), /if \(!activeId \|\| skeletonTabs\.ids\.has\(activeId\) \|\| !liveAsks\.has\(activeId\) \|\| snapView\) \{/,
@@ -329,7 +329,7 @@ function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript
   const prelude = `
     const { sessions, views, tabMeta, skeletonTabs, commentThreads, jumpBtn, replyChips, atBottomDist, isReplyReady, hostOf, isProvisionalId, el, rompLoaderInner, HOOKS } = W;
     let activeId = null, skeletonLoading = null, replyChipSig = "";
-    const placeReviveLoader = () => {}, notifyActive = () => {}, renderLedger = () => {}, renderLiveAsk = () => {}, renderBgTasks = () => {}, renderSubHead = () => {}, updateStatusline = () => {};
+    const placeReviveLoader = () => {}, notifyActive = () => {}, renderLedger = () => {}, renderLiveAsk = () => {}, renderBgTasks = () => {}, renderNotices = () => {}, renderSubHead = () => {}, updateStatusline = () => {};
     // the unfocused body's painter and the box's name overlay (T357): inert here, the strip test is about the chips
     const paintEmptyState = () => {}, syncComposerPh = () => {}, order = [];
     // the section-at-a-glance view, inert: no section shows (snapView null), so showActive's branch is not taken

@@ -30,8 +30,8 @@ test("a follow-mode reader follows the bottom when a box below grows or shrinks;
 
 test("render.ts observes #bg-tasks and #footer and writes the new bottom through the scroll-write helper", () => {
   assert.match(RENDER, /import \{[^}]*\bfollowBoxBelow\b[^}]*\} from "\.\/scroll-keep";/);
-  assert.match(RENDER, /for \(const boxId of \["bg-tasks", "footer"\]\) \{/);
-  const m = RENDER.match(/for \(const boxId of \["bg-tasks", "footer"\]\) \{([\s\S]*?)\n\}/);
+  assert.match(RENDER, /for \(const boxId of \["notices", "bg-tasks", "footer"\]\) \{/);
+  const m = RENDER.match(/for \(const boxId of \["notices", "bg-tasks", "footer"\]\) \{([\s\S]*?)\n\}/);
   assert.ok(m, "the boxes-below observer block");
   const body = m![1];
   assert.match(body, /new ResizeObserver\(/);

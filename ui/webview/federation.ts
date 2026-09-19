@@ -162,6 +162,10 @@ export function prefixInbound(host: string, msg: any): any {
   // four of PR 1831: a remote card's dismissing action stayed on the board with its button latched until the next push)
   if (typeof out.itemId === "string") out.itemId = prefixNoticeId(host, out.itemId);
   if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => prefixNoticeId(host, x));
+  // a session frame's approval-box rows (status.notices, the chat's #notices box) carry notice ids too: prefixed like the feed's
+  // cards, so a remote host's noticeActionDone (prefixed above) finds the row it answers (the review of PR 1890, medium 2)
+  if (out.status && typeof out.status === "object" && !Array.isArray(out.status) && Array.isArray(out.status.notices))
+    out.status = { ...out.status, notices: out.status.notices.map((n: any) => (n && typeof n === "object" && typeof n.itemId === "string") ? { ...n, itemId: prefixNoticeId(host, n.itemId) } : n) };
   for (const k of OBJ_SID)
     if (Array.isArray(out[k]))
       out[k] = out[k].map((o: any) => _prefixIdBearing(host, o, "sid"));

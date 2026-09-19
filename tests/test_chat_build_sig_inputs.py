@@ -97,6 +97,7 @@ CENSUS = {
     "_effort_color": ("pure", "over the effort string and the colormap name"),
     "_effort_tone": ("pure", "over the effort string"),
     "_feed_needs_input_of": ("sig", "needs", "the last feed build's needs-you set, as the boolean for this session (None and False share a value)"),
+    "_chat_notices": ("sig", "notices", "the approval box's rows by id: this session's needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
     "_fold_tasks": ("memo", "pure over the parse's turns (transcript, live); the per-turn memo is keyed on each turn's atoms and fingerprint"),
     "_genuine_queued": ("pure", "over a queued text"),
     "_git_branch": ("sig", "cwd"),
