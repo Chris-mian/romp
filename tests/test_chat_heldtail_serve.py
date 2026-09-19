@@ -278,16 +278,21 @@ class HeldTailServe(unittest.TestCase):
         port, tok, p, cwd, state = self._boot("m2", lambda cwd: _turns_text(cwd, 0, 600))
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
-        full1 = self._first_full(c)                              # sets the client's echat base
-        held = self._tail_first_key(full1)
-        self._rewrite_bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # shrink: the base no longer maps -> a proactive baseGone full
-        got = None
-        for fr in c.frames(45):                                  # WAIT for the re-read EVENT: the proactive baseGone full (its chatFull row is filed when it leaves)
-            if fr.get("type") == "session" and fr.get("id") == SID and (fr.get("rebased") or fr.get("firstUuid") != held):
-                got = fr; break
-        self.assertIsNotNone(got, "the kernel re-read the shrink and pushed a baseGone full within 45 s")
-        rows = [r for r in self._chatfull_rows(state) if r["data"].get("reason") in ("baseGone", "noBase")]
-        self.assertTrue(rows, "a baseGone/noBase chatFull row was filed: %r" % self._chatfull_rows(state))
+        self._first_full(c)                                      # sets the client's echat base
+        self._rewrite_bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # shrink: the base no longer maps
+        # WAIT for the exact event this test asserts: the baseGone/noBase chatFull ROW in the diag log, filed when the
+        # proactive re-read full leaves. Drain frames each pass so the socket answers pings and the kernel keeps pushing;
+        # do NOT end on a mere `type: session` frame -- a delta or a keepalive-driven one (firstUuid None) arrives at once,
+        # before the re-read, and its rows carry only the connect's reason. Bounded at 45 s.
+        deadline = time.time() + 45
+        rows = []
+        while time.time() < deadline:                            # loop-ok: bounded, each pass blocks up to 3 s reading the socket
+            for _fr in c.frames(3):
+                pass
+            rows = [r for r in self._chatfull_rows(state) if r["data"].get("reason") in ("baseGone", "noBase")]
+            if rows:
+                break
+        self.assertTrue(rows, "a baseGone/noBase chatFull row appeared within 45 s: %r" % self._chatfull_rows(state))
         self.assertFalse(any(r["data"].get("firstHeld") for r in rows),
                          "firstHeld is False on the baseGone full (the held-key local must not clobber the bool): %r" % rows)
 
