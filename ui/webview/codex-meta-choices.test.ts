@@ -326,12 +326,12 @@ function liftMenu(opts: { thread?: { th: unknown; status: any }; vscodeApi?: { p
   let repaints = 0;
   const fn = new Function("document", "window", "kernelUrl", "fetch", "adoptCommentDefaults", "sessions",
     "openCommentThread", "threadMetaStatus", "metaCurrent", "metaPending", "vscodeApi",
-    "modeIconSvg", "riskyMode", "nonClassicChoiceTone", "setTip", "liveSession",
+    "modeIconSvg", "riskyMode", "nonClassicChoiceTone", "setTip", "pruneTip", "liveSession",
     "pendingFlags", "dropPendingFlag", "notifyShell", "warnToast", "updateStatusline", js);
   const api = fn(doc, win, (p: string) => p, stub.fetch, () => {}, sessions,
     () => (opts.thread ? { th: opts.thread.th } : null),
     () => { if (!opts.thread) throw new Error("no thread here"); return opts.thread.status; },
-    () => "", new Map(), opts.vscodeApi ?? null, () => "", () => false, () => undefined, () => {},
+    () => "", new Map(), opts.vscodeApi ?? null, () => "", () => false, () => undefined, () => {}, () => {},   // setTip, pruneTip (closeMetaMenu/closeSub drop a row's tip with the menu, 2026-09-17)
     (id: string) => sessions.get(id),
     new Map(), () => {}, (kind: string, text: string, sid: string) => { filed.push([kind, text, sid]); }, (t: string) => { toasts.push(t); }, () => { repaints++; });
   return { api, sessions, body: BODY, win, pending: stub.pending, failing: stub.failing, rectReads, filed, toasts, repaints: () => repaints };

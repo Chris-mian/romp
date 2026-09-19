@@ -328,7 +328,14 @@ following to every connected machine's kernel):
   happens again is logged once per attempt; its card follows the board's usual
   rule, nothing new while the swap's card stands, a fresh one once you cleared it. When a turn is served on the picked tier, a second
   Completed card says the session is back (`Model back on …`) and the retry ends.
-  A pick of your own ends it too, as does turning the switch off.
+  A pick of your own ends it too, as does turning the switch off. While a
+  fallback stands, the session's model picker, in the chat statusline and in the
+  timeline's lane picker alike, marks the requested model with a yellow tick
+  beside the blue tick on the model that answers; its tooltip says why
+  (the safety classifiers and their category, once the CLI has named them, which it
+  does within seconds of the swap; a fallback that predates the kernel is read off
+  the transcript when the kernel attaches) and whether romp is
+  retrying, with the cadence and the next attempt, or where to turn retries on.
 
 ### Per-session billing (login vs API key)
 
@@ -2248,7 +2255,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   of the wrong shape, or no reader entry after the walk).
 - `stacks`: every live thread's stack, keyed `"<ident> <kind>"`. The kind
   is the thread's name up to the naming convention's colon (`sdk` and
-  `sdk-intr` for a session's threads, `codex` for a Codex session's worker,
+  `sdk-intr`, `sdk-fbcause` (a session reading a standing fallback's cause off its transcript at an attach) for a session's threads, `codex` for a Codex session's worker,
   `end-host` for a session's end hook, `port-up` for a dial's port watch, `peer` for a postal peer loop,
   `romp-refused-mark` for the refused-echo mark a cut-off boot re-delivery writes aside), the
   target function for a thread the code left unnamed (`_ask_poll`,
