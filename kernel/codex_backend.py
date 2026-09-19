@@ -192,8 +192,12 @@ def _postal_tools(postal):
     developer message, replayed on every resume and across kernel restarts). At thread/RESUME the tools are
     accepted and harmless (the persisted registration stands) and the instructions are accepted and IGNORED, so
     a resume cannot revise an existing thread's instructions: a changed text reaches only threads started after
-    it. The same dict rides both calls anyway: a thread first started by a kernel without the tools gets its
-    registration from the resume, and one shape is one test."""
+    it. Nor can a resume ADD a registration (read against openai/codex at rust-v0.153.3 for the review of
+    2026-09-19: ThreadResumeParams has no dynamic_tools field, resume_thread_with_history builds its
+    StartThreadOptions with dynamic_tools empty, and the session falls back to the rollout's persisted
+    session_meta), so a thread started without the tools stays without them for its life; the smoke's resume leg
+    shows persistence, not addition. The same dict rides both calls anyway: the resume's copy is harmless, and one
+    shape is one test."""
     if postal is None:
         return {}
     return {"dynamicTools": copy.deepcopy(POSTAL_TOOL_SPECS), "developerInstructions": POSTAL_INSTRUCTIONS}

@@ -139,16 +139,20 @@ exposed to the commands the session runs, the sender is always the session
 itself, and the bus's rules (live-only addressing, the per-session mailbox
 toggle) apply exactly as they do to Claude sessions. Sandboxed and Auto mail
 the same way; no reviewer is involved. The shell command `romp mail` is
-refused inside the sandbox, with its reason, by design: the sandbox has no
-token to offer it. Note what the sandbox does and does not confine: it bounds
-the files and commands of *this* session, not its ability to ask peers for
-work, so a sandboxed session can delegate to unsandboxed sessions and to peer
-hosts, bounded per recipient by that recipient's mailbox toggle. `list_agents`
-shows a sandboxed session every peer's name, git branch and working-note, as
-it shows any session. To run Codex sessions without the tools, write `off`
-into `codex-postal-tools` in ROMP's state directory and restart the kernel
-(absent means on); the tools and their instructions are given to a thread when
-it starts, and stay with it, so a change reaches threads started after it.
+refused inside the sandbox (its identity lookup and the serve token both live
+outside the mounts) or, in a workspace without a romp checkout, not there at
+all; either way a Codex session mails through the tools. Note what the
+sandbox does and does not confine: it bounds the files and commands of *this*
+session, not its ability to ask peers for work, so a sandboxed session can
+delegate to unsandboxed sessions and to peer hosts, bounded per recipient by
+that recipient's mailbox toggle. `list_agents` shows a sandboxed session every
+peer's name, git branch and working-note, as it shows any session. To run
+Codex sessions without the tools, write `off` into `codex-postal-tools` in
+ROMP's state directory and restart the kernel (absent means on); the tools and
+their instructions are given to a thread when it starts, and stay with it, so
+a change reaches threads started after it. An existing thread keeps its
+persisted tools and instructions until it is ended; with the setting off,
+each call it makes is answered that mail is not available in this session.
 
 Two host notes:
 

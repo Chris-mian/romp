@@ -2430,7 +2430,7 @@ _OVERSIZE_NAMED = set()   # mids of oversize mail already named in the log: a me
 #                           is re-claimed by every retry pass, and one line per message is the record
 
 
-def _bounce_oversize(sid, m):
+def _bounce_oversize(sid, m, reply_tool=False):
     """One message whose /deliver body alone exceeds _PUSH_MAX_BYTES: it can never ride the live wake
     (the kernel refuses the body before reading it), so it is not posted, and never was going to land
     however often the retry pass re-posted it. A LOCAL sender hears it, the way a peer's refusal reaches
@@ -2441,8 +2441,11 @@ def _bounce_oversize(sid, m):
     `ext:<label>` id names no mailbox: _safe_id has no ':', so deliver() to it raises ValueError, which
     before 2026-09-10 escaped into _push's catch-all and stranded in cur/ every message the drain had
     claimed) stays in new/ for the turn-end drain and check_inbox, which have no size cap, and is named
-    in the log once."""
-    n = _deliver_body_bytes(sid, [m])
+    in the log once. `reply_tool` is the banner _push judged the message with (a Codex recipient's names
+    the send_message tool, 2 wire bytes longer than the shell hint once json.dumps has escaped the hint's
+    quotes), so the note reports the size as delivered to THIS recipient: measured with the shell banner,
+    a bounce to a Codex recipient named a size under the very limit it had crossed (the review, 2026-09-19)."""
+    n = _deliver_body_bytes(sid, [m], reply_tool)
     mid, frm_id = m.get("id", ""), m.get("from_id", "")
     if frm_id and not m.get("from_host") and frm_id != sid and _safe_id(frm_id):
         to = _name_for_id(sid) or sid
@@ -2524,7 +2527,7 @@ def _push(sid, agent):
         reply_tool = agent.get("backend") == "codex"      # a Codex recipient replies through its send_message tool
         chunks, oversize = _push_chunks(sid, msgs, reply_tool)
         for m in oversize:
-            _bounce_oversize(sid, m)
+            _bounce_oversize(sid, m, reply_tool)
         landed, held, cause = 0, [], ""
         for i, chunk in enumerate(chunks):
             resp = _kernel_post("/deliver", {"id": sid, "text": format_push(chunk, reply_tool)}, timeout=12)

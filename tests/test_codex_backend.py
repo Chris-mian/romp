@@ -693,7 +693,8 @@ class PostalTools(unittest.TestCase):
         self.assertIn("kind", send["inputSchema"]["required"])
         self.assertEqual(params["developerInstructions"], cb.POSTAL_INSTRUCTIONS)
         # the same on thread/resume: the registration persists server-side and passing it again is harmless
-        # (probed 2026-09-19), and a thread first started by an older kernel gets it here
+        # (probed 2026-09-19). It ADDS nothing: ThreadResumeParams has no dynamic_tools at rust-v0.153.3, so a
+        # thread started without the tools stays without them for its life (the review of 2026-09-19)
         self.assertTrue(be.kill(sid))
         self.assertTrue(be.resume("web", sid))
         self.assertTrue(be.send(sid, "again"))
@@ -702,6 +703,23 @@ class PostalTools(unittest.TestCase):
         self.assertEqual(resume_params["dynamicTools"], tools)
         self.assertEqual(resume_params["developerInstructions"], cb.POSTAL_INSTRUCTIONS)
         self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+
+    def test_a_pending_row_turned_real_by_prepare_thread_registers_the_tools_too(self):
+        # the create branch of _prepare_thread (a pending- or failed- row: a spawn whose thread/start failed,
+        # turned real on its first turn) is the third site that merges _postal_params into thread params; the
+        # registration test above drives spawn's and the resume's, and this one stayed unpinned until the review
+        # (2026-09-19). A failed- row takes the same branch, so one pending- case covers both.
+        be, fake, _ = build(postal=lambda *a: (True, ""))
+        sid = be.spawn("web", "/TESTDIR")
+        spawned = fake.called("thread_start")[0][1]["dynamicTools"]
+        s = be._session(sid)
+        s.tid = "pending-%s" % sid[:8]         # force the create path
+        s.loaded = False
+        self.assertTrue(be._prepare_thread(s, fake))
+        params = fake.called("thread_start")[-1][1]
+        self.assertEqual(params.get("dynamicTools"), spawned, "the spawn's own list, not a literal")
+        self.assertEqual(params.get("developerInstructions"), cb.POSTAL_INSTRUCTIONS)
+        self.assertFalse(s.tid.startswith("pending-"))
 
     def test_a_postal_tool_call_mails_as_the_calling_thread_and_only_that_thread(self):
         # the callable is ASSIGNED after construction in the four handler tests (a plain attribute write, which the

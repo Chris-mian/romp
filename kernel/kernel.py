@@ -4090,11 +4090,37 @@ def _codex_postal_tools_on():
     return jd._state_str("codex-postal-tools", "").strip().lower() != "off"
 
 
-def _codex_postal_http(method, path, payload=None):
+_CODEX_POSTAL_SAID = [False]     # a Codex postal tool's bus fault (unreachable, no answer) said once per fault spell: re-armed by the next answer
+
+
+def _codex_postal_log(tool, sid, cause, once=False):
+    """The kernel log's one line for a Codex postal tool call that failed, naming the tool, the session and the cause
+    (the review of 2026-09-19: _codex_postal_call never raises, so the backend's raise-only log line never fired, and
+    a refused bus, a hung bus and a store raise each reached the session as a failed result with an empty kernel
+    log, the one cross-session surface). The two bus faults (`once`) are said once per fault spell, after
+    _INTR_MARKS_WRITE_SAID: every Codex session's every call fails the same way until the bus answers again, and
+    _codex_postal_http re-arms the latch on its next answer. A store raise is no spell and is said every time. The
+    write is wrapped: a stderr that cannot be written (ENOSPC) must not turn the per-fault sentence the session gets
+    into the generic one."""
+    if once:
+        if _CODEX_POSTAL_SAID[0]:
+            return
+        _CODEX_POSTAL_SAID[0] = True
+    try:
+        sys.stderr.write("codex postal tool %s for session %s: %s%s\n"
+                         % (tool or "?", sid or "?", cause,
+                            " (said once per fault spell; re-armed when the mail service answers again)" if once else ""))
+    except Exception:
+        pass
+
+
+def _codex_postal_http(method, path, payload=None, tool="", sid=""):
     """One loopback call to the bus for a Codex postal tool: (status, body, written). status 0 when the bus could not
     be reached (nothing was written: a plain failure), -1 when the request was WRITTEN and no answer came inside
     CODEX_POSTAL_TIMEOUT_S (written True: the bus may have acted, and the caller's sentence says so, the distinction
-    _bus_send_relay draws as `unknown`), else the bus's status with its JSON body (a dict, {} when unparsable)."""
+    _bus_send_relay draws as `unknown`), else the bus's status with its JSON body (a dict, {} when unparsable).
+    `tool` and `sid` name the call in the kernel log's line for either fault (_codex_postal_log, once per fault
+    spell); an answer of any status ends the spell."""
     conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=CODEX_POSTAL_TIMEOUT_S)
     try:
         try:
@@ -4104,11 +4130,15 @@ def _codex_postal_http(method, path, payload=None):
                 headers["Content-Type"] = "application/json; charset=utf-8"
             conn.request(method, path, data, headers)
         except Exception as e:
+            _codex_postal_log(tool, sid, "the mail service could not be reached, nothing written (%s: %s)"
+                              % (type(e).__name__, str(e)[:120]), once=True)
             return 0, {"error": "The mail service could not be reached just now (%s)." % e.__class__.__name__}, False
         try:
             resp = conn.getresponse()
             raw = resp.read()
         except Exception as e:
+            _codex_postal_log(tool, sid, "the request was written and no answer came within %.0f s (%s: %s)"
+                              % (CODEX_POSTAL_TIMEOUT_S, type(e).__name__, str(e)[:120]), once=True)
             return -1, {"error": "No answer from the mail service within %.0f s (%s)."
                         % (CODEX_POSTAL_TIMEOUT_S, e.__class__.__name__)}, True
     finally:
@@ -4116,6 +4146,7 @@ def _codex_postal_http(method, path, payload=None):
             conn.close()
         except Exception:
             pass
+    _CODEX_POSTAL_SAID[0] = False                 # an answer, whatever its status, ends the fault spell: the latch re-arms
     try:
         body = json.loads(raw.decode("utf-8", "replace") or "{}")
     except Exception:
@@ -4138,13 +4169,14 @@ def _codex_postal_call(tool, sid, name, args):
     bin/romp-postal-service: to and body required, a kind outside the three refused rather than downgraded to
     undeclared, tracked a JSON boolean and a delegate's only), and the delivered sentences are copied from it, pinned
     equal by tests/test_codex_postal_tools.py. set_working writes the kernel's own store directly (the bus's tool
-    posts to this kernel for it). Never raises: the backend answers the call on the SDK's reader thread."""
+    posts to this kernel for it). Never raises: the backend answers the call on the SDK's reader thread, and it
+    logs only a raise, so every fault here is one kernel log line of its own (_codex_postal_log)."""
     try:
         args = args if isinstance(args, dict) else {}
         if tool == "send_message":
             return _codex_postal_send(sid, name, args)
         if tool == "check_inbox":
-            status, body, written = _codex_postal_http("GET", "/inbox?id=%s" % quote(sid))
+            status, body, written = _codex_postal_http("GET", "/inbox?id=%s" % quote(sid), tool=tool, sid=sid)
             if status == 200:
                 return True, (_codex_inbox_text(body.get("messages") or [], sid) or "No new messages.")
             if status == 503 and body.get("unreadable"):
@@ -4157,7 +4189,7 @@ def _codex_postal_call(tool, sid, name, args):
                 return False, "The mail service could not be reached just now; your mail waits and the next check retries."
             return False, _codex_postal_fault(status, body, tool)
         if tool == "list_agents":
-            status, body, written = _codex_postal_http("GET", "/agents?me=%s" % quote(name or ""))
+            status, body, written = _codex_postal_http("GET", "/agents?me=%s" % quote(name or ""), tool=tool, sid=sid)
             if status != 200:
                 return False, _codex_postal_fault(status, body, tool)
             return True, _codex_agents_text(body.get("agents") or [], sid)
@@ -4171,7 +4203,7 @@ def _codex_postal_call(tool, sid, name, args):
             return True, ("Cleared your 'working on' note." if not text.strip()
                           else "Published — others see: working on '%s'." % text)
         if tool == "check_sent":
-            status, body, written = _codex_postal_http("GET", "/sent?id=%s" % quote(sid))
+            status, body, written = _codex_postal_http("GET", "/sent?id=%s" % quote(sid), tool=tool, sid=sid)
             if status != 200:
                 return False, _codex_postal_fault(status, body, tool)
             return True, _codex_receipts_text(body.get("sent") or [])
@@ -4179,12 +4211,15 @@ def _codex_postal_call(tool, sid, name, args):
             to, rid = str(args.get("to") or ""), str(args.get("id") or "")
             if not to and not rid:
                 return False, "Give 'to' (the recipient) and/or 'id' to recall."
-            status, body, written = _codex_postal_http("POST", "/recall", {"from_id": sid, "to": to, "id": rid})
+            status, body, written = _codex_postal_http("POST", "/recall", {"from_id": sid, "to": to, "id": rid},
+                                                       tool=tool, sid=sid)
             if status != 200:
                 return False, _codex_postal_fault(status, body, tool)
             return True, _codex_recall_text(body.get("removed") or [], body.get("kept") or [])
         return False, "Unknown tool: %s" % tool
     except Exception as e:
+        # a raise below the bus call (the working-note store, a renderer): no spell, so every one is said
+        _codex_postal_log(tool, sid, "the call raised (%s: %s)" % (type(e).__name__, str(e)[:200]))
         return False, "The %s call failed: %s" % (tool, str(e) or e.__class__.__name__)
 
 
@@ -4203,7 +4238,7 @@ def _codex_postal_send(sid, name, args):
     payload = {"to": to, "from": name or "unknown", "from_id": sid, "body": body, "kind": kind}
     if tracked:
         payload["tracked"] = True
-    status, resp, written = _codex_postal_http("POST", "/send", payload)
+    status, resp, written = _codex_postal_http("POST", "/send", payload, tool="send_message", sid=sid)
     if status == -1:
         # WRITTEN, no answer: the bus may have delivered, and a resend would send a delegate twice
         return False, ("No answer from the mail service within %.0f s: the message may still have gone through. "

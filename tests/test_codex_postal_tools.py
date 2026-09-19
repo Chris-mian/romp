@@ -14,6 +14,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -172,6 +173,19 @@ class OtherTools(unittest.TestCase):
             ok, text = call("check_inbox", {})
         self.assertFalse(ok)
         self.assertIn("cannot be read", text)
+        # the fault branches (the review, 2026-09-19): a hang is a WRITTEN request the bus may have acted on, so
+        # the sentence warns that mail may now count as read without having been shown; a refused connection
+        # wrote nothing, and says only that the next check retries
+        with bus({"hang": True}) as log:
+            ok, text = call("check_inbox", {})
+        self.assertFalse(ok)
+        self.assertEqual(len(log), 1, "the request was written")
+        self.assertIn("count as read", text)
+        with bus({"refuse": True}) as log:
+            ok, text = call("check_inbox", {})
+        self.assertFalse(ok)
+        self.assertEqual(log, [], "nothing was written")
+        self.assertNotIn("count as read", text)
 
     def test_list_agents_marks_you_by_id_and_flags_a_stale_claim(self):
         rows = [{"id": SID, "name": "api", "dir": "/TESTDIR/api", "state": "working", "working": "the exporter",
@@ -241,6 +255,22 @@ class OtherTools(unittest.TestCase):
             ok, text = call("recall_message", {})
         self.assertFalse(ok)
         self.assertEqual(log, [])
+
+    def test_the_fault_branches_of_the_read_tools_tell_a_written_request_from_an_unwritten_one(self):
+        # list_agents, check_sent and recall_message (the review, 2026-09-19): a hang is a written request with no
+        # answer inside the budget, said as "No answer"; a refused connection wrote nothing and says the bus could
+        # not be reached, the distinction _codex_postal_http draws with its -1 and 0 statuses
+        for tool, args in (("list_agents", {}), ("check_sent", {}), ("recall_message", {"to": "web"})):
+            with bus({"hang": True}) as log:
+                ok, text = call(tool, args)
+            self.assertFalse(ok, tool)
+            self.assertEqual(len(log), 1, "%s: the request was written" % tool)
+            self.assertIn("No answer", text, tool)
+            with bus({"refuse": True}) as log:
+                ok, text = call(tool, args)
+            self.assertFalse(ok, tool)
+            self.assertEqual(log, [], "%s: nothing was written" % tool)
+            self.assertIn("could not be reached", text, tool)
 
     def test_an_unknown_tool_is_refused(self):
         with bus() as log:
@@ -358,6 +388,29 @@ class ParityWithTheBus(unittest.TestCase):
         self.assertIn("send_message", mine[-1])
         self.assertIn("romp mail send", theirs[-1])
 
+    def test_the_recall_sentences_match_the_bus_tool(self):
+        # the kernel's KEEP-IN-SYNC copy of the bus tool's recall branch (the review, 2026-09-19): every shape
+        # through both, the empty pair's "Nothing to recall" included. A carried kept row WITHOUT its own why is
+        # the only path through the kernel's inlined WHY_CARRIED literal (the bus server fills why itself), and
+        # every removed row carries both to and body, which the bus tool indexes directly where the kernel uses
+        # .get (a missing key raises on the bus side instead of yielding a comparable string)
+        shapes = [
+            {"removed": [], "kept": []},
+            {"removed": [{"to": "web", "body": "take it"}], "kept": []},
+            {"removed": [{"to": "web", "body": "take it"}, {"to": "web", "body": "and the fixtures"}], "kept": []},
+            {"removed": [], "kept": [{"to": "tests", "id": "m-3", "carried": True, "host": "TESTHOST", "body": "take it"}]},
+            {"removed": [], "kept": [{"to": "tests", "id": "m-4", "why": "is still queued for relay to TESTHOST",
+                                      "body": "x"}]},
+            {"removed": [{"to": "web", "body": "a"}],
+             "kept": [{"to": "tests", "id": "m-5", "carried": True, "why": "left for TESTHOST", "body": "b"},
+                      {"to": "tests", "id": "m-6", "body": "c"}]},
+        ]
+        for resp in shapes:
+            pm._http = lambda method, path, payload=None, _r=resp: dict(_r, ok=True)
+            theirs, err = pm._mcp_call("recall_message", {"to": "web"})
+            self.assertFalse(err, resp)
+            self.assertEqual(km._codex_recall_text(resp["removed"], resp["kept"]), theirs, resp)
+
     def test_the_inbox_fault_and_working_note_sentences_match_the_bus_tool(self):
         def raising(status, text):
             def _http(method, path, payload=None):
@@ -376,6 +429,74 @@ class ParityWithTheBus(unittest.TestCase):
         for args in ({"text": "editing the exporter"}, {"text": ""}, {}):
             theirs = pm._mcp_call("set_working", dict(args))
             self.assertEqual(call("set_working", dict(args)), (not theirs[1], theirs[0]), args)
+
+
+class TheKernelLogNamesAFault(unittest.TestCase):
+    """The kernel log's line for a failed call (the review, 2026-09-19): the callable never raises, so the backend's
+    raise-only log line never fires, and before this a refused bus, a hung bus and a store raise each reached the
+    session as a failed result and left the kernel log, the one cross-session surface, empty. One line naming the
+    tool, the session and the cause: the two bus faults once per fault spell, re-armed by the bus's next answer
+    (the _INTR_MARKS_WRITE_SAID shape), a store raise every time; the sentence to the session is unchanged."""
+
+    def setUp(self):
+        km._CODEX_POSTAL_SAID[0] = False
+
+    def _stderr_of(self, fn):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = fn()
+        return out, err.getvalue().splitlines()
+
+    def test_a_bus_fault_is_said_once_per_spell_and_a_store_raise_every_time(self):
+        def two_refused():
+            with bus({"refuse": True}):
+                return call("check_inbox", {}), call("list_agents", {})
+        (first, second), lines = self._stderr_of(two_refused)
+        self.assertEqual((first[0], second[0]), (False, False))
+        self.assertIn("could not be reached", first[1], "the sentence to the session is the per-fault one")
+        self.assertEqual(len(lines), 1, "said once for the spell, not per call: %r" % lines)
+        for piece in ("check_inbox", SID, "ConnectionRefusedError"):
+            self.assertIn(piece, lines[0])
+        self.assertNotIn("list_agents", lines[0], "the second call of the spell adds no line")
+        # an answer from the bus (any status) ends the spell and re-arms the latch
+        with bus({"status": 403, "body": {"error": "mailbox off"}}):
+            call("check_sent", {})
+
+        def two_hung():
+            with bus({"hang": True}, {"hang": True}):
+                return call("check_sent", {}), call("send_message", {"to": "web", "body": "hi", "kind": "coordinate"})
+        (first, second), lines = self._stderr_of(two_hung)
+        self.assertEqual((first[0], second[0]), (False, False))
+        self.assertIn("No answer", first[1])
+        self.assertEqual(len(lines), 1, lines)
+        for piece in ("check_sent", SID, "TimeoutError"):
+            self.assertIn(piece, lines[0])
+
+        # a store raise is no spell: every one is said, and the sentence carries the exception's text
+        def two_raises():
+            with mock.patch.object(km, "_set_working_note", side_effect=OSError(28, "No space left on device")):
+                return call("set_working", {"text": "a"}), call("set_working", {"text": "b"})
+        (first, second), lines = self._stderr_of(two_raises)
+        self.assertFalse(first[0])
+        self.assertIn("No space left", first[1])
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            for piece in ("set_working", SID, "No space left"):
+                self.assertIn(piece, line)
+
+    def test_a_stderr_that_cannot_be_written_does_not_swallow_the_sentence(self):
+        class _Dead(io.TextIOBase):
+            def write(self, s):
+                raise OSError(28, "No space left on device")
+        with contextlib.redirect_stderr(_Dead()):
+            with bus({"refuse": True}):
+                out = call("check_inbox", {})
+            with mock.patch.object(km, "_set_working_note", side_effect=OSError(28, "No space left on device")):
+                out2 = call("set_working", {"text": "a"})
+        self.assertEqual(out, (False, "The mail service could not be reached just now; your mail waits and the next "
+                                      "check retries."))
+        self.assertEqual(out2[0], False)
+        self.assertIn("No space left", out2[1], "the store's own raise, not the log write's")
 
 
 class TheBusNamesTheToolForCodex(unittest.TestCase):
@@ -407,20 +528,46 @@ class TheBusNamesTheToolForCodex(unittest.TestCase):
             {"id": SID, "name": "api", "state": "waiting", "backend": "codex", "dir": "/TESTDIR/api", "lastSid": SID},
             {"id": WEB, "name": "web", "state": "waiting", "backend": "sdk", "dir": "/TESTDIR/web", "lastSid": WEB}])}
         posted = []
-        saved = (pm._drain, pm._kernel_post, pm._push_disabled, os.environ.get("ROMP_SESSIONS_FILE"))
-        pm._drain = lambda sid: {"messages": list(msgs)}
+        box = {"messages": list(msgs)}
+        saved = (pm._drain, pm._kernel_post, pm._push_disabled, pm._name_for_id, pm._log,
+                 os.environ.get("ROMP_SESSIONS_FILE"))
+        pm._drain = lambda sid: {"messages": list(box["messages"])}
         pm._kernel_post = lambda path, body, timeout=None: posted.append((path, body)) or {"injected": True}
         pm._push_disabled = lambda: False
+        pm._name_for_id = lambda sid, rows=None: "api"    # no kernel to ask; the oversize note names the recipient
+        pm._log = lambda m: None
         os.environ.pop("ROMP_SESSIONS_FILE", None)
         try:
             self.assertTrue(pm._push(SID, rows[SID]))
             self.assertTrue(pm._push(WEB, rows[WEB]))
+            self.assertEqual([p for p, _ in posted], ["/deliver", "/deliver"])
+            self.assertIn("send_message", posted[0][1]["text"].splitlines()[-1])
+            self.assertIn("romp mail send", posted[1][1]["text"].splitlines()[-1])
+            # the oversize bounce measures the banner the recipient would have got (the review, 2026-09-19): the
+            # two bodies differ by 2 wire bytes (json.dumps escapes the shell hint's two double quotes), so a
+            # message sized to sit exactly on the cap as a SHELL body crosses it only as a TOOL body. To a Codex
+            # recipient it is bounced, with the tool body's size in the note, over the cap; to a shell recipient
+            # the same message still rides the wake. The real deliver lands the note in the sender's box.
+            big = dict(msgs[0], id="m-big")
+            big["body"] = "x" * (pm._PUSH_MAX_BYTES - pm._deliver_body_bytes(SID, [dict(big, body="")]))
+            self.assertEqual(pm._deliver_body_bytes(SID, [big]), pm._PUSH_MAX_BYTES)
+            n_tool = pm._deliver_body_bytes(SID, [big], reply_tool=True)
+            self.assertGreater(n_tool, pm._PUSH_MAX_BYTES)
+            box["messages"] = [big]
+            del posted[:]
+            self.assertFalse(pm._push(SID, rows[SID]), "nothing rode the wake: the one message was oversize")
+            self.assertEqual(posted, [], "no /deliver post for the Codex row")
+            notes = pm.read_box(WEB, consume=False)
+            self.assertEqual(len(notes), 1, notes)
+            self.assertIn("undeliverable to 'api'", notes[0]["body"])
+            said = int(re.search(r"is (\d+) bytes as delivered", notes[0]["body"]).group(1))
+            self.assertEqual(said, n_tool, "the note reports the size as delivered to THIS recipient")
+            self.assertGreater(said, pm._PUSH_MAX_BYTES, "a bounce naming a size under the limit explains nothing")
+            self.assertTrue(pm._push(WEB, rows[WEB]), "the same message fits a shell recipient's banner")
+            self.assertEqual([p for p, _ in posted], ["/deliver"])
         finally:
-            pm._drain, pm._kernel_post, pm._push_disabled = saved[:3]
-            restore_env("ROMP_SESSIONS_FILE", saved[3])
-        self.assertEqual([p for p, _ in posted], ["/deliver", "/deliver"])
-        self.assertIn("send_message", posted[0][1]["text"].splitlines()[-1])
-        self.assertIn("romp mail send", posted[1][1]["text"].splitlines()[-1])
+            pm._drain, pm._kernel_post, pm._push_disabled, pm._name_for_id, pm._log = saved[:5]
+            restore_env("ROMP_SESSIONS_FILE", saved[5])
 
     def test_a_codex_shell_refused_by_mail_send_is_pointed_at_the_tool(self):
         saved = (pm.ensure, os.environ.get("CODEX_THREAD_ID"), os.environ.get("CLAUDE_CODE_SESSION_ID"))
