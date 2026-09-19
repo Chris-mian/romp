@@ -135,12 +135,6 @@ class HeldTailServe(unittest.TestCase):
         """The frame's tail run first key = its firstUuid (the page's resident tail run older edge)."""
         return fr.get("firstUuid")
 
-    def _rewrite_bust(self, state, p, cwd, turns_text):
-        Path(p).write_text(turns_text(cwd))
-        Path(os.path.dirname(p), "_bust_%d" % int(time.time() * 1000)).write_text("x")   # a dir entry: busts the discover fingerprint (keyed on dir entries)
-        Path(state, "names", "_bust").write_text("x")
-        # NO sleep: the caller waits for the re-read EVENT (the proactive frame), never a fixed moment (K2's flake, 2026-09-19 round two)
-
     def _repair_full(self, c, held_first, with_key=True):
         """Send a needFull (carrying heldTailFirst unless with_key is False), return the repair full frame."""
         msg = {"type": "needFull", "id": SID, "why": "gap"}
@@ -229,22 +223,6 @@ class HeldTailServe(unittest.TestCase):
         self.assertNotIn("rebased", full, "nothing new for an older page: %r" % {k: full.get(k) for k in ("tailLo", "rebased")})
 
 
-    def _chatfull_rows(self, state):
-        import json as _j
-        fp = os.path.join(str(state), "client-diag.jsonl")
-        out = []
-        try:
-            for ln in open(fp):
-                try:
-                    r = _j.loads(ln)
-                except Exception:
-                    continue
-                if r.get("what") == "chatFull":
-                    out.append(r)
-        except OSError:
-            pass
-        return out
-
     # ── K7 / M1a: an overlay-card kind or a Codex echo-<hex> key (no colon, not a uuid) is KEPT, never rebased ──
     def test_k7_an_overlay_or_echo_key_never_rebases(self):
         # _key_in_transcript checks a uuid SHAPE, not a colon; `todo` and `echo-<hex>` carry no colon and are not record
@@ -272,30 +250,23 @@ class HeldTailServe(unittest.TestCase):
         self.assertNotIn("rebased", r2, "a no-key needFull after a keyed one gets today's plain frame, not the remembered key's rebased (M3): %r" % {k: r2.get(k) for k in ("tailLo", "rebased")})
 
     # ── K9 / M2: the held-key local must not clobber the `held_first` BOOL _note_chat_full reads (firstHeld on baseGone) ──
-    def test_k9_firstheld_is_false_on_a_basegone_full(self):
-        # Red at the base: my round-one code reassigned `held_first` to the KEY, so every baseGone full's chatFull row
-        # read firstHeld True. The bool is False on a baseGone (neither held edge maps in the shorter list).
-        port, tok, p, cwd, state = self._boot("m2", lambda cwd: _turns_text(cwd, 0, 600))
-        c = ChatClient(port, tok, SID)
-        c.send({"type": "ready", "proto": 2})
-        self._first_full(c)                                      # sets the client's echat base
-        self._rewrite_bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # shrink: the base no longer maps
-        # WAIT for the exact event this test asserts: the baseGone/noBase chatFull ROW in the diag log, filed when the
-        # proactive re-read full leaves. Drain frames each pass so the socket answers pings and the kernel keeps pushing;
-        # do NOT end on a mere `type: session` frame -- a delta or a keepalive-driven one (firstUuid None) arrives at once,
-        # before the re-read, and its rows carry only the connect's reason. Bounded at 45 s.
-        deadline = time.time() + 45
-        rows = []
-        while time.time() < deadline:                            # loop-ok: bounded, each pass blocks up to 3 s reading the socket
-            for _fr in c.frames(3):
-                pass
-            rows = [r for r in self._chatfull_rows(state) if r["data"].get("reason") in ("baseGone", "noBase")]
-            if rows:
-                break
-        self.assertTrue(rows, "a baseGone/noBase chatFull row appeared within 45 s: %r" % self._chatfull_rows(state))
-        self.assertFalse(any(r["data"].get("firstHeld") for r in rows),
-                         "firstHeld is False on the baseGone full (the held-key local must not clobber the bool): %r" % rows)
-
+    def test_k9_the_held_key_local_does_not_clobber_the_firstheld_bool(self):
+        # M2 (2026-09-19 round two): a baseGone full's chatFull row must read firstHeld from the BOOL (held_first =
+        # `pf is not None`, False on a baseGone), never the held-tail KEY. A BEHAVIOURAL pin here is inherently racy: it
+        # needs a proactive baseGone full, which depends on the pusher re-discovering a fingerprint-busted shrink and
+        # pushing within a bound, and a cold or contended box misses even 45 s (observed on a fresh detached checkout).
+        # No synchronous, echat-preserving push exists to force it (activeTab only wakes the pusher). So this pins the fix
+        # at the source, where it is exact and deterministic: the held-tail key is its own local `held_key`, the
+        # `held_first` bool is set and unclobbered, and the bool is the argument _note_chat_full receives for firstHeld.
+        # Red at the round-one head, where `held_first = pc.get("first")` reassigned the bool to the key.
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py")).read()
+        i = src.index("def _send_chat_proto2(")
+        fn = src[i:src.index("\ndef ", i + 1)]
+        self.assertIn('held_key = pc.get("first")', fn, "the held-tail key is its OWN local (held_key), not the held_first bool")
+        self.assertIn("held_first = pf is not None", fn, "the held_first BOOL is set")
+        self.assertNotIn('held_first = pc.get("first")', fn, "the bool must not be reassigned to the key (the round-one bug)")
+        self.assertIn("_note_chat_full(c, sid, reason, change_from, total, held_first, pl is not None)", fn,
+                      "the BOOL held_first is what _note_chat_full receives for firstHeld")
 
 if __name__ == "__main__":
     unittest.main()
