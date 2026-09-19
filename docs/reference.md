@@ -1545,26 +1545,30 @@ hand its descriptors over, in which case the kernel attaches to the old host as
 before and files a `host.reexec-refused` row. To re-exec, the host holds its
 stdout reader (no further record is taken off the CLI; bytes not yet read stay
 in the pipe, which survives the exec), drains its stdin pump and its journal
-writer, and hands over only when the CLI is quiet: no turn re-opened meanwhile
-and the reader's stream buffer holds no bytes. Output arriving instead (a
-message queued during the turn now running as its own, or bytes of a record
-not yet parsed) defers the exec to the next `result`, the event, and the
-reader runs on meanwhile. Then it tells an attached kernel `reexec-now`,
-writes any record read during that drain to the journal itself so the count
+writer, drains the attached kernel's socket backlog to the last byte (five
+seconds at most), and then decides with nothing awaited between the decision
+and the exec: the CLI is quiet, meaning no turn re-opened and the reader's
+stream buffer holds no bytes, or the exec is deferred to the next `result`,
+the event, and the reader runs on meanwhile (a `reexec-deferred` line names
+the reason: output arriving, or a kernel that did not drain in time). Quiet, it
+writes any record read during the drains to the journal itself so the count
 it hands over and the journal agree, writes a handoff file
 (`hosts/<sid>/reexec.json`: the CLI's pid, start time, spawn time and
 conversation id, the three pipe descriptors, the read count, the open turns,
 the open requests and the acknowledged offset), marks the descriptors
-inheritable, closes its socket, and calls `execv` on the same pid: the CLI
-stays its child, the pipes stay open (descriptors survive an execve), the
-lease holder's pid and start time are unchanged, so `hostAck` still names
-this host and the replay offset holds, and the journal is reopened from its
-segment files (the index rebuilt from the files entry for entry as the live
-one held it, the next offset from the last record, a deleted segment's
-offsets unreadable). The new host confirms the inherited descriptors against
-the CLI's own `/proc` descriptors on Linux before trusting the handoff, adopts
-the CLI through the pipe transport over them, re-serves the socket, writes
-the lease with the new version (in that order, so a kernel that reads the new
+inheritable, writes `reexec-now` to the kernel (its backlog empty, the frame
+reaches the socket at once; a kernel whose socket is full at that instant
+misses it and reads the close as unplanned, the lease holding for its next
+connect), closes its socket, and calls `execv` on the same pid: the CLI stays
+its child, the pipes stay open (descriptors survive an execve), the lease
+holder's pid and start time are unchanged, so `hostAck` still names this host
+and the replay offset holds, and the journal is reopened from its segment
+files (the index rebuilt from the files entry for entry as the live one held
+it, the next offset from the last record, a deleted segment's offsets
+unreadable). The new host confirms the inherited descriptors against the
+CLI's own `/proc` descriptors on Linux before trusting the handoff, adopts the
+CLI through the pipe transport over them, re-serves the socket, writes the
+lease with the new version (in that order, so a kernel that reads the new
 version finds a listener; the kernel's wait for the re-executed host also
 connects before it trusts the lease), and waits for the kernel's attach; the
 kernel, told `reexec-now`, treats the socket's close as the planned handover,
@@ -1578,10 +1582,13 @@ handoff that does not check out, makes the new host exit with the CLI still
 running, which the kernel's existing orphan road handles as a host death: the
 CLI finishes its turn on end-of-file and the session resumes from the
 transcript. The worst case is the pre-host behaviour for one session, never a
-dead one. The one thing an exec cannot carry is a partial line the reader had
-pulled off the pipe and not yet parsed at the handover, which the quiet check
-above makes a record the CLI was mid-write on at that instant, outside any
-turn: rare, and lost to the journal only, never to the CLI.
+dead one. What the guarantee covers: every record parsed off the CLI before
+the exec is in the journal, numbered as the kernel was told; every byte still
+in the pipe reaches the new host. What it cannot cover is a line the SDK's
+reader has split across two chunks (its framer holds the first part between
+reads), which with the stream buffer empty at the check is a record the CLI
+is mid-write on at that instant, outside any turn: lost to the journal only,
+never to the CLI.
 
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the

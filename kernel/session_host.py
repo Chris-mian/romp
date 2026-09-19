@@ -52,6 +52,7 @@ JOURNAL_SEGMENT_BYTES = 64 * 1024 * 1024
 READER_BEHIND_RECORDS = 5000     # records read but not yet on disk before the host says so
 ACK_NONE = -1
 EXIT_FLUSH_S = 2.0               # how long the exiting host waits for an attached kernel to take its last frames
+REEXEC_DRAIN_S = 5.0        # the handover waits this long for an attached kernel to drain its socket backlog, else defers
 GAP_TYPE = "romp-journal-gap"     # a record the journal could not write: a marker keeps the numbering, readers skip it
 UNREADABLE = (None, 0)    # an index entry whose segment is gone (acknowledged and deleted): read_from skips it
 END_SENTINEL = object()          # on the stdin pump: close the CLI's stdin after everything queued before it
@@ -842,21 +843,23 @@ class SessionHost:
 
     async def _reexec_now(self, python: str, launcher: str) -> None:
         """The handover. Hold the stdout reader (no further record is taken off the CLI; bytes not yet read stay in the
-        pipe, which survives the exec), drain what is queued for the CLI and for the disk, and hand over only when the
-        CLI is quiet: no turn re-opened meanwhile and the reader's stream buffer holds no bytes. Output arriving (a queued
-        line running as its own turn, or bytes of a record not yet parsed) defers the exec to the next result, the
-        event, and releases the reader meanwhile. Then `reexec-now` to the kernel, and with no await from there to the
-        exec: any record the reader took during that drain (its read was already in flight) written synchronously, so
-        the handoff's count and the journal agree; the handoff file; the descriptors marked inheritable; the socket
-        closed; the exec of this same process into the kernel's code. A failure before the exec is a `reexec-failed`
-        line, a fault to the kernel, and the host goes on as it was (a kernel already told `reexec-now` is detached, so
-        its planned reconnect happens against this host). Round two of the review: the reader ran on through the
-        handover, so records read after the flush were counted in the handoff and lost with the process, and the new
-        host's numbering ran ahead of its journal for good."""
+        pipe, which survives the exec), drain what is queued for the CLI and for the disk, drain the attached kernel's
+        socket backlog (bounded), and then, with NO await from here to the exec, decide: the CLI is quiet (no turn
+        re-opened, the reader's stream buffer holds no bytes) or the exec is deferred to the next result, the event, the
+        reader released meanwhile. A kernel that does not drain within the bound defers it too. Quiet: any record the
+        reader took meanwhile (its read was already in flight) written synchronously so the handoff's count and the
+        journal agree; the handoff file; the descriptors marked inheritable; `reexec-now` written to the kernel, whose
+        backlog is empty, so the frame goes to the socket at once; the socket closed; the exec of this same process into
+        the kernel's code. A failure before the exec is a `reexec-failed` line, a fault to the kernel, and the host goes
+        on as it was. Round two of the review: the reader ran on through the handover, so records read after the flush
+        were counted in the handoff and lost with the process; round three: the quiet check preceded the drain's await,
+        so output arriving while a slow kernel drained entered the stream buffer after the check and was lost."""
         self._reexec_pending = None
         self._reexec_running = True
         told = False
+        limits_set = False
         written: list = []
+        w = self.attached
         try:
             self._reader_hold.clear()
             flushed = asyncio.Event()
@@ -866,20 +869,22 @@ class SessionHost:
             fds = cli_pipe_fds(self.transport)
             if fds is None:
                 raise RuntimeError("descriptors")
-            pending = self._stdout_pending_bytes()
-            if self.inflight > 0 or pending:
-                self._reexec_pending = (python, launcher)
-                self._reader_hold.set()
-                self.log("reexec-deferred", inflight=self.inflight, pendingBytes=pending)
-                return
-            if self.attached is not None:
-                told = True
-                self._send(self.attached, {"t": "reexec-now"})
+            if w is not None:
+                # the kernel's backlog first, to empty (the buffer limits at zero, so drain waits for the last byte): the
+                # frame written after the check then reaches the socket at once, and nothing is decided under an await
                 try:
-                    await asyncio.wait_for(self.attached.drain(), 5)
+                    w.transport.set_write_buffer_limits(0, 0); limits_set = True
+                    await asyncio.wait_for(w.drain(), REEXEC_DRAIN_S)
+                except asyncio.TimeoutError:
+                    self._defer(python, launcher, "kernel-behind")
+                    return
                 except Exception:
-                    pass
-            for off in sorted(self._unwritten):             # no await from here to the exec
+                    pass                                    # a closed or failed writer: nothing to drain; the frame goes nowhere
+            pending = self._stdout_pending_bytes()          # no await from here to the exec
+            if self.inflight > 0 or pending:
+                self._defer(python, launcher, "output-arriving", pendingBytes=pending)
+                return
+            for off in sorted(self._unwritten):
                 if off == self.journal.next_offset:
                     self.journal.append(self._unwritten[off])
                     written.append(off)
@@ -895,7 +900,15 @@ class SessionHost:
                 json.dump(handoff, f)
             for fdn in fds.values():
                 os.set_inheritable(int(fdn), True)
-            self.log("reexec", python=python, launcher=launcher, journalNext=self.journal.next_offset)
+            buffered = None
+            if w is not None and self.attached is w:
+                told = True
+                self._send(w, {"t": "reexec-now"})
+                try:
+                    buffered = w.transport.get_write_buffer_size()   # 0: the frame is in the socket; else the kernel's socket is full
+                except Exception:
+                    buffered = None
+            self.log("reexec", python=python, launcher=launcher, journalNext=self.journal.next_offset, frameBuffered=buffered)
             self.journal.close()
             self._server.close()
             argv = [python, launcher, str(self.spec_path), "--reexec", str(hpath)]
@@ -918,16 +931,28 @@ class SessionHost:
             if self.attached is not None:
                 self._send(self.attached, {"t": "fault", "kind": "reexec-failed", "text": type(e).__name__})
                 if told:                                    # the kernel plans a reconnect: give it the stream's end it waits for
-                    w = self.attached
-                    self._detach(w)
+                    w2 = self.attached
+                    self._detach(w2)
                     try:
-                        w.close()
+                        w2.close()
                     except Exception:
                         pass
         finally:
             self._reexec_running = False
+            if limits_set and w is not None and not w.is_closing():
+                try:
+                    w.transport.set_write_buffer_limits()
+                except Exception:
+                    pass
             if self._reader_hold is not None:
                 self._reader_hold.set()
+
+    def _defer(self, python: str, launcher: str, reason: str, **fields) -> None:
+        """The handover waits for the next result (the event) and the reader runs on meanwhile: output arriving (a turn
+        re-opened, bytes of a record not yet parsed) or a kernel that did not drain its socket within the bound."""
+        self._reexec_pending = (python, launcher)
+        self._reader_hold.set()
+        self.log("reexec-deferred", reason=reason, inflight=self.inflight, **fields)
 
     def _stdout_pending_bytes(self):
         """Bytes read off the CLI's stdout pipe and not yet parsed into a record, as far as the transport shows them (the
