@@ -476,7 +476,7 @@ class _PerfStats:
     JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "retryUpgrade", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
-            "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
+            "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes", "heldWorking")   # the tick jobs, each a `jobs.<job>` stage (T398)
     STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst",
               "jobsPass", "jobs.prelude") \
         + tuple("jobs." + j for j in JOBS)   # every stage a fresh snapshot lists at zero: the cycle's prelude, the containers, the sub-stages
@@ -35355,6 +35355,96 @@ _PROMPT_HOLD_S = 3.0        # the prompt hold's clock FALLBACK: after the drain 
                                  # (a paste refused, a builtin that opens no prompt turn), until this many seconds
 _drain_hold: dict = {}           # sid -> (time.monotonic() deadline, until_busy); _apply_pending_ops skips the sid
                                  # while the hold is open (_drain_hold_open)
+_held_working: dict = {}         # sid -> the belt's state while the working gate holds its queue (_note_held_working)
+HELD_WORKING_KIND = "pending-ops.held-working"
+HELD_WORKING_RETRACTED_KIND = "pending-ops.held-working-retracted"
+
+
+def _mark_held_working(sid, now):
+    """The drain's side of the belt (the pusher thread): RECORD that the working gate holds this sid's queue, nothing more. The
+    reading of the transcript is the jobs thread's (_held_working_pass): the pusher's cycle was emptied of per-cycle transcript
+    work on 2026-09-05 and serves every client, and a held session whose turn is open would otherwise pay a parse at every tool
+    boundary that rests one cycle (40 to 96 ms per version on a 2.8 MB transcript, measured by 1876's review)."""
+    if sid not in _held_working:
+        _held_working[sid] = {"since": now, "stat": None, "parsed": None, "said": False}
+
+
+def _held_working_pass(now):
+    """The belt for a queue the WORKING gate holds (the stuck-Working shape of #1838, 2026-09-18: a host counted a folded message
+    as an open turn for days, every kernel adopted the count at its attach, busy() read it, and the drain parked every send in
+    silence while the page read Ready), on the jobs thread once per pass. For each sid the drain recorded held
+    (_mark_held_working), the belt reads the one source a stale count lives in, the backend's open-turn COUNT with nothing
+    queued to start (SdkBackend.count_says_open; never the composite busy(), which also holds for a queued turn or a feeder
+    that waits with the count at zero, holds that are correct), and then the session's transcript, the backend-agnostic
+    evidence: when it shows the last turn CLOSED while the count says one is open, a `pending-ops.held-working` problem row
+    ONCE per hold (the ledger, the kernel log, the error center's ring: a decision-shaped fault, the remedy the user's), and a
+    `pending-ops.held-working-retracted` row when a later version of the transcript shows a turn open after all. The rules it
+    keeps (the review's constraints on the note it replaces): no verdict from absence (no transcript, or a parse with no
+    turns, or one that raises, says nothing); the transcript is parsed only AT REST, once per file version (its stat
+    unchanged from the previous pass: a just-started turn's record lands within a pass, a streaming turn's file never rests,
+    so neither is read as closed), through the kernel's shared parse, which is memoized on the same stat; no busy() read of
+    its own (the gate's one read is the pin in tests/test_drain_hoists.py); a compacting sid is the compacting gate's, not a
+    hold of this kind (the drain decides). The state clears when the hold ends (the gate passes, the queue empties or the
+    user cancels the chip), so the next hold says again."""
+    for sid, h in list(_held_working.items()):
+        try:
+            be = Sessions.backend_for(sid)
+            says = getattr(be, "count_says_open", None) if be is not None else None
+            if says is None or says(sid) is not True:
+                h["stat"] = None                          # not the stale shape (a queued turn, a feeder's hold, another backend): nothing to read
+                continue
+            path = _path_of(sid, now)
+            try:
+                st = os.stat(path) if path else None
+            except OSError:
+                st = None
+            if st is None:
+                h["stat"] = None                          # no transcript to read: no verdict
+                continue
+            key = (st.st_mtime_ns, st.st_size)
+            if h["stat"] != key:
+                h["stat"] = key                           # the file moved since the last pass: read it at rest, next pass
+                continue
+            if h["parsed"] == key:
+                continue                                  # this version was read: nothing new to say
+            h["parsed"] = key
+            try:
+                session = _parse(path, sid, now) or {}
+            except Exception:
+                continue                                  # a parse that fails is no verdict either
+            turns = session.get("turns") or []
+            if not turns:
+                continue                                  # a parse that yields nothing is no verdict
+            open_turn = _session_working(turns)
+            if says(sid) is not True:
+                continue                                  # the count cleared during the parse: nothing to say
+            row = _session_row(sid, now) or {}
+            name = row.get("name") or sid[:8]
+            # THE WRITE MOMENT (round three of the review): the parse ran with no lock and took tens of milliseconds, and the
+            # hold can lift meanwhile (the turn settles and the drain delivers and pops both dicts, or the user cancels the
+            # chip); a row written then named a hold that no longer stood, with nothing to retract it, and a `said` mark
+            # landed on an orphaned entry. So the decision and the write run under the queue lock against the LIVE queue and
+            # the live entry: the hold must still stand, or nothing is filed and nothing is left behind.
+            with _pending_ops_lock:
+                ops = _pending_ops.get(sid) or []
+                if _held_working.get(sid) is not h or not ops:
+                    continue                              # the hold lifted mid-parse: no row, no orphan
+                queued = len(ops)
+                if not open_turn and not h["said"]:
+                    h["said"] = True
+                    _spend_guard_row(HELD_WORKING_KIND,
+                                     "%s's queue is held: the kernel counts a turn open in this session while its transcript shows the last "
+                                     "turn closed; %s. If it stays, ending and reviving the session replaces the count."
+                                     % (name, "1 parked item waits" if queued == 1 else "%d parked items wait" % queued), sid, name, be, queued=queued)
+                elif open_turn and h["said"]:
+                    h["said"] = False
+                    _spend_guard_row(HELD_WORKING_RETRACTED_KIND,
+                                     "%s's transcript now shows a turn open: the hold on its queue is the turn's, not a stale count."
+                                     % name, sid, name, be, queued=queued)
+        except Exception:
+            sys.stderr.write("held-working belt: %s\n" % traceback.format_exc())
+
+
 def _inflight_slot(sid, ops):
     """The slot of the op the drain is handing to the backend this instant, or -1. Scanned from the front for the
     op's identity, and the first identity hit is the one taken (_compact_or_park's interned ("compact",) makes a
@@ -35597,6 +35687,7 @@ def _cancel_parked(sid, park, md, qid=None):
         if not ops:
             _pending_ops.pop(sid, None)
             _drain_hold.pop(sid, None)    # an emptied queue leaves no hold behind (nothing left for it to protect)
+            _held_working.pop(sid, None)  # ...and no belt state: the next hold on this sid says again (1876's review)
         _save_pending_ops()
     _mark_views_dirty()
     return None
@@ -36418,6 +36509,7 @@ def _apply_pending_ops(now=None):
                 if not _pending_ops.get(sid):
                     _pending_ops.pop(sid, None)
                     _drain_hold.pop(sid, None)        # no queue, no hold
+                    _held_working.pop(sid, None)
                     continue
             if sid in _moving:
                 continue                              # a move is mid-flight: its relocation must finish first
@@ -36428,8 +36520,13 @@ def _apply_pending_ops(now=None):
                 _drain_hold.pop(sid, None)
             if _limit_hold(sid):
                 continue                              # the account can't serve a request yet: no parse, no gates
-            if _compacting_now(sid) or _working_now(sid):
+            if _compacting_now(sid):
+                _held_working.pop(sid, None)          # the compacting gate's hold, not the working gate's
                 continue
+            if _working_now(sid):
+                _mark_held_working(sid, now)          # the belt records the hold; the jobs thread reads the transcript (_held_working_pass)
+                continue
+            _held_working.pop(sid, None)              # the hold ended: the next one says again
             changed = False                               # a real mutation below → save the mirror + wake the pusher
             try:
                 be = Sessions.backend_for(sid)
@@ -57652,6 +57749,10 @@ def _jobs_pass(now, live_map):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+    try:                                  # the drain's held-working belt: the transcript read the pusher must not pay for
+        _job_stage('heldWorking', lambda: _held_working_pass(now))
+    except Exception:
+        sys.stderr.write("held-working belt: %s\n" % traceback.format_exc())
     _files_stat_pass_close(_own_stat)
     _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
 
