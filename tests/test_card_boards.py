@@ -112,7 +112,7 @@ class CardsCarryTheirBoard(unittest.TestCase):
                 "_blocked_placeholder": '"column": "needs_input", "board": "feed", "category": "needs_input",',
                 "build_feed": '"column": "needs_input", "board": "feed", "category": "needs_input",',   # the parked handoff
                 "_quarantine_cards": '"column": "needs_input", "board": "feed", "category": "needs_input",',
-                "_notice_cards": '"board": "feed", "category": "needs_input" if r.get("needsYou") else "completed",'}
+                "_notice_cards": '"board": "feed", "category": column,'}   # the column computed once (PR 1831), the same value
         for fn, lit in fams.items():
             self.assertIn(lit, inspect.getsource(getattr(km, fn)), fn)
         self.assertEqual(KSRC.count('"board": "feed"'), 7, "seven families, no eighth card built by hand without its board")

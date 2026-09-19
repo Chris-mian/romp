@@ -466,6 +466,71 @@ growth stays as the reference says; the byte bound is the user's call. Known and
 not archived yet reads the whole archive (its rows are live, the tail read finds none and walks to the start), no worse
 than before the bound.
 
+## Owner-less cards and the terse command (2026-09-18)
+
+**The ask.** The user found `romp card` overly restrictive: they want cards WITHOUT a session that appear at the TOP of the
+feed, no key to manage, and the terse form `romp card -t "title" -m "some text"` to just make a card.
+
+**The home.** An owner-less card lives in the reserved file `STATE/notices/notes.jsonl`, the key `notes`
+(`NOTICE_OWNERLESS_SID`). It cannot collide with a session: the store is keyed by sid, a sid is a uuid (thirty-six
+characters of hex and hyphens), and `notes` is a word. A session NAMED notes has a uuid sid, and the kernel resolves a
+name to its sid before the store sees it, so a name no session answers to is still refused ("no session answers to"),
+never guessed owner-less: only an ABSENT session (no `id`, no `name` on the route; no `--session` and no `ROMP_SID` on the
+command line, or `--no-session` inside a session) takes the owner-less road. `post_notice` takes an EMPTY `sid` as that
+road and nothing else: the reserved word arriving as a sid (an unresolved name handed back by `_sid_of`) is refused as a
+name no session answers to, and the session check never answers for the key.
+
+**Name and colour.** On the feed the owner-less run reads **Notes** (`NOTICE_OWNERLESS_NAME`) with no identity colour, since
+no session stands behind it; the card carries no session chip. In a federated view the remote host's prefix distinguishes
+one host's Notes from another's, as it does every remote card (federation prefixes a remote card's sid and name with its
+host); the kernel bakes no hostname into the card, so the repo and the state carry no machine identifier.
+
+**Item id and the ledger.** `notice:notes:<key>:<rev>`, the same shape as every notice card's; the cleared ledger already
+treats `notice:` ids as sessionless (`_CLEARED_NO_SESSION`), and Undo, the restore and the retention pass split the id the
+same way, so no reader changes.
+
+**The archive bound.** The owner-less file is one more `<sid>.jsonl` to the retention pass: dismissed, expired,
+superseded and over-cap rows move to `notices-archive/notes.jsonl`, the revision index `notes.revs.json` counts its
+revisions, the restore's tail read serves its Undo. The fifty-live-keys cap applies to the file on its own, so owner-less
+cards are capped as one session's would be.
+
+**Order: the feed board's rule.** Every NOTICE card carries two fields the board model reads (plans/card-boards.md;
+the names agreed with its author 2026-09-18): `board`, the board the card sits on, `"feed"` today; and `category`, the
+card's category, which is today's raw column value (`needs_input`, `working`, `completed`), carried beside `column` until
+the renderer reads `category` alone (`column` stays byte-identical meanwhile). The other card families write `column`
+alone; every family carrying the two fields is the boards' phase two, as the card-boards plan says. The owner-less cards' place
+is a SORT RULE of the feed board, not a card field and not a timestamp trick: within a category, runs order by the owner
+key, the reserved no-session key first, then the session order, then time; needs-you still decides the category, so an
+owner-less card that needs you heads the needs-you column and one that does not heads Completed. In grouped mode the Notes
+run opens each column it has cards in; in ungrouped mode the owner-less cards sort first within the column by the same key
+(a stable sort, so their own time order holds).
+
+**Actions and attachments.** An owner-less card carries no actions: `/send` needs a session to send to, so `post_notice`
+refuses actions on the owner-less road and the action runner refuses a hand-made owner-less id. An attachment is judged
+against the home directory alone (no session folder to admit).
+
+**The command.** `romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>]
+[--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, with `--title`, `--message` (`--body` stays
+as its alias), `--key` and `--session` the long forms, and the positional shorthand `romp card "title" "text"` (a bare
+first word is the title, a bare second the text; anything more is a usage error). `-k` is OPTIONAL: when absent the command
+mints a key, the first eight hex of a uuid4, never a slug of the title (an edited title must not make a second card, the
+round-two lesson), and the success line prints it so a later revision can name it (`romp card -k <key> ...`). Outside a
+session with no `-s` the card posts owner-less; inside a session `ROMP_SID` owns it by default and `--no-session` forces
+owner-less. The usage string stays short; the reference documents the shorthand.
+
+**The card's modal, and a reply's id (2026-09-18, the read of the owner-less cards' third round).** A notice card's modal shows
+the notice: its title heads the overlay and its body is the card's own face (the producer line, the body through the sanitizer,
+the attachment, the actions as the same latching buttons), in place of the goal tree a notice never has (the tree body read "No
+work yet." and hid the title). No session gesture shows there: the kernel's follow-up road reads the session out of a GOAL id, so
+Follow up, Check status and Continue on a notice id are refused as a session no kernel has, and they hide for every notice card;
+Clear stays. An owner-less card's header name is plain text, never a session link, never struck through; the title locates
+nothing and lights no chat turn. The kernel's answer to an action reaches the modal as it reaches the card: a success on a
+dismissing card closes both, any other answer re-arms. In a federated view a NOTICE id wears its host on EVERY inbound face, a
+row's and a reply's alike (noticeActionDone, a refused bell, an err naming its request), or the answer misses the card the
+pane holds; the prefix comes off on the way out beside the sid's. The viewer's cleared overlay never touches a notice card: the
+kernel ships goal ids alone as foreign clears (the prefixed families never ride), and a notice card's dismissal is a routed
+gesture the owning kernel's ledger records under the bare id.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key

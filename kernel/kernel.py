@@ -19798,6 +19798,14 @@ def _reveal_or_confirm(sid, focus_msg, client=None):
     Where a CLIENT is in scope (every WS op that calls this), the reveal is aimed at that dashboard
     alone: a jump into a transcript is one viewer's navigation, and broadcasting it dragged every open
     dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
+    if sid == NOTICE_OWNERLESS_SID:               # the owner-less notice cards' home is no session: nothing to reveal, nothing to revive (round three of PR 1831)
+        if client is not None:
+            try:
+                client["send"](json.dumps({"type": "err", "sid": sid, "title": "Nothing to open",
+                                           "text": "That card belongs to no session (an owner-less notice), so there is no chat to show and nothing to revive."}))
+            except Exception:
+                pass
+        return
     if sid and sid not in _live_map():
         _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
         if client:
@@ -23874,6 +23882,9 @@ NOTICE_BODY_MAX = 64 * 1024
 NOTICE_ACTIONS_MAX = 4
 NOTICE_ACTION_LABEL_MAX = 60
 NOTICE_ACTION_ROUTES = ("/send",)          # each further route needs its own argument for why a button may call it
+NOTICE_OWNERLESS_SID = "notes"             # the owner-less notice cards' home under STATE/notices (the user 2026-09-18: a card with no session,
+                                           # shown at the top of the feed): a word, so it can never be a sid (a uuid is hex and hyphens)
+NOTICE_OWNERLESS_NAME = "Notes"            # the run's name on the feed; no identity colour (no session stands behind it)
 NOTICE_LIVE_KEYS_MAX = 50                  # live keys per session: past it the oldest keys are superseded into the archive (round two, low a)
 _notice_lock = threading.Lock()            # one appender at a time per kernel; the file is append-only between sweeps
 
@@ -23956,7 +23967,10 @@ def _notice_memo_report():
 
 
 def _notice_session_known(sid):
-    """A notice belongs to a session the kernel knows: one the names registry lists (alive or not) or one that is live."""
+    """A notice belongs to a session the kernel knows: one the names registry lists (alive or not) or one that is live. The
+    reserved owner-less key is NOT a session this answers for: the owner-less road is taken on an EMPTY sid alone
+    (post_notice), never on the word arriving as a name (round two of PR 1831: _sid_of hands an unresolved name back
+    unchanged, so "notes" as a name reached the store as the reserved sid)."""
     try:
         if _name_of(sid):
             return True
@@ -24022,15 +24036,16 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
     human-readable refusal, never a silent drop (add_watch's contract). One validation for every door: the key's grammar,
     the title and body caps, the producer label, the session known to this kernel, the attachment's verdict (a refusal
     carries its why), the actions' allowlist and cap. The kernel assigns `rev`, the revision count for the key in the
-    session across the live file and the archive (an id the cleared ledger holds is never minted again), stamps `at`, appends under the lock, marks the views dirty and wakes the pusher."""
+    session across the live file and the archive (an id the cleared ledger holds is never minted again), stamps `at`, appends under the lock, marks the views dirty and wakes the pusher.
+    An empty `sid` posts an OWNER-LESS card (the user 2026-09-18): its home is the reserved file NOTICE_OWNERLESS_SID under
+    STATE/notices, it shows at the top of the feed under the name Notes with no colour, and it carries no actions."""
     now = int(now if now is not None else time.time())
-    sid = str(sid or "").strip()
+    ownerless = not str(sid or "").strip()             # no session named: the owner-less home (the user 2026-09-18)
+    sid = NOTICE_OWNERLESS_SID if ownerless else str(sid).strip()
     key = str(key or "").strip()
     title = " ".join(str(title or "").split())
     body = str(body or "")
     producer = str(producer or "").strip()
-    if not sid:
-        return None, "a notice needs a session"
     if not NOTICE_KEY_RE.match(key):
         return None, "the key must match [A-Za-z0-9_.-]{1,64}"
     if not title:
@@ -24041,8 +24056,8 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
         return None, "the body is too long (%d bytes max)" % NOTICE_BODY_MAX
     if not NOTICE_PRODUCER_RE.match(producer):
         return None, "the producer label must match [A-Za-z0-9_.-]{1,32}"
-    if not _notice_session_known(sid):
-        return None, 'no session answers to "%s"' % sid
+    if not ownerless and (sid == NOTICE_OWNERLESS_SID or not _notice_session_known(sid)):
+        return None, 'no session answers to "%s"' % sid   # a given name that resolves to no session, the reserved word included
     exp = None
     if expires_at not in (None, "", 0):
         try:
@@ -24054,6 +24069,8 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
     acts, aerr = _notice_actions_check(actions)
     if aerr:
         return None, aerr
+    if acts and sid == NOTICE_OWNERLESS_SID:
+        return None, "an owner-less card has no session to send to: actions need a session"
     att = None
     if attachment:
         att = _notice_attachment(attachment, sid)
@@ -24084,7 +24101,10 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
 def expire_notice(sid, key, now=None):
     """A producer retires its newest revision of `key` early: an {op: expire} row, so the file is the whole history. (row, error)."""
     now = int(now if now is not None else time.time())
-    sid, key = str(sid or "").strip(), str(key or "").strip()
+    ownerless = not str(sid or "").strip()
+    sid, key = (NOTICE_OWNERLESS_SID if ownerless else str(sid).strip()), str(key or "").strip()
+    if not ownerless and (sid == NOTICE_OWNERLESS_SID or not _notice_session_known(sid)):
+        return None, 'no session answers to "%s"' % sid   # the same name door as post_notice (round two of PR 1831)
     with _notice_lock:
         posts = [r for r in _notice_rows_unlocked(sid) if r.get("op") == "post" and r.get("key") == key]
         if not posts:
@@ -24179,12 +24199,21 @@ def _notice_cards(now, cleared):
     except OSError:
         return out
     for sid in sids:
+        ownerless = sid == NOTICE_OWNERLESS_SID           # the reserved home: no session's name or colour (the user 2026-09-18)
         for r in _notice_projection(sid, now, cleared):
             item_id = _notice_item_id(sid, r.get("key"), r.get("rev") or 0)
             t = int(r.get("t") or 0)
+            column = "needs_input" if r.get("needsYou") else "completed"
             out.append({
-                "itemId": item_id, "sid": sid, "name": _name_of(sid) or sid[:8], "color": _name_color(sid),
+                "itemId": item_id, "sid": sid,
+                "name": NOTICE_OWNERLESS_NAME if ownerless else (_name_of(sid) or sid[:8]),
+                "color": None if ownerless else _name_color(sid),
                 "text": r.get("title") or "", "t": t, "live": False,
+                # the board model's fields (plans/card-boards.md; the names agreed with its author 2026-09-18) on the NOTICE
+                # family: the board the card sits on today and its category, today's column, carried beside it (the other
+                # builders write column alone until the boards' phase two); the owner-less run's place at the top is the feed
+                # board's sort rule over the owner key, in the pane, never a field here
+                "board": "feed", "category": column,
                 "trgb": list(cm.age_rgb(now - t, _colormap())),   # the age colour stamped here: this attach is post-loop, no fold pops a private field
                 "turnId": item_id, "origin": None,
                 "followupPending": None, "waitingOn": None,
@@ -24194,8 +24223,7 @@ def _notice_cards(now, cleared):
                            "body": r.get("body") or "", "attachment": r.get("attachment"),
                            "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
                            "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
-                "column": "needs_input" if r.get("needsYou") else "completed",
-                "board": "feed", "category": "needs_input" if r.get("needsYou") else "completed",   # the board model's two fields (phase two)
+                "column": column,
                 "tree": []})
     out.sort(key=lambda c: (c["t"], c["itemId"]))
     return out
@@ -24228,6 +24256,8 @@ def _notice_action(item_id, route, body):
 
 def _notice_action_run(m, item_id, route, body):
     sid, key, rev = m.group(1), m.group(2), int(m.group(3))
+    if sid == NOTICE_OWNERLESS_SID:
+        return False, "an owner-less card has no actions"   # refused at the post too; the second door for a hand-made id
     row = next((r for r in _notice_rows(sid) if r.get("op") == "post" and r.get("key") == key and int(r.get("rev") or 0) == rev), None)
     if row is None:
         return False, "that notice is gone"
@@ -53822,7 +53852,7 @@ _CODE_BOARDS = {
         "sort": {"key": "t", "dir": "asc"},
         "subSorts": [],
         "groupBy": "session",
-        "order": [],                                   # the owner rank joins in phase three
+        "order": ["ownerRank"],                        # what feed.ts does (PR 1831): the owner-less notice run first, then the session order, then time
         "notify": ["needs_input", "completed"],
         "needsYou": "needs_input",
         "kinds": ["goal", "placeholder", "parked", "quarantine", "notice"],
@@ -65741,23 +65771,28 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/notice":
                 # Post a NOTICE CARD (T370, plans/notice-cards.md): door two of post_notice, in /watch's shape. Body:
                 # {"id"|"name": <session>, "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "actions"?,
-                # "dismissOnAction"?, "producer"?, "t"?}; or {"id"|"name", "expire": <key>} to retire the newest revision early.
-                # 400 for a malformed body or a missing key, title or session; 200 {"ok": false, "error"} for a refusal with
+                # "dismissOnAction"?, "producer"?, "t"?}; or {"id"|"name", "expire": <key>} to retire the newest revision early;
+                # with neither id nor name the card is OWNER-LESS (the user 2026-09-18).
+                # 400 for a malformed body or a missing key or title; 200 {"ok": false, "error"} for a refusal with
                 # its reason (an unknown session, a bad key, an oversize body, a refused attachment, a disallowed action);
                 # 200 {"ok": true, "notice": <row>} on success.
                 b, berr = _json_object_body(raw_body)
                 if berr:
                     return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
-                who = str(b.get("id") or b.get("name") or "").strip()
+                # No id and no name posts an OWNER-LESS card (the user 2026-09-18): the reserved home, the top of the feed. Only
+                # an ABSENT session takes that road: a name no session answers to is still refused, never guessed owner-less.
+                raw_who = b.get("id") if b.get("id") is not None else b.get("name")
+                who = str(raw_who or "").strip()
+                if raw_who is not None and not who:   # a whitespace-only id or name names nobody: refused, never guessed owner-less (round three of PR 1831)
+                    return self._send(200, json.dumps({"ok": False, "error": 'no session answers to "%s"' % str(raw_who)}), "application/json")
+                owner = _sid_of(who) if who else ""
                 if b.get("expire"):
-                    if not who:
-                        return self._send(400, json.dumps({"ok": False, "error": "id|name (the session) required"}), "application/json")
-                    row, err = expire_notice(_sid_of(who), str(b["expire"]))
+                    row, err = expire_notice(owner, str(b["expire"]))
                     return self._send(200, json.dumps({"ok": False, "error": err} if err else {"ok": True, "notice": row}), "application/json")
-                if not who or not str(b.get("key") or "").strip() or not str(b.get("title") or "").strip():
+                if not str(b.get("key") or "").strip() or not str(b.get("title") or "").strip():
                     return self._send(400, json.dumps({"ok": False, "error":
-                        "key, title and id|name (the session the card belongs to) required"}), "application/json")
-                row, err = post_notice(_sid_of(who), b.get("key"), b.get("title"), b.get("body") or "",
+                        "key and title required (id|name names the session the card belongs to; neither posts an owner-less card)"}), "application/json")
+                row, err = post_notice(owner, b.get("key"), b.get("title"), b.get("body") or "",
                                        producer=b.get("producer") or "http", attachment=b.get("attachment"),
                                        needs_you=bool(b.get("needsYou")), expires_at=b.get("expiresAt"), actions=b.get("actions"),
                                        dismiss_on_action=bool(b.get("dismissOnAction")), t=b.get("t"))

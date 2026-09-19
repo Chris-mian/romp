@@ -25,6 +25,14 @@ export function prefixId(host: string, id: string): string {
   return host ? host + SEP + id : id;
 }
 
+/** A NOTICE card's item id wears its host the way its sid does (round three of PR 1831, every inbound face since round four):
+ *  the reserved owner-less key sits in the sid slot on every host, so two hosts' cards under one key minted one id; and the
+ *  pane's maps are keyed by the prefixed id, so a row's id AND a reply's (noticeActionDone, settingRefused, an err naming its
+ *  op) take the same prefix, or the answer misses the card it names. A goal card's id ("sid:gN") stays bare (T287). */
+export function prefixNoticeId(host: string, id: any): any {
+  return typeof id === "string" && id.startsWith("notice:") ? prefixId(host, id) : id;
+}
+
 // hostOf/bareId live in host-prefix.ts (the side-effect-free helper module) so that OTHER modules can
 // read a host prefix WITHOUT importing this file — importing federation.ts boots a FederationManager
 // (the module-tail bootstrap below), and a second copy bundled into a pane emitted remote-only merged
@@ -148,6 +156,11 @@ export function prefixInbound(host: string, msg: any): any {
     if (typeof out[k] === "string") out[k] = prefixId(host, out[k]);
   for (const k of ARRAY_ID)
     if (Array.isArray(out[k])) out[k] = out[k].map((x: any) => (typeof x === "string" ? prefixId(host, x) : x));
+  // a kernel's REPLY names the card it answers at the top level (noticeActionDone, settingRefused, an err naming its op): a
+  // notice id there wears the host too, or the pane's maps, keyed by the prefixed id, miss it and the answer is lost (round
+  // four of PR 1831: a remote card's dismissing action stayed on the board with its button latched until the next push)
+  if (typeof out.itemId === "string") out.itemId = prefixNoticeId(host, out.itemId);
+  if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => prefixNoticeId(host, x));
   for (const k of OBJ_SID)
     if (Array.isArray(out[k]))
       out[k] = out[k].map((o: any) => _prefixIdBearing(host, o, "sid"));
@@ -203,6 +216,7 @@ function _prefixIdBearing(host: string, o: any, idKey: string): any {
   if (!o || typeof o !== "object" || typeof o[idKey] !== "string") return o;
   const out: any = { ...o, [idKey]: prefixId(host, o[idKey]) };
   if (typeof out.name === "string") out.name = prefixId(host, out.name);
+  out.itemId = prefixNoticeId(host, out.itemId);   // a NOTICE card's item id is prefixed like its sid; a goal card's id stays bare (T287)
   // A feed card's delegation origin (asks[].origin): peerHost empty means the SENDER is local to the
   // card's own kernel — attribute it to that host, and prefix peerSid so the click routes there. A
   // set peerHost means the sender lives on some OTHER host (that kernel recorded which); keep it,
@@ -415,6 +429,10 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
     // "g448"; the owning kernel then recorded a node id with no session, cleared nothing, and the cards the
     // laptop's session-header Clear all had crossed off came back with the next payload and every restart.
     if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => typeof x === "string" ? stripHost(host, x) : x);
+    // a NOTICE card's item id is host-prefixed on the way in (prefixInbound: two hosts' owner-less cards under one key would
+    // otherwise share one id on the merged board, round three of PR 1831), so it is stripped on the way out like the sid;
+    // a goal card's id ("sid:gN") is never prefixed and passes untouched
+    if (typeof out.itemId === "string" && bareId(out.itemId).startsWith("notice:")) out.itemId = stripHost(host, out.itemId);
     return [{ host, msg: out }];
   }
 
@@ -485,6 +503,9 @@ export function applyViewerClears(merged: any, ledgers: any[], clearedForeign: a
   // ("sid:gN") and compare as they are against the bare foreign ids (T287: reading the id's own first colon as
   // a host took the uuid for a host and compared "gN", so nothing ever matched).
   const remote = (sid: any) => typeof sid === "string" && hostOf(sid) !== LOCAL;
+  // the foreign ids are GOAL ids alone: the kernel's _cleared_foreign drops every prefixed family (notice: among them, the
+  // _CLEARED_NO_SESSION list), so no overlay ever clears a notice card; its dismissal is a routed gesture (askClear with the
+  // card's sid) that the owning kernel's ledger records under the bare id (round four of PR 1831 dropped an unreachable arm here)
   const hit = (sid: any, id: any) => remote(sid) && typeof id === "string" && foreign.has(id);
   merged.asks = merged.asks.filter((a: any) => !hit(a?.sid, a?.itemId));
   merged.items = merged.items.filter((c: any) => !hit(c?.sid, c?.itemId));

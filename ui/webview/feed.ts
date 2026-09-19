@@ -23,7 +23,7 @@ import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
 import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
-import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf, bareId } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
@@ -602,6 +602,14 @@ function feedPrefs(): FeedPrefs {
 // user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
 // per-host orders local-first, ids pre-prefixed.
 let sessionOrder: string[] = [];
+// The owner-less notice cards' owner key (kernel.py NOTICE_OWNERLESS_SID; the user 2026-09-18: a card with no session at the
+// top of the feed). The feed board's SORT RULE, never a card field or a timestamp trick (plans/notice-cards.md, "Owner-less
+// cards"): within a column, the owner-less run ranks before every session run, then the session order, then time.
+const NOTICE_OWNERLESS_SID = "notes";
+// A remote host's owner-less card arrives with its sid host-prefixed (federation prefixInbound: "host:notes"), so the test
+// strips the prefix the way federation adds it: one helper for the rank, the chip and the header (round two of PR 1831)
+const isOwnerless = (sid: string | null | undefined): boolean => !!sid && bareId(sid) === NOTICE_OWNERLESS_SID;
+const ownerRank = (sid: string): number => isOwnerless(sid) ? 0 : 1;
 // The chat tab strip's sessions (sid+name+color), riding every feed push: the footer's session-filter
 // menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
 // filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
@@ -1405,7 +1413,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   if (titleAnchor === "prompt" && !titleUuid && cardAnchorUuid) { titleAnchor = "work"; titleUuid = cardAnchorUuid; }
   // A PROVISIONAL placeholder has no goal node / timeline anchor — clicking anywhere just opens the live
   // session (go see what it's working on); the modal, timeline deep-link, and path-hover are all skipped.
-  title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
+  title.onclick = (ev) => { ev.stopPropagation(); if (isOwnerless(it.sid)) { fullscreenAskId = it.itemId; renderModal(); return; } if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };   // an owner-less card: the title opens the card, never a session gesture (round three of PR 1831)
   // (The auto-line is plain text now — no deep-link — so no onclick here; its hover tooltip = the planner's
   // why, set in updateAskCard. The inline sub-goal checkmarks remain clickable via wireNodeZones.)
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
@@ -2027,6 +2035,59 @@ function noticeBodyNodes(md: string): Node[] {
   }
 }
 
+// The notice FACE, one body for the card and the card's modal (round four of PR 1831): the producer line (and the board the
+// card belongs to when it is not the feed's), the body through the sanitizer, the attachment (the pinned picture where the page
+// can reach the kernel, else its name) and the actions as buttons that post noticeAction with the card's sid and latch on the
+// click; the kernel's noticeActionDone or the next push re-arms them (the card's rule, PR 1757).
+function fillNoticeFace(it: AskItem, nt: NonNullable<AskItem["notice"]>, onBoard: string, nProd: HTMLElement, nBody: HTMLElement, nAttach: HTMLElement, nActions: HTMLElement): void {
+  nProd.textContent = (nt.producer ? "via " + nt.producer : "") + (onBoard ? (nt.producer ? " · " : "") + "on " + onBoard : "");
+  nProd.title = (nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "") + (onBoard ? (nt.producer ? "; " : "") + "on the " + onBoard + " board" : "");
+  nProd.style.display = nProd.textContent ? "" : "none";
+  nBody.replaceChildren();
+  if (nt.body && nt.body.trim()) nBody.append(...noticeBodyNodes(nt.body));
+  nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
+  nAttach.replaceChildren();
+  const att = nt.attachment;
+  let canPrev = false;
+  try { canPrev = canPreview(); } catch (e) { canPrev = false; }   // no location (a document stand-in): no fetch, the file's name instead
+  if (att && att.allowed && att.kind === "image" && canPrev) {
+    const img = el("img", "fask-nimg") as HTMLImageElement;
+    img.src = fileUrl(att.path, it.sid) + (att.pin ? "&pin=" + encodeURIComponent(att.pin) : "");
+    img.alt = att.path.split("/").pop() || "attachment";
+    img.title = att.path;
+    nAttach.appendChild(img);
+  } else if (att && att.allowed) {
+    const f = el("span", "fask-nfile"); f.textContent = att.path.split("/").pop() || att.path; f.title = att.path + " (" + (att.kind || "file") + ")";
+    nAttach.appendChild(f);
+  }
+  nAttach.style.display = nAttach.childNodes.length ? "" : "none";
+  nActions.replaceChildren();
+  for (const act of nt.actions || []) {
+    const b = el("button", "fdismiss fnact") as HTMLButtonElement;
+    b.textContent = act.label; (b as any)._idle = act.label;
+    b.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      vscodeApi?.postMessage({ type: "noticeAction", itemId: it.itemId, sid: it.sid, route: act.route, body: act.body });
+      b.disabled = true; b.textContent = act.label + "…";
+    };
+    nActions.appendChild(b);
+  }
+  nActions.style.display = (nt.actions || []).length ? "" : "none";
+}
+
+// The modal of a NOTICE card shows the notice (round four of PR 1831, medium 2): the same face as the card, in place of the goal
+// tree a notice never has (the tree body read "No work yet." and the title hid, so an owner-less card's title opened an overlay
+// with nothing of the card). Rebuilt on every modal render, which is what re-arms a latched button on a push (the card's rule).
+function renderNoticeModalBody(host: HTMLElement, it: AskItem, nt: NonNullable<AskItem["notice"]>): void {
+  host.innerHTML = ""; (host as any)._sig = "";
+  const wrap = el("div", "feed-modal-notice");
+  const prod = el("div", "fask-nprod feed-modal-nprod"), nb = el("div", "fask-nbody"), na = el("div", "fask-nattach"), nac = el("div", "fask-nactions");
+  fillNoticeFace(it, nt, boardOf(it) !== FEED_BOARD ? boardOf(it).title : "", prod, nb, na, nac);
+  wrap.append(prod, nb, na, nac);
+  host.appendChild(wrap);
+  (host as any)._nActions = nac;   // the answer handler re-arms or closes through the modal's own buttons
+}
+
 // A notice card's action buttons let go on EVERY push, gated or not (the review of PR 1757, medium 2): a click on a down
 // socket is dropped and never answered (a kernel restart), and the card gate skips an unchanged card's update, so a latch
 // that waited for the card's own update or the kernel's answer read "Send again…" for good. The kernel's noticeActionDone
@@ -2077,9 +2138,15 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
   if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
   setLinkedText(a._title, it.text, prRepoOf(it.sid));   // `#123` in the goal text → its PR page; keyed, so an unchanged title keeps its anchors across pushes (pr-links.ts)
-  a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
-  if (it.color) a._name.style.color = it.color.bg;
-  setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
+  // an OWNER-LESS notice card has no session chip: no session stands behind it, so no name to open and no dot to paint; the
+  // run header above it says Notes (the user 2026-09-18)
+  const ownerless = isOwnerless(it.sid);
+  a._name.style.display = ownerless ? "none" : "";
+  if (!ownerless) {
+    a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
+    if (it.color) a._name.style.color = it.color.bg;
+    setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
+  }
   // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
   const og = a._origin as HTMLElement;
   if (it.origin && it.origin.peer) {
@@ -2649,7 +2716,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // `acted`, so no button shows. Rebuilt only when the notice's own fields change (the rev key).
   const nt = it.notice || null;
   const nProd = a._nProd as HTMLElement, nBody = a._nBody as HTMLElement, nAttach = a._nAttach as HTMLElement, nActions = a._nActions as HTMLElement;
-  for (const e of [nProd, nBody, nAttach, nActions]) e.style.display = nt ? "" : "none";
+  for (const e of [nProd, nBody, nAttach, nActions]) e.style.display = nt ? "" : "none";   // the face fill below refines each block
   if (nt) {
     // a card on a data-defined board shows on the feed under the feed's default column until the board has a view of its own
     // (phase four's switch); its board's title rides the producer label so the reader knows where it belongs
@@ -2657,38 +2724,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     const nkey = JSON.stringify([nt.key, nt.rev, nt.producer, nt.body, nt.attachment, nt.actions, it.sid, onBoard]);
     if ((a._nKey as string | undefined) !== nkey) {
       a._nKey = nkey;
-      nProd.textContent = (nt.producer ? "via " + nt.producer : "") + (onBoard ? (nt.producer ? " · " : "") + "on " + onBoard : "");
-      nProd.title = (nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "") + (onBoard ? (nt.producer ? "; " : "") + "on the " + onBoard + " board" : "");
-      nBody.replaceChildren();
-      if (nt.body && nt.body.trim()) nBody.append(...noticeBodyNodes(nt.body));
-      nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
-      nAttach.replaceChildren();
-      const att = nt.attachment;
-      let canPrev = false;
-      try { canPrev = canPreview(); } catch (e) { canPrev = false; }   // no location (a document stand-in): no fetch, the file's name instead
-      if (att && att.allowed && att.kind === "image" && canPrev) {
-        const img = el("img", "fask-nimg") as HTMLImageElement;
-        img.src = fileUrl(att.path, it.sid) + (att.pin ? "&pin=" + encodeURIComponent(att.pin) : "");
-        img.alt = att.path.split("/").pop() || "attachment";
-        img.title = att.path;
-        nAttach.appendChild(img);
-      } else if (att && att.allowed) {
-        const f = el("span", "fask-nfile"); f.textContent = att.path.split("/").pop() || att.path; f.title = att.path + " (" + (att.kind || "file") + ")";
-        nAttach.appendChild(f);
-      }
-      nAttach.style.display = nAttach.childNodes.length ? "" : "none";
-      nActions.replaceChildren();
-      for (const act of nt.actions || []) {
-        const b = el("button", "fdismiss fnact") as HTMLButtonElement;
-        b.textContent = act.label; (b as any)._idle = act.label;
-        b.onclick = (ev: Event) => {
-          ev.stopPropagation();
-          vscodeApi?.postMessage({ type: "noticeAction", itemId: it.itemId, sid: it.sid, route: act.route, body: act.body });
-          b.disabled = true; b.textContent = act.label + "…";
-        };
-        nActions.appendChild(b);
-      }
-      nActions.style.display = (nt.actions || []).length ? "" : "none";
+      fillNoticeFace(it, nt, onBoard, nProd, nBody, nAttach, nActions);
     }
     // re-armed from the payload on EVERY update (the review of PR 1757, medium 2): a click on a down socket is dropped and
     // never answered, so a latch that waited for noticeActionDone alone read "Send again…" for good; the quarantine card's
@@ -3770,14 +3806,32 @@ function renderModalNow() {
     // title), so a goal with no sub-work is just one list line carrying its own done/blocked state, and
     // any sub-goals render beneath it as the rest of the list (the user 2026-06-16). The header above the
     // tree is only the session name + a recency-tinted age; Follow up moved to the footer below the tree.
-    ttlEl.style.display = "none";
-    titleHoverId = it.turnId;
-    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live);
-    agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
+    // a NOTICE card's modal shows the notice (round four of PR 1831): its title heads the overlay (a notice has no tree whose
+    // first line could stand in), the title locates nothing and lights no chat turn (a notice has none), and an OWNER-LESS
+    // card's header name is plain text: no session to open, none to revive (the card header's rule since round two)
+    const nt = it.notice || null;
+    const ownerless = isOwnerless(it.sid);
+    ttlEl.style.display = nt ? "" : "none";
+    if (nt) { ttlEl.textContent = it.text; ttlEl.classList.remove("nav"); ttlEl.title = ""; ttlEl.onclick = null; }
+    titleHoverId = nt ? null : it.turnId;
+    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); agent.style.color = it.color ? it.color.bg : "";
+    agent.classList.toggle("fname-plain", ownerless);
+    if (ownerless) { setWorkDot(agent, false); agent.classList.remove("dead"); agent.title = ""; agent.onclick = null; }
+    else { setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live); agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid }); }
     ageEl.textContent = relAge(hostNow - it.t);
     wireAgeTip(ageEl, () => provenanceRows(it, hostNow, PROV_FMT));
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
+    if (nt) {
+      // no session gesture on a notice card's modal: the kernel's follow-up road reads the session out of a GOAL id
+      // ("sid:gN"), so Follow up, Check status and Continue on a notice id ("notice:<sid>:<key>:<rev>") are refused as a
+      // session no kernel has ("the pane addressed the wrong kernel"), and for an owner-less card there is no session at all;
+      // Clear stays (the ordinary askClear with the card's sid, the ledger's road). Round four of PR 1831, medium 2.
+      fupEl.style.display = "none"; fuboxEl.style.display = "none";
+      if (csEl) csEl.style.display = "none";
+      if (contEl) contEl.style.display = "none";
+      renderNoticeModalBody(body, it, nt);
+    } else {
     // "Check status" (the user 2026-07-20): shown when the card has open/blocked subs to sweep and the
     // session is live to answer. Same ack + re-arm contract as the card button (event-based: the judge's
     // re-file clears the asked state via the fresh modal render).
@@ -3813,6 +3867,7 @@ function renderModalNow() {
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
     applyModalWarnings(body, it);      // debug mode: this card's judge failures, input+reply expandable (the user 2026-07-09)
+    }
   }
   // The bottom bar always shows (every modal has an age + Clear); the Follow-up button inside it hides
   // itself for standalone deliverables (no follow-up), and the composer stays collapsed until toggled.
@@ -3921,16 +3976,29 @@ function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
   // same-value write too
   if (h.getAttribute("data-fsid") !== e.sid) h.setAttribute("data-fsid", e.sid);
   if (h.getAttribute("data-fcol") !== e.col) h.setAttribute("data-fcol", e.col);
-  const nm = (h as any)._name as HTMLElement;
+  let nm = (h as any)._name as HTMLElement;
+  // the owner-less run's header name is a SPAN, no anchor at all (round two of PR 1831: an anchor offered to open or revive a
+  // session named notes that never existed); a header is keyed per (column, sid), so the swap happens once per header
+  if (isOwnerless(e.sid) !== (nm.tagName === "SPAN")) {
+    const sw = el(isOwnerless(e.sid) ? "span" : "a", isOwnerless(e.sid) ? "fname-plain" : "fname");
+    nm.replaceWith(sw); (h as any)._name = sw; (h as any)._nmSig = undefined; nm = sw;
+  }
   // the name nodes are minted only when what they show changes: headers repaint every render (they are not
   // behind the per-card update gate), and each mint is a Text-node replacement — the same reason cards are
   // gated. hostNameNodes reads the name, the sid's host prefix and whether that host's link is down.
   const nmSig = e.name + "\u0000" + e.sid + "\u0000" + (hostIsDown(e.sid) ? "d" : "");
   if ((h as any)._nmSig !== nmSig) { (h as any)._nmSig = nmSig; nm.replaceChildren(...hostNameNodes(e.name, e.sid)); }
   if (e.color) nm.style.color = e.color.bg;
-  nm.classList.toggle("dead", !e.live);
-  nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
-  setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  if (isOwnerless(e.sid)) {
+    // the owner-less run's header (Notes, or a remote host's host:Notes) is PLAIN TEXT: no session stands behind it, so no
+    // anchor to open, no title, no dead class, no revive offer, no dot
+    nm.classList.remove("dead"); nm.removeAttribute("title"); nm.onclick = null;
+  } else {
+    nm.title = "open this session";
+    nm.classList.toggle("dead", !e.live);
+    nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
+    setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  }
   // the fold caret + the "n cards" stand-in for what it hides
   const fold = (h as any)._fold as HTMLElement, foldn = (h as any)._foldn as HTMLElement;
   // per (session, COLUMN) — T263c, the user 2026-09-08: the same session folds in Blocked and stays open in
@@ -5646,6 +5714,8 @@ function renderBody(list: HTMLElement) {
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
   const newestFirst = feedPrefs().newestFirst;
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
+  // the feed board's owner rule (stable, so each run keeps the column's time order): the owner-less cards first in every mode
+  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entrySid(x)) - ownerRank(entrySid(y)));
   // THE FOCUSED SESSION's view of these buckets (T347), taken HERE, before grouping: the section shows one
   // session, so it carries no run headers, and a thread folded below must not empty it — the fold hides
   // cards behind a caret the section does not have, and a compact view never dead-ends (ui/CLAUDE.md).
@@ -5660,7 +5730,7 @@ function renderBody(list: HTMLElement) {
     for (const k of Object.keys(buckets) as Column[]) {
       const extra = new Map<string, number>();   // sids the order list doesn't know → after it, first-seen order
       for (const e of buckets[k]) { const s = eSid(e); if (!rank.has(s) && !extra.has(s)) extra.set(s, extra.size); }
-      const rk = (e: Entry) => { const s = eSid(e); return rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };
+      const rk = (e: Entry) => { const s = eSid(e); return isOwnerless(s) ? -1 : rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };   // the owner-less run heads the column (a remote host's too)
       buckets[k].sort((x, y) => rk(x) - rk(y));
       const withHeads: Entry[] = [];
       let cur: string | null = null;
@@ -6544,7 +6614,10 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // no button re-arms (round four, high: re-armed, it invited a second click that delivered the words again before the
     // push that removes the card landed). A success on a card that stays: its buttons let go.
     const twins = cardTwins(m.itemId);
-    const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction));
+    const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction)) || !!asks.find((a) => a.itemId === m.itemId)?.notice?.dismissOnAction;
+    // the card's modal, when it shows this card (round four of PR 1831): a success on a dismissing card closes it with the card;
+    // any other answer re-renders it, which rebuilds the notice face and so re-arms its buttons (the same rule as the card's)
+    if (fullscreenAskId === m.itemId) { if (m.ok && dismisses) fullscreenAskId = null; renderModal(); }
     if (m.ok && dismisses) {
       pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
       for (const c of twins) c.dispatchEvent(new MouseEvent("mouseleave"));   // removed under the pointer: the card's own leave logic (freezeLeave, the hover highlight off or back to the pin), as the clear paths dispatch it (round six, low)

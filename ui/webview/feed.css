@@ -512,6 +512,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    2026-07-13): it wears the base size + weight the CARD TITLES render at, so the two read as one rank. */
 .feed-sess-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 9px 3px 0; font-weight: 600; }
 .feed-sess-head .fname { font-size: inherit; }   /* not .fname's 0.92em — the header matches the card titles exactly */
+.feed-sess-head .fname-plain { font-size: inherit; font-weight: 600; cursor: default; text-decoration: none; }
+.feed-modal-agent.fname-plain { cursor: default; text-decoration: none; }          /* an owner-less card's modal header: a name, not a session link (round four of PR 1831) */
+.feed-modal-notice { display: flex; flex-direction: column; gap: 6px; }                /* a notice card's modal body: its face in place of the goal tree */
+.feed-modal-notice .fask-nprod { margin-left: 0; white-space: normal; }
+.feed-modal-notice .fask-nbody { opacity: 1; }                                       /* the card's 0.86em, full ink: the modal is where the words are read */   /* the owner-less run's header (Notes): plain text in the header's weight, no link cursor, no hover underline, no session behind it (round two of PR 1831) */
 .feed-sess-head:first-child { margin-top: 2px; }
 /* the FOLD caret, right of the name (the user 2026-07-31). Bare glyph, no chip box: it sits on EVERY
    header, so the .fask-secbtn outline the service chip wears would draw a border down the whole column.
