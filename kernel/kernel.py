@@ -50750,6 +50750,31 @@ def _chat_full_reason(pc, pf, pl, change_from, total):
     return "other"                                    # no known shape reaches the full frame past these: counted, never raised
 
 
+def _key_in_transcript(sid, key, now):
+    """True if `key` (a held event's wire key) still appears in the sid's current parse (what the chat can show and its
+    pages serve), not merely in the floored built list. A key gone from here is a fork or a rewind that abandoned those
+    turns: they are genuinely not part of the current session, so the page sets them aside (rebased). Reads the CACHED
+    _parse's turns only, pre-cut turns' uuids included (t["uuids"], no body), so it never re-reads the leaf whole (the
+    proto-2 read budget, test_chat_proto2_served); _parse's own candidate set already covers the resume-fork lineage,
+    so a resume that keeps its older turns keeps the key. Any doubt (no session row, a synthetic key, a parse fault)
+    answers True: keep the rows (content that exists is never dropped, the user 2026-09-19)."""
+    try:
+        if not key or ":" in str(key):   # a synthetic key (an overlay card, an ordinal note), not a record uuid: keep
+            return True
+        sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
+        if sess is None:
+            return True
+        u = str(key).split("#", 1)[0]    # a second event of a record (uuid#n) rides its record's uuid
+        for t in _parse(sess["path"], sid, now)["turns"]:
+            src = t.get("uuids") if t.get("pre") else [a.get("uuid") for a in (t.get("atoms") or [])]
+            for tu in (src or []):
+                if tu and str(tu).split("#", 1)[0] == u:
+                    return True
+        return False
+    except Exception:
+        return True
+
+
 def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     """The uuid-anchored wire (T323 stage 4b) for a client whose ready said proto 2. Its base is {first, last}: the uuids
     of the oldest and newest events of its TAIL run, the one run every client always holds and always live (T386 stage
@@ -50814,6 +50839,27 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # grows by that turn's head and no more. WIRE_TAIL is a floor, not a ceiling, here. A cut already at the list's start
     # (a floored list shorter than the tail) moves nowhere and still names its turn.
     head_from, tail_lo = _tail_run_start(sid, evs, head_from, int(time.time()))
+    # CONTENT THAT EXISTS NEVER GETS DROPPED (the user 2026-09-19). tail_lo above is re-derived from THIS build's tail
+    # (WIRE_TAIL events from the current end) and reads nothing the client holds, so a SHORTER current transcript (a
+    # fork, a rewind) puts tailLo below a run the page still shows and 1877's merge-by-position would drop it. The
+    # client's held tail run's older edge is pc["first"] for a connected client whose base went away (baseGone), else
+    # the heldTailFirst the page sent on ready / needFull for a reconnected client (its echat was cleared). When that
+    # key still sits in the built list BELOW the cut, serve from there so the frame is a SUPERSET of what the page
+    # holds (guard 3's split.before is empty, it applies, nothing dropped). When it is gone from the whole STITCHED
+    # transcript (not merely floored, and not a resume that stitches it back), those turns are genuinely not part of
+    # the current session: the frame carries `rebased` so the page sets them aside under the one landing notice, the
+    # ONE place rows leave on purpose. Floored-but-present, or a null tail_lo (the cold boot): the plain frame, and the
+    # page keeps its rows (1877 keeps a run below tailLo; guard 3 stays the belt).
+    rebased = False
+    if tail_lo is not None:
+        held_first = pc.get("first") if isinstance(pc, dict) else (c.get("heldTailFirst") or {}).get(sid)
+        if held_first:
+            j = _uuid_positions(evs, sid).get(held_first)
+            if j is not None:
+                if j < head_from:
+                    head_from, tail_lo = _tail_run_start(sid, evs, j, int(time.time()))
+            elif not _key_in_transcript(sid, held_first, int(time.time())):
+                rebased = True
     _release_skeleton_locked(c, sid)
     # …and the full IS the answer to a needFull (2026-09-19): the mark _client_reset_chat_sid set is consumed here, where
     # the echat entry that keeps the sid out of any later set is written; not inside the release, which a click reaches
@@ -50830,6 +50876,8 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     m_send["lastUuid"] = _event_key(evs[-1]) if total else None
     m_send["tailLo"] = 0 if head_known else tail_lo   # the tail run's first turn (T386 stage 2), the turn the frame now begins with
     m_send["pageTurns"] = PAGE_TURNS                  # the page the gaps ask by (chat-regions.ts pagesToAsk)
+    if rebased:
+        m_send["rebased"] = True                      # the held tail run is gone from the current session (a fork / rewind): the page sets it aside under the notice
     # The full frame, counted by reason and filed when the client held a base it was owed deltas on: AFTER the send, and only
     # when the frame LEFT (2026-09-19, the review of the anchor fix). _send_client dedupes a frame the client already holds byte
     # for byte within _DEDUP_REPOST_S (a targeted push repeated on one build, the connect handshake's second push) and hands
@@ -67673,6 +67721,11 @@ class Handler(BaseHTTPRequestHandler):
             # whole session (_send_chat's full path fires when echat has no entry for the sid) and the
             # delta stream re-bases from there. Per-CLIENT, so one stale pane never re-sends for the rest.
             sid = str(msg["id"])
+            if msg.get("heldTailFirst"):
+                # the page's tail run FIRST key for this sid (2026-09-19): guard 3 refused a frame that would drop this
+                # run and re-asks with the key, so the repair full below serves from it (a superset) or, if the turns
+                # are gone from the transcript, sets them aside via `rebased`.
+                client.setdefault("heldTailFirst", {})[sid] = msg["heldTailFirst"]
             # Answer EVERY needFull: the page bounds a REFUSED-frame loop itself (render.ts refusedFrameLatch stops after
             # the second identical refusal), so the kernel must not dedup here. A kernel dedup dropped a GENUINE second gap
             # ask inside its window and, with the page's awaitingFull still set, the tab then discarded every later delta

@@ -34,10 +34,10 @@ function liftLatch(): { api: LatchApi; posts: Posted[] } {
   const js = requireCjs("esbuild").transformSync(RENDER.slice(a, b), { loader: "ts" }).code;
   const posts: Posted[] = [];
   const vscodeApi = { postMessage: (m: Posted) => { posts.push(m); } };
-  const make = new Function("vscodeApi", "hostOf", js + `
+  const make = new Function("vscodeApi", "hostOf", "sessions", "keyOf", js + `
     return { requestFullSession, awaitingFull, pendingFullWhy,
-             clearAsksForHost: typeof clearAsksForHost === "function" ? clearAsksForHost : undefined };`) as (v: unknown, h: unknown) => LatchApi;
-  return { api: make(vscodeApi, hostOf), posts };
+             clearAsksForHost: typeof clearAsksForHost === "function" ? clearAsksForHost : undefined };`) as (v: unknown, h: unknown, s: unknown, k: unknown) => LatchApi;
+  return { api: make(vscodeApi, hostOf, new Map(), () => undefined), posts };
 }
 
 const WEB = "web", API = "api";

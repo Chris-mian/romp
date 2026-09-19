@@ -26,8 +26,8 @@ test("a delta gap asks the kernel for a full session instead of freezing", () =>
   // since 2026-09-07 every ask names its WHY (a one-word diagnostic the kernel ignores; the return-to-tab
   // harness counts asks by it — skeleton-tabs-wiring.test.ts pins the vocabulary); the gap is "gap"
   assert.match(RENDER, /requestFullSession\(msg\.id, "gap"\);/, "…and request a re-base");
-  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "needFull", id, why \}\)/,
-    "the resync request must actually reach the kernel");
+  assert.match(RENDER, /const held = heldTailFirstKey\(id\);\n  if \(held\) ask\.heldTailFirst = held;[\s\S]{0,260}?vscodeApi\?\.postMessage\(ask\)/,
+    "the resync request reaches the kernel, carrying the held tail key when the page holds a tail run (2026-09-19)");
 });
 
 test("the resync is asked ONCE per desync, and re-arms when the full session lands", () => {

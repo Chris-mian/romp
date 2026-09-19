@@ -149,6 +149,12 @@ export function landingNotice(t: number | null | undefined, clock: (epochS: numb
   return t != null ? "Going to the message from " + clock(t) + ", click to stay here" : "Going to the earlier message, click to stay here";
 }
 
+/** The set-aside notice (2026-09-19): a `rebased` full frame said the held tail run's turns are gone from the current
+ *  session (a fork or a rewind), so the page set them aside. Never silent: this names how many and why. */
+export function setAsideNotice(n: number): string {
+  return n + (n === 1 ? " earlier message was" : " earlier messages were") + " set aside; this session was continued";
+}
+
 export interface LandingState { target: string | null; notice: boolean; askInFlight: boolean; }
 /** What the notice's click (the only cancel) leaves: no target and no notice, the ask still in flight (its reply inserts the run;
  *  nothing is thrown away) and the view where it is. */
