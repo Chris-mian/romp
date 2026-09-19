@@ -306,6 +306,106 @@ class Actions(unittest.TestCase):
         self.assertEqual(len(self.w.delivered), 2)
 
 
+class ActionKinds(unittest.TestCase):
+    """Actions are of a KIND the kernel defines (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): a
+    kind names its route and body shape, the allowlist admits kinds never bare routes, and the store keeps {label, kind, body}.
+    The older {label, route: "/send", body} shape (rows written before, the older pane's wire) reads as the send kind. The
+    quarantine kind: {mid, verdict approve|deny}, run through the bus's act road with the card's owner as the recipient, a
+    deny's optional note from the click as the bus's feedback."""
+    def setUp(self):
+        self.w = World()
+        self.saved_act = km._bus_quarantine_act
+        self.acts = []
+        km._bus_quarantine_act = lambda body: (self.acts.append(body) or (True, ""))
+    def tearDown(self):
+        km._bus_quarantine_act = self.saved_act
+        self.w.close()
+
+    def test_the_store_keeps_label_kind_body_and_reads_an_older_route_as_its_kind(self):
+        row, err = km.post_notice(SID, "k", "t", producer="cli", actions=[{"label": "Send", "route": "/send", "body": {"text": "x"}}], now=100)
+        self.assertIsNone(err); self.assertEqual(row["actions"], [{"label": "Send", "kind": "send", "body": {"text": "x"}}], "route read as its kind, stored as the kind")
+        row, err = km.post_notice(SID, "k2", "t", producer="cli", actions=[{"label": "Send", "kind": "send", "body": {"text": "x"}}], now=100)
+        self.assertIsNone(err); self.assertEqual(row["actions"], [{"label": "Send", "kind": "send", "body": {"text": "x"}}])
+        self.assertEqual(km.NOTICE_ACTION_KINDS, ("send", "quarantine"))
+        # the card carries each action's kind, so an older row's route reaches the pane as its kind
+        by = {c["itemId"]: c for c in km._notice_cards(500, set())}
+        self.assertEqual(by["notice:%s:k:1" % SID]["notice"]["actions"][0]["kind"], "send")
+
+    def test_kinds_not_in_the_table_and_bare_routes_are_refused_by_name(self):
+        for acts, why in [
+            ([{"label": "a", "kind": "watch", "body": {}}], "action kind 'watch' is not one the kernel knows (the kinds: send, quarantine)"),
+            ([{"label": "a", "route": "/watch", "body": {}}], "action route '/watch' is not allowed: actions are of a kind (send, quarantine)"),
+            ([{"label": "a", "body": {"text": "x"}}], "an action needs a kind (send, quarantine)"),
+            ([{"label": "a", "kind": "quarantine", "body": {"mid": "m1", "verdict": "edit"}}], "a quarantine action's verdict is approve or deny (a user never edits held mail)"),
+            ([{"label": "a", "kind": "quarantine", "body": {"mid": "m1", "verdict": "approve", "text": "x"}}], "a quarantine action's body is {mid, verdict}; 'text' is not a member"),
+            ([{"label": "a", "kind": "quarantine", "body": {"verdict": "approve"}}], "a quarantine action's body needs the held message's id"),
+            ([{"label": "a", "kind": "quarantine", "body": {"mid": "../x", "verdict": "approve"}}], "a quarantine action's body needs the held message's id"),
+        ]:
+            row, err = km.post_notice(SID, "k", "t", producer="cli", actions=acts, now=100)
+            self.assertEqual((row, err), (None, why))
+        self.assertEqual(_rows(SID), [], "nothing written")
+
+    def _held(self, mid="m1"):
+        acts = [{"label": "Approve", "kind": "quarantine", "body": {"mid": mid, "verdict": "approve"}},
+                {"label": "Deny", "kind": "quarantine", "body": {"mid": mid, "verdict": "deny"}}]
+        row, err = km.post_notice(SID, mid, "New message from api", "from TESTHOST:api to web, held because peer TESTHOST is DIRECTED\n\nhello",
+                                  producer="postal", actions=acts, needs_you=True, dismiss_on_action=True, now=100)
+        self.assertIsNone(err)
+        return "notice:%s:%s:1" % (SID, mid)
+
+    def test_an_approve_runs_the_bus_act_with_the_cards_owner_as_the_recipient_and_retires_the_card(self):
+        iid = self._held()
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m1", "verdict": "approve"}), (True, ""))
+        self.assertEqual(self.acts, [{"mid": "m1", "action": "approve", "sid": SID}], "the row's owner, never the pane's word")
+        self.assertEqual([r["op"] for r in _rows(SID)], ["post", "expire", "acted"], "the decision expires the card whatever the ledger later says, then the spent mark")
+        self.assertEqual(_rows(SID)[2]["kind"], "quarantine", "the acted row names the kind")
+        self.assertIn(iid, km._cleared_ids())
+        self.assertEqual(km._notice_cards(500, km._cleared_ids()), [])
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m1", "verdict": "deny"}), (False, "that card's action ran already"), "one decision per message")
+        self.assertEqual(len(self.acts), 1)
+        self.assertEqual(self.w.delivered, [], "the send door was never touched")
+
+    def test_a_deny_carries_the_clicks_note_as_the_bus_feedback_and_only_a_deny_takes_one(self):
+        iid = self._held("m2")
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m2", "verdict": "approve"}, {"note": "why"}), (False, "the action takes no 'note' from the click"))
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m2", "verdict": "deny"}, {"text": "edited"}), (False, "the action takes no 'text' from the click"))
+        self.assertEqual(self.acts, [], "refused before the bus")
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m2", "verdict": "deny"}, {"note": "  not  now "}), (True, ""))
+        self.assertEqual(self.acts, [{"mid": "m2", "action": "deny", "sid": SID, "feedback": "not now"}])
+        iid3 = self._held("m3")
+        self.assertEqual(km._notice_action(iid3, "quarantine", {"mid": "m3", "verdict": "deny"}), (True, ""))
+        self.assertNotIn("feedback", self.acts[-1], "no note, no feedback member")
+
+    def test_a_bus_refusal_is_the_answer_and_leaves_the_card_standing(self):
+        km._bus_quarantine_act = lambda body: (False, "the recipient is no longer live")
+        iid = self._held("m4")
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m4", "verdict": "approve"}), (False, "the recipient is no longer live"))
+        self.assertEqual([r["op"] for r in _rows(SID)], ["post"]); self.assertNotIn(iid, km._cleared_ids())
+        def boom(body): raise OSError("no port record")
+        km._bus_quarantine_act = boom
+        ok, err = km._notice_action(iid, "quarantine", {"mid": "m4", "verdict": "approve"})
+        self.assertEqual((ok, err), (False, "the verdict could not reach the postal bus (no port record)"), "a fault is the answer, never the socket's death")
+
+    def test_a_quarantine_action_is_accepted_only_for_the_message_s_own_recipient(self):
+        # the manager's review of PR 1885, medium: with the held file in this world's root, a card under api naming web's message is
+        # refused at the post, web's own is accepted, and a mid with no file is left to the bus at the click
+        qdir = km.jd.STATE / "postal" / "quarantine"; qdir.mkdir(parents=True, exist_ok=True)
+        (qdir / "held-1.json").write_text(json.dumps({"mid": "held-1", "to": "web", "toId": SID, "frm": "api", "frmId": SID2, "body": "hello", "kind": "coordinate", "origin": "TESTHOST", "at": 1000}))
+        acts = [{"label": "Approve", "kind": "quarantine", "body": {"mid": "held-1", "verdict": "approve"}}]
+        self.assertEqual(km.post_notice(SID2, "held-1", "t", producer="postal", actions=acts, needs_you=True, now=100), (None, "a quarantine action's message is held for another session, not this card's owner"))
+        row, err = km.post_notice(SID, "held-1", "t", producer="postal", actions=acts, needs_you=True, now=100)
+        self.assertIsNone(err); self.assertEqual(row["actions"], acts)
+        row, err = km.post_notice(SID2, "held-9", "t", producer="postal", actions=[{"label": "Approve", "kind": "quarantine", "body": {"mid": "held-9", "verdict": "approve"}}], needs_you=True, now=100)
+        self.assertIsNone(err, "no file: nothing to compare at the post")
+
+    def test_the_stored_body_is_matched_whole_and_a_send_kind_is_not_a_quarantine_kind(self):
+        iid = self._held("m5")
+        self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m6", "verdict": "approve"}), (False, "no such action on that card"))
+        self.assertEqual(km._notice_action(iid, "send", {"mid": "m5", "verdict": "approve"}), (False, "no such action on that card"))
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "x"}), (False, "no such action on that card"))
+        self.assertEqual(self.acts, [])
+
+
 class OwnerLess(unittest.TestCase):
     """Owner-less cards (plans/notice-cards.md, "Owner-less cards and the terse command"; the user 2026-09-18): a card with no
     session lives in the reserved file notes.jsonl, shows under Notes with no colour, carries the board model's fields, has no
@@ -1063,7 +1163,7 @@ class TheDoors(unittest.TestCase):
         call = re.search(r'_post_boot = getattr\(_sdk_backend, "post_boot_notices", None\)\n\s*if _post_boot:\n\s*_post_boot\(\)', KSRC)
         self.assertIsNotNone(call, "the kernel asks the backend for its boot-road post: the getattr, the guard and the call, in order")
         self.assertGreater(call.start(), wired, "...after the on_notice wiring, never before it")
-        self.assertIn('asks.extend(_notice_cards(now, cleared))', KSRC, "the feed attaches the family after the quarantine cards")
+        self.assertIn('asks.extend(_notice_cards(now, cleared, {s["sid"] for s in alive}))', KSRC, "the feed attaches the family with the build's alive roster (a card's live is its owner's)")
         self.assertIn('("notices", _notice_memo_report)', KSRC, "/perf reports the memo")
         self.assertIn('_nmoved = _compact_notices()', KSRC, "the retention pass runs beside the goal-store sweep")
 

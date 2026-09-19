@@ -19,8 +19,8 @@ export const PREDICATE_KEYS: readonly (keyof Predicate)[] = ["needsYou", "produc
 export interface Rule { when: Predicate; category: string; }
 export type OrderRule = "ownerRank";
 export const ORDER_RULES: readonly OrderRule[] = ["ownerRank"];
-export type KindId = "goal" | "placeholder" | "parked" | "quarantine" | "notice";
-export const KIND_IDS: readonly KindId[] = ["goal", "placeholder", "parked", "quarantine", "notice"];
+export type KindId = "goal" | "placeholder" | "parked" | "notice";   // the quarantine card is a notice card since 2026-09-19 (plans/notice-cards.md)
+export const KIND_IDS: readonly KindId[] = ["goal", "placeholder", "parked", "notice"];
 
 export interface Category { id: string; title: string; chip: Chip; }
 
@@ -67,7 +67,7 @@ export const FEED_BOARD: Board = {
   order: ["ownerRank"],                       // what feed.ts does (PR 1831): the owner-less run first, then the session order, then time
   notify: ["needs_input", "completed"],       // kernel.py _NOTIFY_COLUMNS
   needsYou: "needs_input",                    // kernel.py _needs_you_count
-  kinds: ["goal", "placeholder", "parked", "quarantine", "notice"],
+  kinds: ["goal", "placeholder", "parked", "notice"],
 };
 
 // ── the kinds: the card families feed.ts renders, described ────────────────────────────────────────────────────────────
@@ -109,11 +109,6 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
   },
   placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "makeAskCard" }], actions: [CLEAR, BELL], menu: MENU },
   parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "makeAskCard" }, BELL], menu: MENU },
-  quarantine: {
-    id: "quarantine", sections: [],
-    actions: [{ id: "approve", label: "Approve", via: "makeAskCard" }, { id: "deny", label: "Deny", via: "makeAskCard" }, BELL],
-    menu: MENU,
-  },
   notice: {
     id: "notice",
     sections: [{ id: "body", label: null, via: "noticeBodyNodes" }, { id: "attachment", label: null, via: "updateAskCard" }],
@@ -126,7 +121,6 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
 export function kindOf(card: { notice?: unknown; provisional?: unknown; blocked?: { state?: string } | null }): KindId {
   if (card.notice) return "notice";
   const st = card.blocked && card.blocked.state;
-  if (st === "quarantine") return "quarantine";
   if (st === "parkedHandoff") return "parked";
   if (card.provisional) return "placeholder";
   return "goal";

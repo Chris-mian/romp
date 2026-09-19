@@ -105,17 +105,16 @@ class BoardTable(unittest.TestCase):
 
 class CardsCarryTheirBoard(unittest.TestCase):
     def test_every_card_family_stamps_board_and_category_beside_column(self):
-        # the seven builders, by their source: six carry "board": "feed" and a category equal to its column literal; the notice family its row's pair
+        # the six builders (the quarantine card is a notice card since 2026-09-19), by their source: five carry "board": "feed" and a category equal to its column literal; the notice family its row's pair
         fams = {"_feed_session_entry": '"board": "feed", "category": column,',
                 "_provisional_card": '"column": "working", "board": "feed", "category": "working",',
                 "_awaiting_card": '"column": "working", "board": "feed", "category": "working",',
                 "_blocked_placeholder": '"column": "needs_input", "board": "feed", "category": "needs_input",',
                 "build_feed": '"column": "needs_input", "board": "feed", "category": "needs_input",',   # the parked handoff
-                "_quarantine_cards": '"column": "needs_input", "board": "feed", "category": "needs_input",',
                 "_notice_cards": '"board": board_id, "category": category_id,'}   # the row's own fields since phase three (the feed with the needsYou mapping for a row without them)
         for fn, lit in fams.items():
             self.assertIn(lit, inspect.getsource(getattr(km, fn)), fn)
-        self.assertEqual(KSRC.count('"board": "feed"'), 6, "six families stamp the feed literally; the notice family copies its row's board (phase three); no eighth card built by hand without its board")
+        self.assertEqual(KSRC.count('"board": "feed"'), 5, "five families stamp the feed literally (the quarantine card is a notice card since 2026-09-19); the notice family copies its row's board (phase three); no card built by hand without its board")
         self.assertIn('board_id = r.get("board") or "feed"', inspect.getsource(km._notice_cards), "the notice family's fallback is the feed")
         # the column expression itself is untouched: the record of the 2026-06-29 and 2026-07-07 rulings its pins hold
         self.assertIn('column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top', inspect.getsource(km._feed_session_entry))

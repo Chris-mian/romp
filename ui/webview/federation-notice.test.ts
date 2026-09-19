@@ -37,7 +37,7 @@ test("a remote host's notice card merges with its prefixed sid and name kept and
 
 test("the dismissal of a notice card is a routed gesture: the feed posts askClear with the card's sid", () => {
   assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "askClear", itemId: it\.itemId, sid: it\.sid \}\);/);
-  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "noticeAction", itemId: it\.itemId, sid: it\.sid, route: act\.route, body: act\.body \}\);/, "an action carries the sid too");
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "noticeAction", itemId: it\.itemId, sid: it\.sid, kind, body: act\.body, \.\.\.\(input \? \{ input \} : \{\}\) \}\);/, "an action carries the sid too (and its kind, 2026-09-19)");
 });
 
 test("the owner-less notice cards' owner key is one literal in the kernel and the pane, and the pane ranks it first by the feed board's rule", () => {
