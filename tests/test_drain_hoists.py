@@ -135,8 +135,10 @@ class DrainHoists(unittest.TestCase):
         self.assertIn("_live_scope.usage = _usage()", drain)
         self.assertIn("_live_scope.usage = _UNSET", drain, "the scope is cleared even when the loop raises")
         held = drain.index("_limit_hold(sid)")
-        self.assertLess(held, drain.index("_compacting_now(sid) or _working_now(sid)"),
-                        "the account hold is checked before the gates that read the transcript")
+        compacting, working = drain.find("if _compacting_now(sid):"), drain.find("if _working_now(sid):")
+        self.assertGreater(min(compacting, working), 0, "the two gates stand on their own lines (the working gate carries the held-working belt)")
+        self.assertLess(held, compacting, "the account hold is checked before the gates that read the transcript")
+        self.assertLess(compacting, working, "the compacting gate first, the working gate second")
 
     def test_f_the_scope_is_cleared_when_the_loop_raises(self):
         km._pending_ops[SIDS[0]] = [("send", "go")]

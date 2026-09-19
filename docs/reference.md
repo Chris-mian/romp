@@ -1594,6 +1594,23 @@ reads), which with the stream buffer empty at the check is a record the CLI
 is mid-write on at that instant, outside any turn: lost to the journal only,
 never to the CLI.
 
+The parked-op drain says so when a stale count holds a queue. The drain
+delivers a session's parked input once the session is quiet, and its working
+gate reads the backend's open-turn count, which under a host is the count the
+host handed over at the attach. When that count says a turn is open while the
+session's transcript, at rest, shows its last turn closed (the shape of the
+stuck-Working defect: a host counted a message folded into a running turn as
+its own turn, and every kernel adopted the count for days), the drain files a
+`pending-ops.held-working` problem row once per hold: the ledger, the kernel
+log and the error center's ring, naming the session and how many items wait,
+with the remedy (ending and reviving the session replaces the count). It reads
+the transcript only at rest, once per version of the file, through the
+kernel's shared parse; a transcript that is absent, that parses to no turns or
+that keeps changing (a turn streaming) is no verdict, and a later version that
+shows a turn open files a `pending-ops.held-working-retracted` row. The belt
+never delivers: the queue stays held until the count clears or the session is
+replaced.
+
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
 exception type and the failing frame (file, line and function, first on the line
