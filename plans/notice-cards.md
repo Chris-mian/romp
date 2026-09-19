@@ -531,6 +531,51 @@ pane holds; the prefix comes off on the way out beside the sid's. The viewer's c
 kernel ships goal ids alone as foreign clears (the prefixed families never ride), and a notice card's dismissal is a routed
 gesture the owning kernel's ledger records under the bare id.
 
+## The card command names its board (2026-09-18; card boards phase three, the producer's half)
+
+**The ask.** A producer or the user posts a card onto a board of their own, or onto a category of the feed, from the command
+line: `romp card -t "A figure is ready" -b figures -c new`, and `romp card -t "Decide the retry policy" -b reviews --needs-you`.
+The board store, its validator, the pure resolver and the standing count landed first (plans/card-boards.md, phase three, the
+first PR); this half puts the two flags on the command, threads the two fields through the notice store and the card builder,
+and names a created board on the posted line.
+
+**The command.** `romp card` takes `-b <id>` / `--board <id>` and `-c <id>` / `--category <id>` beside `-t`, `-m`, `-k`, `-s`,
+`--needs-you` and the rest; each rides the `/notice` body as `board` and `category`, both optional, both absent when not
+given (an older kernel ignores unknown members and files the card on the feed as today). `-c` without `-b` names a feed
+category (`working`, `needs_input`, `completed`), which the resolver accepts only when the feed has it. The usage line and
+`docs/reference.md`'s entry name both flags.
+
+**The post.** `post_notice` takes `board` and `category` as keyword arguments (empty by default) and calls
+`_board_resolve_post(board, category, needs_you=..., producer=..., key=...)` AFTER every other check of the post has passed
+(the key's grammar, the caps, the producer label, the session or the owner-less road, the expiry, the actions, the attachment),
+so a refused post never leaves a board behind; the resolver's error is the post's refusal, word for word (`romp card:
+refused: ...`), the resolver's `pending` definition is written through `define_board(pending)` right before the row appends
+(a write fault refuses the post), and the row stores `board` and `category` as resolved. `POST /notice` reads the two members
+off the body and hands them through; the WS door and every kernel-internal producer keep posting with neither and land on the
+feed as before. `--needs-you` on a board is the board's needsYou category, and refused when the definition names none (the
+resolver's words; on an unknown board the refusal comes before the defaults are minted, so the first post and every later one
+answer alike).
+
+**The card.** `_notice_cards` copies a row's `board` and `category` onto the card when the row carries them, and keeps the
+phase-two mapping for a row without them (`feed`, `needs_input` when needsYou else `completed`), so every notice card still
+carries the two fields the boards' phase two promised and the feed's column (`column`) stays the category's feed value for a
+feed card. For a card on a data board the feed keeps showing it under the feed's default column with its board named beside
+the producer, until phase four's view switch. `_notice_standing_count` reads the stored fields the same way (it already does).
+
+**The posted line.** On success the command prints the key, the revision and where the card went: `romp card: posted (key
+figure) on board figures/new`, and when the post created the board or appended a category the line says so (`board figures
+created with category new`, from the kernel's answer, which carries `board`, `category` and `created`), so a typo in `-b` is
+visible at once rather than a silent new board; `romp board list` names it and `romp board remove` takes it away while no
+card stands on it.
+
+**Tests, red first at the base.** bats: the two flags ride the body and their long forms; `-c` alone names a feed category;
+the posted line names the board and the creation. Python (the store module): a post onto an unknown board creates it with
+the named category and stores the fields; a second post onto it reuses the definition; a category unknown to a data board is
+appended in neutral dress; the feed's unknown category, a bad board id and `--needs-you` on a board with no badge category
+are refused with the resolver's words, and no board file appears after a refused post (the resolver runs last); the card
+builder copies the fields and maps a fieldless row as before; the standing count sees a card posted by the command. The
+served lab: a card posted with `-b` shows on the feed with its board beside the producer.
+
 ## Privacy
 
 The store holds the producer's payload and nothing more. The kernel log names the session, the key
