@@ -7,8 +7,10 @@ Approve and Deny while the session's tab wears the ask ring. Approve reaches the
 bus in the lab, is refused as unreachable: the buttons re-arm and the row says why. Deny opens the optional note inline with two
 choices and a way back; Deny without note posts the bare verdict and is refused the same way. The decision itself is the bus's
 success (unit-tested with the act stubbed), so the lab takes it the way the runner records it, an expire row in the notice
-store: the row leaves the box and the ring leaves the tab within a frame. Synthetic only: placeholder ids, invented text,
-hostname TESTHOST."""
+store: the row leaves the box and the ring leaves the tab within a frame. Every read of the reader's bottom holds at the box's
+observer pass (the page's romp:box-below event, the load flake of 2026-09-19), and one scenario pins the follow-mode race that
+flake uncovered: a write to the bottom whose scroll echo is dispatched after the box grew. Synthetic only: placeholder ids,
+invented text, hostname TESTHOST."""
 import json
 import os
 import re
@@ -49,6 +51,13 @@ try { browser = await chromium.launch(cfg.launch || {}); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
+// the bottom box's observer pass is an EVENT (render.ts, "romp:box-below": one per pass, with the height that pass acted on). The lab
+// records the last pass per box before the page's scripts run, and a read of the bottom holds until the box's current height is the
+// one the last pass reported (settled): the flake of 2026-09-19 (main red at bee556e8) read scrollTop between the box's growth and
+// the pass that re-pins the reader. A box at its max height grows no further and passes no more, so the hold is on the height,
+// never on "a pass came" (two rows reach the max on one font and not on another)
+await page.addInitScript(() => { window.__labBoxBelow = {}; window.addEventListener("romp:box-below", (e) => { const d = e.detail;
+  window.__labBoxBelow[d.id] = { n: ((window.__labBoxBelow[d.id] || {}).n || 0) + 1, height: d.height, repinned: d.repinned }; }); });
 await page.goto(cfg.chat);
 // the socket hold (the merge-guard lab's shim): an outbound frame whose type is in __hold is parked at the socket, not sent;
 // __release sends the parked ones. The latch is a TRANSIENT (the kernel's refusal re-arms the row and says why), so it may not
@@ -74,14 +83,42 @@ const facts = () => page.evaluate((s) => { const box = document.getElementById("
     rows: box ? Array.from(box.querySelectorAll(".ntc-row")).map((x) => x.getAttribute("data-item")) : [],
     atBottom: (() => { const c = document.getElementById("content"); return c ? (c.scrollHeight - c.scrollTop - c.clientHeight) < 2 : null; })(),
     scrollable: (() => { const c = document.getElementById("content"); return c ? c.scrollHeight > c.clientHeight + 40 : null; })(),
+    pass: (window.__labBoxBelow || {}).notices || null, boxHeight: box ? box.getBoundingClientRect().height : null,
     tabClasses: tab ? Array.from(tab.classList) : null }; }, rowSel);
+// settled: the approval box's content height (what the observer measures: the border box less borders and padding, 0 while hidden)
+// is the height its last pass reported. False after fifteen seconds is a fact the assertions read, never a retry
+const settledFn = () => { const b = document.getElementById("notices"); const rec = (window.__labBoxBelow || {}).notices; if (!b || !rec) return false;
+  const cs = getComputedStyle(b); const r = b.getBoundingClientRect().height;
+  const content = r > 0 ? r - parseFloat(cs.borderTopWidth) - parseFloat(cs.borderBottomWidth) - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) : 0;
+  return Math.abs(content - rec.height) < 0.02; };
+const settled = () => page.waitForFunction(settledFn, null, { timeout: 15000 }).then(() => true).catch(() => false);
+const atBottomNow = () => page.evaluate(() => { const c = document.getElementById("content"); return c ? (c.scrollHeight - c.scrollTop - c.clientHeight) < 2 : null; });
+const lastPass = () => page.evaluate(() => (window.__labBoxBelow || {}).notices || null);
 const hold = (mid, body) => fs.writeFileSync(cfg.qdir + "/" + mid + ".json", JSON.stringify({ mid, to: "web", toId: cfg.sid, frm: "api", frmId: "11111111-2222-3333-4444-666666666666",
   body, kind: "coordinate", origin: "TESTHOST", via: "peer", at: Math.floor(Date.now() / 1000) - 60 }));
 const rowSelOf = (mid) => '#notices .ntc-row[data-item="notice:' + cfg.sid + ":" + mid + ':1"]';
 // (1) the box and its row from the first frames; the ring trails the feed build by at most one frame
 await page.waitForFunction((s) => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && !!document.querySelector(s); }, rowSel, { timeout: 90000 }).catch(() => {});
+const settled1 = await settled();   // the box appeared: the reader's re-pin is on the pass this holds at
 await page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && Array.from(tab.classList).some((c) => c.startsWith("ring-")); }, null, { timeout: 60000 }).catch(() => {});
-const first = await facts();
+const first = await facts(); first.settled = settled1;
+// (1b) follow mode across a box's growth (2026-09-19, the second cause behind main's red): a write to the bottom owes one scroll event,
+// its echo; the approval box growing before that event is dispatched put the reader a box's height above the NEW bottom at the echo's
+// at-bottom read, and the record said scrolled-up, so the box's pass had nothing to re-pin. Deterministic here: the reader moves up
+// (no write pending: a gesture, follow mode off), then in ONE task the jump button's write to the bottom and the Deny step's growth
+// of the box (the note textarea under one row, which leaves room below the max height); the echo and the pass come in the next
+// rendering update, the echo first. Then Back: the two actions again, the box back to one row's height
+let race = null;
+if (first.row) {
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop - 300; });
+  await page.waitForFunction(() => { const j = document.getElementById("jump-bottom"); return !!j && !j.hidden; }, null, { timeout: 15000 }).catch(() => {});
+  const before = await lastPass();
+  await page.evaluate((s) => { document.getElementById("jump-bottom").click(); const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
+  const settledRace = await settled();
+  race = { settled: settledRace, before, pass: await lastPass(), atBottom: await atBottomNow(), boxHeight: await page.evaluate(() => document.getElementById("notices").getBoundingClientRect().height) };
+  await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Back").click(); }, rowSel);
+  race.backSettled = await settled(); race.back = await facts();
+}
 // (2) Approve PRESSED while a second hold lands (the review of PR 1890, medium 1): the frame that adds the second row must not
 // destroy the pressed button; the release is a click: latched, posted, the kernel's refusal (no bus) re-arms with the reason
 let approve = null;
@@ -94,7 +131,8 @@ if (first.row) {
   await page.mouse.down();
   hold(cfg.mid2, "a second message, held while the first's Approve is pressed");
   await page.waitForSelector(rowSelOf(cfg.mid2), { timeout: 90000 }).catch(() => {});
-  const midPress = await facts();
+  const settledMid = await settled();   // the second row grew the box under the press
+  const midPress = await facts(); midPress.settled = settledMid;
   // the pressed button must be the SAME element after the frame (the old code replaced every row, so the press had nothing to
   // land on); the box grew upward with its new row, so the pointer follows the button to where it now sits before the release
   midPress.pressedSurvived = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Approve");
@@ -109,14 +147,15 @@ if (first.row) {
   // (2b) a THIRD hold lands: the first row's refusal line stays (its own actions did not change), the rows keep their order
   hold(cfg.mid3, "a third message, held after the refusal");
   await page.waitForSelector(rowSelOf(cfg.mid3), { timeout: 90000 }).catch(() => {});
-  approve.afterThird = await facts();
+  const settledThird = await settled();   // three rows: at the max height on one font, grown on another; the hold is the height, not a pass
+  approve.afterThird = await facts(); approve.afterThird.settled = settledThird;
 }
 // (3) Deny: the inline note step, Back, then Deny without note: refused the same way
 let deny = null;
 if (first.row) {
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
-  const step = await facts();
-  step.atBottomAfterNote = (await facts()).atBottom;
+  const settledNote = await settled();   // with three rows the box may already stand at its max height: settled either way
+  const step = await facts(); step.settled = settledNote;
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Back").click(); }, rowSel);
   const back = await facts();
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
@@ -136,7 +175,7 @@ if (first.row) {
   await page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && !Array.from(tab.classList).some((c) => c === "ring-waiting-on-you"); }, null, { timeout: 60000 }).catch(() => {});
   decided = await facts();
 }
-process.stdout.write("RESULT:" + JSON.stringify({ first, approve, deny, decided, errors }) + "\n");
+process.stdout.write("RESULT:" + JSON.stringify({ first, race, approve, deny, decided, errors }) + "\n");
 await browser.close();
 """
 
@@ -251,7 +290,17 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(f["tabClasses"], "the session's tab")
         self.assertIn("ring-waiting-on-you", f["tabClasses"], "the ask ring: a held message blocks the session until decided: %r" % f["tabClasses"])
         self.assertTrue(f["scrollable"], "the transcript scrolls (sixty turns), so the bottom is a real position")
-        self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a)")
+        self.assertTrue(f["settled"], "the box's height is the one its last observer pass reported: the event the read holds at (pass: %r)" % f["pass"])
+        self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a), read settled")
+
+    def test_a_bottom_writes_echo_keeps_follow_mode_when_the_box_grows_before_it_is_dispatched(self):
+        r = self._result()
+        x = r["race"]
+        self.assertIsNotNone(x)
+        self.assertTrue(x["settled"], "the box settled after the note step opened under the jump (pass: %r)" % x["pass"])
+        self.assertGreater(x["pass"]["height"], x["before"]["height"], "the note step grew the box, the scenario's premise: %r -> %r" % (x["before"], x["pass"]))
+        self.assertTrue(x["atBottom"], "the jump's write to the bottom and the box's growth in one task: the write's echo keeps follow mode and the pass re-pins the reader to the new bottom (pass: %r)" % x["pass"])
+        self.assertTrue(x["backSettled"]); self.assertEqual([b["label"] for b in x["back"]["buttons"]], ["Approve", "Deny"], "Back restores the two actions")
 
     def test_a_press_survives_a_hold_landing_mid_press_and_the_refusal_line_survives_the_next_hold(self):
         r = self._result()
@@ -267,7 +316,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertEqual(t["rows"][0], "notice:%s:%s:1" % (SID, MID), "the first row kept its place")
         self.assertIn("Refused: postal bus unreachable", t["err"], "the first row's refusal line survived the frame that added a row")
         self.assertEqual(t["errShown"], "")
-        self.assertTrue(t["atBottom"], "still at the bottom with three rows")
+        self.assertTrue(t["settled"], "the box settled after the third row, at its max height or grown (pass: %r)" % t["pass"]); self.assertTrue(t["atBottom"], "still at the bottom with three rows, read settled")
 
     def test_approve_reaches_the_kernel_and_the_refusal_re_arms_the_row_saying_why(self):
         r = self._result()
@@ -284,7 +333,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(d)
         self.assertEqual([b["label"] for b in d["step"]["buttons"]], ["Deny & send note", "Deny without note", "Back"])
         self.assertEqual(d["step"]["note"], "", "the note textarea shows")
-        self.assertTrue(d["step"]["atBottomAfterNote"], "the note step grew the box: the at-bottom reader stayed at the bottom (low a)")
+        self.assertTrue(d["step"]["settled"], "the box settled after the note step (pass: %r)" % d["step"]["pass"]); self.assertTrue(d["step"]["atBottom"], "the note step grew or kept the box: the at-bottom reader stayed at the bottom (low a), read settled")
         self.assertEqual([b["label"] for b in d["back"]["buttons"]], ["Approve", "Deny"], "Back returns to the two actions"); self.assertEqual(d["back"]["note"], "none")
         self.assertTrue(all(b["disabled"] for b in d["latched"]["buttons"]), "latched on the decision (read with the request held at the socket): %r" % d["latched"]["buttons"])
         self.assertEqual(d["held"], 1, "exactly one request was held and released")
