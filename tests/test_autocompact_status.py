@@ -80,20 +80,32 @@ class StreamBracket(unittest.TestCase):
         self._feed(_status("compacting"))
         self.assertEqual((self.s._compacting, len(self.pokes)), (True, 1), "a repeated frame changes nothing and pokes nothing")
 
-    def test_the_end_is_the_result_field_never_a_bare_null(self):
+    def test_the_end_is_any_null_without_a_permission_mode(self):
+        """The CLI 2.1.257 bundle, read by grep, ends a compaction with a null status in three shapes: carrying the result
+        after a compaction that ran; bare after a PreCompact hook blocked it (the "compacting" status comes before the
+        hooks run, and no boundary follows); bare after the reactive compaction of a too-long prompt ended. Its two
+        permission-mode emitters both carry permissionMode and never a compaction field, and "requesting" marks each
+        stream request. So the rule (round two of the review, which found the result-keyed clear leaving a hook-blocked
+        compaction's bracket open for the rest of the turn, parking the drain): a null without permissionMode clears, a
+        null with permissionMode never touches the bracket."""
         self._feed(_status("compacting"))
         self._feed(_status("requesting"))                        # the request start the CLI emits at each stream request
         self.assertIs(self.be.compacting(SID), True, "requesting is not a compaction's edge")
-        self._feed(_status(None, permissionMode="default"))      # the CLI's bare null: a permission-mode change
-        self.assertIs(self.be.compacting(SID), True, "a bare null status is a mode change, not the compaction's end")
+        self._feed(_status(None, permissionMode="default"))      # the CLI's permission-mode change: a null WITH the mode
+        self.assertIs(self.be.compacting(SID), True, "a null carrying permissionMode is a mode change, not the compaction's end")
         self.assertEqual(len(self.pokes), 1)
         self._feed(_status(None, compact_result={"trigger": "auto", "preTokens": 180000}))
-        self.assertIs(self.be.compacting(SID), False, "the null status carrying the compaction's result closes the bracket")
+        self.assertIs(self.be.compacting(SID), False, "the null carrying the compaction's result closes the bracket")
         self.assertEqual(len(self.pokes), 2, "and pokes once more")
         self._feed(_status(None, compact_result={"trigger": "auto"}))
         self.assertEqual(len(self.pokes), 2, "closing a closed bracket pokes nothing")
         self._feed(_status("compacting")); self._feed(_status(None, compact_error="context too small"))
         self.assertIs(self.be.compacting(SID), False, "a compaction that failed ends too")
+        self._feed(_status("compacting")); self._feed(_status(None))
+        self.assertIs(self.be.compacting(SID), False, "a hook-blocked compaction ends with a BARE null and no boundary: cleared")
+        self._feed(_status("compacting")); self._feed(_status(None, uuid="11111111-2222-3333-4444-eeeeeeeeee01", session_id=SID))
+        self.assertIs(self.be.compacting(SID), False, "the reactive path's bare null (identity fields only) clears too")
+        self.assertEqual(len(self.pokes), 8, "each edge poked once: four opens, four closes")
 
     def test_the_boundary_still_clears_and_a_manual_compact_is_unchanged(self):
         self._feed(_status("compacting"))
@@ -107,6 +119,10 @@ class StreamBracket(unittest.TestCase):
         self.assertEqual((self.be.compacting(SID), len(self.pokes)), (True, 0), "already open: the stream's frame adds nothing")
         self._feed(_status(None, permissionMode="default"))
         self.assertIs(self.be.compacting(SID), True, "a mode change mid-compaction leaves the manual bracket standing")
+        self._feed(_status(None, permissionMode="default", compact_result={"trigger": "manual"}))
+        self.assertIs(self.be.compacting(SID), False, "a null carrying a compaction field is a compaction's end even beside a mode "
+                      "(no bundle emits the pair today; the mode emitters carry the mode alone)")
+        self.s._compacting = True
         self._feed_boundary(_Sys("compact_boundary"))
         self.assertIs(self.be.compacting(SID), False)
 

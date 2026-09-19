@@ -8127,18 +8127,24 @@ class SdkSession:
             # The CLI's own compaction bracket (the user 2026-09-19: a session at its context ceiling sat "unresponsive"
             # while it compacted on its own; no chip, no teal, no overlay card, because _compacting was set only when romp
             # delivered a /compact). The CLI 2.1.257 stream emits {"subtype": "status", "status": "compacting"} when a
-            # compaction starts, automatic or manual, and {"status": null, "compact_result": …} (or "compact_error")
-            # when it ends; it also emits "requesting" at each request start and a bare {"status": null,
-            # "permissionMode": …} on a permission-mode change, neither of which is a compaction's edge, so the clear
-            # keys on the result fields, never on the null alone. Every surface reads the one bracket through
-            # compacting(sid), so the poke flips them all at once, as the init branch does for the model.
+            # compaction starts, automatic or manual, and a null status when it ends: with compact_result or
+            # compact_error after a compaction that ran, and BARE after one that did not (a PreCompact hook blocked it,
+            # or the reactive compaction of a too-long prompt ended), with no boundary following either. It also emits
+            # "requesting" at each request start, and a null status carrying permissionMode on a permission-mode change,
+            # which is not a compaction's edge (round two of 1904's review: a clear keyed on the result fields left the
+            # bracket open after a hook-blocked compaction, and an open bracket parks the drain and refuses the rewind for
+            # the rest of the turn). So: a null WITHOUT permissionMode clears, whatever else it carries; a null WITH
+            # permissionMode and no compaction field never touches the bracket (the bundle's mode emitters carry the
+            # mode alone and its compaction emitters never carry the mode; a frame carrying both, which no bundle emits
+            # today, reads as a compaction's end). Every surface reads the one bracket through compacting(sid), so the
+            # poke flips them all at once, as the init branch does for the model.
             d = msg.data if isinstance(getattr(msg, "data", None), dict) else {}
             status = d.get("status")
             if status == "compacting":
                 if not self._compacting:
                     self._compacting = True
                     self.backend._poke()
-            elif status is None and ("compact_result" in d or "compact_error" in d):
+            elif status is None and ("permissionMode" not in d or "compact_result" in d or "compact_error" in d):
                 if self._compacting:
                     self._compacting = False   # the compaction's end on the stream; the boundary and the result clear it too
                     self.backend._poke()
