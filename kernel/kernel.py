@@ -67540,6 +67540,10 @@ class Handler(BaseHTTPRequestHandler):
             # whole session (_send_chat's full path fires when echat has no entry for the sid) and the
             # delta stream re-bases from there. Per-CLIENT, so one stale pane never re-sends for the rest.
             sid = str(msg["id"])
+            # Answer EVERY needFull: the page bounds a REFUSED-frame loop itself (render.ts refusedFrameLatch stops after
+            # the second identical refusal), so the kernel must not dedup here. A kernel dedup dropped a GENUINE second gap
+            # ask inside its window and, with the page's awaitingFull still set, the tab then discarded every later delta
+            # and never re-asked until a reconnect (round two MEDIUM). A legit repeat gets the frame again.
             _client_reset_chat_sid(client, sid)               # …and drop the dedup slot, so the full send lands
             self._push_one(client)                            # repair NOW, not on the next 0.5-3s tick
             return

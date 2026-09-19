@@ -49,7 +49,7 @@ test("a below-the-head delta is still ignored quietly (not a desync)", () => {
 test("the kernel handles needFull by forgetting what that client holds", () => {
   assert.ok(KERNEL.includes('msg.get("type") == "needFull"'), "the kernel must handle the frame");
   const i = KERNEL.indexOf('msg.get("type") == "needFull"');
-  const body = KERNEL.slice(i, i + 1200);
+  const body = KERNEL.slice(i, i + 2000);
   // the two pops live in _client_reset_chat_sid since 2026-09-04 (they run under the client's slot lock, so
   // the pusher's _send_chat lands whole before or after them) — pin the handler's call AND the helper's body
   assert.ok(body.includes("_client_reset_chat_sid(client, sid)"), "the handler forgets through the locked helper");

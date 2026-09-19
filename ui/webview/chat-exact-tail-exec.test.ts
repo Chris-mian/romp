@@ -53,7 +53,8 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const renderBgTasks = () => { H.bgRenders++; };
     const awaitChanged = (_sid) => { H.bgRenders++; };   // 2026-09-10: the tail calls this (box + a viewer's header); it counts as the box render
     const schedulePrebuild = () => { H.prebuilds++; };
-    const regionsAbsorbTail = () => {};                  // the tail run's regions follow the events (T386 stage 2); this slice holds no regions
+    const regionsAbsorbTail = () => true;                // the tail run's regions follow the events (T386 stage 2); returns whether it could (a short store refuses); this slice holds no regions, so always true
+    const clearRefusedLatch = () => {};                  // a delta applied clears the full-frame refusal latch (round two); no latch in this slice
     const indexOfUuid = HOOKS.indexOfUuid, keyOf = HOOKS.keyOf;   // the proto-2 arm (afterUuid): chat-window's real helpers, handed in by the world
   `;
   const epilogue = `

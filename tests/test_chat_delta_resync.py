@@ -123,7 +123,7 @@ def test_needfull_handler_is_wired_in_the_kernel():
     src = inspect.getsource(km)
     i = src.find('msg.get("type") == "needFull"')
     assert i > 0, "the kernel must handle the client's needFull resync request"
-    body = src[i:i + 1200]
+    body = src[i:i + 2000]
     if "_client_reset_chat_sid(client, sid)" in body:     # the pops moved under the client's slot lock (2026-09-04):
         j = src.find("def _client_reset_chat_sid")        # pin the helper the handler calls
         assert j > 0

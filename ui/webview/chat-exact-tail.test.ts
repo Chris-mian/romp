@@ -38,8 +38,8 @@ test("a full frame for a held session and a wholesale events replacement rebuild
   const up = RENDER.slice(RENDER.indexOf("function upsert(msg: any) {"), RENDER.indexOf("function update(msg: any) {"));
   // `!kept`: a frame that carried no events for a session with content keeps the resident events (T249b,
   // frame-merge.ts) — nothing was replaced, so a status-shaped frame leaves the view as it is
-  assert.match(up, /\} else if \(existed && !kept\) \{[\s\S]{0,900}?const v = views\.get\(msg\.id\);\s*\n\s*if \(v\) v\.stale = true;\s*\n\s*\}/);
-  assert.ok(up.indexOf("const kept = keepResidentEvents(") < up.indexOf("} else if (existed && !kept) {"), "the keep decision precedes the stale mark");
+  assert.match(up, /\} else if \(existed && !keepResident\) \{[\s\S]{0,900}?const v = views\.get\(msg\.id\);\s*\n\s*if \(v\) v\.stale = true;\s*\n\s*\}/);
+  assert.ok(up.indexOf("const kept = keepResidentEvents(") < up.indexOf("} else if (existed && !keepResident) {"), "the keep decision precedes the stale mark");
   const upd = RENDER.slice(RENDER.indexOf("function update(msg: any) {"), RENDER.indexOf("function update(msg: any) {") + 1200);
   assert.match(upd, /if \(msg\.events\) \{ const v0 = views\.get\(msg\.id\); if \(v0\) v0\.stale = true; \}/);
 });
