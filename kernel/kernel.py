@@ -395,7 +395,10 @@ class _PerfStats:
                                    cycle_ms_p50 / cycle_ms_p90 / cycle_ms_ring_max / ring_n from a
                                    ring of the last RING cycle durations; sends (every client payload);
                                    idle_cycles / idle_ms_sum / idle_cpu_ms_sum (cycles that set no wake,
-                                   sent no payload and saved no store: what a longer wait would skip)
+                                   sent no payload and saved no store: what a longer wait would skip);
+                                   chatFullWhy (every proto-2 full session frame by the reason the sender
+                                   had for it, _chat_full_reason: a recurrence meter for a base the next
+                                   push could not map, 2026-09-19)
       stages_ms                    jobs: the cycle's tick jobs outside _push_all; push: _push_all as
                                    the cycle calls it; push.chat (the tab strip, the build_session
                                    loop and the chat sends), push.feed (the view signature,
@@ -502,6 +505,10 @@ class _PerfStats:
             # a fresh client's full push on its handler thread (2026-09-14): the browser's own first draw after a reload or a
             # restart, per app; the pusher's cycles never see it, so the restart's logo phase had no number before this
             self.connect_push_stats = {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0, "byApp": {}}
+            # the proto-2 full session frames by the reason the sender had (2026-09-19), copied into the snapshot's pusher as
+            # chatFullWhy: its own attribute, since snapshot()'s dict(self.pusher) is a shallow copy that would share a nested
+            # map with every reader; see chat_full_why
+            self.chat_full_why_stats = {}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -600,6 +607,19 @@ class _PerfStats:
             a["count"] += 1; a["ms_sum"] += ms; a["ms_last"] = ms
             if ms > a["ms_max"]:
                 a["ms_max"] = ms
+
+    def chat_full_why(self, reason):
+        """One proto-2 full session frame that WENT, counted by the reason the sender had for it (_chat_full_reason, 2026-09-19;
+        the sender counts after _send_client says the frame left, so a deduped frame is not one here, as under `sends`). The
+        steady state sends a caught-up client deltas only, so this map is the recurrence meter for the transient-key anchor
+        defect (a non-zero lastGone:<family>) and the census of the other producers (noBase, baseGone, changeAt0, ...).
+        Under the lock: _push_session_now sends on handler and backend threads concurrently with the pusher's cycle. Capped
+        at SLOTS labels the way the sends map is, the rest under "other", so no label family can grow it."""
+        with self.lock:
+            d = self.chat_full_why_stats
+            if reason not in d and len(d) >= self.SLOTS:
+                reason = "other"
+            d[reason] = d.get(reason, 0) + 1
 
     def cycle_failed(self):
         """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
@@ -1032,6 +1052,7 @@ class _PerfStats:
             pusher = dict(self.pusher)
             pusher["connectPush"] = {k: (dict(v) if k != "byApp" else {a: dict(row) for a, row in v.items()}) if isinstance(v, dict) else v
                                      for k, v in self.connect_push_stats.items()}
+            pusher["chatFullWhy"] = dict(self.chat_full_why_stats)   # the proto-2 full frames by reason (2026-09-19): a copy, its own map
             pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
             sr = list(self.stage_ring) if self.stage_ring is not None else []                           #  first cycle's split
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
@@ -32780,6 +32801,31 @@ def _branch_marker(sid, events):
 
 
 _OVERLAY_KINDS = frozenset(("todo", "compacting", "clearing", "reconnecting", "retrying", "queued", "apiError"))   # the live overlay cards
+# The kernel's TRANSIENT live-tail keys (2026-09-19): each names an event that a durable record or note under a DIFFERENT key
+# replaces the moment it lands or retires, so the key is in no later built list. The SDK backend's input echo is "echo:<hex>"
+# (SdkBackend.send mints it, or takes the client's id in that same form, admitted by _CLIENT_QID_RE through _wire_qid;
+# SdkBackend._reseed_echoes keeps it across a restart, or re-mints it in the same form for a mirror entry that carried no uuid);
+# the Codex backend's echo is "echo-<hex>" (CodexBackend.send); the /model, /effort and /auth acknowledgement chip is "cmd:<t>:<name>"
+# (_ack_cmd_chip), retired by prune_live's stale_cmd or by text, after which build_session's durable cmdGesture note
+# "cmdg:<t>:<n>" takes its slot. A proto-2 base whose `last` was one of these could not be mapped by the next push (the delta
+# branch needs both edges in the list), so the pusher sent a whole session frame to every caught-up client on every send
+# into an idle session, a nudge, a postal delivery and a manager dispatch included; measured on a serving kernel 2026-09-18:
+# 1022 full chat frames, 644 MB, against 70,138 deltas, 581 MB, in 20 h. _last_anchor skips them the way it skips the
+# overlay cards, so they ride the suffix of the deltas after them. The client's twin is send-pending.ts stableUuid, which
+# excludes isKernelEchoUuid and OVERLAY_KINDS from the anchors a send may take; its echo rule names "echo:" alone, so a Codex
+# echo is never hidden behind the sender's bubble there (a client sibling's to close). A prefix rule, not a stamp on the
+# event, so a fifth live-tail key minted outside the tuple would re-open the defect: tests/test_send_pending_overlay_kinds.py
+# pins the four mint sites (the SDK send, the boot reseed, the chip, the Codex echo) and the client-id gate to the tuple, and a
+# full sent for a vanished key is counted on /perf under
+# pusher.chatFullWhy["lastGone:<family>"], where a recurrence reads as a non-zero label. NOT folded into _OVERLAY_KINDS: that
+# is a list of KINDS, twinned with the client's and pinned equal; these are key prefixes, and the events keep their wire shape.
+_TRANSIENT_KEY_PREFIXES = ("echo:", "echo-", "cmd:")
+
+
+def _transient_key(key):
+    """Whether `key` (an _event_key: a str, or None for a uuid-less hand-built event) is one of the kernel's transient
+    live-tail keys (_TRANSIENT_KEY_PREFIXES, 2026-09-19); a `uuid#n` key of one matches by its prefix too."""
+    return isinstance(key, str) and key.startswith(_TRANSIENT_KEY_PREFIXES)
 
 
 def _event_key(ev):
@@ -47723,6 +47769,29 @@ def _note_history_reply(client, sid, mtype, reply, nbytes, now=None, sent=True):
         pass
 
 
+def _note_chat_full(client, sid, reason, change_from, total, first_held, last_held, now=None):
+    """One client-diag row per proto-2 FULL session frame that LEFT for a client that HOLDS a base for the session
+    (2026-09-19; called once _send_client has returned True, so a frame deduped against the client's last files nothing).
+    The pusher's steady state owes such a client deltas only, and the page treats a full for a session it holds as a
+    reconnect repair (a whole-window rebuild, the reader's place re-derived); the kernel filed nothing for it, so the 1022
+    fulls a serving kernel counted in 20 h against 70,138 deltas could not be told apart by cause from the serving side
+    (the transient-key anchor, a fork, a targeted push), only from the page's own slow-frame rows. The row names the client
+    (cid, kind), the session, the reason _chat_full_reason gave, the change index and the list's length, and which base
+    edges the list still held. Numbers and identifiers only: no event text, no names. Diagnostic only; the file's own
+    failure is swallowed, as _note_history_reply's is. Called under the client's slot lock (all of _send_chat_proto2 runs
+    inside its callers' `with _client_lock(c)`), unlike _note_history_reply, which its handler calls after its lock block:
+    safe, since _client_diag_append takes only its own leaf lock and takes no other inside it, so the order client lock
+    then diag lock has no reverse anywhere."""
+    try:
+        now = time.time() if now is None else now
+        data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid), "reason": str(reason),
+                "changeFrom": int(change_from), "total": int(total), "firstHeld": bool(first_held), "lastHeld": bool(last_held)}
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "chatFull",
+                                                                        "data": data}) + "\n")
+    except Exception:
+        pass
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -49302,7 +49371,12 @@ def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
     whole frame) or "delta" for a caller whose frame is a suffix or a diff (_send_chat's chatTail).
 
     `pre` may also be a _LazyWire (the feed, the bars): its bytes are produced only if the frame GOES — a
-    deduped frame costs its size() and nothing else."""
+    deduped frame costs its size() and nothing else.
+
+    Returns whether the frame WENT (2026-09-19): True once _client_send accepted it, False when it was deduped against
+    the client's last frame or the socket refused it. _send_chat_proto2 reads it to count and file a whole chat frame
+    only when one left: a meter that fired on the decision counted, and filed a client-diag row for, fulls the client
+    never received (the review of the anchor fix). Every other caller ignores it."""
     if pre is None:
         s = json.dumps(msg)
     elif isinstance(pre, str):
@@ -49328,14 +49402,14 @@ def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
             n = len(s) if s is not None else pre.size()   # deduped: the length only; a lazy frame stays unserialized
             _perf("send", slot=_perf_slot(key), bytes=n, deduped=1)
             _PERF_STATS.send(key, "deduped", n)
-            return
+            return False
         if s is None:
             s = pre.text()                            # the frame goes: the build's one whole encode (the cell keeps it) —
             #                                           BEFORE the slot is written, so a raise here leaves it for a retry
         c["sent"][key] = (sig, now)
         _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=0)
         _PERF_STATS.send(key, kind, len(s))
-        _client_send(c, s, key)                       # enqueue only (never blocks): the lock is held for microseconds,
+        return _client_send(c, s, key)                # enqueue only (never blocks): the lock is held for microseconds,
         #                                               or for the one whole encode when a lazy frame goes
 
 
@@ -49909,13 +49983,68 @@ def _snap_turn_end(tix, q):
 
 
 def _last_anchor(evs):
-    """The uuid a proto-2 client's base ends on: the last TRANSCRIPT event, never a trailing overlay card (a todo, a
-    queued or api-error notice comes and goes between builds; anchoring on one left the next push unable to map the
-    base and sent a full frame). The overlay cards ride every delta's suffix instead."""
+    """The uuid a proto-2 client's base ends on: the last event that is neither a trailing overlay card (a todo, a queued
+    or api-error notice comes and goes between builds) nor one of the kernel's transient live-tail keys (an input echo, the
+    command chip: _transient_key, 2026-09-19). Anchoring on either left the next push unable to map the base and sent a
+    full frame; both ride every later delta's suffix instead, so the landing that replaces an echo with the CLI's record is
+    a chatTail after the record before the echo, the road proto-1 clients take. Known, accepted residue: a list of nothing
+    but such events (a transcript-less session whose only event is its first echo) still anchors on its last event and
+    sends one full at that first landing, once per session creation; and the base's FIRST edge can still sit on a transient
+    key when the tail-run cut lands on a placed dropped echo, which takes the existing road for a first edge the list no
+    longer holds (the list's first event is inside what the client holds)."""
     for e in reversed(evs):
-        if e.get("kind") not in _OVERLAY_KINDS:
-            return _event_key(e)
+        if e.get("kind") in _OVERLAY_KINDS or _transient_key(_event_key(e)):
+            continue
+        return _event_key(e)
     return _event_key(evs[-1]) if evs else None
+
+
+def _gone_key_label(key):
+    """The bounded label under which a proto-2 full frame is counted when the held base's last edge is a key the new list no
+    longer carries (the `lastGone:<label>` reason, 2026-09-19): a transient key names its prefix without the colon (echo,
+    echo-, cmd), so a recurrence of the anchor defect names the family that caused it; another colon-keyed key names its
+    family too (the kernel's synthesized notes: cmdg, orphan, retried, gaveup, effort, branch, clear, system, ev; a bounded
+    set); a bare overlay kind is `overlay`; anything else, a record uuid above all, is `record`, so a rewind or a fork that
+    cuts the held last never mints a label per uuid (the map is capped besides, _PerfStats.chat_full_why). A `uuid#n` key
+    is read by its uuid; an empty key is `none`."""
+    k = str(key or "").split("#", 1)[0]
+    if not k:
+        return "none"
+    for p in _TRANSIENT_KEY_PREFIXES:
+        if k.startswith(p):
+            return p if p.endswith("-") else p[:-1]
+    if k in _OVERLAY_KINDS:
+        return "overlay"
+    if ":" in k:
+        return k.split(":", 1)[0]
+    return "record"
+
+
+def _chat_full_reason(pc, pf, pl, change_from, total):
+    """The reason a proto-2 send fell through to the full frame, from what the sender saw (pusher.chatFullWhy, 2026-09-19):
+    `noBase` (no base held: a first send, a ready or needFull reset), `empty` (a list with no events), `baseGone` (neither
+    edge in the list: a fork, a rewind, a /clear), `lastGone:<label>` (the first edge held, the last not: the shape the
+    transient-key anchor produced, labeled by _gone_key_label), `inverted` (the last edge before the first),
+    `changeAt0` (a change at the list's first event against a held base: _push_session_now's targeted push and a genuine
+    first-event change, not told apart without a caller's mark), `changeBelowFirst` (a change before the held first edge).
+    `pf` and `pl` are the edges' indexes as the delta branch read them (a first edge before the floor'd list is 0)."""
+    if not isinstance(pc, dict):
+        return "noBase"
+    if not total:
+        return "empty"
+    if pf is None and pl is None:
+        return "baseGone"
+    if pl is None:
+        return "lastGone:" + _gone_key_label(pc.get("last"))
+    if pf is None:
+        pf = 0
+    if pf > pl:
+        return "inverted"
+    if change_from <= 0:
+        return "changeAt0"
+    if change_from <= pf:
+        return "changeBelowFirst"
+    return "other"                                    # no known shape reaches the full frame past these: counted, never raised
 
 
 def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
@@ -49925,13 +50054,20 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     change inside or right after what it holds is a chatTail {afterUuid, events}: it truncates after afterUuid and
     appends; a change before its first event, a base the new list no longer holds (a fork, a rewind), or no base is a
     full session frame carrying the list's tail with firstUuid/lastUuid, headKnown, headTotal and tailLo (the turn the
-    tail run begins at, so the page can size its head gap)."""
+    tail run begins at, so the page can size its head gap). Every full that LEAVES is counted by its reason under /perf
+    `pusher.chatFullWhy`, and one that leaves for a client that HOLDS a base files one `chatFull` client-diag row
+    (2026-09-19, _chat_full_reason and _note_chat_full, once _send_client says the frame went; a frame it deduped is
+    neither): the steady state owes such a client deltas only, and the page treats a full for a session it holds as a
+    reconnect repair, a whole-window rebuild."""
     sid = m["id"]
     evs = m.get("events") or []
     total = len(evs)
+    pf = pl = None
+    held_first = False
     if isinstance(pc, dict) and total:
         pos = _uuid_positions(evs, sid)
         pf, pl = pos.get(pc.get("first")), pos.get(pc.get("last"))
+        held_first = pf is not None
         if pf is None and pl is not None:
             pf = 0                                        # the client's run begins before the floor'd list (pages it scrolled
         #                                                    into): the list's first event is inside what it holds
@@ -49976,7 +50112,16 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     m_send["lastUuid"] = _event_key(evs[-1]) if total else None
     m_send["tailLo"] = 0 if head_known else tail_lo   # the tail run's first turn (T386 stage 2), the turn the frame now begins with
     m_send["pageTurns"] = PAGE_TURNS                  # the page the gaps ask by (chat-regions.ts pagesToAsk)
-    _send_client(c, ("chat", sid), m_send)
+    # The full frame, counted by reason and filed when the client held a base it was owed deltas on: AFTER the send, and only
+    # when the frame LEFT (2026-09-19, the review of the anchor fix). _send_client dedupes a frame the client already holds byte
+    # for byte within _DEDUP_REPOST_S (a targeted push repeated on one build, the connect handshake's second push) and hands
+    # the client nothing; a meter that fired on the decision counted those, filed a client-diag row for a frame nobody received,
+    # and its total outran sends.full, which never counts a deduped frame either.
+    if _send_client(c, ("chat", sid), m_send):
+        reason = _chat_full_reason(pc, pf, pl, change_from, total)
+        _PERF_STATS.chat_full_why(reason)
+        if isinstance(pc, dict):
+            _note_chat_full(c, sid, reason, change_from, total, held_first, pl is not None)
     st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
     return ms
 

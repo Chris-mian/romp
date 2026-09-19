@@ -1959,7 +1959,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (cycles that set no wake, sent no payload and saved no goal store: what a
   longer wait between cycles would have skipped; a conservative undercount,
   since a wake set by another thread or a periodic repost of an unchanged
-  frame marks a cycle busy).
+  frame marks a cycle busy), and `chatFullWhy` (every whole session frame the
+  uuid-anchored chat wire sent, counted once the frame has left, so a frame the
+  per-client dedup swallowed is no more one here than under `sends`; by the
+  reason the sender had for it: `noBase`
+  for a first send or a reset, `baseGone` for a fork or a rewind,
+  `lastGone:<family>` for a held last edge the next list no longer carried,
+  `changeAt0` for a change at the list's first event, the targeted push's
+  shape, `changeBelowFirst`, `inverted`, `empty`; a caught-up client is owed
+  deltas, so `lastGone` is the recurrence meter for a base anchored on a key
+  that vanished, an input echo's or the command chip's).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
   split and the newest cycles' splits, each `{s, t, stages, gc}` (`gc` is the
   cycle's own collections, described under `gc` above) with, per stage,
@@ -2920,7 +2929,11 @@ announces `chatProto2` in its `caps`:
   no row on screen re-windows once around the named point;
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
-  reader in older history; a reconnect's `ready` starts a fresh base. A run whose
+  reader in older history; a reconnect's `ready` starts a fresh base. The base's
+  `last` skips the live overlay cards and the kernel's transient keys (an input
+  echo, the command chip), which ride the suffix of the deltas after them like
+  the overlays: the landing that replaces an echo with its record is a delta
+  after the record before it, never a full frame. A run whose
   edges left the transcript (a `/clear`, a fork, a rewind) gets a full frame; a
   `missing` reply on a held key is a gap the page answers with `needFull`. A
   reply that reaches the head carries the head cards first.
@@ -3242,6 +3255,14 @@ frames it received is measured in the panes themselves, by
   cannot be written is said on stderr once, since the reading rule holds only while
   writes succeed. A planned per-app split of the connect push (perf work) will read
   the same `kind`.
+- The kernel files one `chatFull` row (surface `kernel`) per whole session frame
+  the uuid-anchored chat wire sends to a client that already holds a base for the
+  session, filed once the frame has left (a frame the per-client dedup swallowed
+  files nothing): such a client is owed deltas, and the page treats a full for a
+  held session as a reconnect repair. The row carries the client's `cid` and `kind`, the
+  session, the `reason` (the `chatFullWhy` label under `/perf`), the change index,
+  the list's length, and which base edges the list still held; a first send files
+  nothing.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about
