@@ -592,6 +592,52 @@ nothing.
   `romp board list` shows it, and `romp board remove` takes it away once its card is dismissed. A
   confirmation prompt would break every scripted producer.
 
+## 8. The board view switch (phase four, 2026-09-18)
+
+**The ask.** A card posted onto a board of the user's (`romp card -b figures`) shows today on the feed under the feed's
+default column with its board named beside the producer. Phase four gives every board its own view inside the feed pane:
+one board at a time, chosen from the View menu, so a data board's cards sit under THEIR categories, sorted by THEIR sort,
+and the feed itself renders byte-identically when the switch is on the feed (plans/card-boards.md, section 4 road 1 and
+section 6 phase 4).
+
+**The switch.** The View menu gains a Board group: one `menuitemradio` row per definition the frame carries (the feed
+first, then the data boards in id order), the current one checked; the pick is the feed pane's own view state
+(`FeedViewState.board`, prune-exempt like `cols` and `order`, absent or "feed" meaning the feed) and survives a reload.
+A board created by `romp card -b` appears in the menu on the next frame with no reload (the frame's `boards` field);
+a pick that names a board the frame no longer carries (removed, or a remote host gone) falls back to the feed and says
+so in the disclosure line, never a blank pane. The pane's header row stays empty and no strip of board tabs appears:
+the board's name lives in the View menu's radio row (the many-sessions rule). A `?board=<id>` query on the feed page
+selects that definition at load and hides the Board row, the hook the docking kit's pane-per-board mounts on; the
+kernel's page passes the query through untouched (no new route, no inline JS).
+
+**The renderer under a board.** The active definition replaces the feed constant at the sites section 4 names: the
+column list, titles and chip classes come from `board.categories` (a data board's columns take the generic class
+`col-<id>` and the chip class of their `chip`); `askColumn` maps a card's category through the ACTIVE board's table; the
+bucket sort reads `board.sort` and `board.order`; grouped mode runs only when `board.groupBy === "session"` and the
+preference is on (the notes board groups nothing: no session runs, no combobox); the folds key on category id as today.
+Only the cards whose `board` is the active one render; a card whose board names no known definition renders on the
+feed under the default category with an "unknown board" chip, the loud fallback section 4 names. The goal kind's roads
+(the title jump, the tree modal, the follow-up composer, the turn groups, the focused-session section) stay the feed's:
+a board without the goal kind never shows them. The bell, the phone and the badge are the kernel's and read the card's
+own board already (phase two and the 1861 rule): the switch changes what is SHOWN, never what needs the user.
+
+**The notes board's shape (romp_cards' to settle).** `romp board define notes` with three categories `new`, `kept`
+and `done` (chips neutral, working, completed), `defaultCategory: "new"`, `needsYou: "new"`, `notify: ["new"]`, a rule
+filing a needs-you post under `new`, newest first, no grouping. The owner-less cards keep their home on the feed (the
+Notes run at the top) until the user files them on a board with `-b`; the reserved owner key and the board id `notes`
+are different things and may coexist.
+
+**Tests, red first at the base.** The served lab (a hermetic kernel): `romp card -b notes -c new -t ...` against a
+kernel with no such board makes the board exist on the next frame with the defaults; `romp board define notes --json`
+gives it the shape above; the View menu's Board row lists it; the switch shows the card under `new` and hides the feed's
+cards; the pick survives a reload; the bell fires for `new` and the badge counts a needs-you card there while the switch
+is on the feed; `?board=notes` selects it at load with the Board row hidden; a define dropping `new` while a card stands
+there is refused naming it. The harness (`feed-render-incremental.test.ts`): the feed byte-identical under the switch on
+the feed (phase one's frames again, the same elements); a frame whose card names an unknown board renders the fallback
+chip; the Board row's radio vocabulary (`menuitemradio`, one checked) and the view-state round trip. Pins: the section-4
+census test (`board-def.test.ts`, "feed.ts reads the definition at the section-4 sites and nowhere else") re-aimed at
+the active board.
+
 ## Alternatives considered
 
 - **A client-side rule per category** (the renderer buckets by a predicate over the card). Rejected
