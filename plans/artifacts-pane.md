@@ -114,6 +114,13 @@ so today's toggle control shows and hides it with no new mechanism:
   (`ui/webview/settings.ts`: only the literal `true` shows; the gear's Panes section gains the row), read by the landing
   the way `filesCtl()` is: off, the rail button and the tab are hidden, an open pane closes on the same apply, and
   `togglePane('artifacts')` refuses. The kernel's own `/version` says nothing about it; the flag is per browser.
+- **The shipped naming pattern, exactly** (the timeline owner's word, 2026-09-19, for the registry that folds a pane in by
+  key and the docking engine that keys panes by element id): the pane element `artifacts-pane`, the iframe `f-artifacts`
+  with `data-src`, the body class `po-artifacts`, the grow variable `--g-artifacts`, the `_PANE_ORDER` entry with its
+  `LBL` word; the pane-set broadcast carries the key from `_PANE_ORDER` for free. The docking engine
+  (`ui/webview/pane-dock.ts`, on only under the gear's docking switch) lists the four dashboard panes by name today, so
+  this pane shows, hides and orders through the shipped flex path and becomes a leaf of the docking tree only when the
+  registry PR reads the pane set from `_PANE_ORDER`; that is the registry's change, not this one's.
 - **Self-contained by protocol.** The page and the shell exchange only the pane protocol: inbound `{romp:'panes', on,
   avail}` (the shell's broadcast, so the pane knows whether the Files pane is on screen and whether its control
   exists) and outbound `{romp:'viewFile', ...}` (the existing relay). Its kernel traffic rides its own shim socket
