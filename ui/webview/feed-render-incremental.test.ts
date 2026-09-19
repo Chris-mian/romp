@@ -1336,7 +1336,7 @@ test("the View menu's Board rows show one board at a time: a data board's cards 
   assert.equal(colsRoot().dataset.board, "figures");
   assert.equal(body.querySelector("#col-asks-list"), null, "the feed's columns are gone"); assert.ok(body.querySelector("#col-new-list")); assert.ok(body.querySelector("#col-kept-list"));
   assert.deepEqual(body.querySelectorAll("#feed-cols .feed-col-name").map((h: any) => [h.textContent, h.className]),
-    [["New", "feed-col-name fcol-chip fcol-chip-neutral"], ["Kept", "feed-col-name fcol-chip fcol-chip-working"]], "the board's titles and chips, in its order");
+    [["New", "feed-col-name fcol-chip fcol-chip-neutral fcol-static"], ["Kept", "feed-col-name fcol-chip fcol-chip-working fcol-static"]], "the board's titles and chips, in its order; static (no drag) on a data board");
   assert.deepEqual((body.querySelector("#col-new-list") as any).children.map((c: any) => c.dataset.key), ["a:" + f3.itemId, "a:" + f1.itemId], "newest first: the board's sort, not the feed's preference");
   assert.equal(colOf(f2.itemId), "col-kept-list");
   assert.equal(card("g1"), null, "a feed card is not on the Figures board"); assert.equal(card(lost.itemId), null, "nor a card of an unknown board");
@@ -1360,6 +1360,54 @@ test("the View menu's Board rows show one board at a time: a data board's cards 
   assert.equal(colsRoot().dataset.board, "figures", "back on the next frame carrying it");
   // restore the feed for the tests below
   menu = openMenu(); pick(menu, "feed"); await settle(); assert.equal(colsRoot().dataset.board, "feed");
+  await dispatch(frame([g1, g2, g3]));
+});
+
+test("on a session-grouped data board with the focused section ON, the section stays the feed's (hidden), the board's cards reconcile and no render throws; a data board's fold is keyed per board and its chips wear no drag affordance", async () => {
+  // the 1886 read, HIGH: a data board with groupBy session took the grouping branch and handed focusedEntries buckets keyed by
+  // its categories while the section read the feed's three keys: a TypeError on every render, three empty columns after a
+  // reload. The section is the feed's (plans/card-boards.md section 4); a board opting in is phase five's. Medium 2: a fold on a
+  // data board is stored as <board>:<category>; medium 3: a data board's chip has no drag affordance (its order is its definition's).
+  const GRP = { id: "reviews", title: "Reviews", categories: [{ id: "open", title: "Open", chip: "blocked" }, { id: "done", title: "Done", chip: "completed" }],
+    defaultCategory: "open", rules: [], sort: { key: "t", dir: "desc" }, subSorts: [], groupBy: "session", order: [], notify: [], needsYou: "open", kinds: ["notice"] };
+  const r1 = { ...cardOf("notice:" + WEB + ":r1:1", WEB, "web", "#3366cc", "Review the retry policy", "needs_input", { live: false, tree: [], blocked: null, board: "reviews", category: "open",
+    notice: { producer: "cli", key: "r1", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } }), t: K0 - 20 };
+  const r2 = { ...cardOf("notice:" + API + ":r2:1", API, "api", "#cc6633", "Reviewed the schema", "completed", { live: false, tree: [], blocked: null, board: "reviews", category: "done",
+    notice: { producer: "cli", key: "r2", rev: 1, body: "", attachment: null, actions: [], expiresAt: null, dismissOnAction: false } }), t: K0 - 10 };
+  const setPrefs = (v: string) => { stores.local.set("romp:settings", v); win.dispatchEvent(Object.assign(new Event("storage"), { key: "romp:settings", newValue: v })); };
+  setPrefs(JSON.stringify({ grouped: true, newestFirst: false }));   // grouping on: the board's groupBy is what makes the runs
+  await dispatch(frame([g1, g2, r1, r2], { boards: { reviews: GRP } }));
+  // the focused section ON, the chat focused on web (the frame the kernel relays); the row by its place (the fourth view row), the same in every engine
+  await dispatch({ type: "activeChat", id: WEB });
+  const viewRows = (m: any) => m.querySelectorAll(".ctx-item").filter((r: any) => !r.classList.contains("ctx-board"));
+  let menu = openMenu(); const focusRow = viewRows(menu)[3]; assert.ok(focusRow, "the focused-session row");
+  focusRow.onclick(ev); await settle();
+  assert.ok(body.querySelector("#feed-focus"), "the section shows on the feed");
+  // pick the session-grouped board: the section hides, the board's cards reconcile under its columns with session headers, nothing throws
+  menu = openMenu(); pick(menu, "reviews"); await settle();
+  assert.equal(colsRoot().dataset.board, "reviews");
+  assert.equal(body.querySelector("#feed-focus"), null, "the focused section is the feed's: hidden on a data board");
+  assert.equal(colOf(r1.itemId), "col-open-list"); assert.equal(colOf(r2.itemId), "col-done-list", "the board's cards reconcile");
+  assert.ok(body.querySelectorAll("#feed-cols .feed-sess-head").length >= 2, "the board groups by session: a header per run");
+  await dispatch(frame([g1, g2, r1, r2], { boards: { reviews: GRP } }));   // a second frame: the render that used to throw
+  assert.equal(colOf(r1.itemId), "col-open-list", "still reconciled on the next frame");
+  // medium 3: a data board's chip is static, the feed's drags
+  const chips = body.querySelectorAll("#feed-cols .feed-col-name");
+  assert.ok(chips.every((c: any) => c.classList.contains("fcol-static") && !c.getAttribute("title")), "no drag affordance on a data board's chips");
+  // medium 2: fold the Open column: the fold is keyed reviews:open in the view state and the column wears col-collapsed
+  const fold = body.querySelector("#feed-cols .feed-col.col-open .fcol-fold") as any; assert.ok(fold, "the fold caret");
+  fold.dispatchEvent(new Event("click")); await settle();
+  assert.ok((body.querySelector("#feed-cols .feed-col.col-open") as any).classList.contains("col-collapsed"), "folded");
+  assert.deepEqual(JSON.parse(stores.local.get("romp:feedview")!).cols.filter((k: string) => k.includes(":")), ["reviews:open"], "the fold is the board's own key");
+  fold.dispatchEvent(new Event("click")); await settle();
+  assert.ok(!(body.querySelector("#feed-cols .feed-col.col-open") as any).classList.contains("col-collapsed"), "unfolded");
+  // back to the feed: the section returns, the feed's chips drag
+  menu = openMenu(); pick(menu, "feed"); await settle();
+  assert.ok(body.querySelector("#feed-focus"), "the section is back on the feed");
+  assert.ok(body.querySelectorAll("#feed-cols .feed-col-name").every((c: any) => c.getAttribute("title") === "drag to reorder"), "the feed's chips drag");
+  menu = openMenu(); viewRows(menu)[3].onclick(ev); await settle();
+  await dispatch({ type: "activeChat", id: null });
+  setPrefs(JSON.stringify({ grouped: false, newestFirst: false }));
   await dispatch(frame([g1, g2, g3]));
 });
 

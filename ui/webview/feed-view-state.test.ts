@@ -358,3 +358,11 @@ test("the board pick round-trips, an id outside the board grammar or naming the 
   assert.equal(capViewState({ ...s, asks: Array.from({ length: 5000 }, (_, i) => "a" + i) }, 10).board, "figures", "the cap never trims it");
   assert.match(FEED, /activeBoardId = st\.board;/, "the pane hydrates the pick"); assert.match(FEED, /focusFolded, board: activeBoardId \};/, "and writes it back");
 });
+
+test("a data board's column fold is keyed <board>:<category> and survives the round trip; junk and a bare data key are dropped; the order gate stays the feed's", () => {
+  const s = { ...emptyViewState(), cols: ["asks", "figures:kept", "Bad:Key", "kept", "figures:kept"], order: ["figures:new", "completed", "asks", "needsInput"] };
+  const back = parseViewState(serializeViewState(s));
+  assert.deepEqual(back.cols, ["asks", "figures:kept"], "the feed's key and the board-keyed fold, once each; junk and a bare category dropped");
+  assert.deepEqual(back.order, ["completed", "asks", "needsInput"], "the order admits the feed's three alone (a data board's order is phase five's)");
+  assert.equal(pruneViewState(s, new Set()).cols.length, 5, "prune-exempt as before");
+});

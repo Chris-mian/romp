@@ -1686,6 +1686,12 @@ function activeBoard(): Board {
   return FEED_BOARD;
 }
 const activeCols = (): readonly Column[] => feedColumns(activeBoard());
+/** The ACTIVE board's cards out of a list: the render pass and the hover-freeze hint read the same filter, so the hint counts
+ *  what is on screen and nothing else (a card naming an unknown board is the feed's, boardOf). */
+const onActiveBoard = (list: AskItem[]): AskItem[] => { const b = activeBoard(); return list.filter((a) => boardOf(a) === b); };
+/** A column fold's key in the view state: the feed's columns by their names (as always), a data board's as `<board>:<category>`
+ *  so a fold on one board never folds a same-named category on another (the 1886 read, medium 2). */
+const foldKey = (key: string): string => (activeBoard() === FEED_BOARD ? key : activeBoard().id + ":" + key);
 /** An order the user dragged applies only when it names every column of the ACTIVE board once (the feed's stored order
  *  means nothing on a data board's columns, and a board's order nothing on the feed). */
 const orderComplete = (o: readonly string[]): boolean => { const cols = activeCols(); return o.length === cols.length && cols.every((k) => o.includes(k)); };
@@ -4315,7 +4321,7 @@ function buildViewMenu(menu: HTMLElement): void {
 // Sync the four rows to the CURRENT prefs — labels, ✓s, the forced state — without rebuilding them.
 function paintViewMenu(menu: HTMLElement): void {
   const p = feedPrefs();
-  const rows = menu.querySelectorAll(".ctx-item:not(.ctx-board)");   // the four view rows; the Board radios below them paint at build (a pick closes the menu)
+  const rows = Array.from(menu.querySelectorAll(".ctx-item")).filter((r) => !r.classList.contains("ctx-board"));   // the four view rows; the Board radios below them paint at build (a pick closes the menu)
   if (rows.length !== 4) return;
   const set = (i: number, label: string, opts: { current: boolean; forced?: boolean; title: string }) => {
     const r = rows[i] as HTMLElement;
@@ -4626,7 +4632,7 @@ function applyColStack(): void {
     // section's blocks take their order from applyFocusLayout below (the board's, until the user drags THERE).
     const col = document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + key);
     if (!col) continue;
-    const folded = collapsedCols.has(key);
+    const folded = collapsedCols.has(foldKey(key));
     col.classList.toggle("col-collapsed", folded);
     if (custom) col.style.setProperty("--col-order", String(custom.indexOf(key) + 1));
     else col.style.removeProperty("--col-order");
@@ -4938,13 +4944,13 @@ function ensureCols(list: HTMLElement) {
       fold.setAttribute("aria-label", "Collapse " + label);
       fold.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        if (collapsedCols.has(key)) collapsedCols.delete(key); else collapsedCols.add(key);
+        if (collapsedCols.has(foldKey(key))) collapsedCols.delete(foldKey(key)); else collapsedCols.add(foldKey(key));
         applyColStack();
         persistViewState();
       });
       const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
-      name.title = "drag to reorder";
-      wireColDrag(name, col, key);            // the chip ITSELF drags (the user 2026-08-16) — the grab
+      if (board === FEED_BOARD) { name.title = "drag to reorder"; wireColDrag(name, col, key); }   // the chip ITSELF drags (the user 2026-08-16), the grab
+      else name.classList.add("fcol-static");   // a data board's columns keep their definition's order: no drag, no grab cursor, no title (a no-op affordance lies; per-board order is phase five's)
       //                                         cursor it wears in the stacked layout is the affordance
       const count = el("span", "feed-col-count"); count.id = "col-" + key + "-count";
       head.append(name, fold, count);         // caret RIGHT of the chip — the same side as the
@@ -5767,7 +5773,7 @@ function renderBody(list: HTMLElement) {
   // painter so the deferred-churn hint counts exactly what the user would see move (viewFiltered).
   // The ACTIVE board's cards alone (phase four): a card names its board; one naming an id this renderer does not know
   // is the feed's, under the feed's default category with its producer line saying so (boardLabelOf).
-  let shown = viewFiltered(asks).filter((a) => boardOf(a) === board);
+  let shown = onActiveBoard(viewFiltered(asks));
   // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId) — turnGroups, the rule the
   // jump-unfold reads too, so what renders as a group and what unfolds as one can never disagree (T263e).
   const byTurn = turnGroups(shown);
@@ -5789,7 +5795,7 @@ function renderBody(list: HTMLElement) {
   // THE FOCUSED SESSION's view of these buckets (T347), taken HERE, before grouping: the section shows one
   // session, so it carries no run headers, and a thread folded below must not empty it — the fold hides
   // cards behind a caret the section does not have, and a compact view never dead-ends (ui/CLAUDE.md).
-  const focusBuckets = showFocused && board.groupBy === "session" ? focusedEntries(buckets, focusedSid, entrySid) : null;   // a board without session runs has no focused section (phase four)
+  const focusBuckets = showFocused && board === FEED_BOARD ? focusedEntries(buckets, focusedSid, entrySid) : null;   // the focused section is the FEED's (the goal kind's road, plans/card-boards.md section 4); a board opting in is phase five's (the 1886 read, high: on a session-grouped data board the section read the feed's three keys and threw on every render)
   // GROUPED mode (the user 2026-07-13): within each column, cards gather by SESSION — session order = the
   // kernel's session-order list (the same order the chat tabs + timeline lanes hold; sessions the list
   // doesn't know keep their time order after it) — with a name+dot header entry opening each run. The sort
@@ -6266,7 +6272,7 @@ function paintFreezeBadges(): void {
     document.getElementById("freeze-selfnote")?.remove();
     return;
   }
-  const toItems = (list: AskItem[]) => viewFiltered(list).map((a) => ({ id: a.itemId, col: askColumn(a) as string, sid: a.sid }));
+  const toItems = (list: AskItem[]) => onActiveBoard(viewFiltered(list)).map((a) => ({ id: a.itemId, col: askColumn(a) as string, sid: a.sid }));   // the render pass's own board filter: the hint counts what is on screen (the 1886 read, medium 1)
   const d = freezeDiff(toItems(asks), toItems(payloadView(pendingFeedPayload)));
   const put = (host: Element | null, c: { add: number; del: number } | undefined) => {
     if (!host) return;

@@ -82,6 +82,17 @@ test("feed.ts reads the definition at the section-4 sites and nowhere else", () 
   assert.match(FEED, /const activeCols = \(\): readonly Column\[\] => feedColumns\(activeBoard\(\)\);/, "one read of the definition's column list");
   assert.doesNotMatch(FEED, /feedColumns\(FEED_BOARD\)/);
   assert.doesNotMatch(FEED, /FLY_COLS/, "the fly walks the active board's columns (phase four)");
+  // the census reaches every file that names the feed's columns (the 1886 read): the focused section (feed-focus.ts) stays the
+  // feed's and is gated on it, so its three literal keys are never asked of a data board's buckets; the view state's fold gate
+  // admits a data board's `<board>:<category>` keys beside the feed's three, and its order gate the feed's three alone
+  const FOCUS = read("ui", "webview", "feed-focus.ts"), VS = read("ui", "webview", "feed-view-state.ts");
+  assert.match(FEED, /const focusBuckets = showFocused && board === FEED_BOARD \? focusedEntries\(buckets, focusedSid, entrySid\) : null;/, "the section shows on the feed alone");
+  assert.match(FOCUS, /for \(const col of FEED_COLUMNS\) out\[col\] = buckets\[col\]/, "the section's entries read the feed's keys (feed-only by the gate above)");
+  assert.match(VS, /cols: foldKeys\(o\.cols\), order: col\(o\.order\)/, "folds admit a data board's keys; the order stays the feed's (phase five's for a data board)");
+  assert.match(FEED, /const foldKey = \(key: string\): string => \(activeBoard\(\) === FEED_BOARD \? key : activeBoard\(\)\.id \+ ":" \+ key\);/, "one fold-key helper");
+  assert.equal((FEED.match(/collapsedCols\.has\(foldKey\(key\)\)/g) || []).length, 2, "the fold click and the paint read it");
+  assert.match(FEED, /collapsedCols\.delete\(foldKey\(key\)\); else collapsedCols\.add\(foldKey\(key\)\);/, "and the click writes it");
+  assert.match(FEED, /if \(board === FEED_BOARD\) \{ name\.title = "drag to reorder"; wireColDrag\(name, col, key\); \}/, "the drag affordance is the feed's; a data board's chip is static");
   assert.doesNotMatch(FEED, /\[\["asks", "Working", "working"\]/, "the literal header table is gone from the renderer");
   assert.doesNotMatch(FEED, /for \(const key of \["asks", "needsInput", "completed"\]\)/, "no column loop spells the keys by hand");
   // what stays a literal in feed.ts on purpose (pinned there; asserted equal above): the two CSS default orders, the sort

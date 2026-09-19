@@ -84,7 +84,7 @@ test("#feed-focus sits directly before #feed-cols: head, empty line, the three c
     "the caret folds the section's block under its own state, persisted");
   // in render(): the pick is taken before grouping (a folded thread below must not empty the section), the
   // section is painted before the board's reconcile, and the board's own reconcile is what it always was
-  const pickAt = FEED.indexOf("const focusBuckets = showFocused && board.groupBy === \"session\" ? focusedEntries(buckets, focusedSid, entrySid) : null;");
+  const pickAt = FEED.indexOf("const focusBuckets = showFocused && board === FEED_BOARD ? focusedEntries(buckets, focusedSid, entrySid) : null;");
   const groupAt = FEED.indexOf("if (feedPrefs().grouped && board.groupBy === \"session\") {", pickAt);
   const callAt = FEED.indexOf("if (focusBuckets) renderFocusSection(list, focusBuckets, gate); else removeFocusSection();");
   const flipAt = FEED.indexOf("const flipFirst = needFlip ? captureCardRects(cols) : new Map<string, FlipState>();");

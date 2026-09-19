@@ -318,6 +318,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the chip drags in BOTH layouts (the user 2026-08-24, reversing the 2026-08-16 stacked-only
    exclusion): grab cursor as the affordance, the section lifted over its siblings while it follows. */
 .feed-col-head .fcol-chip { cursor: grab; touch-action: none; user-select: none; }
+.feed-col-head .fcol-chip.fcol-static { cursor: default; touch-action: auto; }   /* a data board's chip: its definition's order, nothing to drag (phase four) */
 .feed-col.col-dragging { position: relative; z-index: 5; opacity: 0.9; }
 .feed-col.col-dragging .fcol-chip { cursor: grabbing; }
 .feed-col-head {

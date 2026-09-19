@@ -132,7 +132,8 @@ test("both card shapes arm the freeze on the same events the hover highlight rid
 test("the badge hint counts the USER'S view and never mutates state computing it", () => {
   // render and the painter share one view filter, so the hint counts exactly what would move
   assert.match(FEED, /function viewFiltered\(list: AskItem\[\]\): AskItem\[\]/);
-  assert.match(FEED, /let shown = viewFiltered\(asks\)\.filter\(\(a\) => boardOf\(a\) === board\);/);   // the active board's cards alone (phase four)
+  assert.match(FEED, /let shown = onActiveBoard\(viewFiltered\(asks\)\);/);   // the active board's cards alone (phase four)
+  assert.match(FEED, /const toItems = \(list: AskItem\[\]\) => onActiveBoard\(viewFiltered\(list\)\)\.map/, "the hint reads the render pass's own board filter, so it counts what is on screen (the 1886 read, medium 1)");
   assert.match(FEED, /const d = freezeDiff\(toItems\(asks\), toItems\(payloadView\(pendingFeedPayload\)\)\);/);
   // payloadView reads pendingCleared but must not write it (the flush re-runs the real bookkeeping)
   const pv = FEED.slice(FEED.indexOf("function payloadView"), FEED.indexOf("function paintFreezeParts"));

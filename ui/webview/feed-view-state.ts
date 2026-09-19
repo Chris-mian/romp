@@ -31,8 +31,9 @@ export interface FeedViewState {
   // and reads as every column (threadKeys), so yesterday's folds survive the upgrade.
   threads: string[];
   // Stacked-layout COLUMN state (the user 2026-08-16): collapsed column keys ("asks"/"needsInput"/
-  // "completed") and the user's dragged column order. Both describe the LAYOUT, not any card, so both
-  // are prune-EXEMPT like `threads` and bounded by their three known keys instead.
+  // "completed", and since phase four a data board's `<board>:<category>`) and the user's dragged column
+  // order (the feed's alone: a data board's columns keep their definition's order until phase five). Both
+  // describe the LAYOUT, not any card, so both are prune-EXEMPT like `threads` and bounded by their key grammar.
   cols: string[];
   order: string[];
   // The feed's FOCUSED SESSION section (T347, the user 2026-09-11, who wanted the focused session's cards
@@ -103,6 +104,9 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
     // wedged the section's drag (hand-edited storage is the only writer of such a blob; the widget prefs dedupe the same way)
     const col = (x: unknown): string[] =>
       Array.from(new Set(arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed")));
+    // a data board's column FOLD is keyed `<board>:<category>` (phase four): the feed's three names, or two ids in the board grammar
+    const foldKeys = (x: unknown): string[] =>
+      Array.from(new Set(arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed" || /^[a-z][a-z0-9_-]{0,31}:[a-z][a-z0-9_-]{0,31}$/.test(k))));
     // the section's block weights (T410): the three known keys only, each a finite positive number; anything
     // else is dropped at the gate and that block reads as weight 1. A blob saved before T410 reads as the
     // defaults for all three fields (follow the board, equal split, nothing folded), same shape as `focused`.
@@ -117,7 +121,7 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
       return w;
     };
     return { v: 1, sec, tree: arr(o.tree), nodes: arr(o.nodes), logs: arr(o.logs), asks: arr(o.asks),
-             threads: arr(o.threads), cols: col(o.cols), order: col(o.order), focused: o.focused === true,
+             threads: arr(o.threads), cols: foldKeys(o.cols), order: col(o.order), focused: o.focused === true,
              focusOrder: col(o.focusOrder), focusW: weights(o.focusW), focusCols: col(o.focusCols),
              focusFolded: o.focusFolded === true,
              board: typeof o.board === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(o.board) && o.board !== "feed" ? o.board : "" };

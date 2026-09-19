@@ -89,10 +89,18 @@ await page.waitForSelector(".feed-viewmenu", { state: "detached", timeout: 10000
 await page.waitForFunction(() => { const c = document.getElementById("feed-cols"); return !!c && c.dataset.board === "notes"; }, null, { timeout: 10000 });
 const onNotes = await facts();
 const viewState = await page.evaluate(() => JSON.parse(localStorage.getItem("romp:feedview") || "{}").board || "");
+// (3b) fold the board's first column (the caret is stacked-only in CSS: click it through the DOM); the fold is keyed notes:new
+await page.evaluate(() => { const f = document.querySelector("#feed-cols .feed-col.col-new .fcol-fold"); if (f) f.click(); });
+await page.waitForTimeout(300);
+const folded = await page.evaluate(() => ({ collapsed: !!document.querySelector("#feed-cols .feed-col.col-new.col-collapsed"),
+  cols: (JSON.parse(localStorage.getItem("romp:feedview") || "{}").cols || []), chipTitle: (document.querySelector("#feed-cols .feed-col.col-new .feed-col-name") || {}).getAttribute ? document.querySelector("#feed-cols .feed-col.col-new .feed-col-name").getAttribute("title") : null,
+  chipStatic: !!document.querySelector("#feed-cols .feed-col.col-new .feed-col-name.fcol-static") }));
 // (4) the pick survives a reload
 await page.reload();
 await page.waitForFunction(() => { const c = document.getElementById("feed-cols"); return !!c && c.dataset.board === "notes" && document.querySelector("#col-new-list [data-key]"); }, null, { timeout: 60000 }).catch(() => {});
 const afterReload = await facts();
+const foldAfterReload = await page.evaluate(() => !!document.querySelector("#feed-cols .feed-col.col-new.col-collapsed"));
+await page.evaluate(() => { const f = document.querySelector("#feed-cols .feed-col.col-new .fcol-fold"); if (f) f.click(); });   // unfold for the roads below
 // (5) back to the feed through the menu: the feed's three columns
 const rows2 = await menu();
 await page.locator(".feed-viewmenu .ctx-item[data-board='feed']").click();
@@ -108,7 +116,7 @@ await page2.waitForSelector(".feed-viewmenu .ctx-item", { timeout: 10000 });
 const queryRows = await page2.evaluate(() => Array.from(document.querySelectorAll(".feed-viewmenu .ctx-item")).map((r) => r.getAttribute("role")));
 // (7) a define dropping the category that holds the card is refused naming it
 const dropped = await board({ ...JSON.parse(JSON.stringify(cfg.notes)), categories: cfg.notes.categories.filter((c) => c.id !== "new"), defaultCategory: "kept", rules: [], notify: [], needsYou: null });
-process.stdout.write("RESULT:" + JSON.stringify({ firstUse, defined, rows, beforePick, onNotes, viewState, afterReload, rows2, backOnFeed, byQuery, queryRows, dropped, errors }) + "\n");
+process.stdout.write("RESULT:" + JSON.stringify({ firstUse, defined, rows, beforePick, onNotes, viewState, folded, afterReload, foldAfterReload, rows2, backOnFeed, byQuery, queryRows, dropped, errors }) + "\n");
 await browser.close();
 """
 
@@ -232,6 +240,16 @@ class BoardViewServed(unittest.TestCase):
         back = r["backOnFeed"]
         self.assertEqual(back["board"], "feed"); self.assertEqual(back["lists"], ["col-asks-list", "col-needsInput-list", "col-completed-list"])
         self.assertNotIn("board", back["title"])
+
+    def test_a_fold_on_the_boards_column_is_keyed_per_board_and_survives_a_reload_and_its_chips_have_no_drag_affordance(self):
+        # the 1886 read, medium 2 (a data board's fold was dropped by the view state's feed-only gate on a reload) and medium 3 (a
+        # data board's chip promised a drag that stored nothing)
+        r = self._result()
+        f = r["folded"]
+        self.assertTrue(f["collapsed"], "the column folds: %r" % f)
+        self.assertIn("notes:new", f["cols"], "the fold is the board's own key in the view state: %r" % f["cols"])
+        self.assertIsNone(f["chipTitle"], "no drag title on a data board's chip"); self.assertTrue(f["chipStatic"], "the chip is static")
+        self.assertTrue(r["foldAfterReload"], "the fold survives a reload")
 
     def test_a_board_query_selects_the_board_at_load_with_the_board_rows_hidden(self):
         r = self._result()

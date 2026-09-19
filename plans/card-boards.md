@@ -615,7 +615,7 @@ kernel's page passes the query through untouched (no new route, no inline JS).
 column list, titles and chip classes come from `board.categories` (a data board's columns take the generic class
 `col-<id>` and the chip class of their `chip`); `askColumn` maps a card's category through the ACTIVE board's table; the
 bucket sort reads `board.sort` and `board.order`; grouped mode runs only when `board.groupBy === "session"` and the
-preference is on (the notes board groups nothing: no session runs, no combobox); the folds key on category id as today.
+preference is on (the notes board groups nothing: no session runs, no combobox); the folds key on category id as today (a data board's fold stored as `<board>:<category>`, so a fold on one board never folds a same-named category on another). Three things stay the feed's in phase four and are phase five's for a data board: the focused-session section (the goal kind's road; on a data board the switch hides it), column reorder (a data board's chips wear no drag affordance; its columns keep the definition's order) and the sub-sorts.
 Only the cards whose `board` is the active one render; a card whose board names no known definition renders on the
 feed under the default category with an "unknown board" chip, the loud fallback section 4 names. The goal kind's roads
 (the title jump, the tree modal, the follow-up composer, the turn groups, the focused-session section) stay the feed's:
