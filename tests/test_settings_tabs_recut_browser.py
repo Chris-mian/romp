@@ -447,11 +447,11 @@ class ServedSettingsTabs(unittest.TestCase):
         r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
         self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
 
-    def test_the_off_dashboard_hide_takes_all_five_panes_rows(self):
+    def test_the_off_dashboard_hide_takes_all_six_panes_rows(self):
         # round two, low 4: the outcome, not the class: hidden by the selector the hide uses, every row reads display none and height 0
         r = self._run(); h = r["panesHide"]; table = "\n  " + json.dumps(h) + " classes: " + json.dumps(r.get("panesRowClasses"))
-        self.assertTrue(h["covered"], "the hide's selector reaches all five Panes rows (the Files row since the T404 tidy, the Pane docking switch since phase two)" + table)
-        self.assertEqual(h["count"], 6, "the head and the five rows, nothing else" + table)
+        self.assertTrue(h["covered"], "the hide's selector reaches all six Panes rows (the Files row since the T404 tidy, the Pane docking switch since phase two, the Artifacts row since 2026-09-19)" + table)
+        self.assertEqual(h["count"], 7, "the head and the six rows, nothing else" + table)
         for x in h["hidden"]:
             self.assertEqual((x["display"], x["height"]), ("none", 0), "hidden: display none, height 0" + table)
         self.assertEqual(h["shown"], ["flex"] * 5, "shown again: display flex" + table)

@@ -59586,6 +59586,7 @@ def _artifacts_walk(turns, sid, link_cache=None):
     cwd = (_cwd_of(sid) or "") if sid else ""
     drops = str(jd.STATE / "drops") + os.sep
     link_cache = _PATH_LINK_CACHE if link_cache is None else link_cache
+    em.hydrate({"turns": turns or []}, rompuuid=sid, by="_artifacts_walk")   # bodies before the assembly cut are read on demand (T323 stage 4a): every atom this walk reads, first
 
     def absolute(p):
         p = str(p or "")
