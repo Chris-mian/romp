@@ -39,7 +39,7 @@ test("the load entry names federation.js by its served path and reports the four
 });
 
 test("render.ts: the boot check fails loudly — one reload, then one diag row per incident, the marker consumed, and a banner IN FLOW above the strip", () => {
-  assert.match(RENDER, /import \{ listenForFrames, federationMissing, federationLoadEntry, fedRetryKey \} from "\.\/frame-listener";/);
+  assert.match(RENDER, /import \{ listenForFrames, federationMissing, federationLoadEntry, fedRetryKey, paneArranges \} from "\.\/frame-listener";/);   // paneArranges: the page with neither shim nor manager arranges its own strip (pane-arranges.test.ts, 2026-09-19)
   const boot = RENDER.slice(RENDER.indexOf("const fedMissing = federationMissing(window as any);"), RENDER.indexOf("listenForFrames(perfFrameHandler("));
   assert.ok(boot.length > 0 && boot.length < 5000, "the check sits right ahead of the frame listener");
   assert.match(boot, /const FED_RETRY = fedRetryKey\(location\);/, "the marker is per document: two chat columns of one tab never share a retry");

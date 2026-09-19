@@ -38,6 +38,19 @@ export function federationMissing(w: { __rompLocalSend?: unknown; __rompFed?: un
   return typeof w.__rompLocalSend === "function" && !w.__rompFed;
 }
 
+// ── a page that never has a manager (a VS Code webview) arranges its own strip (2026-09-19) ─────────────────────
+// The viewer's order (view-order.ts) is applied to the kernel's tabOrder frames by federation.js at its merge point.
+// A page that never loads that layer consumed the kernel's SEED verbatim, so a drag there wrote the browser's store
+// (render.ts commitTabOrder) and the next push undid it — since the 2026-07-31 move of the order into the viewer,
+// tabs in the VS Code panel never stayed where they were put (the user 2026-09-19). Such a page is NOT
+// federationMissing: no shim, so no manager was ever due, and nothing else will apply the arrangement. The pane
+// does it itself, at the one place it adopts the kernel's order (render.ts applyTabOrder). A page WITH the manager
+// leaves it to the manager (its frames arrive arranged); a page whose manager is MISSING keeps showing the seed
+// and refusing the drag, as federationMissing rules. The two predicates never both hold.
+export function paneArranges(w: { __rompLocalSend?: unknown; __rompFed?: unknown }): boolean {
+  return typeof w.__rompLocalSend !== "function" && !w.__rompFed;
+}
+
 /** What the browser recorded about fetching federation.js — the one measurement that separates a failed fetch
  *  (status 0 or an empty transfer, a long duration: a network gap, a dist swap mid-read) from a bundle that
  *  arrived and failed to evaluate (a 200 with a normal body, the slot still unset). Picked from
