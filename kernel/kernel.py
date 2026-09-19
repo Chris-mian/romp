@@ -36052,7 +36052,9 @@ def _apply_pending_ops(now=None):
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes, plus
     _limit_hold's account gate — a queue held by a usage limit drains on the cycle after the API's own
     reset stamp passes, so the whole sequence goes in at the reset in the order it was typed); a dead
-    session's queue is dropped (fails once, logged), never retried.
+    session's queue is dropped (fails once, logged), never retried. An effort level or fast toggle the
+    backend refuses when it fires here is reported (the walk's stderr line, a settingRefused frame to the
+    chat), not popped silently.
 
     ONE LOCK, HELD FOR THE MUTATIONS ONLY (2026-09-05): every writer of _pending_ops — a handler's park or
     cancel, the move thread's head re-insert, this walk — takes _pending_ops_lock, and this walk takes it
@@ -36210,9 +36212,15 @@ def _apply_pending_ops(now=None):
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
-                        be.set_effort(sid, op[1])
+                        # the verdict is READ, as the command and compact arms read theirs: a level the backend refuses
+                        # at fire time (a Codex model whose catalog does not offer it after a model change under the
+                        # park, a session the backend holds no row for) is reported below, where the live setEffort op
+                        # would have said so; dropped, the queued chip retired as if the level had landed, with no
+                        # stderr line and no reply. Strict `is False`: the SessionBackend contract is a bool and every
+                        # shipped setter keeps it, so a setter answering None is not read as a refusal.
+                        refused = be.set_effort(sid, op[1]) is False
                     elif op[0] == "fast":
-                        be.set_fast(sid, op[1])
+                        refused = be.set_fast(sid, op[1]) is False   # its bool was dropped the same way
                     elif op[0] == "auth":
                         be.set_auth(sid, op[1])
                     elif op[0] == "env":
@@ -36251,6 +36259,23 @@ def _apply_pending_ops(now=None):
                             _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
+                    if op[0] in ("effort", "fast") and refused:
+                        # the backend refused the parked level or toggle when it fired (a Codex model whose catalog does
+                        # not offer the level, a session the backend holds no row for, a Codex session's fast toggle: it
+                        # has no fast mode): the same stderr line the command and compact arms write, and the refusal
+                        # to the chat on the settingRefused frame the live setEffort and setFast ops answer with (gesture
+                        # command, the sid, the flag), so the chip's retirement is not read as the pick landing. A bare
+                        # warn is not the shape here: the chat reads one arriving during a create as that create's
+                        # verdict. Said whether or not `took`: a same-kind replacement delivering next does not unsay
+                        # this one's refusal. No client is at hand here (the pusher thread runs the drain), so the chat
+                        # page is the addressee, as the command and compact arms chose. Nothing applies early and nothing
+                        # is retried: the gate lift is still what fires the op, and it is popped once, above.
+                        what = "/%s %s" % (op[0], op[1])
+                        why = (_effort_refusal(be, op[1]) if op[0] == "effort"
+                               else "Couldn't toggle fast mode: the session's backend refused it.")
+                        sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
+                        _send_to_app("chat", {"type": "settingRefused", "gesture": "command", "sid": sid,
+                                              "flag": op[0], "text": why})
                     # a settings op (or an unknown kind): delivery continues. `took` False means a same-kind pick
                     # replaced the head in place while it was with the backend — the replacement delivers next
             except Exception:
