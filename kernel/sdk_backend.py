@@ -7989,17 +7989,27 @@ class SdkSession:
             # next, not just that a storm exists (the user 2026-07-10).
             #
             # The field names were GUESSED when this was written (number / max_retries / retry_delay_ms /
-            # error_status / retryAt) and every one of them was wrong, so `retry_info` came back all-None on
-            # every real storm and the whole detail UI below it rendered blank — the user saw a bare "API
-            # retrying" with no attempt count, no countdown and no reason, for months (the user 2026-07-29).
-            # The names are now VERIFIED against two authoritative sources rather than guessed:
-            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry) — snake_case, per the CLI's own
-            #     embedded schema: retry_in_ms / is_network_down / is_ssl_error / rate_limit_type;
-            #   * the TRANSCRIPT twin the same frame is written from (system / subtype api_error) — camelCase:
+            # error_status / retryAt) and the detail never showed: the user saw a bare "API retrying" with no
+            # attempt count, no countdown and no reason, for months (the user 2026-07-29). The names are now
+            # VERIFIED against two authoritative sources rather than guessed:
+            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry), snake_case, per the CLI's own
+            #     embedded schema: attempt / max_retries / retry_delay_ms / error_status (an int; null for a
+            #     connection error that got no HTTP response) / error (a CATEGORY string from the CLI's own
+            #     classifier: overloaded, rate_limit, authentication_failed, server_error, unknown, and a
+            #     few more) / no_response (optional: waited_ms, retry_wait_ms) / uuid / session_id;
+            #   * the TRANSCRIPT twin the wire frame is built from (system / subtype api_error), camelCase:
             #     retryAttempt / maxRetries / retryInMs / error{status,formatted,requestId,isNetworkDown,
-            #     rateLimits}.
+            #     rateLimits}. The schema entry that names retry_in_ms / is_network_down / is_ssl_error /
+            #     rate_limit_type describes THIS frame in its snake_case internal rendering; the transcript
+            #     records it camelCase.
             # We accept BOTH spellings (plus the old guesses) because the two surfaces genuinely differ and
             # either may reach us; `error` arrives as a dict on the transcript side and a string on the wire.
+            # The wire bullet above listed the transcript twin's names before, so the reads below never
+            # looked for `attempt` or the string `error`: every live storm showed the local per-frame tally as
+            # the attempt and a blank reason, and the shape diagnostic further down stayed quiet because
+            # max_retries and error_status were read. Each _pick below now leads with the wire's name; the
+            # transcript's error dict is still consulted first for the human string, its formatted text being
+            # the best of them.
             d = msg.data if isinstance(msg.data, dict) else {}
             _now = time.time()
 
@@ -8020,12 +8030,12 @@ class SdkSession:
             # The human string: the transcript's error.formatted ("529 Overloaded") is the best of these;
             # error.message carries the raw JSON envelope, so it is the last resort.
             _err = (_e.get("formatted") or _e.get("message") if _e else None) \
-                or _pick("display_message", "message", want=(str,))
+                or _pick("error", "display_message", "message", want=(str,))
             _status = _pick("status_code", "error_status", "status") \
                 or (_e.get("status") if isinstance(_e.get("status"), (int, str)) else None)
             _net = d.get("is_network_down", d.get("isNetworkDown", _e.get("isNetworkDown")))
             self.retry_info = {
-                "attempt": _pick("retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
+                "attempt": _pick("attempt", "retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
                 "max": _pick("max_retries", "maxRetries", want=(int,)),
                 "status": _status,
                 "error": _err[:300] if isinstance(_err, str) else None,
@@ -10437,6 +10447,7 @@ class SdkBackend:
             return None
         if state == "attach":
             sess._host_is_attach = True
+            lease = await self._host_reexec_on_skew(sess, lease) or lease
             reg = read_reg(self.state_dir, sess.sid) or {}
             ack = reg.get("hostAck") if isinstance(reg.get("hostAck"), dict) else {}
             holder = lease.get("holder") or {}
@@ -10493,7 +10504,99 @@ class SdkBackend:
                                 on_hello=lambda hello, s=sess: self._on_host_hello(s, hello),
                                 on_stderr=sess._on_cli_stderr,
                                 on_exit=lambda ex, s=sess: self._host_ended(s, ex),
-                                on_fault=lambda f, s=sess: self._log("host (%s): fault %s: %s" % (s.name, f.get("kind"), f.get("text")), problem=True))
+                                on_reexec=lambda f, s=sess: self._on_host_reexec_now(s),
+                                on_fault=lambda f, s=sess: self._on_host_fault(s, f))
+
+    def _on_host_fault(self, sess, f: dict) -> None:
+        """A host's `fault` frame: a problem line, and for a handover that failed after the host had accepted it (`reexec-failed`:
+        the host serves on, on its old code) the `host.reexec-failed` row the refusal road files, so a failed upgrade is on
+        the ledger as a refused one is (round two of the review: a failure after the ok answer filed no row)."""
+        if f.get("kind") == "reexec-failed":
+            was = getattr(sess, "_host_reexec_from", None)
+            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s and failed before the exec "
+                        "(%s); it serves on as it was" % (sess.name, was or "unknown", self.code_version, f.get("text") or "no reason"),
+                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+            sess._host_reexec_from = None
+            return
+        self._log("host (%s): fault %s: %s" % (sess.name, f.get("kind"), f.get("text")), problem=True)
+
+    async def _host_reexec_on_skew(self, sess, lease):
+        """A live host on another code version than this kernel's: ask it to re-exec into this kernel's code before the
+        attach (docs/reference.md, the per-session hosts: a host upgrades itself in place). The spec's version is rewritten
+        first, so the re-executed host reads the version it now runs. The host answers `now` (its CLI idle: this waits,
+        bounded, for the lease to carry the new version and returns the fresh lease, the same holder pid and start since
+        an exec keeps both), `at-turn-end` (the attach proceeds against the old host; its `reexec-now` frame at the
+        turn's end makes the reconnect a planned one), or a refusal (a `host.reexec-refused` row; the attach proceeds
+        as before). Nothing here raises out of the connect: a fault is a log line and the plain attach."""
+        try:
+            ht = _ht()
+            was = str((lease or {}).get("version") or "")
+            if not self.code_version or was == self.code_version:
+                return None
+            spec_path = ht.host_dir(self.state_dir, sess.sid) / "spawn.json"
+            try:
+                spec = json.loads(spec_path.read_text())
+                spec["version"] = self.code_version
+                ht.write_spawn_spec(self.state_dir, sess.sid, spec)
+            except Exception as e:
+                self._log("host (%s): the spawn spec could not be rewritten for the re-exec (%s); attaching as is" % (sess.name, type(e).__name__))
+                return None
+            launcher = str(Path(__file__).resolve().parent.parent / "bin" / "romp-session-host")
+            ans = await ht.request_reexec(ht.host_sock(self.state_dir, sess.sid), sys.executable, launcher, self.code_version)
+            if not ans.get("ok"):
+                problem_row(self.state_dir, "the session host for %s runs code version %s and refused to re-exec into %s (%s); attached as is"
+                            % (sess.name, was or "unknown", self.code_version, ans.get("reason") or "no reason"), "host.reexec-refused",
+                            sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+                return None
+            sess._host_reexec_from = was
+            if ans.get("when") == "at-turn-end":
+                self._log("host (%s): re-exec into %s deferred to the turn's end; attaching to the running host meanwhile" % (sess.name, self.code_version))
+                return None
+            holder = (lease or {}).get("holder") or {}
+            deadline = time.time() + ht.SOCKET_WAIT_S
+            fresh = None
+            while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
+                fresh = read_lease(self.state_dir, sess.sid)
+                fh = (fresh or {}).get("holder") or {}
+                # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
+                # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
+                # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
+                if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
+                        and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
+                    self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
+                              % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
+                    return fresh
+                await asyncio.sleep(0.05)
+            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
+                        "served within %.0f s; attached as is" % (sess.name, was or "unknown", self.code_version, ht.SOCKET_WAIT_S),
+                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+            sess._host_reexec_from = None
+            return None
+        except Exception as e:
+            self._log("host (%s): the re-exec request failed (%s); attaching as is" % (sess.name, type(e).__name__))
+            return None
+
+    @staticmethod
+    async def _host_socket_accepts(sock) -> bool:
+        """Whether a listener accepts on the host's socket path now: one connect, closed at once (the host's client loop reads
+        end-of-file from a connection that never attached and forgets it). False on a refusal, a missing path or a slow accept."""
+        try:
+            _r, w = await asyncio.wait_for(asyncio.open_unix_connection(str(sock)), 1.0)
+        except (OSError, asyncio.TimeoutError):
+            return False
+        try:
+            w.close()
+        except Exception:
+            pass
+        return True
+
+    def _on_host_reexec_now(self, sess) -> None:
+        """The host says it is about to exec into this kernel's code and close the socket: the stream's end that follows is
+        the planned handover, so the session reconnects (the same lease, the new version) instead of reading a lost host.
+        `_reconnect` is the whole of the guard: the connect loop's next pass finds the lease valid under the same holder and
+        attaches (round two of the review dropped a flag that was written here and read nowhere)."""
+        sess._reconnect = True
+        self._log("host (%s): re-exec at the turn's end; reconnecting to the re-executed host" % sess.name)
 
     def _spawn_host(self, sess, spec_path):
         """Start bin/romp-session-host detached: in a transient scope of its own on Linux when scopes are on
@@ -10649,8 +10752,19 @@ class SdkBackend:
             open_turns = int(hello.get("inflight") or 0)
         except (TypeError, ValueError):
             open_turns = 0
-        if open_turns > sess.inflight:
-            sess.inflight = open_turns
+        # The host is the authority for the CLI's open turn: its count becomes ours EXACTLY, up or down. Taking only a
+        # higher count carried this kernel's own stale count across the attach, and a stale count on either side read
+        # as Working forever: every send parked behind a turn that had ended days before (the user's laptop,
+        # 2026-09-18). The count is never carried across an attach; a zero clears the fed-text twin too, since the
+        # CLI answered everything it was fed.
+        sess.inflight = open_turns
+        if open_turns == 0:
+            texts = getattr(sess, "_inflight_texts", None)
+            if texts is not None:
+                try:
+                    texts.clear()
+                except Exception:
+                    pass
         if getattr(sess, "_host_is_attach", False):
             # an attach's hello has nothing to wait for (no init record follows a replay); a SPAWN's hello is
             # the host's, not the CLI's, and the init record releases the boot-stagger slot as for any spawn
@@ -10658,6 +10772,10 @@ class SdkBackend:
                 sess._fire_boot_settled()
             except Exception:
                 pass
+        if getattr(sess, "_host_reexec_from", None) is not None and str(h.get("version") or "") == self.code_version:
+            append_session_event(self.state_dir, "host.reexeced", sid=sess.sid, name=sess.name, fromVersion=sess._host_reexec_from,
+                                 toVersion=self.code_version, hostPid=h.get("pid"), cliPid=c.get("pid"))
+            sess._host_reexec_from = None
         append_session_event(self.state_dir, "host.attached", sid=sess.sid, name=sess.name, boot=boot,
                              hostPid=h.get("pid"), cliPid=c.get("pid"), fsid=c.get("fsid"),
                              replayFrom=int(sess._host.ack_offset) + 1 if sess._host else None, journalNext=j.get("next"),

@@ -776,7 +776,7 @@ function initGear(post, opts) {
     function announce(list, id) {
       var g = cfg.group ? cfg.group(id) : null;
       var ids = list.filter(function (x) { return !(cfg.divider && x === cfg.divider.id) && (!cfg.group || cfg.group(x) === g); }), n = ids.indexOf(id) + 1;
-      var side = cfg.divider ? (list.indexOf(id) < list.indexOf(cfg.divider.id) ? ', before the ' + cfg.divider.label : ', after the ' + cfg.divider.label) : '';
+      var side = cfg.divider ? (list.indexOf(id) < list.indexOf(cfg.divider.id) ? ', before the ' + cfg.divider.label.toLowerCase() : ', after the ' + cfg.divider.label.toLowerCase()) : '';   // mid-sentence, the label lowercased
       var where = cfg.group ? ' in the ' + cfg.groupLabel(g) : '';
       liveRegion().textContent = labelOf(id) + ' moved to position ' + n + ' of ' + ids.length + side + where;
     }
@@ -918,7 +918,7 @@ function initGear(post, opts) {
   function demoLabel() { var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = SW.DEMO_RECORD.name; return label; }
   var tabSection = widgetSection({
     host: document.getElementById('rs-widgets'), list: TW.titleWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',   // the widgets that render INTO the title; the rings have their own rows below
-    order: TW.tabListOrder, divider: { id: TW.NAME_DIVIDER, label: 'session name' }, group: null, groupLabel: null,
+    order: TW.tabListOrder, divider: { id: TW.NAME_DIVIDER, label: 'Session name' }, group: null, groupLabel: null,   // sentence case, as every section label (the user 2026-09-18)
     save: function (prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); },
     on: TW.widgetOn, opts: TW.widgetOpts,
     preview: function (prefs) {   // a tab as the strip would draw it: the enabled widgets on each side of the name, in order

@@ -184,30 +184,66 @@ const rectIn = async (fid, sel) => { const fr = await frameOf(fid); if (!fr) ret
 const filled = async (fid) => {
   const fr = await frameOf(fid); if (!fr) return { missing: true };
   await fr.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 }).catch(() => {});
-  await fr.evaluate(() => { const c = document.getElementById("content"); if (c) { c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); } });
-  await page.waitForTimeout(300);
-  await fr.evaluate(() => { const c = document.getElementById("content"); if (c) { c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); } });
-  await page.waitForTimeout(1800);
+  // WAIT for the fill (a run region at lo 0), re-nudging #content to the top on each poll so a slow observer keeps
+  // getting a scroll to act on; bounded and event-based, never a fixed sleep (a starved runner needs far longer than
+  // a fixed pause, a fast one far less). A genuine miss falls through and reports filled:false with the last regions.
+  await fr.waitForFunction((id) => {
+    const c = document.getElementById("content"); if (c) { c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); }
+    const regions = (typeof window.__rompRegions === "function") ? window.__rompRegions(id) : null;
+    return !!(regions && regions.some((r) => r.kind === "run" && r.lo === 0));
+  }, cfg.bot, { timeout: 30000 }).catch(() => {});
   return await fr.evaluate((id) => { const regions = (typeof window.__rompRegions === "function") ? window.__rompRegions(id) : null; return { turns: document.querySelectorAll("#content .turn[data-uuid]").length, filled: !!(regions && regions.some((r) => r.kind === "run" && r.lo === 0)), regions }; }, cfg.bot);
 };
 try {
   await page.goto(cfg.url);
   await page.waitForFunction((t) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + t + '"]')); }, cfg.top, { timeout: 40000 });
-  // both sessions sit in column 1; show the top one, then wait for the bottom session's tab to be draggable (its manager up, not locked)
+  // both sessions sit in column 1; show the top one
   await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
-  await page.waitForFunction((b) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + b + '"]'); return !!(t && t.draggable); }, cfg.bot, { timeout: 40000 });
-  out.pane = await page.evaluate(() => { const p = document.getElementById("chat-pane"); const r = p.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; });
   // A REAL pointer drag of the bottom session's tab past the threshold: the page's dragstart mounts the shell's zones.
-  // Wait for the seeded tab to render AND lay out (a slow runner paints the strip late, so a one-shot boundingBox can be
-  // null) with a bounded, event-based locator wait, never a fixed sleep, before measuring it.
-  const botSel = '#tabs .tab[data-id="' + cfg.bot + '"]';
-  const botFr = await frameOf("f-chat");
-  if (!botFr) throw new Error("no drag start: f-chat's content frame was missing");
+  // The tab is found AND measured in ONE in-page step (2026-09-18). The chat page rebuilds its strip from scratch on every
+  // frame that changes its signature (a placeholder tab turning into a loaded one, a status change), so a Playwright
+  // locator's two-step boundingBox (resolve a handle, then measure it) can measure a node the rebuild just replaced and
+  // read null: the driver then died in milliseconds wearing a 40 s message, with the tab present, visible and draggable
+  // at every instant. The page's JS is single-threaded, so an in-page find-and-measure cannot be interleaved with a
+  // rebuild. The predicate wants the live node draggable (its manager up, not locked), laid out (a non-empty box; a slow
+  // runner paints the strip late) and not visibility:hidden (Playwright's own visible test), and maps its centre through
+  // the iframe's box (the pane's iframe is position:absolute at inset 0 with no border, under no transformed ancestor).
+  // waitForFunction retries it every frame under the same 40 s bound, never a fixed sleep; a non-timeout error keeps its
+  // own text, so the timeout is the only road to the throw below.
   let t = null;
-  try { const loc = botFr.locator(botSel).first(); await loc.waitFor({ state: "visible", timeout: 40000 }); const b = await loc.boundingBox(); if (b) t = { x: b.x + b.width / 2, y: b.y + b.height / 2 }; } catch (e) {}
-  if (!t) throw new Error("no drag start: the bottom session's tab (data-id " + cfg.bot + ") never rendered as a visible box in f-chat's strip within 40s");
-  await page.mouse.move(t.x, t.y); await page.mouse.down(); await page.mouse.move(t.x + 24, t.y + 6, { steps: 4 });
-  await page.waitForFunction(() => !!document.querySelector("#chat-pane > .col-drop.col-drop-bottom"), null, { timeout: 20000 });
+  try {
+    const h = await page.waitForFunction((b) => {
+      const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const el = d && d.querySelector('#tabs .tab[data-id="' + b + '"]');
+      if (!el || !el.draggable) return null;
+      const r = el.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0) || d.defaultView.getComputedStyle(el).visibility === "hidden") return null;
+      const fr = f.getBoundingClientRect(); return { x: fr.left + f.clientLeft + r.left + r.width / 2, y: fr.top + f.clientTop + r.top + r.height / 2 };
+    }, cfg.bot, { timeout: 40000 });
+    t = await h.jsonValue();
+  } catch (e) { if (!(e && e.name === "TimeoutError")) throw e; }
+  if (!t) throw new Error("no drag start: the bottom session's tab (data-id " + cfg.bot + ") never rendered as a visible, draggable box in f-chat's strip within 40s");
+  out.pane = await page.evaluate(() => { const p = document.getElementById("chat-pane"); const r = p.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; });
+  // Hear the page's dragstart from the SHELL: the tab's dragstart posts {romp:'tabDrag', on:true} to the parent,
+  // which is what makes the shell mount the zones (mountZones). Install the listener BEFORE the drag so none is missed.
+  await page.evaluate(() => { window.__vsplitDragStarted = false; window.addEventListener("message", (e) => { if (e && e.data && e.data.romp === "tabDrag" && e.data.on) window.__vsplitDragStarted = true; }, false); });
+  // Cross the native drag threshold in SEVERAL honoured pointer moves, yielding a paint between each so a starved
+  // runner registers the gesture and fires dragstart; stop as soon as the shell has heard it. Never a fixed sleep.
+  await page.mouse.move(t.x, t.y); await page.mouse.down();
+  let dragStarted = false;
+  for (const step of [[4, 1], [10, 3], [18, 6], [28, 9], [40, 12]]) {
+    await page.mouse.move(t.x + step[0], t.y + step[1]);
+    dragStarted = await page.evaluate(() => window.__vsplitDragStarted === true);
+    if (dragStarted) break;
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  }
+  if (!dragStarted) dragStarted = await page.waitForFunction(() => window.__vsplitDragStarted === true, null, { timeout: 15000 }).then(() => true).catch(() => false);
+  if (!dragStarted) throw new Error("no dragstart: the real pointer drag of the bottom tab (data-id " + cfg.bot + ") never fired the page's dragstart (no {romp:'tabDrag',on} reached the shell) across five stepped moves and a 15s wait; the drag threshold was not crossed under load");
+  // dragstart fired, so the shell mounts the zones now; this road drives the bottom drop zone
+  try {
+    await page.waitForFunction(() => !!document.querySelector("#chat-pane > .col-drop.col-drop-bottom"), null, { timeout: 20000 });
+  } catch (e) {
+    if (e && e.name === "TimeoutError") throw new Error("no drop zone: dragstart fired but the shell did not mount #chat-pane > .col-drop.col-drop-bottom within 20s (mountZones ran late, or the pane lost its zone under load)");
+    throw e;
+  }
   const bz = await page.evaluate(() => { const z = document.querySelector("#chat-pane > .col-drop.col-drop-bottom"); const r = z.getBoundingClientRect(); const p = z.parentElement.getBoundingClientRect(); return { col: z.getAttribute("data-col"), top: Math.round(r.top), height: Math.round(r.height), x: r.left + r.width / 2, y: r.top + r.height / 2, paneTop: Math.round(p.top), paneHeight: Math.round(p.height) }; });
   out.bottomZone = bz;
   // move the pointer over the bottom zone: the ghost shows the pane's BOTTOM half with the dragged session's name
@@ -217,7 +253,8 @@ try {
   // the drop: the column splits into a top and a bottom pane, a place:'below' entry keyed on parent 1
   await page.mouse.up();
   await page.waitForFunction(() => { const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); return (cc.cols || []).some((c) => c.place === "below"); }, null, { timeout: 20000 });
-  await page.waitForTimeout(500);
+  // wait for the bottom pane's iframe to be BUILT (event-based), not a fixed settle, so afterDrop reads its id under load
+  await page.waitForFunction(() => !!document.querySelector(".pane.split-v .chat-sub iframe"), null, { timeout: 20000 }).catch(() => {});
   out.afterDrop = await page.evaluate(() => {
     const cc = JSON.parse(localStorage.getItem("romp-chat-cols") || "{}"); const be = (cc.cols || []).find((c) => c.place === "below");
     const g = document.getElementById("col-ghost"); const bot = document.querySelector(".pane.split-v .chat-sub iframe");
@@ -225,7 +262,7 @@ try {
              ghostCls: g.className, zones: document.querySelectorAll(".col-drop").length, paneSplit: !!(bot && bot.closest(".pane") && bot.closest(".pane").classList.contains("split-v")) };
   });
   const botFid = out.afterDrop.botId;
-  if (botFid) { await page.waitForFunction((fid) => !!document.getElementById(fid), botFid, { timeout: 20000 }); await page.waitForTimeout(600); out.botFill = await filled(botFid); }
+  if (botFid) { await page.waitForFunction((fid) => !!document.getElementById(fid), botFid, { timeout: 20000 }); out.botFill = await filled(botFid); }
 } catch (e) { out.died = String(e).slice(0, 500); }
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();

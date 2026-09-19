@@ -14,6 +14,7 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 import collections
 import copy
 import gc
+import hashlib
 import math
 import tracemalloc
 import zlib
@@ -1105,7 +1106,7 @@ class _PerfStats:
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("judgingBand", _judging_band_report),   # the judging band's per-row memo and horizon cursor (2026-09-16)
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
-                          ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked
+                          ("subagentTree", _subagent_tree_memo_report),   # the subagents directory walk memo (2026-09-16): served vs walked, scoped
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
                           # the chat build's fixed-cost memos (2026-09-09): the live merge's transcript-side
                           # sets, the fold's sealed postal cards, the ledger's goal-tree walk, the task fold
@@ -3982,7 +3983,7 @@ def _bus_send_relay(payload):
     mailbox), so a retry cannot help; a bus that could not be reached or failed (a 5xx) is not definitive. The
     response carries the bus's id and, for a far host, "parked"."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=12)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=12)
         try:                                           # UTF-8 on the wire: an escaped non-ASCII body would be six times its
             conn.request("POST", "/send", json.dumps(payload, ensure_ascii=False).encode("utf-8"),   # bytes, past the bus's
                          {"Content-Type": "application/json; charset=utf-8", "X-Romp-Token": TOKEN})   # limit the excerpt's cap
@@ -4010,7 +4011,7 @@ def _bus_recall_relay(sid, mid):
     host delivered): as the worker, by id. Returns "withdrawn" (the unread message is gone), "carried" (it left with an
     exchange and can no longer be withdrawn, or was read), or "unknown" (the bus could not be asked)."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=12)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=12)
         conn.request("POST", "/recall", json.dumps({"from_id": sid, "to": "", "id": mid}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
         resp = conn.getresponse()
@@ -4033,7 +4034,7 @@ def _bus_restore_mail(sid, mids):
     this side's say-so. Authoritative about the bus's files (an id missing from the set is gone from cur/); RAISES
     when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a quiet False
     here would be the loss this exists to end."""
-    conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=5)
+    conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=5)
     try:
         conn.request("POST", "/restore", json.dumps({"id": sid, "mids": list(mids)}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
@@ -14816,7 +14817,7 @@ def _nudge_response_ready(turns, store, rec, gid, now):
     return True, resp
 
 
-_nudge_gate_memo = {}            # sid -> (parse key, the shared view object, clears-log stat, unplanned): the gate's answer while its inputs stand
+_nudge_gate_memo = {}            # sid -> (parse key, the shared view object, episode-log stat, clears-log stat, unplanned): the gate's answer while its inputs stand
 _NUDGE_GATE_STATS = {"served": 0, "derived": 0, "failed": 0}   # /perf memos.nudgeGate: how often the walk re-derived the gate,
 #                                                                  and how often the derivation raised (the except leg answers not unplanned: nudges waved past the planner gate)
 _NUDGE_GATE_MEMO_MAX = 512
@@ -14824,19 +14825,32 @@ _NUDGE_GATE_MEMO_MAX = 512
 
 def _nudge_placement_gate(sid, turns, store):
     """The planner-placement gate's answer (is any unit of this parse still unplaced?), DERIVED ONCE per
-    (parse, store) and served while both stand (2026-09-09). The derivation re-segments every turn, applies
+    (parse, store, episode log, clears log) and served while all four stand (2026-09-09; the clears log
+    since 2026-09-18, see below). The derivation re-segments every turn, applies
     the seams, builds the plan units and normalizes every recorded placement key; on the maintainer's box it
     was 70% of the kernel's CPU, run for every idle session on every pusher cycle with nothing changed
     (py-spy: _seg_key, _placed_key, _segment_id, _mint_quote under _auto_nudge_session). Its inputs: the
-    parse, the store's bytes, and the clears log (_placed_key scopes its fuzzy match by the episode floor).
+    parse, the store's bytes, and two append-only logs. The session's EPISODE log, STATE/episodes/<sid>.jsonl:
+    _placed_key scopes its fuzzy match by the episode floor read from it. The CLEARS log, STATE/cleared.jsonl,
+    the cards cleared off the board: plan_units reads it live for the open segment's live re-plan unit
+    (_live_anchor_gone -> _cleared_under -> _view_cleared), so a clear of the card an open segment's ask sits
+    on turns an empty queue into one owing a re-plan, and an undo row turns it back, with the parse, the view
+    and the episode log all standing.
 
     Both halves are IDENTITY-bound, never stat'd after the read (review 2026-09-09: the first cut stat'd the
     store file after the walk had read the view, so a placement a judge published in between was keyed under
     the NEW file with the OLD bytes' answer and served until the store next moved). The parse half is
     parsed_session's cached object; the store half is the shared read-only view object itself, which the
     shared loader replaces whenever the store, its override journal or the archive moves, and the answer is
-    cached only when that view is STILL the current one after the derivation. The clears log's stat is taken
-    BEFORE the derivation, so a boundary appended during it leaves a key the next cycle's stat cannot match.
+    cached only when that view is STILL the current one after the derivation. Each log's stat is taken
+    BEFORE the derivation and compared on the hit path, so a row appended during it leaves a key the next
+    cycle's stat cannot match. The clears log joined the key after the episode log (2026-09-18): the walk's
+    file-keyed memo already named it as this road's input (_NUDGE_FILE_KEYED_VERDICTS) and keyed on it, and
+    every writer of it marks every session, so after a clear the look re-ran while this memo served the old
+    answer until the parse, the view or the episode log moved. The user-facing clear paths also flag the node
+    in the store, which moves the view; the term is what catches a row filed with no store write: the undo
+    path's late re-journal, a flag step skipped on a store fault, and the window between a writer's append
+    and its flag step, which the pusher's pass can enter.
     A parse the cache does not hold, or a store that is not the current shared view, is derived every time
     and never cached. The exception path is unchanged: a gate that cannot be computed answers not unplanned (the walk proceeds on the
     closer gate alone: nudges waved past the planner gate, counted under failed and said on stderr with its traceback), and is never cached."""
@@ -14844,10 +14858,11 @@ def _nudge_placement_gate(sid, turns, store):
     #                                             view stored between the walk's parse and this read: review find)
     parse_key = pk[0] if (pk is not None and pk[1] is not None and pk[1].get("turns") is turns) else None
     epi = _stat_key(jd.EPIDIR / (sid + ".jsonl")) if parse_key is not None else None
+    clr = _stat_key(jd.STATE / "cleared.jsonl") if parse_key is not None else None
     hit = _nudge_gate_memo.get(sid) if parse_key is not None else None
-    if hit is not None and hit[0] == parse_key and hit[1] is store and hit[2] == epi:
+    if hit is not None and hit[0] == parse_key and hit[1] is store and hit[2] == epi and hit[3] == clr:
         _NUDGE_GATE_STATS["served"] += 1
-        return hit[3]
+        return hit[4]
     try:
         _live = {sg["id"] for tn in turns for sg in jd._segs(tn, store)}
         unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
@@ -14867,7 +14882,7 @@ def _nudge_placement_gate(sid, turns, store):
         if current is store:                     # the view we derived from is still the store's current one
             if len(_nudge_gate_memo) > _NUDGE_GATE_MEMO_MAX:      # bounded by the session count; evict oldest-inserted
                 _nudge_gate_memo.pop(next(iter(_nudge_gate_memo)))
-            _nudge_gate_memo[sid] = (parse_key, store, epi, unplanned)
+            _nudge_gate_memo[sid] = (parse_key, store, epi, clr, unplanned)
     return unplanned
 
 
@@ -19825,6 +19840,14 @@ def _reveal_or_confirm(sid, focus_msg, client=None):
     Where a CLIENT is in scope (every WS op that calls this), the reveal is aimed at that dashboard
     alone: a jump into a transcript is one viewer's navigation, and broadcasting it dragged every open
     dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
+    if sid == NOTICE_OWNERLESS_SID:               # the owner-less notice cards' home is no session: nothing to reveal, nothing to revive (round three of PR 1831)
+        if client is not None:
+            try:
+                client["send"](json.dumps({"type": "err", "sid": sid, "title": "Nothing to open",
+                                           "text": "That card belongs to no session (an owner-less notice), so there is no chat to show and nothing to revive."}))
+            except Exception:
+                pass
+        return
     if sid and sid not in _live_map():
         _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
         if client:
@@ -20758,7 +20781,58 @@ def _note_tunnel_teardown(r, now):
     r["fails"] = int(r.get("fails") or 0) + 1
     r["next_try"] = now + _tunnel_backoff(r["fails"])
     return r["fails"]
-BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # this laptop's postal bus (reverse-forwarded)
+BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # the environment's word for this machine's bus port: the tunnel's
+#                                                                    local side (the -L target, the legacy -R) and the FALLBACK of _bus_port()
+_BUS_PORT_SAID = [None]                                           # the census line's memory: (port, source) said once, a change said again
+_BUS_ENSURED = [False]                                            # this kernel ENSURED its bus (the ensure exited 0): the bus whose record it may trust
+
+
+def _bus_port():
+    """The port this machine's bus BOUND, for every loopback dial of it: the bus's own record STATE/postal/postal-port ({"port",
+    "pid", "tok"}, written after its bind, removed on a clean exit; postal_service.py PORTFILE) ahead of the environment, which is
+    the fallback when the record is absent, stale (its pid no longer runs), another bus's (its token mark is not this kernel's),
+    or when this kernel ensured no bus at all (_BUS_ENSURED: client-only mode, a lab kernel, an in-process test kernel; the
+    whole test suite showed a record one world left under the shared state root redirecting a later world's dial, and the
+    ensure is the event that makes a bus this kernel's). Both processes read ROMP_POSTAL_PORT at import and
+    nothing bound them (2026-09-18): a unit or profile that set the port for one process and not the other, or a stale legacy
+    tunnel reverse-forwarding the hub's bus onto this loopback at the fixed port, had the kernel dial a bus that was not its
+    own, and a held message's approve came back "no held message" from a bus that never held it. The record is the bus's
+    answer to "which port are you on", read on every dial (a few hundred bytes, no memo: the bus may restart on another
+    port between dials); a mismatch with the environment is said once per change (_bus_port_census)."""
+    port, source = BUS_PORT, "environment"
+    try:
+        rec = json.loads((jd.STATE / "postal" / "postal-port").read_text())
+        rp, pid = int(rec.get("port") or 0), int(rec.get("pid") or 0)
+        # trusted only when it is THIS kernel's bus: this kernel ENSURED a bus (a kernel that ensured none, client-only or a
+        # lab's, dials the environment's port and no record can redirect it), its pid runs, and its token mark is this
+        # kernel's own
+        if _BUS_ENSURED[0] and rp > 0 and pid > 0 and _pid_alive(pid) and str(rec.get("tok") or "") == _bus_token_mark():
+            port, source = rp, "record"
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    _bus_port_census(port, source)
+    return port
+
+
+def _bus_token_mark():
+    """The mark the bus writes into its record (postal_service._token_mark): a sha256 prefix of the shared serve token, so a
+    kernel trusts only a record its own bus wrote (a record another bus, another state root's world or a reused pid left can
+    never redirect the dial)."""
+    try:
+        return hashlib.sha256(str(TOKEN or "").encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _bus_port_census(port, source):
+    """One boot census line, and one more per change: the bus port the kernel dials, whether the record or the environment
+    named it, and the mismatch with the environment when there is one (the operator's pointer at the pair)."""
+    cur = (int(port), source)
+    if _BUS_PORT_SAID[0] == cur:
+        return
+    _BUS_PORT_SAID[0] = cur
+    note = "" if int(port) == BUS_PORT else " (ROMP_POSTAL_PORT says %d: the environment and the bus disagree; the record wins)" % BUS_PORT
+    sys.stderr.write("romp-kernel: postal bus dialed on 127.0.0.1:%d from the %s%s\n" % (int(port), source, note))
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
 _REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port
@@ -20812,6 +20886,8 @@ def _ensure_postal_bus():
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
         if r.returncode != 0:   # the bus said no (2026-09-10: it refuses the machine's fixed port under a test): say so here, where the kernel's log is
             sys.stderr.write("postal bus ensure refused (exit %d): %s\n" % (r.returncode, (r.stderr or "").strip()[-2000:]))
+        else:
+            _BUS_ENSURED[0] = True   # the bus this kernel ensured is the one whose port record _bus_port() may trust
     except Exception:
         sys.stderr.write("postal bus ensure failed:\n%s" % traceback.format_exc())
 
@@ -20826,6 +20902,9 @@ def _revive_postal_bus():
     so a burst of refused notifies — one per tunnel per supervisor pass — coalesces into one ensure.
     A quiet hub went dark exactly this way twice on 2026-08-12: bus gone, kernel up, every /peer
     notify failing silently, cross-host mail parked until a manual ensure."""
+    if (os.environ.get("ROMP_POSTAL_CLIENT_ONLY") or "").strip().lower() in ("1", "on", "true", "yes"):
+        return   # a client-only kernel owns no bus to revive: the ensure would only ping (2026-09-18: a revive kicked on a daemon
+        #          thread by a hermetic test's refused notify outran the test's environment restore and started a real bus)
     with _bus_revive_lock:
         if _bus_reviving[0]:
             return
@@ -21175,7 +21254,7 @@ def _notify_bus_peer(host, port, up, peer_token="", trust="directed"):
     A refusal ALSO kicks _revive_postal_bus: a dead bus must not stay dead until the next kernel
     boot while the supervisor retries into it forever (the 2026-08-12 quiet-hub outage)."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up),
                                                   "token": peer_token or "", "trust": trust or "directed"}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
@@ -21194,7 +21273,7 @@ def _notify_bus_origin_trust(host, trust):
     down never breaks the caller; the supervisor re-pushes, and a restarted bus re-seeds from
     /tunnels' `known` rows. A refusal kicks _revive_postal_bus, like _notify_bus_peer's."""
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "trust": trust or "directed",
                                                   "originOnly": True}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
@@ -21269,7 +21348,7 @@ def _bus_peers_snap(fresh=False):
         return _via_cache["snap"]
     snap = {}
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=2)
         conn.request("GET", "/peers", None, {"X-Romp-Token": TOKEN})
         r = conn.getresponse()
         if r.status == 200:
@@ -21306,13 +21385,14 @@ def _bus_peer_tiers():
 def _bus_quarantine_act(body):
     """Proxy a quarantine verdict (approve/deny, optional edited text) to the bus, which OWNS postal
     delivery and the held-message store. On approve the bus re-runs the peer's deliver(), so an approved
-    message lands as normal postal mail. Returns (ok, error)."""
+    message lands as normal postal mail. Returns (ok, error). The body carries the recipient `sid` when the
+    pane named it, so a bus that holds nothing for a session it does not serve says so (2026-09-18)."""
     try:
         # 20s: the client half of the approve path's budget pair (2026-09-01). The bus-side approve
         # pays one checked kernel fetch (≤6s) plus the recipient's deliver push (≤12s), so a 6s cap
         # here gave up mid-approve — the delivery landed while the kernel reported the bus
         # unreachable. The halves move together (the 830 budget-pair discipline).
-        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=20)
+        conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=20)
         conn.request("POST", "/quarantine/act", json.dumps(body),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
         resp = conn.getresponse()
@@ -23844,6 +23924,9 @@ NOTICE_BODY_MAX = 64 * 1024
 NOTICE_ACTIONS_MAX = 4
 NOTICE_ACTION_LABEL_MAX = 60
 NOTICE_ACTION_ROUTES = ("/send",)          # each further route needs its own argument for why a button may call it
+NOTICE_OWNERLESS_SID = "notes"             # the owner-less notice cards' home under STATE/notices (the user 2026-09-18: a card with no session,
+                                           # shown at the top of the feed): a word, so it can never be a sid (a uuid is hex and hyphens)
+NOTICE_OWNERLESS_NAME = "Notes"            # the run's name on the feed; no identity colour (no session stands behind it)
 NOTICE_LIVE_KEYS_MAX = 50                  # live keys per session: past it the oldest keys are superseded into the archive (round two, low a)
 _notice_lock = threading.Lock()            # one appender at a time per kernel; the file is append-only between sweeps
 
@@ -23926,7 +24009,10 @@ def _notice_memo_report():
 
 
 def _notice_session_known(sid):
-    """A notice belongs to a session the kernel knows: one the names registry lists (alive or not) or one that is live."""
+    """A notice belongs to a session the kernel knows: one the names registry lists (alive or not) or one that is live. The
+    reserved owner-less key is NOT a session this answers for: the owner-less road is taken on an EMPTY sid alone
+    (post_notice), never on the word arriving as a name (round two of PR 1831: _sid_of hands an unresolved name back
+    unchanged, so "notes" as a name reached the store as the reserved sid)."""
     try:
         if _name_of(sid):
             return True
@@ -23992,15 +24078,16 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
     human-readable refusal, never a silent drop (add_watch's contract). One validation for every door: the key's grammar,
     the title and body caps, the producer label, the session known to this kernel, the attachment's verdict (a refusal
     carries its why), the actions' allowlist and cap. The kernel assigns `rev`, the revision count for the key in the
-    session across the live file and the archive (an id the cleared ledger holds is never minted again), stamps `at`, appends under the lock, marks the views dirty and wakes the pusher."""
+    session across the live file and the archive (an id the cleared ledger holds is never minted again), stamps `at`, appends under the lock, marks the views dirty and wakes the pusher.
+    An empty `sid` posts an OWNER-LESS card (the user 2026-09-18): its home is the reserved file NOTICE_OWNERLESS_SID under
+    STATE/notices, it shows at the top of the feed under the name Notes with no colour, and it carries no actions."""
     now = int(now if now is not None else time.time())
-    sid = str(sid or "").strip()
+    ownerless = not str(sid or "").strip()             # no session named: the owner-less home (the user 2026-09-18)
+    sid = NOTICE_OWNERLESS_SID if ownerless else str(sid).strip()
     key = str(key or "").strip()
     title = " ".join(str(title or "").split())
     body = str(body or "")
     producer = str(producer or "").strip()
-    if not sid:
-        return None, "a notice needs a session"
     if not NOTICE_KEY_RE.match(key):
         return None, "the key must match [A-Za-z0-9_.-]{1,64}"
     if not title:
@@ -24011,8 +24098,8 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
         return None, "the body is too long (%d bytes max)" % NOTICE_BODY_MAX
     if not NOTICE_PRODUCER_RE.match(producer):
         return None, "the producer label must match [A-Za-z0-9_.-]{1,32}"
-    if not _notice_session_known(sid):
-        return None, 'no session answers to "%s"' % sid
+    if not ownerless and (sid == NOTICE_OWNERLESS_SID or not _notice_session_known(sid)):
+        return None, 'no session answers to "%s"' % sid   # a given name that resolves to no session, the reserved word included
     exp = None
     if expires_at not in (None, "", 0):
         try:
@@ -24024,6 +24111,8 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
     acts, aerr = _notice_actions_check(actions)
     if aerr:
         return None, aerr
+    if acts and sid == NOTICE_OWNERLESS_SID:
+        return None, "an owner-less card has no session to send to: actions need a session"
     att = None
     if attachment:
         att = _notice_attachment(attachment, sid)
@@ -24054,7 +24143,10 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
 def expire_notice(sid, key, now=None):
     """A producer retires its newest revision of `key` early: an {op: expire} row, so the file is the whole history. (row, error)."""
     now = int(now if now is not None else time.time())
-    sid, key = str(sid or "").strip(), str(key or "").strip()
+    ownerless = not str(sid or "").strip()
+    sid, key = (NOTICE_OWNERLESS_SID if ownerless else str(sid).strip()), str(key or "").strip()
+    if not ownerless and (sid == NOTICE_OWNERLESS_SID or not _notice_session_known(sid)):
+        return None, 'no session answers to "%s"' % sid   # the same name door as post_notice (round two of PR 1831)
     with _notice_lock:
         posts = [r for r in _notice_rows_unlocked(sid) if r.get("op") == "post" and r.get("key") == key]
         if not posts:
@@ -24149,12 +24241,21 @@ def _notice_cards(now, cleared):
     except OSError:
         return out
     for sid in sids:
+        ownerless = sid == NOTICE_OWNERLESS_SID           # the reserved home: no session's name or colour (the user 2026-09-18)
         for r in _notice_projection(sid, now, cleared):
             item_id = _notice_item_id(sid, r.get("key"), r.get("rev") or 0)
             t = int(r.get("t") or 0)
+            column = "needs_input" if r.get("needsYou") else "completed"
             out.append({
-                "itemId": item_id, "sid": sid, "name": _name_of(sid) or sid[:8], "color": _name_color(sid),
+                "itemId": item_id, "sid": sid,
+                "name": NOTICE_OWNERLESS_NAME if ownerless else (_name_of(sid) or sid[:8]),
+                "color": None if ownerless else _name_color(sid),
                 "text": r.get("title") or "", "t": t, "live": False,
+                # the board model's fields (plans/card-boards.md; the names agreed with its author 2026-09-18) on the NOTICE
+                # family: the board the card sits on today and its category, today's column, carried beside it (the other
+                # builders write column alone until the boards' phase two); the owner-less run's place at the top is the feed
+                # board's sort rule over the owner key, in the pane, never a field here
+                "board": "feed", "category": column,
                 "trgb": list(cm.age_rgb(now - t, _colormap())),   # the age colour stamped here: this attach is post-loop, no fold pops a private field
                 "turnId": item_id, "origin": None,
                 "followupPending": None, "waitingOn": None,
@@ -24164,7 +24265,7 @@ def _notice_cards(now, cleared):
                            "body": r.get("body") or "", "attachment": r.get("attachment"),
                            "actions": r.get("actions") or [], "expiresAt": r.get("expiresAt"),
                            "dismissOnAction": bool(r.get("dismissOnAction")), "acted": bool(r.get("acted"))},
-                "column": "needs_input" if r.get("needsYou") else "completed",
+                "column": column,
                 "tree": []})
     out.sort(key=lambda c: (c["t"], c["itemId"]))
     return out
@@ -24197,6 +24298,8 @@ def _notice_action(item_id, route, body):
 
 def _notice_action_run(m, item_id, route, body):
     sid, key, rev = m.group(1), m.group(2), int(m.group(3))
+    if sid == NOTICE_OWNERLESS_SID:
+        return False, "an owner-less card has no actions"   # refused at the post too; the second door for a hand-made id
     row = next((r for r in _notice_rows(sid) if r.get("op") == "post" and r.get("key") == key and int(r.get("rev") or 0) == rev), None)
     if row is None:
         return False, "that notice is gone"
@@ -30045,7 +30148,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     these: the judge's stamp (_latch_skill_load_anchors, off the parse's own report of the wrappers it skipped)
     marks it "machine" with askAnchorRecord {kind: skill-load, skill},
     re-stamping an older "human" latch once, so this reads the store alone, never a transcript (build_feed's
-    cold-start contract). Its why names the skill, and with no host in the store it is marked hidden
+    cold-start contract). Its why names the skill, and with no host current at its mint it is marked hidden
     (born.hidden: the feed shows no card, the session's own view keeps the work) rather than left as a root,
     and a block romp filed itself (a failed nudge, an interrupt) does not except it: the judge resolves such a top
     with romp's done verdict, and only a live floor or the agent's own question to the user (a block from the
@@ -30063,9 +30166,13 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
     the dispatch and never overwritten by the completion's summary; never the brief or script) and shares by
     the smaller word set, more than half and at least two, so one stray word never carries it; it only picks
     WHICH launch supplies the why and, when several hosts are open, which is the parent; with no matching
-    launch the parent is the newest host minted before the node (else the oldest) and the why says the record
-    it is rooted in. Returns {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no
-    host). Deterministic: a pure function of the store and the task stream. Never writes the store."""
+    launch the parent is the newest host minted before the node and the why says the record it is rooted in.
+    A host minted AFTER the node was never current at its mint, so a node older than every host is NOT nested:
+    it keeps its card, with its face (an oldest-host fallback stood here until 2026-09-18, when a store whose
+    five human-anchored hosts were all minted in one day swept two completed roots from days before into the
+    oldest host's tree (the first request of that day), as its reviewed-earlier rows: a time boundary applied across roots). Returns
+    {nid: (parent nid or None, born)}; None for a top not nested (blocked, or no host current at its mint).
+    Deterministic: a pure function of the store and the task stream. Never writes the store."""
     out = {}
     status = status or {}
     def delegate(nd):
@@ -30116,7 +30223,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
         host = None
         if nest:
             before = [h for h in hosts if (h[1].get("t") or 0) <= (nd.get("t") or 0) and h[0] != nid]
-            pool = before or [h for h in hosts if h[0] != nid][:1]
+            pool = before                       # only a host current at the mint: never one minted after the node
             if pool:
                 host = pool[-1]
                 if hit and len(pool) > 1:            # several open: the launch's words pick the parent, ties the newest
@@ -30125,7 +30232,7 @@ def _heal_session_tops(path, nodes, status=None, keep=()):
         if host:
             born["parentText"] = str(host[1].get("text") or "")[:120]
         elif nest and skill_of(nd):
-            born["hidden"] = True     # a skill-load top with no request in the store to sit under: the feed hides it (the
+            born["hidden"] = True     # a skill-load top with no host current at its mint to sit under: the feed hides it (the
                                       # session's own view keeps the work); a blocked one is not here, it keeps its card
         out[nid] = (host[0] if host else None, born)
     return out
@@ -30197,9 +30304,11 @@ SUBAGENT_STEPS_CAP = 200        # tool calls shipped on the Agent head (agentSte
 # per build from the feed, timeline and chat builds and the nudge walk, and a pusher stack sample put a tenth of its push-stage
 # samples inside that walk. Bounded by ownership, not by a count: _subagent_trees_forget drops every root no alive session's
 # transcript names, on every jobs pass (_interrupt_block_tick, audience-independent) and, as a belt, after each feed build
-# and from the tracking-off frame.
+# and from the tracking-off frame. And, since 2026-09-18, one sample per cycle on `_live_scope.subagent_trees`: the first
+# reader of a root in a pusher cycle (a jobs pass, a handler thread's connect push) validates or walks, and every later
+# reader of that cycle is served the same (directories, stats) with no lstat (_subagent_tree, THE CYCLE SCOPE).
 _SUBAGENT_TREES = {}
-_SUBAGENT_TREE_STATS = {"hit": 0, "miss": 0, "evict": 0, "dirStats": 0, "walkMs": 0.0, "validateMs": 0.0}   # /perf memos.subagentTree;
+_SUBAGENT_TREE_STATS = {"hit": 0, "miss": 0, "scoped": 0, "evict": 0, "dirStats": 0, "walkMs": 0.0, "validateMs": 0.0}   # /perf memos.subagentTree;
 #                          advisory tallies, incremented without a lock as the neighbouring memos' are (a lost count under a race
 #                          is tolerated; the memo's own writes are single dict stores of immutable tuples)
 
@@ -30264,7 +30373,52 @@ def _subagent_tree(d):
     but cannot be listed (EACCES) stays in the list, where os.walk dropped it, unvouched, so the tree is walked on every
     call until it can be listed (today's cost, and the chmod that opens it is seen at once); no consumer's output changes
     (_subagent_meta_map's listing of it fails and is skipped, _find_agent_file finds no file in it, the feed key folds one
-    more identity)."""
+    more identity).
+
+    THE CYCLE SCOPE (2026-09-18). The event is one pusher cycle (or one jobs pass, or one connect push's chat loop on a
+    handler thread), which opens `_live_scope.subagent_trees`: {root path: (directories, stats)}, exactly what this
+    function returns. The first reader of a root in the cycle validates or walks (_subagent_tree_sample, the body) and
+    its answer is stored on the scope; every later reader of the cycle is served that sample with no lstat, counted as
+    `scoped`. Before it each reader took its own sample within the one cycle: the chat build's sidecar-map reads
+    (_stamp_agents, _awaiting_live_rows, _awaiting_nest, through _subagent_meta_map), the feed key's
+    _subagent_dirs_ident, the derivation's _session_awaiting, and a viewer frame's agent-file re-walk on a cache miss
+    (its first open, or after a file landed in a directory the walk read), which samples the root through
+    _find_agent_file (the frame's hit-path re-stats through _dir_stamps are a separate route, a follow-up); 63k
+    validations and 5.2M lstats over 3.9k cycles live, of which the ~39,500 outside the feed key are the candidates,
+    an estimated 30-50% of all validations being re-samples of a root another reader had taken in the same cycle, the
+    `scoped` tally measuring the realized share. A
+    directory change landing after the sample is invisible to the rest of the cycle and seen by the next cycle's fresh
+    sample, the one-cycle lag _sessions' mtime and _live_scope.snapshot already accept. Exact across the boundary because
+    every scoped sample carries a stamp per directory it listed (the stats), so a reader that folds those stamps into its
+    own memo (_subagent_meta_map's key, _subagent_file's stamps, the feed key's identities, the chat build's taskout notes)
+    mismatches next cycle when the tree moved and re-derives, never a stale hit; an EMPTY answer (nothing at the root, or
+    not a directory) carries no stamp and is therefore NOT scoped: _subagent_file_walk stamps the root itself with a fresh
+    _dir_stamp and reads its listing through _find_agent_file, and served an older empty sample it would memoize a nested
+    agent's miss under a stamp newer than the listing it read, a stale miss that outlives the cycle because
+    _subagent_file's hit path re-stats and never re-walks; so such a root costs each caller its one lstat, as before. The
+    `stats` list is shared by every reader of the cycle and read-only by contract, as _sessions' rows are (the readers
+    zip, iterate or copy it). Outside a scope every call samples afresh, as _live_map, _sessions, _path_of and
+    _auth_avail_status behave (a WS viewer handler, GET /feed.json read fresh)."""
+    d = str(d)
+    scope = getattr(_live_scope, "subagent_trees", None)
+    if scope is not None:
+        got = scope.get(d)
+        if got is not None:
+            _SUBAGENT_TREE_STATS["scoped"] += 1
+            return got
+    out = _subagent_tree_sample(d)
+    if scope is not None and out[0]:
+        # only an answer with at least one directory is scoped (2026-09-18): it carries a stamp per directory it listed,
+        # so a reader folding those stamps into its own memo re-derives next cycle; the two zero-directory answers carry
+        # none, and a scoped empty answer would let _subagent_file_walk memoize a nested agent's miss under the root's
+        # fresh stamp for good (its hit path re-stats and never re-walks)
+        scope[d] = out
+    return out
+
+
+def _subagent_tree_sample(d):
+    """One fresh sample of the tree at `d`: the memo's validation or walk, with no cycle scope (2026-09-18: _subagent_tree's
+    body before the scope, unchanged; the memo's rules are documented there)."""
     d = str(d)
     try:
         st = os.lstat(d)
@@ -30348,9 +30502,11 @@ def _subagent_trees_forget(alive):
 
 
 def _subagent_tree_memo_report():
-    """/perf memos.subagentTree: hit and miss (trees served by validation against trees walked), evict (roots dropped as
-    unowned), dirStats (the lstats validations paid), walkMs and validateMs (the time in each, every thread), and the gauges
-    roots (entries) and dirs (directories held). Written from several threads; a resize under the sum is read again."""
+    """/perf memos.subagentTree: hit and miss (trees served by validation against trees walked), scoped (served from the
+    cycle's sample with no stat at all, 2026-09-18: scoped / (hit + miss + scoped) is the share of reads that were
+    re-samples of a root another reader took in the same cycle), evict (roots dropped as unowned), dirStats (the lstats
+    validations paid), walkMs and validateMs (the time in each, every thread), and the gauges roots (entries) and dirs
+    (directories held). Written from several threads; a resize under the sum is read again."""
     for _ in range(3):
         try:
             dirs = sum(len(v[0]) for v in list(_SUBAGENT_TREES.values()))
@@ -30368,7 +30524,9 @@ def _subagent_meta_map(path):
     transcript at `path`, the nested workflow directories included (T355: a workflow agent's sidecar sits under
     workflows/wf_<id>/, and a flat listing missed it, so its Agent card never learned its id), cached on the
     directories' mtimes (a sidecar landing changes its directory's — a stat, never a timer). {} when the directory does
-    not exist (older CLIs wrote no subagent files)."""
+    not exist (older CLIs wrote no subagent files). The directories and their stats come from the shared walk memo
+    (_subagent_tree), one sample per cycle across every reader since 2026-09-18: the three reads a chat build makes of
+    this map (_stamp_agents, _awaiting_live_rows, _awaiting_nest) and the feed key's read share the cycle's stamps."""
     d = str(_subagents_dir(path))
     dirs, stats = _subagent_tree(d)                       # the shared walk memo (2026-09-16): the directories and the stat each
     if not dirs:                                          #  was taken under, one pass, no os.walk and no second stat per directory
@@ -31387,7 +31545,7 @@ def _postal_intent(kind, body=""):
     return m.group(1) if m else ""
 
 
-_postal_index_memo = [None]   # ((mtime_ns, size), idx, body_map) — exact-change key of messages.jsonl
+_postal_index_memo = [None]   # ((mtime_ns, size), idx, body_map, sid_revs) — exact-change key of messages.jsonl
 
 
 def _postal_index():
@@ -31398,7 +31556,8 @@ def _postal_index():
     through this and re-parsed the whole log per push otherwise (~7% of the pusher's wall time,
     py-spy 2026-08-31). Consumers only read the index (_hydrate_postal), so sharing one dict is safe.
     The memo also carries the index's body-keyed map (_postal_body_rows), built once per index version
-    beside it, so the outgoing-card join does not rescan every row per card per build."""
+    beside it, so the outgoing-card join does not rescan every row per card per build, and the per-session
+    revision table (_postal_sid_revs_of, 2026-09-18), so a chat's postal key is a dict lookup per build."""
     p = jd.STATE / "timeline" / "messages.jsonl"
     try:
         st = os.stat(p)
@@ -31452,7 +31611,7 @@ def _postal_index():
                     rec["bouncedWhy"] = re.sub(r"[\x00-\x1f\x7f]+", " ", why)[:200]
             elif ev == "recall":
                 rec["recalled"] = o["t"]
-    _postal_index_memo[0] = (key, idx, _postal_body_map(idx))
+    _postal_index_memo[0] = (key, idx, _postal_body_map(idx), _postal_sid_revs(idx))
     return idx
 
 
@@ -31479,6 +31638,61 @@ def _postal_body_rows(index):
     if hit is not None and hit[1] is index:
         return hit[2]
     return _postal_body_map(index)
+
+
+def _postal_sid_revs(index):
+    """Per session, its revision of the postal index (2026-09-18): {key: (n, last_mid, outcomes)} over the
+    records whose fromId or toId is the key, walked in the index's (the log's) order. n is the count of such
+    records, last_mid the id of the latest, outcomes a tuple with one entry per such record that carries any
+    outcome, (id, read, relayed, bounced, recalled, bouncedWhy) as the record holds them: the receipt a sent
+    card renders (enrich_out in _hydrate_postal), lossless, so equality is exact by value. Being a fold of
+    the records' VALUES it equals a fresh walk of the same records (a caller's own dict and the memo's table
+    agree) and moves exactly when a card's receipt would: an exec on one message beside an unexec on
+    another moves it, where a count of outcomes would net to no change; an exec then an unexec of ONE
+    message with no build between leaves it where it was, because the receipt is back where it was (the
+    drain rolled back, the mail is unread again); with a build between it moves twice, as the receipt did;
+    and a later exec after the restore lands a new time, which the card renders, so that moves it too.
+
+    The key "" is the bucket for records with NO recipient: such a record hydrates in every chat
+    (_postal_addressed_to), so every session's revision folds this bucket (_chat_postal_rev). A record with
+    no SENDER keys its recipient alone: the bus refuses an anonymous /send, so the only writer of one is the
+    bus's own return note (deliver from "romp-postal", from_id ""), and an outgoing card joins its row by
+    body with no sender filter today, so such a row is no more its sender's than any third party's; keying
+    it here would rebuild every mail-bearing tab per return note for nothing. When the join is scoped to
+    rows with fromId in (sid, "") the bucket must key fromId == "" too. A self-addressed or pre-schema row
+    (from == to) counts once, the keys being a set. A relay row's to_id is "peer:<host>", an unused bucket
+    (this kernel builds chats only for sessions with a local transcript; an incoming relayed message is a
+    local sent row with to_id the local session), one dict entry per peer host. A second `sent` row for one
+    id is not a case: deliver mints a unique maildir name, the relay park a px- name, the start sweep's row
+    rebuild skips ids already sent, and every writer appends (_tl_append)."""
+    revs = {}
+    for rec in index.values():
+        keys = {rec.get("toId") or ""}
+        if rec.get("fromId"):
+            keys.add(rec["fromId"])
+        outs = None
+        if rec.get("read") or rec.get("relayed") or rec.get("bounced") or rec.get("recalled"):
+            outs = (rec["id"], rec.get("read") or None, rec.get("relayed") or None, rec.get("bounced") or None,
+                    rec.get("recalled") or None, rec.get("bouncedWhy") or None)
+        for k in keys:
+            ent = revs.get(k)
+            if ent is None:
+                ent = revs[k] = [0, None, []]
+            ent[0] += 1
+            ent[1] = rec["id"]
+            if outs is not None:
+                ent[2].append(outs)
+    return {k: (n, mid, tuple(outs)) for k, (n, mid, outs) in revs.items()}
+
+
+def _postal_sid_revs_of(index):
+    """The per-session revision table for `index` (2026-09-18): the memoized index's table comes from its
+    memo entry (built once per index version, never per build); any other dict (a caller's own index) gets
+    one built here, once per call. _chat_postal_rev reads a session's revision through this."""
+    hit = _postal_index_memo[0]
+    if hit is not None and hit[1] is index:
+        return hit[3]
+    return _postal_sid_revs(index)
 
 
 def _name_color_by_name(name):
@@ -31759,8 +31973,8 @@ def _postal_card_deps(cards, index, captions):
     re-hydration in this build would read: per card its mid, the caption under that mid, and its peer's
     identity (the sender's name and colour for an incoming card, the recipient's colour for an outgoing
     one); a raw event that did not hydrate contributes None, its rendering depending on the log alone,
-    which the gate keys beside this by the log's identity (_chat_postal_key). Everything else a card
-    carries comes from the raw event or the log row. `captions` is the build's caption-map getter and is
+    which the gate keys beside this by this session's postal revision (_chat_postal_rev). Everything else
+    a card carries comes from the raw event or the log row. `captions` is the build's caption-map getter and is
     called only when a card carries a mid, so a tab whose cards join no caption never pays for the map.
     The gate re-hydrates when this tuple moved: O(cards) dict lookups instead of a whole-list re-hydration
     on every judge pass, which was the gate's rule while the judge generation was its key (2026-09-09)."""
@@ -32813,13 +33027,29 @@ def _chat_stat_key(path):
         return None
 
 
-def _chat_postal_key():
-    """The postal index's identity — messages.jsonl (mtime_ns, size), the same key _postal_index memoizes on."""
-    try:
-        st = os.stat(jd.STATE / "timeline" / "messages.jsonl")
-        return (st.st_mtime_ns, st.st_size)
-    except OSError:
-        return None
+def _chat_postal_rev(sid, index):
+    """This session's revision of the postal index (2026-09-18): (its own entry, the no-recipient bucket) from
+    _postal_sid_revs_of(index), the postal component's key beside the values the cards embed
+    (_postal_card_deps). It moves on exactly the postal events that can change this tab's cards: a record
+    addressed to or from this session appearing (a raw marker resolving, an outgoing card's body join), an
+    outcome landing on one of those (read, relayed, bounced with its why, recalled: the receipt a sent card
+    renders), or a record with no recipient appearing (it hydrates in every chat). It deliberately does not
+    move on mail between two other sessions, nor on outcome rows for their messages. The key before it was
+    the log's identity ((mtime_ns, size), the index memo's own key), so a message between ANY two sessions
+    rebuilt every mail-bearing tab and re-hydrated their sealed cards: 1862 of 5907 background chat rebuilds
+    on one live kernel carried the postal label, and the gate re-hydrated sealed cards 1624 times (a /perf
+    read, 2026-09-18).
+
+    One residual inexactness, inherited from the outgoing join: enrich_out in _hydrate_postal joins an
+    outgoing card to ANY sent row wearing its exact body, closest in time to the tool call, with no sender
+    filter. For a card correctly joined to its own row, a later identical-body row from another pair would
+    STEAL the join under the log key, so the render this key leaves unrefreshed is the correct one; the one
+    wrong-either-way case is a card already mis-joined to a third party's row whose outcomes then change,
+    which this key does not see. The follow-up that scopes the join to rows with fromId in (sid, "") makes
+    this key exact by construction (and adds fromId == "" to the bucket, see _postal_sid_revs). `index` is
+    the object the build hydrates against, so the key and the cards it stands for read one index."""
+    revs = _postal_sid_revs_of(index)
+    return (revs.get(sid), revs.get(""))
 _prev_chat_ledger = {}                           # sid → the previous build's ledger (so a delta carries it only when changed)
 
 # The ledger memo (2026-09-09): build_session's goal-tree walk and live roots per sid, keyed on every input
@@ -32918,12 +33148,57 @@ def _chat_ident(path):
 
 
 def _chat_reg_sig(sid):
-    """Registry content that can change a chat or feed entry, plus its readable/missing/unreadable state. Host journal
+    """Registry content that can change a chat entry, plus its readable/missing/unreadable state. Host journal
     acknowledgements and log offsets move during ordinary output without changing the payload; keying on
     the file's stat rebuilt the tab on each of those writes. Keep every other field, including future
-    ones. The shared reader handles atomic replacements and permission repairs; never edit its record."""
+    ones (the chat reads many). The feed key takes _feed_reg_sig, its allow-list (2026-09-18). The shared reader
+    handles atomic replacements and permission repairs; never edit its record."""
     state, reg = _thread_reg_read(sid)
     return state, {k: v for k, v in reg.items() if k not in ("hostAck", "hostLogPos")}
+
+
+_FEED_REG_FIELDS = ("bgLedger", "spawnedAt")   # the SDK registry fields a feed derivation reads (2026-09-18): the launch
+#   ledger (_bg_live_norm's deadline / acting-agent join over the live task rows) and the CLI epoch (_sdk_spawned_at ->
+#   jd._cli_epoch, the bg ghost gate). An ALLOW-list, pinned by tests/test_feed_memo_inputs.py (RegAllowList) against
+#   every function of the kernel and the judge that reads the record in one of the receiver shapes that census names
+#   (the shared readers, a decode of the registry path, a `reg` parameter or a record handed on, their copies, merges
+#   and comprehensions) and against a callee walk from the derivation: a reader in those shapes that the walk reaches
+#   names a field here, or the test is red. lastSid is read inside the body too (_session_stamp_read -> jd._sdk_last_sid, under _bg_split ->
+#   _session_stamped_tops, run by _awaiting_task_descs and _bg_service_descs) and stays out on purpose: it shapes only
+#   that helper's own memo key and its deleg output, which no card consumes, and the transcript path it resolves is
+#   folded by the key's `transcript` component (_feed_reg_sig says why in full).
+
+
+def _feed_reg_sig(sid):
+    """The feed key's registry half: the record's readable/missing/unreadable state (its existence is what
+    _display_sdk_human and the parse slot answer) and ONLY the fields a feed derivation reads (_FEED_REG_FIELDS), by
+    value. The feed key took _chat_reg_sig, every field but the host journal's, so a result's cost watermark
+    (costState), the Stop hook's settle stamp (lastStopAt, lastTurnOpener), the echo and queue mirrors, the bgTasks
+    mirror and the cron, task-store, push and skill records each re-derived the session's cards though no card reads
+    them (2026-09-18; live, `reg` rode 9% of misses). An allow-list, not a deny-list: a registry field a feed reader
+    takes up is added to _FEED_REG_FIELDS, and the census pin (tests/test_feed_memo_inputs.py, RegAllowList) is red
+    until it is, for a reader in the receiver shapes the census names (the shared readers _thread_reg and
+    _thread_reg_read, the backend's read_reg, a decode of the registry path, a `reg` parameter or a record handed on
+    to a function, their dict() and .copy() copies, `{**reg}` merges, walruses and comprehensions, a name or attribute
+    bound from one) that a callee walk from _feed_session_entry reaches; a record reaching a reader outside those
+    shapes (a container built in another function, an attribute set in another method) is outside the pin, and the
+    census's docstring says so. Every other field is mirrored into the
+    live row (apiKeyAuth as the row's authLive, the bgTasks set, the auth fields the row carries: the `row`
+    component) or read only off the feed path: lastStopAt by _settle_event_key (the nudge and compaction ticks) and
+    _turn_end_key (_turn_notify_tick's post-loop pass, the checkpoints, the bell pass after the feed's loop);
+    lastTurnOpener by _turn_opener (the same pass); threadOf by _compact_suggest_tick, _thread_mail_off,
+    _asker_row_alive and the backend's own live_sessions and thread_sessions views; bgLedgerEnded by _lift_decisions
+    (the lift tick); forkOf and forkedFrom by the comment threads and the chat page's signature; spawnedAtCli by the
+    SDK backend's host attach alone. lastSid IS read inside the body, by _session_stamp_read -> jd._sdk_last_sid
+    (under _bg_split -> _session_stamped_tops, run by _awaiting_task_descs and _bg_service_descs), and stays out of
+    the list because that read shapes only the helper's own memo key and its deleg output, which the feed never
+    consumes (_session_awaiting's stamp arm is gated on `stamp`, which the body never passes), while the transcript
+    path it resolves is discover's, folded by the `transcript` component; a card that starts consuming deleg adds
+    lastSid here. The values ride by reference (the memo's nested bgLedger list, as _chat_reg_sig's did):
+    _thread_reg_read's record is the memo's own and no caller edits it (_thread_reg hands out copies), so the key
+    never aliases a later write."""
+    state, reg = _thread_reg_read(sid)
+    return state, {k: reg[k] for k in _FEED_REG_FIELDS if k in reg}
 
 
 def _names_digest(snap):
@@ -32966,12 +33241,24 @@ def _chat_sig_shared():
 def _chat_push_scopes_open():
     """Open what the chat loop reads once per push and would otherwise read once per TAB on a thread with
     no pusher-cycle scope (a connect push on a handler thread): the shared signature components
-    (_chat_sig_shared), the caption-map slot (_msg_summaries_scoped) and the names snapshot (a registry
-    scan per outgoing postal card without it). A pusher cycle already holds the last two, so only the
-    absent ones are opened, and the record says which; _chat_push_scopes_close clears exactly what was
-    opened here, so a cycle's own scopes are never touched. A names snapshot on a handler thread makes
-    that push's postal values one read (the fold's `_scoped`), which is the condition the recorded values
-    rest on, and gives the signature's names digest the same content the pusher's has."""
+    (_chat_sig_shared), the caption-map slot (_msg_summaries_scoped), the names snapshot (a registry
+    scan per outgoing postal card without it) and the subagents-tree samples (`subagent_trees`,
+    2026-09-18: a rebuilt tab reads its sidecar map two to four times, each a validation of its own
+    without the slot, and a viewer frame's agent-file re-walk on a cache miss (its first open, or after
+    a file landed in a directory the walk read) samples the root once more; a handler thread's push
+    shares one sample per root across its chat loop and those re-walks, exactly as a pusher cycle does.
+    The frame's hit-path re-stats through _dir_stamps are a separate route, a follow-up). A pusher cycle
+    already holds the last three, so only the absent ones are opened, and the record says which;
+    _chat_push_scopes_close clears exactly what was opened here, so a cycle's own scopes are never
+    touched. The ownership record is written BEFORE the shared components are read (2026-09-18, the
+    review's finding): _chat_sig_shared reads the flags and cards files, the colormap, the login label
+    and the billing availability, and a raise there used to leave the slots just opened set on the
+    handler thread with no record of them, so the push's except branch and the next push's opening
+    close cleared nothing, and every later push and viewer frame on that connection's thread was served
+    the stale snapshot for the connection's life (the open skips a slot that is already set, so the leak
+    was adopted, never replaced). A names snapshot on a handler thread makes that push's postal values
+    one read (the fold's `_scoped`), which is the condition the recorded values rest on, and gives the
+    signature's names digest the same content the pusher's has."""
     owned = ["chat_shared"]
     if getattr(_live_scope, "msgsum", None) is None:
         _live_scope.msgsum = [_MSGSUM_UNSET]
@@ -32979,8 +33266,11 @@ def _chat_push_scopes_open():
     if getattr(_live_scope, "names", None) is None:
         _live_scope.names = _names_snapshot()
         owned.append("names")
-    _live_scope.chat_shared = _chat_sig_shared()
-    _live_scope.chat_push_owned = owned
+    if getattr(_live_scope, "subagent_trees", None) is None:
+        _live_scope.subagent_trees = {}                   # one sample per subagents root across this push's chat loop and its
+        owned.append("subagent_trees")                    #  viewer frames' agent-file re-walks (_push_subagents runs before the close), 2026-09-18
+    _live_scope.chat_push_owned = owned                   # recorded before the read below can raise (2026-09-18): the close must
+    _live_scope.chat_shared = _chat_sig_shared()          #  find every slot this open set, on the except path too
 
 
 def _chat_push_scopes_close():
@@ -33024,10 +33314,10 @@ def _chat_build_deps(sid, payload):
     so _chat_build_sig can re-evaluate them every cycle as its three trailing components
     (_CHAT_SIG_DEPS): the files whose tails the payload embeds, each with the identity it was read under
     (taskout); the messages whose path tokens are still unresolved (a mention precedes its file, so the
-    build retries them), with the links and pins as rendered (pathlink); and the postal cards, with the
-    log's identity and the embedded values (_postal_card_deps) read from the index and caption map the
-    build hydrated against, never from a fresh read (postal). `at_build` is the three components as this
-    build embedded them, the tail of the signature stored with the entry; the next cycle's
+    build retries them), with the links and pins as rendered (pathlink); and the postal cards, with this
+    session's postal revision (_chat_postal_rev) and the embedded values (_postal_card_deps) read from the
+    index and caption map the build hydrated against, never from a fresh read (postal). `at_build` is the
+    three components as this build embedded them, the tail of the signature stored with the entry; the next cycle's
     _chat_sig_deps evaluates the same record against the world then. A cold tab records its dependencies
     on its first build and is cached from then on."""
     sc = getattr(_chat_dep_scope, "deps", None) or {}
@@ -33045,12 +33335,13 @@ def _chat_build_deps(sid, payload):
     postal_any = bool(cards) or bool(sc.get("postal_any"))
     postal = None
     if postal_any:
+        pidx = sc.get("pidx")
+        idx = pidx if pidx is not None else _postal_index()  # the index first: the revision is read from it (2026-09-18)
         pk = sc.get("postal_key", _DEPS_UNSET)
         if pk is _DEPS_UNSET:
-            pk = _chat_postal_key()
-        pidx = sc.get("pidx")
+            pk = _chat_postal_rev(sid, idx)
         msum = sc.get("msum") or _msg_summaries_scoped
-        postal = (pk, _postal_card_deps(cards, pidx if pidx is not None else _postal_index(), msum))
+        postal = (pk, _postal_card_deps(cards, idx, msum))
     pl_at = tuple((u, l, p) for u, _md, l, p in pl)
     # `pl_check` starts None: the next cycle's signature re-resolves the pending tokens once (the build's
     # own resolves ran before any pre-check could be taken) and vouches from there (_chat_sig_deps)
@@ -33127,9 +33418,9 @@ def _chat_sig_deps(sid, deps):
     the build ran per pass before, moved into the key), except that a message none of whose candidate
     directories moved since the record's answers were verified (_chat_pl_precheck) keeps those answers,
     and only the messages a moved directory could have resolved are re-resolved (pathlink); and the
-    postal cards' embedded values re-read from the current index and caption map beside the log's
-    identity (postal). No record (a cold tab) → the empty components, which a first build's record then
-    replaces. The pre-check is taken BEFORE the re-resolve and stored on the record only when every
+    postal cards' embedded values re-read from the current index and caption map beside this session's
+    postal revision (postal). No record (a cold tab) → the empty components, which a first build's record
+    then replaces. The pre-check is taken BEFORE the re-resolve and stored on the record only when every
     answer held (stat-then-read): a file landing between the two is seen by the resolve, one landing
     after moves the next pre-check."""
     if not deps:
@@ -33157,8 +33448,11 @@ def _chat_sig_deps(sid, deps):
     postal = None
     if deps["postal_any"]:
         # the caption map through the cycle's slot on the pusher (_msg_summaries_scoped): the same map every
-        # build of the cycle hydrates against, one fetch per cycle; a handler thread reads it fresh
-        postal = (_chat_postal_key(), _postal_card_deps(deps["postal_cards"], _postal_index(), _msg_summaries_scoped))
+        # build of the cycle hydrates against, one fetch per cycle; a handler thread reads it fresh. The
+        # revision is read from the one index resolved here (2026-09-18): one stat of the log per tab per
+        # cycle, where the log-identity key stat'd it once and _postal_index again
+        idx = _postal_index()
+        postal = (_chat_postal_rev(sid, idx), _postal_card_deps(deps["postal_cards"], idx, _msg_summaries_scoped))
     return (touts, tuple(pl), postal)
 
 
@@ -33957,7 +34251,9 @@ def _parse_cached(path):
     cost on the request path. build_feed reads it for the working-dots + deep-link anchors so its CARDS
     (which come from the goal store, cheap) paint AT ONCE on a cold kernel start; the dots/anchors fill in a
     beat later once _warm_fleet_bg has parsed the session in the background (the user 2026-06-26: the feed
-    cards lagged the timeline lanes on startup, all of it the ~1s cold parse of the fleet)."""
+    cards lagged the timeline lanes on startup, all of it the ~1s cold parse of every living session). The one caller-side
+    exception (2026-09-18): _feed_session_key falls through to _parse when the memo already holds a WARM-keyed
+    entry for the session and this read misses; a session parsed once, never a cold kernel's first paint."""
     ent = jd.parse_entry_for_leaf(str(path))     # the entry names its romp sid: a leaf's stem is the CLI session's id
     if ent is None or len(ent) < 5:               # after a /clear or a resume fork, never the romp sid (review find)
         return None
@@ -37460,12 +37756,15 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     _fk, _fe, _fold_ok, _fold_why = _floor, None, False, None
     _pref_len = 0
     _seams_sig = json.dumps((_bs_store or {}).get("seams") or [], sort_keys=True, default=str)
-    _pk = _chat_postal_key()
     # ONE postal index and ONE caption map per build: the fold gate's check, the tail pass and the commit
     # hydrate against the same objects, so the entry records exactly the values its cards embed (a caption
     # appended between two of them would otherwise be embedded by one hydration and recorded by another).
     # The map is the cycle's on the pusher thread (_msg_summaries_scoped); a handler thread fetches its own.
+    # This session's postal revision (_pk, _chat_postal_rev) is read from that same index (2026-09-18), so
+    # the key the gate compares and the index it hydrates against are one object; the log's identity was
+    # the key before it, and mail between two other sessions rebuilt every mail-bearing tab.
     _pidx = _postal_index()
+    _pk = _chat_postal_rev(sid, _pidx)
     _msum_slot = [None]
     def _msum():
         if _msum_slot[0] is None:
@@ -37549,11 +37848,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                             break
             if _fold_why is None and _fe["postal_raw"]:
                 # The sealed postal cards are keyed on the VALUES they embed from outside the transcript
-                # (2026-09-09): the log's identity (_pk, the index memo's own key) and, per card, its caption
-                # and its peer's name and colour, read from the same index and caption map a re-hydration in
-                # this build would read (_postal_card_deps). They used to be re-hydrated on every judge pass
-                # (_judge_gen), although the only judge-written input a card embeds is its caption: every
-                # tab's whole sealed list, on every pass that moved any store. A deps tuple of None is an
+                # (2026-09-09): this session's postal revision (_pk, _chat_postal_rev, 2026-09-18) and, per
+                # card, its caption and its peer's name and colour, read from the same index and caption map a
+                # re-hydration in this build would read (_postal_card_deps). They used to be re-hydrated on
+                # every judge pass (_judge_gen), although the only judge-written input a card embeds is its
+                # caption: every tab's whole sealed list, on every pass that moved any store. A deps tuple of None is an
                 # entry sealed outside the pusher's names scope (see _scoped): unverified, so it re-hydrates
                 # once here and is recorded by this build if it is scoped.
                 _deps = _fe.get("postal_deps")
@@ -38065,7 +38364,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         if _ev.get("uuid") and _ev["uuid"] not in _raw_turn:
             _raw_turn[_ev["uuid"]] = _ti
     # A raw postal event that did not hydrate (its message not in the index yet) renders from the log alone and
-    # depends on the postal log, so the signature folds the log's identity even when no card rendered
+    # depends on the postal log, so the signature folds this session's postal revision even when no card rendered
     # (_chat_build_deps: postal_any); the record keeps the index and caption map this build hydrated against.
     if _chat_dep_scope.deps is not None:
         _chat_dep_scope.deps["postal_any"] = _chat_dep_scope.deps["postal_any"] or any(_chat_postal_relevant(_e) for _e in _raw_tail)
@@ -38188,6 +38487,8 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                                     + [(em.parse_z(_e.get("ts")) or 0, (_e.get("md") or "").strip()) for _e in _newpart if _e.get("orphaned")],
                     "open_tools": _open_tools, "skill_unfilled": _skill_unf,
                     "postal_raw": _praw, "postal_cards": _pcards,
+                    # postal_key: this session's postal revision (2026-09-18; the field's name predates it, and an
+                    # entry sealed under the old shape never outlives a restart: _chat_fold is in memory)
                     "postal_key": _pk, "postal_deps": _pdeps, "pl_pending": _plp, "pv_missing": _pvm,
                     "task_outs": _touts,
                     # the sealed Agent cards, for _chat_agents_moved: (toolUseId, agentId, pending) —
@@ -39699,7 +40000,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
             "t": t, "live": live, "_ageT": t,   # the tint's epoch; trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working",
+            "blocked": None, "column": "working", "board": "feed", "category": "working",
             # judging = the turn has SETTLED and the planner's classify pass is due/in flight — the swirl
             # chip says Analyzing… only then; an open turn keeps the honest Working… (the user 2026-07-12)
             "provisional": True, "judging": not turn_open, "tree": []}
@@ -39735,7 +40036,7 @@ def _awaiting_card(s, name, color, fsid, live, now, why, kind=None, since=None, 
             "t": t, "live": live, "_ageT": age_t,   # trgb is stamped per build by the feed's fold (_feed_fold_card)
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working",
+            "blocked": None, "column": "working", "board": "feed", "category": "working",
             # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
             # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
             # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
@@ -39804,7 +40105,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
             "blocked": {"state": perm_state,
                         "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                  else "this session is stopped awaiting your approval")},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "provisional": True, "tree": []}
 
 
@@ -40325,6 +40626,17 @@ _feed_memo = {}                                  # sid → (key, entry_json, siz
 #                                                  moves to the tail, the head goes first when the bytes exceed the bound
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
 _FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0, "failed": 0,
+                    "coldLive": 0, "coldFlip": 0,   # coldLive: a living session with a transcript whose cache-only parse
+                    #                                  read MISSED, per session per build; a session no client and no judge
+                    #                                  has parsed rides it EVERY build, so a standing count is those
+                    #                                  cold-by-design sessions, not a fault. coldFlip: those the memo held
+                    #                                  WARM-keyed and the key re-read in place through _parse instead of
+                    #                                  deriving cold (one kernel parse each, also under /perf parses.kernel;
+                    #                                  2026-09-18, the re-read comment in _feed_session_key). Watch: coldFlip
+                    #                                  climbing every build for ONE session with no appends means its parse
+                    #                                  never stores (jd._parse_store refuses a retired leaf), a row still
+                    #                                  naming a leaf discover retired; discover retires the old leaf exactly
+                    #                                  when handing out the new one, so it should not occur, and this shows it
                     "miss_by": {k: 0 for k in _FEED_MEMO_LABELS + ("cold",)},   # /perf builds.feed.memo
                     "row_by": {k: 0 for k in _FEED_ROW_FIELDS + ("presence",)}}   # ...and which row position moved on a row
 #                                                  miss; `presence`: the row appeared or left (None on one side) or has another
@@ -40506,7 +40818,9 @@ def _subagent_dirs_ident(sid, d):
     """(the directories under the subagents root `d`, their identities) for the feed key's subagents component, from the
     shared walk memo (_subagent_tree, 2026-09-16; before it this key held a sid-keyed memo of its own over the same walk,
     the T368 review's profile having put the walk at a third of the key's cost, while every other reader still walked):
-    an unchanged tree costs one lstat per known directory. A root that does not exist is the tree (d,) with identity None,
+    an unchanged tree costs one lstat per known directory, once per cycle across every reader (the cycle scope,
+    2026-09-18: the chat build's sidecar-map reads earlier in the same cycle sampled this root, and the key is served that
+    sample). A root that does not exist is the tree (d,) with identity None,
     and its appearance moves the component; a symlink or file in its place is (d,) with the LINK's own lstat identity
     (before the shared memo, the target's os.stat identity: one component miss at deploy for such a session, no output
     change).
@@ -40672,10 +40986,16 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
     they did before the memo. `prev_entry` is the session's previous decoded entry (None when cold): its `peers` and
     `reads` records drive the dependency components (_FEED_MEMO_DEPS), which _feed_key_with_deps re-evaluates over the NEW entry
-    after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build.
+    after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build. `ctx["prev_key"]`
+    is the key that entry was memoized under (None when cold), set per session by build_feed's loop beside `prev_entry`:
+    its parse component decides the warm-to-stale re-read below.
 
     Components, label: what it covers (the reads in the body), how it is taken.
-      transcript: _chat_ident(s["path"]). The cache-only parse (_parse_cached → jd.parse_cached's fileset key), the
+      transcript: (_chat_ident(s["path"]), s["path"]). The file's identity and its PATH, the string (2026-09-18: a live
+        SDK row discover cannot see yet takes its path from the registry's cwd and lastSid through _sdk_sess, and
+        `reg` no longer folds those fields; a move between two transcripts that exist moves the identity, a move
+        between two that do not has the identity None at both, and the string alone tells them apart). The
+        cache-only parse (_parse_cached → jd.parse_cached's fileset key), the
         anchors (_segs_seam, _seg_anchors, _seg_jump, _seg_key, _seg_last_text, _atom_prose_chars, em.turn_scalar),
         the api-error tail (_api_error), the background scans (_heal_session_tops → _bg_scan_all_cached,
         _bg_live_norm's transcript rung, _bg_owner_tops/_bg_service_descs/_awaiting_task_descs → _bg_placed_tops →
@@ -40687,7 +41007,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         parse that is not a function of its files (em.parse_session reads the clock for the trailing idle span's
         end alone, synthesize_idle), so a parse re-run at a later clock with no file change (an evicted parse warmed
         again) differs there and nowhere else; keying on it re-derives once per re-parse and makes the parse's
-        identity exact without a clock in the key (T368 review round two).
+        identity exact without a clock in the key (T368 review round two). The bit never flips back to False for an
+        entry the memo holds warm: when the cache-only read misses for such a session, the key re-reads through _parse
+        in place (the re-read comment in the body, 2026-09-18) rather than deriving the session cold and warm again a
+        build later; a cold kernel's first paint still parses nothing, since no entry is warm yet.
       cut: the SDK backend's pending_cut(sid), a chat DELETE rollback that changes the parse with no file change.
       states: (_chat_ident(STATE/states/<fsid>.jsonl), _chat_ident(STATE/states/<anchor>.jsonl)). The parse key's
         states file, the machine cuts (_interrupt_suppresses_nudge → _last_machine_cut), _session_retrying's
@@ -40709,10 +41032,16 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         stamp moved every snapshotted session's key twice per pass.
       anchors: _node_anchor_rev[fsid]. The warm-anchor table _node_anchor_uuids serves a cold node from; a chat build's
         resolve for this sid bumps it.
-      reg: (_chat_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry's content and read state,
-        excluding host journal acknowledgements/log offsets, plus the death marker's file identity. The launch ledger
-        (_thread_reg → _bg_live_norm), spawnedAt and the death marker (_sdk_spawned_at, jd._cli_epoch), the SDK-human
-        flag (_display_sdk_human).
+      reg: (_feed_reg_sig(fsid), _chat_ident(STATE/gone/<fsid>.json)). The SDK registry record's state (readable,
+        missing or unreadable) and the fields a derivation reads (_FEED_REG_FIELDS, by value): bgLedger, the launch
+        ledger _bg_live_norm joins for deadlines and acting agents (the body's own call, _session_awaiting →
+        _awaiting_live_rows, _bg_owner_tops' rows, _awaiting_task_descs, _bg_service_descs), and spawnedAt, the CLI
+        epoch (_sdk_spawned_at → jd._cli_epoch); plus the death marker's file identity. The record's existence is
+        _display_sdk_human's answer (the parse slot). Every other field is the live row's (`row`) or is read off the
+        feed path (2026-09-18, the allow-list; _feed_reg_sig names the readers). cwd, lastSid and name reach the
+        loop's session row through _sdk_sess outside this key and are folded by `transcript` (the path, by string
+        and by identity) and `names` (the row's name, by value); lastSid is also read inside the body by
+        _session_stamp_read → jd._sdk_last_sid, whose output no card consumes (_feed_reg_sig says why).
       cleared: the session's own slice of _cleared_ids(), sorted. `nid in cleared` per top, the provisional card's
         follow-up target check; a peer's slice rides `peers`.
       row: _feed_row_key(tm): the live row's fields the derivation reads, by position (state, since; the billing fields
@@ -40753,7 +41082,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
         under it, from the shared walk memo (_subagent_dirs_ident over _subagent_tree, 2026-09-16: the directories are
         listed once per change, vouched for by one lstat each while they stand). _subagent_meta_map. A sidecar rewritten
         in place under its own name moves no directory's mtime and is invisible here as it is to the map's own cache
-        (pre-existing).
+        (pre-existing). Sampled once per pusher cycle across every reader (2026-09-18), so the key's identities are the
+        same sample the derivation's map read.
       usage: _chat_ident(STATE/usage.json) when the previous entry recorded reading it (an api error's cap offer,
         _cap_switch_offer), else None. A deps component.
       offer: the login-account usage window sitting at its cap with its reset still ahead of the build's clock, as
@@ -40780,7 +41110,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     hide = bool(_session_flag(fsid, "hideFromFeed"))
     board = _feed_board_facts(ctx, now)         # the board-wide identities and indexes, once per build (before any read)
     # ── file identities, every one BEFORE the reads below ──
-    transcript = _chat_ident(path) if path else None
+    transcript = (_chat_ident(path), path) if path else None   # the identity and the string: two absent files differ by path alone
     states = tuple(_chat_ident(jd.STATESDIR / (k + ".jsonl"))
                    for k in dict.fromkeys([fsid, str(s.get("anchor") or "")]) if k)
     names = (s.get("name"), tuple(_names_parts(fsid) or ()))
@@ -40792,7 +41122,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     _hold = _rewind_hold_get(fsid)
     hold = (_hold.get("cutT"), _hold.get("leaf"), _hold.get("at")) if _hold else None
     anchors = _node_anchor_rev.get(fsid, 0)
-    reg = (_chat_reg_sig(fsid), _chat_ident(jd.GONEDIR / (fsid + ".json")))
+    reg = (_feed_reg_sig(fsid), _chat_ident(jd.GONEDIR / (fsid + ".json")))
     cl = board["cleared_by_sid"].get(fsid, ())
     row = _feed_row_key(tm)                          # the read fields by position, None when not live (2026-09-18)
     postal = _postal_session_slice(fsid, board["postal"])
@@ -40828,6 +41158,36 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     ps, st, who_working, interrupting, closer, snap_key = None, None, False, False, False, None
     if not hide:
         ps = _parse_cached(s["path"]) if path else None   # CACHE-ONLY: the cards paint at once on a cold kernel (the user 2026-06-26)
+        if ps is None and path:
+            _feed_memo_count("coldLive")             # a living session (every session in build_feed's loop is in live_map:
+            #                                          _alive_sessions filters on it, so no `live` gate here) whose parse
+            #                                          the cache does not hold at this version; a session nothing has
+            #                                          parsed rides this every build
+            prev_key = ctx.get("prev_key")           # the key the memo holds this session's entry under (build_feed's loop
+            #                                          sets it per session, None when cold)
+            if _feed_key_was_warm(prev_key):
+                # THE WARM-TO-STALE RE-READ (2026-09-18). This session's memoized entry was derived over a warm parse and
+                # the cache-only read just missed: its transcript, its states log or its cut moved since the parse the
+                # chat's build stored, which is what a streaming session does every cycle (the chat builds before the
+                # feed in _push; the stream lands between them). Deriving COLD here painted the entry without its
+                # parse-derived half (no working dot, no open-turn narration, no anchors, sessState unknown, bg None,
+                # the closer swirl off) and the next build, after the chat re-parsed, derived it WARM again: two
+                # derivations and a dot blink per append, a card move on no new information (live: the parse miss label
+                # 2061 against transcript 1297 over 1195 builds). The parse is the shared store's (jd.parsed_session
+                # through _parse, the slot the chat's build hits next cycle), so a tab the chat builds every cycle pays
+                # it once either way, here instead of there; a session the chat skips pays one assembly fold per
+                # appended version (em.parse_session's `fold` mode; a full parse when the fold cannot serve), on
+                # whichever thread builds the feed (the pusher, a clearAll handler, GET /feed.json), a racing build on
+                # another thread costing a duplicate parse and never a wrong entry. A session never derived warm still
+                # reads cache-only, so a cold kernel's first paint parses nothing, as before. The one completeness
+                # caveat: a parse whose content changed while the transcript's identity, both states identities, the
+                # cut, the reg and the last turn's end all stand now key-equals and hits (the cold/warm pair used to
+                # re-derive it). The only parse input outside the key is the anchor candidate transcript
+                # (jd._judge_candidates), which the store treats as immutable after the fork (jd._note_leaf retires the
+                # old leaf as discover hands out the new one); were that contract to break, add the anchor's identity
+                # to the `transcript` component (same label, no census change).
+                ps = _parse(path, fsid, now)
+                _feed_memo_count("coldFlip")
         if ps is not None:
             ps = _merge_live_atoms(ps, fsid)         # the same LIVE-MERGED session the chat chip + timeline lane read
         try:
@@ -40863,6 +41223,17 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     return (transcript, parse, cut, states, names, captions, store, anchors, reg, cl, row, ask, live_rev,
             bg, wait, postal, stalls, nudge, jauth, jactive, hide, watch, subagents, usage, offer, auth, downtime,
             debug, interrupting, closer, peers)
+
+
+_FEED_PARSE_IDX = _FEED_MEMO_LABELS.index("parse")
+
+
+def _feed_key_was_warm(key):
+    """Whether a memoized key was taken over a WARM parse: its parse component reads (True, end). False for no key, a
+    key of another shape (a build before a label change; _feed_memo_miss files that under cold) or a cold one
+    (2026-09-18, the warm-to-stale re-read in _feed_session_key)."""
+    return (isinstance(key, tuple) and len(key) == len(_FEED_MEMO_LABELS)
+            and isinstance(key[_FEED_PARSE_IDX], tuple) and key[_FEED_PARSE_IDX][0] is True)
 
 
 _FEED_PEERS_UNSETTLED = ("unsettled",)           # a `peers` component no build's key can equal (the builder makes None or
@@ -41910,6 +42281,7 @@ def _feed_session_entry(s, ctx):
             "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
             "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
             "column": column,
+            "board": "feed", "category": column,   # the board model's two fields (plans/card-boards.md, phase two): the feed's category IS the column
             "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
             "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
             "judging": bool((sess_judging or _stall_inflight) and column == "working"),
@@ -42084,6 +42456,10 @@ def build_feed(now, live_map=None):
         try:
             prev = json.loads(ent[1]) if ent is not None else None   # the ONE decode per session per build: a hit's fresh
             #                                                          objects to fold, and the dependency record the key reads
+            ctx["prev_key"] = ent[0] if ent is not None else None    # ...and the key it was memoized under: the key's
+            #                                                          warm-to-stale re-read reads its parse component
+            #                                                          (2026-09-18). Set for EVERY session, None when cold:
+            #                                                          ctx is one dict across the loop (the peer_facts idiom)
             key = _feed_session_key(s, tm, ctx, prev)
             if ent is not None and ent[0] == key:
                 _feed_memo_count("hit")
@@ -42123,8 +42499,8 @@ def build_feed(now, live_map=None):
     if heal_total > _HEAL_LOG["n"]:                   #   count is named only when it is the one that rose, so a rise in
         _rose.append("%d session-started top(s) nested under the goal they ran in" % heal_total)   # one never re-says
     if hidden_total > _HEAL_LOG.get("h", 0):         #   the other's number (T333: the hidden count, a skill the harness
-        _rose.append("%d session-started top(s) hidden (rooted in a skill the harness loaded, no request in the "
-                     "store to sit under; the session's own view keeps the work)" % hidden_total)   # loaded, no host)
+        _rose.append("%d session-started top(s) hidden (rooted in a skill the harness loaded, no request current at "
+                     "its mint to sit under; the session's own view keeps the work)" % hidden_total)   # loaded, no host)
     if _rose:
         _HEAL_LOG["n"], _HEAL_LOG["h"] = max(heal_total, _HEAL_LOG["n"]), max(hidden_total, _HEAL_LOG.get("h", 0))
         sys.stderr.write("feed: %s (no request behind them; the planner nests new ones at mint time)\n" % "; ".join(_rose))
@@ -42171,7 +42547,7 @@ def build_feed(now, live_map=None):
             "blocked": {"state": "parkedHandoff", "toSid": ph["toId"], "toName": ph["toName"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"
                                 % (ph["fromName"], ph["toName"])},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
     # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
     # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
@@ -42200,6 +42576,9 @@ def build_feed(now, live_map=None):
             # session name -> live judge-classified SERVICE descs (a dev server the session keeps around;
             # _bg_split) → the grouped-mode session header's neutral chip, never a waiting state (2026-07-24)
             "bgServices": bg_services,
+            # the data-defined boards (plans/card-boards.md, phase three): the definitions a producer or the user made through
+            # the door, for the renderer to merge over its code constants; fixed across builds until a define or a remove
+            "boards": _boards_data(),
             "dismissedCount": len(cleared), "showDismissed": False,
             # the ledger's ids that belong to no session of THIS kernel (review find, 2026-09-09): clears this
             # kernel took for cards another kernel owns; the merged board applies them over that host's rows
@@ -44557,6 +44936,17 @@ def _postal_messages(now, alive_sids, id2name, live_sids=None):
     tanchors = _thread_anchors(alive_sids)              # {tid: (parent sid, anchorT, name)} — thread mail's home
     for mid, e in sent.items():
         f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
+        # A relayed send's row addresses the RELAY ("peer:<host>") and, since 2026-09-08, names the recipient too:
+        # to_sid its stable id, toName "<host>:<name>". The connector's far end is the RECIPIENT (the merged board
+        # stitches a bare foreign sid onto that host's lane by its uuid) and its display name carries the host, so
+        # mail to a remote twin of a local session reads "web → TESTHOST:web", never "web → peer:TESTHOST" hanging
+        # off a stub for a lane nobody has (the user 2026-09-18). The relay address keeps ONE job, the pending
+        # flag's cross-host leg below, which stays honest on it (the far end's liveness is not knowable here). A
+        # row older than the fields keeps the relay address, as before.
+        relay = isinstance(t, str) and t.startswith("peer:")
+        to_name = ""
+        if relay and e.get("to_sid"):
+            t, to_name = str(e["to_sid"]), str(e.get("toName") or "")
         # both endpoints must EXIST (bus-origin mail — bounces from the Romp Postal Service itself —
         # has no sender sid and can never draw), and at least one must be a local lane. A comment-THREAD
         # endpoint counts through its parent's lane (rewritten below) — the raw f == t self-check runs
@@ -44567,7 +44957,7 @@ def _postal_messages(now, alive_sids, id2name, live_sids=None):
         ex = execd.get(mid)
         ex_t, ex_dmid = (ex if isinstance(ex, tuple) else (ex, None))
         row = {"id": mid, "fromId": f, "toId": t,
-               "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t, ""),
+               "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t) or to_name,
                "fromOrig": e.get("from", id2name.get(f, f)),
                "sent": st, "exec": ex_t if ex_t else st, "hasExec": ex_t is not None,
                # pending = the deciding events say it can still land: never read (no exec), never
@@ -44580,10 +44970,13 @@ def _postal_messages(now, alive_sids, id2name, live_sids=None):
                "pending": (ex_t is None and mid not in ended
                            and (live_sids is None or t in live_sids
                                 or (t in tanchors and tanchors[t][0] in live_sids)
-                                or (isinstance(t, str) and t.startswith("peer:")))),
+                                or relay)),
                "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)}
         if ex_dmid:
             row["dmid"] = ex_dmid   # lets the MERGED view join a relayed connector to the remote turn's mids
+        if e.get("originMid"):
+            row["originMid"] = str(e["originMid"])   # a delivered copy names the SENDER's id: the merged board folds the
+            #                                          two kernels' rows for one message into one connector on it
         # A thread has NO lane of its own; its visual home is the comment's anchor square on the
         # parent's lane (the user 2026-08-23: the connector comes out of the square and lands back in
         # the lane where the mail arrives — and a reply arcs back into the square). Rewrite the
@@ -44792,7 +45185,7 @@ def _quarantine_cards(now, cleared):
                         "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
                                 "waiting on you — approve to deliver it to %s, or deny to drop it. Nothing "
                                 "reaches %s until you approve." % (frm, origin, to, to)},
-            "column": "needs_input",
+            "column": "needs_input", "board": "feed", "category": "needs_input",
             "tree": []})
     out.sort(key=lambda c: c["t"])
     return out
@@ -52284,7 +52677,8 @@ def _push(targets, connect=False, live_map=None):
             # start-keyed dirty watermark for the in-memory stamps neither key named; every stamp is a
             # component now, so a bare _mark_views_dirty rebuilds no chat tab (it still busts the feed and the
             # timeline). The shared components, the caption map and the names snapshot are opened once per
-            # push (_chat_push_scopes_open; a pusher cycle already holds the last two).
+            # push (_chat_push_scopes_open; a pusher cycle already holds the last three, 2026-09-18: the caption
+            # map, the names snapshot and the subagents-tree samples).
             _chat_push_scopes_open()
             _nd = len(_CHAT_SIG_DEPS)
             # the render floor (T323 stage 4b): a proto-1 client needs today's index frames over the whole
@@ -53497,6 +53891,400 @@ def _pure_feed(now, live_map):
         return feed
 
 
+# THE BOARD TABLE (plans/card-boards.md, phase two): the code-defined boards in the one schema the renderer's
+# ui/webview/board-def.ts holds (FEED_BOARD there is this dict, field for field; tests/test_card_boards.py holds the two
+# together). A card the kernel builds names its board and its category (`board`, `category`, beside `column` until the
+# renderer reads category alone); the bell, the phone and the badge read the board's `notify` and `needsYou` here instead
+# of a literal. Data-defined boards (phase three) join through _board_check's door and never overwrite a code-defined id.
+_CODE_BOARDS = {
+    "feed": {
+        "id": "feed", "title": "Feed",
+        "categories": [{"id": "working", "title": "Working", "chip": "working"},
+                       {"id": "needs_input", "title": "Blocked", "chip": "blocked"},
+                       {"id": "completed", "title": "Completed", "chip": "completed"}],
+        "defaultCategory": "working",
+        "rules": [],                                   # the feed's category rule is code: the expression in _feed_session_entry
+        "sort": {"key": "t", "dir": "asc"},
+        "subSorts": [],
+        "groupBy": "session",
+        "order": ["ownerRank"],                        # what feed.ts does (PR 1831): the owner-less notice run first, then the session order, then time
+        "notify": ["needs_input", "completed"],
+        "needsYou": "needs_input",
+        "kinds": ["goal", "placeholder", "parked", "quarantine", "notice"],
+    },
+}
+_BOARD_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_BOARD_MEMBERS = ("id", "title", "categories", "defaultCategory", "rules", "sort", "subSorts", "groupBy", "order", "notify", "needsYou", "kinds")
+_BOARD_CHIPS = ("working", "blocked", "completed", "neutral")
+_BOARD_SORT_FIELDS = ("t", "session", "owner", "title")
+_BOARD_PREDICATES = ("needsYou", "producer", "keyPrefix")
+_BOARD_ORDER_RULES = ("ownerRank",)
+_BOARD_KINDS = ("goal", "placeholder", "parked", "quarantine", "notice")
+
+
+def _board_check_sort(sv, where):
+    if not isinstance(sv, dict):
+        return where + " must be an object {key, dir}"
+    for k in sv:
+        if k not in ("key", "dir"):
+            return "%s has an unknown member %r" % (where, k)
+    if sv.get("key") not in _BOARD_SORT_FIELDS:
+        return where + ".key must be one of " + ", ".join(_BOARD_SORT_FIELDS)
+    if sv.get("dir") not in ("asc", "desc"):
+        return where + ".dir must be asc or desc"
+    return None
+
+
+def _board_check(defn, allow_reserved=False):
+    """The schema check, the kernel's half (ui/webview/board-def.ts boardCheck is the renderer's, the same rules): (defn, None)
+    for a board in the schema, else (None, the refusal naming the member and the rule it broke). An unknown member refuses,
+    so a typo never silently defaults; a code-defined id is refused at the door (`allow_reserved` lets the constants pass)."""
+    if not isinstance(defn, dict):
+        return None, "a board definition must be a JSON object"
+    for k in defn:
+        if k not in _BOARD_MEMBERS:
+            return None, "unknown member %r (the schema's members are %s)" % (k, ", ".join(_BOARD_MEMBERS))
+    bid = defn.get("id")
+    if not isinstance(bid, str) or not _BOARD_ID_RE.match(bid):
+        return None, "id must match [a-z][a-z0-9_-]{0,31}"
+    if not allow_reserved and bid in _CODE_BOARDS:
+        return None, "id %r is a code-defined board and cannot be defined" % bid
+    title = defn.get("title")
+    if not isinstance(title, str) or not 1 <= len(title) <= 40:
+        return None, "title must be 1 to 40 characters"
+    cats = defn.get("categories")
+    if not isinstance(cats, list) or not 1 <= len(cats) <= 8:
+        return None, "categories must hold 1 to 8 entries"
+    ids = set()
+    for c in cats:
+        if not isinstance(c, dict):
+            return None, "each category must be an object {id, title, chip}"
+        for k in c:
+            if k not in ("id", "title", "chip"):
+                return None, "category has an unknown member %r" % k
+        cid = c.get("id")
+        if not isinstance(cid, str) or not _BOARD_ID_RE.match(cid):
+            return None, "category id must match [a-z][a-z0-9_-]{0,31}"
+        if cid in ids:
+            return None, "category id %r repeats" % cid
+        ids.add(cid)
+        ct = c.get("title")
+        if not isinstance(ct, str) or not 1 <= len(ct) <= 40:
+            return None, "category %s: title must be 1 to 40 characters" % cid
+        if c.get("chip") not in _BOARD_CHIPS:
+            return None, "category %s: chip must be one of %s" % (cid, ", ".join(_BOARD_CHIPS))
+    if defn.get("defaultCategory") not in ids:
+        return None, "defaultCategory must name one of the board's categories"
+    rules = defn.get("rules")
+    if not isinstance(rules, list) or len(rules) > 16:
+        return None, "rules must hold 0 to 16 entries"
+    for r in rules:
+        if not isinstance(r, dict) or not isinstance(r.get("when"), dict):
+            return None, "each rule must be an object {when, category}"
+        for k in r:
+            if k not in ("when", "category"):
+                return None, "rule has an unknown member %r" % k
+        when = r["when"]
+        for k in when:
+            if k not in _BOARD_PREDICATES:
+                return None, "rule predicate has an unknown member %r (the predicates are %s)" % (k, ", ".join(_BOARD_PREDICATES))
+        if not when:
+            return None, "a rule's predicate must name at least one member"
+        if "needsYou" in when and not isinstance(when["needsYou"], bool):
+            return None, "rule predicate needsYou must be a boolean"
+        for k in ("producer", "keyPrefix"):
+            if k in when and not isinstance(when[k], str):
+                return None, "rule predicate %s must be a string" % k
+        if r.get("category") not in ids:
+            return None, "a rule's category must name one of the board's categories"
+    err = _board_check_sort(defn.get("sort"), "sort")
+    if err:
+        return None, err
+    subs = defn.get("subSorts")
+    if not isinstance(subs, list) or len(subs) > 6:
+        return None, "subSorts must hold 0 to 6 entries"
+    for i, sv in enumerate(subs):
+        err = _board_check_sort(sv, "subSorts[%d]" % i)
+        if err:
+            return None, err
+    if defn.get("groupBy") not in ("session", None):
+        return None, 'groupBy must be "session" or null'
+    order = defn.get("order")
+    if not isinstance(order, list) or len(order) > 4:
+        return None, "order must hold 0 to 4 entries"
+    for o in order:
+        if o not in _BOARD_ORDER_RULES:
+            return None, "order rules must be from " + ", ".join(_BOARD_ORDER_RULES)
+    notify = defn.get("notify")
+    if not isinstance(notify, list):
+        return None, "notify must be a list of category ids"
+    for n in notify:
+        if n not in ids:
+            return None, "notify names a category the board does not have: %r" % (n,)
+    ny = defn.get("needsYou")
+    if ny is not None and ny not in ids:
+        return None, "needsYou must be one of the board's categories or null"
+    kinds = defn.get("kinds")
+    if not isinstance(kinds, list) or not kinds:
+        return None, "kinds must hold at least one entry"
+    for k in kinds:
+        if k not in _BOARD_KINDS:
+            return None, "kinds must be from " + ", ".join(_BOARD_KINDS)
+    return defn, None
+
+
+for _bid, _bdef in _CODE_BOARDS.items():                 # a drifted constant fails at import, never in a build
+    _berr = _board_check(_bdef, allow_reserved=True)[1]
+    if _berr or _bdef.get("id") != _bid:
+        raise RuntimeError("code-defined board %r is not in the schema: %s" % (_bid, _berr or "its id differs from its key"))
+
+
+# THE BOARD STORE (plans/card-boards.md, phase three): a data-defined board is one JSON file, STATE/boards/<id>.json, holding a
+# definition in the schema above, written whole by define_board (the one write door behind POST /board, `romp board define`
+# and the notice producer's create-on-first-use), removed by remove_board, and read by _boards(): the directory listed and
+# every file parsed once per directory state (the directory's stat, taken BEFORE the read, the cleared ledger's rule; a
+# published file moves the directory's mtime), merged over the code-defined table with code winning on an id, which the door
+# refuses anyway. A file that fails the check is skipped and named on stderr once per (file, reason), never a raise into a
+# build. The frame carries the DATA definitions alone (`boards`); the renderer holds the code constants itself.
+_BOARDS_MEMO = {"slot": None}        # (directory stat key, {id: defn}) or None
+_BOARDS_BAD = set()                  # (path, reason) already said
+_boards_lock = threading.Lock()      # define and remove serialise their read-check-write against each other
+
+
+def _board_dir():
+    return jd.STATE / "boards"
+
+
+def _board_path(bid):
+    return _board_dir() / (str(bid) + ".json")
+
+
+def _boards_data():
+    """The data-defined boards, {id: defn}, memoized on the directory's stat AND each file's (mtime_ns, size): the door's
+    os.replace moves the directory's stat, but an in-place rewrite of boards/<id>.json (a shell redirection, an editor) moves
+    the file's alone (the 1845 read), and the handful of files make the per-file stat cheap. A moved key after the first read
+    marks the views dirty, so the edit reaches the next frame instead of waiting for the pusher's own reasons. {} when there is
+    no directory."""
+    d = _board_dir()
+    st = _stat_key(d)
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+    except OSError:
+        names = []
+    files = []
+    for n in names:
+        try:
+            fs = os.stat(d / n)
+            files.append((n, fs.st_mtime_ns, fs.st_size))
+        except OSError:
+            files.append((n, None, None))
+    key = ((str(d),) + st + tuple(files)) if st is not None else None
+    slot = _BOARDS_MEMO["slot"]
+    if key is not None and slot is not None and slot[0] == key:
+        return slot[1]
+    out = {}
+    if not names:
+        if key is not None:
+            _BOARDS_MEMO["slot"] = (key, out)
+        return out
+    for n in names:
+        fp = d / n
+        try:
+            defn = json.loads(fp.read_text())
+        except (OSError, ValueError) as e:
+            reason = "%s: %s" % (type(e).__name__, e)
+            defn, err = None, reason
+        else:
+            defn, err = _board_check(defn)
+            if not err and defn.get("id") != n[:-5]:
+                defn, err = None, "the file names board %r" % defn.get("id")
+        if err:
+            if (str(fp), err) not in _BOARDS_BAD:
+                _BOARDS_BAD.add((str(fp), err))
+                sys.stderr.write("[boards] %s skipped: %s\n" % (fp, err))
+            continue
+        out[defn["id"]] = defn
+    moved = slot is not None and key is not None and slot[0] != key
+    if key is not None:
+        _BOARDS_MEMO["slot"] = (key, out)
+    if moved:
+        _mark_views_dirty()                            # a file edited under the kernel: the next frame carries it
+    return out
+
+
+def _boards():
+    """Every board this kernel knows, {id: defn}: the code-defined table, then the data-defined files for ids the table
+    lacks (the door refuses a reserved id, so the second never shadows the first)."""
+    out = dict(_CODE_BOARDS)
+    for bid, defn in _boards_data().items():
+        out.setdefault(bid, defn)
+    return out
+
+
+def _default_board(bid, category="notes"):
+    """A first-use board's definition (the plan's section 1 defaults; ui/webview/board-def.ts defaultBoard is the same shape):
+    the id's title, one neutral category, newest first, no grouping, no bell, no badge, the notice kind."""
+    cap = lambda t: (t[:1].upper() + t[1:])[:40]
+    return {"id": bid, "title": cap(bid),
+            "categories": [{"id": category, "title": cap(category), "chip": "neutral"}],
+            "defaultCategory": category, "rules": [], "sort": {"key": "t", "dir": "desc"}, "subSorts": [],
+            "groupBy": None, "order": [], "notify": [], "needsYou": None, "kinds": ["notice"]}
+
+
+def _notice_standing_count(board_id, category_id=None):
+    """The standing notice cards filed under a board (and a category when named): the live projection of every notice file
+    under the notice directory, the owner-less home included, which already excludes retired, expired, dismissed and over-cap
+    rows. A row's board and category are read the way the card reads them (board "feed" and the needsYou mapping for a row
+    without the fields). Agreed with the notice producer's owner (2026-09-18): the store's reader, called by define_board and
+    remove_board, never a read of the files by them."""
+    n = 0
+    try:
+        sids = sorted(f[:-6] for f in os.listdir(_notice_dir()) if f.endswith(".jsonl"))
+    except OSError:
+        return 0
+    now, cleared = int(time.time()), _cleared_ids()
+    for sid in sids:
+        for r in _notice_projection(sid, now, cleared):
+            b = r.get("board") or "feed"
+            c = r.get("category") or ("needs_input" if r.get("needsYou") else "completed")
+            if b == board_id and (category_id is None or c == category_id):
+                n += 1
+    return n
+
+
+def define_board(defn):
+    """Write a data-defined board's definition whole -> (defn, error), add_watch's contract. The one validation for every door:
+    the schema (an unknown member, a bad id, a chip or a sort outside the fixed sets, each refused by name), the reserved
+    ids (the feed is code), and a definition that DROPS a category still holding standing cards (named, with the count: the
+    user dismisses or re-posts first, so no card is ever left under a category no definition has). A define replaces the
+    board; its cards keep their categories. The next frame carries it (the views marked dirty, the pusher woken)."""
+    defn, err = _board_check(defn)
+    if err:
+        return None, err
+    bid = defn["id"]
+    with _boards_lock:
+        old = _boards_data().get(bid)
+        if old is not None:
+            new_ids = {c["id"] for c in defn["categories"]}
+            for c in old.get("categories") or []:
+                if c["id"] not in new_ids:
+                    n = _notice_standing_count(bid, c["id"])
+                    if n:
+                        return None, "the definition drops category %r, which still holds %d standing card%s: dismiss or re-post them first" % (c["id"], n, "" if n == 1 else "s")
+        try:
+            _write_state_json(_board_path(bid), json.dumps(defn, sort_keys=True, indent=1) + "\n")
+        except _StateUnwritable as e:
+            return None, str(e)
+    _mark_views_dirty()
+    _push_soon()
+    return defn, None
+
+
+def remove_board(bid):
+    """Take a data-defined board away -> (True, None) or (False, error): refused for a code-defined id, for an id no file
+    defines, and while a standing card names the board (the count in the reason). The file is unlinked; the next frame
+    carries the set without it."""
+    bid = str(bid or "").strip()
+    if bid in _CODE_BOARDS:
+        return False, "board %r is code-defined and cannot be removed" % bid
+    with _boards_lock:
+        if bid not in _boards_data():
+            return False, "no board %r is defined (romp board list names them)" % bid
+        n = _notice_standing_count(bid)
+        if n:
+            return False, "%d standing card%s still name%s board %r: dismiss them first" % (n, "" if n == 1 else "s", "s" if n == 1 else "", bid)
+        try:
+            os.unlink(_board_path(bid))
+        except OSError as e:
+            return False, "the board's file could not be removed: %s" % _errno_text(e)
+    _mark_views_dirty()
+    _push_soon()
+    return True, None
+
+
+def _board_rule_matches(when, needs_you, producer, key):
+    if "needsYou" in when and bool(when["needsYou"]) != bool(needs_you):
+        return False
+    if "producer" in when and when["producer"] != (producer or ""):
+        return False
+    if "keyPrefix" in when and not str(key or "").startswith(when["keyPrefix"]):
+        return False
+    return True
+
+
+def _board_resolve_post(board, category, *, needs_you=False, producer="", key=""):
+    """Where a posted card files -> (board_id, category_id, error, pending): PURE, the plan's five-step resolution, for the
+    notice producer to call (it writes `pending`, a definition to define, only after every other check of the post has
+    passed, right before the row appends, so a refused post leaves no board behind). No board: the feed, its category from
+    needs_you, a named category accepted only if the feed has it. A known board and a known category: as named. A known
+    board and no category: the board's rules in order over {needsYou, producer, keyPrefix}, else needs_you's badge category,
+    else defaultCategory. An unknown board: CREATED on first use (pending = the defaults, the category named or "notes"). A
+    known data board and an unknown category: the category APPENDED in neutral dress (pending = the board with it); on a
+    code-defined board refused. needs_you on a board with no badge category is refused, an
+    UNKNOWN board included (its defaults would carry none), so the first post and every later one answer alike."""
+    board = str(board or "").strip()
+    category = str(category or "").strip()
+    if not board or board == "feed":
+        feed = _CODE_BOARDS["feed"]
+        ids = {c["id"] for c in feed["categories"]}
+        if category and category not in ids:
+            return None, None, "the feed has no category %r (its categories are %s)" % (category, ", ".join(sorted(ids))), None
+        return "feed", category or ("needs_input" if needs_you else "completed"), None, None
+    if not _BOARD_ID_RE.match(board):
+        return None, None, "board id must match [a-z][a-z0-9_-]{0,31}", None
+    d = _boards().get(board)
+    if d is None:
+        if needs_you:
+            # a first-use board carries no badge category (the defaults name none), so the flag is refused BEFORE the defaults
+            # are minted: the same answer the second post gets, never a first post that drops the flag silently (the 1845 read)
+            return None, None, "board %r would be created without a needs-you category: define it with needsYou first (romp board define), or post without --needs-you" % board, None
+        if category and not _BOARD_ID_RE.match(category):
+            return None, None, "category id must match [a-z][a-z0-9_-]{0,31}", None
+        pending = _default_board(board, category or "notes")
+        pending, err = _board_check(pending)
+        if err:
+            return None, None, err, None
+        return board, pending["defaultCategory"], None, pending
+    ids = {c["id"] for c in d["categories"]}
+    if needs_you and d.get("needsYou") is None:
+        return None, None, "board %r has no needs-you category (its definition names none)" % board, None
+    if category:
+        if category in ids:
+            return board, category, None, None
+        if board in _CODE_BOARDS:
+            return None, None, "board %r has no category %r (its categories are %s)" % (board, category, ", ".join(sorted(ids))), None
+        if not _BOARD_ID_RE.match(category):
+            return None, None, "category id must match [a-z][a-z0-9_-]{0,31}", None
+        pending = json.loads(json.dumps(d))
+        pending["categories"].append({"id": category, "title": (category[:1].upper() + category[1:])[:40], "chip": "neutral"})
+        pending, err = _board_check(pending)
+        if err:
+            return None, None, err, None
+        return board, category, None, pending
+    for r in d.get("rules") or []:
+        if _board_rule_matches(r.get("when") or {}, needs_you, producer, key):
+            return board, r["category"], None, None
+    if needs_you:
+        return board, d["needsYou"], None, None
+    return board, d["defaultCategory"], None, None
+
+
+def _board_def(board):
+    """The definition a card's `board` names: the code table, then the data store; a card that names none, or an id this
+    kernel does not know (a remote board, a removed one), reads as the feed's, the default every card the kernel builds carries."""
+    return _boards().get(board) or _CODE_BOARDS["feed"]
+
+
+def _board_notify(board):
+    """The category ids whose ENTRY announces (the bell, the phone) for a card's board."""
+    return tuple(_board_def(board)["notify"])
+
+
+def _board_needs_you(board):
+    """The category the app badge counts for a card's board, or None when the board never badges."""
+    return _board_def(board)["needsYou"]
+
+
 # ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
 # The master bell (bottom-right → notify-cards.json "*"), a session's bell (timeline lane / tab menu →
 # session-flags "notify") or a card's bell (right-click → notify-cards.json) arm OS-level notifications
@@ -53552,7 +54340,7 @@ def _pure_feed(now, live_map):
 # rule holds across a restart too. The silent first-boot seed counts as told (the user has the board).
 # The desktop notice and the phone push both iterate the list this diff returns, so the one gate covers
 # both legs; _buzz_claim's one-buzz-per-turn-end rule sits after it, unchanged.
-_NOTIFY_COLUMNS = ("needs_input", "completed")
+_NOTIFY_COLUMNS = tuple(_CODE_BOARDS["feed"]["notify"])   # the feed board's notify set, the value the snapshot entries are checked against
 # itemId -> {"sid", "column" (the notified column the card was last SEEN in, None while it sits in
 # working), "announced" (the column last announced, None if never), "announcedAt" (seconds)}; the
 # store holds a card while it is in a notified column or carries an announced mark. None = this life's
@@ -53600,21 +54388,26 @@ def _notify_prev_load():
 
 def _notify_prev_entry(ent):
     """One store entry, checked field by field, or None for a shape none of our writers produce: sid a
-    string; column a notified column or None (the card sits in working with an announced mark);
-    announced a notified column or None; announcedAt a number or None; and at least one of column /
-    announced set, else there is nothing to remember."""
+    string; board the card's board (absent on an entry written before the boards: the feed); column a
+    category of THAT board's notify set or None (the card sits outside the set with an announced mark);
+    announced one of the same or None; announcedAt a number or None; and at least one of column /
+    announced set, else there is nothing to remember. The check reads the card's board, not the feed's
+    literal set (the 1837 round-two read): a board whose notify names a category the feed lacks would
+    otherwise announce, be written, be dropped on reload and announce again."""
     if not isinstance(ent, dict) or not isinstance(ent.get("sid"), str):
         return None
+    board = ent.get("board") if isinstance(ent.get("board"), str) and ent.get("board") else "feed"
+    allowed = _board_notify(board)
     col, ann, at = ent.get("column"), ent.get("announced"), ent.get("announcedAt")
-    if col not in _NOTIFY_COLUMNS and col is not None:
+    if col not in allowed and col is not None:
         return None
-    if ann not in _NOTIFY_COLUMNS and ann is not None:
+    if ann not in allowed and ann is not None:
         return None
     if at is not None and not isinstance(at, (int, float)):
         return None
     if col is None and ann is None:
         return None
-    return {"sid": ent["sid"], "column": col, "announced": ann, "announcedAt": int(at) if at is not None else None}
+    return {"sid": ent["sid"], "board": board, "column": col, "announced": ann, "announcedAt": int(at) if at is not None else None}
 
 
 def _notify_user_acted_since(sid, iid, since):
@@ -53776,9 +54569,10 @@ def _feed_notifications_diff(feed):
     now_t = int(feed.get("now") or time.time())   # the build's own moment: wall clock, like the journal's t
     entered = []                                     # (itemId, card, column, entry): the cards that ENTERED a column
     for iid, a in cur.items():
-        col, sid, ent = a.get("column"), str(a.get("sid") or ""), prev.get(iid)
-        if col in _NOTIFY_COLUMNS:
-            e = {"sid": sid, "column": col,
+        col, sid, ent = a.get("category", a.get("column")), str(a.get("sid") or ""), prev.get(iid)   # the board's category; the column from an older card
+        board = a.get("board") or "feed"
+        if col in _board_notify(board):   # the card's board's notify set (the feed's is _NOTIFY_COLUMNS)
+            e = {"sid": sid, "board": board, "column": col,
                  "announced": ent.get("announced") if ent else None,
                  "announcedAt": ent.get("announcedAt") if ent else None}
             nxt[iid] = e
@@ -53788,7 +54582,7 @@ def _feed_notifications_diff(feed):
                 entered.append((iid, a, col, e))
         elif ent is not None and ent.get("announced"):
             # in working now, but announced before: the mark is what keeps a return to that column silent
-            nxt[iid] = {"sid": sid, "column": None, "announced": ent["announced"], "announcedAt": ent.get("announcedAt")}
+            nxt[iid] = {"sid": sid, "board": board, "column": None, "announced": ent["announced"], "announcedAt": ent.get("announcedAt")}
     out = []
     if not first_boot:
         cards = _notify_cards()
@@ -53798,7 +54592,7 @@ def _feed_notifications_diff(feed):
             if e["announced"] == col and not _notify_user_acted_since(e["sid"], iid, e["announcedAt"]):
                 continue                             # the same (card, column), told already, nothing of the user's since
             e["announced"], e["announcedAt"] = col, now_t
-            needs_you = col == "needs_input"            # the card's column: the authoritative state, not the words
+            needs_you = col == _board_needs_you(a.get("board"))   # the board's badge category: the authoritative state, not the words (the same read as _needs_you_count)
             what = "Needs you" if needs_you else "Completed"
             txt = str(a.get("text") or "").strip()
             out.append((_notify_title(a.get("name") or "session", needs_you),
@@ -53816,7 +54610,8 @@ def _needs_you_count(feed):
     """How many real (non-provisional) cards sit in needs_input — the number the app icon wears.
     Counted from the same feed build the notifications diff, so badge and bell can never disagree."""
     return sum(1 for a in (feed.get("asks") or [])
-               if not a.get("provisional") and a.get("column") == "needs_input")
+               if not a.get("provisional") and _board_needs_you(a.get("board")) is not None
+               and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category; a board with none counts nothing
 
 
 # The count the shell clients last heard (None = nothing sent since boot). The badge moves on feed
@@ -55345,6 +56140,10 @@ def _tiers_may_start(tracking=None):
 
 
 JUDGES_PROCESS_FILE = "judges-process"   # STATE/judges-process: the literal `on` runs the judges in a `romp-judge --serve` child
+JUDGES_PROCESS_CLOCK_FILE = "judges-process-clock"   # STATE/judges-process-clock: `request` sends the child the wake's time as the pass's
+#                                                       `now` (the second-truncated clock handed to both tiers, the comparison's explicit
+#                                                       variant); absent or anything else sends a null `now`, so the child's tiers read their
+#                                                       own clock as the in-process tiers do (the default the child's head documents, 2026-09-18)
 #                                          (plans/judges-process.md, stage three of the process split); absent, unreadable or anything
 #                                          else: the in-process tiers, today's road (rule 5: the default flips after the boot measurement)
 JUDGE_CHILD_READY_S = 60.0                 # the child's ready line bound after a start
@@ -55431,6 +56230,18 @@ def _judges_in_child():
             return False                                  # the latch stands until the switch file is written again
         _JUDGE_FALLBACK["stat"] = None                    # the file changed: the child is tried again
     return True
+
+
+def _judge_child_request_clock():
+    """The comparison's clock knob: STATE/judges-process-clock reading `request` makes the pass request carry the wake's time as
+    `now` (the child hands it, truncated to the second, to both tiers: the explicit measurement variant); absent, unreadable or
+    anything else, the request carries `now: null` and the child's tiers read their own clock, the in-process tiers' behaviour
+    and the default. Read on every request: a flip is effective on the next pass, and a read fault is the default, never a
+    raise inside the pass."""
+    try:
+        return (jd.STATE / JUDGES_PROCESS_CLOCK_FILE).read_text(encoding="utf-8").strip().lower() == "request"
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _judge_child_fallback_latch():
@@ -55667,7 +56478,8 @@ class _JudgeChild:
             self.in_pass = True
             try:
                 try:
-                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": float(now), "mayStart": bool(may_start)}) + "\n").encode())
+                    p.stdin.write((json.dumps({"op": "pass", "seq": seq, "now": (float(now) if _judge_child_request_clock() else None),
+                                               "mayStart": bool(may_start)}) + "\n").encode())
                     #                             one word on the wire: the gate's verdict; the child treats an absent field as False
                     p.stdin.flush()
                 except (OSError, ValueError) as e:
@@ -55954,6 +56766,15 @@ def _pusher_cycle():
         #                                         forks); the wide walk under ("wide", window)): ~35 sweeps
         #                                         per cycle became one
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
+        _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
+        #                                       root per cycle for every tree that exists, validated or walked by the
+        #                                       first reader and served to every reader after it: the chat builds'
+        #                                       sidecar maps and awaiting rows, the feed key and its derivations, a
+        #                                       viewer frame's agent-file re-walk on a cache miss (2026-09-18: each
+        #                                       reader took its own sample, 63k validations and 5.2M lstats over 3.9k
+        #                                       cycles live, an estimated 30-50% of them re-samples, the `scoped` tally
+        #                                       measures the realized share; an absent root stays one lstat per caller,
+        #                                       never a validation)
         _live_scope.msgsum = [_MSGSUM_UNSET]    # …and the cycle's caption-map slot (_msg_summaries_scoped): the
         #                                       first chat build that needs the map fetches it, the rest read it
         _live_scope.names = _names_snapshot()   # …and the cycle's NAMES snapshot, same idiom: the name/
@@ -55970,6 +56791,7 @@ def _pusher_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
@@ -56193,6 +57015,8 @@ def _jobs_cycle():
         _live_scope.paths = {}
         _live_scope.sessions = {}
         _live_scope.auth = {}
+        _live_scope.subagent_trees = {}         # the pass's subagents-tree samples (2026-09-18): the reminder walk's
+        #                                       _session_awaiting readers and _mark_nudge_failed read the same roots per pass
         _live_scope.msgsum = [_MSGSUM_UNSET]
         _live_scope.names = _names_snapshot()
         _PERF_STATS.stage("jobs.prelude", time.monotonic() - _t)
@@ -56204,6 +57028,7 @@ def _jobs_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
         _live_scope.files_dirty = None
@@ -56795,11 +57620,15 @@ enqueue(msg);};   // the handoff to the bundle is the ONE deferred step (see the
 // watchdog-close row, when there is one, went down the quiet socket before the abandon (the foreground
 // path sends none), so it lands only if that socket still carried writes; for an armed socket the "-quiet"
 // raise abandon() queues for the redial is the record that survives. send() queues while the socket is
-// down, so the row rides the reconnect. A handshake that never opened fires onclose too (every 1.5 s redial
+// down, so the row rides the reconnect; the kernel stamps every clientDiag row with whether the socket that
+// carried it declared the redial (its dial record, set at accept and never consumed), and the row's own
+// bundleReady, readyAcked and readyQueued are this page's state at the close, the dial term's inputs, so the two
+// together name the redial's kind: declared, or gated off by a bundle not yet ready, a ready still queued, or a
+// ready no caps frame answered (2026-09-10). A handshake that never opened fires onclose too (every 1.5 s redial
 // of an outage — an 8 h outage is ~19k of them, and their timings would be the PREVIOUS socket's): those
 // are counted and reported as one wsconnfail row on the next open, never queued one by one.
 ws.onclose=function(ev){netState("down");
-if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected}});}catch(e){}}
+if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected,bundleReady:bundleReady,readyAcked:readyAcked,readyQueued:readyQueued}});}catch(e){}}
 else{if(!failedConnects)firstFailT=Date.now();failedConnects++;}
 if(stalePending&&openSock===this){var cw=stalePending;stalePending="";raiseStale(cw+"-closed");}   // the reconnected socket died before its resync: nothing is coming on it, and the view IS stale
 try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}
@@ -61861,8 +62690,9 @@ def _landing():
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
-            # same treatment as the settings modal's .rs-sec section headers (10.5px/700/.08em uppercase)
-            ".rnet-khead{color:#6e7681;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
+            # same treatment as the settings modal's .rs-sec section headers (11px/600, sentence case, the accent blue;
+            # the user 2026-09-18: no all-caps delineators in the settings)
+            ".rnet-khead{color:var(--accent,#9cd2ff);font-size:11px;font-weight:600;"
             "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
@@ -63511,6 +64341,11 @@ class Handler(BaseHTTPRequestHandler):
                               "records": {k: v for k, v in (nd.get("nudged") or {}).items() if mine(k)},
                               "walkGates": {k: v for k, v in (nd.get("walkGates") or {}).items() if mine(k)}},
                 }), "application/json", cache="no-cache")
+            if p == "/boards":
+                # every board this kernel knows, for `romp board list|show`: the code-defined table and the data-defined
+                # files, each marked with its source (plans/card-boards.md, phase three)
+                rows = [dict(d, source="code") for d in _CODE_BOARDS.values()] + [dict(d, source="data") for d in _boards_data().values()]
+                return self._send(200, json.dumps({"boards": rows}), "application/json", cache="no-cache")
             if p == "/watches":
                 # the registered generic watches, for `romp watch --list` — AUTHED (rows carry
                 # user-written commands; nothing here is exempt-safe like the bare /busy count)
@@ -64978,26 +65813,49 @@ class Handler(BaseHTTPRequestHandler):
                 if hint:
                     resp["hint"] = hint
                 return self._send(200, json.dumps(resp), "application/json")
+            if u.path == "/board":
+                # Define or remove a DATA-DEFINED BOARD (plans/card-boards.md, phase three): door two of define_board, in
+                # /watch's shape. Body: the definition itself (the schema's members), or {"remove": <id>}. 400 for a malformed
+                # body; 200 {"ok": false, "error"} for a definition the schema refuses, a reserved id, a dropped category still
+                # holding cards, or a remove of a board still named by a card; 200 {"ok": true, "board": <defn>} on a define
+                # and {"ok": true} on a remove.
+                b, berr = _json_object_body(raw_body)
+                if berr:
+                    return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
+                if "remove" in b:
+                    ok, err = remove_board(b.get("remove"))
+                    return self._send(200, json.dumps({"ok": True} if ok else {"ok": False, "error": err}), "application/json")
+                if not b:
+                    return self._send(400, json.dumps({"ok": False, "error": "a board definition (or {\"remove\": <id>}) required"}), "application/json")
+                defn, err = define_board(b)
+                if err:
+                    return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "board": defn}), "application/json")
             if u.path == "/notice":
                 # Post a NOTICE CARD (T370, plans/notice-cards.md): door two of post_notice, in /watch's shape. Body:
                 # {"id"|"name": <session>, "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "actions"?,
-                # "dismissOnAction"?, "producer"?, "t"?}; or {"id"|"name", "expire": <key>} to retire the newest revision early.
-                # 400 for a malformed body or a missing key, title or session; 200 {"ok": false, "error"} for a refusal with
+                # "dismissOnAction"?, "producer"?, "t"?}; or {"id"|"name", "expire": <key>} to retire the newest revision early;
+                # with neither id nor name the card is OWNER-LESS (the user 2026-09-18).
+                # 400 for a malformed body or a missing key or title; 200 {"ok": false, "error"} for a refusal with
                 # its reason (an unknown session, a bad key, an oversize body, a refused attachment, a disallowed action);
                 # 200 {"ok": true, "notice": <row>} on success.
                 b, berr = _json_object_body(raw_body)
                 if berr:
                     return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
-                who = str(b.get("id") or b.get("name") or "").strip()
+                # No id and no name posts an OWNER-LESS card (the user 2026-09-18): the reserved home, the top of the feed. Only
+                # an ABSENT session takes that road: a name no session answers to is still refused, never guessed owner-less.
+                raw_who = b.get("id") if b.get("id") is not None else b.get("name")
+                who = str(raw_who or "").strip()
+                if raw_who is not None and not who:   # a whitespace-only id or name names nobody: refused, never guessed owner-less (round three of PR 1831)
+                    return self._send(200, json.dumps({"ok": False, "error": 'no session answers to "%s"' % str(raw_who)}), "application/json")
+                owner = _sid_of(who) if who else ""
                 if b.get("expire"):
-                    if not who:
-                        return self._send(400, json.dumps({"ok": False, "error": "id|name (the session) required"}), "application/json")
-                    row, err = expire_notice(_sid_of(who), str(b["expire"]))
+                    row, err = expire_notice(owner, str(b["expire"]))
                     return self._send(200, json.dumps({"ok": False, "error": err} if err else {"ok": True, "notice": row}), "application/json")
-                if not who or not str(b.get("key") or "").strip() or not str(b.get("title") or "").strip():
+                if not str(b.get("key") or "").strip() or not str(b.get("title") or "").strip():
                     return self._send(400, json.dumps({"ok": False, "error":
-                        "key, title and id|name (the session the card belongs to) required"}), "application/json")
-                row, err = post_notice(_sid_of(who), b.get("key"), b.get("title"), b.get("body") or "",
+                        "key and title required (id|name names the session the card belongs to; neither posts an owner-less card)"}), "application/json")
+                row, err = post_notice(owner, b.get("key"), b.get("title"), b.get("body") or "",
                                        producer=b.get("producer") or "http", attachment=b.get("attachment"),
                                        needs_you=bool(b.get("needsYou")), expires_at=b.get("expiresAt"), actions=b.get("actions"),
                                        dismiss_on_action=bool(b.get("dismissOnAction")), t=b.get("t"))
@@ -66036,6 +66894,8 @@ class Handler(BaseHTTPRequestHandler):
             # the card on the next build (event-based — no cleared.jsonl needed). Failure answers the asker by mid.
             _qmid = str(msg["mid"])
             _qbody = {"mid": _qmid, "action": str(msg.get("action") or "").strip().lower()}
+            if msg.get("sid"):                     # the recipient, stripped of its host by the route: the bus checks it serves that session
+                _qbody["sid"] = str(msg["sid"])
             if msg.get("text") is not None:
                 _qbody["text"] = str(msg["text"])
             if msg.get("feedback"):                # deny-with-note: the bus mails it back to the sender
@@ -66181,6 +67041,17 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 rec = {"t": int(time.time()), "wid": str(client.get("wid") or ""),
                        "surface": str(msg.get("surface") or ""), "what": str(msg.get("what") or ""),
+                       # whether the socket that CARRIED the row declared the redial (?reconnect=1): the socket's dial
+                       # record, `redial`, set at accept beside the consumable `reconnect` and never popped, so every row
+                       # a socket carries reads the same value on every pane. Not the flag: _resolve_reconnect pops it on
+                       # a chat socket's first strip, _client_reset_chat_base pops it at ready, nothing pops it on the
+                       # other panes, and the ?skeleton=1 arm sets it for a column that declared no redial. The shim
+                       # queues its `wsclose` row while the socket is down and flushes it onto the redial, so with the
+                       # row's own bundleReady, readyAcked and readyQueued (the shim's state at the close) the log tells
+                       # a declared redial from the ones the dial term gated off (2026-09-10: everConnected alone, true on
+                       # every such row, could not). The wsopen row the accept files carries the same value, but it names
+                       # the socket by cid and this row does not, so the two cannot be joined without the stamp.
+                       "reconnect": bool(client.get("redial")),
                        "data": msg.get("data")}
                 # past the size cap the file becomes .1 and a new one starts; the check, rename and write are one
                 # locked step, since every pane's socket posts from its own handler thread
@@ -66747,6 +67618,9 @@ class Handler(BaseHTTPRequestHandler):
             # dialling fresh for its life: the bundle posts ready once, so no later socket carries one and no caps
             # frame follows. Every redial of such a page is served whole, the cost before 2026-09-07, never a
             # false skeleton.
+            # The dial record the clientDiag handler stamps rows with: set here alone, never consumed, and the same
+            # value _note_ws_open files on this socket's wsopen row below (`reconnect` is its consumable twin).
+            client["redial"] = True
             client["reconnect"] = True
             _rp = (q.get("proto") or [""])[0]           # the chat wire the page's bundle declared at its ready, carried on the
             if _rp in ("1", "2"):                       #  redial's dial term (round 2, item 4): a redial posts no ready of its own,
@@ -67670,6 +68544,7 @@ def main():
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
+    _bus_port()                                    # the census line: the bus port dialed, from the record or the environment
     sys.stderr.write("romp-kernel: every request needs the serve token (loopback included) — "
                      "browser entry: `romp`\n")
     if BIND != "127.0.0.1":
