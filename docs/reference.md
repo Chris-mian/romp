@@ -4387,7 +4387,25 @@ mine, and a pinned store's note; and every proposal is a needs-you NOTICE CARD o
 producer `settings`, the key `proposal.<store>.<machine>`, one card per proposing machine, a new revision when the stamp
 moves, expired when the record drops for any reason) with Apply, Keep mine and Keep mine and pin this machine as actions of
 the `setting-proposal` kind, which the kernel alone posts and which hands the stored body to `/setting-proposal`'s own checks;
-answering on the card or in the gear clears both. A peer that reports a store pinned is not pushed our value for it. A MIXED
+answering on the card or in the gear clears both.
+Phase two (2026-09-19): with more than one kernel connected the settings card carries a MACHINE SELECTOR above its tabs.
+"All kernels" is the synchronized view (a click broadcasts as ever, subject to each machine's pin) and a synchronized row
+whose kernels disagree wears the flag "differs" in the warning tone, the machines and their values on hover, with the count
+of differing rows on the selector itself. Picking one or several kernels scopes the four synchronized rows to their values (a
+remote's from its `/tunnels` row, this machine's from `/version`) and a change there applies to those kernels alone and PINS
+the store there: the message carries `scope: "pinned"` beside `origin` (`hosts` names the kernels; federation stamps each
+copy), the pin gate passes a scoped remote-origin gesture, and the arm pins under the gesture's stamp; a broadcast never
+carries the scope. Each synchronized row wears a pin glyph at its right edge, lit while the picked kernel (this machine under
+All) pins the store, its hover naming the pinned value beside the other machines'; a click toggles `setSettingPin` on the
+picked kernels (`hosts`, the scope), and an un-pin returns the row to the synchronized value, the newest stamp across the
+attached machines read from this kernel's own per-machine records (a pinned store keeps a peer's newer value as a HELD record:
+no card, not in the gear's map; it becomes a proposal when the pin lifts), never a dial at click time. The `/tunnels` row
+carries `settingsGt` and `settingsPinned` beside `settings`, and a machine that pins any store wears a "pinned" mark in the
+Remote kernels popover (and in the VS Code strip's network rows), the stores on hover. A peer's pinned store raises no proposal
+here (its value stands there by its user's word; the flag says the machines disagree) and this kernel keeps a store it pinned to
+itself (no push). The selector hides with one kernel; a store this machine pins keeps its glyph, so the un-pin is one click away.
+In a mixed mesh a kernel from before phase two ignores `scope`: with the store pinned there a scoped change is refused as a
+broadcast is, and with it unpinned the value applies but pins nothing, so the next broadcast walks it back; update the kernel. A peer that reports a store pinned is not pushed our value for it. A MIXED
 mesh: an older kernel without this change still adopts the value a one-A kernel pushes to it and still applies our poll's
 value on its side, so the two converge one way (toward the newer kernel's proposals being answered) until it updates.
 

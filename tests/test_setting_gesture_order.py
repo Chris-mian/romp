@@ -950,15 +950,15 @@ class WiringPins(unittest.TestCase):
         self.src = inspect.getsource(km.Handler._dispatch_ws)
 
     def test_auto_nudge_branch_gates_on_the_stamp_and_skips_the_tick_on_stand_down(self):
-        self.assertIn('_set_auto_nudge(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is not None', self.src,
-                      "a stood-down toggle must not fire the nudge tick either — no new information")
+        self.assertIn('_st = _set_auto_nudge(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))\n            if _st is not None:', self.src,
+                      "a stood-down toggle must not fire the nudge tick either, no new information (the scope rides through since phase two)")
 
     def test_file_editing_branch_passes_the_stamp(self):
-        self.assertIn('_set_file_editing(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"))', self.src)
+        self.assertIn('_st = _set_file_editing(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))', self.src)
 
     def test_compact_suggest_branch_gates_on_the_stamp_and_skips_the_tick_on_stand_down(self):
         # T208's WS branch mirrors setAutoNudge's: gt-gated, immediate tick only on a real apply
-        self.assertIn('_set_compact_suggest(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is not None', self.src)
+        self.assertIn('_st = _set_compact_suggest(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"), scope=msg.get("scope"))\n            if _st is not None:', self.src)
 
     def test_update_mode_branch_passes_the_stamp(self):
         self.assertIn('_set_update_mode(str(msg["mode"]), gt=_gesture_ms(msg))', self.src)

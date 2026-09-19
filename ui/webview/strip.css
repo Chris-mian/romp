@@ -105,6 +105,8 @@
    the accent, never a status color; 11px matches the row's other annotations */
 .sn-trust.sn-applying { border-color: var(--accent, #9cd2ff); opacity: 0.8; }
 .sn-pend { color: var(--accent, #9cd2ff); font-size: 11px; flex: 0 0 auto; }
+/* a pinned machine (settings across machines, phase two): the quiet chip vocabulary, the accent's outline, never a fill */
+.sn-pin { margin-left: 6px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--accent, #9cd2ff); color: var(--accent, #9cd2ff); font-size: 10px; line-height: 1.5; white-space: nowrap; }
 /* "Previously attached": a quiet header + dimmed rows, so remembered hosts read as history you can act
    on and never as something currently connected. Hover restores full opacity (they're interactive).
    The header wears the settings' section-label dress (.rs-sec, the kernel's .rnet-khead): sentence case in the accent,
