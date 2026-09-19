@@ -206,6 +206,50 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   o.esc = await drag(page, chat.x + chat.w / 2, chat.y + 1, [{ x: feed.x + feed.w / 2, y: feed.y + feed.h / 2 }], { escape: true });
   // a press under the slop is a click, not a drag
   o.click = await (async () => { const rr = await rectsOf(page); const p = rr["chat-pane"]; await page.mouse.move(p.x + p.w / 2, p.y + 1); await page.mouse.down(); await page.mouse.move(p.x + p.w / 2 + 2, p.y + 2); await frame(page); const d = await page.evaluate(() => window.__rompPaneDock.dragging()); await page.mouse.up(); return { dragging: d, store: await store(page) }; })();
+  // THE EMPTY SPACE INSIDE A PANE (plans/pane-docking.md section 3, 2026-09-19): a press on the feed's own background
+  // below its cards, detected by the feed page and forwarded to the shell, arms the same drag the ring arms; the open
+  // hand shows over that spot and not over a card
+  const frameOfApp = (re) => page.frames().find((f) => re.test(f.url()));
+  const emptySpot = (fr, rootSel) => fr.evaluate((sel) => {
+    const g = window.__rompPaneGrab; if (!g) return { error: "no detector" };
+    const root = document.querySelector(sel) || document.body; const r = root.getBoundingClientRect(); const tried = [];
+    for (const fy of [0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]) for (const fx of [0.5, 0.3, 0.7, 0.15, 0.85, 0.6, 0.4]) {
+      const x = r.left + r.width * fx, y = r.top + r.height * fy; const el = document.elementFromPoint(x, y);
+      if (el && g.empty(el)) return { x, y, tag: el.tagName, cls: String(el.className || ""), id: el.id || "" };
+      if (tried.length < 12) tried.push(el ? el.tagName + (el.id ? "#" + el.id : "") + "." + String(el.className || "").split(" ")[0] : "none");
+    }
+    return { error: "no empty spot", tried };
+  }, rootSel);
+  const frameOrigin = (fid) => page.evaluate((id) => { const f = document.getElementById(id); const b = f.getBoundingClientRect(); return { x: b.left + f.clientLeft, y: b.top + f.clientTop }; }, fid);
+  o.feedEmpty = await (async () => {
+    const ff = frameOfApp(/\/feed(\?|$)/); if (!ff) return { frame: false };
+    await ff.waitForFunction(() => !!window.__rompPaneGrab && document.body.classList.contains("pane-docking"), null, { timeout: 15000 }).catch(() => {});
+    const spot = await emptySpot(ff, "#feed-list");
+    if (!spot || spot.error) return { frame: true, spot };
+    const fo = await frameOrigin("f-feed"); const X = fo.x + spot.x, Y = fo.y + spot.y;
+    await page.mouse.move(X, Y); await frame(page);
+    const hover = await ff.evaluate((sp) => { const el = document.elementFromPoint(sp.x, sp.y); return { cursor: el ? getComputedStyle(el).cursor : null, cls: document.body.className }; }, spot);
+    // a card, when one is there, does not wear the hand
+    const card = await ff.evaluate(() => { const c = document.querySelector("#feed-list .fitem"); if (!c) return null; const r = c.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + Math.min(20, r.height / 2) }; });
+    let cardHover = null;
+    if (card) { await page.mouse.move(fo.x + card.x, fo.y + card.y); await frame(page); cardHover = await ff.evaluate((sp) => { const el = document.elementFromPoint(sp.x, sp.y); return { cursor: el ? getComputedStyle(el).cursor : null, cls: document.body.className, tag: el && el.tagName }; }, card); }
+    const rr = await rectsOf(page); const chat = rr["chat-pane"]; const feedBefore = rr["feed-pane"];
+    const rec = await drag(page, X, Y, [{ x: chat.x + chat.w * 0.1, y: chat.y + chat.h / 2 }]);
+    return { frame: true, spot, hover, cardHover, feedBefore, rec };
+  })();
+  o.bandEmpty = await (async () => {
+    const tf = frameOfApp(/\/timeline(\?|$)/); if (!tf) return { frame: false };
+    await tf.waitForFunction(() => !!window.__rompPaneGrab && document.body.classList.contains("pane-docking") && !!document.querySelector("svg"), null, { timeout: 15000 }).catch(() => {});
+    const spot = await emptySpot(tf, "svg");
+    if (!spot || spot.error) return { frame: true, spot };
+    const fo = await frameOrigin("f-timeline"); const X = fo.x + spot.x, Y = fo.y + spot.y;
+    await page.mouse.move(X, Y); await frame(page);
+    const hover = await tf.evaluate((sp) => { const el = document.elementFromPoint(sp.x, sp.y); return { cursor: el ? getComputedStyle(el).cursor : null, cls: document.body.className, tag: el && el.tagName }; }, spot);
+    await page.mouse.down(); await page.mouse.move(X + 14, Y - 14, { steps: 3 }); await frame(page);
+    const armed = await page.evaluate(() => ({ dragging: window.__rompPaneDock.dragging(), outline: document.getElementById("pd-outline").classList.contains("on"), bodyCursor: getComputedStyle(document.body).cursor }));
+    await page.keyboard.press("Escape"); await frame(page); await page.mouse.up(); await frame(page);
+    return { frame: true, spot, hover, armed, after: { dragging: await page.evaluate(() => window.__rompPaneDock.dragging()), store: await store(page) } };
+  })();
   o.column = await (async () => {
     const before = await store(page);
     const opened = await page.evaluate((sid) => { try { return !!(window.__rompMoveTab && window.__rompMoveTab(sid, "new")); } catch (e) { return String(e); } }, cfg.api);
@@ -244,6 +288,7 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
     engineOn: !!(window.__rompPaneDock && window.__rompPaneDock.on()),
     layout: localStorage.getItem("romp-layout"),
     feedCursor: getComputedStyle(document.getElementById("feed-pane")).cursor,
+    feedDoc: (() => { try { const d = document.getElementById("f-feed").contentDocument; return { cls: d.body.className, script: !!d.getElementById("pd-grab"), detector: !!d.defaultView.__rompPaneGrab }; } catch (e) { return { error: String(e) }; } })(),
   }));
   out.off.before = await snap();
   const rr = await page.evaluate(() => Object.fromEntries(["chat-pane", "fleet-pane", "feed-pane"].map((id) => { const r = document.getElementById(id).getBoundingClientRect(); return [id, { x: r.left, y: r.top, w: r.width, h: r.height }]; })));
@@ -506,6 +551,41 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(c["after"]["store"]["panes"], c["before"]["panes"])
         self._frames_fill(c["after"]["rects"], "after the column closed")
 
+    def test_10_a_press_on_the_feeds_empty_background_wears_the_open_hand_and_arms_the_shells_drag(self):
+        o = self._on()
+        e = o["feedEmpty"]
+        self.assertTrue(e.get("frame"), "the feed frame is on the page")
+        sp = e.get("spot")
+        self.assertTrue(sp and not sp.get("error"), "an empty spot in the feed below its cards (the page's own detector says so): %r" % sp)
+        self.assertEqual(e["hover"]["cursor"], "grab", "the open hand over the feed's empty background: %r" % e["hover"])
+        self.assertIn("pd-grab-hover", e["hover"]["cls"].split())
+        self.assertTrue(e.get("cardHover"), "a card was on the feed to hover (the seeded sessions' cards)")
+        self.assertNotEqual(e["cardHover"]["cursor"], "grab", "a card wears its own cursor, never the hand: %r" % e["cardHover"])
+        self.assertNotIn("pd-grab-hover", e["cardHover"]["cls"].split(), "the hover class drops over a card: %r" % e["cardHover"])
+        rec = e["rec"]
+        self.assertTrue(rec["armed"]["dragging"], "past the slop the feed is held from a press inside its content: %r" % rec["armed"])
+        self.assertEqual(rec["armed"]["bodyCursor"], "grabbing")
+        w = rec["way"][0]
+        self.assertEqual(w["zone"], {"target": "chat-pane", "edge": "left"}, w["zone"])
+        self.assertTrue(w["outline"]["on"] and not w["outline"]["free"], "the outline shows the chat's left half: %r" % w["outline"])
+        a = rec["after"]
+        fd, ch = a["rects"]["feed-pane"], a["rects"]["chat-pane"]
+        self.assertLess(fd["x"] + fd["w"], ch["x"] + 1, "the feed landed left of the chat")
+        lv = self._leaves(self._layout(a["store"])["tree"])
+        self.assertEqual(lv.index("feed-pane") + 1, lv.index("chat-pane"), "the feed sits right before the chat in the row: %r" % lv)
+        self._frames_fill(a["rects"], "after the empty-space drop")
+
+    def test_11_a_press_on_the_sessions_bands_empty_area_arms_the_drag_and_escape_leaves_the_band(self):
+        o = self._on()
+        e = o["bandEmpty"]
+        self.assertTrue(e.get("frame"), "the sessions frame is on the page")
+        sp = e.get("spot")
+        self.assertTrue(sp and not sp.get("error"), "an empty spot in the band's SVG outside every lane and mark: %r" % sp)
+        self.assertEqual(e["hover"]["cursor"], "grab", "the open hand over the band's empty area: %r" % e["hover"])
+        self.assertTrue(e["armed"]["dragging"], "the band is held from a press inside it: %r" % e["armed"])
+        self.assertTrue(e["armed"]["outline"]); self.assertEqual(e["armed"]["bodyCursor"], "grabbing")
+        self.assertFalse(e["after"]["dragging"], "Escape drops it where it was")
+
     # ── the OFF page ─────────────────────────────────────────────────────────────────────────────────
     def test_7_with_the_switch_off_the_same_gestures_change_nothing_and_no_engine_node_or_store_exists(self):
         f = self.r["off"]
@@ -520,6 +600,9 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(a["band"], b["band"])
         self.assertEqual(a["bodyCls"], b["bodyCls"])
         self.assertIsNone(a["layout"]); self.assertFalse(a["css"] or a["outline"]); self.assertEqual(a["divs"], 0)
+        fd = b.get("feedDoc") or {}
+        self.assertNotIn("pane-docking", (fd.get("cls") or "").split(), "the feed document carries no kit class: %r" % fd)
+        self.assertFalse(fd.get("script") or fd.get("detector"), "no grab detector is injected while the kit is off: %r" % fd)
 
 
 if __name__ == "__main__":

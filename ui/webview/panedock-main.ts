@@ -43,6 +43,7 @@ const SETTINGS_KEY = "romp:settings";
 const GROW_KEY = "romp-pane-grow";
 const DRAG_CLASS = "pd-drag", RESIZE_CLASS = "pd-resize", ALT_CLASS = "pd-alt";
 const STYLE_ID = "pd-css";
+const GRAB_SCRIPT_ID = "pd-grab";
 const MIN_PX = 120;      // a pane never resizes below this or a quarter of its pair (the shipped clamp)
 const BAND_MIN = 48;     // the band's floor (the shipped #gh clamp)
 
@@ -193,6 +194,7 @@ class Engine {
     on(document, "keydown", (e) => this.onKey(e as KeyboardEvent), true);
     on(document, "keyup", (e) => this.onKey(e as KeyboardEvent), true);
     on(window, "blur", () => this.setAlt(false));
+    on(window, "message", (e) => this.onGrabMessage(e as MessageEvent));
     this.obs = new MutationObserver(() => this.reconcile());
     this.obs.observe(this.col, { attributes: true, attributeFilter: ["style"] });
     this.allFrames().forEach((f) => this.wire(f));
@@ -359,6 +361,7 @@ class Engine {
       if (this.on && (f.id === "f-chat" || f.id.indexOf("f-chat-") === 0 || f.id === "f-files") && !d.getElementById(STYLE_ID)) {
         const st = d.createElement("style"); st.id = STYLE_ID; st.textContent = PANE_CSS; (d.head || d.documentElement).appendChild(st);
       }
+      if (this.on) this.markDoc(d, f);
     };
     f.addEventListener("load", doWire);
     doWire();
@@ -369,7 +372,41 @@ class Engine {
       const st = d && d.getElementById(STYLE_ID);
       if (st) st.remove();
       if (d) d.documentElement.style.cursor = "";
+      if (d && d.body) d.body.classList.remove(PANE_DOCKING_CLASS, "pd-grab-hover");   // the grab detector reads this: off, it is inert
     } catch { /* gone */ }
+  }
+
+  /** The kit's mark on a pane document while on: the body class the grab detector keys on, and the detector itself
+   *  (dist/pane-grab.js, the plan's section 3: the inner page detects a press on its own empty background and forwards
+   *  it here), injected once per document; the chat is skipped (its grab surface stays the strip's empty run). */
+  private markDoc(d: Document, f: HTMLIFrameElement): void {
+    if (!d.body) return;
+    d.body.classList.add(PANE_DOCKING_CLASS);
+    if (f.id === "f-chat" || f.id.indexOf("f-chat-") === 0 || d.getElementById(GRAB_SCRIPT_ID)) return;
+    const sc = d.createElement("script"); sc.id = GRAB_SCRIPT_ID; sc.src = "/dist/pane-grab.js" + this.distVer();
+    (d.head || d.documentElement).appendChild(sc);
+  }
+  /** The shell's own bundle tag carries the dist version (`?v=N`); the injected detector rides the same, so a rebuild busts both. */
+  private distVer(): string {
+    try {
+      const own = document.querySelector('script[src*="panedock-main.js"]') as HTMLScriptElement | null;
+      const v = own ? new URL(own.src, location.href).searchParams.get("v") : null;
+      return v ? "?v=" + encodeURIComponent(v) : "";
+    } catch { return ""; }
+  }
+
+  /** A pane page's forwarded press ({romp:"paneGrab"}, pane-grab.ts): the page captured the pointer on its own empty
+   *  background and hands the press here; the shell arms exactly the drag the ring arms, hearing the frame's captured
+   *  moves through its window as it does for Option-drag. */
+  private onGrabMessage(e: MessageEvent): void {
+    const m = e.data;
+    if (!m || m.romp !== "paneGrab" || !this.on || this.press || this.div) return;
+    const f = this.allFrames().find((x) => x.contentWindow === e.source);
+    if (!f || !f.contentWindow) return;
+    const paneNode = f.closest(".pane") as HTMLElement | null;
+    if (!paneNode || !this.lay || !has(this.lay.tree, paneNode.id)) return;
+    const b = f.getBoundingClientRect();
+    this.beginPress(paneNode.id, f, f.contentWindow, b.left + f.clientLeft + Number(m.clientX || 0), b.top + f.clientTop + Number(m.clientY || 0));
   }
 
   private onKey(e: KeyboardEvent): void {
