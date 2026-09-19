@@ -130,7 +130,7 @@ yields nothing rather than an error.
 
 ### Card boards: your own categories
 
-`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log.
+`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log. The feed pane shows one board at a time: the View menu gains a **Board** row per board the kernel carries (the feed first) once a second board exists, the pick survives a reload, and a board created by `romp card -b` is a row on the next frame; a data board's cards sit under its own categories, sorted by its definition, with no session grouping unless the definition asks for it. A feed page opened with `?board=<id>` shows that board with the Board rows hidden, the hook a pane per board mounts on. A pick naming a board the frame no longer carries shows the feed and says so on the View button.
 
 ### Moving a session to another folder
 
@@ -328,7 +328,14 @@ following to every connected machine's kernel):
   happens again is logged once per attempt; its card follows the board's usual
   rule, nothing new while the swap's card stands, a fresh one once you cleared it. When a turn is served on the picked tier, a second
   Completed card says the session is back (`Model back on …`) and the retry ends.
-  A pick of your own ends it too, as does turning the switch off.
+  A pick of your own ends it too, as does turning the switch off. While a
+  fallback stands, the session's model picker, in the chat statusline and in the
+  timeline's lane picker alike, marks the requested model with a yellow tick
+  beside the blue tick on the model that answers; its tooltip says why
+  (the safety classifiers and their category, once the CLI has named them, which it
+  does within seconds of the swap; a fallback that predates the kernel is read off
+  the transcript when the kernel attaches) and whether romp is
+  retrying, with the cadence and the next attempt, or where to turn retries on.
 
 ### Per-session billing (login vs API key)
 
@@ -1630,6 +1637,32 @@ reads), which with the stream buffer empty at the check is a record the CLI
 is mid-write on at that instant, outside any turn: lost to the journal only,
 never to the CLI.
 
+The parked-op drain says so when a stale count holds a queue. The drain
+delivers a session's parked input once the session is quiet, and its working
+gate reads the backend's open-turn count, which under a host is the count the
+host handed over at the attach. A stale count (the shape of the stuck-Working
+defect: a host counted a message folded into a running turn as its own turn,
+and every kernel adopted the count for days) holds the queue with the count
+alone: a turn counted open and nothing queued to start. That is the one
+source the belt reads, never the composite busy signal, which also holds for
+a queued turn about to run and for a feeder waiting with the count at zero
+(a parked deploy restart, an armed reconnect after a settings switch, a
+pending rewind), holds that are correct. The drain records the hold on its
+own thread; the jobs thread reads the session's transcript once per pass, and
+when the count says open while the transcript, at rest, shows its last turn
+closed, files a `pending-ops.held-working` problem row once per hold: the
+ledger, the kernel log and the error center's ring, naming the session and
+how many items wait, with the remedy (ending and reviving the session
+replaces the count; a kernel restart does not, since the attach adopts the
+count). The transcript is read only at rest, once per version of the file,
+through the kernel's shared parse, and never on the pusher's thread; a
+transcript that is absent, that parses to no turns or that keeps changing (a
+turn streaming) is no verdict, and a later version that shows a turn open
+files a `pending-ops.held-working-retracted` row. The belt never delivers:
+the queue stays held until the count clears or the session is replaced, and
+cancelling the queued chip clears the belt's state, so the next hold on that
+session says again.
+
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
 exception type and the failing frame (file, line and function, first on the line
@@ -2248,7 +2281,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   of the wrong shape, or no reader entry after the walk).
 - `stacks`: every live thread's stack, keyed `"<ident> <kind>"`. The kind
   is the thread's name up to the naming convention's colon (`sdk` and
-  `sdk-intr` for a session's threads, `codex` for a Codex session's worker,
+  `sdk-intr`, `sdk-fbcause` (a session reading a standing fallback's cause off its transcript at an attach) for a session's threads, `codex` for a Codex session's worker,
   `end-host` for a session's end hook, `port-up` for a dial's port watch, `peer` for a postal peer loop,
   `romp-refused-mark` for the refused-echo mark a cut-off boot re-delivery writes aside), the
   target function for a thread the code left unnamed (`_ask_poll`,

@@ -33,7 +33,7 @@ test("the header's Clear IS the card's Clear: one builder, one class set, a layo
 });
 
 test("grouped mode only: headers (and so the control) are emitted under the grouped guard", () => {
-  const guard = FEED.indexOf("if (feedPrefs().grouped) {\n    const rank = new Map(sessionOrder.map(");
+  const guard = FEED.indexOf("if (feedPrefs().grouped && board.groupBy === \"session\") {   // grouping is the BOARD's to offer (phase four: the notes board groups nothing)\n    const rank = new Map(sessionOrder.map(");
   assert.ok(guard > 0, "the grouped-mode header build lives under the grouped guard");
   assert.match(FEED.slice(guard, guard + 2500), /head = \{ kind: "sess", t: e\.t, sid: s, col: k, name: src\.name/);
   assert.match(FEED, /function dressHeaderIfLast\(card: HTMLElement, sid: string\): void \{\s*\n\s*if \(!feedPrefs\(\)\.grouped\) return;/);

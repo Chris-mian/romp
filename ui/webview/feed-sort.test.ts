@@ -11,7 +11,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
 
 test("each column sorts by modified time; the view menu's 'Sort by most recent ↓/↑' row reverses the direction", () => {
-  assert.match(FEED, /const newestFirst = feedPrefs\(\)\.newestFirst;/);
+  assert.match(FEED, /const newestFirst = board === FEED_BOARD \? feedPrefs\(\)\.newestFirst : board\.sort\.dir === "desc";/);
   assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => newestFirst \? y\.t - x\.t : x\.t - y\.t\)/);
   // folded into the footer VIEW MENU (the user 2026-08-24), keeping the Modified button's rule (the
   // user 2026-08-18): the arrow IS the state — ↓ newest at the top, ↑ oldest at the top — a DIRECTION

@@ -5072,6 +5072,32 @@ def _model_downgrade(frm, to):
     return a is not None and b is not None and b < a
 
 
+def model_fallback_row(pick, live, cause="", arm=None, retry_on=False, now=None, pending=False, category=""):
+    """The model picker's REQUESTED-model mark (the user 2026-09-17): while a session's live model sits a tier below
+    its pick, the picker draws a yellow tick beside the requested model with a tooltip saying why and whether romp is
+    retrying. None when no fallback stands (no pick, no live name, or the live tier at or above the pick's). `pick` is
+    the reg's model (an alias or an id), `live` the live label; `cause` is "safeguards" once the CLI's
+    model_refusal_fallback frame named the episode, else "" (unknown: a capacity fallback, or the frame not yet in);
+    `arm` is the standing upgrade retry ({next, attempts}) and `retry_on` the switch; `pending` (a /model pick of the
+    user's own still resolving) is the badge's switching-dots, never a fallback mark. `live` should be the model the API
+    last SERVED a parent reply on (the reg's servedModel): the per-turn init and a reconnect report the CONFIGURED model,
+    the pick, before anything is served, and a mark keyed on that would vanish at every turn start and reappear at the
+    first reply (review 2026-09-17). Pure over its inputs."""
+    if pending:
+        return None
+    pick_label = _alias_label(str(pick or ""))
+    if not pick_label or not live or not _model_downgrade(pick_label, live):
+        return None
+    now = time.time() if now is None else float(now)
+    nxt = None
+    if arm and arm.get("next"):
+        nxt = max(0, int(float(arm["next"]) - now))
+    return {"pick": pick_label, "pickValue": str(pick or ""), "live": str(live), "cause": str(cause or ""),
+            "category": str(category or ""),   # the API's refusal category when the CLI named one ("cyber", "bio", …)
+            "retry": {"on": bool(retry_on), "everyMin": int(RETRY_UPGRADE_S // 60), "armed": bool(arm),
+                      "nextIn": nxt, "attempts": int((arm or {}).get("attempts", 0) or 0)}}
+
+
 def _echo_queued_in(a: dict, queued) -> bool:
     """Whether echo atom `a` is in the surviving queue `queued` — its copies as {"md", "qid"} (a plain text is an
     id-less copy) — by identity where it has one (T252c, third review): an echo whose uuid a queued copy wears is
@@ -5489,6 +5515,10 @@ class SdkSession:
         self._switch_wait_said = ""  # the ask the 'waiting for quiet' line was said for, once per ask
         self._switch_ask_pending = ""  # the switch ask handed to request_reconnect(defer=False) and not yet armed or dropped
         self._reconnect_switch_why = ""  # the armed reconnect is a switch's ("always fast"/"retry upgrade"): the waker's last look reads it
+        self._fallback_cause = str(reg.get("fallbackCause") or "")   # "safeguards" once the CLI's refusal frame named the standing fallback (model_fallback_row)
+        self._served_model = str(reg.get("servedModel") or reg.get("liveModel") or "")   # the model the API last SERVED a parent reply on (the picker's mark)
+        self._fallback_category = str(reg.get("fallbackCategory") or "")   # the refusal's category beside the cause
+        self._refusal_this_turn = False   # a model_refusal_fallback frame landed in the turn in flight: the downgrade learn keeps its cause
         self._settled_msg = None                 # the ResultMessage whose settle ran last (its finally records
         #   it) — what _note_message_failure reads to say whether a failed result's turn still settled
         # The handshake as a cross-thread EVENT: set the moment a ClaudeSDKClient is up, cleared when
@@ -6503,6 +6533,93 @@ class SdkSession:
                           "down and the ask waits for the next quiet moment; nothing is cut" % (why, self.name, self._busy_words()))
         return True
 
+    def _maybe_seed_fallback_cause(self) -> None:
+        """A standing fallback with no cause on record (it happened under an earlier kernel, whose frame this one never
+        saw): read the CLI's transcript, from the end, for the last swap it recorded, off the loop thread. The picker's
+        tooltip otherwise says the requested model is not answering without saying why until the next fallback."""
+        try:
+            live = getattr(self, "_served_model", "") or getattr(self, "model", "")
+            if getattr(self, "_fallback_cause", "") or not model_fallback_row(self.chosen_model, live):
+                return
+            path = transcript_path(self.cwd, getattr(self, "resume_sid", None) or self.sid)
+            threading.Thread(target=self._seed_fallback_cause_from_transcript, args=(path, live),
+                             name="sdk-fbcause:%s" % self.name, daemon=True).start()
+        except Exception as e:
+            self.backend._log("fallback cause (%s): %s" % (self.name, e))
+
+    def _seed_fallback_cause_from_transcript(self, path, live, cap_bytes=24 << 20) -> bool:
+        """The last swap the transcript recorded, read from the file's end (bounded): a model_refusal_fallback record
+        after the last fallback marker names the safeguards refusal and its category; a marker with no refusal record
+        after it was a swap of another kind, and a record of 'local' scope swapped one reply, not the session. Seeds
+        the cause only when that record's fallback model is the tier now serving. Returns True when it seeded."""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                chunk = 1 << 20
+                tail = b""
+                pos = size
+                while pos > 0 and (size - pos) < cap_bytes:
+                    step = min(chunk, pos)
+                    pos -= step
+                    f.seek(pos)
+                    tail = f.read(step) + tail
+                    if b"model_refusal_fallback" in tail:
+                        break
+        except OSError:
+            return False
+        i_ref = tail.rfind(b'"model_refusal_fallback"')
+        if i_ref < 0:
+            return False
+        i_mark = max(tail.rfind(b'"type":"fallback"'), tail.rfind(b'"type": "fallback"'))
+        if i_mark > i_ref:
+            return False   # the last swap on record was not a refusal: say nothing
+        start = tail.rfind(b"\n", 0, i_ref) + 1
+        end = tail.find(b"\n", i_ref)
+        try:
+            rec = json.loads(tail[start:end if end >= 0 else None].decode("utf-8", "replace"))
+        except Exception:
+            return False
+        if str(rec.get("scope") or "session") == "local":
+            return False
+        to = str(rec.get("fallbackModel") or rec.get("fallback_model") or "")
+        if _model_rank(to) is None or _model_rank(to) != _model_rank(live):
+            return False
+        cat = str(rec.get("apiRefusalCategory") or rec.get("api_refusal_category") or "").strip()
+        self._fallback_cause = "safeguards"
+        self._fallback_category = cat
+        try:
+            self.backend._update_reg(self.sid, fallbackCause="safeguards", fallbackCategory=cat)
+        except Exception as e:
+            self.backend._log("fallback cause (%s): registry write failed: %s" % (self.name, e))
+        self.backend._log("fallback cause (%s): the transcript's last swap was a safeguards refusal%s — the picker's mark says so"
+                          % (self.name, (" (%s)" % cat) if cat else ""))
+        try:
+            self.backend._poke()
+        except Exception:
+            pass
+        return True
+
+    def _arm_if_below_pick(self) -> bool:
+        """Retry upgrades after downgrades, for a session ALREADY sitting below its pick: arm from the pick's label when the
+        switch is on, no arm stands, and the model last served ranks below the pick. Two callers: the switch flip
+        (apply_model_switches) and a host ATTACH after a kernel restart (review 2026-09-17: the arm is in memory only,
+        and an attach to a CLI that survived the restart replays no init and serves no new fallback, so a standing
+        fallback lost its retry — and the picker's tooltip promised a cadence nothing was running). Off: the switch
+        going off ends any arm (_retry_armed). Returns True when it armed."""
+        pick = getattr(self, "chosen_model", "") or ""
+        if not retry_upgrade_on(getattr(self.backend, "state_dir", None)):
+            self._retry_armed()
+            return False
+        if not pick or pick == "default" or getattr(self, "_upgrade_retry", None):
+            return False
+        live = getattr(self, "_served_model", "") or getattr(self, "model", "")
+        pr, lr = _model_rank(pick), _model_rank(live)
+        if pr is not None and lr is not None and lr < pr:
+            self._arm_upgrade_retry(_alias_label(pick), live)
+            return True
+        return False
+
     def _arm_upgrade_retry(self, frm, to):
         """A down-tier model change nobody asked for just landed (the card's branch in _learn_model): with the gear's
         Retry upgrades after downgrades switch on, remember what to get back to and let the kernel's tick ask for it
@@ -7018,6 +7135,9 @@ class SdkSession:
                     # SDK already holds (get_server_info), so the badge exists pre-turn too — without
                     # this, nothing showed after a kernel restart until each session's next turn.
                     asyncio.ensure_future(self._do_adopt_server_info())
+                    if getattr(self, "_host_is_attach", False):
+                        self._arm_if_below_pick()   # an attach replays no init and serves nothing new: a standing fallback re-arms its retry here
+                        self._maybe_seed_fallback_cause()   # …and a standing fallback whose cause this kernel never saw reads it off the transcript
                     feeder = asyncio.ensure_future(client.query(inputs()))
                     recv = asyncio.ensure_future(self._drain(client, AssistantMessage, ResultMessage, SystemMessage))
                     waker = asyncio.ensure_future(self._wake.wait())
@@ -7195,6 +7315,17 @@ class SdkSession:
             return
         cleared = self._resolve_model_pending(pm)
         raw = (raw or "").strip()
+        prev_served = getattr(self, "_served_model", "")   # what the API served BEFORE this observation: the downgrade branch reads it
+        if served and pm:
+            prev = prev_served or self.model   # unseeded: the configured model stands in, so an unchanged main loop is a no-op write
+            if pm != prev:
+                self._served_model = pm        # what the API last SERVED a parent reply on — the picker's mark reads this, never the init's configured name
+                try:
+                    self.backend._update_reg(self.sid, servedModel=pm)
+                except Exception as e:
+                    self.backend._log("served model (%s): registry write failed: %s" % (self.name, e))
+            elif not getattr(self, "_served_model", ""):
+                self._served_model = pm        # remembered in memory only: nothing changed on disk
         if served and self._retry_armed():
             self._note_model_served(pm)
         if pm == self.model:
@@ -7244,8 +7375,22 @@ class SdkSession:
                 except Exception as e:
                     self.backend._log("model-fallback card (%s): %s" % (self.name, e), problem=True)
             self._arm_upgrade_retry(self.model, pm)   # Retry upgrades after downgrades: remember the way back (off → nothing)
+            # A NEW episode resets the cause (the CLI's refusal frame names it seconds later); an observation of the fallback
+            # ALREADY standing — the API served this tier last time too: a host attach replaying the fallen reply the old
+            # kernel never acked, a reconnect's init reporting the pick and the next reply falling back the same way — keeps
+            # the cause on record (review 2026-09-17: the attach's seed set "safeguards" and the replayed learn erased it).
+            same_episode = bool(prev_served) and _model_rank(prev_served) is not None and _model_rank(prev_served) == _model_rank(pm)
+            if not getattr(self, "_refusal_this_turn", False) and not same_episode:
+                self._fallback_cause = ""             # a new episode: its cause is unknown until the CLI's refusal frame names it (seconds later)
+                self._fallback_category = ""
+            downgraded = not getattr(self, "_refusal_this_turn", False) and not same_episode
+        else:
+            downgraded = False
         old, self.model = self.model, pm
         fields = {"liveModel": pm, "modelPending": bool(self._model_pending)}
+        if downgraded:
+            fields["fallbackCause"] = ""
+            fields["fallbackCategory"] = ""
         if raw:
             self._model_id = raw
             fields["liveModelId"] = raw
@@ -7283,6 +7428,14 @@ class SdkSession:
         # A 'local' refusal (a subagent's or a side question's reply) never swapped the session's model,
         # so none of this turn's cards is its own.
         caps = [] if scope == "local" else [c[2] for c in (getattr(self, "_swap_cards", None) or []) if c[2]]
+        if scope != "local":
+            self._fallback_cause = "safeguards"   # the picker's requested-model tooltip names the classifiers (model_fallback_row)
+            self._fallback_category = cat
+            self._refusal_this_turn = True
+            try:
+                self.backend._update_reg(self.sid, fallbackCause="safeguards", fallbackCategory=cat)
+            except Exception as e:
+                self.backend._log("fallback cause (%s): registry write failed: %s" % (self.name, e))
         hook = getattr(type(self.backend), "on_model_refusal_fallback", None)
         if not hook:
             memo = "model_refusal_fallback:no-hook"
@@ -8357,6 +8510,7 @@ class SdkSession:
                 # the CLI, its next streamed atom re-asserts 'working' via _forward — the stream is the truth.
                 self.inflight = 0
                 self._inflight_texts.clear()           # the CLI processed everything fed — same settle semantics
+                self._refusal_this_turn = False        # the turn's refusal frame, if any, has been read into the cause
                 self._swap_cards = []                  # T279: a capacity card learned this turn is claimable only by
                 #                                        this turn's refusal notice — the settle is the deciding event
                 # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
@@ -9500,7 +9654,7 @@ class SdkSession:
 
     # ---- snapshot for live_sessions() ----
 
-    def snapshot(self) -> dict:
+    def snapshot(self, retry_on=None) -> dict:
         # Parked in can_use_tool/_ask_user waiting on the USER (a permission Allow/Deny or an
         # AskUserQuestion picker)? The turn stays inflight through that wait, so reporting "working" made
         # the feed/timeline miss it — the kernel floors a card to BLOCKED off the live "permission"/"picker"
@@ -9567,6 +9721,10 @@ class SdkSession:
                 #   would wake it in seconds (the user 2026-08-13). Dormant rows carry no spawning
                 #   key at all, so they read ready.
                 "fast": self.fast,   # fast-mode state from init ("on"/"off"/"cooldown"; "" = unknown → no badge)
+                "modelFallback": model_fallback_row(self.chosen_model, getattr(self, "_served_model", "") or self.model, getattr(self, "_fallback_cause", ""),
+                                                    getattr(self, "_upgrade_retry", None),
+                                                    retry_upgrade_on(self.backend.state_dir) if retry_on is None else bool(retry_on),
+                                                    pending=bool(self._model_pending), category=getattr(self, "_fallback_category", "")),   # the picker's requested-model mark (served model, never the init's)
                 "fastReason": self.fast_reason,   # init's disabled_reason — non-empty hides the chat toggle
                 "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element
                 "retryInfo": self.retry_info,     # the latest attempt's detail (attempt/max, error status+message, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
@@ -10141,6 +10299,16 @@ class SdkBackend:
         for reg in regs:
             if reg.get("alive") and not self._lease_survives(reg["sid"]):
                 self._heal_stale_awaiting(reg["sid"])
+        # The dropped-sends notice cards the reseed below has to post have no door yet: the kernel wires on_notice on
+        # this CLASS after the constructor returns (type(_sdk_backend).on_notice = staticmethod(post_notice)), so a post
+        # from inside __init__ found no door, the held sends past the age line were flagged dropped and stale with no
+        # card, and the flags took them out of every later boot's selection: on the boot road the card was never posted.
+        # The reseed PARKS each card here (the flag writes, the queue re-add and the mirror write stay synchronous, as
+        # before) and the kernel posts them through post_boot_notices() once the door is wired. The door is not a
+        # constructor argument on purpose: its session check re-enters the kernel's construction lock (Sessions.live()
+        # through _sdk()), which the boot thread holds through this constructor, so a synchronous post from here would
+        # deadlock the boot.
+        self._boot_notices: list | None = []
         self._reseed_echoes(regs)   # unlanded input echoes survive the restart (reg['echoes'] mirror)
         # Boot reconcile (reconcile=True: the KERNEL passes it at boot; tests and ad-hoc constructions
         # opt in explicitly): recover what the previous kernel's death left behind — reap orphaned
@@ -13550,11 +13718,14 @@ class SdkBackend:
                 _texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
                 try:
                     self._mark_dropped_echoes(reg["sid"], [{"md": t, "qid": (m or {}).get("qid")}
-                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))])
+                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))],
+                                              park=getattr(self, "_boot_notices", None))   # the boot road: the card waits for
+                    #                        the door (post_boot_notices). getattr like the forget_fed guard above: a stand-in
+                    #                        that never ran __init__ has no slot and keeps the synchronous post
                 except Exception as e:                   # bookkeeping over the live tail, as at the spawn half: said, never a
                     self._log("dropped-echo marking (%s) failed: %s: %s" % (reg["sid"][:8], type(e).__name__, e))   # boot fault
 
-    def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True) -> None:
+    def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True, park: list | None = None) -> None:
         """A fresh CLI is spawning for this sid, or the kernel just booted: whatever process held any
         earlier send is gone. An input echo whose text is neither in the surviving queue (about to be
         delivered to the new CLI) nor landed in the transcript has no holder left — its send is provably
@@ -13583,7 +13754,12 @@ class SdkBackend:
         re-feed would land the message a second time in a conversation that genuinely kept the first,
         exactly the duplicate that branch refuses by design. The loss still surfaces in full (the dropped
         flag); only the queue re-add is withheld. Boot and dead-spawn callers keep the default: no client
-        survived there to be writing anything."""
+        survived there to be writing anything.
+
+        `park` (the boot reseed, from inside __init__): a list the notice card's POST is appended to as a
+        zero-argument callable instead of being posted here, because the kernel wires the door on this class
+        only after the constructor returns; post_boot_notices posts them then. Everything else (the flags,
+        the queue re-add, the mirror write, the wake) runs here as for every other caller."""
         # The surviving queue, by identity where it has one (T252c, third review): `queued_texts` is the queue's
         # copies as {"md", "qid"} (a caller with texts alone gives id-less copies). An echo whose uuid a queued
         # copy wears is queued; an echo whose text is queued only under OTHER ids is not — by text alone, the
@@ -13749,18 +13925,26 @@ class SdkBackend:
                     reg = read_reg(self.state_dir, sid)
                 name = str((reg or {}).get("name") or "")
             title, body, acts = dropped_sends_card(name, stale, now, REDELIVER_MAX_AGE_S)
-            post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
-            if callable(post):
-                row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
-                                actions=acts, dismiss_on_action=True, t=int(now))
+            count = len(stale)
+
+            def post_card():
+                """The POST and the problem row that says its outcome: run here, or parked for the kernel (`park`)."""
+                post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
+                if callable(post):
+                    row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
+                                    actions=acts, dismiss_on_action=True, t=int(now))
+                else:
+                    row, err = None, "no notice door on this backend"
+                self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
+                          "oldest was from %s; kept in the chat as never-delivered and %s"
+                          % (sid[:8], count, _gap_text(int(REDELIVER_MAX_AGE_S)),
+                             time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
+                             ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
+                             ("the card offering them back could not be posted: %s" % err)), problem=True)
+            if park is not None:
+                park.append(post_card)                    # the boot reseed, inside __init__: no door yet (post_boot_notices)
             else:
-                row, err = None, "no notice door on this backend"
-            self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
-                      "oldest was from %s; kept in the chat as never-delivered and %s"
-                      % (sid[:8], len(stale), _gap_text(int(REDELIVER_MAX_AGE_S)),
-                         time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
-                         ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
-                         ("the card offering them back could not be posted: %s" % err)), problem=True)
+                post_card()
         self._persist_echoes(sid)
         self._wake_push()
 
@@ -14134,6 +14318,20 @@ class SdkBackend:
         with s._lock:
             return s.inflight > 0 or bool(s._pending)
 
+    def count_says_open(self, sid: str) -> "bool | None":
+        """Whether the open-turn COUNT ALONE says a turn is open: inflight > 0 with nothing queued to start. The drain's
+        held-working belt reads this, never busy(): busy() also answers True for a queued turn about to run, and the
+        feeder holds _pending with inflight zero in states where the hold is correct (a parked deploy restart or a quiesce
+        with the lease refreshed, an armed reconnect after an effort, model or auth switch, a pending rewind before it arms,
+        the gap between send() enqueuing and the feeder popping); in each the transcript rests with its last turn closed
+        because no turn is running, and a belt on busy() would call a proper hold a stale count (1876's review, 2026-09-19).
+        None when we don't run this sid."""
+        s = self.sessions.get(sid)
+        if not s:
+            return None
+        with s._lock:
+            return s.inflight > 0 and not s._pending
+
     def compacting(self, sid: str) -> "bool | None":
         """Authoritative 'is a /compact in progress' (see SessionBackend.compacting): set when /compact is
         delivered, cleared event-based by the compact_boundary or the /compact turn's ResultMessage — so a
@@ -14366,10 +14564,12 @@ class SdkBackend:
         if s and s.thread.is_alive():
             try:
                 snap = s.snapshot()
-                return {"mode": str(snap.get("mode") or ""), "fast": str(snap.get("fast") or "")}
+                return {"mode": str(snap.get("mode") or ""), "fast": str(snap.get("fast") or ""),
+                        "modelFallback": snap.get("modelFallback")}   # the popover's picker wears the requested-model mark too (2026-09-17)
             except Exception:
                 return {}
-        return {}
+        reg = read_reg(self.state_dir, sid)
+        return {"modelFallback": self.fallback_row_for_reg(reg)} if reg else {}
 
     def rename(self, sid: str, new_name: str) -> bool:
         reg = read_reg(self.state_dir, sid)
@@ -14694,10 +14894,14 @@ class SdkBackend:
                 s._model_pending = "" if already else value
                 pending = bool(s._model_pending)
                 s._upgrade_retry = None        # a pick of the user's own supersedes the retry after a downgrade (2026-09-17)
+                s._fallback_cause = ""        # …and the standing fallback's cause; the served model is learned afresh on the pick
+                s._fallback_category = ""
+                s._served_model = ""
             # remember as the seed for the NEXT new session (the user 2026-06-27) — pending the CLI's verdict
             tok = self._seed_write_pending(sid, value)
             prev = {"picked": value, "tok": tok}   # what the layers hold until the CLI rules — the revert's CAS keys
             self._update_reg(sid, model=value, modelPending=pending)   # locked RMW — see set_effort
+            self._update_reg(sid, fallbackCause="", fallbackCategory="", servedModel="")   # the requested-model mark starts over with the pick (2026-09-17)
             s.set_model_live(None if value in ("", "default") else value, prev=prev)
         else:
             write_sdk_default(self.state_dir, model=value)   # the seed for the NEXT new session (the user 2026-06-27)
@@ -14705,6 +14909,7 @@ class SdkBackend:
             # alias's best-effort label immediately — never leave the badge on a stale liveModel or trapped
             # on dots. The value applies for real on the next connect (chosen_model → _options).
             self._update_reg(sid, model=value, liveModel=_alias_label(value), modelPending=False)
+            self._update_reg(sid, fallbackCause="", fallbackCategory="", servedModel="")   # a dormant pick starts the mark over too
         # the acknowledging chip — live OR dormant (see _ack_cmd_chip)
         self._ack_cmd_chip(sid, "/model", "/model " + value, s.resume_sid if s else reg.get("lastSid"))
         return True
@@ -14910,13 +15115,7 @@ class SdkBackend:
                                  "" if s.quiet() else " once the session is quiet"))
                     s.want_switch_reconnect("always fast")
                     asked += 1
-                pick = getattr(s, "chosen_model", "") or ""
-                if retry_upgrade_on(self.state_dir) and pick and pick != "default" and not getattr(s, "_upgrade_retry", None):
-                    pr, lr = _model_rank(pick), _model_rank(getattr(s, "model", ""))
-                    if pr is not None and lr is not None and lr < pr:
-                        s._arm_upgrade_retry(_alias_label(pick), s.model)
-                else:
-                    s._retry_armed()
+                s._arm_if_below_pick()
             except Exception as e:
                 self._log("model switches (%s): %s" % (s.name, e), problem=True)
         return asked
@@ -15601,6 +15800,7 @@ class SdkBackend:
         """{sid: state-dict} for every alive SDK session — merged by the kernel
         into its session enumeration so SDK sessions appear in the UI."""
         out = {}
+        retry_on = retry_upgrade_on(self.state_dir)   # once per listing: every row's mark reads the same answer
         for reg in list_regs(self.state_dir):
             if not reg.get("alive"):
                 continue
@@ -15610,7 +15810,7 @@ class SdkBackend:
             if not sid:
                 continue
             try:
-                out[sid] = self._live_row(reg, sid)
+                out[sid] = self._live_row(reg, sid, retry_on)
             except Exception:
                 # One session's bad row must not hide the OTHERS — this loop used to run unguarded
                 # under the kernel merge's single try, so one snapshot() exception silently dropped
@@ -15627,12 +15827,22 @@ class SdkBackend:
                             "retryInfo": None, "ctx": None, "subagents": [], "bgTasks": []}
         return out
 
-    def _live_row(self, reg, sid):
+    def fallback_row_for_reg(self, reg, retry_on=None):
+        """A dormant session's requested-model mark from its registry alone (model_fallback_row over the pick, the model
+        last SERVED, the persisted cause; no arm, the switch read here unless the caller read it once for a listing)."""
+        if not isinstance(reg, dict):
+            return None
+        return model_fallback_row(reg.get("model") or "", reg.get("servedModel") or reg.get("liveModel") or "",
+                                  reg.get("fallbackCause") or "", None,
+                                  retry_upgrade_on(self.state_dir) if retry_on is None else bool(retry_on),
+                                  pending=bool(reg.get("modelPending")), category=reg.get("fallbackCategory") or "")
+
+    def _live_row(self, reg, sid, retry_on=None):
         """One session's live_sessions row (running snapshot, else the dormant reg row) — factored
         so live_sessions can guard it PER SESSION (one bad row must not hide the other sessions)."""
         s = self.sessions.get(sid)
         if s and s.thread.is_alive():
-            return s.snapshot()
+            return s.snapshot(retry_on=retry_on)
         ls = last_state(self.state_dir, sid)
         st = ls.get("state") or "waiting"
         # A NOT-running (dormant, resumable) SDK session can't actually be mid-turn: after a kernel
@@ -15652,6 +15862,7 @@ class SdkBackend:
                     # not running (e.g. post-restart): prefer the last LIVE model we persisted
                     # (liveModel), else the chosen alias — so the badge isn't blank while dormant.
                     "model": model_label(reg.get("liveModel") or "", reg.get("model") or ""),
+                    "modelFallback": self.fallback_row_for_reg(reg, retry_on),   # a dormant session keeps its mark
                     "modelPending": bool(reg.get("modelPending")),
                     "effortPending": bool(reg.get("effortPending")),
                     "effort": reg.get("effort", ""),
@@ -15703,6 +15914,30 @@ class SdkBackend:
             return door(sid, key, title, body, **kw)
         except Exception as e:                       # a producer's post never takes the backend down with it
             return None, "the notice could not be posted (%s)" % e
+
+    def post_boot_notices(self):
+        """The kernel's call once it has wired the notice door (on_notice) on this class: post the notice cards the boot
+        echo reseed PARKED (_reseed_echoes runs inside __init__, before the door exists; _mark_dropped_echoes' `park`),
+        each with the problem row that says its outcome. On a thread of its own, because the kernel calls this while it
+        still holds its construction lock and the door's session check can re-enter that lock (post_notice's
+        Sessions.live() through _sdk()): the thread waits the lock out where a synchronous post would deadlock the boot
+        (the shape of _push_session's sdk-push-session thread around a kernel callback). A post that raises is one
+        problem row, never the thread's death. The parked list is taken whole and the slot cleared, so a second call
+        posts nothing; a backend with nothing parked starts no thread. Returns the thread, or None (the kernel ignores
+        it; a test joins it)."""
+        parked, self._boot_notices = list(getattr(self, "_boot_notices", None) or []), None
+        if not parked:
+            return None
+
+        def run():
+            for post in parked:
+                try:
+                    post()
+                except Exception as e:
+                    self._log("dropped-sends card: the boot post failed: %s: %s" % (type(e).__name__, e), problem=True)
+        th = threading.Thread(target=run, name="sdk-boot-notices", daemon=True)
+        th.start()
+        return th
 
     def _emit_ask(self, sess: SdkSession, ask: dict):
         # STORE the ask (not just a bool): the kernel's _ask_poll replays it to chat clients each tick, so a

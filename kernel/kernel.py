@@ -476,7 +476,7 @@ class _PerfStats:
     JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "retryUpgrade", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
-            "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
+            "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes", "heldWorking")   # the tick jobs, each a `jobs.<job>` stage (T398)
     STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst",
               "jobsPass", "jobs.prelude") \
         + tuple("jobs." + j for j in JOBS)   # every stage a fresh snapshot lists at zero: the cycle's prelude, the containers, the sub-stages
@@ -17572,6 +17572,8 @@ def _comments_frame(sid, live_map=None):
                         "effort": (reg.get("effort") or "") if reg else "",
                         "sinceEpoch": since_ms,
                         "mode": str(meta.get("mode") or ""), "fast": str(meta.get("fast") or ""),
+                        "modelFallback": (meta.get("modelFallback") if meta.get("modelFallback") is not None
+                                          else (be.fallback_row_for_reg(reg) if (be is not None and reg and hasattr(be, "fallback_row_for_reg")) else None)),   # the popover picker's requested-model mark (2026-09-17)
                         # the same rank tints the chat statusline's badges wear (the user 2026-08-25,
                         # color rider: the popover's model/effort rendered plain gray — metaColor
                         # reads these and the frame never carried them)
@@ -18493,6 +18495,15 @@ def _sdk_locked():
             # a producer inside the backend posts a NOTICE CARD through the same door every producer takes (T370,
             # plans/notice-cards.md): the backend resolves it with getattr, so its tests' bare stand-ins carry no hook
             type(_sdk_backend).on_notice = staticmethod(post_notice)
+            # ...and the dropped-sends cards the constructor's boot echo reseed PARKED for this door: the reseed runs inside
+            # __init__, before the line above, so a post from there found no door, the held sends past the age line were
+            # flagged with no card, and the flags took them out of every later boot's selection. The backend posts them on
+            # a thread of its own: this runs under _sdk_lock, and post_notice's session check re-enters it (Sessions.live()
+            # through _sdk()), so a synchronous post here would deadlock the boot; the thread waits the lock out.
+            # getattr-guarded like the probes below: a backend without the affordance still constructs.
+            _post_boot = getattr(_sdk_backend, "post_boot_notices", None)
+            if _post_boot:
+                _post_boot()
             # a SAFEGUARDS refusal the CLI retried on a fallback model (T279): the same wiring shape —
             # the backend observes the frame (and names the capacity card this turn's learn minted for
             # the swap), the judge store files the refusal and folds that card into it, the kernel
@@ -20497,6 +20508,7 @@ class Sessions:
                                 "ctxTokens": st.get("ctxTokens"),   # raw totalTokens (SDK only) — the
                                 #   compaction-suggestion thresholds key on true tokens (2026-08-30)
                                 "fast": st.get("fast", ""),   # fast-mode state from the CLI's init ("on"/"off"/"cooldown"; "" = unknown → no badge)
+                                "modelFallback": st.get("modelFallback"),   # the picker's requested-model mark while the live model sits below the pick (2026-09-17)
                                 "fastReason": st.get("fastReason", ""),   # init's disabled_reason — non-empty hides the chat toggle
                                 "auth": st.get("auth", ""),   # which account this session bills ('login'|'key') → gear badge
                                 # the CLI's own init report ('key'|'login', "" until one lands): the
@@ -35363,6 +35375,96 @@ _PROMPT_HOLD_S = 3.0        # the prompt hold's clock FALLBACK: after the drain 
                                  # (a paste refused, a builtin that opens no prompt turn), until this many seconds
 _drain_hold: dict = {}           # sid -> (time.monotonic() deadline, until_busy); _apply_pending_ops skips the sid
                                  # while the hold is open (_drain_hold_open)
+_held_working: dict = {}         # sid -> the belt's state while the working gate holds its queue (_note_held_working)
+HELD_WORKING_KIND = "pending-ops.held-working"
+HELD_WORKING_RETRACTED_KIND = "pending-ops.held-working-retracted"
+
+
+def _mark_held_working(sid, now):
+    """The drain's side of the belt (the pusher thread): RECORD that the working gate holds this sid's queue, nothing more. The
+    reading of the transcript is the jobs thread's (_held_working_pass): the pusher's cycle was emptied of per-cycle transcript
+    work on 2026-09-05 and serves every client, and a held session whose turn is open would otherwise pay a parse at every tool
+    boundary that rests one cycle (40 to 96 ms per version on a 2.8 MB transcript, measured by 1876's review)."""
+    if sid not in _held_working:
+        _held_working[sid] = {"since": now, "stat": None, "parsed": None, "said": False}
+
+
+def _held_working_pass(now):
+    """The belt for a queue the WORKING gate holds (the stuck-Working shape of #1838, 2026-09-18: a host counted a folded message
+    as an open turn for days, every kernel adopted the count at its attach, busy() read it, and the drain parked every send in
+    silence while the page read Ready), on the jobs thread once per pass. For each sid the drain recorded held
+    (_mark_held_working), the belt reads the one source a stale count lives in, the backend's open-turn COUNT with nothing
+    queued to start (SdkBackend.count_says_open; never the composite busy(), which also holds for a queued turn or a feeder
+    that waits with the count at zero, holds that are correct), and then the session's transcript, the backend-agnostic
+    evidence: when it shows the last turn CLOSED while the count says one is open, a `pending-ops.held-working` problem row
+    ONCE per hold (the ledger, the kernel log, the error center's ring: a decision-shaped fault, the remedy the user's), and a
+    `pending-ops.held-working-retracted` row when a later version of the transcript shows a turn open after all. The rules it
+    keeps (the review's constraints on the note it replaces): no verdict from absence (no transcript, or a parse with no
+    turns, or one that raises, says nothing); the transcript is parsed only AT REST, once per file version (its stat
+    unchanged from the previous pass: a just-started turn's record lands within a pass, a streaming turn's file never rests,
+    so neither is read as closed), through the kernel's shared parse, which is memoized on the same stat; no busy() read of
+    its own (the gate's one read is the pin in tests/test_drain_hoists.py); a compacting sid is the compacting gate's, not a
+    hold of this kind (the drain decides). The state clears when the hold ends (the gate passes, the queue empties or the
+    user cancels the chip), so the next hold says again."""
+    for sid, h in list(_held_working.items()):
+        try:
+            be = Sessions.backend_for(sid)
+            says = getattr(be, "count_says_open", None) if be is not None else None
+            if says is None or says(sid) is not True:
+                h["stat"] = None                          # not the stale shape (a queued turn, a feeder's hold, another backend): nothing to read
+                continue
+            path = _path_of(sid, now)
+            try:
+                st = os.stat(path) if path else None
+            except OSError:
+                st = None
+            if st is None:
+                h["stat"] = None                          # no transcript to read: no verdict
+                continue
+            key = (st.st_mtime_ns, st.st_size)
+            if h["stat"] != key:
+                h["stat"] = key                           # the file moved since the last pass: read it at rest, next pass
+                continue
+            if h["parsed"] == key:
+                continue                                  # this version was read: nothing new to say
+            h["parsed"] = key
+            try:
+                session = _parse(path, sid, now) or {}
+            except Exception:
+                continue                                  # a parse that fails is no verdict either
+            turns = session.get("turns") or []
+            if not turns:
+                continue                                  # a parse that yields nothing is no verdict
+            open_turn = _session_working(turns)
+            if says(sid) is not True:
+                continue                                  # the count cleared during the parse: nothing to say
+            row = _session_row(sid, now) or {}
+            name = row.get("name") or sid[:8]
+            # THE WRITE MOMENT (round three of the review): the parse ran with no lock and took tens of milliseconds, and the
+            # hold can lift meanwhile (the turn settles and the drain delivers and pops both dicts, or the user cancels the
+            # chip); a row written then named a hold that no longer stood, with nothing to retract it, and a `said` mark
+            # landed on an orphaned entry. So the decision and the write run under the queue lock against the LIVE queue and
+            # the live entry: the hold must still stand, or nothing is filed and nothing is left behind.
+            with _pending_ops_lock:
+                ops = _pending_ops.get(sid) or []
+                if _held_working.get(sid) is not h or not ops:
+                    continue                              # the hold lifted mid-parse: no row, no orphan
+                queued = len(ops)
+                if not open_turn and not h["said"]:
+                    h["said"] = True
+                    _spend_guard_row(HELD_WORKING_KIND,
+                                     "%s's queue is held: the kernel counts a turn open in this session while its transcript shows the last "
+                                     "turn closed; %s. If it stays, ending and reviving the session replaces the count."
+                                     % (name, "1 parked item waits" if queued == 1 else "%d parked items wait" % queued), sid, name, be, queued=queued)
+                elif open_turn and h["said"]:
+                    h["said"] = False
+                    _spend_guard_row(HELD_WORKING_RETRACTED_KIND,
+                                     "%s's transcript now shows a turn open: the hold on its queue is the turn's, not a stale count."
+                                     % name, sid, name, be, queued=queued)
+        except Exception:
+            sys.stderr.write("held-working belt: %s\n" % traceback.format_exc())
+
+
 def _inflight_slot(sid, ops):
     """The slot of the op the drain is handing to the backend this instant, or -1. Scanned from the front for the
     op's identity, and the first identity hit is the one taken (_compact_or_park's interned ("compact",) makes a
@@ -35605,6 +35707,7 @@ def _cancel_parked(sid, park, md, qid=None):
         if not ops:
             _pending_ops.pop(sid, None)
             _drain_hold.pop(sid, None)    # an emptied queue leaves no hold behind (nothing left for it to protect)
+            _held_working.pop(sid, None)  # ...and no belt state: the next hold on this sid says again (1876's review)
         _save_pending_ops()
     _mark_views_dirty()
     return None
@@ -36426,6 +36529,7 @@ def _apply_pending_ops(now=None):
                 if not _pending_ops.get(sid):
                     _pending_ops.pop(sid, None)
                     _drain_hold.pop(sid, None)        # no queue, no hold
+                    _held_working.pop(sid, None)
                     continue
             if sid in _moving:
                 continue                              # a move is mid-flight: its relocation must finish first
@@ -36436,8 +36540,13 @@ def _apply_pending_ops(now=None):
                 _drain_hold.pop(sid, None)
             if _limit_hold(sid):
                 continue                              # the account can't serve a request yet: no parse, no gates
-            if _compacting_now(sid) or _working_now(sid):
+            if _compacting_now(sid):
+                _held_working.pop(sid, None)          # the compacting gate's hold, not the working gate's
                 continue
+            if _working_now(sid):
+                _mark_held_working(sid, now)          # the belt records the hold; the jobs thread reads the transcript (_held_working_pass)
+                continue
+            _held_working.pop(sid, None)              # the hold ended: the next one says again
             changed = False                               # a real mutation below → save the mirror + wake the pusher
             try:
                 be = Sessions.backend_for(sid)
@@ -39439,6 +39548,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # no badge — a row without the field stays ""). A non-empty
                   # disabled_reason means /fast would refuse, so the chat hides the toggle.
                   "fast": "" if tm.get("fastReason") else tm.get("fast", ""),
+                  "modelFallback": tm.get("modelFallback"),   # the picker's yellow tick beside the requested model, with why and the retry cadence (2026-09-17)
                   # which account this session bills ('login'|'key') — ALWAYS reported when the backend
                   # knows it (the user 2026-08-09: the tab hover says Billing even on a one-auth
                   # machine; a row without the field reports nothing, honestly).
@@ -47848,6 +47958,7 @@ def build_timeline(now, live_map=None, with_bars=True, live_only=False):
             # with no level had no picker at all)
             "backend": _session_backend(sid, tm),
             "modelPending": _model_pending_now(sid, tm),   # switching-dots until the /model pick lands, from EITHER surface (the user 2026-07-03)
+            "modelFallback": (tm.get("modelFallback") if tm else None),   # the picker's requested-model mark (2026-09-17)
             # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
             "modelColor": _model_color(tm["model"] if tm else "", ctx_stops),
@@ -57661,6 +57772,10 @@ def _jobs_pass(now, live_map):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+    try:                                  # the drain's held-working belt: the transcript read the pusher must not pay for
+        _job_stage('heldWorking', lambda: _held_working_pass(now))
+    except Exception:
+        sys.stderr.write("held-working belt: %s\n" % traceback.format_exc())
     _files_stat_pass_close(_own_stat)
     _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
 

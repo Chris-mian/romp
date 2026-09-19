@@ -43,6 +43,9 @@ export interface Board {
  *  category ids are the kernel's raw column values; this table is the feed definition's own mapping between the two, and
  *  it stays until the sweep that renames the CSS keys (not this change). */
 export type FeedColumnKey = "asks" | "needsInput" | "completed";
+/** A column's local key on ANY board: the feed's three names above, a data board's category ids as they are (phase four: the
+ *  renderer builds a data board's columns as `col-<category id>`, so the key IS the id; the feed keeps its CSS names). */
+export type ColumnKey = string;
 /** The kernel's raw column values, the feed board's category ids (AskItem.column is typed to them). */
 export type FeedCategory = "working" | "needs_input" | "completed";
 // a Map, never a plain object: a category is producer-facing from phase three, and a prototype-named one ("toString",
@@ -155,10 +158,18 @@ export function boardOf(card: { board?: string | null }): Board {
 
 // ── the reads feed.ts makes ───────────────────────────────────────────────────────────────────────────────────────────
 
-/** The renderer's local column key for a category id; an unknown id files under the board's default category, which is
- *  what the old mapping did for anything but the two named values. */
-export function columnOf(board: Board, category: string): FeedColumnKey {
-  return FEED_LOCAL_KEY.get(category) ?? FEED_LOCAL_KEY.get(board.defaultCategory) ?? "asks";
+/** The renderer's local column key for a category id on `board`: the feed's table for the feed (an unknown id files under
+ *  the feed's default category, what the old mapping did for anything but the two named values); on a data board the
+ *  category id itself when the board has it, else the board's default category (phase four). */
+export function columnOf(board: Board, category: string): ColumnKey {
+  if (board.id === FEED_BOARD.id) return FEED_LOCAL_KEY.get(category) ?? FEED_LOCAL_KEY.get(board.defaultCategory) ?? "asks";
+  return board.categories.some((c) => c.id === category) ? category : board.defaultCategory;
+}
+
+/** The board an id names among the ones the renderer knows, or null: the view switch's read (phase four). */
+export function boardById(id: string | null | undefined): Board | null {
+  if (!id || id === FEED_BOARD.id) return FEED_BOARD;
+  return dataBoards.get(id) || null;
 }
 
 /** Whether a card in `category` is one the board's badge counts (the interrupt rule every lens lets through). */
@@ -167,12 +178,12 @@ export function isNeedsYou(board: Board, category: string): boolean {
 }
 
 /** The board's columns in its order, as the local keys the layout and the view state use. */
-export function feedColumns(board: Board): readonly FeedColumnKey[] {
+export function feedColumns(board: Board): readonly ColumnKey[] {
   return board.categories.map((c) => columnOf(board, c.id));
 }
 
 /** The header triples ensureCols iterates: [local key, title, chip class suffix], in the board's order. */
-export function columnTable(board: Board): ReadonlyArray<readonly [FeedColumnKey, string, string]> {
+export function columnTable(board: Board): ReadonlyArray<readonly [ColumnKey, string, string]> {
   return board.categories.map((c) => [columnOf(board, c.id), c.title, c.chip] as const);
 }
 
