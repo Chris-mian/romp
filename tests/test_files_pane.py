@@ -164,8 +164,8 @@ class Plumbing(unittest.TestCase):
         # the pages that pass it: this one and the settings page (the gear alone, no pushed view either;
         # tests/test_settings_page.py); the pane pages call the shim exactly as they did
         shims = re.findall(r'_shim\("(\w+)", v(?:, ([^)]*))?\)', SRC)
-        self.assertEqual([app for app, kw in shims if "no_stale=True" in (kw or "")], ["files", "settings"])
-        self.assertEqual(sorted(app for app, kw in shims), ["chat", "feed", "files", "fleet", "settings", "timeline"])
+        self.assertEqual([app for app, kw in shims if "no_stale=True" in (kw or "")], ["files", "artifacts", "settings"])   # the Artifacts pane receives no pushed view either (2026-09-19)
+        self.assertEqual(sorted(app for app, kw in shims), ["artifacts", "chat", "feed", "files", "fleet", "settings", "timeline"])
 
     def test_the_editor_chunk_derives_from_the_pages_own_bundle_tag(self):
         # file-view.ts loads its CodeMirror chunk from a URL rewritten off the page's running bundle
@@ -201,8 +201,8 @@ class Shell(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_pane_is_in_the_one_ordering_last(self):
-        self.assertEqual(km._PANE_ORDER[-1], ("files", "Files"))
+    def test_the_pane_is_in_the_one_ordering_second_to_last_before_artifacts(self):
+        self.assertEqual(km._PANE_ORDER[-2], ("files", "Files"))   # the Artifacts pane sits after it since 2026-09-19 (plans/artifacts-pane.md)
         _has(self, "<div class=rail-btn data-pane=files>Files</div>", self.html)
         _has(self, "<button data-pane=files>Files</button>", self.html)
 
@@ -219,24 +219,24 @@ class Shell(unittest.TestCase):
 
     def test_off_by_default_and_toggled_by_the_controller(self):
         _has(self, "<body class='po-chat po-feed po-timeline'>", self.html)   # not po-files
-        _has(self, "po={chat:true,fleet:false,feed:true,timeline:true,files:false}", self.html)
-        _has(self, "po={chat:false,fleet:false,feed:false,timeline:false,files:false}", self.html)   # the ?panes= reset
+        _has(self, "po={chat:true,fleet:false,feed:true,timeline:true,files:false,artifacts:false}", self.html)
+        _has(self, "po={chat:false,fleet:false,feed:false,timeline:false,files:false,artifacts:false}", self.html)   # the ?panes= reset
         _has(self, "document.body.classList.toggle('po-files',!!po.files)", self.html)
         _has(self, "files:'files pane'", self.html)   # the rail tooltip's words
 
     def test_every_pane_list_in_the_landing_js_names_it(self):
         _has(self, "'f-files':'files-pane'", km._LANDING_FOCUS_JS)
-        _has(self, "var COLS=['f-chat','f-fleet','f-feed','f-files']", km._LANDING_FOCUS_JS)
+        _has(self, "var COLS=['f-chat','f-fleet','f-feed','f-files','f-artifacts']", km._LANDING_FOCUS_JS)
         # the settings iframe (the gear's document, not a pane) rides the two keyboard lists with the panes
-        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].forEach", km._LANDING_ESC_JS)
-        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].forEach", km._LANDING_MOBILE_JS)
+        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach", km._LANDING_ESC_JS)
+        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach", km._LANDING_MOBILE_JS)
         # the Log's connection-lost label reads the one map, so the pane's row in _PANE_ORDER is the pin
         _has(self, "var PN=" + json.dumps(dict(km._PANE_ORDER)) + ";", km._LANDING_ERRS_JS)
         self.assertEqual(dict(km._PANE_ORDER).get("files"), "Files")
         _has(self, "files:document.getElementById('f-files')", km._LANDING_MOBILE_JS)
-        _has(self, "var PANES=['chat-pane','fleet-pane','feed-pane','files-pane'];", self.html)
-        _has(self, "grow={chat:60,fleet:34,feed:40,files:40}", self.html)
-        _has(self, "id==='feed-pane'?'feed':'files'", self.html)
+        _has(self, "var PANES=['chat-pane','fleet-pane','feed-pane','files-pane','artifacts-pane'];", self.html)
+        _has(self, "grow={chat:60,fleet:34,feed:40,files:40,artifacts:40}", self.html)
+        _has(self, "id==='feed-pane'?'feed':id==='files-pane'?'files':'artifacts'", self.html)
         # the chat side of gv-c is the RIGHTMOST chat column (the split, 2026-09-08: lastChat() is 'chat-pane' with no split)
         _has(self, "gutter('gv-c',function(){var c=document.body.classList;return c.contains('po-feed')?'feed-pane':"
                       "c.contains('po-fleet')?'fleet-pane':lastChat();},'files-pane');", self.html)
@@ -255,7 +255,7 @@ class Shell(unittest.TestCase):
         self.assertNotIn("st.filesControl", js + km._LANDING_MOBILE_JS, "the T317-era key is never read: a whole-object save merged its true into profiles that never touched the box")
         _has(self, "document.body.classList.toggle('no-files-control',!ctl);", js)
         _has(self, "if(k==='files'&&!filesCtl())return;", js)
-        _has(self, "return {romp:'panes',on:on,avail:{files:filesCtl()}};", js)
+        _has(self, "return {romp:'panes',on:on,avail:{files:filesCtl(),artifacts:artifactsCtl()}};", js)
         _has(self, "window.addEventListener('storage',function(e){if(!e||!e.key||e.key===SK)reconcile(true);apply();});", js)   # the gear writes from another document: this is the event (a gear save re-reads the optional panes before the titles refresh)
         mob = km._LANDING_MOBILE_JS
         _has(self, "function show(p){if(p==='files'&&!filesCtlM())p='chat';", mob)
@@ -263,7 +263,7 @@ class Shell(unittest.TestCase):
         gear = (UI / "gear.js").read_text()
         _has(self, "<input type=checkbox id=rs-filesctl>", gear)
         self.assertNotIn("id=rs-filesctl checked", gear, "off by default: the box is not pre-checked")
-        self.assertEqual(gear.count("showFilesControl: false, stripGroupRows"), 2, "the gear's load defaults (the assign and its catch) say off")
+        self.assertEqual(gear.count("showFilesControl: false, showArtifactsControl: false, stripGroupRows"), 2, "the gear's load defaults (the assign and its catch) say off; the Artifacts control beside it since 2026-09-19")
         _has(self, "delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) {", gear)   # load() drops the T317-era key and the T404-era file-links key, so the next save leaves both behind
         # the box has a NAME OF ITS OWN in the gear's one var list (review find: a second `fc` shadowed the feed's
         # collapsed box, so the new row was dead and the feed box wrote this setting)

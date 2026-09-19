@@ -227,7 +227,7 @@ class SplitSourcePins(unittest.TestCase):
         gut = km._LANDING_JS
         self.assertIn("window.__rompRegisterPane=function(id,k){KEYS[id]=k;if(PANES.indexOf(id)<0)PANES.splice(PANES.indexOf('fleet-pane'),0,id);};", gut)
         self.assertIn("window.__rompUnregisterPane=function(id){", gut)
-        self.assertIn("function key(id){return KEYS[id]||(id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':'files');}", gut)
+        self.assertIn("function key(id){return KEYS[id]||(id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':id==='files-pane'?'files':'artifacts');}", gut)
         self.assertIn("window.__rompGutter=gutter;", gut)
         self.assertIn("gutter('gv-a',function(){return lastChat();},'fleet-pane');", gut)
         # a pane with no grow yet never averages in as NaN (the first split opened 0px wide — review find 2026-09-08),

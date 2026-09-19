@@ -54,7 +54,8 @@ class PaneRailTest(unittest.TestCase):
         order = ["id=chat-pane", "id=gv-a", "id=fleet-pane", "id=gv-b", "id=feed-pane", "id=gv-c", "id=files-pane", "id=gh", "id=tl-pane"]
         idxs = [self.html.index(tok) for tok in order]
         self.assertEqual(idxs, sorted(idxs), "row panes, then the gh gutter, then the timeline band")
-        self.assertNotIn("id=gv-d", self.html)                   # no 5th-pane gutter
+        self.assertIn("id=gv-d", self.html)                      # the fifth top pane's gutter (the Artifacts pane, 2026-09-19)
+        self.assertNotIn("id=gv-e", self.html)                   # no 6th-pane gutter
         # the pane rail is the BOTTOM BAR (the user 2026-07-05): LAST child of .col, AFTER the timeline band —
         # no longer the first child of .row. So its markup falls after #tl-pane.
         self.assertGreater(self.html.index("class=pane-rail"), self.html.index("id=tl-pane"),
@@ -106,7 +107,7 @@ class PaneRailTest(unittest.TestCase):
     def test_rail_drives_a_persisted_pane_controller_exposed_for_the_legacy_toggle(self):
         # the controller toggles po-* from the rail, persists the set, and exposes __rompPaneToggle so the
         # legacy {romp:'toggleFleet'} postMessage routes through the same path
-        self.assertIn("var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true,files:false}", self.html)
+        self.assertIn("var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true,files:false,artifacts:false}", self.html)
         self.assertIn("window.__rompPaneToggle=togglePane", self.html)
         self.assertIn("togglePane(b.getAttribute('data-pane'))", self.html)
         self.assertIn("document.body.classList.toggle('po-chat',!!po.chat)", self.html)
@@ -140,7 +141,7 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("#gv-ghost{display:none;position:fixed;width:7px;pointer-events:none;z-index:40;", self.html)
         # a child of .col right after the row closes (the files pane's close, then the row's) and before the
         # timeline's gutter: fixed, so a flex item of neither
-        self.assertIn("<iframe id=f-files src=/files></iframe></div></div><div id=gv-ghost></div>", self.html)
+        self.assertIn("<iframe id=f-artifacts data-src=/artifacts></iframe></div></div><div id=gv-ghost></div>", self.html)
         self.assertLess(self.html.index("<div id=gv-ghost></div>"), self.html.index("<div class=gh id=gh></div>"))
 
     def test_timeline_is_the_rail_toggled_bottom_band(self):

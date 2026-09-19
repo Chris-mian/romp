@@ -23,7 +23,7 @@ JS = km._LANDING_FOCUS_JS
 
 class PaneNav(unittest.TestCase):
     def test_spatial_layout_constants(self):
-        self.assertIn("var COLS=['f-chat','f-fleet','f-feed','f-files']", JS, "the four side-by-side columns, left->right")
+        self.assertIn("var COLS=['f-chat','f-fleet','f-feed','f-files','f-artifacts']", JS, "the five side-by-side columns, left->right (the Artifacts pane since 2026-09-19)")
         self.assertIn("var TL='f-timeline'", JS, "the timeline is the bottom band")
 
     def test_alt_arrow_is_the_trigger_only_outside_text_fields(self):

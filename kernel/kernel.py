@@ -8471,7 +8471,7 @@ def _conserve_tick(now):
     if not be or not hasattr(be, "conserve_close"):
         return
     with _clients_lock:
-        viewer = any(c.get("alive", True) and c.get("app") in ("chat", "fleet", "timeline", "feed", "files")
+        viewer = any(c.get("alive", True) and c.get("app") in ("chat", "fleet", "timeline", "feed", "files", "artifacts")
                      for c in _clients)
     if viewer:
         _conserve_last_viewer[0] = now
@@ -59690,6 +59690,171 @@ def _files_page():
             % (v, THEME_CSS, files_css, _shim("files", v, no_stale=True), v, v))
 
 
+# THE ARTIFACTS PANE (plans/artifacts-pane.md, the user 2026-09-19): a session selector and, under it, every file that was
+# put into that session's thread, as a list and, for images, a grid of large thumbnails to cycle through large. An on-top
+# read of what already happened by deterministic rules (no judge, no model call): the edit tools' file_path and
+# notebook_path inputs (rule 1), the paths the chat links and renders from the session's prose (rule 2), a drop's saved
+# path in the user turn (rule 3). Like the Files pane it receives no pushed view: one request-and-response op
+# (listArtifacts, at the socket) answered by the kernel that owns the session, and the picker's requestSessions for the
+# selector; the shim runs with the stale opt-out. Thumbnails and the large view ride the token-authed /file route with
+# the session's sid, never a new file server. Optional and off by default: the shell's Artifacts control
+# (romp:settings.showArtifactsControl, read like the Files control's) shows its rail toggle and phone tab.
+def _artifacts_page():
+    try:
+        css = (UI / "webview" / "artifacts-pane.css").read_text()
+    except OSError:
+        return ("<!DOCTYPE html><html><body style='font-family:Inter,system-ui,-apple-system,sans-serif;color:#999;"
+                "background:#1e1e1e;padding:12px'>romp's Artifacts pane needs the ui/ modules "
+                "(webview/artifacts-pane.css).</body></html>")
+    v = _dist_ver()
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · artifacts</title>"
+            # the chat's stylesheet provides the lightbox and the link dress; artifacts-pane.css owns the page layout
+            "<link href=/dist/styles.css?v=%d rel=stylesheet>"
+            "<style>%s\n%s</style></head><body class=artifacts-pane>"
+            "<div id=artifacts-root></div>"
+            "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
+            "<script src=/dist/artifacts.js?v=%d></script></body></html>"
+            % (v, THEME_CSS, css, _shim("artifacts", v, no_stale=True), v, v))
+
+
+ARTIFACTS_MAX = 500                                   # the newest entries a listing carries; the page says when it bound
+_ARTIFACT_EDIT_VIA = {"Write": "write", "Edit": "edit", "MultiEdit": "multiedit", "NotebookEdit": "notebook"}   # rule 1's tools (the _EDIT_TOOLS set) and their words
+
+
+def _artifacts_walk(turns, sid, link_cache=None):
+    """Every (path, t, via) the three rules of plans/artifacts-pane.md name over a parsed session's turns, in transcript
+    order, each path absolute (a relative one resolved against the session's cwd the way a click resolves it; a file://
+    URI unwrapped). Rule 1: an assistant tool_use of an edit tool, its file_path or notebook_path. Rule 2: a path-shaped
+    token of the assistant's prose (the chat's token grammar, _path_tokens) that the chat would have linked: one the
+    kernel verified for that message (the path-links cache), one that exists now, or an image path by extension (the
+    figure rule renders it at its mention); a bare word that is no file is not an artifact. Rule 3: a path under the
+    state directory's drops/ in the PERSON's own user turn, as an image block's source path or as text (the shape
+    _user_images reads). Bash commands are not read (the design's road not taken). Best-effort per atom."""
+    out = []
+    cwd = (_cwd_of(sid) or "") if sid else ""
+    drops = str(jd.STATE / "drops") + os.sep
+    link_cache = _PATH_LINK_CACHE if link_cache is None else link_cache
+    em.hydrate({"turns": turns or []}, rompuuid=sid, by="_artifacts_walk")   # bodies before the assembly cut are read on demand (T323 stage 4a): every atom this walk reads, first
+
+    def absolute(p):
+        p = str(p or "")
+        if p.lower().startswith("file://"):
+            p = unquote(p[7:])
+        p = os.path.expanduser(p)
+        if not os.path.isabs(p) and cwd:
+            p = os.path.join(cwd, p)
+        return os.path.normpath(p) if os.path.isabs(p) else ""
+
+    for turn in turns or []:
+        for a in turn.get("atoms") or []:
+            try:
+                t = a.get("t") or turn.get("t") or 0
+                msg = a.get("message") or {}
+                blocks = msg.get("content") if isinstance(msg.get("content"), list) else []
+                text = (" ".join(b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+                        if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else ""))
+                if a.get("type") == "assistant":
+                    for b in blocks:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in _ARTIFACT_EDIT_VIA:
+                            inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                            fp = inp.get("file_path") or inp.get("notebook_path")
+                            ap = absolute(fp) if isinstance(fp, str) and fp else ""
+                            if ap:
+                                out.append((ap, t, _ARTIFACT_EDIT_VIA[b["name"]]))
+                    hit = link_cache.get((sid, a.get("uuid"))) if a.get("uuid") else None
+                    verified = set((hit[0] if hit else {}).keys())
+                    for tok in _path_tokens(text or ""):
+                        ap = absolute(tok)
+                        if not ap:
+                            continue
+                        if tok in verified or os.path.isfile(ap) or _PREVIEW_IMG_RE.search(" " + ap):
+                            out.append((ap, t, "rendered"))
+                elif a.get("type") == "user" and a.get("author") in (None, "human"):
+                    for b in blocks:
+                        if isinstance(b, dict) and b.get("type") == "image":
+                            p = (b.get("source") or {}).get("path")
+                            ap = absolute(p) if isinstance(p, str) and p else ""
+                            if ap and ap.startswith(drops):
+                                out.append((ap, t, "drop"))
+                    for tok in _path_tokens(text or ""):
+                        ap = absolute(tok)
+                        if ap and ap.startswith(drops):
+                            out.append((ap, t, "drop"))
+            except Exception:
+                continue
+    return out
+
+
+def _artifacts_items(mentions, sid):
+    """The listing from the walk's mentions: one entry per path with the LATEST mention winning (its time, its rule),
+    newest first, capped at ARTIFACTS_MAX; each stat'd (a missing file is listed and marked, never hidden) and judged by
+    the file route's own rule (a secrets-shaped name, a path outside the session's folder and the home: `refused` names
+    the reason, and the page fetches nothing for it), with two rules of the pane's own: a path under the Claude
+    configuration directory is refused as such (a thread names its own transcripts and task stores, and they are not its
+    files; the shared route's confinement is the chat's contract for path links and is not widened here, plans/artifacts-pane.md
+    section 1), and a kind the preview does not show is an ordinary kind of the listing, `other`, listed plain and judged by
+    the route's other rules (the design's section 2). Returns (items, capped)."""
+    latest = {}
+    for ap, t, via in mentions:
+        cur = latest.get(ap)
+        if cur is None or (t or 0) >= cur["t"]:
+            latest[ap] = {"path": ap, "t": int(t or 0), "via": via}
+    items = sorted(latest.values(), key=lambda it: (-it["t"], it["path"]))
+    capped = len(items) > ARTIFACTS_MAX
+    items = items[:ARTIFACTS_MAX]
+    drops = str(jd.STATE / "drops") + os.sep
+    claude = os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")) + os.sep
+    for it in items:
+        it["name"] = os.path.basename(it["path"]) or it["path"]
+        if it["path"].startswith(drops):                   # the saved file wears a millisecond prefix (_save_dropped_file); the row wears the name the user dropped, whichever rule named it last
+            it["name"] = re.sub(r"^\d{10,}-", "", it["name"]) or it["name"]
+        it["kind"] = _slice_kind(it["path"]) or "other"
+        try:
+            st = os.stat(it["path"])
+            it["exists"] = stat.S_ISREG(st.st_mode)
+            it["size"] = int(st.st_size) if it["exists"] else None
+            it["mtime"] = int(st.st_mtime) if it["exists"] else None
+        except OSError:
+            it["exists"], it["size"], it["mtime"] = False, None, None
+        why = ""
+        if it["exists"]:
+            if os.path.realpath(it["path"]).startswith(claude):
+                why = "under the Claude configuration directory"
+            else:
+                kind, why = _slice_allowed(it["path"], sid)
+                if kind:
+                    why = ""
+                elif why == "not a kind the preview shows":   # kind other: plain, unless the route's confinement would refuse it
+                    why = "" if (_slice_confined(it["path"], sid) or it["path"].startswith(drops)) else "outside the session's folder and your home"
+                elif it["path"].startswith(drops) and why.startswith("outside"):
+                    why = ""                                # a drop is the user's own file, saved by the kernel wherever the state directory lives
+        it["refused"] = why
+    return items, capped
+
+
+def _artifacts_list(sid, now=None):
+    """The listArtifacts answer for `sid`: (body, error). The session resolves through _session_row, the one-sid API (the
+    picker's selector offers thirty days of sessions while _sessions reaches back discover's 48-hour window, so a session
+    idle two days was offered and answered "no transcript"; the verifier of 2026-09-19 executed it with a five-day-old
+    transcript). The parse comes through the existing store: the cached parse under the live key when there is one
+    (_parse_cached: never a parse), else one parsed_session under the SAME key inputs the chat's build and _parse_cached
+    use (the states log, the display's sdk_human), so the next request and the chat's own build find it warm: written
+    under another key, the first write never satisfied the first read and every request re-parsed. Nothing is written."""
+    now = int(now if now is not None else time.time())
+    row = _session_row(sid, now)
+    if row is None:
+        return None, "no session with that id has a transcript here"
+    try:
+        ps = _parse_cached(row["path"]) or jd.parsed_session(sid, [row["path"]], now, states=str(jd.STATE / "states" / (sid + ".jsonl")),
+                                                             sdk_human=_display_sdk_human(sid))
+    except Exception as e:
+        return None, "the session's transcript could not be read (%s)" % e
+    items, capped = _artifacts_items(_artifacts_walk((ps or {}).get("turns") or [], sid), sid)
+    return {"items": items, "capped": capped, "max": ARTIFACTS_MAX}, ""
+
+
 # Settings: the ⛭ gear on a page of its own (the user 2026-09-10). Inside the feed bundle (2026-07-13) the
 # gear made the Feed pane structurally required in the dashboard: every opener posted openSettings into
 # #f-feed and the shell lifted that iframe. This page hosts gear.js alone (ui/webview/settings-page.ts),
@@ -59859,8 +60024,8 @@ window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);})
 // left neighbour is the outline when shown else chat (so it's the chat|feed gutter when the outline is off);
 // gv-c's is the rightmost of feed, outline, chat that is shown. On grab we normalise every visible pane's grow
 // to its px width so the drag shifts only that pair; grows persist.
-var PANES=['chat-pane','fleet-pane','feed-pane','files-pane'];
-var GK='romp-pane-grow',grow={chat:60,fleet:34,feed:40,files:40};
+var PANES=['chat-pane','fleet-pane','feed-pane','files-pane','artifacts-pane'];
+var GK='romp-pane-grow',grow={chat:60,fleet:34,feed:40,files:40,artifacts:40};
 try{var g=JSON.parse(localStorage.getItem(GK)||'null');if(g)grow=Object.assign(grow,g);}catch(e){}
 function setGrow(k,v){grow[k]=v;row.style.setProperty('--g-'+k,v);}
 for(var k in grow)setGrow(k,grow[k]);
@@ -59871,7 +60036,7 @@ window.__rompRegisterPane=function(id,k){KEYS[id]=k;if(PANES.indexOf(id)<0)PANES
 window.__rompUnregisterPane=function(id){var k=KEYS[id];delete KEYS[id];var i=PANES.indexOf(id);if(i>=0)PANES.splice(i,1);
 if(k){delete grow[k];row.style.removeProperty('--g-'+k);try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}}};
 function lastChat(){return (window.__rompLastChatPane&&window.__rompLastChatPane())||'chat-pane';}
-function key(id){return KEYS[id]||(id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':'files');}
+function key(id){return KEYS[id]||(id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':id==='files-pane'?'files':'artifacts');}
 function shown(id){var p=document.getElementById(id);return p&&getComputedStyle(p).display!=='none';}
 // a pane re-shown from the rail gets a grow comparable to the panes already visible, so it never slots back
 // in as a sliver after the others were dragged to extreme widths (grows are stored as px). Timeline is the
@@ -59930,6 +60095,8 @@ window.__rompGutter=gutter;   // the split's chat|chat gutters are wired through
 gutter('gv-a',function(){return lastChat();},'fleet-pane');
 gutter('gv-b',function(){return document.body.classList.contains('po-fleet')?'fleet-pane':lastChat();},'feed-pane');
 gutter('gv-c',function(){var c=document.body.classList;return c.contains('po-feed')?'feed-pane':c.contains('po-fleet')?'fleet-pane':lastChat();},'files-pane');
+// gv-d sits (files|feed|outline|chat)|artifacts: its left neighbour is the rightmost shown of those (the Artifacts pane, plans/artifacts-pane.md)
+gutter('gv-d',function(){var c=document.body.classList;return c.contains('po-files')?'files-pane':c.contains('po-feed')?'feed-pane':c.contains('po-fleet')?'fleet-pane':lastChat();},'artifacts-pane');
 tf&&tf.addEventListener('load',function(){autosize();
 try{new ResizeObserver(autosize).observe(tf.contentDocument.body);}catch(e){}});
 window.addEventListener('resize',autosize);
@@ -59944,8 +60111,8 @@ window.addEventListener('romp-panes',autosize);   // re-fit when the Timeline to
 # all EVENT-based (no polling). Re-wires on every iframe (re)load; chat is the default focus on open. Inert on
 # mobile (one pane at a time; .pane is display:contents).
 _LANDING_FOCUS_JS = """
-(function(){var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-files':'files-pane','f-timeline':'tl-pane'};   // the Outline (key fleet) is its own pane
-var COLS=['f-chat','f-fleet','f-feed','f-files'];   // the side-by-side column panes, left->right (the Outline's key is fleet; Files last)
+(function(){var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-files':'files-pane','f-artifacts':'artifacts-pane','f-timeline':'tl-pane'};   // the Outline (key fleet) is its own pane
+var COLS=['f-chat','f-fleet','f-feed','f-files','f-artifacts'];   // the side-by-side column panes, left->right (the Outline's key is fleet; Files last)
 var TL='f-timeline';                       // the timeline is a bottom BAND under the columns
 var curFocus='f-chat', lastCol='f-chat';   // for Shift-Up out of the timeline: return to the last column used
 // The active pane gets a focus RING (.pane-focused). Same-origin iframes, so the shell sets it directly on
@@ -60072,7 +60239,8 @@ setTimeout(hide,5000);})();
 # together; a second hardcoded list is the bug this replaces (the bell's PN was the last one, the
 # #957 review). Defined above _LANDING_ERRS_JS because that string is built from it at import.
 # Keys stay internal (timeline/fleet); labels are the user-facing names.
-_PANE_ORDER = (("chat", "Chat"), ("timeline", "Sessions"), ("fleet", "Outline"), ("feed", "Feed"), ("files", "Files"))
+_PANE_ORDER = (("chat", "Chat"), ("timeline", "Sessions"), ("fleet", "Outline"), ("feed", "Feed"), ("files", "Files"),
+               ("artifacts", "Artifacts"))   # the Artifacts pane (plans/artifacts-pane.md, 2026-09-19): optional, off by default
 
 
 def _pane_label(app):
@@ -60274,7 +60442,7 @@ if(closed){e.preventDefault();e.stopPropagation();}}
 function settingsClose(){var f=document.getElementById('f-settings');
 try{var w=f&&f.contentWindow;return !!(w&&w.__rompSettingsClose&&w.__rompSettingsClose());}catch(e){return false;}}
 document.addEventListener('keydown',onEsc,true);
-['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
+['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
 var wire=function(){try{if(f.contentDocument)f.contentDocument.addEventListener('keydown',onEsc,true);}catch(e){}};
 f.addEventListener('load',wire);wire();});
 window.__rompWireEsc=function(f){var wire=function(){try{if(f.contentDocument)f.contentDocument.addEventListener('keydown',onEsc,true);}catch(e){}};
@@ -62508,7 +62676,7 @@ document.addEventListener('focusout',refit);
 if(window.visualViewport){window.visualViewport.addEventListener('resize',refit);
 window.visualViewport.addEventListener('scroll',refit);}
 function hearBlur(f){try{if(!f.contentDocument)return;f.contentWindow.addEventListener('focusout',refit);}catch(e){}}   // cross-origin → nothing to hear
-['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
+['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
 f.addEventListener('load',function(){hearBlur(f);});hearBlur(f);});   // now (already loaded) + on every (re)load, as the Alt+Arrow wiring does; the gear's document too (its login field)
 // The mobile LAYOUT, as the stylesheet decides it: the SAME media query the grid collapses on (_MOBILE_MQ,
 // one constant for the CSS and this probe), one pane at a time, bottom tabs, the po-* classes ignored. Read by
@@ -62519,7 +62687,7 @@ var MQ=(window.matchMedia&&matchMedia(""" + json.dumps(_MOBILE_MQ) + """))||null
 function mobileOn(){return !!(MQ&&MQ.matches);}
 window.__rompMobileOn=mobileOn;
 var bar=document.getElementById('mtabs');if(!bar)return;
-var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-fleet'),feed:document.getElementById('f-feed'),files:document.getElementById('f-files'),timeline:document.getElementById('f-timeline')};
+var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-fleet'),feed:document.getElementById('f-feed'),files:document.getElementById('f-files'),artifacts:document.getElementById('f-artifacts'),timeline:document.getElementById('f-timeline')};
 // ONLY the pane tabs (the user 2026-09-08, on the phone: the bell wore its OFF slash while its popover said
 // on). This list once took EVERY button in the bar, and show() toggled `.on` to data-pane===p on each — for
 // the action buttons and the bell (no data-pane) that is always off, so every pane switch stripped the
@@ -62527,9 +62695,11 @@ var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-f
 // slash rule keys on, until the next paint event. A tab or a reveal decides which pane shows, nothing else.
 var B=bar.querySelectorAll('button[data-pane]'),KT='romp-mobile-tab';
 function filesCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showFilesControl===true);}catch(e){return false;}}   // the gear's Files-control setting (T317; off by default since T317b: shown only when the store holds the literal true under the fresh key, never the T317-era filesControl a whole-object save merged in): the same read the pane controller makes, which parses after this script
-function show(p){if(p==='files'&&!filesCtlM())p='chat';   // the Files tab is hidden while its control is off: the chat shows instead
+function artifactsCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showArtifactsControl===true);}catch(e){return false;}}   // the Artifacts control, read as the Files control is
+function show(p){if(p==='files'&&!filesCtlM())p='chat';if(p==='artifacts'&&!artifactsCtlM())p='chat';   // the Files tab is hidden while its control is off: the chat shows instead
 if(!F[p])return;for(var i=0;i<B.length;i++)if(B[i].getAttribute('data-pane')===p&&B[i].hidden)return;   // a tab the controller hid (its pane is off in the gear's Panes section) is not a place to go
 document.body.setAttribute('data-tab',p);for(var k in F)if(F[k])F[k].classList.toggle('m-on',k===p);   // a pane this shell lacks is skipped, never a TypeError
+if(p==='artifacts'){var af=document.getElementById('f-artifacts');if(af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));}   // a phone shows the pane by its tab, not by po: its iframe loads once, here
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}
 // a tab switch changes what is on screen: re-tell the panes (the collapse script's broadcast; absent only
@@ -63054,12 +63224,12 @@ _STALE_JS = (
 # where the rail toggle only hides a loaded one.
 _LANDING_COLLAPSE_JS = """
 (function(){
-  var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true,files:false},DEF=Object.assign({},po),stored={};
+  var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true,files:false,artifacts:false},DEF=Object.assign({},po),stored={};
   try{var s=JSON.parse(localStorage.getItem(PK)||'null');if(s){stored=s;po=Object.assign(po,s);}}catch(e){}
   var qp=new URLSearchParams(location.search).get('panes');
-  if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false,files:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
+  if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false,files:false,artifacts:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
   function saveP(){try{localStorage.setItem(PK,JSON.stringify(po));}catch(e){}}
-  var LBL={chat:'chat',fleet:'fleet',feed:'feed',timeline:'timeline',files:'files pane'};
+  var LBL={chat:'chat',fleet:'fleet',feed:'feed',timeline:'timeline',files:'files pane',artifacts:'artifacts pane'};
   // THE FILES CONTROL'S OWN SETTING (T317, the user 2026-09-10): the gear's Files row (Settings, General, Panes; T407)
   // (romp:settings.showFilesControl, gear.js; hidden unless the store holds the literal true: OFF by default since T317b,
   // the user 2026-09-10, who wants the control asked for, not shipped. A FRESH key: the T317-era gear saved its merged-in
@@ -63071,6 +63241,8 @@ _LANDING_COLLAPSE_JS = """
   // over the pane clicked (ui/webview/file-route.ts). The gear writes the store from the feed iframe, another
   // document, so the storage listener below is the event that re-applies it here.
   function filesCtl(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showFilesControl===true);}catch(e){return false;}}
+  // the Artifacts control (plans/artifacts-pane.md, 2026-09-19): the same rule as the Files control's, a fresh key of its own
+  function artifactsCtl(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showArtifactsControl===true);}catch(e){return false;}}
   // the Task tracking switch (T404): kernel-side; /version says at boot (noteVersion), the gear says on the flip (a taskTracking message); absent reads on
   function taskTracking(){return window.__rompTaskTracking!==false;}
   window.__rompApplyPanes=function(){apply();};
@@ -63089,7 +63261,7 @@ _LANDING_COLLAPSE_JS = """
   // classes ignored, _LANDING_MOBILE_JS) it is the current tab, so a po.files left true by a desktop session
   // or an earlier bring-forward cannot silently steer a phone's file links into a tab nobody is looking at
   function panesMsg(){var mob=!!(window.__rompMobileOn&&window.__rompMobileOn()),tab=mob?document.body.getAttribute('data-tab'):null;
-    var on={};KEYS.forEach(function(k){on[k]=mob?(k===tab):!!po[k];});return {romp:'panes',on:on,avail:{files:filesCtl()}};}
+    var on={};KEYS.forEach(function(k){on[k]=mob?(k===tab):!!po[k];});return {romp:'panes',on:on,avail:{files:filesCtl(),artifacts:artifactsCtl()}};}
   function tell(f,m){try{f&&f.contentWindow&&f.contentWindow.postMessage(m,'*');}catch(e){}}
   function broadcast(){var m=panesMsg();KEYS.forEach(function(k){tell(document.getElementById('f-'+k),m);});}
   window.__rompPanesTell=broadcast;   // the mobile script re-tells on a tab switch / layout flip
@@ -63126,6 +63298,15 @@ _LANDING_COLLAPSE_JS = """
   function apply(){
     var ctl=filesCtl();
     document.body.classList.toggle('no-files-control',!ctl);
+    var actl=artifactsCtl();
+    document.body.classList.toggle('no-artifacts-control',!actl);
+    // the Artifacts pane's iframe is served with data-src (never loaded while its control is off OR the pane is off: no document,
+    // no socket, no listing walk of the remembered session on a dashboard load, the verifier's find of 2026-09-19); the pane
+    // coming on screen with the control on loads it ONCE (the optional panes' rule), and an open pane closes on the same
+    // apply when the control goes
+    var af=document.getElementById('f-artifacts');if(actl&&po.artifacts&&af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));
+    if(!actl&&po.artifacts){po.artifacts=false;if(qp===null)saveP();}
+    if(!actl&&window.__rompMobileOn&&window.__rompMobileOn()&&document.body.getAttribute('data-tab')==='artifacts'){try{window.__rompMobileTab&&window.__rompMobileTab('chat');}catch(e){}}
     var tt=taskTracking();
     document.body.classList.toggle('no-task-tracking',!tt);
     // tracking off (T404): an open Outline or Feed pane closes on the same apply (in memory only: the stored set stands, so the panes return on the next reload once tracking is on), and a phone on one of their tabs comes to the chat
@@ -63139,6 +63320,7 @@ _LANDING_COLLAPSE_JS = """
     document.body.classList.toggle('po-feed',!!po.feed);
     document.body.classList.toggle('po-timeline',!!po.timeline);
     document.body.classList.toggle('po-files',!!po.files);
+    document.body.classList.toggle('po-artifacts',!!po.artifacts);
     Array.prototype.forEach.call(document.querySelectorAll('.rail-btn[data-pane]'),function(b){
       var k=b.getAttribute('data-pane');b.classList.toggle('on',!!po[k]);
       // tooltip carries the pane command's CURRENT binding (hover discoverability, the user 2026-08-10) —
@@ -63148,7 +63330,7 @@ _LANDING_COLLAPSE_JS = """
     try{window.dispatchEvent(new Event('romp-panes'));}catch(e){}   // nudge the timeline band to auto-fit when toggled
     broadcast();
   }
-  function togglePane(k,to){if(!(k in po))return;if(k==='files'&&!filesCtl())return;var nv=(to===undefined)?!po[k]:!!to;
+  function togglePane(k,to){if(!(k in po))return;if(k==='files'&&!filesCtl())return;if(k==='artifacts'&&!artifactsCtl())return;var nv=(to===undefined)?!po[k]:!!to;
     if(nv===!!po[k])return;   // already so (a relay's bring-forward on an open pane): nothing changed, so no re-apply and no broadcast claiming one
     if(nv&&!po[k]&&window.__rompGrowFair)window.__rompGrowFair(k);   // newly shown → fair width, not a sliver
     po[k]=nv;apply();saveP();}
@@ -63953,7 +64135,7 @@ def _landing():
             ".rail-btn[hidden]{display:none}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.12);border-color:rgba(156,210,255,0.35)}"
             # the Files control hidden by its gear setting (T317): the rail's toggle and the phone's tab both go
-            "body.no-files-control .rail-btn[data-pane=files],body.no-files-control #mtabs button[data-pane=files]{display:none}"
+            "body.no-files-control .rail-btn[data-pane=files],body.no-files-control #mtabs button[data-pane=files]{display:none}body.no-artifacts-control .rail-btn[data-pane=artifacts],body.no-artifacts-control #mtabs button[data-pane=artifacts]{display:none}"
             # the Task tracking switch off (T404): the Outline and Feed buttons and the phone's tabs for them are gone
             "body.no-task-tracking .rail-btn[data-pane=\"fleet\"],body.no-task-tracking .rail-btn[data-pane=\"feed\"],body.no-task-tracking #mtabs button[data-pane=\"fleet\"],body.no-task-tracking #mtabs button[data-pane=\"feed\"]{display:none}"
             # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the RIGHT (margin-left:auto on the
@@ -64422,7 +64604,9 @@ def _landing():
             # the four TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, outline, feed, files. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}#files-pane{flex:var(--g-files,40) 1 0}"
+            "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}"
             "body:not(.po-chat) #chat-pane{display:none}body:not(.po-fleet) #fleet-pane{display:none}body:not(.po-feed) #feed-pane{display:none}body:not(.po-files) #files-pane{display:none}"
+            "body:not(.po-artifacts) #artifacts-pane{display:none}"
             # split chat columns (the user 2026-09-08): every column past the first is a client-made .pane.chat-col
             # (_LANDING_SPLIT_JS) with its own /chat?col=N iframe and its own grow var, set inline. They ride the
             # chat group's toggle: off hides every column and the chat|chat gutters with it.
@@ -64440,6 +64624,8 @@ def _landing():
             "body:not(.po-chat) #gv-a,body:not(.po-fleet) #gv-a{display:none}"
             "body:not(.po-feed) #gv-b,body:not(.po-chat):not(.po-fleet) #gv-b{display:none}"
             "body:not(.po-files) #gv-c,body:not(.po-chat):not(.po-fleet):not(.po-feed) #gv-c{display:none}"
+            # gv-d sits (files|feed|outline|chat)|artifacts, hidden when the Artifacts pane is off or no column is shown to its left
+            "body:not(.po-artifacts) #gv-d,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files) #gv-d{display:none}"
             # ── timeline BOTTOM BAND (the user 2026-06-25): a full-width band UNDER the pane row, shown only when
             # po-timeline (the rail's Timeline toggle); the gh gutter above it resizes it (auto-fits otherwise).
             # Band + gutter both hide when the toggle is off, so the pane row fills the height.
@@ -64839,6 +65025,9 @@ def _landing():
             "<div class=pane id=feed-pane><iframe id=f-feed data-src=/feed></iframe></div>"
             "<div class=gv id=gv-c></div>"
             "<div class=pane id=files-pane><iframe id=f-files src=/files></iframe></div>"
+            # the Artifacts pane (plans/artifacts-pane.md, 2026-09-19): rightmost, data-src (loaded once, when its control is on)
+            "<div class=gv id=gv-d></div>"
+            "<div class=pane id=artifacts-pane><iframe id=f-artifacts data-src=/artifacts></iframe></div>"
             "</div>"
             "<div id=gv-ghost></div>"   # the divider drag's landing line (position:fixed; gutter() in _LANDING_JS moves it)
             "<div id=col-ghost></div>"   # a tab drag's provisional rectangle: the right half of the rightmost chat column (position:fixed; _LANDING_SPLIT_JS places it)
@@ -66067,6 +66256,9 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/files":
                 _client_seen[0] = time.time()
                 return self._send(200, _files_page(), "text/html; charset=utf-8", cache="no-cache")
+            if p == "/artifacts":
+                _client_seen[0] = time.time()
+                return self._send(200, _artifacts_page(), "text/html; charset=utf-8", cache="no-cache")
             if p == "/settings":
                 _client_seen[0] = time.time()
                 return self._send(200, _settings_page(), "text/html; charset=utf-8", cache="no-cache")
@@ -68834,6 +69026,14 @@ class Handler(BaseHTTPRequestHandler):
             _reply(client, dict({"type": "dirCompletions", "reqId": msg.get("reqId"), "host": "",
                                  "value": _val, "status": _dir_status(_val)},
                                 **_dir_completions(_val)))
+        elif msg and msg.get("type") == "listArtifacts":
+            # the Artifacts pane's one request (plans/artifacts-pane.md): the files a session's thread named, answered by
+            # the kernel that OWNS the sid (federation routes by it) on this socket; nothing is pushed and nothing written.
+            # reqId echoes back so a slow answer landing after a newer selection is dropped by the page, never rendered.
+            _asid = str(msg.get("sid") or "")
+            _abody, _aerr = _artifacts_list(_asid) if _asid else (None, "no session named")
+            _reply(client, dict({"type": "artifactsListing", "reqId": msg.get("reqId"), "sid": _asid, "error": _aerr or ""},
+                                **(_abody or {"items": [], "capped": False, "max": ARTIFACTS_MAX})))
         elif msg and msg.get("type") == "listDir":
             # The dashboard's file browser. Answered by the kernel that OWNS the sid's session —
             # federation routes by the sid field, so browsing a remote session lists THAT machine's

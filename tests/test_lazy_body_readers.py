@@ -21,6 +21,7 @@ KERNEL_ALLOWED = {
     # _seg_mids to the scalar readers below: they read no body at all now)
     "_atom_md", "_atom_user_text", "_atom_user_texts", "_interrupt_cause", "_seg_prompt", "_open_turn_progress",
     "_seg_of_tool_uses", "_fold_tasks_turn", "_turn_landed", "_interrupt_settle",
+    "_artifacts_walk",                                  # the Artifacts pane's walk hydrates the whole session first (plans/artifacts-pane.md, 2026-09-19)
     # the chat build hydrates the turns it renders before its loops
     "build_session",
     # readers of raw transcript records (jsonl rows), never atoms
