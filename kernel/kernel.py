@@ -64126,6 +64126,9 @@ def _landing():
             # a dist bundle (ui/webview/palette-main.ts) like age-color-global above. Loaded last —
             # it reads the __romp* globals lazily, at command run time, so order is cosmetic.
             + ("<script src=/dist/palette-main.js?v=%d></script>" % v)
+            # the pane docking engine (ui/webview/panedock-main.ts, plans/pane-docking.md): inert unless
+            # the gear's paneDocking switch is on, so with it off the shipped pane layout above is untouched
+            + ("<script src=/dist/panedock-main.js?v=%d></script>" % v)
             + _stale_block(v) + _update_block() + _rdrift_block() +
             "</body></html>")
 

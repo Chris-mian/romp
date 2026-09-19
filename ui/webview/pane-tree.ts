@@ -16,8 +16,13 @@ export type PaneId = string;
  *  never closed, only emptied: closePane refuses it). */
 export interface Leaf { pane: PaneId; group?: PaneId[]; active?: PaneId }
 /** A split: `kids` laid out along `dir`, each taking `ratios[i]` of the space (ratios sum to 1, one per
- *  kid). A split always has at least two kids; a split reduced to one kid collapses into that kid. */
-export interface Split { dir: Dir; kids: Node[]; ratios: number[] }
+ *  kid). A split always has at least two kids; a split reduced to one kid collapses into that kid.
+ *  `fixed` (phase two, plans/pane-docking.md section 11): a kid may carry a FIXED px size instead of a ratio
+ *  share (the timeline band, `#tl-pane{flex:0 0 var(--tl)}`): `fixed[i]` is that kid's px, null for a ratio
+ *  kid. layout allots the fixed kids their px first and divides the remainder among the ratio kids, whose
+ *  ratios sum to 1 (a fixed kid's ratio is 0). Absent when no kid is fixed, so a store without a band keeps
+ *  its phase-one shape byte for byte. */
+export interface Split { dir: Dir; kids: Node[]; ratios: number[]; fixed?: Array<number | null> }
 export type Node = Leaf | Split;
 
 /** The persisted store: the tree, plus the PARKED panes (closed from the rail but kept mounted and hidden,
@@ -56,16 +61,36 @@ export function leafOf(n: Node, pane: PaneId): Leaf | null {
   return null;
 }
 
-/** Normalise a split's ratios to sum 1 (clamped non-negative); a degenerate all-zero falls to equal
- *  shares. Pure helper, so every edit re-normalises rather than trusting arithmetic to stay exact. */
-function norm(ratios: number[]): number[] {
-  const clamped = ratios.map((r) => (r > 0 ? r : 0));
+/** Normalise a split's ratios to sum 1 over the RATIO kids (clamped non-negative; a fixed kid's ratio is 0);
+ *  a degenerate all-zero falls to equal shares among the ratio kids. Pure helper, so every edit re-normalises
+ *  rather than trusting arithmetic to stay exact. */
+function norm(ratios: number[], fixed?: Array<number | null>): number[] {
+  const isFixed = (i: number) => !!fixed && typeof fixed[i] === "number";
+  const clamped = ratios.map((r, i) => (isFixed(i) ? 0 : r > 0 ? r : 0));
+  const free = clamped.filter((_, i) => !isFixed(i)).length;
+  if (free === 0) return clamped;
   const sum = clamped.reduce((a, b) => a + b, 0);
-  if (sum < EPS) return clamped.map(() => 1 / clamped.length);
+  if (sum < EPS) return clamped.map((_, i) => (isFixed(i) ? 0 : 1 / free));
   return clamped.map((r) => r / sum);
 }
 
-function mkSplit(dir: Dir, kids: Node[], ratios: number[]): Split { return { dir, kids, ratios: norm(ratios) }; }
+/** A `fixed` array worth keeping: one with a px entry; an all-null array is dropped so the shape stays phase one's. */
+function keepFixed(fixed?: Array<number | null>): Array<number | null> | undefined {
+  return fixed && fixed.some((f) => typeof f === "number") ? fixed.map((f) => (typeof f === "number" && f > 0 ? f : null)) : undefined;
+}
+
+function mkSplit(dir: Dir, kids: Node[], ratios: number[], fixed?: Array<number | null>): Split {
+  const fx = keepFixed(fixed);
+  const out: Split = { dir, kids, ratios: norm(ratios, fx) };
+  if (fx) out.fixed = fx;
+  return out;
+}
+
+/** The fixed px of kid `i` of a split, or null for a ratio kid. */
+export function fixedOf(n: Split, i: number): number | null {
+  const f = n.fixed && n.fixed[i];
+  return typeof f === "number" ? f : null;
+}
 
 /** GEOMETRY: every leaf's rectangle in px, from the tree, a viewport and the gutter thickness between
  *  siblings. A row divides width among kids by ratio (less the gutters between them); a column divides
@@ -75,12 +100,15 @@ export function layout(n: Node, box: Rect, gutter: number): Array<{ pane: PaneId
   if (isLeaf(n)) return [{ pane: n.pane, rect: box }];
   const horiz = n.dir === "row";
   const span = (horiz ? box.w : box.h) - gutter * (n.kids.length - 1);
-  const avail = span > 0 ? span : 0;
+  // the fixed kids take their px first (clamped to the span), the ratio kids divide what is left
+  const fixedSum = n.kids.reduce((a, _, i) => a + (fixedOf(n, i) || 0), 0);
+  const avail = span - fixedSum > 0 ? span - fixedSum : 0;
   const out: Array<{ pane: PaneId; rect: Rect }> = [];
   const far = horiz ? box.x + box.w : box.y + box.h;
   let off = horiz ? box.x : box.y;
   n.kids.forEach((kid, i) => {
-    const size = avail * n.ratios[i];
+    const fx = fixedOf(n, i);
+    const size = fx !== null ? fx : avail * n.ratios[i];
     // clamp each kid's start and end to the box: a split narrower than its gutters would otherwise advance
     // the offset a full gutter per kid and land zero-width rects OUTSIDE the box
     const start = off < far ? off : far;
@@ -107,23 +135,31 @@ export function splitAt(tree: Node, target: PaneId, pane: PaneId, edge: Edge): N
   const rebuilt = (n: Node): Node => {
     if (isLeaf(n)) {
       if (n.pane !== target) return n;
-      // the target with no parent match: replace it with a fresh two-kid split
+      // the target with no parent match: replace it with a fresh two-kid split (a fixed target keeps its px:
+      // the parent's fixed entry names the SLOT, which this split now fills, its two kids sharing the px)
       return mkSplit(dir, before(edge) ? [leaf, n] : [n, leaf], [0.5, 0.5]);
     }
     const idx = n.kids.findIndex((k) => isLeaf(k) && k.pane === target);
     if (idx >= 0 && n.dir === dir) {
       // flatten: the target is a direct child of a same-direction split, so the new pane is a sibling and
-      // splits the target's own share in half; the other kids keep their ratios (norm re-scales)
+      // splits the target's own share in half; the other kids keep their ratios (norm re-scales). Beside a
+      // FIXED target (the band) there is no share to halve: the new ratio kid takes an equal share among the
+      // ratio kids (1/(free+1) of the total), and stays a ratio kid.
       const kids = n.kids.slice();
       const ratios = n.ratios.slice();
-      const half = n.ratios[idx] / 2;
+      const fixed = n.fixed ? n.fixed.slice() : n.kids.map(() => null as number | null);
       const at = before(edge) ? idx : idx + 1;
+      const targetFixed = fixedOf(n, idx) !== null;
+      const free = n.kids.filter((_, i) => fixedOf(n, i) === null).length;
+      // the ratio kids sum to 1, so a share of 1/free gives the new kid 1/(free+1) of the total once re-normalised
+      const share = targetFixed ? (free > 0 ? 1 / free : 1) : n.ratios[idx] / 2;
       kids.splice(at, 0, leaf);
-      ratios.splice(at, 0, half);
-      ratios[before(edge) ? idx + 1 : idx] = half;
-      return mkSplit(n.dir, kids, ratios);
+      ratios.splice(at, 0, share);
+      fixed.splice(at, 0, null);
+      if (!targetFixed) ratios[before(edge) ? idx + 1 : idx] = share;
+      return mkSplit(n.dir, kids, ratios, fixed);
     }
-    return mkSplit(n.dir, n.kids.map(rebuilt), n.ratios);
+    return mkSplit(n.dir, n.kids.map(rebuilt), n.ratios, n.fixed);
   };
   return rebuilt(tree);
 }
@@ -135,21 +171,26 @@ export function detach(tree: Node, pane: PaneId): { tree: Node | null; leaf: Lea
   const found = leafOf(tree, pane);
   if (!found) return { tree, leaf: null };
   if (isLeaf(tree)) return { tree: tree.pane === pane ? null : tree, leaf: tree.pane === pane ? tree : null };
-  const strip = (n: Split): Node | null => {
+  // strip returns the rebuilt node and, when it COLLAPSED onto a kid that was fixed in it, that kid's px, so the
+  // parent's slot for it becomes fixed (a band whose only sibling left would otherwise turn into a ratio kid)
+  const strip = (n: Split): { node: Node | null; px: number | null } => {
     const keep: Node[] = [];
     const ratios: number[] = [];
+    const fixed: Array<number | null> = [];
     n.kids.forEach((k, i) => {
       if (isLeaf(k) && k.pane === pane) return;   // drop the target leaf
-      const kept = isSplit(k) ? strip(k) : k;
+      let kept: Node | null = k, px = fixedOf(n, i);
+      if (isSplit(k)) { const r = strip(k); kept = r.node; if (r.px !== null && px === null) px = r.px; }
       if (kept === null) return;   // a nested split that emptied out drops with it
       keep.push(kept);
       ratios.push(n.ratios[i]);
+      fixed.push(px);
     });
-    if (keep.length === 0) return null;   // every kid was the target (a duplicate-id tree): an EMPTY split, not a kid-less one, so closePane's only-pane guard catches it and never blanks the dashboard
-    if (keep.length === 1) return keep[0];   // collapse: the lone kid takes this split's place (and its slot ratio)
-    return mkSplit(n.dir, keep, ratios);
+    if (keep.length === 0) return { node: null, px: null };   // every kid was the target (a duplicate-id tree): an EMPTY split, not a kid-less one, so closePane's only-pane guard catches it and never blanks the dashboard
+    if (keep.length === 1) return { node: keep[0], px: fixed[0] };   // collapse: the lone kid takes this split's place (and its slot ratio, or carries its px up)
+    return { node: mkSplit(n.dir, keep, ratios, fixed), px: null };
   };
-  return { tree: strip(tree), leaf: found };
+  return { tree: strip(tree).node, leaf: found };
 }
 
 /** Move a pane to an edge of a target pane: detach it (collapsing its old parent), then dock it. The target
@@ -166,7 +207,7 @@ export function move(tree: Node, pane: PaneId, target: PaneId, edge: Edge): Node
   if (leaf.group !== undefined || leaf.active !== undefined) {
     const relabel = (n: Node): Node => isLeaf(n)
       ? (n.pane === pane ? { ...n, group: leaf.group, active: leaf.active } : n)
-      : mkSplit(n.dir, n.kids.map(relabel), n.ratios);
+      : mkSplit(n.dir, n.kids.map(relabel), n.ratios, n.fixed);
     return relabel(docked);
   }
   return docked;
@@ -208,6 +249,7 @@ export function resize(tree: Node, path: number[], i: number, delta: number, min
     if (p.length === 0) {
       if (isLeaf(n) || i < 0 || i + 1 >= n.kids.length) return n;
       if (!Number.isFinite(delta) || !Number.isFinite(minFrac)) return n;   // a NaN/Infinity delta or min passes both clamps below and zeroes two panes; leave the edge put
+      if (fixedOf(n, i) !== null || fixedOf(n, i + 1) !== null) return n;   // a fixed kid's edge is sized in px (setFixed), never by ratio
       const ratios = n.ratios.slice();
       const pair = ratios[i] + ratios[i + 1];
       if (pair < 2 * minFrac) return n;   // neither side can meet the min: leave the edge where it is, never mint a negative ratio
@@ -215,16 +257,61 @@ export function resize(tree: Node, path: number[], i: number, delta: number, min
       let a = ratios[i] + delta;
       a = a < lo ? lo : a > hi ? hi : a;
       ratios[i] = a; ratios[i + 1] = pair - a;
-      return mkSplit(n.dir, n.kids.slice(), ratios);   // slice: the returned tree never aliases the input's kids array
+      return mkSplit(n.dir, n.kids.slice(), ratios, n.fixed);   // slice: the returned tree never aliases the input's kids array
     }
     if (isLeaf(n)) return n;
     const [head, ...rest] = p;
     if (head < 0 || head >= n.kids.length) return n;
     const kids = n.kids.slice();
     kids[head] = at(kids[head], rest);
-    return mkSplit(n.dir, kids, n.ratios);
+    return mkSplit(n.dir, kids, n.ratios, n.fixed);
   };
   return at(tree, path);
+}
+
+/** Set (or clear, with null) the FIXED px of the slot holding `pane` (a direct kid of some split): the band's
+ *  height following `--tl`. A pane that is the whole tree, or absent, leaves the tree unchanged. */
+export function setFixed(tree: Node, pane: PaneId, px: number | null): Node {
+  const at = (n: Node): Node => {
+    if (isLeaf(n)) return n;
+    const idx = n.kids.findIndex((k) => isLeaf(k) && k.pane === pane);
+    if (idx >= 0) {
+      const fixed = n.fixed ? n.fixed.slice() : n.kids.map(() => null as number | null);
+      fixed[idx] = px !== null && Number.isFinite(px) && px > 0 ? px : null;
+      return mkSplit(n.dir, n.kids.slice(), n.ratios, fixed);
+    }
+    return mkSplit(n.dir, n.kids.map(at), n.ratios, n.fixed);
+  };
+  return at(tree);
+}
+
+/** Every INTERNAL EDGE of the tree as a gutter rectangle: the gap between kids i and i+1 of the split at `path`,
+ *  `gutter` thick, spanning the split's cross axis. `fixed` says a side is a fixed kid (the engine sizes that edge
+ *  in px, never by ratio). The engine mounts one divider per edge from this. */
+export interface EdgeRect { path: number[]; i: number; dir: Dir; rect: Rect; fixed: boolean; avail: number }
+export function edges(n: Node, box: Rect, gutter: number, path: number[] = []): EdgeRect[] {
+  if (isLeaf(n)) return [];
+  const horiz = n.dir === "row";
+  const span = (horiz ? box.w : box.h) - gutter * (n.kids.length - 1);
+  const fixedSum = n.kids.reduce((a, _, i) => a + (fixedOf(n, i) || 0), 0);
+  const avail = span - fixedSum > 0 ? span - fixedSum : 0;
+  const far = horiz ? box.x + box.w : box.y + box.h;
+  const out: EdgeRect[] = [];
+  let off = horiz ? box.x : box.y;
+  n.kids.forEach((kid, i) => {
+    const fx = fixedOf(n, i);
+    const size = fx !== null ? fx : avail * n.ratios[i];
+    const start = off < far ? off : far;
+    const end = off + size < far ? off + size : far;
+    const rect: Rect = horiz ? { x: start, y: box.y, w: end - start, h: box.h } : { x: box.x, y: start, w: box.w, h: end - start };
+    out.push(...edges(kid, rect, gutter, path.concat(i)));
+    if (i + 1 < n.kids.length) {
+      const g: Rect = horiz ? { x: end, y: box.y, w: gutter, h: box.h } : { x: box.x, y: end, w: box.w, h: gutter };
+      out.push({ path, i, dir: n.dir, rect: g, fixed: fx !== null || fixedOf(n, i + 1) !== null, avail });   // avail: the ratio kids' px, so a px drag converts to a ratio delta
+    }
+    off += size + gutter;
+  });
+  return out;
 }
 
 /** Seed today's row as a tree: a COLUMN of [the row of `order` panes weighted by `grow`, the bottom band],
@@ -238,6 +325,30 @@ export function seedRowOverBand(order: PaneId[], grow: Record<PaneId, number>, b
   const row: Node = order.length === 1 ? { pane: order[0] } : mkSplit("row", order.map((p) => ({ pane: p })), rowRatios);
   if (!band) return row;
   return mkSplit("col", [row, { pane: band }], [1 - bandFrac, bandFrac]);
+}
+
+/** Dock a pane against the WHOLE tree (the band's "bottom of everything"; a pane opened when its default target is
+ *  gone): the root is wrapped in a split along the edge's direction, the new leaf a ratio kid, or a FIXED kid when
+ *  `fixedPx` is given. Throws if the pane is already in the tree. */
+export function dockRoot(tree: Node, pane: PaneId, edge: Edge, fixedPx: number | null = null): Node {
+  if (has(tree, pane)) throw new Error("dockRoot: pane already in the tree: " + pane);
+  const leaf: Leaf = { pane };
+  const kids = before(edge) ? [leaf, tree] : [tree, leaf];
+  const at = before(edge) ? 0 : 1;
+  if (fixedPx !== null && fixedPx > 0) {
+    const fixed: Array<number | null> = [null, null]; fixed[at] = fixedPx;
+    const ratios = [1, 1]; ratios[at] = 0;
+    return mkSplit(dirOf(edge), kids, ratios, fixed);
+  }
+  return mkSplit(dirOf(edge), kids, [0.5, 0.5]);
+}
+
+/** Seed today's row over the timeline BAND at a FIXED height (phase two: `#tl-pane{flex:0 0 var(--tl)}`, the
+ *  band's px read from `--tl`): a column of [the row, the band], the band a fixed kid. With no band, the row. */
+export function seedRowOverFixedBand(order: PaneId[], grow: Record<PaneId, number>, band: PaneId | null, bandPx: number): Node {
+  const row = seedRowOverBand(order, grow, null, 0);
+  if (!band) return row;
+  return mkSplit("col", [row, { pane: band }], [1, 0], [null, bandPx > 0 ? bandPx : 200]);
 }
 
 /** Serialise the store. */
@@ -256,8 +367,15 @@ function validNode(n: unknown): n is Node {
   if (o.dir !== "row" && o.dir !== "col") return false;
   if (!Array.isArray(o.ratios) || o.ratios.length !== o.kids.length) return false;
   if (!(o.ratios as unknown[]).every((r) => typeof r === "number" && (r as number) >= 0)) return false;
-  const sum = (o.ratios as number[]).reduce((a, b) => a + b, 0);
-  if (Math.abs(sum - 1) > 1e-3) return false;
+  if (o.fixed !== undefined) {
+    if (!Array.isArray(o.fixed) || o.fixed.length !== o.kids.length) return false;
+    if (!(o.fixed as unknown[]).every((f) => f === null || (typeof f === "number" && Number.isFinite(f) && (f as number) > 0))) return false;
+    if (!(o.fixed as unknown[]).some((f) => typeof f === "number")) return false;   // an all-null array is not a shape this module writes
+  }
+  const fx = (o.fixed as Array<number | null> | undefined) || null;
+  const sum = (o.ratios as number[]).reduce((a, r, i) => a + (fx && typeof fx[i] === "number" ? 0 : r), 0);
+  const free = (o.kids as unknown[]).filter((_, i) => !(fx && typeof fx[i] === "number")).length;
+  if (free > 0 && Math.abs(sum - 1) > 1e-3) return false;   // the ratio kids sum to 1 (a fixed kid's ratio is ignored)
   return (o.kids as unknown[]).every(validNode);
 }
 
@@ -278,6 +396,6 @@ export function parse(s: string): Layout | null {
   if (parked.some((p) => has(tree, p))) return null;   // a pane cannot be both docked and parked
   // normalise every split's ratios once: validNode accepts a sum within 1e-3, but layout never re-normalises
   // (EPS 1e-6), so a stored [0.4995, 0.4996] would under-fill the box forever; mkSplit's norm() fixes it here
-  const renorm = (n: Node): Node => isLeaf(n) ? n : mkSplit(n.dir, n.kids.map(renorm), n.ratios);
+  const renorm = (n: Node): Node => isLeaf(n) ? n : mkSplit(n.dir, n.kids.map(renorm), n.ratios, n.fixed);
   return { v: 1, tree: renorm(tree), parked };
 }
