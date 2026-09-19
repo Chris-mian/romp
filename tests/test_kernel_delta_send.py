@@ -198,7 +198,7 @@ class RenderHandlesTheTail(unittest.TestCase):
         r = self._render()
         # upsert records the wire offset → s.events is the tail [headFrom, headTotal); an empty frame for a held
         # transcript keeps the resident window instead (T249b, frame-merge.ts)
-        self.assertIn("headFrom: kept && prev ? prev.headFrom : (msg.headFrom ?? 0),", r)
+        self.assertIn("headFrom: keepResident && prev ? prev.headFrom : (msg.headFrom ?? 0),", r)
         # scroll to the top of the resident tail with older on the server → request the previous chunk
         self.assertIn('vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });', r)
         # …only on an upward or unchanged move of the view (T366: a downward flick inside the estimate's top band never asks)

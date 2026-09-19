@@ -128,6 +128,14 @@ var GEAR_HTML =
   '<span><b>Files</b>' +   // the row's name follows Sessions, Outline and Feed above it (T407, the user 2026-09-13); the id, the key and the default stand
   '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
   '</span></label>' +
+  // the pane docking kit (plans/pane-docking.md; the user 2026-09-18, who wants panes moved by their empty space, not a
+  // title bar, and asked for it DEFAULT OFF): the shell's panedock-main.ts bundle reads paneDocking and, on, positions the
+  // panes from a layout tree, arms a move from a pane's ring, its top row's empty run or Option-drag, and shows the
+  // accent outline where the pane will land. Off (the default) the shipped layout and its stores are untouched.
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-panedock>' +
+  '<span><b>Pane docking</b>' +
+  '<span class=rs-sub>Move panes by grabbing their empty space: the frame around a pane, the gap in its top row, or Option-drag (Alt) anywhere over it. A blue outline shows where the pane will land; drop it on another pane\'s left, right, top or bottom half. Off (the default) keeps the fixed layout.</span>' +
+  '</span></label>' +
   // APPEARANCE, a section of General since T404 (the user 2026-09-13; a tab of its own before, renamed from Colors 2026-08-28): the
   // theme, the colormap and the session palette; an older ask or remembered tab named appearance lands here (TAB_ALIASES)
   "<div class='rs-sec' data-section=appearance>Appearance</div>" +
@@ -384,6 +392,7 @@ function initGear(post, opts) {
     csg = document.getElementById('rs-suggestcompact'),
     dd = document.getElementById('rs-defaultdir'),
     fsc = document.getElementById('rs-filesctl'),
+    pdk = document.getElementById('rs-panedock'),
     sr = document.getElementById('rs-striprows'),
     dn = document.getElementById('rs-dense'),
     cs = document.getElementById('rs-chatscheme'),
@@ -436,7 +445,8 @@ function initGear(post, opts) {
   if (sr) sr.addEventListener('change', function () { var s = load(); s.stripGroupRows = sr.checked; save(s); });
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
   if (dn) dn.addEventListener('change', function () { var s = load(); s.denseChrome = dn.checked; save(s); });
-  if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
+  if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });
+  if (pdk) pdk.addEventListener('change', function () { var s = load(); s.paneDocking = pdk.checked; save(s); });   // the shell's engine hears the save (romp:settings in this document, the storage event from another) and starts or stops   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
   // the optional panes: the whole set is rewritten from the three boxes on every change (a missing key reads
   // as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
   function panesOf(s) { var p = (s && s.panes && typeof s.panes === 'object') ? s.panes : {}; return { timeline: p.timeline !== false, fleet: p.fleet !== false, feed: p.feed !== false }; }
@@ -1597,7 +1607,7 @@ function initGear(post, opts) {
   // kernel) reads as no value, and the copy and the label take their value-less form.
   function staleRefused(m) {
     if (!m.gesture || typeof m.gesture !== 'object' || STALE_TYPE[m.setting] !== m.gesture.type) return '';
-    var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type'; });
+    var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type' && k !== 'origin'; });   // origin rides every broadcast copy (one A); the value is the other key
     return keys.length === 1 ? staleWord(m.gesture[keys[0]], m.setting) : '';
   }
   // One toast per refused GESTURE, not per refusing kernel: a dashboard's broadcast reaches every
@@ -1615,6 +1625,9 @@ function initGear(post, opts) {
   // The kernel's reason a write was refused OUTRIGHT as a clause for the copy: its file could not be READ, or
   // (a `why` starting "write failed:", the fold on PR #1019) WRITTEN — one clause per cause; absent on a stand-down
   function staleWhy(m) { return (typeof m.why === 'string' && m.why) ? ' Its settings file could not be ' + (m.why.indexOf('write failed:') === 0 ? 'written' : 'read') + ' (' + m.why + ').' : ''; }
+  // a PIN's stand-down is not a fault (plans/settings-across-machines.md, one A round two): the frame carries `pinned`, and the
+  // clause is the plan's words; the first cut rendered its `why` as the file-fault clause above, a falsehood about the disk
+  function stalePinned(where) { return ' Kept: ' + where + "'s value is pinned."; }
   function staleLive(t) { return !!t.parentNode && !(t.classList && t.classList.contains('fade')); }
   // Apply anyway re-issues the frame's echoed gesture as a NEW one, stamped above everything this
   // page has seen (the frame's storedGt included, learned just before): a fresh click is legitimate
@@ -1642,7 +1655,7 @@ function initGear(post, opts) {
     // A write the kernel refused because it could not READ the setting's file (the frame carries `why`) is
     // not an ordering race: re-issuing the gesture cannot succeed while the file is unreadable, so that
     // toast offers no Apply anyway and says why instead (review find on #1018, 2026-09-08)
-    var why = staleWhy(m);
+    var why = m.pinned === true ? stalePinned(where) : staleWhy(m);
     if (live) {   // the same gesture, refused by one more kernel: add the host to the toast on screen
       if (live.hosts.indexOf(where) < 0) live.hosts.push(where);
       live.t.querySelector('.rs-stale-toast-msg').textContent = staleText(label, live.refused || refused, kept, live.hosts) + why;
@@ -1812,10 +1825,64 @@ function initGear(post, opts) {
       mark.hidden = false;
     });
   }
+  // Settings across machines, phase one A (plans/settings-across-machines.md; the user 2026-09-18): a remote machine's
+  // newer pick is never applied here on its own. The kernel keeps it as a PROPOSAL and /version carries the pending ones
+  // (settingsProposals: host, value, gt, current) and this machine's pins (settingsPinned). Under the affected row the
+  // gear draws a SECOND LINE, "TESTHOST proposes off; this machine is on", with Apply and Keep mine, both posting the
+  // user's answer to /setting-proposal with the proposal's stamp (the kernel refuses a stamp the peer has since moved
+  // past, and the re-fill shows the new one). A pinned store says so under its row. Rows: one per synchronized store.
+  var PROPOSAL_ROWS = { 'auto-nudge': 'rs-autonudge', 'compact-suggest': 'rs-suggestcompact', 'file-editing': 'rs-fileedit', 'task-tracking': 'rs-tasktrack' };
+  function proposalHost(store) {
+    var box = document.getElementById(PROPOSAL_ROWS[store]);
+    var row = box && box.closest ? (box.closest('label') || box.closest('.rs-row')) : null;
+    return row || null;
+  }
+  function clearProposalLines() {
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-proposal, #rsettings .rs-pinned'), function (el) { el.parentNode.removeChild(el); });
+  }
+  function answerProposal(store, host, gt, answer) {
+    return fetch(ku('/setting-proposal'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ store: store, host: host, gt: gt, answer: answer }) })
+      .then(function (r) { return r.json(); }).catch(function () { return null; })
+      .then(function (res) { if (res && res.ok === false && res.error) staleToast(res.error); fill(); });
+  }
+  function fillProposals(v) {
+    clearProposalLines();
+    var props = (v && v.settingsProposals) || {}, pins = (v && v.settingsPinned) || {};
+    Object.keys(PROPOSAL_ROWS).forEach(function (store) {
+      var row = proposalHost(store);
+      if (!row) return;
+      // one line per proposing MACHINE (round two: records are per store and machine; an older kernel's one record reads as one)
+      var rows = Array.isArray(props[store]) ? props[store] : (props[store] && typeof props[store].value === 'boolean' ? [props[store]] : []);
+      var after = row;   // each line goes AFTER the last drawn one, so the panel reads in /version's order, newest stamp first
+      rows.forEach(function (p) {
+        if (typeof p.value !== 'boolean') return;
+        var line = document.createElement('div');
+        line.className = 'rs-proposal'; line.setAttribute('data-store', store); line.setAttribute('role', 'status');
+        var txt = document.createElement('span'); txt.className = 'rs-proposal-msg';
+        txt.textContent = (p.host || 'Another machine') + ' proposes ' + (p.value ? 'on' : 'off') + '; this machine is ' + (p.current ? 'on' : 'off') + '.';
+        var apply = document.createElement('button'); apply.type = 'button'; apply.className = 'rs-proposal-act'; apply.textContent = 'Apply';
+        apply.title = 'Take ' + (p.host || 'the other machine') + "'s value on this machine";
+        var keep = document.createElement('button'); keep.type = 'button'; keep.className = 'rs-proposal-act'; keep.textContent = 'Keep mine';
+        keep.title = 'Keep this machine\'s value; the same proposal is not raised again';
+        apply.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.host, p.gt, 'apply'); });
+        keep.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.host, p.gt, 'keep'); });
+        line.appendChild(txt); line.appendChild(apply); line.appendChild(keep);
+        after.parentNode.insertBefore(line, after.nextSibling); after = line;
+      });
+      if (!rows.length && pins[store]) {
+        var pin = document.createElement('div');
+        pin.className = 'rs-pinned'; pin.setAttribute('data-store', store);
+        pin.textContent = 'Pinned on this machine: other machines\' picks are not applied here.';
+        row.parentNode.insertBefore(pin, row.nextSibling);
+      }
+    });
+  }
   // setShow — fill()'s write path for every kernel-backed select below — sits beside paintChoices, which
   // shares it.
   function fill() { fillChoices().then(function () { return fetch(ku('/version'), { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
     gclock.learnAll(v.settingsGt);   // each store's last-applied stamp: the clock climbs above them (an older kernel sends none)
+    fillProposals(v);   // the pending proposals and this machine's pins under their rows (one A)
     // ONE /tunnels fetch feeds every cross-machine comparison: the autoNudge box and the select marks.
     // A failed /tunnels leaves the local answers standing, unmarked — same fallback as before.
     fetch(ku('/tunnels'), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
@@ -1938,7 +2005,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

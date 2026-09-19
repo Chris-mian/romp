@@ -14,7 +14,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("the caret folds a category to its header and persists like every other disclosure", () => {
   assert.match(FEED, /const fold = el\("button", "fcol-fold"\);/);
-  assert.match(FEED, /if \(collapsedCols\.has\(key\)\) collapsedCols\.delete\(key\); else collapsedCols\.add\(key\);/);
+  assert.match(FEED, /if \(collapsedCols\.has\(foldKey\(key\)\)\) collapsedCols\.delete\(foldKey\(key\)\); else collapsedCols\.add\(foldKey\(key\)\);/);
   assert.match(FEED, /cols: \[\.\.\.collapsedCols\],\s*\n\s*order: colOrder\.slice\(\)/, "rides the persisted view state (the key stays `order` across the 2026-08-24 merge)");
   // The fold BITES only in the stacked layout (the user 2026-08-18): collapsed while stacked, then
   // widened to three columns, the section stayed hidden with no caret to reopen it. The rule must
@@ -71,7 +71,7 @@ test("the chip drags in BOTH layouts — grab affordance, live provisional movem
   assert.match(FEED, /chip\.addEventListener\("pointercancel", up\);/, "a cancelled drag still settles + persists");
   // a no-op drag leaves no trace: ending on the layout's own default with no pre-existing custom
   // order resets to [] — an explicit order would silently re-arrange the OTHER layout (review 2026-08-24)
-  assert.match(FEED, /if \(!hadCustom && cur\.length === 3 && cur\.join\(\) === fallback\.join\(\)\) slots\.set\(\[\]\);/);
+  assert.match(FEED, /if \(!hadCustom && orderComplete\(cur\) && cur\.join\(\) === fallback\.join\(\)\) slots\.set\(\[\]\);/);   // a complete order names every column of the ACTIVE board once (phase four)
   assert.match(FEED, /set: \(o\) => \{ colOrder = o; applyColStack\(\); \},/, "BOARD_SLOTS writes colOrder and repaints the board");
   // the keyboard card cursor walks the VISUAL order — the effective column `order`, var resolved
   assert.match(FEED, /slot\.set\(e, col \? parseInt\(getComputedStyle\(col\)\.order \|\| "0", 10\) \|\| 0 : 0\);/);

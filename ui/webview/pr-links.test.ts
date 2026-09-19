@@ -864,7 +864,7 @@ test("the chat learns its kernel's own name from every tabOrder frame too, throu
 });
 
 test("the feed links card titles (keyed), distiller lines, held-mail gists (by sender), group cards, checklists and the modal — per the card's session", () => {
-  assert.match(FEED, /import \{ linkifyPrRefs, setLinkedText, senderPrRepo, installPrLinkOpener \} from "\.\/pr-links";/);
+  assert.match(FEED, /import \{ linkifyPrRefs, setLinkedText, installPrLinkOpener \} from "\.\/pr-links";/);   // senderPrRepo left with the held gist 2026-09-19
   assert.match(FEED, /githubRepo\?: string \| null \}\[\] = \[\];/, "the session rows carry the repo");
   assert.match(FEED, /function prRepoOf\(sid: string \| undefined\): string \| null \{\s*\n\s*return \(sid && sessionsMeta\.find\(\(s\) => s\.sid === sid\)\?\.githubRepo\) \|\| null;/);
   // the two in-place titles are KEYED: an unchanged title keeps its anchor nodes across pushes
@@ -872,11 +872,7 @@ test("the feed links card titles (keyed), distiller lines, held-mail gists (by s
   assert.match(FEED, /setLinkedText\(a\._title, g\.title, prRepoOf\(g\.sid\)\);/);
   assert.doesNotMatch(FEED, /a\._title\.textContent = /, "no per-push rewrite of a title");
   assert.match(FEED, /if \(distillShown\) linkifyPrRefs\(a\._distill as HTMLElement, prRepoOf\(it\.sid\)\);/);
-  // the held message's gist links against its SENDER's repo (blocked.frm on blocked.origin), not the recipient card's
-  assert.match(FEED, /linkifyPrRefsIn\(Object\.assign\(el\("div", "fq-gist"\)[^\n]*prRepoOfSender\(it\.blocked\.frm, it\.blocked\.origin\)\)\);/);
-  const sender = FEED.match(/function prRepoOfSender\([\s\S]*?\n\}/)?.[0] || "";
-  assert.match(sender, /const host = !origin \|\| origin === "\?" \? undefined : origin === feedSelfHost \? "" : origin;/);
-  assert.match(sender, /return senderPrRepo\(sessionsMeta, frm \|\| "", host\);/);
+  // (the held message's gist and its sender-repo helper left 2026-09-19: a held message is a notice card, its body markdown)
   assert.match(FEED, /txt\.textContent = m\.text; linkifyPrRefs\(txt, prRepoOf\(m\.sid \|\| g\.sid\)\);/);
   assert.match(FEED, /el\("span", "fcheck-text"\); txt\.textContent = s\.text; linkifyPrRefs\(txt, prRepoOf\(it\.sid\)\);/);
   assert.match(FEED, /el\("span", "ftree-text"\); txt\.textContent = node\.text \|\| "\(node\)"; linkifyPrRefs\(txt, prRepoOf\(it\.sid\)\);/);

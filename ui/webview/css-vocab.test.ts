@@ -132,10 +132,12 @@ test("same-row badges wear the SAME metric set; micro-labels wear the section-he
   // .fcol-chip's comment says it reproduces the chat .chip — now its padding does too
   assert.match(FEED, /\.fcol-chip \{[^}]*padding: 3px 10px;/s);
   assert.match(CHAT, /\.chip \{[^}]*padding: 3px 10px;/s);
-  // section labels: sentence case in the accent colour, 11px/600, never uppercase or letter-spaced (the user 2026-09-18;
-  // the .rs-sec spec, mirrored at the kernel's .rnet-khead); .sn-khead is the same feature in the VS Code strip
+  // section labels: sentence case in the accent colour, 600, never uppercase or letter-spaced (the user 2026-09-18; the .rs-sec
+  // spec, mirrored at the kernel's .rnet-khead); .sn-khead is the same feature in the VS Code strip at 11px. The settings card's
+  // own heads are centred titled dividers a step above their 13px rows since 2026-09-19 (14px, the user's ask), the one place
+  // the size differs: a head over rows, not a label over a list
   assert.match(STRIP, /\.sn-khead \{ color: var\(--accent, #9cd2ff\); font-size: 11px; font-weight: 600;/);
-  assert.match(GEAR, /\.rs-sec \{ font-size: 11px; font-weight: 600; color: var\(--accent, #9cd2ff\);/s);
+  assert.match(GEAR, /\.rs-sec, #rsettings \.rs-widget\.rs-divider \{ display: flex; align-items: center; justify-content: center;[^}]*font-size: 14px; font-weight: 600; color: var\(--accent, #9cd2ff\);/s);
   assert.doesNotMatch(GEAR, /text-transform: uppercase/, "no all-caps rule survives in the settings sheet");
   assert.doesNotMatch(STRIP, /\.sn-khead \{[^}]*(uppercase|letter-spacing)/);
   // no px letter-spacing (an em value scales with its label; 0.4px was the one outlier)

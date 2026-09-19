@@ -249,9 +249,10 @@ test("node esbuild.js, with and without --production: a webview failure after th
     for (const rel of Object.keys(snapshot(dist))) fs.utimesSync(path.join(dist, rel), oldTime, oldTime);
     const before = snapshot(dist);
 
-    // the failure's shape: a webview source imports a package this node_modules does not have. Both ways the
-    // kernel runs the script take the same path: without --production (its in-place rebuild) and with it (its
-    // rebuild at boot, and the release build).
+    // the failure's shape: a webview source imports a package this node_modules does not have. Both profiles take
+    // the same path: the dev-knob build (ROMP_EXT_DEV_BUILD set, or a hand-run `node esbuild.js`) and the production
+    // build (every kernel rebuild, in place and at boot, and install.sh, all with ROMP_EXT_DEV_BUILD unset; and the
+    // release build).
     const render = path.resolve(cwd, "../ui/webview/render.ts");
     const goodRender = fs.readFileSync(render, "utf8");
     fs.appendFileSync(render, `import "${MISSING_PKG}";\n`);

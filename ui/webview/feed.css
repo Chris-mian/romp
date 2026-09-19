@@ -318,6 +318,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the chip drags in BOTH layouts (the user 2026-08-24, reversing the 2026-08-16 stacked-only
    exclusion): grab cursor as the affordance, the section lifted over its siblings while it follows. */
 .feed-col-head .fcol-chip { cursor: grab; touch-action: none; user-select: none; }
+.feed-col-head .fcol-chip.fcol-static { cursor: default; touch-action: auto; }   /* a data board's chip: its definition's order, nothing to drag (phase four) */
 .feed-col.col-dragging { position: relative; z-index: 5; opacity: 0.9; }
 .feed-col.col-dragging .fcol-chip { cursor: grabbing; }
 .feed-col-head {
@@ -1108,29 +1109,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
 .fdismiss.fq-no { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
 .fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
-/* Compact quarantine line (the user 2026-07-26; given its route 2026-07-29): line one is WHO to WHO —
-   host:session -> host:session, hosts as quiet metadata, session names in their identity colours — and
-   line two is the gist. Click opens the decision modal; the full body never renders on the card. */
-.fask-qbody {
-  display: block; width: 100%; box-sizing: border-box; margin: 4px 0 2px;
-  font: inherit; font-size: 12px; line-height: 1.45;
-  color: var(--dim); cursor: pointer;
-}
-.fask-qbody:hover .fq-gist { color: #dfe7ee; }
-.fq-who { white-space: nowrap; }
-.fq-name { font-weight: 600; }               /* the identity colour rides an inline style */
-.fq-arrow { margin: 0 6px; opacity: 0.6; }
-.fq-gist {                                    /* one line, whatever the message length */
-  margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim);
-}
-/* The quarantine decision dialog rides the pickdlg overlay/box; the body is READ-ONLY (.qdlg-view);
-   the textarea appears only on the deny step, for the optional note back to the sender. */
+/* The held-mail Deny prompt (showDenyNoteDialog) rides the pickdlg overlay/box: a textarea for the optional note and two
+   choices; the message text is the notice card's body, so the prompt has no read-only view (2026-09-19). */
 .qdlg-box { width: min(640px, 96%); }
-.qdlg-view {
-  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
-  max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
-  color: #dfe7ee; background: #0c1117; border: 1px solid #35414d; border-radius: 6px; padding: 6px 8px;
-}
 .qdlg-text {
   width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
   min-height: 5em; resize: vertical; margin-top: 8px;
@@ -1454,10 +1435,6 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   box-shadow: var(--shadow-modal);
 }
 .pickdlg-title { font-weight: 700; color: var(--vscode-foreground, #ccc); margin-bottom: 4px; }
-/* the quarantine dialog's title IS the card's route line, so opening a held message never re-words who
-   it is between: "New message" then host:session -> host:session, same colours (the user 2026-07-29) */
-.qdlg-lead { margin-right: 8px; }
-.pickdlg-title .fq-name { font-weight: 700; }
 /* the err dialog's body sentence — the resume-picker dialog is all buttons, so its box carried no prose style */
 .pickdlg-detail { color: var(--vscode-descriptionForeground, #999); margin-bottom: 10px; line-height: 1.45; }
 .pickdlg-opt {

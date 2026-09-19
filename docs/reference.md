@@ -126,11 +126,11 @@ yields nothing rather than an error.
 
 ### Notice cards: a feed card without a judge
 
-`romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [--body-file <path>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, or the shorthand `romp card "title" "text"`, posts a **notice card** to the feed: a card the kernel makes from what you hand it, with no judge involved (design: plans/notice-cards.md). With no session named the card is **owner-less** and shows at the **top** of the feed under the name Notes, above every session's cards (outside a session that is the default; inside one `ROMP_SID` owns the card unless you pass `--no-session`); `-s <name>` gives it to a session. `-k` names the card: a second post under the same key is a **revision** (it replaces the earlier card on the board, and shows again even if you had dismissed the earlier one, since it carries new information, and its number counts the archived posts of the key too, so a dismissed card's id is never minted again); with no `-k` the command mints a key and prints it, so a later `romp card -k <key> ...` revises the card. The body is markdown, rendered through the chat's sanitizer; `--attach` names a file the card shows inline when it is an image (the kernel judges it as the hover preview does: your home or the session's folder, no secrets-shaped names, the size caps, and keeps a pinned copy of an image as posted; an owner-less card's attachment is judged against your home alone). A card leaves the board on your dismissal (Clear; Undo restores it, copying its rows back out of the archive when the retention pass has already moved them), on a revision, or at `--expires` seconds from the post. `--needs-you` files it under Needs you. The kernel keeps every post in `notices/<session>.jsonl` under the state directory (`notices/notes.jsonl` for owner-less cards) and archives dismissed, expired and superseded rows to `notices-archive/`; a home shows at most fifty live keys at once, the oldest superseded past that. The same door is `POST /notice` on the kernel (the `/watch` shape: `{"id"|"name", "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "producer"?}`; with neither `id` nor `name` the card is owner-less; `{"id"|"name", "expire": "<key>"}` retires a card early), and producers inside romp call the kernel's `post_notice` in process. An owner-less card carries no actions.
+`romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>] [--body-file <path>] [--attach <path>] [--needs-you] [--expires <seconds>] [--producer <label>]`, or the shorthand `romp card "title" "text"`, posts a **notice card** to the feed: a card the kernel makes from what you hand it, with no judge involved (design: plans/notice-cards.md). With no session named the card is **owner-less** and shows at the **top** of the feed under the name Notes, above every session's cards (outside a session that is the default; inside one `ROMP_SID` owns the card unless you pass `--no-session`); `-s <name>` gives it to a session. `-k` names the card: a second post under the same key is a **revision** (it replaces the earlier card on the board, and shows again even if you had dismissed the earlier one, since it carries new information, and its number counts the archived posts of the key too, so a dismissed card's id is never minted again); with no `-k` the command mints a key and prints it, so a later `romp card -k <key> ...` revises the card. The body is markdown, rendered through the chat's sanitizer; `--attach` names a file the card shows inline when it is an image (the kernel judges it as the hover preview does: your home or the session's folder, no secrets-shaped names, the size caps, and keeps a pinned copy of an image as posted; an owner-less card's attachment is judged against your home alone). A card leaves the board on your dismissal (Clear; Undo restores it, copying its rows back out of the archive when the retention pass has already moved them), on a revision, or at `--expires` seconds from the post. `--needs-you` files it under Needs you. The kernel keeps every post in `notices/<session>.jsonl` under the state directory (`notices/notes.jsonl` for owner-less cards) and archives dismissed, expired and superseded rows to `notices-archive/`; a home shows at most fifty live keys at once, the oldest superseded past that. The same door is `POST /notice` on the kernel (the `/watch` shape: `{"id"|"name", "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "producer"?}`; with neither `id` nor `name` the card is owner-less; `{"id"|"name", "expire": "<key>"}` retires a card early), and producers inside romp call the kernel's `post_notice` in process. An owner-less card carries no actions. `-b <board>` files the card on a board of yours (`plans/card-boards.md`): an unknown board is created on first use with the category `-c` names (or `notes`), a category unknown to your board is added to it, and the posted line names the board and says when the post created it, so a typo in `-b` is a new board you can see at once (`romp board list` names it, `romp board remove` takes it away while no card stands on it). `-c` alone names a feed category (`working`, `needs_input`, `completed`). `--needs-you` on a board is that board's needs-you category, and is refused when its definition names none.
 
 ### Card boards: your own categories
 
-`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log.
+`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log. The feed pane shows one board at a time: the View menu gains a **Board** row per board the kernel carries (the feed first) once a second board exists, the pick survives a reload, and a board created by `romp card -b` is a row on the next frame; a data board's cards sit under its own categories, sorted by its definition, with no session grouping unless the definition asks for it. A feed page opened with `?board=<id>` shows that board with the Board rows hidden, the hook a pane per board mounts on. A pick naming a board the frame no longer carries shows the feed and says so on the View button.
 
 ### Moving a session to another folder
 
@@ -328,7 +328,14 @@ following to every connected machine's kernel):
   happens again is logged once per attempt; its card follows the board's usual
   rule, nothing new while the swap's card stands, a fresh one once you cleared it. When a turn is served on the picked tier, a second
   Completed card says the session is back (`Model back on …`) and the retry ends.
-  A pick of your own ends it too, as does turning the switch off.
+  A pick of your own ends it too, as does turning the switch off. While a
+  fallback stands, the session's model picker, in the chat statusline and in the
+  timeline's lane picker alike, marks the requested model with a yellow tick
+  beside the blue tick on the model that answers; its tooltip says why
+  (the safety classifiers and their category, once the CLI has named them, which it
+  does within seconds of the swap; a fallback that predates the kernel is read off
+  the transcript when the kernel attaches) and whether romp is
+  retrying, with the cadence and the next attempt, or where to turn retries on.
 
 ### Per-session billing (login vs API key)
 
@@ -480,8 +487,14 @@ The usage rail reflects a mixed machine: the window bars (5 hours / 7 days /
 Fable 5) are drawn once, aggregated across every connected host's login as the
 worst reading per window, and an `API` cell beside them carries the
 key-billed dollars (5-hour burn and month-to-date, numbers only). Hovering
-breaks both down per host, one column per host, side by side, and a host
-can show its login's windows and its key's spend together. A click on the
+breaks the windows down by ACCOUNT: one block per distinct login (the account
+line as its head, the meters written once, since they are the account's
+allowance), beneath them one line naming the machines logged into it in the
+tab strip's quiet host dress, a machine whose own reading lagged the freshest
+named as lagging beside its name, and one updated-ago line per block (the
+oldest report of the group); two accounts are two blocks side by side; a
+machine attached but not yet reporting is named after the blocks rather than
+given a column; the key spend stays one section for every machine. A click on the
 readout opens the spend detail: a chart of spend over time stacked by session,
 and under it the list of sessions with their dollars, turns and tokens. The
 list follows the chart's range (one day by hour, seven days by hour, ninety
@@ -1630,6 +1643,32 @@ reads), which with the stream buffer empty at the check is a record the CLI
 is mid-write on at that instant, outside any turn: lost to the journal only,
 never to the CLI.
 
+The parked-op drain says so when a stale count holds a queue. The drain
+delivers a session's parked input once the session is quiet, and its working
+gate reads the backend's open-turn count, which under a host is the count the
+host handed over at the attach. A stale count (the shape of the stuck-Working
+defect: a host counted a message folded into a running turn as its own turn,
+and every kernel adopted the count for days) holds the queue with the count
+alone: a turn counted open and nothing queued to start. That is the one
+source the belt reads, never the composite busy signal, which also holds for
+a queued turn about to run and for a feeder waiting with the count at zero
+(a parked deploy restart, an armed reconnect after a settings switch, a
+pending rewind), holds that are correct. The drain records the hold on its
+own thread; the jobs thread reads the session's transcript once per pass, and
+when the count says open while the transcript, at rest, shows its last turn
+closed, files a `pending-ops.held-working` problem row once per hold: the
+ledger, the kernel log and the error center's ring, naming the session and
+how many items wait, with the remedy (ending and reviving the session
+replaces the count; a kernel restart does not, since the attach adopts the
+count). The transcript is read only at rest, once per version of the file,
+through the kernel's shared parse, and never on the pusher's thread; a
+transcript that is absent, that parses to no turns or that keeps changing (a
+turn streaming) is no verdict, and a later version that shows a turn open
+files a `pending-ops.held-working-retracted` row. The belt never delivers:
+the queue stays held until the count clears or the session is replaced, and
+cancelling the queued chip clears the belt's state, so the next hold on that
+session says again.
+
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
 exception type and the failing frame (file, line and function, first on the line
@@ -2018,7 +2057,27 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (cycles that set no wake, sent no payload and saved no goal store: what a
   longer wait between cycles would have skipped; a conservative undercount,
   since a wake set by another thread or a periodic repost of an unchanged
-  frame marks a cycle busy).
+  frame marks a cycle busy), and `chatFullWhy` (every whole session frame the
+  uuid-anchored chat wire sent, counted once the frame has left, so a frame the
+  per-client dedup swallowed is no more one here than under `sends`; by the
+  reason the sender had for it: `noBase`
+  for a first send, a reset, or the repost of a session whose built list is
+  empty and the first content frame after it (an empty list records no base,
+  so a just-created session is re-sent whole once per client per repost
+  window until it has content; the reconnect-only reads of the held set are
+  unaffected, since a client whose redial is unresolved holds no base for any
+  session); `baseGone` for a fork or a rewind;
+  `lastGone:<family>` for a held last edge the next list no longer carried;
+  `changeAt0` for a change at the list's first event against a held base, a
+  genuine first-event change or a no-baseline send, by whichever sender
+  (`sends.full.chat.targeted` below tells the senders apart);
+  `changeBelowFirst` for a change at or before the held first edge;
+  `inverted` for a base whose last edge sits before its first; `empty` for a
+  list with no events sent to a client holding a base; and `other` for a
+  shape none of these names, also the label the rest fold under once the map
+  holds as many labels as the sends map; a caught-up client is owed
+  deltas, so `lastGone` is the recurrence meter for a base anchored on a key
+  that vanished, an input echo's or the command chip's).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
   split and the newest cycles' splits, each `{s, t, stages, gc}` (`gc` is the
   cycle's own collections, described under `gc` above) with, per stage,
@@ -2239,7 +2298,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   of the wrong shape, or no reader entry after the walk).
 - `stacks`: every live thread's stack, keyed `"<ident> <kind>"`. The kind
   is the thread's name up to the naming convention's colon (`sdk` and
-  `sdk-intr` for a session's threads, `codex` for a Codex session's worker,
+  `sdk-intr`, `sdk-fbcause` (a session reading a standing fallback's cause off its transcript at an attach) for a session's threads, `codex` for a Codex session's worker,
   `end-host` for a session's end hook, `port-up` for a dial's port watch, `peer` for a postal peer loop,
   `romp-refused-mark` for the refused-echo mark a cut-off boot re-delivery writes aside), the
   target function for a thread the code left unnamed (`_ask_poll`,
@@ -2469,7 +2528,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rebuilt one would.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
-  was built and compared, then not sent.
+  was built and compared, then not sent. Every frame the targeted one-session
+  push sent, its tab strip and the cold-tab gate's status included, is counted
+  under its slot with a `.targeted` suffix (`chat.targeted`,
+  `status.targeted`, `taborder.targeted`), so a full from that road reads
+  apart from the pusher's cycle. The suffix is the road's, whatever the stage
+  mark: the two backend hand-offs (the SDK connect handshake, the Codex
+  backend's stream events) run under the `push.session` stage above as their
+  thread's default mark, while a create, a fork or a promote calls the push
+  from a request handler and runs under that request's
+  `http.<METHOD>.<route>` mark.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
   loader (`load_goals`) and `save_goals`; the pusher's read-only loads go
   through the shared store cache and show under `memos.shared`, not here. A
@@ -2979,7 +3047,11 @@ announces `chatProto2` in its `caps`:
   no row on screen re-windows once around the named point;
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
-  reader in older history; a reconnect's `ready` starts a fresh base. A run whose
+  reader in older history; a reconnect's `ready` starts a fresh base. The base's
+  `last` skips the live overlay cards and the kernel's transient keys (an input
+  echo, the command chip), which ride the suffix of the deltas after them like
+  the overlays: the landing that replaces an echo with its record is a delta
+  after the record before it, never a full frame. A run whose
   edges left the transcript (a `/clear`, a fork, a rewind) gets a full frame; a
   `missing` reply on a held key is a gap the page answers with `needFull`. A
   reply that reaches the head carries the head cards first.
@@ -3301,6 +3373,14 @@ frames it received is measured in the panes themselves, by
   cannot be written is said on stderr once, since the reading rule holds only while
   writes succeed. A planned per-app split of the connect push (perf work) will read
   the same `kind`.
+- The kernel files one `chatFull` row (surface `kernel`) per whole session frame
+  the uuid-anchored chat wire sends to a client that already holds a base for the
+  session, filed once the frame has left (a frame the per-client dedup swallowed
+  files nothing): such a client is owed deltas, and the page treats a full for a
+  held session as a reconnect repair. The row carries the client's `cid` and `kind`, the
+  session, the `reason` (the `chatFullWhy` label under `/perf`), the change index,
+  the list's length, and which base edges the list still held; a first send files
+  nothing.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about
@@ -4271,8 +4351,35 @@ gesture-stamped setting uses, and an applied flip is echoed to the socket that m
 when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is
 told on the same socket instead (a `settingStale` frame naming the fault and the kept value), so the gear snaps back to
 the kernel's value and the rail and the panes stay as they were. It is one value across attached machines: the click
-reaches every attached kernel, and a kernel attached later adopts the newest stamp, the road Auto Nudge, Suggest
-/compact and file editing take.
+reaches every attached kernel; a kernel attached later, or polling one, used to adopt the newest stamp, the road Auto
+Nudge, Suggest /compact and file editing took. Since phase one A of plans/settings-across-machines.md (2026-09-18) a remote
+machine's newer value is a PROPOSAL, never a silent apply: the polling kernel (and a kernel a hub pushes to over
+`/mesh-settings`) writes a record per proposing MACHINE under `settings-proposals.json` (the value, the peer's stamp, the
+local value at the time; a peer is named by the key its row carries, the alias it was attached under; a poll with the
+token learns the peer's own name from its `/version` and writes it on the row, saved with it, so a push naming itself
+resolves to the row's key, a record a push filed under the self-name before the first poll moves onto the row's key, and a
+detached row takes its records and kept stamps with it) and applies nothing; the same value under a newer stamp lifts the local stamp only; a pinned store raises
+none; the record drops when the values come to equal or the peer's stamp is no longer newer. The user answers through
+`POST /setting-proposal` (`{"store", "host", "gt", "answer": "apply" | "keep" | "pin"}`, this kernel's own record from that
+machine only, the stamp checked: a stamp the machine has since moved past is refused, that machine changed its mind and
+the line is refreshed): Apply runs the store's own gt-gated setter under the peer's stamp (a click on this machine that
+already outranks the record is refused and drops it), Keep drops that machine's record and remembers the stamp as answered
+so it is not proposed again, Pin sets the machine's pin and drops every record for the store. The pin (`settings-pins.json`, set
+from this dashboard's own kernel by `setSettingPin`, never broadcast) keeps this machine's value against every remote input:
+a proposal is never raised for a pinned store, and a gear click that reaches this kernel from a dashboard attached to
+another machine (the broadcast carries `origin`, `local` or `remote`; a message without it is read as remote) stands down
+with a `settingStale` frame carrying `pinned` and the kept value (the gear's toast: kept, that machine's value is pinned),
+while this machine's own dashboard's click applies as ever; the pin itself (`setSettingPin`) is taken from the local origin
+alone, and a stale pin gesture is said in the log with no frame. `/version` carries `settingsPinned` (the pinned stores) to
+every caller and, to a caller with the token (the gear, a polling peer), `settingsProposals` (the pending records, a list
+per store, the local value live) and `host` (this machine's name), all additive; the gear draws the pending proposal under the affected row (which machine, from what to what) with Apply and Keep
+mine, and a pinned store's note; and every proposal is a needs-you NOTICE CARD on the owner-less Notes run (phase one B: the
+producer `settings`, the key `proposal.<store>.<machine>`, one card per proposing machine, a new revision when the stamp
+moves, expired when the record drops for any reason) with Apply, Keep mine and Keep mine and pin this machine as actions of
+the `setting-proposal` kind, which the kernel alone posts and which hands the stored body to `/setting-proposal`'s own checks;
+answering on the card or in the gear clears both. A peer that reports a store pinned is not pushed our value for it. A MIXED
+mesh: an older kernel without this change still adopts the value a one-A kernel pushes to it and still applies our poll's
+value on its side, so the two converge one way (toward the newer kernel's proposals being answered) until it updates.
 
 **Across attached machines** the browser merges every host's feed frame into one. A host whose frame is the off stand-in
 is named in the merged frame (`offHosts`, beside the per-host build counters), a host that is attached but has not yet

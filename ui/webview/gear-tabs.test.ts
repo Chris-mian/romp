@@ -125,7 +125,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   // the old Context gauge row is gone: its WHEN is the Context bar widget's option in the Tab widgets section
   assert.doesNotMatch(GEAR, /id=rs-tabctx\b/);
   assert.doesNotMatch(GEAR, /Context gauge in tabs/);
-  // section sub-heads: the first of each pane wears rs-sec-first (no rule above it), and every pane has one
+  // section sub-heads: the first of each pane wears rs-sec-first (a tighter top margin; since 2026-09-19 it wears the titled rule like the rest), and every pane has one
   for (const t of TABS) assert.match(ps[t], /<div class='rs-sec rs-sec-first'>/, t + " opens with a first section head");
 });
 

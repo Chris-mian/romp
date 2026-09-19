@@ -54,7 +54,7 @@ test("a live menu syncs IN PLACE — rows are never rebuilt under a pressed poin
   // paintViewMenu runs on an OPEN menu (settings change from another pane, the width crossing 540px);
   // rebuilding rows there would drop a click landing between mousedown and mouseup (click-safety)
   const paint = FEED.slice(FEED.indexOf("function paintViewMenu"), FEED.indexOf("function openViewMenu"));
-  assert.ok(paint.includes('const rows = menu.querySelectorAll(".ctx-item");'), "sync finds the existing rows");
+  assert.ok(paint.includes('const rows = Array.from(menu.querySelectorAll(".ctx-item")).filter((r) => !r.classList.contains("ctx-board"));'), "sync finds the existing four view rows (the Board radios below them paint at build; a pick closes the menu)");
   assert.ok(!paint.includes("replaceChildren") && !paint.includes("appendChild"),
     "paint never rebuilds — buildViewMenu appends once per open");
   assert.match(FEED, /act\(\);\s*\n\s*closeViewMenu\(\);/, "handlers attach once in buildViewMenu");

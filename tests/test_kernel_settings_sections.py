@@ -51,7 +51,7 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
         where = {
-            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-panedock", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
             "chat": ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-swidgets"],
             "feed": ["rs-feedcollapsed"],
             "sessions": ["rs-defaultdir", "rs-backend"],
@@ -68,7 +68,7 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("+ SHORTCUT_ROWS +", panes["general"])
         # Panes (the user 2026-09-10): three rows, one hint each, Sessions before Outline before Feed; the chat is required, Files keeps its rail toggle
         pn = panes["general"]   # the Panes section moved to General (T400)
-        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 4)   # Sessions, Outline, Feed, and the Files row since the T404 tidy
+        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 5)   # Sessions, Outline, Feed, the Files row since the T404 tidy, and the Pane docking switch (plans/pane-docking.md phase two: a Panes row, so the off-dashboard hide takes it)
         self.assertLess(pn.index("<b>Sessions</b>"), pn.index("<b>Outline</b>"))
         self.assertLess(pn.index("<b>Outline</b>"), pn.index("<b>Feed</b>"))
         self.assertNotIn("id=rs-pane-chat", h, "the chat is required")
@@ -85,7 +85,7 @@ class SettingsSectionsTest(unittest.TestCase):
         # button before the version (T290)
         ge = panes["general"]
         self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index("id=rs-pane-feed") < ge.index("id=rs-filesctl")
-                        < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
+                        < ge.index("id=rs-panedock") < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
                         < ge.index(">This machine<") < ge.index("id=rs-conserve") < ge.index("id=rs-updates") < ge.index(">Keyboard shortcuts<"))
         self.assertIn("<b>Allow file editing</b>", ge)
         self.assertIn("<b>Updates install automatically <span class=rs-mixed hidden></span></b>", ge)
@@ -218,8 +218,9 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("#rsettings .rs-row[hidden], #rsettings .rs-sec[hidden] { display: none; }", _gear_css_src())
 
     def test_section_header_styling_exists(self):
-        self.assertIn("#rsettings .rs-sec {", _gear_css_src())
-        self.assertIn("#rsettings .rs-sec-first { border-top: 0;", _gear_css_src())
+        self.assertIn("#rsettings .rs-sec, #rsettings .rs-widget.rs-divider { display: flex; align-items: center; justify-content: center;", _gear_css_src(),
+                      "the heads are centred titled dividers (the user 2026-09-19)")
+        self.assertIn("#rsettings .rs-sec-first { margin-top: 7px; }", _gear_css_src(), "the first head of a pane keeps only its tighter top margin: it wears the rule too")
 
     def test_oldest_first_toggle_is_gone(self):
         # the feed is always oldest-at-top now → no checkbox, no wiring (the user 2026-06-27)

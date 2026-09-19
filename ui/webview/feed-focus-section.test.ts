@@ -28,7 +28,7 @@ test("the fourth row reads 'Show focused session', a ✓ row after Group by sess
 test("the switch is the feed's own view state under `focused`: OFF unless a blob saved it on", () => {
   assert.match(FEED, /let showFocused = false;/);
   assert.match(FEED, /showFocused = st\.focused;/, "hydrated with the rest of the view state");
-  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused,\s*\n\s*focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded \};/,
+  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused,\s*\n\s*focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded, board: activeBoardId \};/,
     "currentViewState carries it (and the section's own block layout and fold, T410), so persistViewState writes it");
 });
 
@@ -84,11 +84,11 @@ test("#feed-focus sits directly before #feed-cols: head, empty line, the three c
     "the caret folds the section's block under its own state, persisted");
   // in render(): the pick is taken before grouping (a folded thread below must not empty the section), the
   // section is painted before the board's reconcile, and the board's own reconcile is what it always was
-  const pickAt = FEED.indexOf("const focusBuckets = showFocused ? focusedEntries(buckets, focusedSid, entrySid) : null;");
-  const groupAt = FEED.indexOf("if (feedPrefs().grouped) {", pickAt);
+  const pickAt = FEED.indexOf("const focusBuckets = showFocused && board === FEED_BOARD ? focusedEntries(buckets, focusedSid, entrySid) : null;");
+  const groupAt = FEED.indexOf("if (feedPrefs().grouped && board.groupBy === \"session\") {", pickAt);
   const callAt = FEED.indexOf("if (focusBuckets) renderFocusSection(list, focusBuckets, gate); else removeFocusSection();");
   const flipAt = FEED.indexOf("const flipFirst = needFlip ? captureCardRects(cols) : new Map<string, FlipState>();");
-  const boardAt = FEED.indexOf("reconcileCol(cols.asks, buckets.asks, desired, gate);");
+  const boardAt = FEED.indexOf("for (const k of activeCols()) reconcileCol(cols.lists[k], buckets[k], desired, gate);");
   assert.ok(pickAt > 0 && groupAt > pickAt && callAt > groupAt && flipAt > callAt && boardAt > flipAt,
     "pick → grouping → section → the board's FLIP capture → the board's reconcile");
   // the section sits ABOVE the board, so it must have settled before the board's First rects are read: a capture
@@ -267,7 +267,7 @@ test("the gutter's floor is 0.35 of a share, the pair's sum preserved", () => {
 test("the chip's arrow keys move the block one slot within the section, from the order on screen", () => {
   const fn = FEED.slice(FEED.indexOf("function wireBlockKeys("), FEED.indexOf("// Drag a section by its CATEGORY CHIP"));
   assert.match(fn, /const delta = e\.key === "ArrowLeft" \|\| e\.key === "ArrowUp" \? -1 : e\.key === "ArrowRight" \|\| e\.key === "ArrowDown" \? 1 : 0;/);
-  assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = cur\.length === 3;\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows — as the drag seeds itself");
+  assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = orderComplete\(cur\);\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows, as the drag seeds itself");
   assert.match(fn, /e\.stopPropagation\(\);/, "the chip's key is the chip's alone: the card cursor's arrow keys must not also fire");
   // the no-trace rule per PROVENANCE (review round two): a key sequence out of a following state can be walked back to
   // nothing stored; an order pinned by drag is never cleared by a key press that lands on the fallback

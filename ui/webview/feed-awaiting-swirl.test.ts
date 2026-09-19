@@ -16,14 +16,14 @@ test("the swirl element is built in the body, right after the distiller line, an
   assert.match(FEED, /const awaitSpin = el\("div", "fask-awaiting"\); awaitSpin\.style\.display = "none";/);
   assert.match(FEED, /const awaitGlyph = el\("span", "fask-awaiting-swirl"\)/);
   // distill now rides inside the takeaway section (takeSec), with the background section above it (2026-07-02)
-  // the notice card's body, attachment and actions (T370) sit between the quarantine body and the swirl
-  assert.match(FEED, /main\.append\(row1, row2, row3, secs, qbody, nbody, nattach, nactions, awaitSpin, checklist, delegations\)/);
+  // the notice card's body, attachment and actions (T370) sit between the sections and the swirl (the quarantine body left 2026-09-19)
+  assert.match(FEED, /main\.append\(row1, row2, row3, secs, nbody, nattach, nactions, awaitSpin, checklist, delegations\)/);
   assert.match(FEED, /a\._awaitSpin = awaitSpin; a\._awaitWhy = awaitWhy;/);
 });
 
 test("the swirl is driven by spinFor's caption — shown when there is one, else hidden", () => {
   assert.match(FEED, /import \{ spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow \} from "\.\/spin-caption";/);   // the rows' vocabulary too (slice 2)
-  assert.match(FEED, /const spin = spinFor\(it, distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
+  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \} from "\.\/distiller-line";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);

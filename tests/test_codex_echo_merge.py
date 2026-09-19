@@ -106,6 +106,10 @@ class CodexEchoMerge(unittest.TestCase):
 
     def test_an_echo_alone_paints_once_and_never_forces_the_turn_open(self):
         self.assertTrue(self.be.send(self.sid, "and the tests"))
+        # the key send minted is one of the kernel's transient live-tail keys (2026-09-19): the proto-2 base skips it, so the
+        # record that lands the text rides a delta. Executed on the built atom, beside the source pin on the mint line in
+        # tests/test_send_pending_overlay_kinds.py, which a key rewritten behind an intact line left green
+        self.assertTrue(km._transient_key(km._event_key(self.be.live_atoms(self.sid)[0])), "the Codex echo wears a transient key")
         merged = km._merge_live_atoms(self._session(), self.sid)
         echoes = [a for a in merged["turns"][-1]["atoms"] if a.get("_echo_text")]
         self.assertEqual([a["_echo_text"] for a in echoes], ["and the tests"], "the pending send is visible, once")

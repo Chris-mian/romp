@@ -142,7 +142,10 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     let pendingAnchor = null, pendingAnchorIntent = null, pendingAnchorT = null, pendingAnchorKind = null, pendingAnchorKeepY = null, flashedAnchor = null;
     let anchorPendingOlder = false;
     let seek = null;
+    let landingNoticeSid = null;   // the one notice's sid (T386 stage 2): chatHead brings the older wire's wait down by it (2026-09-19); never set in this world
+    const liveWindowAsk = () => null;   // the notice's owner check beside every hide (the review of 2026-09-19, round two): no window ask's record in this world
     const loadingOlder = new Set(), pendingOlderAnchor = new Map(), pendingOlderKeepY = new Map(), windowAsks = new Map();   // windowAsks: the per-ask records revealProgressTick reads (round eight)
+    const pendingOlderMark = new Map();   // the older wire's click marks (2026-09-19): written by waitOnOlderWire (not in this world), read by chatHead's re-arm
     const H = HOOKS;
     const vscodeApi = { postMessage: (m) => H.posts.push(m) };
     let loadingPillEl = null;

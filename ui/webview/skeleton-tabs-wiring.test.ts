@@ -202,10 +202,10 @@ test("requestFullSession(id, why): every ask names its why, from the fixed vocab
   assert.match(RENDER, /type NeedFullWhy = "gap" \| "nobase" \| "skeleton-click" \| "prefetch" \| "skeleton-delta";/);   // reattach retired with the detached client (T386 stage 2)
   assert.match(RENDER, /function requestFullSession\(id: string, why: NeedFullWhy\): void \{\s*\n\s*if \(!id\) return;\s*\n\s*if \(awaitingFull\.has\(id\)\) \{[\s\S]*?\n\s*return;\s*\n\s*\}\s*\n\s*awaitingFull\.add\(id\);\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "needFull", id, why \}\);/);   // the latched branch's row is pinned in needfull-latch-hygiene.test.ts (2026-09-19)
   const calls = [...RENDER.matchAll(/requestFullSession\(([^()]*?)\)/g)].map((m) => m[1]).filter((a) => !a.startsWith("id: string"));
-  assert.ok(calls.length >= 9, "the gap ×3, no-base ×2 (chatTail and update; statusOnly holds a status for its strip instead, 2026-09-11), skeleton-delta ×2, skeleton-click and prefetch sites (the reattach site and a missing chatMore's gap retired with the detached client, T386 stage 2)");
+  assert.ok(calls.length >= 9, "the gap ×6 (three plus the round-two guards), no-base ×2 (chatTail and update; statusOnly holds a status for its strip instead, 2026-09-11), skeleton-delta ×2, skeleton-click and prefetch sites (the reattach site and a missing chatMore's gap retired with the detached client, T386 stage 2)");
   for (const c of calls) assert.match(c, /, "(gap|nobase|skeleton-click|prefetch|skeleton-delta)"$/, `call site without a why: requestFullSession(${c})`);
   const why = (w: string) => RENDER.split(`, "${w}")`).length - 1;
-  assert.equal(why("gap"), 3); assert.equal(why("nobase"), 2); assert.equal(why("skeleton-delta"), 2); assert.equal(why("reattach"), 0);   // no detached client, no re-attach (T386 stage 2)   // gap ×3: the index tail's, the uuid tail's and a missing chatHead's (an anchor gone from the transcript; chatMore is retired); nobase ×2: chatTail and update (statusOnly holds a status for its strip instead)
+  assert.equal(why("gap"), 6); assert.equal(why("nobase"), 2); assert.equal(why("skeleton-delta"), 2); assert.equal(why("reattach"), 0);   // no detached client, no re-attach (T386 stage 2)   // gap ×6: the index tail's, the uuid tail's, a missing chatHead's, plus (round two) upsert's full-frame-desync refusal, the numeric-from history-truncation refusal, and regionsAbsorbTail's short-store re-base (an anchor gone from the transcript; chatMore is retired); nobase ×2: chatTail and update (statusOnly holds a status for its strip instead)
   assert.equal(why("skeleton-click"), 1); assert.equal(why("prefetch"), 1);
 });
 
@@ -221,7 +221,7 @@ test("every ACTIVE-tab display path reads through liveSession; only name reads a
   for (const r of raw) assert.match(r, /\?\.name|showForkPrompt\(activeId/);
   const live = RENDER.split("liveSession(activeId)").length - 1;
   assert.ok(live >= 17, `the sweep covers the display paths (${live} sites)`);
-  for (const f of ["updateStatusline", "renderBgTasks", "renderSubHead", "paintScrollMarks", "updateCommentRail", "landNearestMoment", "virtualizeToViewport", "updateJumpBtn", "updateReplyChips"]) {
+  for (const f of ["updateStatusline", "renderBgTasks", "renderNotices", "renderSubHead", "paintScrollMarks", "updateCommentRail", "landNearestMoment", "virtualizeToViewport", "updateJumpBtn", "updateReplyChips"]) {
     assert.match(fn(f), /liveSession\(activeId\)/, f + " reads the gated session");
   }
   assert.match(fn("renderLiveAsk"), /if \(!activeId \|\| skeletonTabs\.ids\.has\(activeId\) \|\| !liveAsks\.has\(activeId\) \|\| snapView\) \{/,
@@ -329,7 +329,7 @@ function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript
   const prelude = `
     const { sessions, views, tabMeta, skeletonTabs, commentThreads, jumpBtn, replyChips, atBottomDist, isReplyReady, hostOf, isProvisionalId, el, rompLoaderInner, HOOKS } = W;
     let activeId = null, skeletonLoading = null, replyChipSig = "";
-    const placeReviveLoader = () => {}, notifyActive = () => {}, renderLedger = () => {}, renderLiveAsk = () => {}, renderBgTasks = () => {}, renderSubHead = () => {}, updateStatusline = () => {};
+    const placeReviveLoader = () => {}, notifyActive = () => {}, renderLedger = () => {}, renderLiveAsk = () => {}, renderBgTasks = () => {}, renderNotices = () => {}, renderSubHead = () => {}, updateStatusline = () => {};
     // the unfocused body's painter and the box's name overlay (T357): inert here, the strip test is about the chips
     const paintEmptyState = () => {}, syncComposerPh = () => {}, order = [];
     // the section-at-a-glance view, inert: no section shows (snapView null), so showActive's branch is not taken

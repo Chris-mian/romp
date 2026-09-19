@@ -9,10 +9,13 @@ the chat as never-delivered) and ONE notice card per session per restart (droppe
 backend's post_notice door, plans/notice-cards.md) offers each dropped message back with a Send again button;
 nothing is injected into the session (the user 2026-09-15, who rejected the notice the card replaced). A send
 the prompt gate REFUSED is flagged dropped + refused at the refusal, so it is never re-fed; both flags ride
-the registry mirror across restarts. The queue proper (sends never fed) is not under the line. SYNTHETIC."""
+the registry mirror across restarts. The queue proper (sends never fed) is not under the line. On the BOOT road the
+card is posted once the kernel has wired the notice door (TheBootRoad): the constructor's reseed parks it, the
+kernel posts it. SYNTHETIC."""
 import inspect
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -29,6 +32,7 @@ sb = load_source("romp_sdk_backend_stale0", os.path.join(BIN, "romp-event-model"
 sb = load_source("romp_sdk_backend_stale", os.path.join(HERE, "..", "kernel", "sdk_backend.py"))
 
 SID = "11111111-2222-3333-4444-666666666666"
+SID2 = "11111111-2222-3333-4444-666666666667"    # a second session on the boot road (TheBootRoad's two-card case)
 NOW = FRESH_T = STALE_T = 0              # set per test by Fixture.setUp (_reset_clock), never at import
 
 
@@ -470,6 +474,155 @@ class TheMirror(Fixture):
         by = {x["_echo_text"]: x for x in stashed}
         self.assertTrue(by["three day old words"].get("dropped") and by["three day old words"].get("stale"))
         self.assertTrue(by["a prompt the gate refused"].get("dropped") and by["a prompt the gate refused"].get("refused"))
+
+
+class TheBootRoad(unittest.TestCase):
+    """The card on the BOOT road, over a REAL backend wired the kernel's way. The kernel wires the notice door on the
+    backend's class AFTER the constructor returns, and the constructor's echo reseed runs the age line synchronously: a
+    held human send older than the line at the restart was flagged dropped and stale (the flags on the mirror) with NO
+    card, the flags kept it out of every later boot's selection, and the card promised for the first restart after the
+    line was never posted. The reseed PARKS the card (the flag writes, the queue re-add and the mirror write stay
+    synchronous, as before) and the kernel posts it once the door is wired, through post_boot_notices, on a thread of its
+    own: the kernel calls it while it still holds its construction lock, which the door's session check re-enters
+    (Sessions.live() through _sdk()), so the thread waits the lock out where a synchronous post would deadlock the boot.
+    The door here is the kernel's own class-level assignment, captured; the backend is the real class over its own state
+    root, which wears the hosts floor (a root with no session-hosts file is on, and a hosted connect starts a real host).
+    The constructor is built with reconcile off, its default: no thread starts, no session connects. Two of the claims
+    are read at the moment they are about: the flags are on the mirror when the constructor RETURNS, before any door is
+    wired (a mirror write parked with the post would pass a read after the join), and a parked post that raises is one
+    problem row with the next parked post still run (a drainer without its guard dies at the first raise)."""
+
+    def setUp(self):
+        _reset_clock()
+        self.td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.td, ignore_errors=True)
+        open(os.path.join(self.td, "session-hosts"), "w").write("off")     # the hosts floor: a real backend over its own root
+        before = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.td, "claude")   # hermetic: no read of a real account file
+        self.addCleanup(lambda: os.environ.pop("CLAUDE_CONFIG_DIR", None) if before is None
+                        else os.environ.__setitem__("CLAUDE_CONFIG_DIR", before))
+        self.posted, self.logs = [], []
+        self.assertNotIn("on_notice", vars(sb.SdkBackend), "precondition: no door on the class before the kernel wires one")
+
+    def tearDown(self):
+        if "on_notice" in vars(sb.SdkBackend):
+            del sb.SdkBackend.on_notice                     # the class is shared with every other test in this module
+
+    def _stale_reg(self, sid=SID):
+        sb.write_reg(self.td, sid, {"sid": sid, "alive": True, "cwd": self.td, "lastSid": sid, "queue": [],
+                                    "echoes": [{"t": STALE_T, "text": "three day old words", "author": "human",
+                                                "uuid": "echo:boot1", "rompAuto": False, "dropped": False}]})
+
+    def _door(self, sid, key, title, body="", **kw):
+        """The kernel's door (post_notice), captured: one row per post, the rev counting the posts under the key."""
+        rev = 1 + sum(1 for n in self.posted if n["sid"] == sid and n["key"] == key)
+        self.posted.append(dict(sid=sid, key=key, title=title, body=body, **kw))
+        return {"op": "post", "sid": sid, "key": key, "rev": rev, "title": title}, None
+
+    def _boot(self, door=None):
+        """One kernel boot in the kernel's order: construct (the reseed runs the age line), wire the door on the CLASS, post
+        the parked cards; the posting thread is joined so the assertions read a finished boot. Returns (backend, thread).
+        self.at_return is what the constructor's RETURN left, read before the door exists: (the live atom, the mirror
+        row) for SID, copied, so a case can hold the constructor to the synchronous half it promises."""
+        before = len(self.posted)
+        be = sb.SdkBackend(self.td, "/bin/true", lambda *a, **k: None, log=self.logs.append)
+        self.assertEqual(len(self.posted), before, "no post from inside the constructor: the door is wired after it")
+        self.at_return = (dict((be._live.get(SID) or {}).get("echo:boot1") or {}), sb.read_reg(self.td, SID) or {})
+        type(be).on_notice = staticmethod(door or self._door)   # the kernel's line, after the constructor has returned
+        th = be.post_boot_notices()
+        if th is not None:
+            th.join(10)
+            self.assertFalse(th.is_alive(), "the posting thread finished")
+        return be, th
+
+    def test_the_first_boot_posts_the_card_once_and_the_next_boot_posts_nothing(self):
+        self._stale_reg()
+        be, th = self._boot()
+        self.assertIsNotNone(th, "the boot had a card to post")
+        # the synchronous half stands as before, and it is the CONSTRUCTOR's: the flags were live and on the mirror when
+        # it returned, before the door was wired or the post ran (a mirror write parked with the post would fail here and
+        # pass the reads below, which follow the join)
+        atom0, reg0 = self.at_return
+        self.assertTrue(atom0.get("dropped") and atom0.get("stale"), atom0)
+        self.assertTrue(reg0.get("echoes") and reg0["echoes"][0].get("dropped") and reg0["echoes"][0].get("stale"),
+                        "the flags reach the mirror inside the constructor: %r" % (reg0.get("echoes"),))
+        a = be._live[SID]["echo:boot1"]
+        self.assertTrue(a.get("dropped") and a.get("stale"), "the stale send takes the flag path at the reseed")
+        reg = sb.read_reg(be.state_dir, SID) or {}
+        self.assertTrue(reg.get("echoes") and reg["echoes"][0].get("dropped") and reg["echoes"][0].get("stale"), reg.get("echoes"))
+        self.assertEqual(reg.get("queue") or [], [], "nothing re-fed, nothing injected")
+        # exactly one post carrying the dropped key, and exactly one card: revision 1 under it
+        self.assertEqual(len(self.posted), 1, [n["title"] for n in self.posted])
+        n = self.posted[0]
+        self.assertEqual((n["sid"], n["key"], n["producer"], n["needs_you"], n["dismiss_on_action"]),
+                         (SID, "dropped-sends", "dropped-sends", True, True))
+        self.assertEqual(n["title"], "1 message you typed before the restart was not re-sent")
+        self.assertEqual(n["actions"], [{"label": "Send again", "route": "/send", "body": {"text": "three day old words"}}])
+        self.assertIn("three day old words", n["body"])
+        rows = [str(m) for m in self.logs if "age line" in str(m)]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("offered back on a card (key=dropped-sends rev=1)", rows[0], "the post's outcome rides the problem row")
+        self.assertIsNone(be.post_boot_notices(), "a second call posts nothing: the parked cards were taken whole")
+        self.assertEqual(len(self.posted), 1)
+        # the NEXT boot: the flags keep the send out of the selection, so it posts nothing (the first boot was the one
+        # chance, which is why the card could never appear while the post ran inside the constructor)
+        be2, th2 = self._boot()
+        self.assertIsNone(th2, "nothing parked: the send is already flagged")
+        self.assertEqual(len(self.posted), 1, "no second card for a send already flagged")
+        self.assertTrue(be2._live[SID]["echo:boot1"].get("stale"))
+
+    def test_the_parked_post_runs_on_its_own_thread_never_the_constructing_one(self):
+        # the kernel calls post_boot_notices under its construction lock, and the door's session check re-enters that
+        # lock (Sessions.live() through _sdk()): the post must run on the thread the call starts, never on the caller's
+        self._stale_reg()
+        seen = []
+
+        def door(sid, key, title, body="", **kw):
+            seen.append(threading.current_thread())
+            return self._door(sid, key, title, body, **kw)
+        be, th = self._boot(door)
+        self.assertIsNotNone(th)
+        self.assertEqual(seen, [th], "the door ran on the posting thread alone")
+        self.assertNotEqual(th, threading.current_thread())
+
+    def test_a_refused_boot_post_is_said_in_the_problem_row_and_the_flags_stand(self):
+        self._stale_reg()
+        be, th = self._boot(lambda sid, key, title, body="", **kw: (None, 'no session answers to "%s"' % sid))
+        self.assertIsNotNone(th)
+        self.assertTrue(be._live[SID]["echo:boot1"].get("stale"), "the drop stands whatever the card did")
+        rows = [str(m) for m in self.logs if "age line" in str(m)]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("could not be posted: no session answers to", rows[0])
+
+    def test_a_raising_parked_post_is_one_problem_row_and_the_next_parked_post_still_runs(self):
+        # two sessions park a card each at the boot. The door's FIRST answer is a row that is no mapping, so that card's
+        # parked post raises at its row read (the one raise inside a parked post that the door cannot cause otherwise:
+        # post_notice absorbs a door that raises into a refusal); the raise is one problem row and the second card is
+        # still posted. Without the guard around each parked post the thread dies at the first raise and the second
+        # session's card is never posted.
+        self._stale_reg()
+        self._stale_reg(SID2)
+        calls = []
+
+        def door(sid, key, title, body="", **kw):
+            calls.append(sid)
+            if len(calls) == 1:
+                return ["not", "a", "row"], None            # truthy and no .get: the parked post raises AttributeError
+            return self._door(sid, key, title, body, **kw)
+        be, th = self._boot(door)
+        self.assertIsNotNone(th)
+        self.assertEqual(sorted(calls), sorted([SID, SID2]), "both parked posts reached the door: the raise stopped none")
+        self.assertEqual([n["sid"] for n in self.posted], [calls[1]], "the second card was posted after the first raised")
+        failed = [str(m) for m in self.logs if "the boot post failed" in str(m)]
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("AttributeError", failed[0], "the row names the raise")
+        rows = [str(m) for m in self.logs if "age line" in str(m)]
+        self.assertEqual(len(rows), 1, rows)                 # the posted card's outcome; the raising post's row never formed
+        self.assertIn("offered back on a card (key=dropped-sends rev=1)", rows[0])
+        self.assertTrue(rows[0].startswith(calls[1][:8]), rows[0])
+        for sid in (SID, SID2):
+            self.assertTrue(be._live[sid]["echo:boot1"].get("dropped") and be._live[sid]["echo:boot1"].get("stale"),
+                            "the flags stand on both sessions' sends: written at the reseed, before either post")
 
 
 if __name__ == "__main__":

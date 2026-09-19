@@ -6,7 +6,9 @@ the pages from turn 0 to the floor, concatenated with the floor'd list, equal th
 at every page size (so at every page boundary), with notes interleaved between the turns; a page hydrates its own
 turns only and the floor'd build hydrates the tail's; the floor drops to 0 while a proto-1 client is connected and
 climbs back when it leaves (the fold entry rebuilt, the prefix released); every event's uuid is unique within a
-list. Synthetic transcripts only (the stage 4a served fixture's builder and the golden compaction scenarios)."""
+list. The proto-2 base never ends on one of the kernel's transient live-tail keys (an input echo, the command chip;
+2026-09-19): the landing that replaces such a key is a delta after the record before it, and a full frame sent to a
+client holding a base is counted by reason and filed as a client-diag row. Synthetic transcripts only (the stage 4a served fixture's builder and the golden compaction scenarios)."""
 import contextlib
 import io
 import json
@@ -836,6 +838,278 @@ class Proto2Wire(Harness):
         km._send_chat_locked(c, m2, None, len(m["events"]), False)
         d = sent[-1]
         self.assertEqual((d["type"], d["afterUuid"], [e["uuid"] for e in d["events"]]), ("chatTail", m["events"][-1]["uuid"], ["u_next"]))
+
+    # ── the kernel's transient live-tail keys at the tail (2026-09-19) ──
+    # An SDK input echo ("echo:<hex>"), a Codex echo ("echo-<hex>") or the /model chip ("cmd:<t>:<name>") is an ordinary
+    # {"kind": "user"} event of the built list, sorted after every atom of the last turn, and its key is in no later list
+    # once the CLI's record (or the chip's cmdGesture note) lands: the record carries its own uuid, and the live atom
+    # leaves the merge (_merge_live_atoms's `fresh` filter, its text in `hide`). A base whose `last` was such a key could
+    # not be mapped by the next push, and the pusher sent a whole session frame to every caught-up client on every send
+    # into an idle session. The lists here are hand-built on the restored tail, so the key vanishes because the next list
+    # omits it, the way the landing build omits it; tests/test_queued_copy_identity.py drives the real road.
+    ECHO = "echo:" + "a" * 32
+    REC = {"kind": "user", "md": "please continue", "uuid": "11111111-2222-4333-8444-555555555501", "human": True}
+    REPLY = {"kind": "assistant", "md": "on it", "uuid": "11111111-2222-4333-8444-555555555502"}
+
+    def _with(self, m, extra):
+        m1 = dict(m); m1["events"] = list(m["events"]) + list(extra)
+        return m1
+
+    def _frame(self, d):
+        return (d["type"], d.get("afterUuid"), [e["uuid"] for e in d.get("events") or []]) if d["type"] == "chatTail" else (d["type"],)
+
+    def _diag_rows(self):
+        fp = jd.STATE / "client-diag.jsonl"
+        rows = [json.loads(l) for l in fp.read_text().splitlines() if l.strip()] if fp.exists() else []
+        return [r for r in rows if r.get("surface") == "kernel" and r.get("what") == "chatFull"]
+
+    def _diag_reasons(self):
+        return [r["data"]["reason"] for r in self._diag_rows()]
+
+    def _echo_then_landing(self, echo_uuid):
+        """A caught-up client; the echo appended as a delta; then the list with the CLI's record and a reply in the echo's
+        place, sent with the pusher's own change_from (_chat_diff finds the echo's slot). Returns what the sends produced."""
+        whole, m = self._restored_tail()
+        c, sent = _client()
+        km._send_chat(c, m, None, 0, False)               # the locked entry: the chatFull rows the counter test reads are filed
+        last_rec = km._event_key(m["events"][-1])         # after its lock block, so a row test drives it, never _send_chat_locked
+        echo = {"kind": "user", "md": "please continue", "uuid": echo_uuid, "human": True}
+        m1 = self._with(m, [echo])
+        km._send_chat(c, m1, None, len(m["events"]), False)
+        d1, base1 = sent[-1], dict(c["echat"][SID])
+        m2 = self._with(m, [self.REC, self.REPLY])
+        cf = km._chat_diff(m1["events"], m2["events"])
+        self.assertEqual(cf, len(m["events"]), "the pusher's diff finds the echo's slot")
+        km._send_chat(c, m2, None, cf, False)
+        return m, c, sent, last_rec, echo, d1, base1, sent[-1]
+
+    def test_a_pending_input_echo_that_lands_does_not_break_the_base(self):
+        m, c, sent, last_rec, echo, d1, base1, d2 = self._echo_then_landing(self.ECHO)
+        self.assertEqual(self._frame(d1), ("chatTail", last_rec, [echo["uuid"]]), "the echo itself rides a delta")
+        self.assertEqual(base1["last"], last_rec, "the base ends on the record before the echo, never on the echo")
+        self.assertEqual(self._frame(d2), ("chatTail", last_rec, [self.REC["uuid"], self.REPLY["uuid"]]), "the landing rides the suffix")
+        self.assertEqual(c["echat"][SID]["last"], self.REPLY["uuid"])
+        # a status-only send while the echo is pending: the empty suffix is anchored on the echo, which the client holds
+        c2, sent2 = _client()
+        m1 = self._with(m, [echo])
+        km._send_chat_locked(c2, m, None, 0, False)
+        km._send_chat_locked(c2, m1, None, len(m["events"]), False)
+        km._send_chat_locked(c2, m1, None, len(m1["events"]), False)
+        self.assertEqual(self._frame(sent2[-1]), ("chatTail", echo["uuid"], []))
+        self.assertEqual(c2["echat"][SID]["last"], last_rec)
+
+    def test_a_codex_echo_that_lands_does_not_break_the_base(self):
+        m, c, sent, last_rec, echo, d1, base1, d2 = self._echo_then_landing("echo-0123abcd")   # CodexBackend.send's form: "echo-" + 8 hex
+        self.assertEqual(self._frame(d1), ("chatTail", last_rec, [echo["uuid"]]))
+        self.assertEqual(base1["last"], last_rec, "the Codex form is a transient key too")
+        self.assertEqual(self._frame(d2), ("chatTail", last_rec, [self.REC["uuid"], self.REPLY["uuid"]]))
+
+    def test_a_dropped_echo_dismissed_is_an_empty_suffix_after_the_record(self):
+        # a never-delivered echo (undelivered, echoT) the user dismissed with its cross (SdkBackend.dismiss_echo): the list
+        # shrinks back to the record, and the delta is an empty suffix after it, not a full frame
+        whole, m = self._restored_tail()
+        c, sent = _client()
+        km._send_chat_locked(c, m, None, 0, False)
+        last_rec = km._event_key(m["events"][-1])
+        dropped = {"kind": "user", "md": "lost one", "uuid": self.ECHO, "human": True, "undelivered": True, "echoT": NOW - 30}
+        m1 = self._with(m, [dropped])
+        km._send_chat_locked(c, m1, None, len(m["events"]), False)
+        self.assertEqual(c["echat"][SID]["last"], last_rec)
+        cf = km._chat_diff(m1["events"], m["events"])
+        self.assertEqual(cf, len(m["events"]))
+        km._send_chat_locked(c, m, None, cf, False)
+        self.assertEqual(self._frame(sent[-1]), ("chatTail", last_rec, []), "the dismissal: an empty suffix after the record")
+
+    def test_the_command_chip_replaced_by_its_durable_note_rides_the_suffix(self):
+        # _ack_cmd_chip's "cmd:<t>:<name>" chip is retired (prune_live's stale_cmd at the next human turn, or by text) for the
+        # durable cmdGesture note "cmdg:<t>:<n>" build_session emits in its slot, a different key: the echo's road again
+        whole, m = self._restored_tail()
+        c, sent = _client()
+        km._send_chat_locked(c, m, None, 0, False)
+        last_rec = km._event_key(m["events"][-1])
+        chip = {"kind": "user", "md": "/model sonnet", "uuid": "cmd:%d:model" % (NOW - 20), "human": True}
+        note = {"kind": "cmdGesture", "cmd": "/model sonnet", "uuid": "cmdg:%d:1" % (NOW - 20)}
+        mc = self._with(m, [chip])
+        km._send_chat_locked(c, mc, None, len(m["events"]), False)
+        self.assertEqual(c["echat"][SID]["last"], last_rec, "the chip is never the anchor")
+        mn = self._with(m, [note, self.REC, self.REPLY])
+        km._send_chat_locked(c, mn, None, km._chat_diff(mc["events"], mn["events"]), False)
+        self.assertEqual(self._frame(sent[-1]), ("chatTail", last_rec, [note["uuid"], self.REC["uuid"], self.REPLY["uuid"]]))
+        self.assertEqual(c["echat"][SID]["last"], self.REPLY["uuid"])
+
+    def test_two_echoes_then_a_queued_overlay_keep_the_base_on_the_record(self):
+        # two pending sends and then a queued card after them: the base stays on the record before the first echo, and the
+        # card's arrival re-sends the echoes on the suffix (the client truncates after the record and re-applies them; its
+        # pending reconcile re-hides the sender's own), the way an overlay card rides every later delta
+        whole, m = self._restored_tail()
+        c, sent = _client()
+        km._send_chat_locked(c, m, None, 0, False)
+        last_rec = km._event_key(m["events"][-1])
+        e1 = {"kind": "user", "md": "one", "uuid": "echo:" + "b" * 32, "human": True}
+        e2 = {"kind": "user", "md": "two", "uuid": "echo:" + "c" * 32, "human": True}
+        q = {"kind": "queued", "uuid": "queued", "texts": [{"md": "three"}]}
+        m5 = self._with(m, [e1, e2])
+        km._send_chat_locked(c, m5, None, len(m["events"]), False)
+        self.assertEqual(c["echat"][SID]["last"], last_rec)
+        m6 = self._with(m, [e1, e2, q])
+        km._send_chat_locked(c, m6, None, km._chat_diff(m5["events"], m6["events"]), False)
+        self.assertEqual(self._frame(sent[-1]), ("chatTail", last_rec, [e1["uuid"], e2["uuid"], "queued"]))
+        self.assertEqual(c["echat"][SID]["last"], last_rec)
+        # a list of nothing else falls back to its last event (a transcript-less session's first echo): the known residue,
+        # one full at that first landing, once per session creation
+        self.assertEqual(km._last_anchor([e1, e2, q]), "queued")
+        self.assertEqual(km._last_anchor([e1, e2]), e2["uuid"])
+
+    def test_the_transient_key_rule_and_the_gone_key_label(self):
+        # None-safe (a hand-built event with no uuid gives _event_key None); a uuid#n key of a transient matches by its
+        # prefix; the kernel's durable synthesized keys and the overlay kinds are not transient
+        self.assertFalse(km._transient_key(None))
+        self.assertEqual(km._last_anchor([{"kind": "user", "uuid": "x"}, {"kind": "user"}]), None)
+        for k in (self.ECHO, "echo-0123abcd", "cmd:1781199000:model", self.ECHO + "#2"):
+            self.assertTrue(km._transient_key(k), k)
+        for k in ("cmdg:1:1", "orphan:1:1", "retried:1:1", "gaveup:1:1", "effort:1:1", "branch:x", "clear:x", "system:x", "ev:abc",
+                  "queued", "apiError", self.REC["uuid"], self.REC["uuid"] + "#2"):
+            self.assertFalse(km._transient_key(k), k)
+        # the lastGone label is a bounded vocabulary: a transient key names its prefix, a colon-keyed note its family, an
+        # overlay kind `overlay`, a record uuid (with or without its #n) `record`, never a label per uuid
+        self.assertEqual([km._gone_key_label(k) for k in (self.ECHO, "echo-0123abcd", "cmd:1:model", "cmd:1:model#2")],
+                         ["echo", "echo-", "cmd", "cmd"])
+        self.assertEqual([km._gone_key_label(k) for k in ("cmdg:1:1", "orphan:1:1", "ev:abc")], ["cmdg", "orphan", "ev"])
+        self.assertEqual([km._gone_key_label(k) for k in (self.REC["uuid"], self.REC["uuid"] + "#2", "u_new", "queued", None, "")],
+                         ["record", "record", "record", "overlay", "none", "none"])
+        # the two comparison labels, asserted on the rule itself (the 2026-09-19 review: no test read them, so a dropped branch
+        # or a loosened comparison landed the full under another label with every module green): a base whose last edge
+        # sits before its first is `inverted`; a change at or before the held first edge is `changeBelowFirst`; a change
+        # past it that still reached the full frame is `other`
+        base = {"first": "f", "last": "l"}
+        self.assertEqual(km._chat_full_reason(base, 5, 2, 7, 10), "inverted")
+        self.assertEqual(km._chat_full_reason(base, 3, 8, 2, 10), "changeBelowFirst")
+        self.assertEqual(km._chat_full_reason(base, 3, 8, 3, 10), "changeBelowFirst", "at the held first edge itself")
+        self.assertEqual(km._chat_full_reason(base, 3, 8, 4, 10), "other")
+
+    def test_a_full_to_a_base_holder_is_counted_by_reason_and_filed_once(self):
+        # the meter (2026-09-19): every proto-2 full is counted under pusher.chatFullWhy by the reason the sender had, and a
+        # full to a client that HOLDS a base files one chatFull client-diag row; the deltas count and file nothing. The
+        # collector is process-global and the harness never resets it (the other tests here send fulls too), so reset first
+        km._PERF_STATS.reset()
+        why = lambda: km._PERF_STATS.snapshot()["pusher"]["chatFullWhy"]
+        m, c, sent, last_rec, echo, d1, base1, d2 = self._echo_then_landing(self.ECHO)
+        self.assertEqual(why(), {"noBase": 1}, "the first send: no base held, counted, not filed")
+        self.assertEqual(self._diag_reasons(), [], "the two deltas filed nothing")
+        m4 = dict(m); m4["events"] = [{"kind": "user", "md": "x", "uuid": "z1"}, {"kind": "assistant", "md": "y", "uuid": "z2"}]   # a fork
+        km._send_chat(c, m4, None, 0, False)
+        self.assertEqual(sent[-1]["type"], "session")
+        self.assertEqual(why(), {"noBase": 1, "baseGone": 1})
+        self.assertEqual(self._diag_reasons(), ["baseGone"])
+        m5 = self._with(m4, [{"kind": "assistant", "md": "z", "uuid": "z3"}])   # the fork grew by a reply: unlike the last frame sent
+        km._send_chat(c, m5, None, 0, False)                           # a change at the list's first event against a held base: a
+        self.assertEqual(sent[-1]["type"], "session")                  # genuine first-event change or a no-baseline send, by whichever sender
+        self.assertEqual(why(), {"noBase": 1, "baseGone": 1, "changeAt0": 1})
+        self.assertEqual(self._diag_reasons(), ["baseGone", "changeAt0"])
+        row = self._diag_rows()[-1]
+        self.assertEqual((row["surface"], set(row)), ("kernel", {"t", "wid", "surface", "what", "data"}))
+        self.assertEqual(row["data"], {"cid": None, "kind": None, "sid": SID, "reason": "changeAt0", "changeFrom": 0, "total": 3,
+                                       "firstHeld": True, "lastHeld": True})
+        # the same full again inside the dedup window (the 2026-09-19 review): _send_client finds the client already holds the
+        # frame byte for byte and hands it nothing, counting it under sends.deduped. The meter and the row follow the frame
+        # that LEFT, not the decision to send one, so neither gains anything
+        n_sent, before = len(sent), km._PERF_STATS.snapshot()["sends"]
+        km._send_chat(c, m5, None, 0, False)
+        after = km._PERF_STATS.snapshot()["sends"]
+        self.assertEqual(len(sent), n_sent, "no frame left the client's send")
+        self.assertEqual(after["deduped"]["chat"]["count"], before["deduped"].get("chat", {}).get("count", 0) + 1, "the dedup happened")
+        self.assertEqual(why(), {"noBase": 1, "baseGone": 1, "changeAt0": 1}, "a deduped full is not counted")
+        self.assertEqual(self._diag_reasons(), ["baseGone", "changeAt0"], "nor filed")
+        # a base whose last edge is gone while the first is held: the label names the vanished key's family (the defect's own
+        # shape, and how a fourth transient prefix minted outside the tuple would read on /perf). This client wears a real
+        # socket's identity, and the row is read whole (the 2026-09-19 review: with a bare client and both edges held, swapped
+        # or constant flags, swapped identity fields and a wid taken from the cid field all stayed green)
+        n = len(m["events"])
+        c3, sent3 = _client()
+        c3.update(cid="11111111-2222-3333-4444-5555555555c3", kind="page", wid="W3")
+        c3["echat"][SID] = {"first": km._event_key(m["events"][0]), "last": self.ECHO}
+        km._send_chat(c3, m, None, n, False)
+        self.assertEqual(sent3[-1]["type"], "session")
+        self.assertEqual((why()["lastGone:echo"], self._diag_reasons()[-1]), (1, "lastGone:echo"))
+        row = self._diag_rows()[-1]
+        self.assertEqual(row["wid"], "W3", "the row names the window, from the client's own wid")
+        self.assertEqual(row["data"], {"cid": "11111111-2222-3333-4444-5555555555c3", "kind": "page", "sid": SID, "reason": "lastGone:echo",
+                                       "changeFrom": n, "total": n, "firstHeld": True, "lastHeld": False})
+        c4, sent4 = _client()
+        c4["echat"][SID] = {"first": km._event_key(m["events"][0]), "last": "11111111-2222-4333-8444-555555555599"}
+        km._send_chat(c4, m, None, 1, False)
+        self.assertEqual(why()["lastGone:record"], 1, "a vanished record uuid is one label, not one per uuid")
+        # the two comparison labels through the sender, a fresh client each (a byte-identical repost inside the window is
+        # deduped and counts nothing): a base whose last edge sits before its first, and a change below the held first edge
+        self.assertGreaterEqual(n, 4, "the restored tail has the events the two arms index")
+        c5, sent5 = _client()
+        c5["echat"][SID] = {"first": km._event_key(m["events"][-1]), "last": km._event_key(m["events"][-3])}
+        km._send_chat(c5, m, None, n, False)
+        self.assertEqual((sent5[-1]["type"], why()["inverted"], self._diag_reasons()[-1]), ("session", 1, "inverted"))
+        c6, sent6 = _client()
+        c6["echat"][SID] = {"first": km._event_key(m["events"][-2]), "last": km._event_key(m["events"][-1])}
+        km._send_chat(c6, m, None, n - 3, False)
+        self.assertEqual((sent6[-1]["type"], why()["changeBelowFirst"], self._diag_reasons()[-1]), ("session", 1, "changeBelowFirst"))
+        # an empty list to a client that holds a base: `empty`, and a row, since the client was owed deltas
+        m0 = dict(m); m0["events"] = []
+        km._send_chat(c4, m0, None, 0, False)
+        self.assertEqual((why()["empty"], self._diag_reasons()[-1]), (1, "empty"))
+        self.assertEqual(why(), {"noBase": 1, "baseGone": 1, "changeAt0": 1, "lastGone:echo": 1, "lastGone:record": 1,
+                                 "inverted": 1, "changeBelowFirst": 1, "empty": 1})
+        self.assertEqual(sum(why().values()), km._PERF_STATS.snapshot()["sends"]["full"]["chat"]["count"],
+                         "the meter's total is the whole chat frames that went, no more")
+        snap = why(); snap["planted"] = 1
+        self.assertNotIn("planted", why(), "the snapshot hands out a copy")
+
+    def test_an_empty_list_records_no_base_so_its_repost_and_the_first_content_frame_are_no_base_fulls_filed_nowhere(self):
+        # A session whose built list is empty (a just-created SDK session: registered before any first send, built with zero
+        # events, not skeletoned for want of a transcript) used to leave a base with both edges None (the 2026-09-19 review of
+        # the meter): every later send to that client then read as one to a base holder, so the pusher's repost of the
+        # identical empty full, once per client per repost window, was counted `empty` and filed a chatFull row with no event
+        # behind it (180 rows an hour for one idle fresh session with three tabs open), and the first content frame found
+        # neither edge in the list and was counted `baseGone` with a row. An empty list records no base: the repost and the
+        # first content frame are noBase fulls, filed nowhere, and the frame after that is a delta
+        km._PERF_STATS.reset()
+        why = lambda: km._PERF_STATS.snapshot()["pusher"]["chatFullWhy"]
+        whole, m = self._restored_tail()
+        m0 = dict(m); m0["events"] = []
+        c, sent = _client()
+        km._send_chat(c, m0, None, 0, False)
+        self.assertEqual((sent[-1]["type"], sent[-1]["events"], sent[-1]["lastUuid"]), ("session", [], None), "the empty full")
+        self.assertNotIn(SID, c["echat"], "an empty list records no base")
+        self.assertEqual((why(), self._diag_reasons()), ({"noBase": 1}, []))
+        sig, t = c["sent"][("chat", SID)]
+        c["sent"][("chat", SID)] = (sig, t - km._DEDUP_REPOST_S - 1)  # the pusher's next cycle past the dedup window
+        km._send_chat(c, m0, None, 0, False)
+        self.assertEqual(len(sent), 2, "the repost left")
+        self.assertEqual((why(), self._diag_reasons()), ({"noBase": 2}, []),
+                         "a re-sent empty list past the dedup slot: noBase, no row, no empty label")
+        km._send_chat(c, m, None, 0, False)                            # the first content frame
+        self.assertEqual(sent[-1]["type"], "session")
+        self.assertEqual((why(), self._diag_reasons()), ({"noBase": 3}, []), "the first content frame is noBase, and files no row")
+        self.assertEqual(c["echat"][SID], {"first": sent[-1]["firstUuid"], "last": km._last_anchor(m["events"])})
+        m2 = self._with(m, [{"kind": "user", "md": "more", "uuid": "u_after_empty"}])
+        km._send_chat(c, m2, None, len(m["events"]), False)
+        self.assertEqual(self._frame(sent[-1]), ("chatTail", km._event_key(m["events"][-1]), ["u_after_empty"]), "and the frame after it is a delta")
+        self.assertEqual(sum(why().values()), km._PERF_STATS.snapshot()["sends"]["full"]["chat"]["count"])
+
+    def test_the_chat_full_row_is_appended_once_the_locked_entry_has_released_the_clients_lock(self):
+        # The row's decision is made under the client's slot lock, with the send; the disk append is not (the 2026-09-19
+        # review: a 0.6 s stall in the append under the lock held a handler thread's needFull reset for 0.55 s). Both
+        # locked entries, the pusher's and the targeted push's road (_send_chat_or_status) and the test-facing one
+        # (_send_chat), append after their lock block: a spy on the diag append reads who holds the lock at the write
+        whole, m = self._restored_tail()
+        seen, real = [], km._client_diag_append
+        for entry in (km._send_chat, km._send_chat_or_status):
+            c, sent = _client()
+            entry(c, m, None, 0, False)                                     # the base
+            m4 = dict(m); m4["events"] = [{"kind": "user", "md": "x", "uuid": "z1"}]   # a fork: a full to a base holder
+            spy = lambda fp, line, c=c: (seen.append((json.loads(line)["what"], c["dlock"]._is_owned())), real(fp, line))
+            with mock.patch.object(km, "_client_diag_append", spy):
+                entry(c, m4, None, 0, False)
+            self.assertEqual(sent[-1]["type"], "session")
+            self.assertEqual(seen, [("chatFull", False)], entry.__name__ + ": one row, appended with the client's lock released")
+            del seen[:]
 
     def test_the_whole_chat_frames_switch_builds_a_documented_session_from_turn_0_for_a_protocol_2_client_and_flips_live(self):
         """The Whole chat frames switch (2026-09-15, the night stage one b landed): a protocol-2 client over a documented

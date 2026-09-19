@@ -183,6 +183,11 @@ turn, interrupts, model and reasoning-effort switches, resume after restarts,
 and postal mail both ways: delivery into Codex sessions, and the six postal
 tools from inside them (the Sandboxing section above). A Codex session's
 sends show in its chat and timeline under the same name a Claude session's do.
+and postal delivery into Codex sessions. A resume whose reply the pinned SDK
+cannot read, because the thread's history holds an item kind newer than the
+SDK's models, still runs: the app-server has resumed the thread by the time the
+SDK objects, so ROMP logs the mismatch once and lets the next turn's own request
+decide.
 
 Slash commands: `/model` and `/effort` work (they apply at the session's next
 turn). Anything else (`/clear`, `/compact`, `/new`, a skill) typed into the
