@@ -616,5 +616,88 @@ class TheQueueMirrorAlignsByPosition(unittest.TestCase):
         self.assertEqual(sb.queue_meta_from_reg({"queue": ["go"], "queueMeta": "junk"}), [None])
 
 
+class TheEchoLandingKeepsTheProto2Base(unittest.TestCase):
+    """The real road of the transient-key anchor rule (kernel.py _last_anchor, 2026-09-19): the echo SdkBackend.send mints
+    is the tail of one build and absent from the next because the landing record's text is in the merge's `hide` set, so
+    _merge_live_atoms's `fresh` filter drops the live atom (prune_live is the durable retirement, not the reason the key
+    is missing from the list). tests/test_chat_pages.py builds the two lists by hand; here the backend, the merge and the
+    proto-2 sender run as they do live, and the frame that lands the record must be a delta after the record before the
+    echo, never a whole session frame."""
+    def setUp(self):
+        self.w = _World()
+
+    def tearDown(self):
+        self.w.close()
+        km._pending_ops.pop(SID, None)
+
+    def test_the_landing_of_a_sent_echo_is_a_delta_after_the_record_before_it(self):
+        live = at_clock(self.w.now)
+        self.w.write(RUNNING, shift=live)
+        fed_text = "and also update the docstring"
+        self.assertTrue(self.w.be.send(SID, fed_text))
+        with self.w.s._lock:
+            self.w.s._pop_for_feed_locked()          # the CLI took the copy: the echo is the visible one now
+        a = self.w.build()
+        tail = a["events"][-1]
+        self.assertEqual((tail.get("kind"), tail.get("md"), str(tail.get("uuid", ""))[:5]), ("user", fed_text, "echo:"),
+                         "the echo is the built list's tail, sorted after every atom of the last turn")
+        before_echo = next(km._event_key(e) for e in reversed(a["events"])
+                           if e.get("kind") not in km._OVERLAY_KINDS and not str(km._event_key(e) or "").startswith("echo:"))
+        sent = []
+        c = {"send": lambda s: sent.append(json.loads(s)), "sent": {}, "proto": 2, "echat": {}}
+        km._send_chat_locked(c, a, None, 0, False)
+        self.assertEqual(sent[-1]["type"], "session")
+        self.assertEqual(c["echat"][SID]["last"], before_echo, "the base ends on the record before the echo, never on the echo")
+        self.assertTrue(km._transient_key(km._event_key(tail)), "an echo the SDK backend minted satisfies the kernel's rule")
+        self.w.write(RUNNING + [attline(T0 + 85, fed_text, "att1", "tr1"),
+                                aline(T0 + 105, "Updated.", "a3", "att1", tools=("Bash",), stop="tool_use")], shift=live)
+        b = self.w.build()
+        self.assertFalse(any(str(km._event_key(e) or "").startswith("echo:") for e in b["events"]), "the echo left the list at the landing")
+        cf = km._chat_diff(a["events"], b["events"])
+        self.assertEqual(cf, len(a["events"]) - 1, "the pusher's change is at the echo's slot")
+        km._send_chat_locked(c, b, None, cf, False)
+        d = sent[-1]
+        self.assertEqual((d["type"], d.get("afterUuid")), ("chatTail", before_echo), "the landing rides the suffix")
+        self.assertEqual([e.get("md") for e in d["events"] if e.get("kind") == "user"][:1], [fed_text])
+        self.assertEqual(c["echat"][SID]["last"], km._last_anchor(b["events"]))
+
+    def test_a_reseeded_echo_whose_mirror_carried_no_uuid_wears_a_transient_key(self):
+        # the fourth mint (the 2026-09-19 review of the anchor rule): at a kernel boot SdkBackend._reseed_echoes re-creates each
+        # persisted unlanded echo, keeping its echo: uuid, or re-minting one in the same form when the mirror entry carries
+        # none (an older kernel's mirror). The re-minted key must satisfy the rule too, or a landing after a restart would send
+        # a whole frame again. The reg is handed in directly, the way the boot's registry listing is; its queue carries the
+        # text, so the boot's dropped marking leaves the echo pending
+        live = at_clock(self.w.now)
+        self.w.write(RUNNING, shift=live)
+        text = "and also update the docstring"
+        reg = dict(sb.read_reg(self.w.be.state_dir, SID))
+        reg["echoes"], reg["queue"] = [{"text": text, "t": self.w.now - 5}], [text]
+        self.w.be._reseed_echoes([reg])
+        [atom] = [a for a in self.w.be.live_atoms(SID) if a.get("_echo_text") == text]
+        self.assertTrue(atom.get("_echo_reminted"), "no uuid in the mirror: the key is re-minted")
+        self.assertTrue(km._transient_key(atom["uuid"]), "in the transient form the base skips")
+        a = self.w.build()
+        tail = a["events"][-1]
+        self.assertEqual((tail.get("md"), km._event_key(tail)), (text, atom["uuid"]), "the reseeded echo is the built list's tail")
+        self.assertNotEqual(km._last_anchor(a["events"]), atom["uuid"], "and the base's last edge is the record before it")
+
+    def test_a_key_the_kernel_admits_from_a_client_is_transient(self):
+        # the client's id reaches SdkBackend.send only through kernel.py _wire_qid, gated by _CLIENT_QID_RE (the admission
+        # gate; send-pending.ts isKernelEchoUuid consumes the form, it does not let it in): a key the gate admits must satisfy
+        # the rule, or a page could hand the kernel an anchor the base cannot skip (the 2026-09-19 review)
+        live = at_clock(self.w.now)
+        self.w.write(RUNNING, shift=live)
+        qid = "echo:" + "ab" * 16
+        self.assertEqual(km._wire_qid({"qid": qid}), qid, "the gate admits the client's form")
+        self.assertTrue(km._transient_key(qid), "and the rule holds for what it admits")
+        self.assertIsNone(km._wire_qid({"qid": "copy:" + "ab" * 16}), "a form outside the tuple is refused at the gate")
+        self.assertTrue(self.w.be.send(SID, "please continue", qid=qid))
+        with self.w.s._lock:
+            self.w.s._pop_for_feed_locked()
+        a = self.w.build()
+        self.assertEqual(km._event_key(a["events"][-1]), qid, "the echo wears the admitted key")
+        self.assertNotEqual(km._last_anchor(a["events"]), qid, "and the base skips it")
+
+
 if __name__ == "__main__":
     unittest.main()
