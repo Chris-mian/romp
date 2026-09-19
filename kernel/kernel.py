@@ -9555,7 +9555,13 @@ def _rebuild_dist():
     kernel left up: _dist_ver() stats per page render so the fresh ?v= token flows on the next paint,
     and the extension's newer-build prompt keys off the dv keepalive. (ok, err_tail)."""
     try:
-        r = subprocess.run(["node", "esbuild.js"], cwd=str(ROOT / "vscode-extension"),
+        # --production (minified, no sourcemaps) unless ROMP_EXT_DEV_BUILD is set: the same profile and the
+        # same knob as _ensure_bundles and vscode-extension/install.sh. A bare `node esbuild.js` here served
+        # unminified bundles with sourcemaps after every fast-forward, and _ensure_bundles never re-minified
+        # them: its staleness test is mtime against dist/render.js, not profile, so the bundles a converge
+        # wrote stayed current to the next boot until an unrelated source change.
+        argv = ["node", "esbuild.js"] + ([] if os.environ.get("ROMP_EXT_DEV_BUILD") else ["--production"])
+        r = subprocess.run(argv, cwd=str(ROOT / "vscode-extension"),
                            capture_output=True, text=True, timeout=180)
         return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
     except Exception as e:
@@ -46543,7 +46549,7 @@ def _lane_segments(sid, session, goals, caps, live, bft, full_prompts=None, cap_
                 # with every default OMITTED (a false flag, an empty list or caption, the "typed" source):
                 # 8,577 bars carried 1.1 MB of key names and 0.9 MB of defaults in a 12 MB frame. The view
                 # expands a bar once at its boundary (expandBars in ui/romp-timeline-view.js, the twin of
-                # _BAR_WIRE below, drift-guarded by tests) so every reader keeps its long names.
+                # _BAR_WIRE above, drift-guarded by tests) so every reader keeps its long names.
                 # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a chat
                 # message-hover lights only the dot and a work-hover only the bar (dotLit/barLit in the view).
                 # The wire prompt (T278b): the first line, capped; the tip shows 90 chars of it and nothing
