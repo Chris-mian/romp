@@ -1591,6 +1591,9 @@ function initGear(post, opts) {
   // The kernel's reason a write was refused OUTRIGHT as a clause for the copy: its file could not be READ, or
   // (a `why` starting "write failed:", the fold on PR #1019) WRITTEN — one clause per cause; absent on a stand-down
   function staleWhy(m) { return (typeof m.why === 'string' && m.why) ? ' Its settings file could not be ' + (m.why.indexOf('write failed:') === 0 ? 'written' : 'read') + ' (' + m.why + ').' : ''; }
+  // a PIN's stand-down is not a fault (plans/settings-across-machines.md, one A round two): the frame carries `pinned`, and the
+  // clause is the plan's words; the first cut rendered its `why` as the file-fault clause above, a falsehood about the disk
+  function stalePinned(where) { return ' Kept: ' + where + "'s value is pinned."; }
   function staleLive(t) { return !!t.parentNode && !(t.classList && t.classList.contains('fade')); }
   // Apply anyway re-issues the frame's echoed gesture as a NEW one, stamped above everything this
   // page has seen (the frame's storedGt included, learned just before): a fresh click is legitimate
@@ -1618,7 +1621,7 @@ function initGear(post, opts) {
     // A write the kernel refused because it could not READ the setting's file (the frame carries `why`) is
     // not an ordering race: re-issuing the gesture cannot succeed while the file is unreadable, so that
     // toast offers no Apply anyway and says why instead (review find on #1018, 2026-09-08)
-    var why = staleWhy(m);
+    var why = m.pinned === true ? stalePinned(where) : staleWhy(m);
     if (live) {   // the same gesture, refused by one more kernel: add the host to the toast on screen
       if (live.hosts.indexOf(where) < 0) live.hosts.push(where);
       live.t.querySelector('.rs-stale-toast-msg').textContent = staleText(label, live.refused || refused, kept, live.hosts) + why;
@@ -1802,9 +1805,9 @@ function initGear(post, opts) {
   function clearProposalLines() {
     Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-proposal, #rsettings .rs-pinned'), function (el) { el.parentNode.removeChild(el); });
   }
-  function answerProposal(store, gt, answer) {
+  function answerProposal(store, host, gt, answer) {
     return fetch(ku('/setting-proposal'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ store: store, gt: gt, answer: answer }) })
+                                            body: JSON.stringify({ store: store, host: host, gt: gt, answer: answer }) })
       .then(function (r) { return r.json(); }).catch(function () { return null; })
       .then(function (res) { if (res && res.ok === false && res.error) staleToast(res.error); fill(); });
   }
@@ -1814,8 +1817,10 @@ function initGear(post, opts) {
     Object.keys(PROPOSAL_ROWS).forEach(function (store) {
       var row = proposalHost(store);
       if (!row) return;
-      var p = props[store];
-      if (p && typeof p.value === 'boolean') {
+      // one line per proposing MACHINE (round two: records are per store and machine; an older kernel's one record reads as one)
+      var rows = Array.isArray(props[store]) ? props[store] : (props[store] && typeof props[store].value === 'boolean' ? [props[store]] : []);
+      rows.forEach(function (p) {
+        if (typeof p.value !== 'boolean') return;
         var line = document.createElement('div');
         line.className = 'rs-proposal'; line.setAttribute('data-store', store); line.setAttribute('role', 'status');
         var txt = document.createElement('span'); txt.className = 'rs-proposal-msg';
@@ -1824,11 +1829,12 @@ function initGear(post, opts) {
         apply.title = 'Take ' + (p.host || 'the other machine') + "'s value on this machine";
         var keep = document.createElement('button'); keep.type = 'button'; keep.className = 'rs-proposal-act'; keep.textContent = 'Keep mine';
         keep.title = 'Keep this machine\'s value; the same proposal is not raised again';
-        apply.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.gt, 'apply'); });
-        keep.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.gt, 'keep'); });
+        apply.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.host, p.gt, 'apply'); });
+        keep.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.host, p.gt, 'keep'); });
         line.appendChild(txt); line.appendChild(apply); line.appendChild(keep);
         row.parentNode.insertBefore(line, row.nextSibling);
-      } else if (pins[store]) {
+      });
+      if (!rows.length && pins[store]) {
         var pin = document.createElement('div');
         pin.className = 'rs-pinned'; pin.setAttribute('data-store', store);
         pin.textContent = 'Pinned on this machine: other machines\' picks are not applied here.';

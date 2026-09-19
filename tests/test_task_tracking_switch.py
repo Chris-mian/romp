@@ -537,7 +537,7 @@ class TheMeshRoad(_Base):
         self.assertTrue(km._task_tracking_on(), "nothing applied: the judges keep running here (the base turned the switch off)")
         self.assertEqual(out, ["task-tracking"], "a proposal is pending")
         self.assertEqual(km._setting_stored_gt("task-tracking"), 0, "the store's stamp did not move")
-        self.assertEqual(km._settings_proposals_map()["task-tracking"], {"host": "TESTHOST", "value": False, "gt": 7000, "current": True})
+        self.assertEqual(km._settings_proposals_map()["task-tracking"], [{"host": "TESTHOST", "value": False, "gt": 7000, "current": True}], "one record per proposing machine (round two)")
         out = km._propose_peer_settings("TESTHOST", {"settings": {"taskTracking": True}, "settingsGt": {"task-tracking": 6000}})
         self.assertEqual(out, [], "an older stamp teaches nothing, and its stale agreement drops no record")
         self.assertIn("task-tracking", km._settings_proposals_map())

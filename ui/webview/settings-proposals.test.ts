@@ -24,6 +24,9 @@ test("a broadcast kernel setting carries its origin per copy: local to this kern
   const other = routeOutbound({ type: "setThinkingSummaries", enabled: true, gt: 7 }, new Set(["TESTHOSTA"]));
   assert.ok(other.every((r) => (r.msg as any).origin === undefined), "a per-install setting is not a KERNEL_SETTING and carries no origin");
   assert.match(FED, /msg: \{ \.\.\.msg, origin: h === LOCAL \? "local" : "remote" \}/, "the stamp at the fan-out, per copy");
+  // a PIN (round two): the local kernel alone, stamped local, the one origin its kernel takes a pin from
+  const pin = routeOutbound({ type: "setSettingPin", store: "task-tracking", pinned: true, gt: 9 }, new Set(["TESTHOSTA"]));
+  assert.deepEqual(pin.map((r) => [r.host, (r.msg as any).origin, (r.msg as any).store]), [[LOCAL, "local", "task-tracking"]], "never to an attached host");
 });
 
 test("the gear draws a pending proposal under its row with Apply and Keep mine, both posting the answer with the proposal's stamp", () => {
@@ -33,8 +36,9 @@ test("the gear draws a pending proposal under its row with Apply and Keep mine, 
   assert.match(GEAR, /txt\.textContent = \(p\.host \|\| 'Another machine'\) \+ ' proposes ' \+ \(p\.value \? 'on' : 'off'\) \+ '; this machine is ' \+ \(p\.current \? 'on' : 'off'\) \+ '\.';/,
     "which machine, from what to what, in the user's terms");
   assert.match(GEAR, /apply\.textContent = 'Apply';/); assert.match(GEAR, /keep\.textContent = 'Keep mine';/);
-  assert.match(GEAR, /answerProposal\(store, p\.gt, 'apply'\)/); assert.match(GEAR, /answerProposal\(store, p\.gt, 'keep'\)/);
-  assert.match(GEAR, /fetch\(ku\('\/setting-proposal'\), \{ method: 'POST', headers: \{ 'Content-Type': 'application\/json' \},\s*\n\s*body: JSON\.stringify\(\{ store: store, gt: gt, answer: answer \}\) \}\)/,
+  assert.match(GEAR, /answerProposal\(store, p\.host, p\.gt, 'apply'\)/); assert.match(GEAR, /answerProposal\(store, p\.host, p\.gt, 'keep'\)/);
+  assert.match(GEAR, /rows\.forEach\(function \(p\) \{/, "one line per proposing machine (round two: records are per store and machine)");
+  assert.match(GEAR, /fetch\(ku\('\/setting-proposal'\), \{ method: 'POST', headers: \{ 'Content-Type': 'application\/json' \},\s*\n\s*body: JSON\.stringify\(\{ store: store, host: host, gt: gt, answer: answer \}\) \}\)/,
     "the answer rides the route with the stamp the line was drawn for; a moved proposal is refused there and the re-fill shows the new one");
   assert.match(GEAR, /if \(res && res\.ok === false && res\.error\) staleToast\(res\.error\); fill\(\);/, "a refusal is toasted in the modal's own vocabulary, then the panel re-fills");
   assert.match(GEAR, /pin\.textContent = 'Pinned on this machine: other machines\\' picks are not applied here\.';/, "a pinned store says so under its row");

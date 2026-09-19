@@ -107,7 +107,17 @@ class _Kernel:
 
     def pin(self, store, pinned, gt):
         with self:
-            return km._set_setting_pin(store, pinned, gt=gt)
+            try:
+                return km._set_setting_pin(store, pinned, gt=gt, origin="local")   # round two: a pin takes the local origin alone
+            except TypeError:                                                      # the first cut's pin knew no origin: its road
+                return km._set_setting_pin(store, pinned, gt=gt)
+
+    def push(self, host, store, value, gt):
+        """A peer's push landing here: /mesh-settings' applier, the body naming the pusher as it names itself."""
+        key = [k for k, s, _f in km._MESH_ADOPTED_SETTINGS if s == store][0]
+        with self:
+            with contextlib.redirect_stderr(io.StringIO()):
+                return km._apply_mesh_settings({key: value, "gt": gt, "host": host})
 
     def answer(self, body):
         with self:
@@ -140,7 +150,7 @@ class ProposePeerSettings(unittest.TestCase):
         pending, err = self.a.propose("TESTHOST", self.b.version())
         self.assertEqual(pending, ["compact-suggest"])
         self.assertEqual(self.a.read("compact-suggest"), (False, 1_000), "nothing applied: the local value and stamp stand (the base adopted True under 2000)")
-        self.assertEqual(self.a.proposals(), {"compact-suggest": {"host": "TESTHOST", "value": True, "gt": 2_000, "current": False}},
+        self.assertEqual(self.a.proposals(), {"compact-suggest": [{"host": "TESTHOST", "value": True, "gt": 2_000, "current": False}]},
                          "the record: which machine, what value, under which stamp, against which local value")
         self.assertIn("TESTHOST", err); self.assertIn("nothing applied", err)
         self.assertEqual([n for n in self.a.notices() if "proposes" in n],
@@ -156,7 +166,7 @@ class ProposePeerSettings(unittest.TestCase):
         self.a.propose("TESTHOST", self.b.version())
         self.b.set("compact-suggest", True, 2_500)              # the other machine clicked again
         self.a.propose("TESTHOST", self.b.version())
-        self.assertEqual(self.a.proposals()["compact-suggest"]["gt"], 2_500, "the record follows the peer's stamp")
+        self.assertEqual(self.a.proposals()["compact-suggest"][0]["gt"], 2_500, "the record follows the peer's stamp")
         self.assertEqual(len([n for n in self.a.notices() if "proposes" in n]), 2)
         self.assertIn("(the proposal moved)", self.a.notices()[-1])
 
@@ -234,7 +244,7 @@ class ProposePeerSettings(unittest.TestCase):
             pending, _ = self.a.propose("TESTHOST", self.b.version())
             self.assertIn(store, pending, store)
             self.assertEqual(self.a.read(store)[0], default, store + ": the local value stands")
-            self.assertEqual(self.a.proposals()[store]["value"], not default, store)
+            self.assertEqual(self.a.proposals()[store][0]["value"], not default, store)
 
 
 class TheAnswers(unittest.TestCase):
@@ -258,7 +268,7 @@ class TheAnswers(unittest.TestCase):
         self.assertTrue(ack["ok"], ack)
         self.assertEqual(self.a.read("task-tracking"), (True, 1_000), "nothing applied")
         self.assertEqual(self.a.proposals(), {})
-        self.assertEqual(self.a.records()["task-tracking"], {"answered": {"gt": 2_000}}, "the stamp is remembered as answered")
+        self.assertEqual(self.a.records()["task-tracking"], {"hosts": {}, "answered": {"TESTHOST": 2_000}}, "the stamp is remembered as answered, per machine")
         self.assertEqual(self.a.propose("TESTHOST", self.b.version())[0], [], "the next poll with the same stamp raises nothing")
         self.b.set("task-tracking", False, 3_000)               # a newer click on the other machine
         self.assertEqual(self.a.propose("TESTHOST", self.b.version())[0], ["task-tracking"], "…a newer stamp raises a fresh one")
@@ -272,7 +282,8 @@ class TheAnswers(unittest.TestCase):
         self.assertEqual(self.a.propose("TESTHOST", self.b.version())[0], [], "pinned: no proposal for any newer stamp")
 
     def test_a_stale_gt_an_unknown_store_and_a_bad_answer_are_refused_with_the_reason(self):
-        for body, why in (({"store": "task-tracking", "gt": 1_999, "answer": "apply"}, "the proposal moved"),
+        for body, why in (({"store": "task-tracking", "gt": 1_999, "answer": "apply"}, "TESTHOST changed its mind since this line was drawn"),
+                          ({"store": "task-tracking", "host": "TESTHOSTX", "gt": 2_000, "answer": "apply"}, "no proposal is pending for task-tracking from TESTHOSTX"),
                           ({"store": "judge-model", "gt": 2_000, "answer": "apply"}, "not a synchronized setting"),
                           ({"store": "task-tracking", "gt": 2_000, "answer": "later"}, "apply, keep or pin"),
                           ({"store": "auto-nudge", "gt": 2_000, "answer": "apply"}, "no proposal is pending"),
@@ -302,7 +313,7 @@ class ThePinGate(unittest.TestCase):
                 self.assertIsNone(km._set_task_tracking(False, gt=5_000, origin="remote"))
             self.assertEqual(self.a.read("task-tracking"), (True, 1_000), "the pinned value stands against a NEWER remote stamp")
             rf = km._pop_refused_notice()
-            self.assertEqual((rf["setting"], rf["gt"], rf["why"], rf["known"]), ("task-tracking", 5_000, "pinned on this machine", True), rf)
+            self.assertEqual((rf["setting"], rf["gt"], rf["why"], rf["known"], rf["pinned"]), ("task-tracking", 5_000, "pinned on this machine", True, True), rf)
             self.assertIn("pinned on this machine", err.getvalue())
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertIsNone(km._set_task_tracking(False, gt=5_001), "a message without an origin is read as remote")
@@ -325,15 +336,154 @@ class ThePinGate(unittest.TestCase):
 
     def test_the_pin_itself_is_gt_gated_and_never_broadcast(self):
         with self.a:
-            self.assertIsNone(km._set_setting_pin("task-tracking", True, gt=1_050), "a stale pin gesture stands down")
-            km._pop_stale_notice()
-            self.assertIsNone(km._set_setting_pin("task-tracking", True, gt=1_100), "an equal stamp with the same state is an echo")
-            self.assertEqual(km._set_setting_pin("task-tracking", False, gt=1_200), 1_200)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(km._set_setting_pin("task-tracking", True, gt=1_050, origin="local"), "a stale pin gesture stands down")
+            self.assertIn("stale gesture stood down (gesture 1050 <= applied 1100)", err.getvalue())
+            self.assertIsNone(km._pop_stale_notice(), "…and files NO settingStale frame: pin:<store> is outside the gear's vocabulary (round two)")
+            self.assertIsNone(km._pop_refused_notice())
+            self.assertIsNone(km._set_setting_pin("task-tracking", True, gt=1_100, origin="local"), "an equal stamp with the same state is an echo")
+            self.assertEqual(km._set_setting_pin("task-tracking", False, gt=1_200, origin="local"), 1_200)
             self.assertEqual(km._settings_pinned_map(), {})
-            self.assertIsNone(km._set_setting_pin("judge-model", True, gt=1_300), "only a synchronized store pins")
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(km._set_setting_pin("task-tracking", True, gt=1_250), "a pin without a local origin stands down (round two)")
+                self.assertIsNone(km._set_setting_pin("task-tracking", True, gt=1_260, origin="remote"))
+            self.assertEqual(km._settings_pinned_map(), {}, "…and nothing was pinned")
+            self.assertIn("this machine's own dashboard alone", err.getvalue())
+            self.assertIsNone(km._set_setting_pin("judge-model", True, gt=1_300, origin="local"), "only a synchronized store pins")
         self.assertIn('msg.get("type") == "setSettingPin"', KERNEL_SRC)
+        self.assertIn('_set_setting_pin(str(msg.get("store")), pinned, gt=_gesture_ms(msg), origin=msg.get("origin"))', KERNEL_SRC, "the arm hands the origin over")
+        self.assertIn('if (msg.type === "setSettingPin") return [{ host: LOCAL, msg: { ...msg, origin: "local" } }];',
+                      open(os.path.join(os.path.dirname(BIN), "ui", "webview", "federation.ts")).read(), "federation stamps the pin local, to the local kernel alone")
         self.assertNotIn("setSettingPin", open(os.path.join(os.path.dirname(BIN), "ui", "webview", "federation.ts")).read().split("const KERNEL_SETTING")[1].split(");")[0],
                          "a pin is per machine: never a KERNEL_SETTING")
+
+
+class RoundTwo(unittest.TestCase):
+    """The verifier's finds on the first cut (2026-09-19): one record slot per store flapped between two proposing machines
+    with a notice every pass and Keep mine never sticking; the poll and the push named one peer two ways; the pin's stand-down
+    read as a file fault; Apply answered ok over a newer local click; the line printed a stale local value; the pin took any
+    origin and filed a frame the gear cannot name; the exempt /version served another machine's name to a token-less caller."""
+
+    def setUp(self):
+        self.a, self.b, self.c = _Kernel(), _Kernel(), _Kernel()
+        with self.a:
+            km._SYNC_NOTICES[:] = []
+        getattr(km, "_PEER_SELF_NAMES", {}).clear()   # absent at the first cut, so its run reds on what it DID, not on a name
+
+    def tearDown(self):
+        getattr(km, "_PEER_SELF_NAMES", {}).clear()
+        self.a.close(); self.b.close(); self.c.close()
+
+    def _said(self):
+        return [n for n in self.a.notices() if "proposes" in n]
+
+    def test_two_machines_proposing_one_store_hold_one_record_each_and_are_said_once_each(self):
+        # the verifier's drive: A on@1000 polling B (off@2000) and C (off@3000) drew notices 2, 4, 6, 8 after four passes, the
+        # record flapping B/C for ever; after Keep, B was re-proposed and re-notified on three consecutive passes
+        self.a.set("task-tracking", True, 1_000)
+        self.b.set("task-tracking", False, 2_000)
+        self.c.set("task-tracking", False, 3_000)
+        for _pass in range(4):
+            self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], ["task-tracking"])
+            self.assertEqual(self.a.propose("TESTHOSTC", self.c.version())[0], ["task-tracking"])
+        self.assertEqual(len(self._said()), 2, "one notice per RECORD, two machines, four passes: %r" % self._said())
+        self.assertEqual(self.a.proposals(), {"task-tracking": [{"host": "TESTHOSTC", "value": False, "gt": 3_000, "current": True},
+                                                                {"host": "TESTHOSTB", "value": False, "gt": 2_000, "current": True}]},
+                         "both records stand, newest stamp first")
+        self.assertEqual(self.a.read("task-tracking"), (True, 1_000))
+        ack = self.a.answer({"store": "task-tracking", "host": "TESTHOSTB", "gt": 2_000, "answer": "keep"})
+        self.assertTrue(ack["ok"], ack)
+        self.assertEqual([r["host"] for r in ack["settingsProposals"]["task-tracking"]], ["TESTHOSTC"], "Keep mine answers B's record alone")
+        for _pass in range(3):
+            self.a.propose("TESTHOSTB", self.b.version()); self.a.propose("TESTHOSTC", self.c.version())
+        self.assertEqual([r["host"] for r in self.a.proposals()["task-tracking"]], ["TESTHOSTC"], "Keep sticks: B is not re-proposed under the kept stamp")
+        self.assertEqual(len(self._said()), 2, "…and nothing more is said")
+        ack = self.a.answer({"store": "task-tracking", "gt": 3_000, "answer": "keep"})
+        self.assertTrue(ack["ok"], "with one record left the body need not name the machine: %r" % ack)
+        self.assertEqual(self.a.proposals(), {})
+        self.assertEqual(self.a.records()["task-tracking"], {"hosts": {}, "answered": {"TESTHOSTB": 2_000, "TESTHOSTC": 3_000}})
+        self.assertFalse(self.a.answer({"store": "task-tracking", "gt": 3_000, "answer": "keep"})["ok"], "nothing pending now")
+
+    def test_two_records_need_the_machine_named_and_one_apply_drops_every_record_holding_that_value(self):
+        self.a.set("task-tracking", True, 1_000)
+        self.b.set("task-tracking", False, 2_000); self.c.set("task-tracking", False, 3_000)
+        self.a.propose("TESTHOSTB", self.b.version()); self.a.propose("TESTHOSTC", self.c.version())
+        ack = self.a.answer({"store": "task-tracking", "gt": 2_000, "answer": "apply"})
+        self.assertFalse(ack["ok"]); self.assertIn("name the machine", ack["error"])
+        ack = self.a.answer({"store": "task-tracking", "host": "TESTHOSTB", "gt": 2_000, "answer": "apply"})
+        self.assertTrue(ack["ok"], ack)
+        self.assertEqual(self.a.read("task-tracking"), (False, 2_000), "applied under B's stamp")
+        self.assertEqual(ack["settingsProposals"], {}, "C proposed the value now held: its record dropped with B's")
+
+    def test_the_poll_and_the_push_name_one_peer_one_way(self):
+        # the poll names the peer by its remotes-row key (the alias the user attached it under); the push names itself by its own
+        # name; the token-gated /version carries that name, so the poll teaches the mapping and the push lands on the same record
+        self.a.set("compact-suggest", False, 1_000)
+        self.b.set("compact-suggest", True, 2_000)
+        rver = dict(self.b.version(), host="TESTHOSTB")     # what the poll reads off B's /version with the token
+        self.assertEqual(self.a.propose("peer-alias", rver)[0], ["compact-suggest"])
+        ack = self.a.push("TESTHOSTB", "compact-suggest", True, 2_000)   # B pushes the same pick, naming itself
+        self.assertEqual([r["host"] for r in ack["settingsProposals"]["compact-suggest"]], ["peer-alias"], "one record, under the row's key")
+        self.assertEqual(len(self._said()), 1, "said once: the push found the poll's record standing")
+        self.b.set("compact-suggest", True, 2_500)
+        self.a.push("TESTHOSTB", "compact-suggest", True, 2_500)          # B clicked again and pushes first
+        self.assertEqual(self.a.proposals()["compact-suggest"], [{"host": "peer-alias", "value": True, "gt": 2_500, "current": False}])
+        self.assertEqual(len(self._said()), 2, "the moved stamp is one more revision of the ONE record")
+        self.a.propose("peer-alias", dict(self.b.version(), host="TESTHOSTB"))
+        self.assertEqual(len(self._said()), 2, "…and the poll then finds it standing")
+        with self.a:
+            self.assertEqual(km._peer_key("TESTHOSTB"), "peer-alias"); self.assertEqual(km._peer_key("TESTHOSTZ"), "TESTHOSTZ")
+
+    def test_apply_over_a_newer_local_click_is_refused_and_drops_the_record(self):
+        self.a.set("task-tracking", True, 1_000)
+        self.b.set("task-tracking", False, 2_000)
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.a.set("task-tracking", True, 2_500)               # the user clicked here after the line was drawn (the same value)
+        ack = self.a.answer({"store": "task-tracking", "gt": 2_000, "answer": "apply"})
+        self.assertFalse(ack["ok"]); self.assertEqual(ack["error"], "your own newer choice stands; the proposal is dropped")
+        self.assertEqual(self.a.read("task-tracking"), (True, 2_500), "nothing applied")
+        self.assertEqual(ack["settingsProposals"], {}, "the record is gone")
+
+    def test_the_line_reads_the_live_local_value_and_a_local_click_to_the_proposed_value_ends_it(self):
+        self.a.set("task-tracking", True, 1_000)
+        self.b.set("task-tracking", False, 2_000)
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.proposals()["task-tracking"][0]["current"], True)
+        self.a.set("task-tracking", False, 2_500)              # the user took the proposed value by their own click
+        self.assertEqual(self.a.proposals()["task-tracking"][0]["current"], False, "the line says what the control shows, not the raise-time value")
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], [], "the next pass: the values agree, the record drops")
+        self.assertEqual(self.a.proposals(), {})
+
+    def test_the_pins_stand_down_rides_its_own_field_and_files_no_problem_row(self):
+        self.a.set("task-tracking", True, 1_000); self.a.pin("task-tracking", True, 1_100)
+        frames, problems = [], []
+        with self.a:
+            saved = km._reply, km._sdk_problem
+            km._reply = lambda client, frame: frames.append(frame); km._sdk_problem = lambda text, **kw: problems.append(text)
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertIsNone(km._set_task_tracking(False, gt=5_000, origin="remote"))
+                    km._tell_stale_gesture(object(), {"type": "setTaskTracking", "enabled": False, "gt": 5_000, "origin": "remote"})
+            finally:
+                km._reply, km._sdk_problem = saved
+        self.assertEqual(len(frames), 1, frames)
+        f = frames[0]
+        self.assertEqual((f["type"], f["setting"], f["pinned"], f["kept"], f["gt"]), ("settingStale", "task-tracking", True, True, 5_000), f)
+        self.assertNotIn("why", f, "no `why`: the gear rendered any why as a file fault (the toast claimed the settings file could not be read)")
+        self.assertEqual(f["gesture"], {"type": "setTaskTracking", "enabled": False, "origin": "remote"})
+        self.assertEqual(problems, [], "a pin is not a fault: no error-center row")
+
+    def test_version_serves_the_proposals_and_this_machines_name_to_the_token_alone(self):
+        self.a.set("task-tracking", True, 1_000); self.b.set("task-tracking", False, 2_000)
+        self.a.propose("TESTHOSTB", self.b.version())
+        with self.a:
+            bare, authed = km._version_info(), km._version_info(authed=True)
+        self.assertNotIn("settingsProposals", bare, "a token-less caller of the exempt route learns no other machine's name")
+        self.assertNotIn("host", bare)
+        self.assertEqual(authed["settingsProposals"]["task-tracking"][0]["host"], "TESTHOSTB")
+        self.assertEqual(authed["host"], km._self_host())
+        self.assertEqual(bare["settingsPinned"], authed["settingsPinned"], "the pins ride both (no names in them)")
 
 
 class _FakePeer(BaseHTTPRequestHandler):
@@ -441,7 +591,7 @@ class TheEmitterIsOneSnapshotPerStore(unittest.TestCase):
         self.assertEqual((values["compactSuggest"], stamps["compact-suggest"]), (True, 9_000))
 
     def test_version_builds_the_four_adopted_settings_from_the_snapshot_helper(self):
-        src = KERNEL_SRC.split("def _version_info():")[1].split("\ndef ")[0]
+        src = KERNEL_SRC.split("def _version_info(")[1].split("\ndef ")[0]
         self.assertIn("_mesh_settings_snapshot()", src)
         with self.k:
             km._set_file_editing(True, gt=4_000)
@@ -502,9 +652,11 @@ class VersionCarriesPinsAndProposals(unittest.TestCase):
         self.a.propose("TESTHOST", self.b.version())
         with self.a:
             self.assertEqual(km._settings_pinned_map(), {"auto-nudge": True})
-            self.assertEqual(km._settings_proposals_map(), {"task-tracking": {"host": "TESTHOST", "value": False, "gt": 2_000, "current": True}})
+            self.assertEqual(km._settings_proposals_map(), {"task-tracking": [{"host": "TESTHOST", "value": False, "gt": 2_000, "current": True}]})
         self.assertIn('"settingsPinned": _settings_pinned_map(),', KERNEL_SRC, "/version carries the pins")
-        self.assertIn('"settingsProposals": _settings_proposals_map(),', KERNEL_SRC, "…and the pending proposals, the gear's surface")
+        self.assertIn('**({"settingsProposals": _settings_proposals_map(), "host": _self_host()} if authed else {}),', KERNEL_SRC,
+                      "…and, to a caller with the token, the pending proposals (the gear's surface) and this machine's name")
+        self.assertIn('_version_info(authed=self._authorize(q)[0])', KERNEL_SRC, "the handler says whether the caller presented the token")
         self.assertIn('"settingsPinned": j.get("settingsPinned") if isinstance(j.get("settingsPinned"), dict) else None', KERNEL_SRC,
                       "the poll lifts a peer's pins, so a pinned store is not pushed to")
 
@@ -540,13 +692,13 @@ class OneDirectionalAttach(unittest.TestCase):
         self.assertEqual(out["pushed"], [], "the peer did not APPLY it (its ack shows its own stamp): not counted as pushed")
         self.assertEqual(out["adopted"], [])
         self.assertEqual(self.b.read("compact-suggest"), (True, 5_000), "b's store stands (the base wrote the hub's value under 9000)")
-        self.assertEqual(self.b.proposals(), {"compact-suggest": {"host": km._self_host(), "value": False, "gt": 9_000, "current": True}},
+        self.assertEqual(self.b.proposals(), {"compact-suggest": [{"host": km._self_host(), "value": False, "gt": 9_000, "current": True}]},
                          "b holds the hub's pick as a proposal naming the hub")
         self.assertEqual([c[2] for c in self.m.calls], ["/mesh-settings"])
         self.assertEqual(self.m.calls[0][3].get("host"), km._self_host(), "the push names its machine for the peer's record")
         out, _ = self.m.converge()
         self.assertEqual(len(self.m.calls), 2, "the hub pushes again while the stamps differ; the peer's record is unchanged")
-        self.assertEqual(self.b.proposals()["compact-suggest"]["gt"], 9_000)
+        self.assertEqual(self.b.proposals()["compact-suggest"][0]["gt"], 9_000)
 
     def test_a_newer_peer_is_proposed_here_and_nothing_is_pushed_to_it(self):
         self.a.set("compact-suggest", False, 5_000)
@@ -554,7 +706,7 @@ class OneDirectionalAttach(unittest.TestCase):
         out, _ = self.m.converge()
         self.assertEqual((out["adopted"], out["pushed"]), (["compact-suggest"], []), "the adopted list reads as the PENDING proposals")
         self.assertEqual(self.a.read("compact-suggest"), (False, 5_000), "the local store stands")
-        self.assertEqual(self.a.proposals()["compact-suggest"]["value"], True)
+        self.assertEqual(self.a.proposals()["compact-suggest"][0]["value"], True)
         self.assertEqual(self.m.calls, [])
 
     def test_a_peers_pinned_store_is_not_pushed_to(self):
@@ -584,7 +736,7 @@ class OneDirectionalAttach(unittest.TestCase):
             self.b.set(store, default, 5_000)
             self.m.converge()
             self.assertEqual(self.b.read(store), (default, 5_000), store + ": the peer's store stands")
-            self.assertEqual(self.b.proposals()[store]["value"], not default, store + ": the push landed as a proposal")
+            self.assertEqual(self.b.proposals()[store][0]["value"], not default, store + ": the push landed as a proposal")
 
 
 class TrustGate(unittest.TestCase):
@@ -619,9 +771,9 @@ class TrustGate(unittest.TestCase):
             ack = km._apply_mesh_settings({"compactSuggest": False, "gt": 9_000, "host": "TESTHOST2"})
             self.assertEqual(ack["ok"], True)
             self.assertEqual((ack["settings"]["compactSuggest"], ack["settingsGt"]["compact-suggest"]), (True, 5_000), "nothing applied (the base wrote False under 9000)")
-            self.assertEqual(ack["settingsProposals"], {"compact-suggest": {"host": "TESTHOST2", "value": False, "gt": 9_000, "current": True}})
+            self.assertEqual(ack["settingsProposals"], {"compact-suggest": [{"host": "TESTHOST2", "value": False, "gt": 9_000, "current": True}]})
             stale = km._apply_mesh_settings({"compactSuggest": True, "gt": 4_000, "host": "TESTHOST2"})
-            self.assertEqual(stale["settingsProposals"]["compact-suggest"]["gt"], 9_000, "an older stamp changes nothing; the ack shows what holds")
+            self.assertEqual(stale["settingsProposals"]["compact-suggest"][0]["gt"], 9_000, "an older stamp changes nothing; the ack shows what holds")
             self.assertIsNone(km._pop_stale_notice(), "no socket delivered this: no verdict left for the next gesture")
             junk = km._apply_mesh_settings({"compactSuggest": "yes", "gt": 9_500})
             self.assertEqual(junk["settings"]["compactSuggest"], True, "a non-bool is ignored")

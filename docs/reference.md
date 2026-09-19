@@ -4214,18 +4214,23 @@ the kernel's value and the rail and the panes stay as they were. It is one value
 reaches every attached kernel; a kernel attached later, or polling one, used to adopt the newest stamp, the road Auto
 Nudge, Suggest /compact and file editing took. Since phase one A of plans/settings-across-machines.md (2026-09-18) a remote
 machine's newer value is a PROPOSAL, never a silent apply: the polling kernel (and a kernel a hub pushes to over
-`/mesh-settings`) writes a record under `settings-proposals.json` (the host, the value, the peer's stamp, the local value
-at the time) and applies nothing; the same value under a newer stamp lifts the local stamp only; a pinned store raises
+`/mesh-settings`) writes a record per proposing MACHINE under `settings-proposals.json` (the value, the peer's stamp, the
+local value at the time; a peer is named by the key its row carries, the alias it was attached under, and a poll with the
+token learns the peer's own name from its `/version` so a push from it lands on the same record) and applies nothing; the same value under a newer stamp lifts the local stamp only; a pinned store raises
 none; the record drops when the values come to equal or the peer's stamp is no longer newer. The user answers through
-`POST /setting-proposal` (`{"store", "gt", "answer": "apply" | "keep" | "pin"}`, this kernel's own record only, the stamp
-checked): Apply runs the store's own gt-gated setter under the peer's stamp, Keep drops the record and remembers the stamp
-as answered so it is not proposed again, Pin sets the machine's pin and drops the record. The pin (`settings-pins.json`, set
+`POST /setting-proposal` (`{"store", "host", "gt", "answer": "apply" | "keep" | "pin"}`, this kernel's own record from that
+machine only, the stamp checked: a stamp the machine has since moved past is refused, that machine changed its mind and
+the line is refreshed): Apply runs the store's own gt-gated setter under the peer's stamp (a click on this machine that
+already outranks the record is refused and drops it), Keep drops that machine's record and remembers the stamp as answered
+so it is not proposed again, Pin sets the machine's pin and drops every record for the store. The pin (`settings-pins.json`, set
 from this dashboard's own kernel by `setSettingPin`, never broadcast) keeps this machine's value against every remote input:
 a proposal is never raised for a pinned store, and a gear click that reaches this kernel from a dashboard attached to
 another machine (the broadcast carries `origin`, `local` or `remote`; a message without it is read as remote) stands down
-with a `settingStale` frame whose `why` is pinned and the kept value named, while this machine's own dashboard's click
-applies as ever. `/version` carries `settingsPinned` (the pinned stores) and `settingsProposals` (the pending records), both
-additive; the gear draws the pending proposal under the affected row (which machine, from what to what) with Apply and Keep
+with a `settingStale` frame carrying `pinned` and the kept value (the gear's toast: kept, that machine's value is pinned),
+while this machine's own dashboard's click applies as ever; the pin itself (`setSettingPin`) is taken from the local origin
+alone, and a stale pin gesture is said in the log with no frame. `/version` carries `settingsPinned` (the pinned stores) to
+every caller and, to a caller with the token (the gear, a polling peer), `settingsProposals` (the pending records, a list
+per store, the local value live) and `host` (this machine's name), all additive; the gear draws the pending proposal under the affected row (which machine, from what to what) with Apply and Keep
 mine, and a pinned store's note; until the owner-less notice card of phase one B lands, a raised or refreshed proposal is a
 sync notice in the bell, in the user's terms. A peer that reports a store pinned is not pushed our value for it. A MIXED
 mesh: an older kernel without this change still adopts the value a one-A kernel pushes to it and still applies our poll's
