@@ -2419,7 +2419,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rebuilt one would.
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
-  was built and compared, then not sent.
+  was built and compared, then not sent. Every frame the targeted one-session
+  push sent (the SDK connect handshake, the Codex backend's stream events, a
+  create, a fork or a promote; the `push.session` stage above), its tab strip
+  and the cold-tab gate's status included, is counted under its slot with a
+  `.targeted` suffix (`chat.targeted`, `status.targeted`, `taborder.targeted`),
+  so a full from that road reads apart from the pusher's cycle.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
   loader (`load_goals`) and `save_goals`; the pusher's read-only loads go
   through the shared store cache and show under `memos.shared`, not here. A

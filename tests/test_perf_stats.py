@@ -340,6 +340,18 @@ class Collector(unittest.TestCase):
         self.assertEqual(s["deduped"], {"chat": {"count": 1, "bytes": 1000}})
         self.assertEqual(s["delta"], {"feed": {"count": 1, "bytes": 20}})
 
+    def test_sends_from_the_targeted_push_read_under_their_own_slot(self):
+        # the sender's road (2026-09-19): the one-session push's frames are counted under `<slot>.targeted`, apart from the
+        # pusher's, so a full from that road is attributable in one read of /perf instead of a journal reconstruction
+        self.st.send(("chat", SID), "full", 1000, road="targeted")
+        self.st.send(("chat", SID), "delta", 100, road="targeted")
+        self.st.send(("status", SID), "full", 50, road="targeted")
+        self.st.send(("chat", SID), "full", 1000)                    # the pusher's: no road
+        s = self.st.snapshot()["sends"]
+        self.assertEqual(s["full"], {"chat.targeted": {"count": 1, "bytes": 1000}, "status.targeted": {"count": 1, "bytes": 50},
+                                     "chat": {"count": 1, "bytes": 1000}})
+        self.assertEqual(s["delta"], {"chat.targeted": {"count": 1, "bytes": 100}})
+
     def test_send_slots_are_capped(self):
         for i in range(40):
             self.st.send(("slot%d" % i,), "full", 1)
