@@ -89,10 +89,30 @@ test("the chat skeleton hosts the #bg-tasks box between the transcript and the f
   // div on both skeletons, in the same place: after #content, before #footer.
   const skelBox = SKELETON.indexOf('<div id="bg-tasks" style="display:none"></div>');
   assert.ok(skelBox > 0, "page-skeleton.chatBody carries the box");
-  assert.ok(SKELETON.indexOf('<div id="content">') < skelBox, "after the transcript");
-  assert.ok(skelBox < SKELETON.indexOf('<div id="footer">'), "before the footer");
+  const skelContent = SKELETON.indexOf('<div id="content">');
+  const skelFooter = SKELETON.indexOf('<div id="footer">');
+  assert.ok(skelContent >= 0 && skelFooter >= 0, "the skeleton's transcript and footer anchors are present");
+  assert.ok(skelContent < skelBox, "after the transcript");
+  assert.ok(skelBox < skelFooter, "before the footer");
   const kernBox = KERNEL.indexOf('\'<div id="bg-tasks" style="display:none"></div>\'');
   assert.ok(kernBox > 0, "the kernel's _chat_body carries the same box");
-  assert.ok(KERNEL.indexOf('\'<div id="content"><div id="live-ask"') < kernBox, "after the transcript (kernel)");
-  assert.ok(kernBox < KERNEL.indexOf('\'<div id="footer">\''), "before the footer (kernel)");
+  const kernContent = KERNEL.indexOf('\'<div id="content"><div id="live-ask"');
+  const kernFooter = KERNEL.indexOf('\'<div id="footer">\'');
+  assert.ok(kernContent >= 0 && kernFooter >= 0, "the kernel body's transcript and footer anchors are present");
+  assert.ok(kernContent < kernBox, "after the transcript (kernel)");
+  assert.ok(kernBox < kernFooter, "before the footer (kernel)");
+});
+
+test("the chat skeleton hosts the #notices box between the transcript and the background box — on BOTH skeletons", () => {
+  // The approval box (decisions only the user can make) mounts in its own #notices div, which the kernel's
+  // _chat_body has carried above #bg-tasks since 2026-09-19 (tests/test_chat_notices.py pins its place);
+  // renderNotices and its click delegate look it up by id and stand down when it is absent, so a skeleton
+  // without it shows no Approve/Deny row in the editor. Same place on both skeletons: after #content, before #bg-tasks.
+  const skelNotices = SKELETON.indexOf('<div id="notices" style="display:none"></div>');
+  assert.ok(skelNotices > 0, "page-skeleton.chatBody carries the approval box");
+  assert.ok(SKELETON.indexOf('<div id="content">') >= 0 && SKELETON.indexOf('<div id="content">') < skelNotices, "after the transcript");
+  assert.ok(skelNotices < SKELETON.indexOf('<div id="bg-tasks" style="display:none"></div>'), "above the background box");
+  const kernNotices = KERNEL.indexOf('\'<div id="notices" style="display:none"></div>\'');
+  assert.ok(kernNotices > 0, "the kernel's _chat_body carries the same box");
+  assert.ok(kernNotices < KERNEL.indexOf('\'<div id="bg-tasks" style="display:none"></div>\''), "above the background box (kernel)");
 });

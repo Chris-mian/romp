@@ -14,10 +14,10 @@
 // compile to one shared bundle each; this is the HTML that hosts those bundles.)
 
 // Chat view: window frame, tab bar, ledger, transcript, the live-ask picker, the
-// background-task box, and the footer (statusline + composer). The box (#bg-tasks)
-// must be here: renderBgTasks, its fold delegate and the Awaiting chip's click all
-// look it up by id and stand down when it is absent, so a skeleton without it shows
-// no box at all (the user 2026-09-19 — the chip's "click to see what it's waiting
+// approval box, the background-task box, and the footer (statusline + composer). The
+// two boxes (#notices, then #bg-tasks, the kernel's order) must be here: renderNotices,
+// renderBgTasks, their click delegates and the Awaiting chip's click all look them up
+// by id and stand down when absent, so a skeleton without them shows no box at all (the user 2026-09-19 — the chip's "click to see what it's waiting
 // on" did nothing in the editor while the kernel's _chat_body had carried the div
 // since 2026-06-26; bg-tasks.test.ts pins both skeletons). The composer's
 // attach-button tooltip is the one genuinely host-specific bit — VS Code intercepts
@@ -28,6 +28,7 @@ export function chatBody(attachTitle: string): string {
   <div id="tabbar-resize" title="Drag to resize the tab strip"></div>
   <div id="ledger" style="display:none"></div>
   <div id="content"><div id="live-ask" style="display:none"></div></div>
+  <div id="notices" style="display:none"></div>
   <div id="bg-tasks" style="display:none"></div>
   <div id="footer">
     <div id="composer-resize" title="Drag to resize the message box"></div>
