@@ -24,7 +24,8 @@ load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
-SID = "11111111-2222-3333-4444-555555555555"
+SID = "11111111-2222-3333-4444-000000000902"   # a PRIVATE synthetic sid: the suite shares one state root across modules, and a names
+#                                                entry left under the shared placeholder poisons a later module's route test (2026-09-19)
 KSRC = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py")).read()
 
 
@@ -46,6 +47,17 @@ class ChatNotices(unittest.TestCase):
         (km.jd.NAMES / SID).write_text("web\t%s\t#1EA1EB\t#ffffff\n" % (km.jd.STATE / "notes-api"))
         km.NAMES = km.jd.NAMES
         km._live_scope.names = None
+        km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
+
+    def tearDown(self):
+        # remove what the tests wrote into the shared root: the names entry, the notice files, the ledger
+        for f in (km.jd.NAMES / SID, km.jd.STATE / "cleared.jsonl"):
+            if f.exists():
+                f.unlink()
+        for d in (km.jd.STATE / "notices", km.jd.STATE / "notices-archive"):
+            if d.exists():
+                for f in d.iterdir():
+                    f.unlink()
         km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
 
     def test_the_box_lists_needs_you_notices_with_actions_each_action_with_its_kind(self):
