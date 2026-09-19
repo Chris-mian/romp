@@ -92,7 +92,12 @@ const seed = (on) => (() => {
   } catch (e) {}
 }).toString().replace("__PANES__", JSON.stringify(PANES)).replace("__ON__", on ? "true" : "false");
 
-const rectsOf = (page) => page.evaluate(() => Object.fromEntries((window.__rompPaneDock ? window.__rompPaneDock.rects() : []).map((r) => [r.pane, r.rect])));
+const rectsOf = (page) => page.evaluate(() => Object.fromEntries((window.__rompPaneDock ? window.__rompPaneDock.rects() : []).map((r) => {
+  const el = document.getElementById(r.pane); const f = el && el.querySelector(":scope > iframe"); const b = f ? f.getBoundingClientRect() : null;
+  return [r.pane, Object.assign({}, r.rect, { frame: b ? { x: b.left, y: b.top, w: b.width, h: b.height } : null })];
+})));
+if (cfg.shots) fs.mkdirSync(cfg.shots, { recursive: true });
+const leavesOf = (page) => page.evaluate(() => { const lay = window.__rompPaneDock.layout(); const lv = (n) => n.pane ? [n.pane] : n.kids.flatMap(lv); return lay ? lv(lay.tree) : []; });
 const store = (page) => page.evaluate(() => ({ layout: localStorage.getItem("romp-layout"), grow: localStorage.getItem("romp-pane-grow"), panes: localStorage.getItem("romp-panes") }));
 const outlineRect = (page) => page.evaluate(() => { const o = document.getElementById("pd-outline"); if (!o) return null; const r = o.getBoundingClientRect(); return { on: o.classList.contains("on"), free: o.classList.contains("free"), refused: o.classList.contains("refused"), x: r.left, y: r.top, w: r.width, h: r.height, text: o.textContent }; });
 const chatFrame = (page) => page.frames().find((f) => /\/chat(\?|$)/.test(f.url()));
@@ -118,6 +123,7 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
     await page.mouse.move(w.x, w.y, { steps: 6 });
     await frame(page);
     rec.way.push({ at: w, rects: await rectsOf(page), outline: await outlineRect(page), zone: await page.evaluate(() => window.__rompPaneDock.zone()) });
+    if (cfg.shots && waypoints.length === 2 && rec.way.length === 2) await page.screenshot({ path: cfg.shots + "/pane-docking-drag.png" });
   }
   if (escape) { await page.keyboard.press("Escape"); await frame(page); rec.afterEscape = await page.evaluate(() => ({ dragging: window.__rompPaneDock.dragging(), outline: document.getElementById("pd-outline").classList.contains("on") })); await page.mouse.up(); }
   else if (release) { await page.mouse.up(); await frame(page); }
@@ -139,7 +145,8 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
     return !!(d && d.getElementById("tabbar") && document.getElementById("f-fleet") && document.getElementById("f-fleet").getAttribute("src"));
   }, null, { timeout: 60000 }).then(() => true).catch(() => false);
   out.on.ready = ready;
-  await page.waitForTimeout(800);
+  if (ready) await page.waitForFunction(() => !!(window.__rompPaneDock.layout() && localStorage.getItem("romp-layout") && document.querySelectorAll(".pd-div").length >= 1
+    && getComputedStyle(document.getElementById("feed-pane")).cursor === "grab"), null, { timeout: 20000 }).catch(() => {});
   const o = out.on;
   o.bodyClass = await page.evaluate(() => document.body.className);
   o.rects0 = await rectsOf(page);
@@ -163,11 +170,20 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   };
   // Option/Alt held: the open hand over content
   await page.keyboard.down("Alt");
-  await page.waitForTimeout(80);
+  await page.waitForFunction(() => document.body.classList.contains("pd-alt"), null, { timeout: 5000 }).catch(() => {});
   o.alt = { chatRoot: cf ? await cf.evaluate(() => getComputedStyle(document.documentElement).cursor) : null, bodyCls: await page.evaluate(() => document.body.className) };
   await page.keyboard.up("Alt");
-  await page.waitForTimeout(80);
+  await page.waitForFunction(() => !document.body.classList.contains("pd-alt"), null, { timeout: 5000 }).catch(() => {});
   o.altUp = { chatRoot: cf ? await cf.evaluate(() => getComputedStyle(document.documentElement).cursor) : null, bodyCls: await page.evaluate(() => document.body.className) };
+  // a plain press inside a pane's CONTENT (not the ring, no Option): the content's own cursor, nothing lifts, nothing moves
+  o.contentPress = await (async () => {
+    const rr = await rectsOf(page); const c = rr["chat-pane"]; const x = c.x + c.w / 2, y = c.y + c.h / 2;
+    const cursorAtRest = cf ? await cf.evaluate(() => getComputedStyle(document.body).cursor) : null;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + 14, y + 14, { steps: 3 }); await frame(page);
+    const st = await page.evaluate(() => ({ dragging: window.__rompPaneDock.dragging(), outline: document.getElementById("pd-outline").classList.contains("on"), bodyCursor: getComputedStyle(document.body).cursor }));
+    await page.mouse.move(x + 60, y + 60, { steps: 3 }); await frame(page); await page.mouse.up(); await frame(page);
+    return Object.assign({ cursorAtRest }, st, { store: await store(page), rects: await rectsOf(page) });
+  })();
   // drag 1: the feed by its top ring, across the outline pane's TOP then BOTTOM half, dropped on the bottom
   let r = o.rects0, feed = r["feed-pane"], fleet = r["fleet-pane"];
   o.drag1 = await drag(page, feed.x + feed.w / 2, feed.y + 1, [
@@ -189,6 +205,19 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   o.esc = await drag(page, chat.x + chat.w / 2, chat.y + 1, [{ x: feed.x + feed.w / 2, y: feed.y + feed.h / 2 }], { escape: true });
   // a press under the slop is a click, not a drag
   o.click = await (async () => { const rr = await rectsOf(page); const p = rr["chat-pane"]; await page.mouse.move(p.x + p.w / 2, p.y + 1); await page.mouse.down(); await page.mouse.move(p.x + p.w / 2 + 2, p.y + 2); await frame(page); const d = await page.evaluate(() => window.__rompPaneDock.dragging()); await page.mouse.up(); return { dragging: d, store: await store(page) }; })();
+  o.column = await (async () => {
+    const before = await store(page);
+    const opened = await page.evaluate((sid) => { try { return !!(window.__rompMoveTab && window.__rompMoveTab(sid, "new")); } catch (e) { return String(e); } }, cfg.api);
+    const up = await page.waitForFunction(() => { const el = document.getElementById("chat-pane-2"); const f = el && el.querySelector(":scope > iframe"); const lay = window.__rompPaneDock.layout(); const lv = (n) => n.pane ? [n.pane] : n.kids.flatMap(lv);
+      return !!(el && f && lay && lv(lay.tree).includes("chat-pane-2") && f.getBoundingClientRect().width > 100); }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+    await frame(page);
+    const withCol = { rects: await rectsOf(page), store: await store(page), leaves: await leavesOf(page) };
+    await page.evaluate(() => { if (window.__rompCloseSplit) window.__rompCloseSplit(2); });
+    const gone = await page.waitForFunction(() => { const lay = window.__rompPaneDock.layout(); const lv = (n) => n.pane ? [n.pane] : n.kids.flatMap(lv);
+      return !document.getElementById("chat-pane-2") && !!lay && !lv(lay.tree).includes("chat-pane-2"); }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+    await frame(page);
+    return { opened, up, gone, before, withCol, after: { rects: await rectsOf(page), store: await store(page), leaves: await leavesOf(page), parked: await page.evaluate(() => window.__rompPaneDock.layout().parked) } };
+  })();
   o.final = { rects: await rectsOf(page), store: await store(page), tl: await page.evaluate(() => getComputedStyle(document.querySelector(".col")).getPropertyValue("--tl").trim()) };
   if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/pane-docking-on.png" }); }
   await ctx.close();
@@ -203,7 +232,9 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   page.on("pageerror", (e) => out.errors.push("off: " + String(e && e.stack || e).slice(0, 300)));
   await page.goto(cfg.url);
   await page.waitForFunction(() => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; const g = document.getElementById("f-feed"); return !!(d && d.getElementById("tabbar") && g && g.getAttribute("src") && document.querySelector("#feed-pane")); }, null, { timeout: 60000 }).catch(() => {});
-  await page.waitForTimeout(1200);
+  await page.waitForFunction(() => ["f-chat", "f-fleet", "f-feed", "f-timeline"].every((id) => { const f = document.getElementById(id); let d = null; try { d = f && f.contentDocument; } catch (e) { d = null; }
+    return !!(d && d.readyState === "complete" && d.body && d.body.childElementCount > 0); }), null, { timeout: 60000 }).catch(() => {});
+  await frame(page);
   const snap = () => page.evaluate(() => ({
     row: document.querySelector(".row").outerHTML,
     band: document.getElementById("tl-pane").outerHTML,
@@ -219,7 +250,7 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
   const feed = rr["feed-pane"], chat = rr["chat-pane"];
   await page.mouse.move(feed.x + feed.w / 2, feed.y + 1); await page.mouse.down(); await page.mouse.move(feed.x + feed.w / 2 + 14, feed.y + 14, { steps: 3 }); await page.mouse.move(chat.x + chat.w * 0.1, chat.y + chat.h / 2, { steps: 6 }); await page.mouse.up();
   await page.keyboard.down("Alt"); await page.mouse.move(chat.x + chat.w / 2, chat.y + chat.h / 2); await page.mouse.down(); await page.mouse.move(chat.x + chat.w / 2 + 14, chat.y + chat.h / 2 + 14, { steps: 3 }); await page.mouse.move(feed.x + feed.w / 2, feed.y + feed.h / 2, { steps: 6 }); await page.mouse.up(); await page.keyboard.up("Alt");
-  await page.waitForTimeout(400);
+  await frame(page); await frame(page);   // the gestures must do nothing: two frames is every event they could raise
   out.off.after = await snap();
   await ctx.close();
 }
@@ -290,7 +321,7 @@ class ServedPaneDocking(unittest.TestCase):
     def _drive(cls):
         cfg = os.path.join(cls.lab, "cfg.json")
         with open(cfg, "w") as f:
-            json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (cls.port, cls.token), "shots": os.environ.get("PANE_DOCK_SHOTS", "")}, f)
+            json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (cls.port, cls.token), "api": SID_API, "shots": os.environ.get("PANE_DOCK_SHOTS", "")}, f)
         driver = os.path.join(cls.lab, "driver.mjs")
         Path(driver).write_text(DRIVER)
         p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
@@ -328,6 +359,17 @@ class ServedPaneDocking(unittest.TestCase):
     def _near(self, a, b, tol, what):
         self.assertLessEqual(abs(a - b), tol, "%s: %r vs %r" % (what, a, b))
 
+    def _frames_fill(self, rects, when):
+        """Every pane's iframe is its pane's rectangle inset by the 3 px ring (the round-one read: with width and height
+        auto an absolutely positioned iframe sat at its intrinsic 300 by 150 px inside a correctly sized pane)."""
+        for pane, r in rects.items():
+            f = r.get("frame")
+            self.assertIsNotNone(f, "%s has an iframe (%s): %r" % (pane, when, r))
+            self._near(f["x"], r["x"] + 3, 1.5, "%s iframe left (%s)" % (pane, when))
+            self._near(f["y"], r["y"] + 3, 1.5, "%s iframe top (%s)" % (pane, when))
+            self._near(f["w"], r["w"] - 6, 1.5, "%s iframe width fills the pane less the ring (%s)" % (pane, when))
+            self._near(f["h"], r["h"] - 6, 1.5, "%s iframe height fills the pane less the ring (%s)" % (pane, when))
+
     # ── the ON page ──────────────────────────────────────────────────────────────────────────────────
     def test_1_the_engine_is_on_and_positions_every_pane_with_the_band_at_a_fixed_height(self):
         self.assertEqual(self.r["errors"], [], self.r["errors"])
@@ -347,6 +389,7 @@ class ServedPaneDocking(unittest.TestCase):
         lay = self._layout(o["store0"])
         self.assertEqual(lay["tree"]["dir"], "col"); self.assertEqual(lay["tree"]["fixed"][1], tl, "the band is the fixed kid of the root column")
         self.assertEqual(self._leaves(lay["tree"]), ["chat-pane", "fleet-pane", "feed-pane", "tl-pane"])
+        self._frames_fill(r, "after the seed")
 
     def _on(self):
         o = self.r["on"]
@@ -411,6 +454,8 @@ class ServedPaneDocking(unittest.TestCase):
         fl, fd = d["rects"]["fleet-pane"], d["rects"]["feed-pane"]
         self.assertGreater(fl["x"], fd["x"] + fd["w"] - 1, "the outline right of the feed"); self._near(fl["y"], fd["y"], 1.5, "same top"); self._near(fl["h"], fd["h"], 1.5, "same height")
         self.assertEqual(self._leaves(self._layout(d["store"])["tree"]), ["feed-pane", "fleet-pane", "chat-pane", "tl-pane"])
+        for name, after in (("drop 1", a), ("drop 2", b), ("drop 3", c), ("drop 4", d)):
+            self._frames_fill(after["rects"], "after " + name)
         # every drop kept the band fixed at the bottom
         band = d["rects"]["tl-pane"]
         self._near(band["h"], float(o["final"]["tl"].replace("px", "")), 1.5, "the band's px through four drops")
@@ -432,6 +477,32 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(o["final"]["store"]["grow"], o["store0"]["grow"], "romp-pane-grow untouched by four drops")
         self.assertEqual(o["final"]["store"]["panes"], o["store0"]["panes"], "romp-panes untouched")
         self.assertEqual(json.loads(o["store0"]["panes"]), {"chat": True, "fleet": True, "feed": True, "timeline": True, "files": False})
+
+    def test_8_a_plain_press_over_content_wears_the_contents_cursor_and_arms_nothing(self):
+        o = self._on()
+        c = o["contentPress"]
+        self.assertNotEqual(c["cursorAtRest"], "grab", "content at rest is not a grab surface: %r" % c)
+        self.assertFalse(c["dragging"], "14 px of travel from a press over content lifts nothing: %r" % c)
+        self.assertFalse(c["outline"], "no outline")
+        self.assertNotEqual(c["bodyCursor"], "grabbing")
+        self.assertEqual(c["store"]["layout"], o["store0"]["layout"], "the store is untouched")
+        self.assertEqual(c["rects"], o["rects0"], "nothing moved")
+
+    def test_9_a_chat_column_opened_and_closed_under_the_kit_is_mirrored_filled_and_pruned_with_the_old_store_untouched(self):
+        o = self._on()
+        c = o["column"]
+        self.assertEqual(c["opened"], True, "the shipped split opened a column: %r" % c["opened"])
+        self.assertTrue(c["up"], "the column's pane is a leaf of the tree with a sized iframe: %r" % c["withCol"]["leaves"])
+        lv = c["withCol"]["leaves"]
+        self.assertIn("chat-pane-2", lv)
+        self.assertEqual(lv.index("chat-pane-2"), lv.index("chat-pane") + 1, "right of the last chat leaf: %r" % lv)
+        self._frames_fill(c["withCol"]["rects"], "with the column open")
+        self.assertTrue(c["gone"], "the column closed and left the tree: %r" % c["after"]["leaves"])
+        self.assertNotIn("chat-pane-2", c["after"]["parked"], "a closed column has no mounted iframe to re-open: its park is pruned: %r" % c["after"]["parked"])
+        self.assertEqual(c["after"]["store"]["grow"], c["before"]["grow"], "romp-pane-grow byte-identical across a column open and close under the kit")
+        self.assertEqual(c["after"]["store"]["grow"], o["store0"]["grow"])
+        self.assertEqual(c["after"]["store"]["panes"], c["before"]["panes"])
+        self._frames_fill(c["after"]["rects"], "after the column closed")
 
     # ── the OFF page ─────────────────────────────────────────────────────────────────────────────────
     def test_7_with_the_switch_off_the_same_gestures_change_nothing_and_no_engine_node_or_store_exists(self):

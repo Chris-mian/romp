@@ -132,6 +132,17 @@ test("reconcileShown: a pane turned off PARKS, one turned on opens at its defaul
   assert.deepEqual(lay.parked, ["chat-pane-2"]);
 });
 
+test("reconcileShown: a parked pane whose element is gone (a closed chat column) is pruned; a hidden dashboard pane's park stays", () => {
+  let lay: Layout = seedLayout({ row: [CHAT, "chat-pane-2", FLEET], band: false, bandPx: 0, grow: {} });
+  // the rail hides the outline and the column closes: both leave the row; only the outline's element remains
+  lay = reconcileShown(lay, { row: [CHAT], band: false, bandPx: 0, grow: {}, present: [CHAT, FLEET, FEED, FILES, BAND] });
+  assert.deepEqual(leaves(lay.tree), [CHAT]);
+  assert.deepEqual(lay.parked, [FLEET], "the outline parks (its iframe is mounted and hidden); the column's park is pruned (nothing is mounted)");
+  // without a present list every park is kept (an older caller)
+  const kept = reconcileShown(seedLayout({ row: [CHAT, "chat-pane-2"], band: false, bandPx: 0, grow: {} }), { row: [CHAT], band: false, bandPx: 0, grow: {} });
+  assert.deepEqual(kept.parked, ["chat-pane-2"]);
+});
+
 test("reconcileShown: every shown pane parked (a store from a browser whose panes were all off) restarts from the shown set", () => {
   const lay = reconcileShown({ v: 1, tree: { pane: FILES }, parked: [CHAT, FEED] }, { row: [CHAT, FEED], band: false, bandPx: 0, grow: {} });
   assert.deepEqual(leaves(lay.tree), [CHAT, FEED]);

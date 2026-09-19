@@ -78,10 +78,13 @@ const SHELL_CSS = [
   `body.${PANE_DOCKING_CLASS} .row>.gv,body.${PANE_DOCKING_CLASS} #gh{display:none}`,
   `body.${PANE_DOCKING_CLASS} .pane{position:absolute;margin:0;cursor:grab}`,
   `body.${PANE_DOCKING_CLASS} #tl-pane{position:absolute}`,
-  // the grab RING: the pane's own padding, the iframe inset by it (a press on the ring is a press on the pane element)
-  `body.${PANE_DOCKING_CLASS} .pane>iframe{inset:${RING}px;width:auto;height:auto}`,
+  // the grab RING: the pane's own padding, the iframe inset by it (a press on the ring is a press on the pane element).
+  // The size is EXPLICIT: an absolutely positioned replaced element with width and height auto takes its intrinsic
+  // 300 by 150 px and ignores its far offsets (CSS 2.1 10.3.8 and 10.6.5), so inset alone never stretches an iframe
+  // (the round-one read: every pane's content sat in a 300 by 150 box at its top-left)
+  `body.${PANE_DOCKING_CLASS} .pane>iframe{inset:${RING}px;width:calc(100% - ${2 * RING}px);height:calc(100% - ${2 * RING}px)}`,
   `body.${PANE_DOCKING_CLASS} .pane.split-v{padding:${RING}px;box-sizing:border-box}`,
-  `body.${PANE_DOCKING_CLASS} .pane.split-v>iframe{inset:auto;width:100%}`,
+  `body.${PANE_DOCKING_CLASS} .pane.split-v>iframe{inset:auto;width:100%;height:auto}`,
   // the dividers: the shipped gutter dress (a 1 px line in a 7 px strip), col-resize between columns, row-resize between rows
   `body.${PANE_DOCKING_CLASS} .pd-div{position:absolute;z-index:7;background:linear-gradient(90deg,transparent 3px,#333 3px,#333 4px,transparent 4px);cursor:col-resize}`,
   `body.${PANE_DOCKING_CLASS} .pd-div[data-dir=col]{background:linear-gradient(180deg,transparent 3px,#333 3px,#333 4px,transparent 4px);cursor:row-resize}`,
@@ -133,6 +136,7 @@ class Engine {
   private wired = new WeakSet<Document>();
   private offs: Array<() => void> = [];
   private altOn = false;
+  private savedWriters: Record<string, unknown> | null = null;
 
   constructor() {
     const w = window as any;
@@ -192,6 +196,27 @@ class Engine {
     this.obs = new MutationObserver(() => this.reconcile());
     this.obs.observe(this.col, { attributes: true, attributeFilter: ["style"] });
     this.allFrames().forEach((f) => this.wire(f));
+    this.standDownGrowWriters();
+  }
+
+  // The shipped geometry writers (_LANDING_JS: a new column halves the rightmost pane's grow, a closing one hands its
+  // width left, a re-shown pane takes a fair grow, an unregistered pane drops its key) each write romp-pane-grow. Under
+  // the kit the tree owns the geometry and the old keys are the OFF path's source of truth (plans/pane-docking.md
+  // section 10), so while the kit is on they are stood down: the same globals answer as no-ops, and the originals
+  // return when the kit goes off. The inline pane list they maintain is harmless stale while off (a missing element
+  // is filtered by its own shown() check).
+  private static WRITERS = ["__rompSplitGrow", "__rompSplitShrink", "__rompGrowFair", "__rompGrowFairIfNew", "__rompUnregisterPane"];
+  private standDownGrowWriters(): void {
+    const w = window as any;
+    if (this.savedWriters) return;
+    this.savedWriters = {};
+    for (const k of Engine.WRITERS) { this.savedWriters[k] = w[k]; w[k] = () => false; }
+  }
+  private restoreGrowWriters(): void {
+    const w = window as any;
+    if (!this.savedWriters) return;
+    for (const k of Engine.WRITERS) { if (this.savedWriters[k] !== undefined) w[k] = this.savedWriters[k]; }
+    this.savedWriters = null;
   }
 
   private stop(): void {
@@ -208,6 +233,7 @@ class Engine {
     this.allPaneEls().forEach((el) => { el.style.left = el.style.top = el.style.width = el.style.height = ""; });
     this.allFrames().forEach((f) => this.unwire(f));
     this.setAlt(false);
+    this.restoreGrowWriters();
   }
 
   // ── what the shell shows ─────────────────────────────────────────────────────────────────────────────
@@ -229,7 +255,8 @@ class Engine {
     let grow: Record<string, number> = {};
     try { const g = JSON.parse(localStorage.getItem(GROW_KEY) || "null"); if (g && typeof g === "object") grow = g; } catch { grow = {}; }
     const band = this.poOn("timeline") && !!byId(BAND);
-    return { row, band, bandPx: this.bandPx(), grow };
+    const present = this.allPaneEls().map((el) => el.id).filter(Boolean);   // a closed column's element is gone: its park goes with it
+    return { row, band, bandPx: this.bandPx(), grow, present };
   }
   private bandPx(): number {
     const c = this.col;

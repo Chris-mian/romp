@@ -123,7 +123,12 @@ export function crossedSlop(dx: number, dy: number, slop: number = SLOP): boolea
 
 /** What the shell shows, read by the engine from the DOM: the panes on screen in row order (the chat, its
  *  side columns, then the outline, feed and files as toggled on), whether the band is on, the band's px. */
-export interface Shown { row: PaneId[]; band: boolean; bandPx: number; grow: Record<string, number> }
+export interface Shown {
+  row: PaneId[]; band: boolean; bandPx: number; grow: Record<string, number>;
+  /** the pane ids whose ELEMENTS exist (shown or hidden); absent, every parked id is kept. A park keeps a MOUNTED
+   *  iframe (section 5); a closed chat column has none, so its park is pruned rather than kept forever. */
+  present?: PaneId[];
+}
 
 /** Seed a layout from the shipped stores, plans/pane-docking.md section 6: the row of shown panes weighted by
  *  their romp-pane-grow numbers over the band as a FIXED kid. This reproduces today's row when the kit turns on;
@@ -193,8 +198,9 @@ export function reconcileShown(cur: Layout, sh: Shown): Layout {
     lay = { v: 1, tree: dockRoot(lay.tree, BAND, "bottom", sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX), parked: lay.parked.filter((q) => q !== BAND) };
   }
   if (sh.band) lay = { ...lay, tree: setFixed(lay.tree, BAND, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX) };
-  // a stale park of anything shown is dropped (the parked set never holds a docked pane)
-  const parked = lay.parked.filter((q) => !has(lay.tree, q));
+  // a stale park of anything shown is dropped (the parked set never holds a docked pane), and so is the park of a
+  // pane whose element is gone (a closed chat column: nothing is mounted to re-open)
+  const parked = lay.parked.filter((q) => !has(lay.tree, q) && (!sh.present || sh.present.includes(q)));
   return parked.length === lay.parked.length ? lay : { ...lay, parked };
 }
 
