@@ -7382,14 +7382,6 @@ def _overlap(a, b):
     return len(ta & tb) / float(min(len(ta), len(tb)))
 
 
-def _top_of(nodes, nid):
-    seen = set()
-    while nid in nodes and nodes[nid].get("parentId") and nid not in seen:
-        seen.add(nid)
-        nid = nodes[nid]["parentId"]
-    return nid if nid in nodes else None
-
-
 def _seg_trigger_author(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
@@ -7429,8 +7421,9 @@ def _demote_session_mints(ops, seg, store, menu, p_target, human):
     seam_top = (seg.get("seamOf") or {}).get("top") if isinstance(seg.get("seamOf"), dict) else None
     for cand in (seam_top, p_target, (store.get("placements") or {}).get(seg.get("id") or "")):
         if isinstance(cand, str) and cand in nodes:
-            parent = _top_of(nodes, cand)
-            break
+            top = _top_of(nodes, cand)                 # the last id the walk reached: the dangling parent id when
+            parent = top if top in nodes else None     #   the chain dead-ends, read here as no placement, the way
+            break                                      #   the rule's other callers read it (nodes.get(top) or {})
     open_tops = [m["id"] for m in menu if m.get("id") in nodes and nodes[m["id"]].get("parentId") is None
                  and not nodes[m["id"]].get("nodeComplete") and not nodes[m["id"]].get("cleared")]
     def launch_match(o):                               # the launch's words in the mint's TEXT only
@@ -16226,6 +16219,44 @@ def mint_fallback_card(sid, from_model, to_model, ev_t=None):
         return None
 
 
+RESTORED_WHY = "kernel-observed model restored"   # mint_restored_card's why key (the user 2026-09-17)
+
+
+def mint_restored_card(sid, from_model, to_model, ev_t=None):
+    """A COMPLETED card recording that a session is BACK on its model after an automatic change (the user 2026-09-17:
+    the Retry upgrades after downgrades switch): romp asked for the picked model again at a turn boundary and a turn
+    was served on it. mint_fallback_card's twin — `from_model` is the fallback the session sat on, `to_model` the model
+    it is back on — with the same existence-keyed dedupe: while an identical uncleared card stands, another observation
+    mints nothing. Kernel-authored bookkeeping: minted done, never a question. Returns the card id, or None."""
+    try:
+        store = load_goals(sid)
+        nodes = store.setdefault("nodes", {})
+        text = "Model back on %s (after the automatic change to %s)" % (to_model, from_model or "?")
+        vc = _view_cleared()
+        for prev in nodes.values():
+            if prev.get("why") == RESTORED_WHY and prev.get("text") == text and not prev.get("cleared") \
+                    and prev.get("id") not in vc:
+                return None
+        n = store.get("seq", 0) + 1
+        store["seq"] = n
+        gid = "%s:g%d" % (sid, n)
+        t = int(ev_t or time.time())
+        why = ("The session is back on %s: after the automatic change to %s, romp asked for the picked model again "
+               "(Settings, Automation, Retry upgrades after downgrades) and a turn was served on it."
+               % (to_model, from_model or "the fallback"))
+        nd = GuardedNode({"id": gid, "text": text, "swap": {"from": from_model or "?", "to": to_model or "?"},
+                          "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
+                          "trail": [], "promptUuid": "", "quote": "", "t": t, "mt": t, "why": RESTORED_WHY, "log": []})
+        nodes[gid] = nd
+        record_verdict(store, nd, "romp", "done", t, why=why)
+        rollup_status(store, True)
+        save_goals(sid, store)
+        return gid
+    except Exception as e:
+        sys.stderr.write("restored-card mint (%s): %r\n" % (sid[:8], e))
+        return None
+
+
 REFUSAL_FALLBACK_WHY = "kernel-observed safeguards refusal fallback"     # the refusal card's why key (T279)
 CAPACITY_FALLBACK_WHY = "kernel-observed API model fallback"            # mint_fallback_card's, as it spells it
 
@@ -19553,7 +19584,15 @@ def _dump_goals():
 # recovery flag, consumed by the child
 # and acted on by the kernel (the give-up re-arm after a rate-limit storm ends). One pass at a time: a `pass` arriving before the previous `done` is answered `busy` and
 # DROPPED, never queued, so a stuck tier cannot pile requests behind the kernel's bound (the kernel sends one per wake; this
-# is the fail-safe). Every stderr line of the process carries the prefix `romp-judge: ` so the kernel can attribute the
+# is the fail-safe). The gate is the DONE LINE itself, cleared in the emit that writes it, rather than the pass thread's
+# liveness: a thread is alive through its teardown after its last statement, and on a free-threaded interpreter, with no GIL
+# holding the loop's thread behind the exiting one, that teardown outlives the done line by more than a request's round
+# trip, so a gate on liveness answered the request that followed a done line with `busy`, and the kernel kills a child that
+# answers anything but the pass's done. Liveness stays as the gate's second clause for a pass whose thread died short of its
+# done line (an exception out of the pass body): its dead thread frees the child for the next pass, or the child would read
+# busy for life. Only a done line clears the gate: an error line written while a pass runs (busy, unknownOp, malformed)
+# leaves it set, so the child runs one pass at a time however the request stream misbehaves.
+# Every stderr line of the process carries the prefix `romp-judge: ` so the kernel can attribute the
 # child's diagnostics when it drains the pipe; file descriptor 1 is dup2'd onto stderr for the whole process and the protocol
 # goes to the saved descriptor, so no print, os.write or child process can reach the channel.
 PROTOCOL_VERSION = 1
@@ -19858,9 +19897,15 @@ def serve(inp=None, out=None):
     if swept:
         sys.stderr.write("serve: swept %d stale temp file%s beside the stores\n" % (swept, "" if swept == 1 else "s"))
     emit_lock = threading.Lock()
+    inflight = [False]                            # a pass between its request and its done line, read and written under emit_lock
+                                                  #  alone: the loop sets it as it starts a pass, the emit of the done line clears it
 
     def emit(obj):
         with emit_lock:
+            if obj.get("op") == "done":
+                inflight[0] = False               # the pass ends HERE, in the hold that writes its done line, before the line leaves
+                                                  #  the process: the request that follows the line never finds the pass in flight,
+                                                  #  whatever its thread is still doing (the thread's exit is no event of the protocol)
             real_out.write(json.dumps(obj, separators=(",", ":")) + "\n")
             real_out.flush()
 
@@ -19883,7 +19928,11 @@ def serve(inp=None, out=None):
         if req["op"] != "pass":
             emit({"op": "error", "seq": seq, "reason": "unknownOp"})
             continue
-        if running[0] is not None and running[0].is_alive():
+        with emit_lock:                           # busy: a pass short of its done line whose thread still runs (a thread that died
+            busy = inflight[0] and running[0] is not None and running[0].is_alive()   #  short of its done frees the child)
+            if not busy:
+                inflight[0] = True                # read and set in one hold, so the loop's step and the done line's are ordered
+        if busy:                                  # answered outside the hold: emit takes the same Lock, which does not re-enter
             emit({"op": "error", "seq": seq, "reason": "busy"})   # dropped, never queued
             continue
         running[0] = threading.Thread(target=_serve_pass, args=(req, emit), name="serve-pass")

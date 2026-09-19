@@ -78,7 +78,7 @@ test("(5) the renderer is one module: render.ts imports it and keeps only the ch
   assert.match(RENDER, /^function metaButton\(kind: MetaKind, text: string, forSid\?: string \| null\): HTMLElement \{ return buildMetaButton\(kind, text, forSid, META_HOOKS\); \}/m);
   assert.match(RENDER, /^function syncMetaControls\(meta: HTMLElement, st: Status, forSid\?: string \| null\): void \{ syncMetaControlsWith\(meta, st, forSid, META_HOOKS\); \}/m);
   assert.match(RENDER, /^function ctxBar\(\): HTMLElement \{ const bar = buildCtxBar\(compactActiveSession\); bar\.id = "ctx-bar"; return bar; \}/m, "the chat's battery keeps its id (the in-place refresh finds it) and its /compact click");
-  assert.match(RENDER, /^function setCtxBar\(bar: HTMLElement, ctxStr: string \| undefined, compacting = false, ctxColor\?: number\[\], ctxOver = false\): void \{\s*\n\s*setCtxBarWith\(bar, ctxStr, compacting, ctxColor, ctxOver, \(scan, fresh\) => applyCompactSweep\(scan, 3200, fresh\)\);\s*\n\}/m, "the compaction sweep stays the chat's (it reads the chat's colormap setting)");
+  assert.match(RENDER, /^function setCtxBar\(bar: HTMLElement, ctxStr: string \| undefined, compacting = false, ctxColor\?: number\[\], ctxOver = false, st\?: Status\): void \{\s*\n\s*if \(st\) markCtxBarFor\(bar, st\);\s*\n\s*setCtxBarWith\(bar, ctxStr, compacting, ctxColor, ctxOver, \(scan, fresh\) => applyCompactSweep\(scan, 3200, fresh\)\);\s*\n\}/m, "the compaction sweep stays the chat's (applyCompactSweep) and rides the hook; the status the chat hands in marks a Codex bar inert before the fill (2026-09-19)");
   assert.match(RENDER, /^function ramp\(v: number\): \[number, number, number\] \{ return rampOn\(v, selectedStops\(\)\); \}/m, "one ramp arithmetic");
 });
 
