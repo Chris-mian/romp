@@ -48,7 +48,7 @@ import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
-import { writeViewOrder } from "./view-order";
+import { applyViewOrder, readViewOrder, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
@@ -120,7 +120,7 @@ import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
 import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
-import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
+import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey, paneArranges } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
 import { turnWorkedSecs as workedSecsOf, workedFooterPlan } from "./worked-footer";
@@ -5770,7 +5770,15 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
     syncSessionsFromTabMeta(tabs, (id) => sessions.get(id), pendingTabMeta);
   }
   // Adopt the kernel order verbatim, keeping any just-arrived tab the push doesn't carry yet (see tab-order.ts).
-  const kernelOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  const seed = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  // …verbatim as the frame ARRIVES: on the browser page federation.js has already arranged it by the viewer's
+  // stored order at its merge point, so this is the arranged order. A page that never loads that layer (a VS Code
+  // webview — frame-listener.ts paneArranges) gets the kernel's raw seed, and until 2026-09-19 adopted it as-is:
+  // a drag wrote the store (commitTabOrder) and this very adoption undid it on the next push. Such a page
+  // arranges here, re-reading the store per frame as the manager does (view-order-wiring.test.ts). The frame's
+  // ID SET is unchanged, so every rule below — the omission teardown, the live keep, the reconcile — reads the
+  // same ids it always did; a page whose manager is MISSING is not this page (fedMissing shows the seed).
+  const kernelOrder = paneArranges(window as any) ? applyViewOrder(seed, readViewOrder()) : seed;
   ackClosingTabs(kernelOrder, report);
   // A kernel-owned tab the push no longer carries gets the SAME teardown the `closed` event runs — the
   // session map, its view, drafts and the active-tab reselect all go, not just the strip entry. Under

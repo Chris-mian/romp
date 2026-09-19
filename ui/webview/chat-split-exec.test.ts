@@ -20,6 +20,8 @@ import { isSubId } from "./subagent-view";
 import { StagedStack } from "./staged-messages";
 import { syncSessionsFromTabMeta } from "./tab-meta";
 import { reconcileTabOrder, retainLiveOmitted, localStrip, stripHost } from "./tab-order";
+import { paneArranges } from "./frame-listener";
+import { applyViewOrder, readViewOrder } from "./view-order";
 import { hostOf } from "./host-prefix";
 
 const requireCjs = createRequire(__filename);
@@ -344,7 +346,8 @@ function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string 
   const js = requireCjs("esbuild").transformSync(
     [line("heldHere"), line("tabInView"), fn("stripLists"), fn("ackClosingTabs"), fn("applyTabOrder"), fn("noteColumnEmptiness")].join("\n"), { loader: "ts" }).code;
   const prelude = `
-    const { columnHolds, columnEmptiness, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, stripHost, HOOKS } = W;
+    const { columnHolds, columnEmptiness, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, stripHost, HOOKS,
+            paneArranges, applyViewOrder, readViewOrder } = W;   // the arrangement read (2026-09-19): real functions; with no localStorage here readViewOrder is [] and the seed passes through unchanged
     const COL = W.col;
     let colSets = W.sets, tabOrderSeen = false, activeId = null, provisionalId = null, wantActive = W.wantActive, vanishedId = null;
     const failedProvisionals = new Set(); let colEmptyPosted = false; let boardLive = new Set(); const hostsSeen = new Set();
@@ -371,6 +374,7 @@ function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string 
   `;
   const make = new Function("W", "window", prelude + js + epilogue) as (w: unknown, win: unknown) => StripApi;
   const api = make({ columnHolds, columnEmptiness, isProvisionalId, isSubId, syncSessionsFromTabMeta, reconcileTabOrder, retainLiveOmitted, hostOf, localStrip, stripHost, HOOKS,
+                     paneArranges, applyViewOrder, readViewOrder,
                      col: o.col, sets: W.sets, shell: W, wantActive: o.wantActive ?? null }, win);
   return { api, HOOKS, W };
 }
