@@ -2121,7 +2121,7 @@ def _kernel_ver():
     return _VER or None
 
 
-def _version_info():
+def _version_info(authed=False):
     """What this kernel is running — code sha + per-bundle build mtimes + pid/uptime. Lets the feed's
     settings gear / `romp version` / a curl tell at a glance whether the browser is on a stale bundle
     (compare the served ?v= against bundles[].mtime here).
@@ -2134,7 +2134,10 @@ def _version_info():
     hid the username, never the checkout's location or name, so the path had no business on an
     auth-exempt route at all. (`defaultDir`/`nativeDialogs` still ride here because the gear reads
     them here; they also travel the authenticated sessionList, and moving the gear onto that is the
-    clean follow-up that lets `defaultDir` leave this payload too.)"""
+    clean follow-up that lets `defaultDir` leave this payload too.) `authed` (round two of one A): the pending
+    proposals name other machines, and this machine's own name rides beside its settings for the polling peer, so both
+    are served only to a caller that presented the token (the peer's poll and the gear do); a token-less caller gets the
+    exempt payload without them."""
     bundles = {}
     try:
         for p in sorted(DIST.glob("*.js")) + sorted(DIST.glob("*.css")):
@@ -2210,13 +2213,13 @@ def _version_info():
             # One dict with every kernel-side setting, lifted by a PEER kernel's /version poll onto its
             # /tunnels row so its gear can mark controls where machines disagree (the user 2026-08-14).
             # The top-level fields above stay: this tab's own gear and older kernels read those.
-            # The three a PEER adopts (T248b, _adopt_peer_settings) ride one snapshot per store with their
+            # The four a PEER reads (T248b; proposed since one A, _propose_peer_settings) ride one snapshot per store with their
             # stamps below: read separately, a click landing between the value read and the stamp read
             # handed the peer (old value, new stamp), which it persisted and the equal-stamp rule then
             # froze on both machines (the change's second review).
             "settings": {"autoNudge": _mv["autoNudge"], "updateMode": _update_mode(),
                          "conserveMemory": _conserve_on(),
-                         "taskTracking": _mv["taskTracking"],   # one value across machines (T404): adopted by a peer, one snapshot with its stamp
+                         "taskTracking": _mv["taskTracking"],   # one value across machines (T404): proposed to a peer since one A, one snapshot with its stamp
                          "compactSuggest": _mv["compactSuggest"],   # default OFF; one value across machines (T248)
                          "fileEditing": _mv["fileEditing"],
                          "judgeModel": jd._triage_model(), "judgeEffort": jd._triage_effort(),
@@ -2235,6 +2238,10 @@ def _version_info():
             # Top-level, not lifted into /tunnels rows — a remote's newer stamp reaches the dashboard
             # through its settingStale frame, and Apply anyway is the designed path from there.
             "settingsGt": {**_settings_gt(), **_mgt},   # the adopted stores' stamps from the SAME snapshot as their values
+            "settingsPinned": _settings_pinned_map(),   # the stores this machine pinned (one A; additive: an older reader ignores it)
+            # the pending proposals (the gear's lines under the rows) and this machine's name (a polling peer records our
+            # pushes under the name it polls us by): with the token only, they name machines (one A round two)
+            **({"settingsProposals": _settings_proposals_map(), "host": _self_host()} if authed else {}),
             "defaultDir": _tilde(_default_create_dir()),   # the resolved default new-session dir → the gear "Default directory" field
             "nativeDialogs": _native_dialogs()}   # whether Browse… can draw a dialog HERE → the gear drops the button when it can't
 
@@ -8121,7 +8128,7 @@ def _pop_stale_notice():
     return d
 
 
-def _note_refused_gesture(name, gt, enabled, snap, why=None, known=None):
+def _note_refused_gesture(name, gt, enabled, snap, why=None, known=None, pinned=False):
     """A gt-gated toggle's write was REFUSED because its ledger read was unproved (the snapshot carries
     UNPROVED — the file could not be read, so the writer would not persist a copy of it). Recorded on this
     thread the way _setting_stale records a stand-down, so the WS branch that delivered the gesture can tell
@@ -8139,6 +8146,7 @@ def _note_refused_gesture(name, gt, enabled, snap, why=None, known=None):
     _stale_seen.refused = {"setting": name, "gt": gt, "refused": "on" if enabled else "off",
                            "why": str(why or snap.get(UNPROVED) or "the ledger could not be read"),
                            "write": why is not None,
+                           "pinned": bool(pinned),   # a PIN's stand-down (one A): the frame says so, not a file fault
                            "known": (bool(known) if known is not None
                                      else str(jd.STATE / "auto-nudge.json") in _autonudge_cache)}   # kept: None → the
     #                                                                                gear drops "Keeping …"
@@ -8508,7 +8516,7 @@ def _write_auto_nudge(d):
                                 _auto_nudge_normalize)
 
 
-def _set_auto_nudge(enabled, gt=None):
+def _set_auto_nudge(enabled, gt=None, origin=None):
     """Returns the applied gesture stamp (epoch ms), or None when a stale `gt` stood down —
     see the gesture-time ordering block above _NUDGE_LOCK — or the store write failed (OSError:
     said once per fault episode by the writer, nothing applied, and the delivering socket hears
@@ -8523,6 +8531,8 @@ def _set_auto_nudge(enabled, gt=None):
         d = dict(_auto_nudge_data())
         if _gesture_echo(gt, _gt_int(d.get("gt")), bool(d.get("enabled")) == bool(enabled)):
             return None                                # the same pick again: quietly nothing to do
+        if _pinned_stand_down("auto-nudge", gt, enabled, d, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+            return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("auto-nudge", gt, _gt_int(d.get("gt"))):
             return None
         d["enabled"] = bool(enabled)
@@ -8548,7 +8558,7 @@ def _compact_suggest_on():
     return bool(_auto_nudge_data().get("compactSuggestEnabled"))
 
 
-def _set_compact_suggest(enabled, gt=None):
+def _set_compact_suggest(enabled, gt=None, origin=None):
     """Returns the applied gesture stamp (epoch ms), or None when a stale `gt` stood down or the
     store write failed (OSError: said once per fault episode by the writer, nothing applied, nothing
     ticked, and the delivering socket hears the refusal) —
@@ -8560,6 +8570,8 @@ def _set_compact_suggest(enabled, gt=None):
         d = dict(_auto_nudge_data())
         if _gesture_echo(gt, _gt_int(d.get("compactSuggestGt")), bool(d.get("compactSuggestEnabled")) == bool(enabled)):
             return None
+        if _pinned_stand_down("compact-suggest", gt, enabled, d, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+            return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("compact-suggest", gt, _gt_int(d.get("compactSuggestGt"))):
             return None
         d["compactSuggestEnabled"] = bool(enabled)
@@ -8589,7 +8601,7 @@ def _file_editing_on():
         return False
 
 
-def _set_file_editing(enabled, gt=None):
+def _set_file_editing(enabled, gt=None, origin=None):
     """Returns the applied gesture stamp (epoch ms), or None when a stale `gt` stood down —
     see the gesture-time ordering block above _NUDGE_LOCK — or the store write failed (OSError:
     loud on stderr, nothing applied; caught HERE like _set_update_mode's, because a raised OSError
@@ -8606,6 +8618,8 @@ def _set_file_editing(enabled, gt=None):
         prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
         if _gesture_echo(gt, prev_gt, isinstance(prev, dict) and bool(prev.get("enabled")) == bool(enabled)):
             return None
+        if _pinned_stand_down("file-editing", gt, enabled, {}, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+            return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("file-editing", gt, prev_gt):
             return None
         stamp = gt if gt is not None else int(time.time() * 1000)
@@ -8826,7 +8840,7 @@ def _task_tracking_on():
     return on
 
 
-def _set_task_tracking(enabled, gt=None):
+def _set_task_tracking(enabled, gt=None, origin=None):
     """Returns the applied gesture stamp (epoch ms), or None when the gesture was its own echo (an equal
     stamp carrying the stored value), a stale `gt` stood down (the gesture-time ordering block above
     _NUDGE_LOCK; the delivering socket hears it through _setting_stale's notice), or the write failed
@@ -8841,6 +8855,8 @@ def _set_task_tracking(enabled, gt=None):
         prev_on = _tracking_value(prev)[0]           # the one reader (round five, low 3); an unproved prior reads on, as the display does
         if _gesture_echo(gt, prev_gt, prev_on == bool(enabled)):
             return None
+        if _pinned_stand_down("task-tracking", gt, enabled, {}, origin):   # the pin (plans/settings-across-machines.md, one A): a remote
+            return None                                             #  machine's click never moves a store this machine pinned
         if _setting_stale("task-tracking", gt, prev_gt):
             return None
         stamp = gt if gt is not None else int(time.time() * 1000)
@@ -22959,6 +22975,8 @@ def detach_remote(host):
             pass
     if r and _postal_peers_on():
         _notify_bus_peer(host, r.get("bus_port"), False, r.get("token") or "")   # the peer is gone on purpose — tell the bus now
+    if r:
+        _forget_peer_proposals(host)   # its proposals and kept stamps go with the row (settings across machines, round three)
     _remotes_save()
     return bool(r)
 
@@ -23116,7 +23134,7 @@ def _poll_remote_version(r):
     kernel that has no such field reads as unknown rather than as off.
 
     `settingsGt` (T248b): every store's last-applied gesture stamp beside `settings`, so the supervisor
-    can adopt a peer's newer pick without a click (_adopt_peer_settings). None when the peer sends none
+    can propose a peer's newer pick to the user (_propose_peer_settings, plans/settings-across-machines.md). None when the peer sends none
     (an older kernel) — the first cut consumed the field here without carrying it across, so nothing
     ever converged in production while the hand-built test dicts passed (its review, 2026-09-08)."""
     import urllib.parse
@@ -23161,7 +23179,9 @@ def _poll_remote_version(r):
                 "checkoutSha": csha, "restartPending": rp if isinstance(rp, bool) else None,
                 "autoNudge": an if isinstance(an, bool) else None,
                 "settings": st if isinstance(st, dict) else None,
-                "settingsGt": gts if isinstance(gts, dict) else None} if sha else None
+                "settingsGt": gts if isinstance(gts, dict) else None,
+                "settingsPinned": j.get("settingsPinned") if isinstance(j.get("settingsPinned"), dict) else None,
+                "host": j.get("host") if isinstance(j.get("host"), str) else None} if sha else None   # the peer's own name (one A round two)
     except Exception:
         return None
 
@@ -51234,12 +51254,15 @@ _MESH_ADOPTED_SETTINGS = (("compactSuggest", "compact-suggest", _set_compact_sug
                           ("autoNudge", "auto-nudge", _set_auto_nudge),
                           ("fileEditing", "file-editing", _set_file_editing),
                           ("taskTracking", "task-tracking", _set_task_tracking))
+_SETTINGS_STORES = frozenset(s for _k, s, _f in _MESH_ADOPTED_SETTINGS)   # the four synchronized stores (phase one A)
+_SETTINGS_LABELS = {"auto-nudge": "Auto Nudge", "compact-suggest": "Suggest /compact", "file-editing": "file editing",
+                    "task-tracking": "task tracking"}                       # the gear's own words, for the sync notice
 
 
 def _mesh_settings_snapshot():
     """(values, stamps) for the four mesh-adopted stores, each store read ONCE so a value and its stamp
     are one snapshot: the auto-nudge blob carries autoNudge/compactSuggest and both stamps, file-editing.json
-    carries fileEditing and its stamp, task-tracking.json carries taskTracking and its stamp (absent reads on). /version serves these for a polling peer's _adopt_peer_settings, which
+    carries fileEditing and its stamp, task-tracking.json carries taskTracking and its stamp (absent reads on). /version serves these for a polling peer's _propose_peer_settings, which
     takes the pair as one fact — two reads let a click landing between them hand the peer (old value, new
     stamp), a pair it persisted and the equal-stamp rule then froze on both machines."""
     d = _auto_nudge_data()
@@ -51273,7 +51296,7 @@ def _mesh_say_once(host, why, line):
 
 def _converge_peer_settings(r, rver, sync=False):
     """One supervisor pass for one up peer (`r` its remotes row, `rver` its polled /version): adopt what the
-    peer holds under a NEWER stamp (_adopt_peer_settings), and PUSH what we hold under a newer stamp than the
+    peer holds under a NEWER stamp as a PROPOSAL (_propose_peer_settings, one A: nothing applies without the user's answer), and PUSH what we hold under a newer stamp than the
     peer's through the peer's gesture route (/mesh-settings, gt-gated by the peer's own setters), so
     latest-wins holds in both directions of a one-way poll (T248c). Both legs gate on trust: an isolated
     peer's stored state is neither read into this kernel's stores nor written over the tunnel — isolation is
@@ -51285,7 +51308,8 @@ def _converge_peer_settings(r, rver, sync=False):
         _mesh_say_once(host, "isolated", "settings: %s is isolated — its picks are neither adopted here nor pushed to it "
                        "(isolation is a boundary both ways)" % host)
         return {"adopted": [], "pushed": []}
-    adopted = _adopt_peer_settings(host, rver)
+    _learn_peer_name(r, rver.get("host") if isinstance(rver, dict) else None)   # the peer's own name, onto the row (round three)
+    adopted = _propose_peer_settings(host, rver)   # one A: proposals, never an apply (the stores adopted read as the pending ones)
     older = _older_peer_settings(rver)
     if not older:
         return {"adopted": adopted, "pushed": []}
@@ -51304,13 +51328,17 @@ def _older_peer_settings(rver):
     if not isinstance(st, dict) or not isinstance(gts, dict):
         return []
     values, stamps = _mesh_settings_snapshot()
+    pinned = (rver or {}).get("settingsPinned") if isinstance(rver, dict) else None
+    pinned = pinned if isinstance(pinned, dict) else {}
     out = []
     for key, store, _setter in _MESH_ADOPTED_SETTINGS:
         pgt, mine = gts.get(store), stamps.get(store) or 0
         if isinstance(pgt, bool) or not isinstance(pgt, (int, float)) or not math.isfinite(pgt) or pgt < 0:
             continue
+        if pinned.get(store):
+            continue                                   # the peer pinned it: its value stands there by its user's word (one A)
         if mine > int(pgt):
-            out.append((store, {key: values[key], "gt": mine}))
+            out.append((store, {key: values[key], "gt": mine, "host": _self_host()}))   # the host, for the peer's proposal record
     return out
 
 
@@ -51331,10 +51359,10 @@ def _push_settings_to_peer(r, older):
                            "route, or unreachable; its copy stays until it updates or the next click reaches it"
                            % (host, err or ("HTTP %s" % st)))
             return pushed
-        if (j.get("settingsGt") or {}).get(store) == body["gt"]:
-            pushed.append(store)
+        if (j.get("settingsGt") or {}).get(store) == body["gt"]:   # the peer applied it (an older kernel adopts; a one-A kernel
+            pushed.append(store)                                    #  proposes and answers its own unchanged stamp: not pushed)
             sys.stderr.write("setting %s: pushed our newer pick (%s, gesture %d) to %s — one value, one stamp across machines\n"
-                             % (store, body[[k for k in body if k != "gt"][0]], body["gt"], host))
+                             % (store, body[[k for k in body if k not in ("gt", "host")][0]], body["gt"], host))
     return pushed
 
 
@@ -51345,41 +51373,18 @@ def _apply_mesh_settings(body):
     (values and stamps), so the sender can see what actually holds. No socket delivered this, so the
     stand-down verdict is consumed here."""
     gt = _gesture_ms(body)
-    if isinstance(body, dict):
-        for key, _store, setter in _MESH_ADOPTED_SETTINGS:
-            if key in body and isinstance(body.get(key), bool):
-                setter(body[key], gt=gt)
+    if isinstance(body, dict) and gt is not None:
+        # one A: a push PROPOSES here as the poll does (the same rule, through the same function, over a one-store dict
+        # shaped like a /version answer), so a hub's newer value never applies on this machine without its user's answer
+        st = {key: body[key] for key, _store, _setter in _MESH_ADOPTED_SETTINGS if key in body and isinstance(body.get(key), bool)}
+        gts = {store: gt for key, store, _setter in _MESH_ADOPTED_SETTINGS if key in st}
+        _propose_peer_settings(_peer_key(body.get("host") or "another machine"), {"settings": st, "settingsGt": gts})   # the row's key
     _pop_stale_notice()
     values, stamps = _mesh_settings_snapshot()
-    return {"ok": True, "settings": values, "settingsGt": stamps}
+    return {"ok": True, "settings": values, "settingsGt": stamps, "settingsPinned": _settings_pinned_map(),
+            "settingsProposals": _settings_proposals_map()}
 
 
-def _adopt_peer_settings(host, rver):
-    """Adopt every kernel-side boolean in `rver` (_poll_remote_version's dict for a peer) whose stamp is
-    newer than the local store's — the value when it differs, the stamp alone when it agrees. Returns
-    the store names adopted. Runs on the supervisor thread: the setters' stand-down verdicts are
-    consumed here (no delivering socket to answer)."""
-    st = (rver or {}).get("settings") if isinstance(rver, dict) else None
-    gts = (rver or {}).get("settingsGt") if isinstance(rver, dict) else None
-    if not isinstance(st, dict) or not isinstance(gts, dict):
-        return []
-    adopted = []
-    for key, store, setter in _MESH_ADOPTED_SETTINGS:
-        val, pgt = st.get(key), gts.get(store)
-        if not isinstance(val, bool) or isinstance(pgt, bool) or not isinstance(pgt, (int, float)) \
-                or not math.isfinite(pgt) or pgt <= 0:
-            continue                                   # json can carry NaN/Infinity: not a stamp, and int() of it raises
-        pgt = int(pgt)
-        if pgt <= _setting_stored_gt(store):
-            continue                                   # older or equal: nothing newer to learn
-        applied = setter(val, gt=pgt)                  # a same value lands too — the setter treats a newer
-        #                                                stamp as an apply (the echo rule needs an EQUAL one)
-        _pop_stale_notice()                            # no WS gesture made this: never leave a verdict for one
-        if applied is not None:
-            adopted.append(store)
-            sys.stderr.write("setting %s: adopted %s's newer pick (%s, gesture %d) — one value, one stamp across machines\n"
-                             % (store, host, val, pgt))
-    return adopted
 
 
 # Every gt-gated store, by the name _setting_stale is called with — the vocabulary the settingStale
@@ -51390,6 +51395,352 @@ _GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "t
               "judge-fast", "distill-fast", "index-fast",
               "always-fast", "retry-upgrade")   # the model switches (2026-09-17)
 
+
+# ── settings across machines, phase one A (plans/settings-across-machines.md; the user's rules of 2026-09-18) ────────
+# Three facts per synchronized store per kernel: the LOCAL value (the store, as ever; only a local gesture writes it),
+# the PIN (settings-pins.json: this machine keeps its value against every remote input) and the PROPOSAL
+# (settings-proposals.json: a remote value under a newer stamp this kernel has NOT applied, surfaced to the user, applied
+# only on their Apply). The poll's inbound leg proposes instead of adopting; a remote-origin click on a pinned store
+# stands down; the user answers a proposal through /setting-proposal. The four adopted booleans are the whole of it.
+SETTINGS_PINS_FILE = "settings-pins.json"
+SETTINGS_PROPOSALS_FILE = "settings-proposals.json"
+
+
+def _json_store(name):
+    try:
+        d = json.loads((jd.STATE / name).read_text())
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _settings_pins():
+    """{store: {"pinned": bool, "gt": int}} for every store the file names; an unreadable file reads as no pins."""
+    return {s: v for s, v in _json_store(SETTINGS_PINS_FILE).items() if isinstance(v, dict)}
+
+
+def _setting_pinned(store):
+    return bool((_settings_pins().get(store) or {}).get("pinned"))
+
+
+def _settings_pinned_map():
+    """/version's `settingsPinned`: {store: true} for every pinned store (additive; an older reader ignores it)."""
+    return {s: True for s, v in _settings_pins().items() if v.get("pinned")}
+
+
+def _set_setting_pin(store, pinned, gt=None, origin=None):
+    """Pin (or unpin) `store` on THIS machine: gt-gated like every setting (a stale gesture stands down, an equal stamp with
+    the same state is an echo), written atomically under _SETTINGS_LOCK. A pin drops the store's pending proposals (the pin
+    is the standing answer). Returns the applied stamp, or None. Per machine by definition: set only by this kernel's own
+    dashboard (setSettingPin, routed to the local kernel alone and stamped `origin` local by federation.ts) or by a
+    proposal's pin answer; any other origin stands down (round two). A stale pin gesture is said on stderr and answers NO
+    settingStale frame: `pin:<store>` is outside the gear's vocabulary, and a frame it cannot name is worse than none."""
+    if store not in _SETTINGS_STORES:
+        return None
+    if origin != "local":
+        sys.stderr.write("setting pin %s: a pin is set by this machine's own dashboard alone (origin %r); nothing applied\n" % (store, origin))
+        return None
+    with _SETTINGS_LOCK:
+        _stale_seen.last = None
+        _stale_seen.refused = None                         # nothing for the arm's _tell_stale_gesture to pop: no frame
+        pins = _settings_pins()
+        prev = pins.get(store) or {}
+        prev_gt = _gt_int(prev.get("gt"))
+        if _gesture_echo(gt, prev_gt, bool(prev.get("pinned")) == bool(pinned)):
+            return None
+        if gt is not None and _gt_int(gt) <= prev_gt:
+            sys.stderr.write("setting pin %s: stale gesture stood down (gesture %d <= applied %d); nothing applied\n" % (store, _gt_int(gt), prev_gt))
+            return None
+        stamp = gt if gt is not None else int(time.time() * 1000)
+        pins[store] = {"pinned": bool(pinned), "gt": stamp}
+        try:
+            _atomic_write(jd.STATE / SETTINGS_PINS_FILE, json.dumps(pins))
+        except OSError as e:
+            sys.stderr.write("setting pin %s: write failed (%s), nothing applied\n" % (store, e))
+            return None
+        if pinned:
+            _proposal_drop(store)
+        return stamp
+
+
+def _pinned_stand_down(store, gt, enabled, snap, origin):
+    """The setters' pin gate, read BEFORE the stale check and only for a gesture whose origin is not this machine's own
+    dashboard (`origin` "local"; the field is set by federation.ts on the broadcast, and a message without it is read as
+    remote, the conservative reading for a dashboard from before this change). A refused click is told to the delivering
+    socket the way a refused write is (a settingStale frame, `why` pinned, the kept value named), never a silent refusal."""
+    if origin == "local" or not _setting_pinned(store):
+        return False
+    _note_refused_gesture(store, gt, enabled, snap if isinstance(snap, dict) else {}, why="pinned on this machine", known=True, pinned=True)
+    sys.stderr.write("setting %s: a remote machine's pick (%s) stood down: pinned on this machine\n" % (store, "on" if enabled else "off"))
+    return True
+
+
+# One name per peer across both legs (round two of one A; per row and persisted since round three): the poll names a peer
+# by its remotes-row key (the alias the user attached it under) and a push names itself by _self_host(). The token-gated
+# /version carries the peer's own name beside its settings, so the poll writes it on the ROW (`self_name`, saved with the
+# row in remotes.json, gone with the row on detach) and a push's self-name resolves to the row key through the rows. A record
+# a push filed under the self-name before the first poll (first contact) is re-keyed onto the row key when the poll learns
+# the name, so one machine never holds two records. Rows, not the tunnel: a push arrives on loopback through the pusher's
+# own forward, which names no peer on this side, and a global self-name map let a row attached under another machine's own
+# name capture its records (the verifier's finds on rounds two and three).
+def _learn_peer_name(r, self_name):
+    """The poll's lesson for one row: the peer's own name from its /version. New to the row, it is written on the row (the
+    supervisor's signature-gated save persists it) and every proposal record and kept stamp filed under the self-name moves
+    onto the row key; a name equal to the key, or one the row already knows, teaches nothing."""
+    if not isinstance(r, dict) or not isinstance(self_name, str) or not self_name:
+        return
+    key = r.get("host")
+    if not isinstance(key, str) or not key or self_name == key or r.get("self_name") == self_name:
+        return
+    r["self_name"] = self_name
+    _rekey_peer_proposals(self_name, key)
+
+
+def _peer_key(self_name):
+    """The ONE name a pushing machine's proposals are recorded under: the key of the row whose learned `self_name` it is,
+    else the name given (a peer with no row here, the one-directional attach, keeps its own name)."""
+    self_name = str(self_name or "?")
+    with _remotes_lock:
+        for key, r in _remotes.items():
+            if r.get("self_name") == self_name:
+                return key
+    return self_name
+
+
+def _rekey_peer_proposals(old, new):
+    """Move every store's record and kept stamp from machine `old` to machine `new` (a self-name onto its row key): a record
+    already under `new` keeps whichever carries the newer stamp; kept stamps keep the newer. Says nothing: the poll that
+    follows finds the moved record standing."""
+    if old == new:
+        return False
+    with _SETTINGS_LOCK:
+        recs = _settings_proposals()
+        changed = False
+        for store, rec in recs.items():
+            moved = rec["hosts"].pop(old, None)
+            if moved is not None:
+                have = rec["hosts"].get(new)
+                if have is None or _gt_int(moved.get("gt")) > _gt_int(have.get("gt")):
+                    rec["hosts"][new] = moved
+                changed = True
+            kept = rec["answered"].pop(old, None)
+            if kept is not None:
+                rec["answered"][new] = max(kept, rec["answered"].get(new) or 0)
+                changed = True
+        if changed:
+            _proposals_write(recs)
+        return changed
+
+
+def _forget_peer_proposals(row_key):
+    """A detached row's proposals and kept stamps go with it (a re-attach under a new alias polls afresh)."""
+    with _SETTINGS_LOCK:
+        recs = _settings_proposals()
+        changed = False
+        for store, rec in recs.items():
+            if rec["hosts"].pop(row_key, None) is not None or rec["answered"].pop(row_key, None) is not None:
+                changed = True
+        if changed:
+            _proposals_write(recs)
+        return changed
+
+
+def _settings_proposals():
+    """{store: {"hosts": {machine: {value, gt, seen, current}}, "answered": {machine: gt}}} from settings-proposals.json: ONE
+    record per (store, machine) (round two: a second machine proposing the same store rewrote the first's record every pass,
+    a notice per pass and Keep mine never sticking), and per machine the stamp the user kept against, so that stamp is not
+    proposed again. A one-slot record from the first cut (its host and value at the top) reads as that machine's record."""
+    out = {}
+    for s, v in _json_store(SETTINGS_PROPOSALS_FILE).items():
+        if not isinstance(v, dict):
+            continue
+        if "value" in v:                                                   # the first cut's one-slot shape
+            out[s] = {"hosts": {str(v.get("host") or "?"): {k: v.get(k) for k in ("value", "gt", "seen", "current")}}, "answered": {}}
+            continue
+        hosts = v.get("hosts") if isinstance(v.get("hosts"), dict) else {}
+        answered = v.get("answered") if isinstance(v.get("answered"), dict) else {}
+        hosts = {h: r for h, r in hosts.items() if isinstance(r, dict) and "value" in r}
+        if set(answered) == {"gt"}:                                        # the first cut's answered-only shape named no machine:
+            answered = {next(iter(hosts)): answered["gt"]} if len(hosts) == 1 else {}   # the one recorded machine's, else forgotten
+        out[s] = {"hosts": hosts,
+                  "answered": {h: _gt_int(g) for h, g in answered.items() if isinstance(g, (int, float)) and not isinstance(g, bool)}}
+    return out
+
+
+def _proposals_write(recs):
+    recs = {s: r for s, r in recs.items() if r.get("hosts") or r.get("answered")}
+    try:
+        _atomic_write(jd.STATE / SETTINGS_PROPOSALS_FILE, json.dumps(recs))
+    except OSError as e:
+        sys.stderr.write("settings proposals: write failed (%s)\n" % e)
+
+
+def _proposal_drop(store, host=None, answered_gt=None):
+    """Forget `store`'s pending proposal from `host` (every machine's when `host` is None: a pin is the standing answer to
+    all of them); with `answered_gt`, remember that stamp as answered for that machine (Keep mine), so its next poll with
+    the same stamp raises nothing and only a newer click there raises a fresh one."""
+    with _SETTINGS_LOCK:
+        recs = _settings_proposals()
+        rec = recs.get(store) or {"hosts": {}, "answered": {}}
+        had = bool(rec["hosts"]) if host is None else host in rec["hosts"]
+        if not had and answered_gt is None:
+            return False
+        if host is None:
+            rec["hosts"] = {}
+        else:
+            rec["hosts"].pop(host, None)
+            if answered_gt is not None:
+                rec["answered"][host] = int(answered_gt)
+        recs[store] = rec
+        _proposals_write(recs)
+        return True
+
+
+def _settings_proposals_map():
+    """/version's `settingsProposals` (to a caller with the token, round two): {store: [record, ...]}, the PENDING records only,
+    one per proposing machine, newest stamp first: host, value, gt, and `current`, the LIVE local value (the first cut served
+    the value the record was raised against, which contradicted the control after a local click until the next poll)."""
+    values, _stamps = _mesh_settings_snapshot()
+    key_of = {store: key for key, store, _f in _MESH_ADOPTED_SETTINGS}
+    out = {}
+    for s, rec in _settings_proposals().items():
+        rows = [{"host": h, "value": r.get("value"), "gt": _gt_int(r.get("gt")), "current": values.get(key_of.get(s))}
+                for h, r in rec["hosts"].items()]
+        if rows:
+            out[s] = sorted(rows, key=lambda r: -r["gt"])
+    return out
+
+
+def _proposal_notice(store, host, rec, refreshed):
+    """The interim alert (one A): one sync notice per proposal RECORD revision (a record is per machine), in the user's terms,
+    naming the machine, the setting and the two values; the owner-less notice card of one B replaces it."""
+    label = _SETTINGS_LABELS.get(store, store)
+    _sync_notice("%s proposes turning %s %s (this machine has it %s); Apply or Keep mine in Settings%s"
+                 % (host or "another machine", label, "on" if rec.get("value") else "off",
+                    "on" if rec.get("current") else "off", " (the proposal moved)" if refreshed else ""), ok=True, kind="sync")
+
+
+def _propose_peer_settings(host, rver):
+    """The poll's inbound leg (in place of adoption, one A): for every adopted store the peer reports under a stamp NEWER
+    than the local store's, a DIFFERENT value raises or refreshes THIS MACHINE's proposal record for the store and applies
+    NOTHING; the SAME value lifts the local stamp only (as before: it applies nothing the user can see and keeps a later
+    local click from being proposed back); a pinned store raises none; a stamp the user already kept against raises none.
+    Records are per (store, machine): another machine's record for the same store stands untouched, and a record whose
+    value has come to equal the local one, or whose stamp a later local click outranks, drops whoever raised it. Returns the
+    stores THIS peer's poll left a proposal standing for (raised, refreshed or unchanged). Runs on the supervisor thread."""
+    st = (rver or {}).get("settings") if isinstance(rver, dict) else None
+    gts = (rver or {}).get("settingsGt") if isinstance(rver, dict) else None
+    if not isinstance(st, dict) or not isinstance(gts, dict):
+        return []
+    host = str(host or "?")                    # the row key as the caller names it; a push's self-name is resolved by the caller
+    values, stamps = _mesh_settings_snapshot()
+    pending = []
+    with _SETTINGS_LOCK:
+        recs = _settings_proposals()
+        changed = False
+        for key, store, setter in _MESH_ADOPTED_SETTINGS:
+            val, pgt = st.get(key), gts.get(store)
+            if not isinstance(val, bool) or isinstance(pgt, bool) or not isinstance(pgt, (int, float)) \
+                    or not math.isfinite(pgt) or pgt <= 0:
+                continue
+            pgt = int(pgt)
+            mine, mine_gt = values.get(key), stamps.get(store) or 0
+            rec = recs.get(store) or {"hosts": {}, "answered": {}}
+            for h in list(rec["hosts"]):                       # a record is a DIFFERENT value under a NEWER stamp, whoever
+                r = rec["hosts"][h]                            # raised it: ours now, or outranked by a later local click, it drops
+                if r.get("value") == mine or _gt_int(r.get("gt")) <= mine_gt:
+                    rec["hosts"].pop(h, None); recs[store] = rec; changed = True
+            mine_rec = rec["hosts"].get(host) or {}
+            if pgt <= mine_gt or val == mine:
+                if pgt > mine_gt and val == mine:          # the same value under a newer stamp: the stamp lifts, nothing to show
+                    setter(val, gt=pgt, origin="local")
+                    _pop_stale_notice()
+                if mine_rec and (pgt >= _gt_int(mine_rec.get("gt")) or mine == mine_rec.get("value")):
+                    rec["hosts"].pop(host, None); recs[store] = rec; changed = True   # this machine's divergence ended: its
+                    #                              CURRENT news agrees or is older than ours; a stale push (an older stamp than
+                    #                              its record's) is not news and drops nothing
+                continue
+            if _setting_pinned(store):
+                if rec["hosts"]:
+                    rec["hosts"] = {}; recs[store] = rec; changed = True
+                continue
+            if rec["answered"].get(host) == pgt:           # the user kept theirs against this very stamp from this machine
+                continue
+            if mine_rec.get("value") == val and _gt_int(mine_rec.get("gt")) == pgt:
+                pending.append(store); continue            # standing, unchanged: nothing said
+            refreshed = bool(mine_rec)
+            rec["hosts"][host] = {"value": val, "gt": pgt, "seen": int(time.time()), "current": mine}
+            rec["answered"].pop(host, None)
+            recs[store] = rec; changed = True; pending.append(store)
+            sys.stderr.write("setting %s: %s proposes %s under gesture %d (this machine has %s); nothing applied, the user answers\n"
+                             % (store, host, val, pgt, mine))
+            _proposal_notice(store, host, rec["hosts"][host], refreshed)
+        if changed:
+            _proposals_write(recs)
+    return pending
+
+
+def _answer_setting_proposal(body):
+    """POST /setting-proposal: {"store", "host", "gt", "answer": "apply" | "keep" | "pin"}, acting only on THIS kernel's own
+    pending record for `store` from `host` (the one record when the body names no machine), and only when `gt` names the
+    record's stamp (that machine changed its mind otherwise: refused with the reason, the gear re-fills). apply: the value
+    through the store's own gt-gated setter under the PEER's stamp (the two machines then hold one stamp and the peer's
+    next poll proposes nothing back); a local click that already outranks the record is refused and drops it (round two:
+    the first cut answered ok with nothing applied); keep: that machine's record drops and its stamp is remembered as
+    answered; pin: the pin is set and every record for the store drops. Answers the current snapshot with the pins and the
+    proposals."""
+    def out(ok, err=None):
+        values, stamps = _mesh_settings_snapshot()
+        d = {"ok": ok, "settings": values, "settingsGt": stamps, "settingsPinned": _settings_pinned_map(),
+             "settingsProposals": _settings_proposals_map()}
+        if err:
+            d["error"] = err
+        return d
+    if not isinstance(body, dict):
+        return out(False, "a JSON object is required")
+    store = str(body.get("store") or "")
+    answer = str(body.get("answer") or "")
+    if store not in _SETTINGS_STORES:
+        return out(False, "store %r is not a synchronized setting" % store)
+    if answer not in ("apply", "keep", "pin"):
+        return out(False, "answer must be apply, keep or pin")
+    rec = _settings_proposals().get(store) or {"hosts": {}, "answered": {}}
+    host = body.get("host")
+    if not isinstance(host, str) or not host:
+        if len(rec["hosts"]) != 1:
+            return out(False, "no proposal is pending for %s" % store if not rec["hosts"]
+                       else "name the machine whose proposal you are answering")
+        host = next(iter(rec["hosts"]))
+    prop = rec["hosts"].get(host)
+    if prop is None:
+        return out(False, "no proposal is pending for %s from %s" % (store, host))
+    pgt = _gt_int(prop.get("gt"))
+    if _gt_int(body.get("gt")) != pgt:
+        return out(False, "%s changed its mind since this line was drawn; the line is refreshed" % host)
+    if answer == "apply":
+        if _setting_stored_gt(store) >= pgt:               # a click on this machine since the record was raised outranks it
+            _proposal_drop(store, host)
+            return out(False, "your own newer choice stands; the proposal is dropped")
+        setter = dict((s, f) for _k, s, f in _MESH_ADOPTED_SETTINGS)[store]
+        applied = setter(bool(prop["value"]), gt=pgt, origin="local")   # the user's own answer on this machine
+        _pop_stale_notice(); _pop_refused_notice()
+        _proposal_drop(store, host)
+        if applied is None:
+            return out(False, "the setter refused the value (see the kernel's log); nothing applied")
+        for h, r in list((_settings_proposals().get(store) or {}).get("hosts", {}).items()):
+            if r.get("value") == bool(prop["value"]):      # the machines proposing the value now held agree with us
+                _proposal_drop(store, h)
+        sys.stderr.write("setting %s: the user applied %s's proposal (%s, gesture %d)\n" % (store, host, prop["value"], pgt))
+        return out(True)
+    if answer == "keep":
+        _proposal_drop(store, host, answered_gt=pgt)
+        sys.stderr.write("setting %s: the user kept this machine's value against %s's proposal (gesture %d)\n" % (store, host, pgt))
+        return out(True)
+    _set_setting_pin(store, True, gt=int(time.time() * 1000), origin="local")
+    _pop_stale_notice()
+    _proposal_drop(store)
+    sys.stderr.write("setting %s: the user pinned this machine's value against %s's proposal\n" % (store, host))
+    return out(True)
 
 def _setting_stored_gt(name):
     """The last-APPLIED gesture stamp a store holds — _setting_kept_value's switch, for the stamp
@@ -51457,13 +51808,18 @@ def _tell_stale_gesture(client, msg):
     if not rf:
         return
     kept = _setting_kept_value(rf["setting"]) if rf.get("known") else None
-    if not rf.get("write"):                            # a write fault's row is the writer's, once per episode
+    if not rf.get("write") and not rf.get("pinned"):   # a write fault's row is the writer's, once per episode; a pin is no fault
         _sdk_problem("setting %s: %s was not applied — %s; the stored value%s stands until the ledger reads again"
                      % (rf["setting"], rf["refused"], rf["why"],
                         "" if kept is None else " (%s)" % ("on" if kept else "off")))
-    _reply(client, {"type": "settingStale", "setting": rf["setting"],
-                    "storedGt": _setting_stored_gt(rf["setting"]), "gt": rf["gt"], "kept": kept,
-                    "why": rf["why"], "gesture": {k: v for k, v in msg.items() if k != "gt"}})
+    frame = {"type": "settingStale", "setting": rf["setting"],
+             "storedGt": _setting_stored_gt(rf["setting"]), "gt": rf["gt"], "kept": kept,
+             "gesture": {k: v for k, v in msg.items() if k != "gt"}}
+    if rf.get("pinned"):
+        frame["pinned"] = True                         # its own field (one A round two): the gear says the value is pinned,
+    else:                                              # never the file-fault clause a bare `why` reads as
+        frame["why"] = rf["why"]
+    _reply(client, frame)
 
 
 # ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel chat-view/src/
@@ -64959,7 +65315,7 @@ class Handler(BaseHTTPRequestHandler):
                                   headers={"X-Romp-Boot": _BOOT_ID,
                                            "Access-Control-Expose-Headers": "X-Romp-Boot"})
             if p == "/version":                               # build/version report — exempt from auth (no paths, harmless)
-                return self._send(200, json.dumps(_version_info()), "application/json", cache="no-cache")
+                return self._send(200, json.dumps(_version_info(authed=self._authorize(q)[0])), "application/json", cache="no-cache")
             if p == "/busy":
                 # In-flight SDK turn count — the manager's quiet-window gate for deferred deploy
                 # refreshes (it polls this only while a refresh is pending). The READ is auth-exempt
@@ -67123,6 +67479,15 @@ class Handler(BaseHTTPRequestHandler):
                     fwd = {k: v for k, v in body.items() if k != "propagate"}
                     threading.Thread(target=_propagate_judge_settings, args=(fwd,), daemon=True).start()
                 return self._send(200, json.dumps(res), "application/json")
+            if u.path == "/setting-proposal":
+                # The user's answer to a pending proposal (plans/settings-across-machines.md, one A): {"store", "gt", "answer":
+                # "apply" | "keep" | "pin"}, this kernel's own records only, the stamp checked; behind the serve token like
+                # /mesh-settings. The gear's second line posts here; the owner-less card of one B will too.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                return self._send(200, json.dumps(_answer_setting_proposal(body if isinstance(body, dict) else {})), "application/json")
             if u.path == "/mesh-settings":
                 # The gesture route a PEER's supervisor pushes its newer kernel-side booleans through (T248c:
                 # compactSuggest / autoNudge / fileEditing with the origin stamp), behind this kernel's serve
@@ -67574,7 +67939,7 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_auto_nudge(enabled, gt=_gesture_ms(msg)) is not None:
+            if _set_auto_nudge(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is not None:
                 # turn-ON acts at once instead of waiting out the pusher's 0.5 s backstop; turning off
                 # has nothing to act on (the tick is a no-op when off, so this also spares the WS
                 # thread the listing fork). The single-flight rule, the dead-wait sweep skip and the
@@ -67595,7 +67960,7 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_compact_suggest(enabled, gt=_gesture_ms(msg)) is not None:
+            if _set_compact_suggest(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is not None:
                 _ws_act_now_tick()
             else:
                 _tell_stale_gesture(client, msg)
@@ -67611,7 +67976,7 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_file_editing(enabled, gt=_gesture_ms(msg)) is None:
+            if _set_file_editing(enabled, gt=_gesture_ms(msg), origin=msg.get("origin")) is None:
                 _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") == "setThinkingSummaries" and msg.get("enabled") is not None:
             # The gear's Thinking summaries checkbox (2026-09-01) — kernel-side like setFileEditing but
@@ -67632,6 +67997,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if _set_whole_chat_frames(enabled, gt=_gesture_ms(msg)) is None:
                 _tell_stale_gesture(client, msg)
+        elif msg and msg.get("type") == "setSettingPin" and msg.get("store"):
+            # The per-machine PIN (plans/settings-across-machines.md, one A): this dashboard's own kernel keeps the store's value
+            # against every remote input. Never a KERNEL_SETTING (a pin is per machine by definition); gt-gated like its siblings.
+            pinned, ferr = _as_bool(msg.get("pinned"), "pinned")
+            if ferr:
+                _refuse_ws_flag(client, msg["type"], ferr, "pinned", msg.get("pinned"))
+                return
+            if _set_setting_pin(str(msg.get("store")), pinned, gt=_gesture_ms(msg), origin=msg.get("origin")) is None:
+                _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") == "setTaskTracking" and msg.get("enabled") is not None:
             # The gear's Task tracking master switch (T404): kernel-side, gt-gated like its siblings, a
             # KERNEL_SETTING in federation. Applied, the producer is woken so the tiers stop or start at the
@@ -67640,7 +68014,7 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            stamp = _set_task_tracking(enabled, gt=_gesture_ms(msg))
+            stamp = _set_task_tracking(enabled, gt=_gesture_ms(msg), origin=msg.get("origin"))
             if stamp is None:
                 _tell_stale_gesture(client, msg)       # a stale stand-down or a refused write, told on this socket
             else:

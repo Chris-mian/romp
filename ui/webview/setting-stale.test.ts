@@ -74,7 +74,7 @@ test("the toast's copy names the setting, the refused value, the hosts and the k
   assert.ok(GEAR.includes("(refused ? refused + ' was not applied on ' : 'not applied on ')"), "the refused value, when the echo carries one");
   assert.ok(GEAR.includes("(kept ? ' Keeping ' + kept + '.' : '')"), "the kept value, with no ordering word");
   const copy = GEAR.slice(GEAR.indexOf("function staleText("), GEAR.indexOf("if (!p.hidden) fill();"));
-  assert.ok(copy.length > 0 && copy.length < 6000, "the copy helper and the listener located (a sanity bound on the slice)");
+  assert.ok(copy.length > 0 && copy.length < 8000, "the copy helper and the listener located (a sanity bound on the slice; the pin clause of one A round two sits inside it)");
   for (const claim of ["somewhere else", "another device", "elsewhere", "changed more recently", "later pick", "newer pick", "already in place"])
     assert.ok(!copy.includes(claim), `the toast no longer says "${claim}"`);
   assert.ok(!GEAR.includes("changed more recently") && !GEAR.includes("already in place"), "the old copy is gone from the file");
@@ -82,7 +82,7 @@ test("the toast's copy names the setting, the refused value, the hosts and the k
   // the kernel echoes it without gt), read only for the setting the frame names — the whitelist Apply
   // anyway uses — and any other shape reads as no value
   assert.match(GEAR, /function staleRefused\(m\)/, "the refused value is read off the echo");
-  assert.ok(GEAR.includes("var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type'; });"), "…as the one key beside type");
+  assert.ok(GEAR.includes("var keys = Object.keys(m.gesture).filter(function (k) { return k !== 'type' && k !== 'origin'; });"), "…as the one key beside type and the broadcast's origin (one A)");
 });
 
 test("Apply anyway re-issues the echoed gesture with a fresh stamp, and only for the setting the frame names", () => {

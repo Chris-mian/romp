@@ -389,7 +389,13 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   // change as applied everywhere: Auto Nudge switched off in the dashboard, still nudging the sessions
   // running on the other machine (the user 2026-08-14, whose two kernels had been disagreeing for days
   // with nothing on screen to say so). Broadcast, like the hover clear above.
-  if (KERNEL_SETTING.has(msg.type)) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
+  // Each copy carries its ORIGIN (plans/settings-across-machines.md, one A): "local" to this dashboard's own kernel,
+  // "remote" to every attached host, so a kernel whose user PINNED the store on that machine can stand a remote
+  // click down (a settingStale frame, why pinned) while its own dashboard's click still applies. A message without
+  // the field is read as remote by the kernel, the conservative reading for a dashboard from before this change.
+  if (KERNEL_SETTING.has(msg.type)) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg: { ...msg, origin: h === LOCAL ? "local" : "remote" } }));
+  // a PIN is per machine (one A): this dashboard's own kernel alone, stamped local, the one origin its kernel takes a pin from
+  if (msg.type === "setSettingPin") return [{ host: LOCAL, msg: { ...msg, origin: "local" } }];
 
   // The BOARD-WIDE Clear all (the feed footer's, T286; the session header's Clear all is askClearMany, routed
   // by its session id below) carries no session id, so it fell through to the local kernel alone and a merged
