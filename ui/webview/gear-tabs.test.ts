@@ -45,7 +45,7 @@ test("seven tabs, in the user's order (T400: General first, Debug last; T404: Au
 test("every existing control keeps its id and sits in exactly one pane, by the approved grouping", () => {
   const ps = panes();
   const where: Record<string, string[]> = {
-    general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+    general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-artctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
     chat: ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-wholechat", "rs-widgets", "rs-rings", "rs-swidgets"],   // rs-rings: the ring widgets' rows (2026-09-14), under the title widgets' rows in the same section
     feed: ["rs-feedcollapsed"],
     sessions: ["rs-defaultdir", "rs-backend"],
@@ -66,7 +66,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   // T404: General opens with the account, then the panes (the Files control among them), Appearance, Permissions, This machine, the
   // shortcuts; Debug opens with the judges' debug views, then the diagnostics (Updates went to General)
   const G = ps.general;
-  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-filesctl") < G.indexOf("data-section=appearance>Appearance<")
+  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-filesctl") < G.indexOf("id=rs-artctl") && G.indexOf("id=rs-artctl") < G.indexOf("data-section=appearance>Appearance<")
             && G.indexOf("data-section=appearance>Appearance<") < G.indexOf(">Permissions<") && G.indexOf(">Permissions<") < G.indexOf("id=rs-fileedit") && G.indexOf("id=rs-fileedit") < G.indexOf(">This machine<")
             && G.indexOf(">This machine<") < G.indexOf("id=rs-conserve") && G.indexOf("id=rs-conserve") < G.indexOf("id=rs-updates") && G.indexOf("id=rs-updates") < G.indexOf(">Keyboard shortcuts<"),
             "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");
