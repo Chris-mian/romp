@@ -1746,10 +1746,13 @@ export function initFileView(poster: (m: Record<string, unknown>) => void,
     } else if (m.type === "fileSaveFailed" && editHooks && m.reqId === editHooks.reqId) {
       const h = editHooks; editHooks = null;
       h.failed(String(m.error || "the save failed"));
-    } else if (m.type === "warn" && editHooks) {
+    } else if (m.type === "warn" && typeof m.sid !== "string" && editHooks) {
       // A federation drop (the session's host unreachable) answers a saveFile with a warn instead
       // of a reply — the feed page renders no toasts, so without this the button spins forever
       // (the same hole the browse overlay closed for listDir).
+      // A warn carrying a session id answers a send INTO that session (the kernel's refusal of a slash command a
+      // Codex session cannot take, broadcast to every chat pane when no socket carried it; 2026-09-19), never this
+      // save: mid-save it read as the save failing. A save's own failure names no session.
       const h = editHooks; editHooks = null;
       h.failed(String(m.text || "the session's host is not answering — the save was not sent"));
     }
