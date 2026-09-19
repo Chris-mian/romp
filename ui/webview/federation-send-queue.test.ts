@@ -91,11 +91,11 @@ test("a kernel setting sent while the socket is still CONNECTING is delivered on
     fm.outbound({ type: "setFileEditing", enabled: true });
     // the LOCAL kernel's copy goes out at once (the pane shim's own queue covers the local socket)
     assert.deepEqual(localSends.filter((m) => m.type === "setFileEditing"),
-      [{ type: "setFileEditing", enabled: true }]);
+      [{ type: "setFileEditing", enabled: true, origin: "local" }]);
     assert.deepEqual(sock.types(), [], "nothing can ride a CONNECTING socket");
     sock.open();
     assert.deepEqual(sock.types(), ["setFileEditing"], "the open event itself delivers the queued setting");
-    assert.deepEqual(JSON.parse(sock.sent[0]), { type: "setFileEditing", enabled: true });
+    assert.deepEqual(JSON.parse(sock.sent[0]), { type: "setFileEditing", enabled: true, origin: "remote" });
   });
 });
 
@@ -203,7 +203,7 @@ test("a queued setting's gesture stamp survives the queue and the flush unchange
     const sock = attach(fm, "TESTHOSTA");
     fm.outbound({ type: "setJudgeModel", model: "m1", gt: 1111 });
     sock.open();
-    assert.deepEqual(JSON.parse(sock.sent[0]), { type: "setJudgeModel", model: "m1", gt: 1111 },
+    assert.deepEqual(JSON.parse(sock.sent[0]), { type: "setJudgeModel", model: "m1", gt: 1111, origin: "remote" },
       "the flush delivers the message byte-identical — gt is the kernel's ordering key");
   });
 });
@@ -215,7 +215,7 @@ test("latest-wins keeps the newest gesture's OWN stamp — never a blend of two 
     fm.outbound({ type: "setJudgeModel", model: "m2", gt: 2000 });
     sock.open();
     assert.deepEqual(sock.sent.map((s) => JSON.parse(s)),
-      [{ type: "setJudgeModel", model: "m2", gt: 2000 }]);
+      [{ type: "setJudgeModel", model: "m2", gt: 2000, origin: "remote" }]);
   });
 });
 
@@ -239,7 +239,7 @@ test("a setting sent after the watchdog abandons a quiet socket queues on the co
     assert.deepEqual(s2.sent, [], "nothing can ride a CONNECTING socket");
     assert.equal(diags(localSends, "senddrop").length, 0, "a setting is queued, never dropped");
     s2.open();
-    assert.deepEqual(s2.sent.map((s) => JSON.parse(s)), [{ type: "setFileEditing", enabled: true, gt: 1234 }],
+    assert.deepEqual(s2.sent.map((s) => JSON.parse(s)), [{ type: "setFileEditing", enabled: true, gt: 1234, origin: "remote" }],
       "the fresh socket's open delivers it, stamp intact");
     const open = diags(localSends, "hostconn").filter((d) => d.data.ev === "open").pop();
     assert.deepEqual(open.data, { host: "TESTHOSTA", ev: "open", flushed: ["setFileEditing"] },
@@ -258,7 +258,7 @@ test("a setting queued on a CLOSED socket survives the watchdog's lost-timer red
     const s2 = FakeSocket.instances[1];
     assert.ok(s2 && s2 !== s1, "redialed by the watchdog");
     s2.open();
-    assert.deepEqual(s2.sent.map((s) => JSON.parse(s)), [{ type: "setAutoNudge", enabled: false, gt: 5 }]);
+    assert.deepEqual(s2.sent.map((s) => JSON.parse(s)), [{ type: "setAutoNudge", enabled: false, gt: 5, origin: "remote" }]);
   });
 });
 
@@ -279,7 +279,7 @@ test("a setting queued for a down host leaves a sendqueue breadcrumb: host, type
     assert.equal(q2.length, 2);
     assert.deepEqual(q2[1].data, { host: "TESTHOSTA", msgType: "setJudgeModel", gt: 2000, rs: 0, superseded: 1000 });
     sock.open();
-    assert.deepEqual(sock.sent.map((s) => JSON.parse(s)), [{ type: "setJudgeModel", model: "m2", gt: 2000 }],
+    assert.deepEqual(sock.sent.map((s) => JSON.parse(s)), [{ type: "setJudgeModel", model: "m2", gt: 2000, origin: "remote" }],
       "the flush itself is unchanged: latest per type, stamp intact");
   });
 });
@@ -338,7 +338,7 @@ test("a send that throws mid-flush clears only the delivered entries: the held o
     sock.readyState = 3;
     const s2 = redial(fm, "TESTHOSTA");
     s2.open();
-    assert.deepEqual(s2.sent.map((s) => JSON.parse(s)), [{ type: "setJudgeModel", model: "m1", gt: 20 }],
+    assert.deepEqual(s2.sent.map((s) => JSON.parse(s)), [{ type: "setJudgeModel", model: "m1", gt: 20, origin: "remote" }],
       "the delivered entry is not replayed — a replay is one gesture delivered twice");
     assert.equal(fm.conns.get("TESTHOSTA").pending.size, 0);
   });
