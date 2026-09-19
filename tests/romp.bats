@@ -2674,6 +2674,11 @@ PY
     [[ "$output" == *"posted (key w, rev 1) on the feed:"* ]]
     [ "$(grep '/notice' "$MOCK_LOG" | grep -c '"category": *"working"')" -eq 1 ]
     [ "$(grep '/notice' "$MOCK_LOG" | grep -c '"board": *"feed"')" -eq 0 ]
+    # an owner-less card on a board: the line says both where it filed and that it has no session (the 1861 read, low)
+    MOCK_CURL_NOTICE_OK='{"ok": true, "notice": {"key": "o", "rev": 1, "sid": "notes", "board": "figures", "category": "new"}}' \
+        run env ROMP_SID= "$ROMP_SCRIPT" card -t "A note on the figures board" -k o -b figures
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"on board figures/new, with no session: it shows until"* ]]
     # neither flag: neither member rides (an older kernel sees today's body)
     run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card -t "Plain" -k p
     [ "$status" -eq 0 ]

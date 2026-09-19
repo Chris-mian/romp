@@ -556,6 +556,15 @@ feed as before. `--needs-you` on a board is the board's needsYou category, and r
 resolver's words; on an unknown board the refusal comes before the defaults are minted, so the first post and every later one
 answer alike).
 
+**One rule for "needs you".** A card needs the user when it sits in its OWN board's needs-you category, and nothing else
+decides it: `_card_needs_you` on the kernel side (read by the app badge, the session's yellow ask ring through the feed's
+needs-input sids, and so build_session's `needsYou`) and `isNeedsYou(boardOf(card), category)` on the pane side (the lens
+that lets a needs-you card through every tag view). The post makes the flag and the category agree by construction: a card
+resolved into its board's needs-you category IS a needs-you card (`romp card -t x -c needs_input` files one without the
+flag), and `--needs-you` beside a category that is not that one is refused by name (drop one of the two). A feed card's
+`column` is its `category`, always; a card on another board carries the needs-you mapping as its feed column, the column
+an older pane files it under, until phase four's view switch.
+
 **The card.** `_notice_cards` copies a row's `board` and `category` onto the card when the row carries them, and keeps the
 phase-two mapping for a row without them (`feed`, `needs_input` when needsYou else `completed`), so every notice card still
 carries the two fields the boards' phase two promised and the feed's column (`column`) stays the category's feed value for a

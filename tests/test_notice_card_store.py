@@ -904,6 +904,46 @@ class Boards(unittest.TestCase):
         self.assertEqual((c["board"], c["category"], c["column"]), ("feed", "needs_input", "needs_input"))
         self.assertEqual(km._notice_standing_count("feed", "needs_input"), 1)
 
+    def test_needs_you_is_one_board_aware_rule_read_by_the_badge_the_ring_and_the_card_column(self):
+        # the 1861 read (medium): a `-c needs_input` post without --needs-you left needsYou false and the column completed, so the
+        # pane filed the card under Blocked and the badge counted it while the ring's readers (column) said no; the mirror on a
+        # data board with a hot needs-you category lit the ring and the badge while the pane showed the card under Working and a
+        # tag lens dropped it. One rule now: the card sits in its own board's needs-you category.
+        HOT = {"id": "urgent", "title": "Urgent", "categories": [{"id": "hot", "title": "Hot", "chip": "blocked"}, {"id": "cool", "title": "Cool", "chip": "neutral"}],
+               "defaultCategory": "cool", "rules": [], "sort": {"key": "t", "dir": "desc"}, "subSorts": [], "groupBy": None, "order": [], "notify": ["hot"], "needsYou": "hot", "kinds": ["notice"]}
+        km.define_board(HOT)
+        # (a) the feed: a category post IS a needs-you post; the flag, the column and the category agree
+        a, err = km.post_notice(SID, "a", "Decide the retry policy", producer="cli", now=100, t=100, category="needs_input")
+        self.assertIsNone(err); self.assertEqual((a["needsYou"], a["board"], a["category"]), (True, "feed", "needs_input"))
+        # (b) the mirror: --needs-you on the hot board files under hot, the flag true
+        b, err = km.post_notice(SID2, "b", "A hot one", producer="cli", now=101, t=101, board="urgent", needs_you=True)
+        self.assertIsNone(err); self.assertEqual((b["needsYou"], b["board"], b["category"]), (True, "urgent", "hot"))
+        # a cool card on the same board needs nobody, whatever the flag would have said; a plain feed card neither
+        c, err = km.post_notice(SID2, "c", "A cool one", producer="cli", now=102, t=102, board="urgent", category="cool")
+        self.assertIsNone(err); self.assertEqual((c["needsYou"], c["category"]), (False, "cool"))
+        d, err = km.post_notice(SID, "d", "Plain", producer="cli", now=103, t=103)
+        self.assertEqual((d["needsYou"], d["category"]), (False, "completed"))
+        cards = {x["itemId"]: x for x in km._notice_cards(200, km._cleared_ids())}
+        ca, cb, cc, cd = (cards["notice:%s:%s:1" % (sid, k)] for sid, k in ((SID, "a"), (SID2, "b"), (SID2, "c"), (SID, "d")))
+        self.assertEqual((ca["column"], ca["category"]), ("needs_input", "needs_input"), "a feed card's column IS its category")
+        self.assertEqual((cb["column"], cb["category"]), ("needs_input", "hot"), "a data board's needs-you card keeps the needs-you mapping as its feed column")
+        self.assertEqual((cc["column"], cc["category"]), ("completed", "cool")); self.assertEqual((cd["column"], cd["category"]), ("completed", "completed"))
+        feed = {"asks": list(cards.values())}
+        self.assertEqual([km._card_needs_you(x) for x in (ca, cb, cc, cd)], [True, True, False, False], "the one rule")
+        self.assertEqual(km._needs_you_count(feed), 2, "the badge counts both needs-you cards")
+        self.assertEqual(km._needs_input_sids(feed), frozenset({SID, SID2}), "the ring lights for both sessions, by the same rule")
+        # the contradiction is refused by name: --needs-you beside a category that is not the board's needs-you one
+        row, err = km.post_notice(SID, "e", "t", producer="cli", now=104, category="completed", needs_you=True)
+        self.assertIsNone(row); self.assertRegex(err, r"--needs-you files the card under 'needs_input' on board 'feed'; the category 'completed' is another")
+        row, err = km.post_notice(SID, "e", "t", producer="cli", now=104, board="urgent", category="cool", needs_you=True)
+        self.assertIsNone(row); self.assertRegex(err, r"--needs-you files the card under 'hot' on board 'urgent'; the category 'cool' is another")
+        # a row without the fields (an older post) keeps the phase-two read on every side
+        km.post_notice(SID, "old", "t", producer="cli", now=105, t=105, needs_you=True)
+        rows = _rows(SID); rows[-1].pop("board"); rows[-1].pop("category")
+        km._notice_path(SID).write_text("".join(json.dumps(r) + "\n" for r in rows)); km._NOTICE_MEMO.clear()
+        old = {x["itemId"]: x for x in km._notice_cards(200, km._cleared_ids())}["notice:%s:old:1" % SID]
+        self.assertEqual((old["board"], old["category"], old["column"], km._card_needs_you(old)), ("feed", "needs_input", "needs_input", True))
+
     def test_the_route_hands_the_two_members_through(self):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler); port = srv.server_address[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()

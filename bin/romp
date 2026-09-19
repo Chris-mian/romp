@@ -1290,7 +1290,7 @@ if b == "feed": print("")
 else:
     note = {"board": " (board %s created with category %s)" % (b, c), "category": " (category %s added to board %s)" % (c, b)}.get(made, "")
     print("on board %s/%s%s" % (b, c, note))' "$_resp" 2>/dev/null || true)"
-        [[ -n "$_cboard" ]] && _cwhere="$_cboard"
+        if [[ -n "$_cboard" ]]; then _cwhere="$_cboard"; [[ -z "$_c_who" ]] && _cwhere="$_cboard, with no session"; fi   # both facts: where it filed, and that it has no session (the 1861 read, low)
         echo "romp card: posted (key $_c_key${_crev:+, rev $_crev}) $_cwhere: it shows until you dismiss it, a post with -k $_c_key revises it, or it expires"
         exit 0
     fi

@@ -162,7 +162,9 @@ class BellAndBadgeReadTheBoard(unittest.TestCase):
             {"itemId": "e", "column": "needs_input"},                                                                     # an older card: column alone
         ]}
         self.assertEqual(km._needs_you_count(feed), 2)
-        self.assertIn('a.get("category", a.get("column")) == _board_needs_you(a.get("board"))', inspect.getsource(km._needs_you_count))
+        self.assertIn('_card_needs_you(a)', inspect.getsource(km._needs_you_count), "the badge reads the one predicate (the 1861 read)")
+        self.assertIn('a.get("category", a.get("column")) == nb', inspect.getsource(km._card_needs_you), "the predicate: the card's own board's badge category, the column from an older card")
+        self.assertIn('_card_needs_you(a)', inspect.getsource(km._needs_input_sids), "the ring's sids read the same predicate")
         # a board whose badge category is None counts nothing, a key-less card included (the 1837 read, low 2: None == None
         # counted a card carrying neither field); the table has no such board yet, so the helper stands in for one
         keyless = {"asks": [{"itemId": "k", "board": "notes"}, {"itemId": "a", "board": "notes", "category": "needs_input"}]}

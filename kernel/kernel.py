@@ -24086,6 +24086,13 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
     board_id, category_id, berr, pending = _board_resolve_post(board, category, needs_you=bool(needs_you), producer=producer, key=key)
     if berr:
         return None, berr
+    # needsYou and the category agree by construction (the 1861 read, medium): a card in its board's needs-you category IS a
+    # needs-you card (`-c needs_input` alone files a needs-you card), and --needs-you beside a category that is not that one
+    # is a contradiction, refused by name; so the row's flag, the feed column, the badge, the ring and the pane's lens read one fact
+    nb_cat = (pending or _boards().get(board_id) or _CODE_BOARDS.get(board_id) or {}).get("needsYou")
+    if needs_you and category_id != nb_cat:
+        return None, "--needs-you files the card under %r on board %r; the category %r is another: drop one of the two" % (nb_cat, board_id, category_id)
+    needs_you = nb_cat is not None and category_id == nb_cat
     created = None
     if pending is not None:
         prior_def = _boards().get(board_id)
@@ -24225,6 +24232,10 @@ def _notice_cards(now, cleared):
             # category's feed value for a feed card and the needsYou mapping for a card on another board (phase four's view switch)
             board_id = r.get("board") or "feed"
             category_id = r.get("category") or column
+            # a FEED card's column IS its category, always (the 1861 read: a `-c needs_input` card read Blocked by its category
+            # and Completed by its column); a card on another board keeps the needs-you mapping as its feed column, the
+            # column an older pane files it under, until phase four's view switch
+            column = category_id if board_id == "feed" else column
             out.append({
                 "itemId": item_id, "sid": sid,
                 "name": NOTICE_OWNERLESS_NAME if ownerless else (_name_of(sid) or sid[:8]),
@@ -53485,11 +53496,12 @@ _feed_needs_input = [None]
 
 
 def _needs_input_sids(feed):
-    """The sids with a card in the feed's needs_input column: the filing rule the feed client maps
-    (feed.ts askColumn: it.column == "needs_input"), applied per session. Placeholders count too: the
-    Blocked list shows them."""
+    """The sids with a card that needs the user: _card_needs_you, the one board-aware rule the badge reads too (the 1861
+    read: this read of `column` and the badge's read of `category` disagreed the moment a notice card's two fields could
+    differ, so the ring stayed off for a card in Blocked and lit for one the pane showed under Working). Placeholders
+    count too: the Blocked list shows them."""
     return frozenset(str(a.get("sid")) for a in (feed.get("asks") or [])
-                     if a.get("column") == "needs_input" and a.get("sid"))
+                     if _card_needs_you(a) and a.get("sid"))
 
 
 def _feed_needs_input_of(sid):
@@ -54251,6 +54263,16 @@ def _board_needs_you(board):
     return _board_def(board)["needsYou"]
 
 
+def _card_needs_you(a):
+    """THE one rule for "this card needs the user" (the 1861 read, medium): the card sits in its OWN board's needs-you category,
+    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the yellow ask ring
+    (_needs_input_sids, and through it build_session's needsYou) and the pane's lens (feed.ts isNeedsYou(boardOf(card), ...))
+    all read this; a board that names no needs-you category has no card that needs the user. A provisional placeholder is
+    a caller's concern (the badge skips it, the ring counts it: the Blocked list shows it)."""
+    nb = _board_needs_you(a.get("board"))
+    return nb is not None and a.get("category", a.get("column")) == nb
+
+
 # ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
 # The master bell (bottom-right → notify-cards.json "*"), a session's bell (timeline lane / tab menu →
 # session-flags "notify") or a card's bell (right-click → notify-cards.json) arm OS-level notifications
@@ -54575,9 +54597,7 @@ def _feed_notifications_diff(feed):
 def _needs_you_count(feed):
     """How many real (non-provisional) cards sit in needs_input — the number the app icon wears.
     Counted from the same feed build the notifications diff, so badge and bell can never disagree."""
-    return sum(1 for a in (feed.get("asks") or [])
-               if not a.get("provisional") and _board_needs_you(a.get("board")) is not None
-               and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category; a board with none counts nothing
+    return sum(1 for a in (feed.get("asks") or []) if not a.get("provisional") and _card_needs_you(a))   # the one rule, board-aware
 
 
 # The count the shell clients last heard (None = nothing sent since boot). The badge moves on feed
