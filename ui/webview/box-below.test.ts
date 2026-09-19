@@ -35,10 +35,16 @@ test("render.ts observes #bg-tasks and #footer and writes the new bottom through
   assert.ok(m, "the boxes-below observer block");
   const body = m![1];
   assert.match(body, /new ResizeObserver\(/);
-  assert.match(body, /followBoxBelow\(v\.stick, h - lastH\)/, "the recorded follow mode decides, never a post-growth atBottom read (the growth already moved the bottom away)");
+  assert.match(body, /followBoxBelow\(v\.stick \|\| wasAtBottom, dh\)/, "the recorded follow mode decides, or the PRE-growth position read back from the geometry (2026-09-19); never a post-growth atBottom read (the growth already moved the bottom away)");
   assert.match(body, /writeScroll\(content, content\.scrollHeight, "box-below", true\);/);
   assert.match(body, /v\.scrollTop = content\.scrollTop;/, "the per-view saved position follows");
   assert.match(body, /content\.clientHeight > 0/, "a hidden pane measures 0: nothing to do");
+  // the pass is an event a reader of the bottom holds at (the load flake of 2026-09-19): one per pass, with the height the pass acted on
+  assert.match(body, /window\.dispatchEvent\(new CustomEvent\("romp:box-below", \{ detail: \{ id: boxId, height: h, repinned \} \}\)\);/, "the event names the box, carries the height and says whether the reader was re-pinned");
+  assert.ok(body.indexOf("lastH = h;") < body.indexOf('new CustomEvent("romp:box-below"'), "the event fires after the pass's own work, never before it");
+  assert.match(body, /writeScroll\(content, content\.scrollHeight, "box-below", true\);\s*\n\s*v\.scrollTop = content\.scrollTop;[^\n]*\n\s*v\.stick = true;[^\n]*\n\s*repinned = true;/, "re-pinned is the write's branch, and the record says follow mode");
+  // the pre-growth truth: the geometry with the growth added back to #content's height, for a growth only (a shrink is the browser's clamp)
+  assert.match(body, /const wasAtBottom = !!\(content && lastH >= 0 && dh > 0 && atBottomDist\(content\.scrollHeight - content\.scrollTop - \(content\.clientHeight \+ dh\)\)\);/, "where the reader stood before the growth");
   // the boxes ABOVE keep their own (opposite) rule
   assert.match(RENDER, /for \(const boxId of \["tabbar", "ledger"\]\) \{/);
   assert.match(RENDER, /writeScroll\(content, content\.scrollTop \+ \(h - lastH\), "box-resize"\);/);

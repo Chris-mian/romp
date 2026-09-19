@@ -14019,11 +14019,29 @@ if (typeof ResizeObserver === "function") {
       const h = entries[0]?.contentRect?.height ?? 0;
       const content = document.getElementById("content");
       const v = activeId ? views.get(activeId) : null;
-      if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick, h - lastH)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
+      const dh = h - lastH;
+      // Where the reader stood BEFORE the growth, from the geometry (2026-09-19, the load flake behind main's red at bee556e8). The
+      // recorded mode is the pre-growth truth only while nothing scrolled between the growth and this pass, and something can: a
+      // scroll event from any other cause in that window (the append path's tail rebuild anchoring the reader, a compensation
+      // write's echo) reads the GROWN geometry, sees the reader a box's height above the new bottom, and records scrolled-up; this
+      // pass then had nothing to re-pin, and the reader stayed above the bottom, text covered, for good. The browser keeps scrollTop
+      // across a growth (no clamp, no event of its own), so the pre-growth position is this geometry with the growth added back to
+      // #content's height; either truth re-pins. A shrink is the browser's clamp: the recorded mode alone, as before.
+      const wasAtBottom = !!(content && lastH >= 0 && dh > 0 && atBottomDist(content.scrollHeight - content.scrollTop - (content.clientHeight + dh)));
+      let repinned = false;
+      if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick || wasAtBottom, dh)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
         writeScroll(content, content.scrollHeight, "box-below", true);
         v.scrollTop = content.scrollTop;                      // keep the per-view saved position in sync
+        v.stick = true;                                       // the record agrees: a follow-mode reader, whichever truth said so
+        repinned = true;
       }
       lastH = h;
+      // the pass is the EVENT a reader of the bottom holds at (the same flake: under load a lab read scrollTop after the box grew
+      // and before this pass, and saw the reader a box's height above the bottom the write restores). One DOM event per pass, named
+      // by the box, carrying the height this pass acted on: a reader is settled when the box's current height is the one the last
+      // pass reported (a box at its max-height grows no further and passes no more, so "a pass came" is the wrong wait). Page-side,
+      // the way PR 1897's socket hold is lab-side.
+      window.dispatchEvent(new CustomEvent("romp:box-below", { detail: { id: boxId, height: h, repinned } }));
     });
     bro.observe(box);
   }
