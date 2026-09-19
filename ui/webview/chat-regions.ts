@@ -50,11 +50,13 @@ export function insertRun(regions: readonly Region[], run: Run): Region[] {
   return regionsFromRuns(kept);
 }
 
-/** The kernel's live overlay cards (its _OVERLAY_KINDS, mirrored 2026-09-19): a to-do box, a compacting or clearing notice, a
- *  reconnecting or retrying notice, the queued group, an api-error card. They come and go between builds and ride every frame's
- *  suffix, so the kernel anchors a client's base on the last TRANSCRIPT event, never on one of these (its _last_anchor), and the
- *  frame-recency reading below skips them the same way. */
-export const OVERLAY_KINDS: ReadonlySet<string> = new Set(["todo", "compacting", "clearing", "reconnecting", "retrying", "queued", "apiError"]);
+/** The kernel's live overlay cards: a to-do box, a compacting or clearing notice, a reconnecting or retrying notice, the queued
+ *  group, an api-error card. They come and go between builds and ride every frame's suffix, so the kernel anchors a client's base on
+ *  the last TRANSCRIPT event, never on one of these (its _last_anchor), and the frame-recency reading below skips them the same way.
+ *  ONE constant serves the page: send-pending.ts OVERLAY_KINDS (kernel.py _OVERLAY_KINDS, pinned equal by
+ *  tests/test_send_pending_overlay_kinds.py), re-exported here for the reading and its tests. A second copy of the set lived here
+ *  (2026-09-19), so a kernel-constant change broke two pins for one change. */
+export { OVERLAY_KINDS } from "./send-pending";
 
 export interface HeldSplit {
   before: Ev[];      // the held events positioned BEFORE the frame's first shared key: history the frame did not carry, kept above it

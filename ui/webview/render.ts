@@ -1202,6 +1202,12 @@ function clearSeek(): void {
  *  a PURE prepend re-anchored on the reader's own row + offset — never a yank to the abandoned target. */
 function releaseSeekFetch(sid: string): void {
   anchorPendingOlder = false;
+  pendingOlderMark.delete(sid);   // the abandoned landing's time and kind go with its claim (2026-09-19): a pure prepend carries none
+  // the wait's notice goes with the claim too (2026-09-19, review round two): the seek's backstop (failSeek), the seek note's cancel
+  // (cancelSeek) and a time-only navigation all release here, and on the older wire the notice waitOnOlderWire showed then stood with
+  // no ask behind it, beside the backstop's own toast, until a click, a later landing's reply or the socket's death (the chunk's chatHead
+  // reads the released claim as a scroll-back's and hides nothing). A window landing's notice is its live ask's record's and stands
+  if (landingNoticeSid === sid && !liveWindowAsk(sid)) hideLandingNotice();
   if (loadingOlder.has(sid)) {
     const content = document.getElementById("content");
     const v = views.get(sid);
@@ -11389,6 +11395,26 @@ function cssEscape(s: string): string {
   return typeof (window as any).CSS?.escape === "function" ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
 }
 
+/** The older wire's wait (2026-09-19): a regions-less proto-2 session's landing rides loadOlder (a window has no regions to join, the
+ *  client merge guard's I4), one chunk per round trip until the anchor is resident, and chatHead re-arms it on every arrival. Both arms
+ *  of that wire in scrollToAnchor end here: the landing armed for chatHead, the trail's word, and, for a navigation, the SAME wait state
+ *  the window road shows (requestAround's notice). A reply chip, the reload restore and an unplaced window's re-arm arm no seek, so on
+ *  this wire nothing said a jump was under way, and the notice's click is the cancel (cancelLanding releases the fetch's claim); the
+ *  keep-offset re-land of the reader's own row (relandAsk) is no navigation and shows nothing, as its window ask would not. The click's
+ *  time and kind ride the fetch (pendingOlderMark), so chatHead's re-arm carries them and the pointer-exact row files with the anchorT
+ *  and kind the attempt row and the window ask's record both keep; a re-point of an in-flight fetch onto a newer click refreshes them.
+ *  onWireDown counts a live landing by the notice, so a socket death mid-walk files its wsdown-lost word and toasts, as a window landing's does. */
+function waitOnOlderWire(sid: string, uuid: string): false {
+  // the first attempt's datum stands across the seek's re-attempts on the anchor (its re-arm carries no time; a window ask's record
+  // stands the same way across pointer-fetch-waiting passes); a click on another anchor replaces it
+  const held = pendingOlderMark.get(sid);
+  const mark = held && held.uuid === uuid ? held : { uuid, t: pendingAnchorT ?? null, kind: pendingAnchorKind ?? pendingAnchorIntent ?? null };
+  pendingOlderMark.set(sid, mark);
+  pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older");
+  if (!relandAsk) showLandingNotice(sid, mark.t);
+  return false;
+}
+
 // Scroll the thread to the event carrying this source JSONL uuid (the deep-link
 // anchor) and flash it. Multiple events can share one line's uuid (a multi-block
 // assistant turn) — target the first. If it's not rendered yet, stash it as
@@ -11458,13 +11484,14 @@ function scrollToAnchor(uuid: string): boolean {
       // then the restore's attempt refused and its arm dropped). The fetch is re-pointed onto this anchor, as the index wire's is below, and
       // chatHead lands it when the page arrives, or re-attempts, which asks the window then. (CI's mid-run road was a different shape: its
       // restore wrote before any fetch existed and fell to the not-rendered path below, round ten.)
-      if (loadingOlder.has(activeId)) { pendingOlderAnchor.set(activeId, uuid); pendingOlderKeepY.delete(activeId); pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false; }
+      if (loadingOlder.has(activeId)) { pendingOlderAnchor.set(activeId, uuid); pendingOlderKeepY.delete(activeId); return waitOnOlderWire(activeId, uuid); }
       // a session with NO regions (a frame whose tailLo the kernel could not name) asks the OLDER wire, never a window (2026-09-19, the
       // client merge guard's I4): a window's run has no regions to join and the insert refuses it (insertRegionRun), where the tail run
       // it used to mint at turn 0 landed the older window after the newest events. loadOlder before firstUuid lands by key (chatHead
       // prepends), re-attempting until the anchor is resident, the road the in-flight re-point above already takes: one round trip per
-      // wire chunk of distance instead of one window, for a rare shape, and the landing lands by keep offset when one is armed.
-      if (!s.regions && fetchOlderForAnchor(activeId, uuid)) { pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false; }
+      // wire chunk of distance instead of one window, for a rare shape, and the landing lands by keep offset when one is armed. The wait
+      // shows the window road's notice and carries the click's time and kind to the landing (waitOnOlderWire, the follow-up of 2026-09-19).
+      if (!s.regions && fetchOlderForAnchor(activeId, uuid)) return waitOnOlderWire(activeId, uuid);
       if (requestAround(activeId, uuid)) {   // the ask's record holds the anchor (round eight); the older wire's marks below are chatHead's alone
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-window"); return false;
       }
@@ -13408,6 +13435,12 @@ function landActive(content: HTMLElement | null, v: View): void {
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind, keep: pendingAnchorKeepY != null };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // the older wire's notice comes down with the attempt that ends its wait (2026-09-19, review round two): landed, honest-failed, or
+  // handed to the window road, whose ask's record owns the notice from then on; an attempt that re-arms the wire (waitOnOlderWire), or
+  // another anchor's attempt while the wire's deep-link fetch is still in flight, leaves it up. Decided HERE, inside the pass, because
+  // compact mode's build defers this pass a frame past chatHead's reply, and a hide at the reply left that frame with no landing for
+  // onWireDown to count (a socket death in it lost the jump with no word)
+  if (att.anchor && activeId && landingNoticeSid === activeId && !liveWindowAsk(activeId) && !(loadingOlder.has(activeId) && pendingOlderAnchor.has(activeId) && !pendingOlderKeepY.has(activeId))) hideLandingNotice();
   // TIME-ONLY navigation (the user 2026-08-25, the fifth can't-locate shape): some producers — the
   // timeline's lane clicks, deep links, cards minted from segments with no anchorable atom — send
   // anchorT with NO uuid, and the by-id-only landing left the whole class dead-ending in the bare
@@ -14191,18 +14224,25 @@ function cancelLanding(): void {
   if (!sid) return;   // no notice showing: nothing to cancel
   const rec = liveWindowAsk(sid);   // the notice is the live ask's
   const target = rec?.anchor;
+  // the older wire's landing is named by the fetch's mark alone at the click (2026-09-19, review round two): landActive nulled the pending
+  // fields at the end of the pass that armed the wait, and the release below deletes the mark, so the row read the landing as nothing
+  // where the window road's row names its anchor from the record
+  const mark = rec ? null : pendingOlderMark.get(sid);
   hideLandingNotice();
   // the cancel marks ITS record and consumes only that record's origin and held gap (round eight): the reply still comes and fills in
   // place, a cancelled landing is not busy (round seven, medium 3: the live-ask gate frees now, so the reader's next click asks), the
   // reader stays where they are, and a later dead end never restores this landing's origin; the gap's glyph goes unless a page ask of
   // its own is on the wire for it
   if (rec) { rec.cancelled = true; rec.origin = null; rec.gap = null; }
+  // the older wire's landing has no ask record (waitOnOlderWire, 2026-09-19): its claim on the in-flight fetch is released the way the
+  // seek's ✕ releases it, so the chunk arrives as a pure prepend re-anchored on the reader's own row and chatHead re-arms nothing
+  if (!rec) releaseSeekFetch(sid);
   // the glyphs follow the truth, not the held record: every gap of the view that no ask names any more sheds its glyph (CI's page kept one
   // on a gap the record no longer matched, round seven)
   const gv = views.get(sid);
   if (gv) for (const g of Array.from(gv.el.querySelectorAll(".tx-gap.tx-gap-loading")) as HTMLElement[]) { if (!gapHasAsk(sid, { lo: Number(g.dataset.lo), hi: Number(g.dataset.hi) })) g.classList.remove("tx-gap-loading"); }
   landTrail.push("cancelled");
-  vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? pendingAnchor ?? undefined, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
+  vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? mark?.uuid ?? pendingAnchor ?? undefined, anchorT: mark?.t ?? pendingAnchorT ?? undefined, kind: mark?.kind ?? pendingAnchorKind ?? undefined, cancelled: true });
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
   clearSeek();
 }
@@ -18149,16 +18189,34 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 // real jump that top-aligns + flashes. The two were indistinguishable before, so every scroll-back arrival
 // jumped (the user 2026-08-02).
 const pendingOlderKeepY = new Map<string, number>();
+// sid → the click's time and kind riding the older wire's deep-link fetch, keyed to its anchor (2026-09-19): chatHead's re-arm carried
+// neither, so the pointer-exact locateDiag row of a regions-less navigation (the older wire carries every one since the client merge
+// guard) lacked the anchorT and kind the attempt row and the window ask's record both keep. Written by waitOnOlderWire, read once by
+// chatHead for the anchor it names (a mark for another anchor is a stale click's and is ignored), gone with the fetch's claim.
+const pendingOlderMark = new Map<string, { uuid: string; t: number | null; kind: string | null }>();
 function chatHead(msg: any) {
   loadingOlder.delete(msg.id);
-  const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
+  const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); pendingOlderMark.delete(sid); };
+  const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor, or an in-flight fetch re-pointed onto an anchor), not a scroll-back's
+  // the older wire's wait ends where its reply lands NOTHING (2026-09-19, review round two), never at the reply itself: a reply the pass
+  // below re-arms on (another chunk is needed) leaves the notice waitOnOlderWire showed standing, and the re-arm's attempt re-shows it in
+  // place, where a hide here first, with compact mode's deferred build pass between the two, opened a frame in which onWireDown counted
+  // no landing and a socket death then lost the jump with no word; the landed attempt brings it down inside the pass (landActive). A
+  // window landing's notice is its live ask's record's and stands through a scroll-back's reply
+  const endWait = () => { if (landingNoticeSid === msg.id && !liveWindowAsk(msg.id)) hideLandingNotice(); };
+  // a stale or missing reply drops the landing it carried (2026-09-19, review round two): its word in the trail, and the reader told as
+  // the fault tells them when no seek stands behind the navigation (a reply chip's, the reload restore's); a seek re-arms from its own
+  // record on the next pass and its backstop speaks for it. Before this the notice went down and nothing was said
+  const dropLanding = (word: string) => {
+    endWait();
+    if (msg.id === activeId && deepLink && anchorPendingOlder) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push(word); if (!(seek && seek.sid === msg.id)) landToast("the history could not be loaded just now"); }
+  };
   const s = sessions.get(msg.id);
-  if (!s) { forget(msg.id); return; }
+  if (!s) { forget(msg.id); endWait(); return; }
   if (msg.fault) {
     // the kernel could not answer this time (T402 round two, low 3): the wait ends, nothing is re-based, the next scroll asks again; a
     // deep link's fetch stands its landing down at once with the same word as a window's fault (round four, low 2), not at the backstop
-    const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
-    forget(msg.id);
+    forget(msg.id); endWait();
     if (msg.id === activeId && deepLink && anchorPendingOlder) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("head-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
     return;
   }
@@ -18167,9 +18225,9 @@ function chatHead(msg: any) {
   if (typeof msg.beforeUuid === "string") {
     // proto 2 (T323 stage 4b): the reply names the resident oldest; a stale one (the oldest moved on) is ignored,
     // a missing anchor is the honest end of the search, and `more: false` is the head: the count exists from here
-    if (msg.missing) { forget(msg.id); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base (a FAULT never reaches here: it returned above)
+    if (msg.missing) { forget(msg.id); dropLanding("head-missing"); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base (a FAULT never reaches here: it returned above)
     const next = prependHead(s.events as { uuid?: string }[], msg.beforeUuid, older as { uuid?: string }[]);
-    if (!next) { forget(msg.id); return; }
+    if (!next) { forget(msg.id); dropLanding("head-stale"); return; }
     s.events = next as ChatEvent[];
     s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
     if (msg.more === false) { s.headKnown = true; s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0); }
@@ -18180,18 +18238,22 @@ function chatHead(msg: any) {
     s.headFrom = from;
   }
   const v = views.get(msg.id);
-  if (msg.id !== activeId) { forget(msg.id); if (v) v.stale = true; return; }
+  if (msg.id !== activeId) { forget(msg.id); endWait(); if (v) v.stale = true; return; }   // a tab left mid-wait: its landing is dropped with the claim, and the wait's notice with it
   // re-anchor: reset the active view so it re-windows around the saved row (now further down s.events), and
   // put that row back where it was — the prepended older content sits above, off-screen, ready to scroll into.
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; }
   const anchorUuid = pendingOlderAnchor.get(msg.id);
   const keepY = pendingOlderKeepY.get(msg.id);
+  const mark = pendingOlderMark.get(msg.id);
   forget(msg.id);
   // A DEEP-LINK STILL WAITING TO LAND WINS (the user 2026-08-02). A scroll-back re-anchor is about where the
   // reader was; a pending deep-link is about where they asked to GO. Letting the arrival overwrite it sent
   // the click somewhere the user never named.
   if (anchorUuid && !pendingAnchor) {
-    pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+    // the click's time and kind ride through from the fetch's mark (2026-09-19), as the window road's re-arm carries them from its
+    // ask's record: the pointer-exact row files with both; a scroll-back's arrival, or a mark left by another click, carries neither
+    const m = mark && mark.uuid === anchorUuid ? mark : null;
+    pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = m ? m.t : null; pendingAnchorKind = m ? m.kind : null;
     flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
   }
