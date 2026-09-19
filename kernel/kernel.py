@@ -325,7 +325,7 @@ def _heap_stats():
 _CHAT_SIG_LABELS = ("transcript", "states", "store", "hold", "archive", "episodes", "reg", "gone", "tasks", "cut",
                     "live", "row", "clock", "backend", "ops", "limit", "retry", "bg", "watch", "stamp", "anchors",
                     "downtime", "names", "flags", "ncards", "colormap", "acct", "cleared", "host",
-                    "cwd", "claudemd", "fork", "note", "needs", "floor",
+                    "cwd", "claudemd", "fork", "note", "needs", "notices", "floor",
                     "taskout", "pathlink", "postal")
 _CHAT_SIG_DEPS = ("taskout", "pathlink", "postal")
 

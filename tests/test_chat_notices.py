@@ -113,6 +113,8 @@ class ChatNotices(unittest.TestCase):
         self.assertIn('"notices": _chat_notices(sid),', src, "beside needsYou on the STATUS, so a status-only delta carries a decision")
         self.assertIn("sig.append(_feed_needs_input_of(sid) is True)\n", KSRC)
         self.assertIn('sig.append(tuple(n["itemId"] for n in _chat_notices(sid)))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
+        labels = km._CHAT_SIG_LABELS
+        self.assertEqual(labels[labels.index("needs") + 1], "notices", "one label per signature position, the new one right after needs (the builder appends them in that order)")
 
     def test_the_chat_page_places_the_box_between_the_transcript_and_the_background_box(self):
         body = km._chat_body()
