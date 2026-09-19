@@ -966,8 +966,12 @@ class _PerfStats:
         with self.lock:
             self.builds["chat"]["moved"] += 1
 
-    def send(self, key, kind, nbytes):
+    def send(self, key, kind, nbytes, road=None):
         slot = key[0] if isinstance(key, tuple) else key
+        if road:
+            slot = "%s.%s" % (slot, road)         # the sender's road when it names one (2026-09-19): `chat.targeted` is the
+        #                                           one-session push's frame (_push_session_now), read apart from the pusher's
+        #                                           `chat`, so a full from that road is attributable in one read of /perf
         with self.lock:
             if kind != "deduped":
                 self.pusher["sends"] += 1             # a payload that went to a client; a deduped frame (built,
@@ -49156,7 +49160,8 @@ def _note_needfull_status(c, sid):
 
 
 def _send_chat_or_status(c, m, ms, change_from, led_changed):
-    """_send_chat for the pusher's per-client loop: a sid the client holds as a skeleton gets a ~400 B status
+    """_send_chat for the pusher's per-client loop (and, since 2026-09-19, the targeted one-session push's, which
+    used to hand every client a full): a sid the client holds as a skeleton gets a ~400 B status
     frame on its own ("status", sid) slot (deduped, so an unchanged status costs nothing) instead of its chat,
     and the lazy full serialization stays unmaterialized. A skeleton sid never reaches _send_chat_locked, so
     echat has no entry and `sent` no ("chat", sid) slot for it — the moment it is released the existing full
@@ -49642,6 +49647,14 @@ def _note_unknown_op(msg, client):
     _reply(client, reply)
 
 
+# The sender's road for /perf's sends split (2026-09-19): _push_session_now names its whole body `targeted` on this
+# thread-local, and _send_client hands the name to the counter, so EVERY frame of the targeted one-session push (the SDK
+# connect handshake, the Codex backend's stream events, a create, a fork), its tab strip, the cold-tab gate's status, the
+# session frame or a skeleton holder's status, is counted under `<slot>.targeted` apart from the pusher's cycle. Nothing
+# else reads it; a thread outside that body has no name set.
+_SEND_ROAD = threading.local()
+
+
 def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
@@ -49688,20 +49701,21 @@ def _send_client(c, key, msg, pre=None, sig=None, kind="full"):
         sq = _views_seq_of(msg)
         if sq is not None:
             seqs.append(sq)
+    road = getattr(_SEND_ROAD, "name", None)         # the targeted push's frames read apart on /perf (see _SEND_ROAD)
     with _client_lock(c):    # the dedup dict is shared with the handler thread's `ready`
         prev = c.setdefault("sent", {}).get(key)      # reset (_client_reset_chat_base) — one writer at a time
         now = time.time()
         if prev is not None and prev[0] == sig and (now - prev[1]) < _DEDUP_REPOST_S:
             n = len(s) if s is not None else pre.size()   # deduped: the length only; a lazy frame stays unserialized
             _perf("send", slot=_perf_slot(key), bytes=n, deduped=1)
-            _PERF_STATS.send(key, "deduped", n)
+            _PERF_STATS.send(key, "deduped", n, road=road)
             return False
         if s is None:
             s = pre.text()                            # the frame goes: the build's one whole encode (the cell keeps it) —
             #                                           BEFORE the slot is written, so a raise here leaves it for a retry
         c["sent"][key] = (sig, now)
         _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=0)
-        _PERF_STATS.send(key, kind, len(s))
+        _PERF_STATS.send(key, kind, len(s), road=road)
         return _client_send(c, s, key)                # enqueue only (never blocks): the lock is held for microseconds,
         #                                               or for the one whole encode when a lazy frame goes
 
@@ -50366,7 +50380,17 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
         #                                                    into): the list's first event is inside what it holds
         if pf is not None and pl is not None and pf <= pl:
             if change_from >= total:
-                start = total                             # nothing changed: a status-only tail with an empty suffix
+                tx = pos.get(_last_anchor(evs))           # the list's last transcript event: the anchor a caught-up base ends on
+                if tx is None or pl >= tx:
+                    start = total                         # nothing changed: a status-only tail with an empty suffix (the trailing
+                    #                                       overlay cards, held since the last suffix, do not ride it again)
+                else:
+                    start = pl + 1                        # ...but a client BEHIND the list's transcript is served from after its
+                    #                                       own held last (2026-09-19): the cycle that advanced the baseline had
+                    #                                       not reached it yet when a targeted push read that baseline, or its
+                    #                                       base came from an older build. Anchored at the list's last, the tail
+                    #                                       sat past what the client held, which the page reads as a gap and
+                    #                                       answers with a full ask, the frame the targeted push stopped sending
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
             if start > pf:                                #  last record (the overlay cards after it ride the suffix)
@@ -53229,6 +53253,11 @@ def _push(targets, connect=False, live_map=None):
                 # drops from the whole events array to just what changed.
                 change_from = _chat_diff(_prev_chat_events.get(m["id"]), m.get("events") or [])
                 led_changed = m.get("ledger") != _prev_chat_ledger.get(m["id"])
+                for c in chat_clients:
+                    # flush as built → the active tab lands first; a full send materializes the lazy
+                    # serialization ONCE and every later client (and the cache below) reuses it. A tab the
+                    # client holds as a skeleton gets only its status (2026-09-07)
+                    ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
                 # The baseline is SHARED by every client, so only a push that reaches them all may advance it.
                 # A connect push targets ONE client (_push_one → _push([client], connect=True)); when it moved
                 # the baseline, everything written since the last full push fell BELOW the next diff's
@@ -53236,15 +53265,20 @@ def _push(targets, connect=False, live_map=None):
                 # delta and froze (the user 2026-07-28: opening or reloading any pane could silently strand the
                 # others). Leaving the baseline alone costs only a slightly longer next suffix, which every
                 # client — including the one that just connected — applies idempotently (truncate at `from`,
-                # re-append). The fresh client is already served its own full session directly below.
+                # re-append). The fresh client was served its own full session directly above.
+                # And it advances AFTER the sends above, never before (2026-09-19): the targeted one-session push
+                # (_push_session_now) reads this baseline on another thread to serve each client from the base it
+                # holds, and must never see one this cycle has not yet delivered to every client. Written before
+                # the loop, a targeted push landing in the write-to-send gap diffed its build against an equal
+                # baseline and anchored an empty tail at the list's last event, one the racing client did not hold
+                # yet; the page reads a tail past what it holds as a gap and asks for a full, the very frame that
+                # push stopped sending. An OLDER baseline only re-sends the overlap, which the client applies
+                # idempotently; a NEWER one anchors a tail past what the client holds. (A send that raises now
+                # leaves the baseline where it was, so the next cycle re-sends the overlap rather than stranding
+                # the clients the loop had not reached.)
                 if not connect:
                     _prev_chat_events[m["id"]] = m.get("events") or []
                     _prev_chat_ledger[m["id"]] = m.get("ledger")
-                for c in chat_clients:
-                    # flush as built → the active tab lands first; a full send materializes the lazy
-                    # serialization ONCE and every later client (and the cache below) reuses it. A tab the
-                    # client holds as a skeleton gets only its status (2026-09-07)
-                    ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
                 # cache AFTER the sends, so a serialization a full send just paid for is kept — the next
                 # connect-push for this unchanged tab reuses it instead of dumping again
                 if sig is not None:
@@ -53641,10 +53675,42 @@ def _push_session_now(sid):
     is near-free — and sends the tab strip plus that payload directly; the next full cycle re-sends both
     idempotently (per-client dedup absorbs the overlap).
 
-    Deliberately NOT touched here: the shared delta baseline (_prev_chat_events) — only a push that
-    reaches every client may advance it (the 2026-07-28 stranded-delta lesson), and change_from=0 below
-    always takes the full-session form so no client's tail state can be left ahead of the baseline; and
-    the build cache/_last_tab_order bookkeeping, which belong to the pusher. Never a fleet build (the
+    Each client is served from the base IT holds, through the pusher's per-client road (2026-09-19). Until then
+    the send loop handed every client a full session frame, change_from forced to 0, on the reasoning that no
+    client's tail state could then be left ahead of the shared baseline. That frame is the one a page treats as
+    a reconnect repair: a tab it held whole rebuilt its window and re-derived the reader's place, and a tab it
+    held as a skeleton was force-loaded, on every SDK connect handshake, every Codex stream event, every create
+    and fork (measured live 2026-09-18: 426 targeted builds in 20 h across 22 sessions; 973 full chat frames
+    against 68,377 deltas, 133 of the fulls connect pushes). Now a caught-up client gets a chatTail whose
+    suffix begins at the change against the baseline, or right after what it holds, and is empty when nothing
+    moved (the status flip this push exists for rides it; an identical tail is deduped on its slot within the
+    repost window, _DEDUP_REPOST_S, and re-sent as a no-op after it); a client holding the tab as a skeleton
+    gets its status on the status slot and keeps the skeleton (the click or the prefetch releases it, as with
+    the pusher); a client with no base (a fresh socket, a redial's watched tab, a needFull reset) gets the full
+    as before; a client armed for the ready arm's connect push gets nothing here, the pusher's rule. The tail
+    needs a baseline: _chat_diff reads 0 with none, and 0 is the full road for a based client too, so a sid the
+    pusher has not built yet (a create, then its handshake seconds later; a new Codex session's first-turn
+    notifications before the pusher's first cycle), one whose only cycle build was transcript-less (an empty
+    baseline reads as none), or one that left and re-entered the strip (the pusher pops the baseline of a tab no
+    longer shown) still gets the full from every targeted push until a cycle has built it. Safe without the
+    forced full: for proto 2 the next tail starts at min(change_from, held last + 1), the no-change tail
+    included (anchored at the client's held last when that lies before the list's last transcript event, so a
+    client behind this build gets the events it lacks rather than a tail past what it holds; a caught-up client's
+    stays the empty suffix), so a client ahead of the baseline is never skipped, only re-sent the overlap since
+    the LAST PUSHER CYCLE, which it applies idempotently (truncate at the anchor, re-append), the state every
+    ready-arm connect push already leaves; the pusher advances that baseline only AFTER its cycle has delivered
+    to every client, so a push landing mid-cycle reads the older baseline and re-sends the overlap, never a
+    suffix anchored past what a racing client holds (with the write before the sends, a push in that gap diffed
+    an equal list and anchored an empty tail at an event the client did not hold yet: a gap ask, and the very
+    full this routing removed); an index-wire client left BEHIND the baseline (this build shorter than it) asks
+    for the gap itself (a tail past what it holds → needFull), the road every connect push relies on. The
+    residual, shared with the connect push and not new: a client ahead of the baseline whose held event at some
+    index differs from both the baseline and the next build while the next build equals the baseline there is
+    re-sent by neither sender until a full; no builder produces such a flap today.
+
+    Deliberately NOT touched here: the shared delta baseline (_prev_chat_events, _prev_chat_ledger) — only a
+    push that reaches every client may advance it (the 2026-07-28 stranded-delta lesson); and the build
+    cache/_last_tab_order bookkeeping, which belong to the pusher. Never a build of every session (the
     push-architecture rule, 2026-07-05): callers sit on WS-handler / spawn / backend threads."""
     sid = str(sid)
     with _clients_lock:
@@ -53652,6 +53718,9 @@ def _push_session_now(sid):
     if not targets:
         return
     try:
+        _SEND_ROAD.name = "targeted"                 # every frame this push sends (the strip, the cold-tab gate's status, the
+        #                                              session frame or a skeleton holder's status) reads apart on /perf as
+        #                                              `<slot>.targeted` (2026-09-19; see _SEND_ROAD); reset in the finally below
         now = int(time.time())
         live_map = _live_map()
         chat_list = _chat_tab_sessions(now, live_map)
@@ -53704,11 +53773,19 @@ def _push_session_now(sid):
             _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None),
                               len(_prev_chat_events.get(sid) or ()))
             return                                   # the periodic pusher owns the sid until content returns
+        # the pusher's diff against the shared baseline, the baseline itself left where it is (2026-09-19; the docstring):
+        # each client is served from the base it holds, exactly as the pusher's per-client loop serves it. The pusher
+        # advances that baseline only AFTER its cycle has delivered to every client, so a read here mid-cycle sees the
+        # older one and re-sends the overlap, never a suffix anchored past what a racing client holds
+        change_from = _chat_diff(_prev_chat_events.get(sid), m.get("events") or [])
+        led_changed = m.get("ledger") != _prev_chat_ledger.get(sid)
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
         for c in targets:                            # the strip went above, before the gate; here the session frame
-            ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form (…and releases a skeleton)
+            ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
+    finally:
+        _SEND_ROAD.name = None
 
 
 # ───────────────────────── producer + push threads ─────────────────────────
