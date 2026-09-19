@@ -157,7 +157,24 @@ class TrustRoute(unittest.TestCase):
         self.assertEqual(data["tunnel"], {"host": "GHOST", "trust": "trusted", "originOnly": True})
 
 
-WEB = "11111111-2222-3333-4444-555555555555"     # the recipient session the names registry knows
+WEB = "11111111-2222-3333-4444-000000000901"     # the recipient session the names registry knows: a PRIVATE synthetic sid (the
+#                                                  suite runs every module in one process over one state root, and a names entry
+#                                                  left under the shared placeholder sid made a later module's rename of that sid
+#                                                  to "web" its own-name no-op, 2026-09-19); _held_mail_cleanup removes what these write
+
+
+def _held_mail_cleanup():
+    """Remove what the held-mail tests wrote into the run's shared state root: the recipient's names entry, the notice
+    files, the held files, the cleared ledger; reset the memos. Every writer here calls it from tearDown."""
+    for f in (km.jd.NAMES / WEB, km.jd.STATE / "cleared.jsonl"):
+        if f.exists():
+            f.unlink()
+    for d in (km.jd.STATE / "postal" / "quarantine", km.jd.STATE / "notices", km.jd.STATE / "notices-archive"):
+        if d.exists():
+            for f in d.iterdir():
+                f.unlink()
+    getattr(km, "_HELD_MAIL_MEMO", {})["slot"] = None; getattr(km, "_HELD_MAIL_SAID", set()).clear()
+    km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
 
 
 class HeldMailCards(unittest.TestCase):
@@ -188,6 +205,9 @@ class HeldMailCards(unittest.TestCase):
         # getattr: at the base before the held-mail card these names are absent, and each test must red on its own behaviour
         getattr(km, "_HELD_MAIL_MEMO", {})["slot"] = None; getattr(km, "_HELD_MAIL_SAID", set()).clear()
         km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
+
+    def tearDown(self):
+        _held_mail_cleanup()
 
     def _cards(self, alive=()):
         return km._notice_cards(2000, km._cleared_ids(), set(alive))
@@ -292,6 +312,7 @@ class HeldMailDecision(unittest.TestCase):
 
     def tearDown(self):
         km._bus_quarantine_act, km._mark_views_dirty = self._saved
+        _held_mail_cleanup()
 
     def _op(self, body, inp=None, kind="quarantine"):
         msg = {"type": "noticeAction", "itemId": self.iid, "sid": WEB, "kind": kind, "body": body}
@@ -708,7 +729,7 @@ class BusPortRecord(unittest.TestCase):
     def test_the_decision_carries_the_recipient_sid_to_the_bus(self):
         # the decision is a notice action of the quarantine kind since 2026-09-19: the recipient the bus is told is the CARD's
         # owner, read from the stored row, never a word the pane sent; a deny's note from the click is the bus's feedback
-        HeldMailCards.setUp(self)
+        HeldMailCards.setUp(self); self.addCleanup(_held_mail_cleanup)
         HeldMailCards._write_held(self, "px-1.2_abc.TESTHOST"); getattr(km, "_held_mail_backfill", lambda: 0)()
         bodies = []
         saved = km._bus_quarantine_act, km._mark_views_dirty
