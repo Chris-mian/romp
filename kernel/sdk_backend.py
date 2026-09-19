@@ -6999,6 +6999,11 @@ class SdkSession:
                     self._ping_feeding = True       # hold feeds until this turn's first streamed message
                 self._mark_producing()              # the one gate: a text fed under a standing prompt leaves the prompt's state
                 self.backend._poke()
+                # …and THIS session's frame now (2026-09-19): the copy just left _pending, so the chat's queued bubble for
+                # it goes and its echo shows, which the pane reads as "taken by the session" and drops the ✎ whose recall
+                # could no longer win (render.ts, send-pending.ts `handed`). The poke wakes the fleet cycle, seconds
+                # behind on a busy kernel; the targeted push lands the flip at once, as the connect handshake's does.
+                self.backend._push_session(self.sid)
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
 
