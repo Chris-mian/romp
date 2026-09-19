@@ -19616,16 +19616,22 @@ def _drive(msg, client):
         # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked.
         # LOUD on refusal, as setFast below: a level the model's Codex catalog does not advertise (the menu
         # lists the catalog's levels, but a stale list or a model change under it can still send one) used
-        # to leave the badge on the old level with no reason given (the review of #1814)
+        # to leave the badge on the old level with no reason given (the review of #1814). The refusal rides
+        # the timeline's own settingRefused frame (gesture command, the sid, the flag), never a bare warn: a
+        # warn arriving while a create is in flight is read by the chat as that create's verdict and strikes
+        # the provisional tab, and the timeline page renders no warn at all, so a lane-menu pick's refusal
+        # was dropped there and its optimistic dim ran out its timer.
         if not _set_effort_or_park(be, sid, str(msg["value"]))[0]:
-            client["send"](json.dumps({"type": "warn", "text": _effort_refusal(be, str(msg["value"]))}))
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "effort",
+                                       "text": _effort_refusal(be, str(msg["value"]))}))
         _push_soon()
     elif t == "setFast" and msg.get("value") in ("on", "off"):
         # the chat's fast badge — /fast on|off delivered like any slash command; mid-compaction → parked.
         # LOUD on refusal (fail loudly, never degrade silently): a dormant SDK session has no live CLI to
         # apply it, and silently swallowing the click would leave a toggle that "did nothing".
+        # The same settingRefused frame as setEffort above (flag fast), for the same two readers.
         if not _set_fast_or_park(be, sid, str(msg["value"]))[0]:
-            client["send"](json.dumps({"type": "warn",
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "fast",
                                        "text": "Couldn't toggle fast mode — the session isn't connected right now."}))
         _push_soon()
     elif t == "setMode" and msg.get("value"):
@@ -35804,7 +35810,9 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
     the client (fail loudly): a dormant SDK session has no live CLI to apply it, and the typed text
     used to at least draw the CLI's own refusal; a refused effort level (one the Codex model's catalog
     does not offer) is told the same way and filed as state["refused_effort"], so POST /send answers ok:false
-    with the words. `state`, when given, receives {"queued": bool}: whether
+    with the words. Both, and the unowned arm's refusal, ride the timeline's own settingRefused frame (gesture
+    command, the sid, the flag), never a bare warn: the timeline page renders no warn, and the chat reads one
+    arriving during a create as that create's verdict. `state`, when given, receives {"queued": bool}: whether
     the change PARKED, taken from each setter's own return, so POST /send answers `queued` for a meta
     command exactly as for a text send (2026-09-03: a parked /model read as plain 'ok'). The effort/fast
     setters report whether they parked under _gate_or_park (the one _ops_gate evaluation those two pay),
@@ -35846,7 +35854,13 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
         if state is not None:
             state["refused"] = why
         if client:
-            client["send"](json.dumps({"type": "warn", "text": why}))
+            # the timeline's own settingRefused frame (gesture command, the sid, the flag from the command head:
+            # model, effort or fast, the key each page's pending map is filed under), as the owned arms below and
+            # the setEffort and setFast ops answer: a bare warn is read by the chat as an in-flight create's verdict
+            # and by the timeline page not at all, so a lane-menu pick on a dead lane got no reason and its
+            # optimistic dim ran out its 20 s timer
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": head[1:],
+                                       "text": why}))
         sys.stderr.write("meta command %s for %s refused: no backend owns this session\n" % (head, sid))
         return True
     if model_pick:
@@ -35865,12 +35879,16 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
             if state is not None:
                 state["refused_effort"] = why
             if client:
-                client["send"](json.dumps({"type": "warn", "text": why}))
+                # the timeline's own settingRefused frame (gesture command, the sid, the flag), as the setEffort op
+                # answers: a bare warn is read by the chat as an in-flight create's verdict and by the timeline page
+                # not at all
+                client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "effort",
+                                           "text": why}))
             sys.stderr.write("effort %r for %s refused by %s\n" % (value, sid, type(be).__name__))
     elif head == "/fast" and value in ("on", "off"):
         took, parked = _set_fast_or_park(be, sid, value)          # took: applied or parked; parked: queued
         if not took and client:
-            client["send"](json.dumps({"type": "warn",
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "fast",
                                        "text": "Couldn't toggle fast mode — the session isn't connected right now."}))
     else:
         return False
