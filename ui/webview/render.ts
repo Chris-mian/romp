@@ -17155,10 +17155,13 @@ function upsert(msg: any) {
   // for a same-transcript re-send (shares a uuid, so not a /clear fork) of a REGIONS session:
   //  (2) not proto 2, or proto 2 with no numeric tailLo → the merge below is skipped and the frame's window replaces
   //      every held run (executed in the investigation: 1446 events → 251, regions → []);
-  //  (3) a tailLo at or below a held HISTORY run's hi whose events the frame does NOT re-carry → the merge drops that
-  //      run (r.lo >= tailLo) or concatenates across the hole (the reported "1 hour ago" directly above "now").
-  // Keep the held regions and resident events (the keepResidentEvents shape), file one client-diag row, and ask for a
-  // frame upsert CAN place.
+  //  (3) a tailLo at or below a held HISTORY run's LO whose events the frame does NOT re-carry → the merge drops that run
+  //      WHOLE (r.lo >= tailLo) (the reported "1 hour ago" directly above "now"). Only tl <= r.lo drops a run; a run
+  //      ending at or straddling tailLo is kept losslessly (r.hi <= tailLo whole; the straddle arm keeps the part the
+  //      frame does not carry and insertRun coalesces), so refusing those would drop a LEGITIMATE larger window's new
+  //      content and then ask a full that returns the same (round two MEDIUM).
+  // Keep the held regions and resident events (the keepResidentEvents shape), file one client-diag row, and (for the
+  // shapes a full frame can heal) ask for a frame upsert CAN place.
   let desyncWhy: string | null = null;
   if (!kept && prev && prev.regions && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
     if (msg.proto !== 2) desyncWhy = "not-proto2";
@@ -17167,7 +17170,7 @@ function upsert(msg: any) {
       if (tl == null) desyncWhy = "no-taillo";
       else {
         const fk = new Set((msg.events as Array<{ uuid?: string; key?: string }>).map((e) => keyOf(e)).filter((k): k is string => !!k));
-        if (runsOf(prev.regions).some((r) => r.hi != null && tl <= r.hi && r.events.some((e) => !fk.has(keyOf(e as { uuid?: string; key?: string }) ?? ""))))
+        if (runsOf(prev.regions).some((r) => r.hi != null && tl <= r.lo && r.events.some((e) => !fk.has(keyOf(e as { uuid?: string; key?: string }) ?? ""))))
           desyncWhy = "taillo-below-held";
       }
     }
@@ -17176,14 +17179,31 @@ function upsert(msg: any) {
   let events: ChatEvent[] = keepResident && prev ? prev.events : (msg.events || (prev ? prev.events : []));
   pendingFullWhy.delete(msg.id);
   if (desyncWhy && prev) {
-    if (!emptyFrameDiagSent.has(msg.id + ":" + desyncWhy)) {
-      emptyFrameDiagSent.add(msg.id + ":" + desyncWhy);
-      vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync", data: { id: msg.id, why: desyncWhy, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
+    // latch on the refused frame's coordinates so an identical re-send (a kernel that answers every needFull the same)
+    // cannot loop the page into an unbounded needFull storm (round two HIGH): ask once; a SECOND identical refusal keeps
+    // the held state and STOPS asking, with one counted diag row; different coordinates (or a delta that applies) resume.
+    const coordKey = String(msg.proto ?? "?") + ":" + (typeof msg.tailLo === "number" ? String(msg.tailLo) : "n") + ":"
+      + (keyOf(msg.events[0] as { uuid?: string; key?: string } | undefined) ?? "?") + ":"
+      + (keyOf(msg.events[msg.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? "?");
+    const prior = refusedFrameLatch.get(msg.id);
+    const n = prior && prior.key === coordKey ? prior.count + 1 : 1;
+    refusedFrameLatch.set(msg.id, { key: coordKey, count: n });
+    if (n === 1) {
+      if (!emptyFrameDiagSent.has(msg.id + ":" + desyncWhy)) {
+        emptyFrameDiagSent.add(msg.id + ":" + desyncWhy);
+        vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync", data: { id: msg.id, why: desyncWhy, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
+      }
+      // Ask only for shapes a full frame can heal: a lying tailLo, or a non-proto-2 re-send (which otherwise shows stale
+      // content forever with no self-heal, round two low b). A no-tailLo proto-2 frame keeps its resident tail and fills
+      // gaps on scroll, so it asks nothing (the keepResidentEvents shape).
+      if (desyncWhy === "taillo-below-held" || desyncWhy === "not-proto2") requestFullSession(msg.id, "gap");
+    } else if (n === 2) {
+      // the ask did not change what the kernel sends: stop asking, and say so ONCE with the count so the loop is not silent
+      vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync-loop", data: { id: msg.id, why: desyncWhy, count: n, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
     }
-    // A no-tailLo / non-proto-2 frame is the keepResidentEvents shape: keep the held regions, let the gaps fill on
-    // scroll (the tail stands), ask no full -- exactly as an empty status frame asks none. A LYING tailLo (at or below a
-    // held run the frame does not re-carry) is a true desync: ask for a frame upsert can place, the held runs standing.
-    if (desyncWhy === "taillo-below-held") requestFullSession(msg.id, "gap");
+    // n > 2: the latch holds silently (held state kept, no ask) until the coordinates change or a delta applies
+  } else if (prev && !kept) {
+    clearRefusedLatch(msg.id);   // a full frame that APPLIES clears the refusal latch: the session is progressing again
   }
   // T386 stage 2: a proto-2 full frame is the TAIL run (the kernel names its first turn, tailLo); history runs the page holds whose
   // spans end at or before it stay, and s.events is the runs' events in turn order. No full frame merges by reason any more: the
@@ -17397,6 +17417,12 @@ function notifyShell(kind: string, text: string, sid?: string): void {
 const awaitingFull = new Set<string>();
 const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked (kept for the reconnect's diagnostics; every full frame merges into the held runs, T386 stage 2)
 const emptyFrameDiagSent = new Set<string>();   // sids whose empty session frame was filed once (see upsert / frame-merge.ts)
+// sid → the coordinates of the last REFUSED full frame and how many identical ones in a row (the dropped-history fix,
+// round two HIGH): a kernel that answers each needFull with the same refused shape would loop the page into an unbounded
+// needFull storm. The page asks once, and after a SECOND identical refusal keeps the held state and stops asking; a frame
+// with different coordinates, or a delta that applies (clearRefusedLatch), resumes. Bounds the page half of the loop.
+const refusedFrameLatch = new Map<string, { key: string; count: number }>();
+function clearRefusedLatch(id: string): void { refusedFrameLatch.delete(id); }
 // `why` is a one-word diagnostic the kernel ignores (2026-09-07): gap = a delta past what we hold; nobase = a
 // delta for a session we hold nothing of; skeleton-click = the active tab is a skeleton; prefetch = the idle
 // chain; skeleton-delta = a delta for a tab held as skeleton (a contract violation). The return-to-tab harness
@@ -17514,10 +17540,21 @@ function chatTail(msg: any) {
     return;
   }
   if (from < 0) return;                            // below the loaded head → our resident tail is still valid
+  // A truncation must never eat into the HISTORY runs a reader scrolled back to load: a `from` below where the tail run
+  // begins would drop everything between a history run and the tail (the parked read point with it), and regionsAbsorbTail
+  // would then relabel a short tail over the hole. Ask for the full frame instead, keeping the resident runs whole -- the
+  // numeric-`from` analogue of guard 1's tail-run-only anchor (round two low a: guard 4's after-the-fact re-base lost the
+  // read point for good; refusing before the truncation keeps the reader's place). Only when history is actually held (a gap).
+  if (s.regions && s.regions.some((r) => r.kind === "gap")) {
+    let hist = 0;
+    for (const r of s.regions) if (r.kind === "run" && r.hi != null) hist += r.events.length;
+    if (from < hist) { requestFullSession(msg.id, "gap"); return; }
+  }
   stripOptimistic(s);                              // kernel coordinates from here on (re-injected below)
   const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
+  clearRefusedLatch(s.id);                         // a delta applied: the session is progressing, so a later refused full frame may ask again
   reconcileRewind(s, from);                        // pending-rewind overlay + the editable-bubble set, judged below the tail's start (see there)
   reconcileHeldCopies(s);                          // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends

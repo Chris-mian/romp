@@ -53,6 +53,7 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const schedulePrebuild = () => { H.prebuilds++; };
     const keyOf = (e) => (e && (e.uuid || e.key)) || null;   // the anchor path resolves inside the tail run by key (the dropped-history guard, 2026-09-19)
     const regionsAbsorbTail = () => true;                // the tail run's regions follow the events (T386 stage 2); returns whether it could (a short store refuses); this slice holds no regions, so always true
+    const clearRefusedLatch = () => {};                  // a delta applied clears the full-frame refusal latch (round two); no latch in this slice
   `;
   const epilogue = `
     return { chatTail, set: (p) => { if (p.sessions) sessions = p.sessions; if (p.views) views = p.views; if ("activeId" in p) activeId = p.activeId; } };

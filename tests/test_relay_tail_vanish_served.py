@@ -46,7 +46,8 @@ REMOTE = HOST + ":" + SID_R
 WID = "vanishlab"
 PAIRS = 600   # ~1200 events; the tail holds the last ~125 turns, so a middle read point stays far from it
 MID_TURN = 200   # the read point: a middle turn far from BOTH the head and the resident tail (~turn 475+), so a gap persists to the tail
-SCENARIOS = ["taillo_low", "no_taillo", "not_proto2", "anchor_in_history"]
+SCENARIOS = ["taillo_low", "no_taillo", "not_proto2", "anchor_in_history",
+             "equal_hi_legit", "straddle_legit", "loop", "from_into_history"]
 
 
 DRIVER = r"""
@@ -64,6 +65,11 @@ const out = { died: null, scenarios: {} };
 page.on("pageerror", () => {});
 await page.addInitScript((rid) => {
   try { localStorage.setItem("romp-vscode-state-chat", JSON.stringify({ activeId: rid })); } catch (e) {}
+  // count the page's full-frame asks (round two: the needFull storm and the guard-3 refusal both post one): a hook on
+  // the socket send, installed before any page script opens one.
+  window.__needFull = 0;
+  try { const W = window.WebSocket, OS = W.prototype.send;
+    W.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type === "needFull") { window.__needFull++; return; } } catch (e) {} return OS.call(this, d); }; } catch (e) {}
 }, cfg.remote);
 
 const snapshot = async () => page.evaluate((c) => {
@@ -74,8 +80,9 @@ const snapshot = async () => page.evaluate((c) => {
   return {
     regions: rs, storeCount: runs.reduce((n, r) => n + (r.n || 0), 0),
     hasGap: rs.some((r) => r.kind === "gap" && r.lo > 0),
-    readPresent: dom.includes(c.readUuid), readRunLo: readRun ? readRun.lo : 0, readRunLast: readRun ? readRun.last : null,
-    neighbors: c.neighbors.filter((u) => dom.includes(u)), domLen: dom.length,
+    midGap: rs.some((r) => r.kind === "gap" && readRun && r.lo >= (readRun.hi || 0)),   // the hole between the read run and the tail
+    readPresent: dom.includes(c.readUuid), readRunLo: readRun ? readRun.lo : 0, readRunHi: readRun ? readRun.hi : 0, readRunLast: readRun ? readRun.last : null,
+    neighbors: c.neighbors.filter((u) => dom.includes(u)), domLen: dom.length, needFull: window.__needFull || 0,
   };
 }, { readUuid: cfg.readUuid, neighbors: cfg.neighbors });
 
@@ -91,13 +98,31 @@ const park = async () => {
 };
 
 const inject = async (name, before) => {
-  const base = { id: cfg.remote, ev: cfg.frameEvents, nm: cfg.sessionName, lo: before.readRunLo, anchor: before.readRunLast, delta: cfg.deltaEvents };
+  const base = { id: cfg.remote, ev: cfg.frameEvents, nm: cfg.sessionName, lo: before.readRunLo, hi: before.readRunHi,
+                 anchor: before.readRunLast, delta: cfg.deltaEvents, fromHi: cfg.eventsFromHi, fromMid: cfg.eventsFromMid,
+                 midLo: cfg.midTailLo, fromLow: cfg.fromLow };
+  if (name === "loop") {
+    // round two HIGH: a kernel that answers every needFull with the SAME refused shape. Re-post the guard-3-refused
+    // frame five times; the page must latch and stop asking after the second, not storm one ask per frame.
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate((a) => window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, tailLo: a.lo, headKnown: false, name: a.nm, status: { state: "idle", sinceEpoch: null } }, "*"), base);
+      await page.waitForTimeout(200);
+    }
+    return;
+  }
   await page.evaluate((a) => {
     const st = { state: "idle", sinceEpoch: null };
     if (a.name === "taillo_low") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, tailLo: a.lo, headKnown: false, name: a.nm, status: st }, "*");
     else if (a.name === "no_taillo") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, headKnown: false, name: a.nm, status: st }, "*");
     else if (a.name === "not_proto2") window.postMessage({ type: "session", id: a.id, events: a.ev, name: a.nm, status: st }, "*");
     else if (a.name === "anchor_in_history") window.postMessage({ type: "chatTail", id: a.id, afterUuid: a.anchor, events: a.delta }, "*");
+    // MEDIUM: a legitimate LARGER window whose tailLo sits at the read run's hi (equal_hi) or inside it (straddle),
+    // re-carrying the run + the hole to the tail: must APPLY (fill the hole), not be refused.
+    else if (a.name === "equal_hi_legit") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.fromHi, tailLo: a.hi, headKnown: false, name: a.nm, status: st }, "*");
+    else if (a.name === "straddle_legit") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.fromMid, tailLo: a.midLo, headKnown: false, name: a.nm, status: st }, "*");
+    // LOW a: a numeric-`from` delta that would truncate INTO the loaded history (below the tail run's start) must not
+    // eat the parked read point: refuse before truncating and keep the reader's place.
+    else if (a.name === "from_into_history") window.postMessage({ type: "chatTail", id: a.id, from: a.fromLow, events: a.delta }, "*");
   }, { ...base, name });
   await page.waitForTimeout(2500);
 };
@@ -188,6 +213,23 @@ class RelayVanishGuards(unittest.TestCase):
         return evs
 
     @classmethod
+    def _range_pairs(cls, cwd, lo, hi):
+        """Turns [lo, hi) as user/assistant pairs on the transcript's real uuid scheme (api-uNNN/api-aNNN), so a frame
+        carrying them shares keys with the resident runs and merges. A LARGER window than the tail: tailLo at the read
+        run's hi (lo=hi-of-run) or inside it re-carries the run and the hole, so a correct merge fills the hole."""
+        evs = []
+        for i in range(lo, hi):
+            t0 = 1_700_000_000 + i * 600
+            evs.append({"type": "user", "uuid": "api-u%03d" % i, "parentUuid": "api-a%03d" % (i - 1), "sessionId": SID_R,
+                        "cwd": cwd, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t0)),
+                        "promptSource": "typed", "message": {"role": "user", "content": "turn %d: what changed?" % i}})
+            evs.append({"type": "assistant", "uuid": "api-a%03d" % i, "parentUuid": "api-u%03d" % i, "sessionId": SID_R,
+                        "cwd": cwd, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t0 + 60)),
+                        "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
+                                    "content": [{"type": "text", "text": "turn %d: the ranking pass is updated" % i}]}})
+        return evs
+
+    @classmethod
     def _delta_pairs(cls, cwd):
         """A short tail delta of brand-new turns (fresh uuids), for the chatTail scenario."""
         t0 = 1_700_000_000 + (PAIRS + 5) * 600
@@ -210,7 +252,11 @@ class RelayVanishGuards(unittest.TestCase):
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?skeleton=1&wid=%s&token=%s" % (cls.hport, WID, cls.htoken),
                        "remote": REMOTE, "readUuid": read_uuid, "neighbors": neighbors, "sessionName": "api",
-                       "scenarios": SCENARIOS, "frameEvents": cls._tail_pairs(cwd), "deltaEvents": cls._delta_pairs(cwd)}, f)
+                       "scenarios": SCENARIOS, "frameEvents": cls._tail_pairs(cwd), "deltaEvents": cls._delta_pairs(cwd),
+                       # legitimate larger windows for the MEDIUM: turns [read-run hi .. end] and [mid-of-read-run .. end]
+                       "eventsFromHi": cls._range_pairs(cwd, 263, PAIRS), "eventsFromMid": cls._range_pairs(cwd, MID_TURN, PAIRS),
+                       "midTailLo": MID_TURN,   # a turn INSIDE the read run [137,263]; straddle merge keeps it lossless
+                       "fromLow": 40}, f)       # a numeric-`from` truncation point inside the read run's events (below the read point at ~index 126): LOW a
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -277,6 +323,52 @@ class RelayVanishGuards(unittest.TestCase):
 
     def test_guard1_a_delta_anchored_in_a_history_run_drops_nothing(self):
         self._assert_scenario("anchor_in_history", expect_read_drop=False)
+
+    # ── round two ──────────────────────────────────────────────────────────────────────────────────
+
+    def test_medium_guard3_applies_a_legit_window_at_the_read_runs_hi(self):
+        before, after = self._scenario("equal_hi_legit")
+        self.assertEqual(before.get("readRunHi"), 263, "premise: landing on turn %d opened the read run [137,263]: %r" % (MID_TURN, before.get("regions")))
+        self.assertTrue(before.get("hasGap"))
+        # a frame whose tailLo sits at the run's HI and re-carries the run + the hole is a legitimate larger window: it
+        # must APPLY (fill the hole, the store grows) and ask no full. Red at bebdc319 (guard 3's tl<=r.hi refused it:
+        # store unchanged, one needFull ask).
+        self.assertGreater(after.get("storeCount", 0), before.get("storeCount", 0),
+                           "[equal_hi_legit] the legitimate larger window did not apply (guard 3 wrongly refused it): before=%d after=%d regions=%r"
+                           % (before.get("storeCount", 0), after.get("storeCount", 0), after.get("regions")))
+        self.assertEqual(after.get("needFull", 0) - before.get("needFull", 0), 0,
+                         "[equal_hi_legit] a full was asked (guard 3 refused a legitimate frame): needFull %r->%r" % (before.get("needFull"), after.get("needFull")))
+        self.assertTrue(after.get("readPresent"), "[equal_hi_legit] the read point stays: %r" % after.get("regions"))
+
+    def test_medium_guard3_applies_a_legit_window_straddling_the_read_run(self):
+        before, after = self._scenario("straddle_legit")
+        self.assertTrue(before.get("hasGap"))
+        self.assertGreater(after.get("storeCount", 0), before.get("storeCount", 0),
+                           "[straddle_legit] a window straddling the read run did not apply (guard 3 wrongly refused): before=%d after=%d regions=%r"
+                           % (before.get("storeCount", 0), after.get("storeCount", 0), after.get("regions")))
+        self.assertEqual(after.get("needFull", 0) - before.get("needFull", 0), 0,
+                         "[straddle_legit] a full was asked (guard 3 refused a legitimate frame): needFull %r->%r" % (before.get("needFull"), after.get("needFull")))
+        self.assertTrue(after.get("readPresent"))
+
+    def test_high_a_repeated_refused_frame_does_not_storm_needfull(self):
+        before, after = self._scenario("loop")
+        asks = after.get("needFull", 0) - before.get("needFull", 0)
+        # five identical refused frames: the page latches on the refused coordinates and stops asking after the second
+        # (round two HIGH). Red at bebdc319 (awaitingFull cleared each frame, one ask per frame: a needFull storm).
+        self.assertLessEqual(asks, 2, "[loop] the page stormed needFull on a repeated refused frame (no latch): %d asks across five identical frames" % asks)
+        self.assertGreaterEqual(after.get("storeCount", 0), before.get("storeCount", 0),
+                                "[loop] the store held across the loop: before=%d after=%d" % (before.get("storeCount", 0), after.get("storeCount", 0)))
+        self.assertTrue(after.get("readPresent"), "[loop] the read point held across the loop: %r" % after.get("regions"))
+
+    def test_lowa_a_numeric_from_truncation_into_history_keeps_the_read_point(self):
+        before, after = self._scenario("from_into_history")
+        self.assertTrue(before.get("readPresent")); self.assertTrue(before.get("hasGap"))
+        # a delta whose `from` lands inside the loaded history would truncate the read run away; the page refuses before
+        # truncating and keeps the reader's place. Red at bebdc319 (the read point gone, the render halved for good).
+        self.assertTrue(after.get("readPresent"),
+                        "[from_into_history] a numeric-from truncation ate the parked read point (round two low a): regions after=%r" % after.get("regions"))
+        self.assertGreaterEqual(after.get("storeCount", 0), before.get("storeCount", 0),
+                                "[from_into_history] the store held: before=%d after=%d" % (before.get("storeCount", 0), after.get("storeCount", 0)))
 
 
 if __name__ == "__main__":
