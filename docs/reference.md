@@ -4215,8 +4215,10 @@ reaches every attached kernel; a kernel attached later, or polling one, used to 
 Nudge, Suggest /compact and file editing took. Since phase one A of plans/settings-across-machines.md (2026-09-18) a remote
 machine's newer value is a PROPOSAL, never a silent apply: the polling kernel (and a kernel a hub pushes to over
 `/mesh-settings`) writes a record per proposing MACHINE under `settings-proposals.json` (the value, the peer's stamp, the
-local value at the time; a peer is named by the key its row carries, the alias it was attached under, and a poll with the
-token learns the peer's own name from its `/version` so a push from it lands on the same record) and applies nothing; the same value under a newer stamp lifts the local stamp only; a pinned store raises
+local value at the time; a peer is named by the key its row carries, the alias it was attached under; a poll with the
+token learns the peer's own name from its `/version` and writes it on the row, saved with it, so a push naming itself
+resolves to the row's key, a record a push filed under the self-name before the first poll moves onto the row's key, and a
+detached row takes its records and kept stamps with it) and applies nothing; the same value under a newer stamp lifts the local stamp only; a pinned store raises
 none; the record drops when the values come to equal or the peer's stamp is no longer newer. The user answers through
 `POST /setting-proposal` (`{"store", "host", "gt", "answer": "apply" | "keep" | "pin"}`, this kernel's own record from that
 machine only, the stamp checked: a stamp the machine has since moved past is refused, that machine changed its mind and

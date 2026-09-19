@@ -369,10 +369,14 @@ class RoundTwo(unittest.TestCase):
         self.a, self.b, self.c = _Kernel(), _Kernel(), _Kernel()
         with self.a:
             km._SYNC_NOTICES[:] = []
-        getattr(km, "_PEER_SELF_NAMES", {}).clear()   # absent at the first cut, so its run reds on what it DID, not on a name
+        getattr(km, "_PEER_SELF_NAMES", {}).clear()   # round two's global map (gone in round three: the row carries the name)
+        with km._remotes_lock:
+            self._rows = dict(km._remotes); km._remotes.clear()
 
     def tearDown(self):
         getattr(km, "_PEER_SELF_NAMES", {}).clear()
+        with km._remotes_lock:
+            km._remotes.clear(); km._remotes.update(self._rows)
         self.a.close(); self.b.close(); self.c.close()
 
     def _said(self):
@@ -422,6 +426,10 @@ class RoundTwo(unittest.TestCase):
         self.a.set("compact-suggest", False, 1_000)
         self.b.set("compact-suggest", True, 2_000)
         rver = dict(self.b.version(), host="TESTHOSTB")     # what the poll reads off B's /version with the token
+        with km._remotes_lock:
+            km._remotes["peer-alias"] = {"host": "peer-alias", "status": "up"}
+        with self.a:
+            km._learn_peer_name(km._remotes["peer-alias"], "TESTHOSTB")   # what _converge_peer_settings does with the answer
         self.assertEqual(self.a.propose("peer-alias", rver)[0], ["compact-suggest"])
         ack = self.a.push("TESTHOSTB", "compact-suggest", True, 2_000)   # B pushes the same pick, naming itself
         self.assertEqual([r["host"] for r in ack["settingsProposals"]["compact-suggest"]], ["peer-alias"], "one record, under the row's key")
@@ -434,6 +442,8 @@ class RoundTwo(unittest.TestCase):
         self.assertEqual(len(self._said()), 2, "…and the poll then finds it standing")
         with self.a:
             self.assertEqual(km._peer_key("TESTHOSTB"), "peer-alias"); self.assertEqual(km._peer_key("TESTHOSTZ"), "TESTHOSTZ")
+            self.assertEqual(km._remotes["peer-alias"]["self_name"], "TESTHOSTB", "the lesson is on the ROW (round three)")
+            self.assertIn("self_name", km._remotes_rows_for_save()[0], "…and persists with it")
 
     def test_apply_over_a_newer_local_click_is_refused_and_drops_the_record(self):
         self.a.set("task-tracking", True, 1_000)
@@ -484,6 +494,100 @@ class RoundTwo(unittest.TestCase):
         self.assertEqual(authed["settingsProposals"]["task-tracking"][0]["host"], "TESTHOSTB")
         self.assertEqual(authed["host"], km._self_host())
         self.assertEqual(bare["settingsPinned"], authed["settingsPinned"], "the pins ride both (no names in them)")
+
+
+class RoundThree(unittest.TestCase):
+    """The verifier's finds on round two (2026-09-19): the self-name mapping healed nothing already recorded and lived in memory,
+    so a push that beat the first poll (first contact, a restart) left one machine two records and re-raised a kept stamp; the
+    first cut's answered-only record migrated into a machine named gt; the gear drew the lines oldest first; a global map let
+    a row attached under another machine's own name capture its records."""
+
+    def setUp(self):
+        self.a, self.b, self.c = _Kernel(), _Kernel(), _Kernel()
+        with self.a:
+            km._SYNC_NOTICES[:] = []
+        with km._remotes_lock:
+            self._rows = dict(km._remotes); km._remotes.clear()
+            km._remotes["hostb"] = {"host": "hostb", "status": "up", "local_port": 51000, "token": "tok", "trust": "directed"}
+        self.a.set("task-tracking", True, 1_000)
+        self.b.set("task-tracking", False, 2_000)
+
+    def tearDown(self):
+        with km._remotes_lock:
+            km._remotes.clear(); km._remotes.update(self._rows)
+        self.a.close(); self.b.close(); self.c.close()
+
+    def _said(self):
+        return [n for n in self.a.notices() if "proposes" in n]
+
+    def _poll(self, row_key="hostb", peer=None, self_name="TESTHOSTB"):
+        """A's supervisor step for the row: the answer B gives with the token (its own name beside its settings)."""
+        peer = peer or self.b
+        with self.a:
+            with contextlib.redirect_stderr(io.StringIO()):
+                return km._converge_peer_settings(km._remotes[row_key], dict(peer.version(), host=self_name), sync=True)
+
+    def test_a_push_before_the_first_poll_is_re_keyed_onto_the_row_when_the_poll_learns_the_name(self):
+        # first contact: B's push beats A's first poll of it, so the record is filed under B's own name; the poll then learns
+        # the name and the record MOVES onto the row key; no second record, no second notice (round two left both standing)
+        self.a.push("TESTHOSTB", "task-tracking", False, 2_000)
+        self.assertEqual(sorted(self.a.records()["task-tracking"]["hosts"]), ["TESTHOSTB"], "no row knows the name yet: filed under it")
+        for _pass in range(3):
+            self._poll(); self.a.push("TESTHOSTB", "task-tracking", False, 2_000)
+        self.assertEqual(sorted(self.a.records()["task-tracking"]["hosts"]), ["hostb"], "ONE record, under the row key")
+        self.assertEqual([r["host"] for r in self.a.proposals()["task-tracking"]], ["hostb"], "the gear draws one line for one machine")
+        self.assertEqual(len(self._said()), 1, "said once: %r" % self._said())
+        self.assertEqual(km._remotes["hostb"]["self_name"], "TESTHOSTB")
+
+    def test_keep_then_a_restart_then_the_push_wins_the_race_and_the_kept_stamp_holds(self):
+        self._poll()
+        ack = self.a.answer({"store": "task-tracking", "host": "hostb", "gt": 2_000, "answer": "keep"})
+        self.assertTrue(ack["ok"], ack)
+        said = len(self._said())
+        # the restart: memory gone, the rows come back from remotes.json with the learned name, the file of records stays
+        saved = km._remotes_rows_for_save()
+        self.assertEqual(saved[0].get("self_name"), "TESTHOSTB", "the name persists with the row")
+        with km._remotes_lock:
+            km._remotes.clear(); km._remotes.update({r["host"]: dict(r) for r in saved})
+        self.a.push("TESTHOSTB", "task-tracking", False, 2_000)      # B's push beats the first poll after the restart
+        self.assertEqual(self.a.records()["task-tracking"], {"hosts": {}, "answered": {"hostb": 2_000}}, "the kept stamp holds: nothing raised")
+        self._poll()
+        self.assertEqual(self.a.proposals(), {}); self.assertEqual(len(self._said()), said, "nothing said again")
+        self.assertFalse(hasattr(km, "_PEER_SELF_NAMES"), "no memory-only map remains")
+
+    def test_a_row_attached_under_another_machines_own_name_keeps_its_own_records(self):
+        # C is attached under the alias TESTHOSTB, which is B's own name; B's row is hostb. Round two's global map keyed by
+        # the self-name sent C's poll to hostb and drew it as B
+        self.c.set("task-tracking", False, 3_000)
+        with km._remotes_lock:
+            km._remotes["TESTHOSTB"] = {"host": "TESTHOSTB", "status": "up", "local_port": 51001, "token": "tok2", "trust": "directed"}
+        self._poll()                                                  # B under hostb, self-name TESTHOSTB learned on hostb's row
+        self._poll(row_key="TESTHOSTB", peer=self.c, self_name="TESTHOSTC")
+        self.assertEqual(self.a.records()["task-tracking"]["hosts"]["TESTHOSTB"]["gt"], 3_000, "C's record under C's row key")
+        self.assertEqual(self.a.records()["task-tracking"]["hosts"]["hostb"]["gt"], 2_000, "B's under B's")
+        self.a.push("TESTHOSTB", "task-tracking", False, 2_000)      # B's push names itself: resolves to hostb, not to C's row
+        self.assertEqual(self.a.records()["task-tracking"]["hosts"]["TESTHOSTB"]["gt"], 3_000, "C's record untouched by B's push")
+        with self.a:
+            self.assertEqual(km._peer_key("TESTHOSTB"), "hostb"); self.assertEqual(km._peer_key("TESTHOSTC"), "TESTHOSTB")
+
+    def test_a_detached_row_takes_its_records_and_kept_stamps_with_it(self):
+        self._poll()
+        self.assertIn("hostb", self.a.records()["task-tracking"]["hosts"])
+        with self.a:
+            self.assertTrue(km._forget_peer_proposals("hostb"))
+        self.assertEqual(self.a.records(), {}, "gone with the row")
+        self.assertIn("_forget_peer_proposals(host)", inspect.getsource(km.detach_remote), "detach_remote forgets them")
+        with self.a:
+            self.assertFalse(km._forget_peer_proposals("hostb"), "nothing to forget twice")
+
+    def test_the_first_cuts_answered_only_record_migrates_to_the_one_machine_or_to_nothing(self):
+        with self.a:
+            (self.a.root / km.SETTINGS_PROPOSALS_FILE).write_text(json.dumps({
+                "task-tracking": {"answered": {"gt": 2_000}},
+                "auto-nudge": {"hosts": {"hostb": {"value": True, "gt": 5_000, "seen": 1, "current": False}}, "answered": {"gt": 4_000}}}))
+        recs = self.a.records()
+        self.assertEqual(recs["task-tracking"], {"hosts": {}, "answered": {}}, "no machine named gt; a stamp no machine is named for is forgotten")
+        self.assertEqual(recs["auto-nudge"]["answered"], {"hostb": 4_000}, "the one recorded machine takes the kept stamp")
 
 
 class _FakePeer(BaseHTTPRequestHandler):

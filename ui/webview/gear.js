@@ -1819,6 +1819,7 @@ function initGear(post, opts) {
       if (!row) return;
       // one line per proposing MACHINE (round two: records are per store and machine; an older kernel's one record reads as one)
       var rows = Array.isArray(props[store]) ? props[store] : (props[store] && typeof props[store].value === 'boolean' ? [props[store]] : []);
+      var after = row;   // each line goes AFTER the last drawn one, so the panel reads in /version's order, newest stamp first
       rows.forEach(function (p) {
         if (typeof p.value !== 'boolean') return;
         var line = document.createElement('div');
@@ -1832,7 +1833,7 @@ function initGear(post, opts) {
         apply.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.host, p.gt, 'apply'); });
         keep.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); answerProposal(store, p.host, p.gt, 'keep'); });
         line.appendChild(txt); line.appendChild(apply); line.appendChild(keep);
-        row.parentNode.insertBefore(line, row.nextSibling);
+        after.parentNode.insertBefore(line, after.nextSibling); after = line;
       });
       if (!rows.length && pins[store]) {
         var pin = document.createElement('div');

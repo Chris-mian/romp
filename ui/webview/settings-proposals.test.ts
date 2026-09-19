@@ -42,7 +42,8 @@ test("the gear draws a pending proposal under its row with Apply and Keep mine, 
     "the answer rides the route with the stamp the line was drawn for; a moved proposal is refused there and the re-fill shows the new one");
   assert.match(GEAR, /if \(res && res\.ok === false && res\.error\) staleToast\(res\.error\); fill\(\);/, "a refusal is toasted in the modal's own vocabulary, then the panel re-fills");
   assert.match(GEAR, /pin\.textContent = 'Pinned on this machine: other machines\\' picks are not applied here\.';/, "a pinned store says so under its row");
-  assert.match(GEAR, /row\.parentNode\.insertBefore\(line, row\.nextSibling\);/, "the line sits right under the row");
+  assert.match(GEAR, /var after = row;[^\n]*\n\s*rows\.forEach\(function \(p\) \{/, "the lines follow the row in /version's order");
+  assert.match(GEAR, /after\.parentNode\.insertBefore\(line, after\.nextSibling\); after = line;/, "each line after the last drawn one, newest stamp first (round three)");
 });
 
 test("gear.css: the proposal line wears the row's line size and the toast's action dress, through the tokens", () => {

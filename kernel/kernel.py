@@ -22828,6 +22828,8 @@ def detach_remote(host):
             pass
     if r and _postal_peers_on():
         _notify_bus_peer(host, r.get("bus_port"), False, r.get("token") or "")   # the peer is gone on purpose — tell the bus now
+    if r:
+        _forget_peer_proposals(host)   # its proposals and kept stamps go with the row (settings across machines, round three)
     _remotes_save()
     return bool(r)
 
@@ -50483,6 +50485,7 @@ def _converge_peer_settings(r, rver, sync=False):
         _mesh_say_once(host, "isolated", "settings: %s is isolated — its picks are neither adopted here nor pushed to it "
                        "(isolation is a boundary both ways)" % host)
         return {"adopted": [], "pushed": []}
+    _learn_peer_name(r, rver.get("host") if isinstance(rver, dict) else None)   # the peer's own name, onto the row (round three)
     adopted = _propose_peer_settings(host, rver)   # one A: proposals, never an apply (the stores adopted read as the pending ones)
     older = _older_peer_settings(rver)
     if not older:
@@ -50552,7 +50555,7 @@ def _apply_mesh_settings(body):
         # shaped like a /version answer), so a hub's newer value never applies on this machine without its user's answer
         st = {key: body[key] for key, _store, _setter in _MESH_ADOPTED_SETTINGS if key in body and isinstance(body.get(key), bool)}
         gts = {store: gt for key, store, _setter in _MESH_ADOPTED_SETTINGS if key in st}
-        _propose_peer_settings(str(body.get("host") or "another machine"), {"settings": st, "settingsGt": gts})
+        _propose_peer_settings(_peer_key(body.get("host") or "another machine"), {"settings": st, "settingsGt": gts})   # the row's key
     _pop_stale_notice()
     values, stamps = _mesh_settings_snapshot()
     return {"ok": True, "settings": values, "settingsGt": stamps, "settingsPinned": _settings_pinned_map(),
@@ -50648,22 +50651,74 @@ def _pinned_stand_down(store, gt, enabled, snap, origin):
     return True
 
 
-# One name per peer across both legs (round two of one A): the poll names a peer by its remotes-row key (the alias the
-# user attached it under) and a push names itself by _self_host(); the token-gated /version carries the peer's own name
-# beside its settings, so a poll learns "self-name -> row key" here and a push's record lands under the same key as the
-# poll's. Memory only: the first poll after a boot teaches it again, and a push arrives only while the peer is up and polled.
-_PEER_SELF_NAMES = {}
+# One name per peer across both legs (round two of one A; per row and persisted since round three): the poll names a peer
+# by its remotes-row key (the alias the user attached it under) and a push names itself by _self_host(). The token-gated
+# /version carries the peer's own name beside its settings, so the poll writes it on the ROW (`self_name`, saved with the
+# row in remotes.json, gone with the row on detach) and a push's self-name resolves to the row key through the rows. A record
+# a push filed under the self-name before the first poll (first contact) is re-keyed onto the row key when the poll learns
+# the name, so one machine never holds two records. Rows, not the tunnel: a push arrives on loopback through the pusher's
+# own forward, which names no peer on this side, and a global self-name map let a row attached under another machine's own
+# name capture its records (the verifier's finds on rounds two and three).
+def _learn_peer_name(r, self_name):
+    """The poll's lesson for one row: the peer's own name from its /version. New to the row, it is written on the row (the
+    supervisor's signature-gated save persists it) and every proposal record and kept stamp filed under the self-name moves
+    onto the row key; a name equal to the key, or one the row already knows, teaches nothing."""
+    if not isinstance(r, dict) or not isinstance(self_name, str) or not self_name:
+        return
+    key = r.get("host")
+    if not isinstance(key, str) or not key or self_name == key or r.get("self_name") == self_name:
+        return
+    r["self_name"] = self_name
+    _rekey_peer_proposals(self_name, key)
 
 
-def _learn_peer_name(row_key, self_name):
-    if isinstance(self_name, str) and self_name and isinstance(row_key, str) and row_key and self_name != row_key:
-        _PEER_SELF_NAMES[self_name] = row_key
+def _peer_key(self_name):
+    """The ONE name a pushing machine's proposals are recorded under: the key of the row whose learned `self_name` it is,
+    else the name given (a peer with no row here, the one-directional attach, keeps its own name)."""
+    self_name = str(self_name or "?")
+    with _remotes_lock:
+        for key, r in _remotes.items():
+            if r.get("self_name") == self_name:
+                return key
+    return self_name
 
 
-def _peer_key(host):
-    """The ONE name a peer's proposals are recorded under: its remotes-row key once a poll has taught it, else the name given."""
-    host = str(host or "?")
-    return _PEER_SELF_NAMES.get(host, host)
+def _rekey_peer_proposals(old, new):
+    """Move every store's record and kept stamp from machine `old` to machine `new` (a self-name onto its row key): a record
+    already under `new` keeps whichever carries the newer stamp; kept stamps keep the newer. Says nothing: the poll that
+    follows finds the moved record standing."""
+    if old == new:
+        return False
+    with _SETTINGS_LOCK:
+        recs = _settings_proposals()
+        changed = False
+        for store, rec in recs.items():
+            moved = rec["hosts"].pop(old, None)
+            if moved is not None:
+                have = rec["hosts"].get(new)
+                if have is None or _gt_int(moved.get("gt")) > _gt_int(have.get("gt")):
+                    rec["hosts"][new] = moved
+                changed = True
+            kept = rec["answered"].pop(old, None)
+            if kept is not None:
+                rec["answered"][new] = max(kept, rec["answered"].get(new) or 0)
+                changed = True
+        if changed:
+            _proposals_write(recs)
+        return changed
+
+
+def _forget_peer_proposals(row_key):
+    """A detached row's proposals and kept stamps go with it (a re-attach under a new alias polls afresh)."""
+    with _SETTINGS_LOCK:
+        recs = _settings_proposals()
+        changed = False
+        for store, rec in recs.items():
+            if rec["hosts"].pop(row_key, None) is not None or rec["answered"].pop(row_key, None) is not None:
+                changed = True
+        if changed:
+            _proposals_write(recs)
+        return changed
 
 
 def _settings_proposals():
@@ -50680,7 +50735,10 @@ def _settings_proposals():
             continue
         hosts = v.get("hosts") if isinstance(v.get("hosts"), dict) else {}
         answered = v.get("answered") if isinstance(v.get("answered"), dict) else {}
-        out[s] = {"hosts": {h: r for h, r in hosts.items() if isinstance(r, dict) and "value" in r},
+        hosts = {h: r for h, r in hosts.items() if isinstance(r, dict) and "value" in r}
+        if set(answered) == {"gt"}:                                        # the first cut's answered-only shape named no machine:
+            answered = {next(iter(hosts)): answered["gt"]} if len(hosts) == 1 else {}   # the one recorded machine's, else forgotten
+        out[s] = {"hosts": hosts,
                   "answered": {h: _gt_int(g) for h, g in answered.items() if isinstance(g, (int, float)) and not isinstance(g, bool)}}
     return out
 
@@ -50750,8 +50808,7 @@ def _propose_peer_settings(host, rver):
     gts = (rver or {}).get("settingsGt") if isinstance(rver, dict) else None
     if not isinstance(st, dict) or not isinstance(gts, dict):
         return []
-    _learn_peer_name(host, rver.get("host"))   # the peer's own name beside its settings (the token-gated /version poll)
-    host = _peer_key(host)
+    host = str(host or "?")                    # the row key as the caller names it; a push's self-name is resolved by the caller
     values, stamps = _mesh_settings_snapshot()
     pending = []
     with _SETTINGS_LOCK:
