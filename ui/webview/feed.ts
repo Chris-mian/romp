@@ -2345,7 +2345,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const { completed: dCompleted, blocked: dBlocked } = distillInputs(it.distillState, it.column);
   // The card is not left mute in that window: the Working displacement only happens under recheck/rejudging,
   // and both raise the "Analyzing…" swirl below, which says the judge is looking at it again.
-  const spin = spinFor(it, distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
+  // A NOTICE card never wears the distiller's placeholder (the user 2026-09-19: an empty card posted from the command line has
+  // nothing to distill): its body IS its text and no judge ever reads it, so a null summary on a completed notice (the row
+  // stamps summary and blockSummary null) is not a takeaway on its way; the spinner is the goal kind's.
+  const spin = spinFor(it, !it.notice && distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
                        dCompleted, nowSec());
   const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
   a._awaitSpin.style.display = spinCaption ? "" : "none";
@@ -2411,8 +2414,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.
   // The rule lives in ./distiller-line so distiller-line.test.ts can EXECUTE it (a regex pin let it silently
   // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
-  const distillShown = applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked,
-                   it.summary, it.blockSummary);
+  const distillShown = it.notice ? (((a._distill as HTMLElement).style.display = "none"), "")   // a notice has no distiller line: its body is the text
+    : applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked, it.summary, it.blockSummary);
   if (distillShown) linkifyPrRefs(a._distill as HTMLElement, prRepoOf(it.sid));   // the takeaway's `#123` links too
   // A judge-auth card explains itself ON THE CARD FACE (the user 2026-08-12: a message, not just a
   // chip): no decision brief can exist here — the distiller is one of the very judges that are down —
