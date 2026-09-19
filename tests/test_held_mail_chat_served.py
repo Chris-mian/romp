@@ -50,6 +50,15 @@ catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 await page.goto(cfg.chat);
+// the socket hold (the merge-guard lab's shim): an outbound frame whose type is in __hold is parked at the socket, not sent;
+// __release sends the parked ones. The latch is a TRANSIENT (the kernel's refusal re-arms the row and says why), so it may not
+// be asserted by timing: CI's runner had the answer back before the read (the manager's fix parcel, 2026-09-19). The click's
+// request is held at the socket while the latch is read, then released, and the re-arm and the refusal line are read after it
+await page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = [];
+  WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__hold.has(m.type)) { window.__heldRaw.push(d); return; } } catch (e) {} return orig.call(this, d); };
+  window.__release = () => { const ws = window.__ws; const held = window.__heldRaw; window.__heldRaw = []; for (const d of held) orig.call(ws, d); return held.length; }; });
+const holdActions = () => page.evaluate(() => { window.__hold.add("noticeAction"); });
+const releaseActions = () => page.evaluate(() => window.__release());
 await page.waitForSelector("#tabs .tab", { timeout: 30000 }).catch(() => {});
 const id = "notice:" + cfg.sid + ":" + cfg.mid + ":1";
 const rowSel = '#notices .ntc-row[data-item="' + id + '"]';
@@ -81,6 +90,7 @@ if (first.row) {
   const bb = await btn.boundingBox();
   await page.evaluate((s) => { window.__pressed = Array.from(document.querySelector(s).querySelectorAll("button")).find((x) => x.textContent === "Approve"); }, rowSel);
   await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await holdActions();
   await page.mouse.down();
   hold(cfg.mid2, "a second message, held while the first's Approve is pressed");
   await page.waitForSelector(rowSelOf(cfg.mid2), { timeout: 90000 }).catch(() => {});
@@ -93,8 +103,9 @@ if (first.row) {
   await page.mouse.move(bb2.x + bb2.width / 2, bb2.y + bb2.height / 2);
   await page.mouse.up();
   const latched = await page.evaluate((s) => { const r = document.querySelector(s); return Array.from(r.querySelectorAll("button")).map((x) => ({ label: x.textContent, disabled: x.disabled })); }, rowSel);
+  const held = await releaseActions();   // the request goes to the kernel now; its refusal (no bus) re-arms the row and says why
   await page.waitForFunction((s) => { const e = document.querySelector(s + " .ntc-err"); return e && e.style.display !== "none" && (e.textContent || "").length > 0; }, rowSel, { timeout: 40000 }).catch(() => {});
-  approve = { midPress, latched, after: await facts() };
+  approve = { midPress, latched, held, after: await facts() };
   // (2b) a THIRD hold lands: the first row's refusal line stays (its own actions did not change), the rows keep their order
   hold(cfg.mid3, "a third message, held after the refusal");
   await page.waitForSelector(rowSelOf(cfg.mid3), { timeout: 90000 }).catch(() => {});
@@ -109,11 +120,13 @@ if (first.row) {
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Back").click(); }, rowSel);
   const back = await facts();
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
+  await holdActions();
   await page.evaluate((s) => { const r = document.querySelector(s); const e = r.querySelector(".ntc-err"); e.textContent = ""; e.style.display = "none";
     Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny without note").click(); }, rowSel);
   const latched = await facts();
+  const held = await releaseActions();
   await page.waitForFunction((s) => { const e = document.querySelector(s + " .ntc-err"); return e && e.style.display !== "none" && (e.textContent || "").length > 0; }, rowSel, { timeout: 40000 }).catch(() => {});
-  deny = { step, back, latched, after: await facts() };
+  deny = { step, back, latched, held, after: await facts() };
 }
 // (4) the decision, as the runner records a success: an expire row in the notice store; the row and the ring leave
 let decided = null;
@@ -246,7 +259,8 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(len(a["midPress"]["rows"]), 2, "the second hold's row landed while Approve was pressed: %r" % a["midPress"]["rows"])
         self.assertTrue(a["midPress"]["pressedSurvived"], "the pressed button is the same element after the frame that added a row (reconciled in place, never replaced)")
-        self.assertEqual(a["latched"], [{"label": "Approve…", "disabled": True}, {"label": "Deny", "disabled": True}], "the release was a click: latched (the review of PR 1890, medium 1)")
+        self.assertEqual(a["latched"], [{"label": "Approve…", "disabled": True}, {"label": "Deny", "disabled": True}], "the release was a click: latched (the review of PR 1890, medium 1); read with the request held at the socket, so the kernel's answer cannot beat the read")
+        self.assertEqual(a["held"], 1, "exactly one request was held and released: the click's noticeAction")
         self.assertIn("Refused: postal bus unreachable", a["after"]["err"], "the kernel answered the click")
         t = a["afterThird"]
         self.assertEqual(len(t["rows"]), 3, "the third hold's row joined: %r" % t["rows"])
@@ -272,7 +286,8 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertEqual(d["step"]["note"], "", "the note textarea shows")
         self.assertTrue(d["step"]["atBottomAfterNote"], "the note step grew the box: the at-bottom reader stayed at the bottom (low a)")
         self.assertEqual([b["label"] for b in d["back"]["buttons"]], ["Approve", "Deny"], "Back returns to the two actions"); self.assertEqual(d["back"]["note"], "none")
-        self.assertTrue(all(b["disabled"] for b in d["latched"]["buttons"]), "latched on the decision: %r" % d["latched"]["buttons"])
+        self.assertTrue(all(b["disabled"] for b in d["latched"]["buttons"]), "latched on the decision (read with the request held at the socket): %r" % d["latched"]["buttons"])
+        self.assertEqual(d["held"], 1, "exactly one request was held and released")
         self.assertIn("Refused: postal bus unreachable", d["after"]["err"])
         self.assertTrue(all(not b["disabled"] for b in d["after"]["buttons"]), "re-armed")
 
