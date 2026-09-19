@@ -91,6 +91,13 @@ test("a window ask carries the navigation's time and kind to its reply; the thre
   assert.match(RENDER, /cmtjump: \(elx\) => \{[\s\S]*?flashedAnchor = null;\s*\n\s*scrollToAnchor\(uuid\);/, "the comment tick lands directly");
 });
 
+test("the set-aside notice is independent of the reveal-progress guard and carries its own tooltip (2026-09-19 round two)", () => {
+  const i = RENDER.indexOf("function showSetAsideNotice");
+  const fn = RENDER.slice(i, RENDER.indexOf("\n}\n", i));
+  assert.ok(i > 0 && !fn.includes("showLandingNotice("), "showSetAsideNotice does not delegate to showLandingNotice, whose revealProgress guard would silence a set-aside");
+  assert.ok(fn.includes("these earlier messages are no longer part of this session"), "…and carries its own tooltip, not the landing notice's");
+});
+
 test("render.ts tracks the pending needFull reason and lands orphan notes by record uuid", () => {
   const upsert = RENDER.slice(RENDER.indexOf("function upsert(msg: any) {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function upsert(msg: any) {")));
   assert.ok(upsert.includes("pendingFullWhy.delete(msg.id)"), "the reason is consumed by the frame that answers it");

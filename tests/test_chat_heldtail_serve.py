@@ -35,11 +35,19 @@ def _free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); n = s.getsockname()[1]; s.close(); return n
 
 
+def U(i):   # a real record uuid for turn i's user event (the tail run's first key is this; M1a's regex checks the uuid shape)
+    return "11111111-2222-3333-4444-%012d" % i
+
+
+def A(i):   # turn i's assistant event uuid
+    return "11111111-2222-3333-4444-%012d" % (500000 + i)
+
+
 def _pair(i, parent, cwd):
     t0 = 1_700_000_000 + i * 600
     ta = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t0))
     tb = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t0 + 60))
-    u, a = "api-u%03d" % i, "api-a%03d" % i
+    u, a = U(i), A(i)
     return [
         {"type": "user", "uuid": u, "parentUuid": parent, "sessionId": SID, "cwd": cwd, "timestamp": ta,
          "promptSource": "typed", "message": {"role": "user", "content": "turn %d?" % i}},
@@ -147,14 +155,14 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         full1 = self._first_full(c)
-        held = self._tail_first_key(full1)                       # api-u475 for 600 turns (WIRE_TAIL from the end)
-        self.assertEqual((full1.get("tailLo"), held), (475, "api-u475"), "premise: the held tail run begins at 475: %r" % full1.get("tailLo"))
+        held = self._tail_first_key(full1)                       # U(475) for 600 turns (WIRE_TAIL from the end)
+        self.assertEqual((full1.get("tailLo"), held), (475, U(475)), "premise: the held tail run begins at 475: %r" % full1.get("tailLo"))
         self._bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 800))   # grow to 800: the WIRE_TAIL cut is now ~675
         full2 = self._repair_full(c, held)
         self.assertEqual(full2.get("tailLo"), 475,
                          "the repair full is served from the held base (a superset), NOT re-cut at ~675: tailLo=%r firstUuid=%r n=%d"
                          % (full2.get("tailLo"), full2.get("firstUuid"), len(full2.get("events") or [])))
-        self.assertEqual(full2.get("firstUuid"), "api-u475")
+        self.assertEqual(full2.get("firstUuid"), U(475))
         self.assertNotIn("rebased", full2, "a grown session is served, never set aside: %r" % {k: full2.get(k) for k in ("tailLo", "rebased")})
 
     # ── K2: a shrink (fork / rewind) that drops the held tail from the transcript emits `rebased`, not a silent low frame ──
@@ -180,11 +188,11 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         self._first_full(c)                                       # the connect full (tailLo ~675)
-        full = self._repair_full(c, "api-u475")                  # a needFull naming the held base at 475
+        full = self._repair_full(c, U(475))                      # a needFull naming the held base at 475
         self.assertEqual(full.get("tailLo"), 475,
                          "the needFull named a held base at 475: the repair full is served from there (a superset), NOT re-cut at ~675: tailLo=%r firstUuid=%r"
                          % (full.get("tailLo"), full.get("firstUuid")))
-        self.assertEqual(full.get("firstUuid"), "api-u475")
+        self.assertEqual(full.get("firstUuid"), U(475))
         self.assertNotIn("rebased", full, "the held base still maps (grown session): served, not set aside: %r" % {k: full.get(k) for k in ("tailLo", "rebased")})
 
     # ── K4: a compaction is NOT a producer (it floors the head, does not renumber): no rebased, tailLo tracks the current end ──
@@ -219,6 +227,66 @@ class HeldTailServe(unittest.TestCase):
         full = self._first_full(c)
         self.assertEqual(full.get("tailLo"), 675, "with no held key the kernel emits its plain WIRE_TAIL frame (cut at ~675): %r" % full.get("tailLo"))
         self.assertNotIn("rebased", full, "nothing new for an older page: %r" % {k: full.get(k) for k in ("tailLo", "rebased")})
+
+
+    def _chatfull_rows(self, state):
+        import json as _j
+        fp = os.path.join(str(state), "client-diag.jsonl")
+        out = []
+        try:
+            for ln in open(fp):
+                try:
+                    r = _j.loads(ln)
+                except Exception:
+                    continue
+                if r.get("what") == "chatFull":
+                    out.append(r)
+        except OSError:
+            pass
+        return out
+
+    # ── K7 / M1a: an overlay-card kind or a Codex echo-<hex> key (no colon, not a uuid) is KEPT, never rebased ──
+    def test_k7_an_overlay_or_echo_key_never_rebases(self):
+        # _key_in_transcript checks a uuid SHAPE, not a colon; `todo` and `echo-<hex>` carry no colon and are not record
+        # uuids, so they are kept. Red at the base (the colon test: `todo` had no colon, the membership scan ran, found
+        # nothing, and emitted rebased=True on an intact 600-turn transcript).
+        port, tok, p, cwd, state = self._boot("overlay", lambda cwd: _turns_text(cwd, 0, 600))
+        c = ChatClient(port, tok, SID)
+        c.send({"type": "ready", "proto": 2})
+        self._first_full(c)
+        for bad in ("todo", "echo-abcdef123456"):
+            full = self._repair_full(c, bad)
+            self.assertNotIn("rebased", full, "a non-uuid key %r is kept, never rebased on an intact transcript: %r" % (bad, {k: full.get(k) for k in ("tailLo", "rebased")}))
+
+    # ── K8 / M3: the wire key is consumed and cleared, so a no-key needFull after a keyed one gets today's plain frame ──
+    def test_k8_a_no_key_needfull_after_a_keyed_one_is_not_served_from_the_remembered_key(self):
+        # Red at the base (heldTailFirst[sid] persisted, so the second, keyless needFull was served from the remembered
+        # key: a second rebased the page never asked for).
+        port, tok, p, cwd, state = self._boot("m3", lambda cwd: _turns_text(cwd, 0, 600))
+        c = ChatClient(port, tok, SID)
+        c.send({"type": "ready", "proto": 2})
+        self._first_full(c)
+        r1 = self._repair_full(c, U(5000))                       # a keyed needFull naming a base GONE from this 600-turn session
+        self.assertTrue(r1.get("rebased") is True, "premise: the keyed needFull for a gone base rebased: %r" % {k: r1.get(k) for k in ("tailLo", "rebased")})
+        r2 = self._repair_full(c, None, with_key=False)          # a NO-key needFull (a click, the prefetch)
+        self.assertNotIn("rebased", r2, "a no-key needFull after a keyed one gets today's plain frame, not the remembered key's rebased (M3): %r" % {k: r2.get(k) for k in ("tailLo", "rebased")})
+
+    # ── K9 / M2: the held-key local must not clobber the `held_first` BOOL _note_chat_full reads (firstHeld on baseGone) ──
+    def test_k9_firstheld_is_false_on_a_basegone_full(self):
+        # Red at the base: my round-one code reassigned `held_first` to the KEY, so every baseGone full's chatFull row
+        # read firstHeld True. The bool is False on a baseGone (neither held edge maps in the shorter list).
+        port, tok, p, cwd, state = self._boot("m2", lambda cwd: _turns_text(cwd, 0, 600))
+        c = ChatClient(port, tok, SID)
+        c.send({"type": "ready", "proto": 2})
+        self._first_full(c)                                      # sets the client's echat base
+        self._bust(state, p, cwd, lambda cwd: _turns_text(cwd, 0, 250))   # shrink: the base no longer maps -> a proactive baseGone full
+        for fr in c.frames(20):                                  # drain the proactive full so its chatFull row is filed
+            if fr.get("type") == "session" and fr.get("id") == SID:
+                break
+        rows = [r for r in self._chatfull_rows(state) if r["data"].get("reason") in ("baseGone", "noBase")]
+        self.assertTrue(rows, "a baseGone/noBase chatFull row was filed: %r" % self._chatfull_rows(state))
+        self.assertFalse(any(r["data"].get("firstHeld") for r in rows),
+                         "firstHeld is False on the baseGone full (the held-key local must not clobber the bool): %r" % rows)
 
 
 if __name__ == "__main__":

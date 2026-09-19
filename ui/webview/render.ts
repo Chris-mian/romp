@@ -14212,8 +14212,26 @@ function showLandingNotice(sid: string, t: number | null | undefined): void {
 /** The set-aside notice for a `rebased` frame (2026-09-19): the same notice element, an informational message with the
  *  count; a click dismisses it (cancelLanding has no live ask to cancel, so it just hides). Never silent. */
 function showSetAsideNotice(sid: string, n: number): void {
-  showLandingNotice(sid, null);
-  if (landingNoticeEl) landingNoticeEl.textContent = setAsideNotice(n);
+  // independent of the reveal-progress guard showLandingNotice keeps (2026-09-19 round two, the LOW): a set-aside must
+  // never be silent, so it shows even while a reveal line is up, and carries its OWN tooltip, not the landing notice's.
+  const content = document.getElementById("content");
+  if (!content || !content.parentNode) return;
+  if (!landingNoticeEl) {
+    landingNoticeEl = document.createElement("div");
+    landingNoticeEl.className = "tx-landing-notice";
+    landingNoticeEl.addEventListener("click", () => cancelLanding());
+  }
+  landingNoticeEl.title = "these earlier messages are no longer part of this session; click to dismiss";
+  landingNoticeEl.textContent = setAsideNotice(n);
+  landingNoticeSid = sid;
+  if (!landingNoticeEl.isConnected) {
+    const anchor = document.createElement("div");
+    anchor.className = "tx-loading-anchor";
+    anchor.appendChild(landingNoticeEl);
+    content.parentNode.insertBefore(anchor, content);
+  }
+  landingNoticeEl.classList.remove("pulse");
+  landingNoticeEl.style.display = "";
 }
 function hideLandingNotice(): void {
   if (landingNoticeEl) {
@@ -17397,7 +17415,7 @@ function upsert(msg: any) {
   // and loses nothing, so it applies; rows dropped AT OR AFTER the frame's content are legit retractions 1877 keeps
   // (round two MEDIUM). A repeated identical refusal is latched below.
   let desyncWhy: string | null = null;
-  if (!kept && prev && prev.regions && msg.proto === 2 && typeof msg.tailLo === "number" && !msg.rebased && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
+  if (!kept && prev && prev.regions && msg.proto === 2 && typeof msg.tailLo === "number" && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
     const tl = msg.tailLo;
     const frameEv = msg.events as unknown as Ev[];
     const txRow = (e: Ev): boolean => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent) && !OVERLAY_KINDS.has(String(e.kind ?? ""));
@@ -17412,7 +17430,13 @@ function upsert(msg: any) {
     // has an empty split.before, so it applies.
     for (const r of runsOf(prev.regions)) {
       if (!r.events.length || r.lo < tl || (r.hi != null && r.hi <= tl)) continue;   // above tailLo (kept) or straddling (its before is kept, the rest is a legit retraction)
-      if (splitHeldAgainstFrame(r.events, frameEv, txRow).before.some(txRow)) { desyncWhy = "would-drop-held"; break; }
+      if (splitHeldAgainstFrame(r.events, frameEv, txRow).before.some(txRow)) {
+        // a `rebased` full may set aside a run the frame shares NO key with (a fork / rewind abandoned it, the kernel
+        // confirmed it gone from the transcript); a run the frame PARTIALLY carries is a loss (a lying low tailLo),
+        // refused even with the flag, so a false or lying rebased can never drop content (2026-09-19 round two, M1b).
+        if (msg.rebased && !sharesAnyUuid(msg.events, r.events as unknown as ChatEvent[])) continue;
+        desyncWhy = "would-drop-held"; break;
+      }
     }
   }
   const keepResident = kept || !!desyncWhy;
