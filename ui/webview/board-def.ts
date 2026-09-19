@@ -19,8 +19,8 @@ export const PREDICATE_KEYS: readonly (keyof Predicate)[] = ["needsYou", "produc
 export interface Rule { when: Predicate; category: string; }
 export type OrderRule = "ownerRank";
 export const ORDER_RULES: readonly OrderRule[] = ["ownerRank"];
-export type KindId = "goal" | "placeholder" | "parked" | "quarantine" | "notice";
-export const KIND_IDS: readonly KindId[] = ["goal", "placeholder", "parked", "quarantine", "notice"];
+export type KindId = "goal" | "placeholder" | "parked" | "notice";   // the quarantine card is a notice card since 2026-09-19 (plans/notice-cards.md)
+export const KIND_IDS: readonly KindId[] = ["goal", "placeholder", "parked", "notice"];
 
 export interface Category { id: string; title: string; chip: Chip; }
 
@@ -45,7 +45,9 @@ export interface Board {
 export type FeedColumnKey = "asks" | "needsInput" | "completed";
 /** The kernel's raw column values, the feed board's category ids (AskItem.column is typed to them). */
 export type FeedCategory = "working" | "needs_input" | "completed";
-export const FEED_LOCAL_KEY: Readonly<Record<string, FeedColumnKey>> = { working: "asks", needs_input: "needsInput", completed: "completed" };
+// a Map, never a plain object: a category is producer-facing from phase three, and a prototype-named one ("toString",
+// "constructor") read a plain object's prototype member where the old ternary read the default (the 1834 read, low 1)
+export const FEED_LOCAL_KEY: ReadonlyMap<string, FeedColumnKey> = new Map([["working", "asks"], ["needs_input", "needsInput"], ["completed", "completed"]]);
 
 /** Today's feed, as one definition. Every value is a literal feed.ts or kernel.py carries now; board-def.test.ts asserts
  *  them against the source, so this constant cannot drift from what renders. */
@@ -62,16 +64,16 @@ export const FEED_BOARD: Board = {
   sort: { key: "t", dir: "asc" },             // oldest at the top (the user 2026-06-27); the newestFirst preference flips it
   subSorts: [],
   groupBy: "session",                         // grouped mode, default on (the user 2026-07-13)
-  order: [],                                  // the owner rank joins in phase three
+  order: ["ownerRank"],                       // what feed.ts does (PR 1831): the owner-less run first, then the session order, then time
   notify: ["needs_input", "completed"],       // kernel.py _NOTIFY_COLUMNS
   needsYou: "needs_input",                    // kernel.py _needs_you_count
-  kinds: ["goal", "placeholder", "parked", "quarantine", "notice"],
+  kinds: ["goal", "placeholder", "parked", "notice"],
 };
 
 // ── the kinds: the card families feed.ts renders, described ────────────────────────────────────────────────────────────
 // A kind's sections and actions are code (the plan's section 1); the descriptors below name each by its id, the label the
-// button wears (null when the label is computed per card) and the feed.ts function that builds or wires it (`via`), so the
-// test can hold the description to the source. The elements are minted by makeAskCard in one fixed order for every kind
+// button wears (null when the label is computed per card) and the feed.ts function whose body mints the element that wears
+// it (`via`), so the test can hold each label to that function's own source and each kind's list to the reviewed table. The elements are minted by makeAskCard in one fixed order for every kind
 // and shown or hidden by updateAskCard and applySections; nothing here changes that.
 export interface Descriptor { id: string; label: string | null; via: string; }
 export interface CardKind { id: KindId; sections: readonly Descriptor[]; actions: readonly Descriptor[]; menu: readonly Descriptor[]; }
@@ -86,32 +88,27 @@ const MENU: readonly Descriptor[] = [
 export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
   goal: {
     id: "goal",
-    sections: [
-      { id: "bg", label: "Background", via: "applySections" },
-      { id: "summary", label: "Summary", via: "applySections" },
-      { id: "subgoals", label: null, via: "applySections" },      // "N sub-goals", the count in the label
-      { id: "stall", label: "Stalled", via: "applySections" },
-      { id: "tasks", label: null, via: "applySections" },         // the awaiting pill's word (spin-caption awaitWord)
+    sections: [                                                   // the toggles makeAskCard mints; applySections wires them
+      { id: "bg", label: "Background", via: "makeAskCard" },
+      { id: "summary", label: "Summary", via: "makeAskCard" },
+      { id: "subgoals", label: null, via: "makeAskCard" },        // "N sub-goals", the count in the label (applySections)
+      { id: "stall", label: "Stalled", via: "makeAskCard" },
+      { id: "tasks", label: null, via: "makeAskCard" },           // the awaiting pill's word (spin-caption awaitWord)
     ],
     actions: [
       CLEAR,
-      { id: "followUp", label: "Follow up", via: "updateAskCard" },
-      { id: "checkStatus", label: "Check status", via: "updateAskCard" },
-      { id: "continue", label: "Continue", via: "updateAskCard" },
-      { id: "retry", label: "Retry", via: "updateAskCard" },
-      { id: "login", label: "Log in…", via: "updateAskCard" },
-      { id: "capSwitch", label: null, via: "updateAskCard" },
+      { id: "followUp", label: "Follow up", via: "renderModalNow" },
+      { id: "checkStatus", label: "Check status", via: "renderModalNow" },
+      { id: "continue", label: "Continue", via: "makeAskCard" },
+      { id: "retry", label: "Retry", via: "makeAskCard" },
+      { id: "login", label: "Log in…", via: "makeAskCard" },
+      { id: "capSwitch", label: null, via: "makeAskCard" },
       BELL,
     ],
     menu: MENU,
   },
-  placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "applySections" }], actions: [CLEAR, BELL], menu: MENU },
-  parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "updateAskCard" }, BELL], menu: MENU },
-  quarantine: {
-    id: "quarantine", sections: [],
-    actions: [{ id: "approve", label: "Approve", via: "updateAskCard" }, { id: "deny", label: "Deny", via: "updateAskCard" }, BELL],
-    menu: MENU,
-  },
+  placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "makeAskCard" }], actions: [CLEAR, BELL], menu: MENU },
+  parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "makeAskCard" }, BELL], menu: MENU },
   notice: {
     id: "notice",
     sections: [{ id: "body", label: null, via: "noticeBodyNodes" }, { id: "attachment", label: null, via: "updateAskCard" }],
@@ -124,10 +121,36 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
 export function kindOf(card: { notice?: unknown; provisional?: unknown; blocked?: { state?: string } | null }): KindId {
   if (card.notice) return "notice";
   const st = card.blocked && card.blocked.state;
-  if (st === "quarantine") return "quarantine";
   if (st === "parkedHandoff") return "parked";
   if (card.provisional) return "placeholder";
   return "goal";
+}
+
+// ── the data-defined boards the frame carries (plans/card-boards.md, phase three) ────────────────────────────────────
+// The kernel ships the definitions a producer or the user made through the door under the frame's `boards` field, data
+// boards only; the renderer holds the code constants itself and merges the two with code winning on an id (the door
+// refuses a reserved id, so the case never arises from a well-behaved kernel; a hostile file is skipped there too). Every
+// shipped definition passes the client half of the check before it is held, so a frame from an older or a foreign kernel
+// can never hand the renderer a board outside the schema.
+const dataBoards = new Map<string, Board>();
+/** Take the frame's `boards` (or a merged frame's): the map replaced whole; returns how many definitions were held. */
+export function adoptBoards(raw: unknown): number {
+  dataBoards.clear();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return 0;
+  for (const [id, defn] of Object.entries(raw as Record<string, unknown>)) {
+    if (RESERVED_BOARD_IDS.includes(id)) continue;
+    if (boardCheck(defn) !== null) continue;
+    const b = defn as Board;
+    if (b.id !== id) continue;
+    dataBoards.set(id, b);
+  }
+  return dataBoards.size;
+}
+/** Every board the renderer knows, code first. */
+export function knownBoards(): Board[] { return [FEED_BOARD, ...dataBoards.values()]; }
+/** The board a card names, or the feed's for a card naming none or an id this renderer does not know. */
+export function boardOf(card: { board?: string | null }): Board {
+  return (card.board && card.board !== FEED_BOARD.id && dataBoards.get(card.board)) || FEED_BOARD;
 }
 
 // ── the reads feed.ts makes ───────────────────────────────────────────────────────────────────────────────────────────
@@ -135,7 +158,12 @@ export function kindOf(card: { notice?: unknown; provisional?: unknown; blocked?
 /** The renderer's local column key for a category id; an unknown id files under the board's default category, which is
  *  what the old mapping did for anything but the two named values. */
 export function columnOf(board: Board, category: string): FeedColumnKey {
-  return FEED_LOCAL_KEY[category] ?? FEED_LOCAL_KEY[board.defaultCategory];
+  return FEED_LOCAL_KEY.get(category) ?? FEED_LOCAL_KEY.get(board.defaultCategory) ?? "asks";
+}
+
+/** Whether a card in `category` is one the board's badge counts (the interrupt rule every lens lets through). */
+export function isNeedsYou(board: Board, category: string): boolean {
+  return board.needsYou !== null && category === board.needsYou;
 }
 
 /** The board's columns in its order, as the local keys the layout and the view state use. */

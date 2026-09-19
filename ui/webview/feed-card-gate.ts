@@ -16,7 +16,7 @@
 //     (updateAskCard stashes `_it`).
 //   - every board-level input updateAskCard reads OUTSIDE the ask object: cardInputsKey folds them into
 //     one string, computed from an env the render builds once. The list below is the complete set (a
-//     source scan of updateAskCard, applySections, quarWho, dotFor and prRepoOf); a missed input shows as
+//     source scan of updateAskCard, applySections, dotFor and prRepoOf); a missed input shows as
 //     a stale badge on an unchanged card, so keep it complete.
 //   - a local gesture (a section toggle, the bell, hover/pin): its handler writes the DOM directly and,
 //     where a column could change, calls render(); hover/pin are also in the key.
@@ -36,9 +36,9 @@ export interface GateItem {
   sid: string;
   name: string;
   color?: { bg: string } | null;
-  blocked?: { state: string } | null;
   tree?: { kind: string; who: string; whoSid?: string }[] | null;
   delegTracked?: { name: string }[] | null;
+  board?: string | null;
 }
 
 /** The board-level inputs, resolved by the render once per pass. */
@@ -59,15 +59,16 @@ export interface GateEnv {
   prefs: { grouped: boolean; collapsed: boolean; colormap: string };
   /** hostIsDown(sid): the struck "host:" prefix on a remote session's name. */
   hostDown: (sid: string) => boolean;
-  /** feedSelfHost: the quarantine route's recipient host. */
+  /** feedSelfHost: this machine's name, the host a local session's card names. */
   selfHost: string;
   /** prRepoOf(sid): the GitHub repository (owner/repo, or null) the card's session works in, read off the
    *  frame's session rows; the title, checklist, takeaway and tree link their `#123` to it (pr-links.ts). A
    *  session whose repository arrives or changes must relink an otherwise unchanged card. */
   repo: (sid: string) => string | null;
-  /** A per-render counter for cards that must never skip: a quarantine card reads sessionColors by
-   *  name, a map the payload rebuilds every frame, so its key is unique per render. */
-  seq: number;
+  /** The title of the data-defined board a card names (board-def.ts boardOf), "" for the feed: the producer label
+   *  names it, and a board defined, retitled or removed between two frames must repaint its cards (card boards,
+   *  phase three). */
+  boardTitle: (it: GateItem) => string;
 }
 
 /** One string of every board-level input this card's face reads. Two renders with equal inputs
@@ -87,13 +88,13 @@ export function cardInputsKey(it: GateItem, env: GateEnv): string {
     // the colour echo (feed.ts applyColorEcho) writes `a.color` IN PLACE — the one write into a shared
     // ask object — so identity cannot carry it; the colour rides the key instead
     (it.color && it.color.bg) || "",
+    env.boardTitle(it),
   ];
   for (const n of it.tree || []) {
     if (n.kind !== "handoff" || !n.whoSid) continue;
     parts.push(n.whoSid + (env.working(n.who) ? "w" : ""));
   }
   for (const d of it.delegTracked || []) parts.push(env.dot(d.name));
-  if (it.blocked && it.blocked.state === "quarantine") parts.push("q" + env.seq);
   return parts.join("|");
 }
 

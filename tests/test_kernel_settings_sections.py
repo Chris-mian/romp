@@ -32,7 +32,7 @@ class SettingsSectionsTest(unittest.TestCase):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
         for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Chat history", "Tab strip", "Tab widgets"]),
-                            ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges"]), ("tasks", ["Task tracking", "Judges"]),
+                            ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges", "Model"]), ("tasks", ["Task tracking", "Judges"]),   # Model: the two model switches (2026-09-17)
                             ("debug", ["Judging bands", "Diagnostics"])):
             p = _pane(h, pane)
             self.assertIn("<div class='rs-sec rs-sec-first'>%s</div>" % heads[0], p, pane + " opens with its first head")
@@ -51,11 +51,11 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
         where = {
-            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-panedock", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
             "chat": ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-swidgets"],
             "feed": ["rs-feedcollapsed"],
             "sessions": ["rs-defaultdir", "rs-backend"],
-            "automation": ["rs-autonudge", "rs-suggestcompact"],
+            "automation": ["rs-autonudge", "rs-suggestcompact", "rs-alwaysfast", "rs-retryupgrade"],   # the two model switches: kernel policies applied to sessions on the kernel's own initiative (2026-09-17)
             "tasks": ["rs-tasktrack", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
             "debug": ["rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
         }
@@ -68,14 +68,14 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("+ SHORTCUT_ROWS +", panes["general"])
         # Panes (the user 2026-09-10): three rows, one hint each, Sessions before Outline before Feed; the chat is required, Files keeps its rail toggle
         pn = panes["general"]   # the Panes section moved to General (T400)
-        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 4)   # Sessions, Outline, Feed, and the Files row since the T404 tidy
+        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 5)   # Sessions, Outline, Feed, the Files row since the T404 tidy, and the Pane docking switch (plans/pane-docking.md phase two: a Panes row, so the off-dashboard hide takes it)
         self.assertLess(pn.index("<b>Sessions</b>"), pn.index("<b>Outline</b>"))
         self.assertLess(pn.index("<b>Outline</b>"), pn.index("<b>Feed</b>"))
         self.assertNotIn("id=rs-pane-chat", h, "the chat is required")
         self.assertNotIn("id=rs-pane-files", h, "the Files pane keeps its rail toggle")
-        # Automation (T404): the two nudges in their order; Task tracking: the judge tiers alone
+        # Automation (T404): the two nudges in their order, then the Model section with its two switches (2026-09-17); Task tracking: the judge tiers alone
         am = panes["automation"]
-        self.assertTrue(am.index(">Nudges<") < am.index("id=rs-autonudge") < am.index("id=rs-suggestcompact"))
+        self.assertTrue(am.index(">Nudges<") < am.index("id=rs-autonudge") < am.index("id=rs-suggestcompact") < am.index("<div class='rs-sec'>Model</div>") < am.index("id=rs-alwaysfast") < am.index("id=rs-retryupgrade"))
         au = panes["tasks"]
         self.assertTrue(au.index(">Task tracking<") < au.index("id=rs-tasktrack") < au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort") < au.index("id=rs-judgeconc"))   # the master switch first (T404 PR 2)
         for gone in ("id=rs-autonudge", "id=rs-conserve", "id=rs-thinksum", ">Sessions<"):
@@ -85,7 +85,7 @@ class SettingsSectionsTest(unittest.TestCase):
         # button before the version (T290)
         ge = panes["general"]
         self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index("id=rs-pane-feed") < ge.index("id=rs-filesctl")
-                        < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
+                        < ge.index("id=rs-panedock") < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
                         < ge.index(">This machine<") < ge.index("id=rs-conserve") < ge.index("id=rs-updates") < ge.index(">Keyboard shortcuts<"))
         self.assertIn("<b>Allow file editing</b>", ge)
         self.assertIn("<b>Updates install automatically <span class=rs-mixed hidden></span></b>", ge)

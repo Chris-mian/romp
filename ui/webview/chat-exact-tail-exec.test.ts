@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { workedFooterPlan } from "./worked-footer";
+import { indexOfUuid, keyOf } from "./chat-window";   // the uuid-anchored arm's real helpers (a proto-2 delta names its anchor by key)
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -27,7 +28,8 @@ function liftBetween(startAnchor: string, endAnchor: string): string {
 // ── chatTail ──────────────────────────────────────────────────────────────────────────────────────
 
 type TailHooks = { fulls: string[]; strips: number; rewinds: [string, number | undefined][]; optRecs: number;
-                   tabRenders: number; appends: number; bgRenders: number; prebuilds: number };
+                   tabRenders: number; appends: number; bgRenders: number; prebuilds: number;
+                   indexOfUuid?: typeof indexOfUuid; keyOf?: typeof keyOf };
 type TailApi = { chatTail: (msg: any) => void; set: (p: { sessions?: Map<string, any>; views?: Map<string, any>; activeId?: string | null }) => void };
 
 function liftChatTail(): (hooks: TailHooks) => TailApi {
@@ -51,9 +53,9 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const renderBgTasks = () => { H.bgRenders++; };
     const awaitChanged = (_sid) => { H.bgRenders++; };   // 2026-09-10: the tail calls this (box + a viewer's header); it counts as the box render
     const schedulePrebuild = () => { H.prebuilds++; };
-    const keyOf = (e) => (e && (e.uuid || e.key)) || null;   // the anchor path resolves inside the tail run by key (the dropped-history guard, 2026-09-19)
     const regionsAbsorbTail = () => true;                // the tail run's regions follow the events (T386 stage 2); returns whether it could (a short store refuses); this slice holds no regions, so always true
     const clearRefusedLatch = () => {};                  // a delta applied clears the full-frame refusal latch (round two); no latch in this slice
+    const indexOfUuid = HOOKS.indexOfUuid, keyOf = HOOKS.keyOf;   // the proto-2 arm (afterUuid): chat-window's real helpers, handed in by the world
   `;
   const epilogue = `
     return { chatTail, set: (p) => { if (p.sessions) sessions = p.sessions; if (p.views) views = p.views; if ("activeId" in p) activeId = p.activeId; } };
@@ -63,7 +65,7 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
 
 const kernelEvents = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", uuid: "e" + i }));
 function tailWorld(opts: { rendered: number; winEnd: number; unitTotal: number; active: boolean; headFrom?: number; opt?: boolean }) {
-  const H: TailHooks = { fulls: [], strips: 0, rewinds: [], optRecs: 0, tabRenders: 0, appends: 0, bgRenders: 0, prebuilds: 0 };
+  const H: TailHooks = { fulls: [], strips: 0, rewinds: [], optRecs: 0, tabRenders: 0, appends: 0, bgRenders: 0, prebuilds: 0, indexOfUuid, keyOf };
   const api = liftChatTail()(H);
   const events: any[] = kernelEvents(10);
   if (opts.opt) events.splice(6, 0, { kind: "user", uuid: "opt-1", opt: true });   // a bubble at its send slot, mid-array
@@ -156,6 +158,24 @@ test("a status-only tail (empty suffix) replaces the status and re-renders the a
   assert.equal(H.bgRenders, 0, "no awaited field changed");
   api.chatTail({ id: "A", from: 10, events: [], status: { state: "working", awaitingWhy: "agents" } });
   assert.equal(H.bgRenders, 1, "the awaiting box renders from the same frame that flips the chip");
+});
+
+test("a landing that replaces the sender's hidden kernel echo arrives as a delta after the record before it: the echo is truncated, the record and the reply appended, the pending reconcile re-run, no full asked", () => {
+  // The kernel's proto-2 base skips its own transient live-tail keys (kernel.py _last_anchor, 2026-09-19), so the CLI's record
+  // landing in an echo's slot is a chatTail anchored on the record BEFORE the echo, not a full frame (which upsert treats as a
+  // reconnect repair and rebuilds the window from). This is the client half of that inference, on the lifted chatTail: the
+  // resident list ends with the kernel's echo, hidden behind the sender's own bubble (hiddenByPending); the delta truncates
+  // it and appends the landing; reconcileOptimistic (reconcilePending) runs once more; nothing asks for the full session.
+  const { H, api, s } = tailWorld({ rendered: 11, winEnd: 11, unitTotal: 11, active: true });
+  s.events.push({ kind: "user", uuid: "echo:" + "a".repeat(32), md: "please continue", human: true, hiddenByPending: true });
+  const rec = { kind: "user", uuid: "11111111-2222-4333-8444-555555555501", md: "please continue", human: true };
+  const reply = { kind: "assistant", uuid: "11111111-2222-4333-8444-555555555502", md: "on it" };
+  api.chatTail({ id: "A", afterUuid: "e9", events: [rec, reply] });
+  assert.deepEqual(H.fulls, [], "no full is asked: the anchor is resident");
+  assert.deepEqual(s.events.slice(-3).map((e: any) => e.uuid), ["e9", rec.uuid, reply.uuid], "the echo is truncated away; the record and the reply follow the anchor");
+  assert.equal(s.events.filter((e: any) => e.kind === "user" && e.md === "please continue").length, 1, "one bubble for the send: the record");
+  assert.equal(H.optRecs, 1, "the pending reconcile runs after the apply: it re-hides or retires the sender's own copy");
+  assert.equal(s.lastUuid, reply.uuid, "the page's last key is the reply's");
 });
 
 // ── patchWorkedFooters ────────────────────────────────────────────────────────────────────────────
