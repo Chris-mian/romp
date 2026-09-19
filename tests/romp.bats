@@ -2295,6 +2295,8 @@ PY
     grep -q '"model": "claude-fable-5"' "$TEST_DIR/req.log"
     grep -q '"effort": "ultracode"' "$TEST_DIR/req.log"
     [[ "$output" == *"applied model claude-fable-5, effort ultracode"* ]]
+    # a level the kernel TOOK is reported as applied and never as refused (the refusal reader stays quiet)
+    [[ "$output" != *"refused"* ]]
 }
 
 @test "new --model/--effort: a kernel that does NOT ack them warns loudly (no silent divergence)" {
@@ -2332,6 +2334,67 @@ PY
     [ "$status" -eq 0 ]
     # per-asked-key: only --model was asked, so only --model is named as dropped
     [[ "$output" == *"did not acknowledge --model (older kernel?)"* ]]
+}
+
+@test "new --effort: a kernel that REFUSES the level says so with its reason, never as an unacknowledged ask" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    touch "$MOCK_LOG"
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf 'tok-test' > "$XDG_STATE_HOME/romp/serve-token"
+    # fake kernel whose effort setter refused the level: the echo carries `refused` (the setter's words) and NO
+    # `effort` key, while the model it took is echoed as before. A reader that keys the dropped-ask WARNING on
+    # the effort echo's PRESENCE prints a refusal as an older kernel that did not acknowledge --effort: a false
+    # protocol gap in place of the kernel's answer.
+    python3 - "$TEST_DIR/port" "$TEST_DIR/req.log" <<'PY' &
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+portfile, log = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        with open(log, "w") as f:
+            json.dump({"path": self.path, "body": body}, f)
+        out = json.dumps({"ok": True, "id": "11111111-2222-3333-4444-555555555555",
+                          "model": body.get("model"),
+                          "refused": "the catalog for this model does not offer it"}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+    def log_message(self, *a): pass
+class _Bound(HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+srv = _Bound(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_address[1]))
+srv.handle_request()
+PY
+    local srv=$!
+    until [ -s "$TEST_DIR/port" ]; do sleep 0.05; done
+    # the two streams apart (run_romp merges them): the refusal is a warning on stderr while the started and
+    # applied lines stay on stdout, so a script reading stdout sees what it saw before. stderr goes to a file
+    # rather than through `run --separate-stderr`, a flag bats warns on unless the file declares a minimum version.
+    local _out _err _st=0
+    _out="$(ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")" "$ROMP_SCRIPT" new --model claude-fable-5 --effort turbo opt 2>"$TEST_DIR/err")" || _st=$?
+    kill "$srv" 2>/dev/null || true
+    _err="$(cat "$TEST_DIR/err")"
+    # the session exists: the exit status is the created path's
+    [ "$_st" -eq 0 ]
+    [[ "$_out" == *"started \"opt\""* ]]
+    grep -q '"effort": "turbo"' "$TEST_DIR/req.log"
+    # one stderr line names the asked level and the kernel's own reason, and nothing about it reaches stdout
+    [ "$(grep -c 'refused' "$TEST_DIR/err")" -eq 1 ]
+    [[ "$_err" == *"romp new: effort turbo refused: the catalog for this model does not offer it"* ]]
+    [[ "$_out" != *"refused"* ]]
+    # the kernel ANSWERED the ask; it did not drop it, so no older-kernel warning on either stream
+    [[ "$_out$_err" != *"did not acknowledge"* ]]
+    [[ "$_out$_err" != *"older kernel"* ]]
+    # what the kernel took is still reported, on stdout, and that line does not name effort
+    local _applied_line
+    _applied_line="$(printf '%s\n' "$_out" | grep 'romp new: applied')"
+    [ "$_applied_line" = "romp new: applied model claude-fable-5" ]
 }
 
 @test "new --model + --env: a kernel that acks model but drops env warns about --env specifically" {
