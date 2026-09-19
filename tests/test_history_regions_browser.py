@@ -83,7 +83,11 @@ const belowRowBefore = await rowAtTop();
 await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
 await painted();
 const belowRegions = await regions(); const belowRowAfter = await rowAtTop(); const belowGestures = await gestures();
-process.stdout.write("RESULT:" + JSON.stringify({ boot: { regions: bootRegions, turns: boot.turns, atBottom: boot.atBottom, notice: boot.notice, strip: boot.strip }, turnsBefore, asks, gapsAsked, regionsAsked, rowBefore, rowAfter, gesturesBefore, gesturesAfter, fills,
+// R3 (the client merge guard, 2026-09-19), the last measurement: after the fill, the live tail and the below-fill, the bottom of the view is
+// the transcript's newest row (the synthetic live turn's reply), and the rendered rows stand in transcript order (the file's records, then
+// the injected turn)
+const r3 = await bottomCheck(tail.events[1].uuid, transcriptOrder().concat(tail.events.map((e) => e.uuid)));
+process.stdout.write("RESULT:" + JSON.stringify({ r3, boot: { regions: bootRegions, turns: boot.turns, atBottom: boot.atBottom, notice: boot.notice, strip: boot.strip }, turnsBefore, asks, gapsAsked, regionsAsked, rowBefore, rowAfter, gesturesBefore, gesturesAfter, fills,
   filled: { regions: regionsFilled, gaps: filled.gaps, turns: filled.turns, firstUuid: filled.firstUuid, lastUuid: filled.lastUuid, top: filled.top, notice: filled.notice, strip: filled.strip },
   gapPerTurn, runPerTurn,
   rowLive, below: { asks: belowAsks, regions: belowRegions, rowBefore: belowRowBefore, rowAfter: belowRowAfter, gestures: belowGestures, gesturesBefore: belowGesturesBefore },
@@ -170,6 +174,17 @@ class ServedHistoryRegions(WindowLab):
         self.assertFalse(live["notice"], "no notice for a live tail")
         self.assertEqual(r["rowLive"]["uuid"], r["rowAfter"]["uuid"], "the tail's arrival did not move the reader: the same row under the viewport top: %r → %r" % (r["rowAfter"], r["rowLive"]))
         self.assertLessEqual(abs(r["rowLive"]["y"] - r["rowAfter"]["y"]), 2, "…at its offset (the spacer estimate above may re-size, the row does not move): %r → %r" % (r["rowAfter"], r["rowLive"]))
+
+    def test_after_the_history_actions_the_bottom_of_the_view_is_the_transcripts_newest_row(self):
+        # R3 (the client merge guard, 2026-09-19): scrolled to the bottom, the last rendered row is the transcript's newest, the view is at
+        # the bottom, and the rendered rows stand in transcript order (a full frame behind the page, or a window placed with no regions,
+        # put older content at the bottom)
+        r = self._result()
+        b = r["r3"]
+        self.assertEqual(b["last"], b["newest"], "the bottom of the view is the transcript's newest row: %r" % b)
+        self.assertTrue(b["atBottom"], "…and the view is at the bottom: %r" % b)
+        self.assertTrue(b["ordered"], "the rendered rows stand in transcript order (misordered at %r): %r" % (b["misordered"], b))
+        self.assertTrue(b["runsOrdered"], "the runs are ordered by lo with the open-ended run last: %r" % b["regions"])
 
 
 if __name__ == "__main__":

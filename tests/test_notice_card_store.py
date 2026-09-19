@@ -386,6 +386,18 @@ class ActionKinds(unittest.TestCase):
         ok, err = km._notice_action(iid, "quarantine", {"mid": "m4", "verdict": "approve"})
         self.assertEqual((ok, err), (False, "the verdict could not reach the postal bus (no port record)"), "a fault is the answer, never the socket's death")
 
+    def test_a_quarantine_action_is_accepted_only_for_the_message_s_own_recipient(self):
+        # the manager's review of PR 1885, medium: with the held file in this world's root, a card under api naming web's message is
+        # refused at the post, web's own is accepted, and a mid with no file is left to the bus at the click
+        qdir = km.jd.STATE / "postal" / "quarantine"; qdir.mkdir(parents=True, exist_ok=True)
+        (qdir / "held-1.json").write_text(json.dumps({"mid": "held-1", "to": "web", "toId": SID, "frm": "api", "frmId": SID2, "body": "hello", "kind": "coordinate", "origin": "TESTHOST", "at": 1000}))
+        acts = [{"label": "Approve", "kind": "quarantine", "body": {"mid": "held-1", "verdict": "approve"}}]
+        self.assertEqual(km.post_notice(SID2, "held-1", "t", producer="postal", actions=acts, needs_you=True, now=100), (None, "a quarantine action's message is held for another session, not this card's owner"))
+        row, err = km.post_notice(SID, "held-1", "t", producer="postal", actions=acts, needs_you=True, now=100)
+        self.assertIsNone(err); self.assertEqual(row["actions"], acts)
+        row, err = km.post_notice(SID2, "held-9", "t", producer="postal", actions=[{"label": "Approve", "kind": "quarantine", "body": {"mid": "held-9", "verdict": "approve"}}], needs_you=True, now=100)
+        self.assertIsNone(err, "no file: nothing to compare at the post")
+
     def test_the_stored_body_is_matched_whole_and_a_send_kind_is_not_a_quarantine_kind(self):
         iid = self._held("m5")
         self.assertEqual(km._notice_action(iid, "quarantine", {"mid": "m6", "verdict": "approve"}), (False, "no such action on that card"))
