@@ -227,11 +227,14 @@ class RefusalReachesTheClient(unittest.TestCase):
         self.assertNotIn(SID, km._pending_ops, "a refusal parks nothing")
 
     def test_the_command_route_answers_a_refused_fast_toggle_on_the_same_frame(self):
-        # the effort arm's frame is pinned above (a level the catalog does not offer); this is the /fast arm's
+        # the effort arm's frame is pinned above (a level the catalog does not offer); this is the /fast arm's.
+        # Not vouched as a Codex session for this call: a live Codex session's /fast is refused above the setter
+        # by the Codex slash guard (#1864), so the fast arm's client is an SDK or unowned session.
         self.be.set_fast = lambda sid, v: False
         client, sent = self._client()
         state = {}
-        self.assertTrue(km._route_meta_command(self.be, SID, "/fast on", client, state=state))
+        with mock.patch.object(km, "_codex", lambda: None):
+            self.assertTrue(km._route_meta_command(self.be, SID, "/fast on", client, state=state))
         self.assertIs(state["queued"], False)
         self.assertEqual([tuple(m.get(k) for k in ("type", "gesture", "sid", "flag")) for m in sent],
                          [("settingRefused", "command", SID, "fast")], sent)
