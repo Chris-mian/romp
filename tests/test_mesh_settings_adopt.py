@@ -129,6 +129,30 @@ class _Kernel:
         with self:
             return [r["text"] for r in km._sync_notice_rows(limit=50)]
 
+    def cards(self):
+        """The STANDING proposal cards on the owner-less home (phase one B): {key: (rev, title, [action labels])}; a key whose
+        newest post is expired is not standing."""
+        with self:
+            rows = km._notice_rows(km.NOTICE_OWNERLESS_SID)
+        posts, gone = {}, {}
+        for r in rows:
+            if r.get("op") == "post":
+                posts[r["key"]] = r
+            elif r.get("op") == "expire":
+                gone[r["key"]] = max(gone.get(r["key"], 0), int(r.get("rev") or 0))
+        return {k: (int(r["rev"]), r["title"], [a["label"] for a in r.get("actions") or []]) for k, r in posts.items() if int(r["rev"]) > gone.get(k, 0)}
+
+    def posted(self):
+        """Every card revision ever posted on the owner-less home, in order: (key, rev, title). What was SAID to the user."""
+        with self:
+            return [(r["key"], int(r["rev"]), r["title"]) for r in km._notice_rows(km.NOTICE_OWNERLESS_SID) if r.get("op") == "post"]
+
+    def click(self, key, rev, body):
+        """The user's click on a card's action, as the noticeAction socket op runs it: (ok, error)."""
+        with self:
+            with contextlib.redirect_stderr(io.StringIO()):
+                return km._notice_action("notice:%s:%s:%d" % (km.NOTICE_OWNERLESS_SID, key, rev), "setting-proposal", body)
+
     def close(self):
         self.td.cleanup()
 
@@ -153,12 +177,14 @@ class ProposePeerSettings(unittest.TestCase):
         self.assertEqual(self.a.proposals(), {"compact-suggest": [{"host": "TESTHOST", "value": True, "gt": 2_000, "current": False}]},
                          "the record: which machine, what value, under which stamp, against which local value")
         self.assertIn("TESTHOST", err); self.assertIn("nothing applied", err)
-        self.assertEqual([n for n in self.a.notices() if "proposes" in n],
-                         ["TESTHOST proposes turning Suggest /compact on (this machine has it off); Apply or Keep mine in Settings"],
-                         "the interim alert: one sync notice, in the user's terms (one B replaces it with the card)")
+        # the alert is the CARD (phase one B): one needs-you notice card on the owner-less home, in the user's terms, with the three
+        # answers as actions of the setting-proposal kind; the sync notice of one A retired with it
+        self.assertEqual(self.a.cards(), {"proposal.compact-suggest.TESTHOST": (1, "Suggest /compact: TESTHOST proposes on; this machine is off",
+                                                                                  ["Apply", "Keep mine", "Keep mine and pin this machine"])})
+        self.assertEqual([n for n in self.a.notices() if "proposes" in n], [], "no sync notice beside the card")
         pending2, _ = self.a.propose("TESTHOST", self.b.version())
         self.assertEqual(pending2, ["compact-suggest"], "the second poll finds the record standing")
-        self.assertEqual(len([n for n in self.a.notices() if "proposes" in n]), 1, "…and says nothing again for the same stamp")
+        self.assertEqual(len(self.a.posted()), 1, "…and posts nothing again for the same stamp")
 
     def test_a_moved_proposal_is_refreshed_and_said_once_more(self):
         self.a.set("compact-suggest", False, 1_000)
@@ -167,8 +193,8 @@ class ProposePeerSettings(unittest.TestCase):
         self.b.set("compact-suggest", True, 2_500)              # the other machine clicked again
         self.a.propose("TESTHOST", self.b.version())
         self.assertEqual(self.a.proposals()["compact-suggest"][0]["gt"], 2_500, "the record follows the peer's stamp")
-        self.assertEqual(len([n for n in self.a.notices() if "proposes" in n]), 2)
-        self.assertIn("(the proposal moved)", self.a.notices()[-1])
+        self.assertEqual(len(self.a.posted()), 2, "the moved stamp is a new revision of the card")
+        self.assertEqual(self.a.cards()["proposal.compact-suggest.TESTHOST"][0], 2, "…and the standing card is the revision")
 
     def test_an_older_or_equal_peer_stamp_raises_nothing(self):
         self.a.set("compact-suggest", True, 3_000)
@@ -380,7 +406,7 @@ class RoundTwo(unittest.TestCase):
         self.a.close(); self.b.close(); self.c.close()
 
     def _said(self):
-        return [n for n in self.a.notices() if "proposes" in n]
+        return self.a.posted()   # what was said to the user: every card revision (phase one B; the sync notice retired)
 
     def test_two_machines_proposing_one_store_hold_one_record_each_and_are_said_once_each(self):
         # the verifier's drive: A on@1000 polling B (off@2000) and C (off@3000) drew notices 2, 4, 6, 8 after four passes, the
@@ -518,7 +544,7 @@ class RoundThree(unittest.TestCase):
         self.a.close(); self.b.close(); self.c.close()
 
     def _said(self):
-        return [n for n in self.a.notices() if "proposes" in n]
+        return self.a.posted()   # what was said to the user: every card revision (phase one B; the sync notice retired)
 
     def _poll(self, row_key="hostb", peer=None, self_name="TESTHOSTB"):
         """A's supervisor step for the row: the answer B gives with the token (its own name beside its settings)."""
@@ -536,7 +562,9 @@ class RoundThree(unittest.TestCase):
             self._poll(); self.a.push("TESTHOSTB", "task-tracking", False, 2_000)
         self.assertEqual(sorted(self.a.records()["task-tracking"]["hosts"]), ["hostb"], "ONE record, under the row key")
         self.assertEqual([r["host"] for r in self.a.proposals()["task-tracking"]], ["hostb"], "the gear draws one line for one machine")
-        self.assertEqual(len(self._said()), 1, "said once: %r" % self._said())
+        self.assertEqual(sorted(self.a.cards()), ["proposal.task-tracking.hostb"], "ONE standing card: the self-name's expired when the record moved")
+        self.assertEqual([k for k, _rev, _t in self._said()], ["proposal.task-tracking.TESTHOSTB", "proposal.task-tracking.hostb"],
+                         "two posts in all: the push's card, then the row key's when the poll re-keyed the record; nothing more over three passes")
         self.assertEqual(km._remotes["hostb"]["self_name"], "TESTHOSTB")
 
     def test_keep_then_a_restart_then_the_push_wins_the_race_and_the_kept_stamp_holds(self):
@@ -588,6 +616,121 @@ class RoundThree(unittest.TestCase):
         recs = self.a.records()
         self.assertEqual(recs["task-tracking"], {"hosts": {}, "answered": {}}, "no machine named gt; a stamp no machine is named for is forgotten")
         self.assertEqual(recs["auto-nudge"]["answered"], {"hostb": 4_000}, "the one recorded machine takes the kept stamp")
+
+
+class TheCard(unittest.TestCase):
+    """Phase one B (plans/settings-across-machines.md): the proposal is a needs-you notice card on the owner-less home, its
+    three answers actions of the setting-proposal kind the kernel alone posts; the card follows the record (posted on raise,
+    revised on a moved stamp, expired on every drop) and a click runs the same route the gear uses."""
+
+    KEY = "proposal.task-tracking.TESTHOSTB"
+
+    def setUp(self):
+        self.a, self.b = _Kernel(), _Kernel()
+        with km._remotes_lock:
+            self._rows = dict(km._remotes); km._remotes.clear()
+        self.a.set("task-tracking", True, 1_000)
+        self.b.set("task-tracking", False, 2_000)
+
+    def tearDown(self):
+        with km._remotes_lock:
+            km._remotes.clear(); km._remotes.update(self._rows)
+        self.a.close(); self.b.close()
+
+    def _body(self, answer, gt=2_000, host="TESTHOSTB"):
+        return {"store": "task-tracking", "host": host, "gt": gt, "answer": answer}
+
+    def test_the_kind_is_in_the_table_needs_no_owner_and_is_the_kernels_alone(self):
+        self.assertEqual(km.NOTICE_ACTION_KINDS, ("send", "quarantine", "setting-proposal"))
+        self.assertEqual(km.NOTICE_ACTION_KIND_OWNER, {"send": True, "quarantine": True, "setting-proposal": False})
+        act = {"label": "Apply", "kind": "setting-proposal", "body": self._body("apply")}
+        with self.a:
+            row, err = km.post_notice("", "k1", "a title", producer="test", actions=[act])
+            self.assertEqual((row, err), (None, "action kind 'setting-proposal' is posted by the kernel alone"), "the route's and the command's door")
+            row, err = km.post_notice("", "k1", "a title", producer="test", actions=[act], internal=True)
+            self.assertIsNone(err, err); self.assertEqual(row["sid"], km.NOTICE_OWNERLESS_SID, "admitted on the owner-less home: it needs no owner")
+            row, err = km.post_notice("", "k2", "a title", producer="test", actions=[{"label": "x", "kind": "send", "body": {"text": "hi"}}], internal=True)
+            self.assertEqual(err, "an owner-less card has no session to send to: actions need a session", "a kind that needs an owner is refused there as ever")
+            for body, why in ((self._body("later"), "apply, keep or pin"), (dict(self._body("apply"), extra=1), "is not a member"),
+                              (dict(self._body("apply"), store="judge-model"), "names a synchronized setting"),
+                              (dict(self._body("apply"), gt=0), "carries the proposal's stamp"), (dict(self._body("apply"), host=""), "names the proposing machine")):
+                _r, err = km.post_notice("", "k3", "a title", producer="test", actions=[{"label": "x", "kind": "setting-proposal", "body": body}], internal=True)
+                self.assertIn(why, err or "", body)
+            self.assertEqual(km._notice_action("notice:notes:k2:1", "send", {"text": "hi"}), (False, "an owner-less card has no actions"), "the click's door for send stands")
+
+    def test_the_card_is_posted_with_the_record_and_apply_from_it_runs_the_route(self):
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.cards(), {self.KEY: (1, "Task tracking: TESTHOSTB proposes off; this machine is on", ["Apply", "Keep mine", "Keep mine and pin this machine"])})
+        with self.a:
+            row = [r for r in km._notice_rows(km.NOTICE_OWNERLESS_SID) if r.get("op") == "post"][0]
+        self.assertEqual((row["producer"], row["needsYou"], row["dismissOnAction"]), ("settings", True, True))
+        self.assertEqual([a["body"] for a in row["actions"]], [self._body("apply"), self._body("keep"), self._body("pin")], "the stored bodies ARE the route's")
+        self.assertIn("Nothing changed here", row["body"])
+        self.assertEqual(self.a.click(self.KEY, 1, self._body("apply")), (True, ""))
+        self.assertEqual(self.a.read("task-tracking"), (False, 2_000), "applied under the peer's stamp, through the route")
+        self.assertEqual(self.a.proposals(), {}); self.assertEqual(self.a.cards(), {}, "the record's drop expired the card")
+        with self.a:
+            ops = [r["op"] for r in km._notice_rows(km.NOTICE_OWNERLESS_SID)]
+        self.assertIn("acted", ops, "dismissOnAction: the acted row"); self.assertIn("expire", ops)
+        self.assertEqual(self.a.click(self.KEY, 1, self._body("apply"))[0], False, "spent")
+
+    def test_keep_from_the_card_drops_the_record_and_the_same_stamp_posts_no_card_again(self):
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.click(self.KEY, 1, self._body("keep")), (True, ""))
+        self.assertEqual(self.a.read("task-tracking"), (True, 1_000)); self.assertEqual(self.a.cards(), {})
+        self.assertEqual(self.a.records()["task-tracking"], {"hosts": {}, "answered": {"TESTHOSTB": 2_000}})
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(len(self.a.posted()), 1, "the kept stamp posts nothing")
+        self.b.set("task-tracking", False, 3_000)
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.cards()[self.KEY][0], 2, "a newer click on the other machine: a fresh revision under the same key")
+
+    def test_pin_from_the_card_pins_and_every_record_for_the_store_goes(self):
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.click(self.KEY, 1, self._body("pin")), (True, ""))
+        self.assertEqual(self.a.pins(), {"task-tracking": True}); self.assertEqual(self.a.cards(), {})
+        self.b.set("task-tracking", False, 4_000)
+        self.assertEqual(self.a.propose("TESTHOSTB", self.b.version())[0], [], "pinned: no proposal, no card")
+
+    def test_a_stale_click_and_a_body_the_card_does_not_carry_are_refused_with_the_routes_words(self):
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.b.set("task-tracking", False, 2_500)                 # the other machine clicked again
+        self.a.propose("TESTHOSTB", self.b.version())
+        self.assertEqual(self.a.cards()[self.KEY][0], 2)
+        ok, err = self.a.click(self.KEY, 1, self._body("apply", gt=2_000))   # the older revision's button, still on screen somewhere
+        self.assertEqual((ok, err), (False, "TESTHOSTB changed its mind since this line was drawn; the line is refreshed"))
+        self.assertEqual(self.a.read("task-tracking"), (True, 1_000), "nothing applied")
+        self.assertEqual(self.a.click(self.KEY, 2, self._body("apply", gt=2_600)), (False, "no such action on that card"), "a body the card never stored")
+        self.assertEqual(self.a.click(self.KEY, 2, self._body("apply", gt=2_500)), (True, ""), "the current revision applies")
+        self.assertEqual(self.a.read("task-tracking"), (False, 2_500))
+
+    def test_the_gears_answer_expires_the_card_and_two_machines_are_two_cards(self):
+        c = _Kernel(); c.set("task-tracking", False, 3_000)
+        try:
+            self.a.propose("TESTHOSTB", self.b.version()); self.a.propose("TESTHOSTC", c.version())
+            self.assertEqual(sorted(self.a.cards()), ["proposal.task-tracking.TESTHOSTB", "proposal.task-tracking.TESTHOSTC"])
+            ack = self.a.answer({"store": "task-tracking", "host": "TESTHOSTC", "gt": 3_000, "answer": "keep"})   # the gear's Keep mine
+            self.assertTrue(ack["ok"], ack)
+            self.assertEqual(sorted(self.a.cards()), ["proposal.task-tracking.TESTHOSTB"], "answering in the gear clears the card too")
+            self.a.set("task-tracking", False, 5_000)               # the user takes the proposed value by their own click
+            self.a.propose("TESTHOSTB", self.b.version())
+            self.assertEqual(self.a.cards(), {}, "the divergence ended: the card is gone")
+        finally:
+            c.close()
+
+    def test_a_re_key_moves_the_card_to_the_row_key_and_a_detached_row_takes_it(self):
+        with km._remotes_lock:
+            km._remotes["hostb"] = {"host": "hostb", "status": "up", "local_port": 51000, "token": "tok", "trust": "directed"}
+        self.a.push("TESTHOSTB", "task-tracking", False, 2_000)     # first contact: the push beats the poll
+        self.assertEqual(sorted(self.a.cards()), [self.KEY])
+        with self.a:
+            with contextlib.redirect_stderr(io.StringIO()):
+                km._converge_peer_settings(km._remotes["hostb"], dict(self.b.version(), host="TESTHOSTB"), sync=True)
+        self.assertEqual(sorted(self.a.cards()), ["proposal.task-tracking.hostb"], "the self-name card expired, the row key's posted")
+        self.assertEqual(len(self.a.posted()), 2)
+        with self.a:
+            km._forget_peer_proposals("hostb")
+        self.assertEqual(self.a.cards(), {}, "gone with the row")
 
 
 class _FakePeer(BaseHTTPRequestHandler):

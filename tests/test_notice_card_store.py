@@ -326,16 +326,16 @@ class ActionKinds(unittest.TestCase):
         self.assertIsNone(err); self.assertEqual(row["actions"], [{"label": "Send", "kind": "send", "body": {"text": "x"}}], "route read as its kind, stored as the kind")
         row, err = km.post_notice(SID, "k2", "t", producer="cli", actions=[{"label": "Send", "kind": "send", "body": {"text": "x"}}], now=100)
         self.assertIsNone(err); self.assertEqual(row["actions"], [{"label": "Send", "kind": "send", "body": {"text": "x"}}])
-        self.assertEqual(km.NOTICE_ACTION_KINDS, ("send", "quarantine"))
+        self.assertEqual(km.NOTICE_ACTION_KINDS, ("send", "quarantine", "setting-proposal"))   # the settings plan's kind (phase one B)
         # the card carries each action's kind, so an older row's route reaches the pane as its kind
         by = {c["itemId"]: c for c in km._notice_cards(500, set())}
         self.assertEqual(by["notice:%s:k:1" % SID]["notice"]["actions"][0]["kind"], "send")
 
     def test_kinds_not_in_the_table_and_bare_routes_are_refused_by_name(self):
         for acts, why in [
-            ([{"label": "a", "kind": "watch", "body": {}}], "action kind 'watch' is not one the kernel knows (the kinds: send, quarantine)"),
-            ([{"label": "a", "route": "/watch", "body": {}}], "action route '/watch' is not allowed: actions are of a kind (send, quarantine)"),
-            ([{"label": "a", "body": {"text": "x"}}], "an action needs a kind (send, quarantine)"),
+            ([{"label": "a", "kind": "watch", "body": {}}], "action kind 'watch' is not one the kernel knows (the kinds: send, quarantine, setting-proposal)"),
+            ([{"label": "a", "route": "/watch", "body": {}}], "action route '/watch' is not allowed: actions are of a kind (send, quarantine, setting-proposal)"),
+            ([{"label": "a", "body": {"text": "x"}}], "an action needs a kind (send, quarantine, setting-proposal)"),
             ([{"label": "a", "kind": "quarantine", "body": {"mid": "m1", "verdict": "edit"}}], "a quarantine action's verdict is approve or deny (a user never edits held mail)"),
             ([{"label": "a", "kind": "quarantine", "body": {"mid": "m1", "verdict": "approve", "text": "x"}}], "a quarantine action's body is {mid, verdict}; 'text' is not a member"),
             ([{"label": "a", "kind": "quarantine", "body": {"verdict": "approve"}}], "a quarantine action's body needs the held message's id"),

@@ -818,7 +818,9 @@ Each kind's runner is a function in the kernel (`_notice_run_send`, `_notice_run
 `(row, action, input)`; `_notice_action` looks the kind up, refuses the click when the stored action is
 not on the card's revision (matched by kind and body), refuses an `input` the kind does not name or with
 members outside its shape, and calls the runner. The owner-less home (`NOTICE_OWNERLESS_SID`) takes no
-actions, as today. The one-delivery-per-click guard (the in-flight set), `dismissOnAction`'s `acted`
+action that NEEDS AN OWNER: the table says which kinds do (`send` and `quarantine`, whose runners act on the card's own
+session), and those are refused there as today; a kind that names no session (the settings plan's `setting-proposal`, which
+acts on this kernel's own proposal record) is admitted on the owner-less road (plans/settings-across-machines.md, phase one B). The one-delivery-per-click guard (the in-flight set), `dismissOnAction`'s `acted`
 row and the rule that a card is never a way to issue an arbitrary request hold for every kind. The kind
 `quarantine` refuses at the post when the card's owner is the owner-less home (a verdict needs a
 recipient) and at the click when the held file's `toId` is not the card's owner (the bus checks the

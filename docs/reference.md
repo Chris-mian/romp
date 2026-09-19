@@ -4352,8 +4352,11 @@ while this machine's own dashboard's click applies as ever; the pin itself (`set
 alone, and a stale pin gesture is said in the log with no frame. `/version` carries `settingsPinned` (the pinned stores) to
 every caller and, to a caller with the token (the gear, a polling peer), `settingsProposals` (the pending records, a list
 per store, the local value live) and `host` (this machine's name), all additive; the gear draws the pending proposal under the affected row (which machine, from what to what) with Apply and Keep
-mine, and a pinned store's note; until the owner-less notice card of phase one B lands, a raised or refreshed proposal is a
-sync notice in the bell, in the user's terms. A peer that reports a store pinned is not pushed our value for it. A MIXED
+mine, and a pinned store's note; and every proposal is a needs-you NOTICE CARD on the owner-less Notes run (phase one B: the
+producer `settings`, the key `proposal.<store>.<machine>`, one card per proposing machine, a new revision when the stamp
+moves, expired when the record drops for any reason) with Apply, Keep mine and Keep mine and pin this machine as actions of
+the `setting-proposal` kind, which the kernel alone posts and which hands the stored body to `/setting-proposal`'s own checks;
+answering on the card or in the gear clears both. A peer that reports a store pinned is not pushed our value for it. A MIXED
 mesh: an older kernel without this change still adopts the value a one-A kernel pushes to it and still applies our poll's
 value on its side, so the two converge one way (toward the newer kernel's proposals being answered) until it updates.
 
