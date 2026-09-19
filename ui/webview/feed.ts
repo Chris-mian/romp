@@ -5504,7 +5504,7 @@ function viewBase(list: AskItem[]): AskItem[] {
   const s = viewScope(list);
   if (lensAll(feedLens)) return s;   // default All = today's board, byte-identical
   const u = lensUnions(feedTagViews);
-  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(FEED_BOARD, a.category ?? a.column));   // the board's badge category passes every lens
+  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(boardOf(a), a.category ?? a.column));   // the card's OWN board's badge category passes every lens (the 1861 read: a data board's needs-you card was dropped while the badge counted it)
 }
 
 // The disclosure count: what the TAG LENS alone hides (breakthroughs already show; counting them

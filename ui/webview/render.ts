@@ -18593,6 +18593,16 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
       const s = sessions.get(m.sid);
       if (s && typeof m.value === "boolean") (s as any)[m.flag] = m.value;
     }
+    if (m.gesture === "command" && typeof m.sid === "string" && typeof m.flag === "string" && m.sid && m.flag) {
+      // a refused setEffort or setFast pick (the kernel's catalog check on a Codex session, a dormant session's fast
+      // toggle, a session no backend owns): the pick's local loader (metaPending, armed by pickValue with its 20 s
+      // timer) ends on THIS event, as the timeline's dim does on the same frame; the kernel's state did not change,
+      // so no push follows to repaint the badge, hence the active tab's line repaints here. A frame with no flag
+      // names no pick and only toasts (the shape the timeline's HTTP road builds for a refused /compact; the kernel
+      // sends none to this page).
+      metaPending.delete(`${m.sid}:${m.flag}`);
+      if (m.sid === activeId) updateStatusline();
+    }
     notifyShell("refused", m.text, typeof m.sid === "string" ? m.sid : "");
     warnToast(m.text);
   }

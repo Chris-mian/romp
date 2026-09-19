@@ -62,7 +62,9 @@ test("the sort, the grouping and the notification set equal the sources' literal
   assert.match(feedTable, /"needsYou": "needs_input"/);
   assert.equal(FEED_BOARD.needsYou, "needs_input");
   assert.match(KERNEL, /_NOTIFY_COLUMNS = tuple\(_CODE_BOARDS\["feed"\]\["notify"\]\)/, "the feed's notify set is read from the table");
-  assert.match(KERNEL, /a\.get\("category", a\.get\("column"\)\) == _board_needs_you\(a\.get\("board"\)\)/, "_needs_you_count counts the board's badge category, the column from an older card");
+  assert.match(KERNEL, /if not a\.get\("provisional"\) and _card_needs_you\(a\)\)/, "_needs_you_count reads the one predicate (the 1861 read)");
+  assert.match(KERNEL, /return nb is not None and a\.get\("category", a\.get\("column"\)\) == nb/, "the predicate: the card's own board's badge category, the column from an older card");
+  assert.match(KERNEL, /if _card_needs_you\(a\) and a\.get\("sid"\)\)/, "the ring's sids read the same predicate");
   assert.deepEqual([...FEED_BOARD.kinds], [...KIND_IDS]);
   assert.deepEqual([...FEED_BOARD.rules], []); assert.deepEqual([...FEED_BOARD.order], ["ownerRank"]); assert.deepEqual([...FEED_BOARD.subSorts], []);   // the owner rank is what feed.ts applies (PR 1831)
 });
@@ -72,7 +74,7 @@ test("feed.ts reads the definition at the section-4 sites and nowhere else", () 
   assert.match(FEED, /column: FeedCategory;/, "the record's column is typed to the feed board's category ids");
   assert.match(FEED, /board\?: string;[^\n]*\n\s*category\?: string;/, "the record carries its board and category (phase two), optional for an older kernel's frame");
   assert.match(FEED, /return columnOf\(FEED_BOARD, it\.category \?\? it\.column\);/, "askColumn is the definition's table over the category, the column as the older frame's fallback");
-  assert.match(FEED, /\|\| isNeedsYou\(FEED_BOARD, a\.category \?\? a\.column\)\);/, "the lens's breakthrough is the board's badge category, not a literal (the 1834 read, low 2)");
+  assert.match(FEED, /\|\| isNeedsYou\(boardOf\(a\), a\.category \?\? a\.column\)\);/, "the lens's breakthrough is the card's OWN board's badge category, not a literal nor the feed's (the 1834 read, low 2; the 1861 read, medium)");
   assert.doesNotMatch(FEED, /\.column === "needs_input"/, "no hand comparison against the raw category id remains");
   assert.equal((FEED.match(/for \(const \[key, label, chip\] of columnTable\(FEED_BOARD\)\)/g) || []).length, 2, "ensureCols and the focused section's twin");
   assert.equal((FEED.match(/of feedColumns\(FEED_BOARD\)\)/g) || []).length, 4, "the four column loops (the stack, the focused layout, the order flip, the freeze badges)");

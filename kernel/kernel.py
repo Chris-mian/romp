@@ -19616,16 +19616,22 @@ def _drive(msg, client):
         # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked.
         # LOUD on refusal, as setFast below: a level the model's Codex catalog does not advertise (the menu
         # lists the catalog's levels, but a stale list or a model change under it can still send one) used
-        # to leave the badge on the old level with no reason given (the review of #1814)
+        # to leave the badge on the old level with no reason given (the review of #1814). The refusal rides
+        # the timeline's own settingRefused frame (gesture command, the sid, the flag), never a bare warn: a
+        # warn arriving while a create is in flight is read by the chat as that create's verdict and strikes
+        # the provisional tab, and the timeline page renders no warn at all, so a lane-menu pick's refusal
+        # was dropped there and its optimistic dim ran out its timer.
         if not _set_effort_or_park(be, sid, str(msg["value"]))[0]:
-            client["send"](json.dumps({"type": "warn", "text": _effort_refusal(be, str(msg["value"]))}))
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "effort",
+                                       "text": _effort_refusal(be, str(msg["value"]))}))
         _push_soon()
     elif t == "setFast" and msg.get("value") in ("on", "off"):
         # the chat's fast badge — /fast on|off delivered like any slash command; mid-compaction → parked.
         # LOUD on refusal (fail loudly, never degrade silently): a dormant SDK session has no live CLI to
         # apply it, and silently swallowing the click would leave a toggle that "did nothing".
+        # The same settingRefused frame as setEffort above (flag fast), for the same two readers.
         if not _set_fast_or_park(be, sid, str(msg["value"]))[0]:
-            client["send"](json.dumps({"type": "warn",
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "fast",
                                        "text": "Couldn't toggle fast mode — the session isn't connected right now."}))
         _push_soon()
     elif t == "setMode" and msg.get("value"):
@@ -24134,7 +24140,7 @@ def _notice_actions_check(actions):
 
 
 def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_you=False, expires_at=None, actions=None,
-                dismiss_on_action=False, t=None, now=None):
+                dismiss_on_action=False, t=None, now=None, board="", category=""):
     """Post a notice card for session `sid` (plans/notice-cards.md). Returns (row, error): the appended row on success, else a
     human-readable refusal, never a silent drop (add_watch's contract). One validation for every door: the key's grammar,
     the title and body caps, the producer label, the session known to this kernel, the attachment's verdict (a refusal
@@ -24183,6 +24189,26 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
         tt = int(t) if t not in (None, "") else now
     except (TypeError, ValueError):
         return None, "t must be epoch seconds"
+    # where the card files (plans/card-boards.md, phase three; plans/notice-cards.md, "The card command names its board"): the
+    # pure resolver runs AFTER every other check of the post, so a refused post never leaves a board behind; its `pending`
+    # definition (a first-use board, or a data board with a category appended) is written right before the row appends
+    board_id, category_id, berr, pending = _board_resolve_post(board, category, needs_you=bool(needs_you), producer=producer, key=key)
+    if berr:
+        return None, berr
+    # needsYou and the category agree by construction (the 1861 read, medium): a card in its board's needs-you category IS a
+    # needs-you card (`-c needs_input` alone files a needs-you card), and --needs-you beside a category that is not that one
+    # is a contradiction, refused by name; so the row's flag, the feed column, the badge, the ring and the pane's lens read one fact
+    nb_cat = (pending or _boards().get(board_id) or _CODE_BOARDS.get(board_id) or {}).get("needsYou")
+    if needs_you and category_id != nb_cat:
+        return None, "--needs-you files the card under %r on board %r; the category %r is another: drop one of the two" % (nb_cat, board_id, category_id)
+    needs_you = nb_cat is not None and category_id == nb_cat
+    created = None
+    if pending is not None:
+        prior_def = _boards().get(board_id)
+        created = "board" if prior_def is None else "category"
+        _, derr = define_board(pending)
+        if derr:
+            return None, derr
     with _notice_lock:
         prior = [r for r in _notice_rows_unlocked(sid) if r.get("op") == "post" and r.get("key") == key]
         arch_rev, aerr = _notice_archive_rev_unlocked(sid, key)   # the archived revisions count too (round six, medium)
@@ -24191,14 +24217,17 @@ def post_notice(sid, key, title, body="", *, producer, attachment=None, needs_yo
         rev = 1 + max([int(r.get("rev") or 0) for r in prior] + [arch_rev])
         row = {"op": "post", "t": tt, "at": now, "key": key, "rev": rev, "sid": sid, "producer": producer,
                "title": title, "body": body, "attachment": att, "actions": acts, "needsYou": bool(needs_you),
-               "expiresAt": exp, "dismissOnAction": bool(dismiss_on_action)}
+               "expiresAt": exp, "dismissOnAction": bool(dismiss_on_action), "board": board_id, "category": category_id}
         err = _notice_append(sid, row)
     if err:
         return None, err
-    sys.stderr.write("notice: posted %s key=%s rev=%d producer=%s\n" % (sid[:8], key, rev, producer))   # never the title or the body
+    sys.stderr.write("notice: posted %s key=%s rev=%d producer=%s board=%s/%s\n" % (sid[:8], key, rev, producer, board_id, category_id))   # never the title or the body
     _mark_views_dirty()
     _push_soon()
-    return dict(row), None
+    out = dict(row)
+    if created:
+        out["created"] = created   # the answer's word alone (never stored): the command names a board or a category the post minted
+    return out, None
 
 
 def expire_notice(sid, key, now=None):
@@ -24410,6 +24439,15 @@ def _notice_cards(now, cleared, alive_sids=None):
             item_id = _notice_item_id(sid, r.get("key"), r.get("rev") or 0)
             t = int(r.get("t") or 0)
             column = "needs_input" if r.get("needsYou") else "completed"
+            # the row's own board and category since phase three (the command's -b and -c); a row without them, posted before, is
+            # the feed's with the needsYou mapping (the same read _notice_standing_count makes); the feed's column stays the
+            # category's feed value for a feed card and the needsYou mapping for a card on another board (phase four's view switch)
+            board_id = r.get("board") or "feed"
+            category_id = r.get("category") or column
+            # a FEED card's column IS its category, always (the 1861 read: a `-c needs_input` card read Blocked by its category
+            # and Completed by its column); a card on another board keeps the needs-you mapping as its feed column, the
+            # column an older pane files it under, until phase four's view switch
+            column = category_id if board_id == "feed" else column
             out.append({
                 "itemId": item_id, "sid": sid,
                 "name": NOTICE_OWNERLESS_NAME if ownerless else (_name_of(sid) or sid[:8]),
@@ -24419,7 +24457,7 @@ def _notice_cards(now, cleared, alive_sids=None):
                 # family: the board the card sits on today and its category, today's column, carried beside it (the other
                 # builders write column alone until the boards' phase two); the owner-less run's place at the top is the feed
                 # board's sort rule over the owner key, in the pane, never a field here
-                "board": "feed", "category": column,
+                "board": board_id, "category": category_id,
                 "trgb": list(cm.age_rgb(now - t, _colormap())),   # the age colour stamped here: this attach is post-loop, no fold pops a private field
                 "turnId": item_id, "origin": None,
                 "followupPending": None, "waitingOn": None,
@@ -35972,7 +36010,9 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
     the client (fail loudly): a dormant SDK session has no live CLI to apply it, and the typed text
     used to at least draw the CLI's own refusal; a refused effort level (one the Codex model's catalog
     does not offer) is told the same way and filed as state["refused_effort"], so POST /send answers ok:false
-    with the words. `state`, when given, receives {"queued": bool}: whether
+    with the words. Both, and the unowned arm's refusal, ride the timeline's own settingRefused frame (gesture
+    command, the sid, the flag), never a bare warn: the timeline page renders no warn, and the chat reads one
+    arriving during a create as that create's verdict. `state`, when given, receives {"queued": bool}: whether
     the change PARKED, taken from each setter's own return, so POST /send answers `queued` for a meta
     command exactly as for a text send (2026-09-03: a parked /model read as plain 'ok'). The effort/fast
     setters report whether they parked under _gate_or_park (the one _ops_gate evaluation those two pay),
@@ -36014,7 +36054,13 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
         if state is not None:
             state["refused"] = why
         if client:
-            client["send"](json.dumps({"type": "warn", "text": why}))
+            # the timeline's own settingRefused frame (gesture command, the sid, the flag from the command head:
+            # model, effort or fast, the key each page's pending map is filed under), as the owned arms below and
+            # the setEffort and setFast ops answer: a bare warn is read by the chat as an in-flight create's verdict
+            # and by the timeline page not at all, so a lane-menu pick on a dead lane got no reason and its
+            # optimistic dim ran out its 20 s timer
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": head[1:],
+                                       "text": why}))
         sys.stderr.write("meta command %s for %s refused: no backend owns this session\n" % (head, sid))
         return True
     if model_pick:
@@ -36033,12 +36079,16 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
             if state is not None:
                 state["refused_effort"] = why
             if client:
-                client["send"](json.dumps({"type": "warn", "text": why}))
+                # the timeline's own settingRefused frame (gesture command, the sid, the flag), as the setEffort op
+                # answers: a bare warn is read by the chat as an in-flight create's verdict and by the timeline page
+                # not at all
+                client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "effort",
+                                           "text": why}))
             sys.stderr.write("effort %r for %s refused by %s\n" % (value, sid, type(be).__name__))
     elif head == "/fast" and value in ("on", "off"):
         took, parked = _set_fast_or_park(be, sid, value)          # took: applied or parked; parked: queued
         if not took and client:
-            client["send"](json.dumps({"type": "warn",
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "fast",
                                        "text": "Couldn't toggle fast mode — the session isn't connected right now."}))
     else:
         return False
@@ -53821,11 +53871,12 @@ _feed_needs_input = [None]
 
 
 def _needs_input_sids(feed):
-    """The sids with a card in the feed's needs_input column: the filing rule the feed client maps
-    (feed.ts askColumn: it.column == "needs_input"), applied per session. Placeholders count too: the
-    Blocked list shows them."""
+    """The sids with a card that needs the user: _card_needs_you, the one board-aware rule the badge reads too (the 1861
+    read: this read of `column` and the badge's read of `category` disagreed the moment a notice card's two fields could
+    differ, so the ring stayed off for a card in Blocked and lit for one the pane showed under Working). Placeholders
+    count too: the Blocked list shows them."""
     return frozenset(str(a.get("sid")) for a in (feed.get("asks") or [])
-                     if a.get("column") == "needs_input" and a.get("sid"))
+                     if _card_needs_you(a) and a.get("sid"))
 
 
 def _feed_needs_input_of(sid):
@@ -54587,6 +54638,16 @@ def _board_needs_you(board):
     return _board_def(board)["needsYou"]
 
 
+def _card_needs_you(a):
+    """THE one rule for "this card needs the user" (the 1861 read, medium): the card sits in its OWN board's needs-you category,
+    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the yellow ask ring
+    (_needs_input_sids, and through it build_session's needsYou) and the pane's lens (feed.ts isNeedsYou(boardOf(card), ...))
+    all read this; a board that names no needs-you category has no card that needs the user. A provisional placeholder is
+    a caller's concern (the badge skips it, the ring counts it: the Blocked list shows it)."""
+    nb = _board_needs_you(a.get("board"))
+    return nb is not None and a.get("category", a.get("column")) == nb
+
+
 # ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
 # The master bell (bottom-right → notify-cards.json "*"), a session's bell (timeline lane / tab menu →
 # session-flags "notify") or a card's bell (right-click → notify-cards.json) arm OS-level notifications
@@ -54911,9 +54972,7 @@ def _feed_notifications_diff(feed):
 def _needs_you_count(feed):
     """How many real (non-provisional) cards sit in needs_input — the number the app icon wears.
     Counted from the same feed build the notifications diff, so badge and bell can never disagree."""
-    return sum(1 for a in (feed.get("asks") or [])
-               if not a.get("provisional") and _board_needs_you(a.get("board")) is not None
-               and a.get("category", a.get("column")) == _board_needs_you(a.get("board")))   # the board's badge category; a board with none counts nothing
+    return sum(1 for a in (feed.get("asks") or []) if not a.get("provisional") and _card_needs_you(a))   # the one rule, board-aware
 
 
 # The count the shell clients last heard (None = nothing sent since boot). The badge moves on feed
@@ -66137,7 +66196,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/notice":
                 # Post a NOTICE CARD (T370, plans/notice-cards.md): door two of post_notice, in /watch's shape. Body:
                 # {"id"|"name": <session>, "key", "title", "body"?, "attachment"?, "needsYou"?, "expiresAt"?, "actions"?,
-                # "dismissOnAction"?, "producer"?, "t"?}; or {"id"|"name", "expire": <key>} to retire the newest revision early;
+                # "dismissOnAction"?, "producer"?, "t"?, "board"?, "category"?}; or {"id"|"name", "expire": <key>} to retire the newest revision early;
                 # with neither id nor name the card is OWNER-LESS (the user 2026-09-18).
                 # 400 for a malformed body or a missing key or title; 200 {"ok": false, "error"} for a refusal with
                 # its reason (an unknown session, a bad key, an oversize body, a refused attachment, a disallowed action);
@@ -66161,7 +66220,8 @@ class Handler(BaseHTTPRequestHandler):
                 row, err = post_notice(owner, b.get("key"), b.get("title"), b.get("body") or "",
                                        producer=b.get("producer") or "http", attachment=b.get("attachment"),
                                        needs_you=bool(b.get("needsYou")), expires_at=b.get("expiresAt"), actions=b.get("actions"),
-                                       dismiss_on_action=bool(b.get("dismissOnAction")), t=b.get("t"))
+                                       dismiss_on_action=bool(b.get("dismissOnAction")), t=b.get("t"),
+                                       board=b.get("board") or "", category=b.get("category") or "")
                 if err:
                     return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "notice": row}), "application/json")

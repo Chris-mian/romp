@@ -113,6 +113,7 @@ if [[ -n "${MOCK_CURL_FAIL_NEW:-}" && "$url" == */new ]]; then exit 7; fi
 if [[ -n "${MOCK_CURL_SEND_QUEUED:-}" && "$url" == */send ]]; then echo '{"ok": true, "queued": true}'; exit 0; fi
 if [[ -n "${MOCK_CURL_SEND_REFUSED:-}" && "$url" == */send ]]; then echo '{"ok": false, "error": "no running backend owns web — the message was not delivered"}'; exit 0; fi
 if [[ -n "${MOCK_CURL_NOTICE_REFUSE:-}" && "$url" == */notice ]]; then echo '{"ok": false, "error": "attachment refused: not a file"}'; exit 0; fi
+if [[ -n "${MOCK_CURL_NOTICE_OK:-}" && "$url" == */notice ]]; then echo "$MOCK_CURL_NOTICE_OK"; exit 0; fi
 if [[ -n "${MOCK_CURL_BOARDS:-}" && "$url" == */boards ]]; then echo "$MOCK_CURL_BOARDS"; exit 0; fi
 if [[ -n "${MOCK_CURL_BOARD_REFUSE:-}" && "$url" == */board ]]; then echo "$MOCK_CURL_BOARD_REFUSE"; exit 0; fi
 if [[ -n "${MOCK_CURL_BOARD_DEFINED:-}" && "$url" == */board ]]; then echo "$MOCK_CURL_BOARD_DEFINED"; exit 0; fi
@@ -2642,6 +2643,51 @@ PY
     [[ "$output" == *"(no session)"* ]]
     [ "$(grep '/notice' "$MOCK_LOG" | grep -c '"id"')" -eq 1 ]   # still the one from the default post
     [ "$(grep -c '/notice' "$MOCK_LOG")" -eq 3 ]
+}
+
+@test "card: -b/-c ride the body as board and category; the posted line names the board and says when the post created it; -c alone names a feed category" {
+    # plans/notice-cards.md, "The card command names its board" (card boards phase three): the kernel resolves where the card
+    # files and answers with the row's board and category and, when the post minted the board or the category, a `created` word
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    MOCK_CURL_NOTICE_OK='{"ok": true, "notice": {"key": "fig", "rev": 1, "board": "figures", "category": "new", "created": "board"}}' \
+        run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card -t "The accuracy figure is ready" -k fig -b figures -c new
+    [ "$status" -eq 0 ]
+    grep '/notice' "$MOCK_LOG" | grep -q '"board": *"figures"'
+    grep '/notice' "$MOCK_LOG" | grep -q '"category": *"new"'
+    [[ "$output" == *"romp card: posted (key fig, rev 1) on board figures/new (board figures created with category new)"* ]]
+    # the long forms; a known board answers with no created word; a category the post added says so
+    MOCK_CURL_NOTICE_OK='{"ok": true, "notice": {"key": "fig", "rev": 2, "board": "figures", "category": "kept", "created": "category"}}' \
+        run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card -t "Kept" -k fig --board figures --category kept
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"on board figures/kept (category kept added to board figures)"* ]]
+    MOCK_CURL_NOTICE_OK='{"ok": true, "notice": {"key": "fig", "rev": 3, "board": "figures", "category": "new"}}' \
+        run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card -t "Again" -k fig -b figures
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"on board figures/new: it shows until"* ]]
+    [[ "$output" != *"created"* ]]
+    # -c alone names a feed category: the body carries category and no board, and the line stays the feed's
+    MOCK_CURL_NOTICE_OK='{"ok": true, "notice": {"key": "w", "rev": 1, "board": "feed", "category": "working"}}' \
+        run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card -t "Working on it" -k w -c working
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"posted (key w, rev 1) on the feed:"* ]]
+    [ "$(grep '/notice' "$MOCK_LOG" | grep -c '"category": *"working"')" -eq 1 ]
+    [ "$(grep '/notice' "$MOCK_LOG" | grep -c '"board": *"feed"')" -eq 0 ]
+    # an owner-less card on a board: the line says both where it filed and that it has no session (the 1861 read, low)
+    MOCK_CURL_NOTICE_OK='{"ok": true, "notice": {"key": "o", "rev": 1, "sid": "notes", "board": "figures", "category": "new"}}' \
+        run env ROMP_SID= "$ROMP_SCRIPT" card -t "A note on the figures board" -k o -b figures
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"on board figures/new, with no session: it shows until"* ]]
+    # neither flag: neither member rides (an older kernel sees today's body)
+    run env ROMP_SID=11111111-2222-3333-4444-555555555555 "$ROMP_SCRIPT" card -t "Plain" -k p
+    [ "$status" -eq 0 ]
+    [ "$(grep '/notice' "$MOCK_LOG" | grep '"key": *"p"' | grep -c '"board"')" -eq 0 ]
+    # usage: a flag with no value, or with a value that is another flag
+    run env ROMP_SID= "$ROMP_SCRIPT" card -t x -b
+    [ "$status" -eq 2 ]
+    run env ROMP_SID= "$ROMP_SCRIPT" card -t x -c -b figures
+    [ "$status" -eq 2 ]
 }
 
 @test "card: a refused post is relayed with the kernel's reason and exit 1, never reported as posted" {
