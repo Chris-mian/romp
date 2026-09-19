@@ -661,6 +661,22 @@ class TheEchoLandingKeepsTheProto2Base(unittest.TestCase):
         self.assertEqual([e.get("md") for e in d["events"] if e.get("kind") == "user"][:1], [fed_text])
         self.assertEqual(c["echat"][SID]["last"], km._last_anchor(b["events"]))
 
+    def test_the_command_chip_the_backend_mints_wears_a_transient_key_and_the_base_skips_it(self):
+        # the chip twin of the echo pin above (the 2026-09-19 review): a /model, /effort or /auth pick's acknowledgment is the
+        # "cmd:<t>:<name>" chip _ack_cmd_chip stashes on the live tail, and the key it mints must satisfy the kernel's rule,
+        # or the chip would anchor a base its durable cmdg: note then breaks. Executed on the built atom, beside the source
+        # pin on the mint line in tests/test_send_pending_overlay_kinds.py
+        live = at_clock(self.w.now)
+        self.w.write(RUNNING, shift=live)
+        self.w.be._ack_cmd_chip(SID, "/model", "/model sonnet", SID)
+        [chip] = [a for a in self.w.be.live_atoms(SID) if a.get("command") == "/model"]
+        self.assertTrue(km._transient_key(km._event_key(chip)), "the chip the backend minted satisfies the kernel's rule")
+        a = self.w.build()
+        tail = a["events"][-1]
+        self.assertEqual((tail.get("kind"), tail.get("md"), km._event_key(tail)), ("user", "/model sonnet", chip["uuid"]),
+                         "the chip is the built list's tail")
+        self.assertNotEqual(km._last_anchor(a["events"]), chip["uuid"], "and the base's last edge is the record before it")
+
     def test_a_reseeded_echo_whose_mirror_carried_no_uuid_wears_a_transient_key(self):
         # the fourth mint (the 2026-09-19 review of the anchor rule): at a kernel boot SdkBackend._reseed_echoes re-creates each
         # persisted unlanded echo, keeping its echo: uuid, or re-minting one in the same form when the mirror entry carries

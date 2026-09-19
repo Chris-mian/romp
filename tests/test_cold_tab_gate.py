@@ -305,6 +305,8 @@ class ColdTabGate(unittest.TestCase):
         km._clients[:] = [c]
         km._push_session_now(S2)                             # the attach handshake's push
         self.assertEqual(self.built, [], "not built: the set resolved first and S2 is in it")
+        self.assertIsNone(getattr(km._SEND_ROAD, "name", None),
+                          "the cold-skip early return resets the road mark too (2026-09-19 review: the dispatch thread runs other pushes)")
         strip = self._frames(c, "tabOrder")[0]
         self.assertEqual(strip["skeleton"], [S3, S2], "the strip carried the set")
         self.assertEqual([f["id"] for f in self._frames(c, "session")], [], "no full handed over")

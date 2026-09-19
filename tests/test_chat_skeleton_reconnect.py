@@ -368,7 +368,10 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertEqual((asked[0].get("firstUuid"), asked[0].get("lastUuid")), ("u0", "u2"), "anchored on its own events")
         self.assertEqual([s for s, _ in self._statuses(c)], [S2], "one status: the tab nobody asked for")
         self.assertEqual(self._tab_orders(c)[0]["skeleton"], [S2], "the strip never names the asked sid")
-        self.assertEqual(sorted(c["echat"]), sorted([S1, S3, S4]))
+        # the transcript-less S4 went whole too (asserted above) and records NO base (2026-09-19, the review of the meter): a
+        # proto-2 base is the tail run's two edges, and a list with no events has none; written as a both-None base, the
+        # entry made every repost of the empty frame count as a full to a base holder and file a row
+        self.assertEqual(sorted(c["echat"]), sorted([S1, S3]))
         self.assertTrue(all(isinstance(b, dict) for b in c["echat"].values()), "proto-2 bases: {first, last} dicts, never index tuples")
         self.assertNotIn(S3, c.get("askedFull") or (), "the proto-2 full consumed the mark")
         self.assertEqual(self._diag_rows("needFullStatus"), [], "the tripwire never fires on the designed path")
@@ -1089,13 +1092,20 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertEqual(self._sessions(c), [], "a client that holds the tab whole gets no full frame")
         self.assertEqual([(t["id"], t["afterUuid"], t["events"]) for t in self._frames(c, "chatTail")], [(S1, "u4", [])],
                          "one empty-suffix tail: nothing changed against the baseline")
-        # the flip the push exists for still lands: the status rides the tail
+        self.assertNotIn("ledger", self._frames(c, "chatTail")[0], "a ledger unchanged against the shared baseline does not ride the tail")
+        self.assertIsNone(getattr(km._SEND_ROAD, "name", None),
+                          "the road mark is reset when the push returns (2026-09-19 review: the dispatch thread runs other pushes)")
+        # the flip the push exists for still lands: the status rides the tail, and so does a ledger that changed against the
+        # baseline (the 2026-09-19 review: led_changed forced either way left every module driving this push green). The
+        # targeted push never advances that baseline, so changed means changed against the map the pusher's cycle left
         self.SESS[S1]["status"]["state"] = "waiting"
+        self.SESS[S1]["ledger"] = {"toc": ["judged"]}
         c["_frames"].clear()
         km._push_session_now(S1)
         self.assertEqual(self._sessions(c), [], "a status change is a tail, not a full")
         tails = self._frames(c, "chatTail")
-        self.assertEqual([(t["afterUuid"], t["events"], t["status"]["state"]) for t in tails], [("u4", [], "waiting")])
+        self.assertEqual([(t["afterUuid"], t["events"], t["status"]["state"], t.get("ledger")) for t in tails],
+                         [("u4", [], "waiting", {"toc": ["judged"]})], "the tail carries the changed ledger")
         # new content arrives as the suffix after what it holds
         self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})
         c["_frames"].clear()

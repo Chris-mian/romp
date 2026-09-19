@@ -266,6 +266,18 @@ class Collector(unittest.TestCase):
         self.st.reset()
         self.assertEqual(self.st.snapshot()["pusher"]["chatFullWhy"], {})
 
+    def test_every_label_the_chat_full_reason_returns_is_in_the_references_gloss(self):
+        """docs/reference.md's `chatFullWhy` parenthetical names every label _chat_full_reason returns (the 2026-09-19 review;
+        the tests/test_perf_heap_block.py Documented precedent), so a renamed or added label reaches the doc or fails here. The
+        gloss runs from the key to the next key of the pusher bullet; the `lastGone:` family is documented as `lastGone:<family>`."""
+        doc = Path(HERE).parent.joinpath("docs", "reference.md").read_text()
+        i = doc.index("`chatFullWhy` (")
+        gloss = doc[i:doc.index("`firstCycle`", i)]
+        labels = re.findall(r'return "([A-Za-z0-9]+:?)"', inspect.getsource(km._chat_full_reason))
+        self.assertEqual(sorted(labels), ["baseGone", "changeAt0", "changeBelowFirst", "empty", "inverted", "lastGone:", "noBase", "other"])
+        for label in labels:
+            self.assertIn("`%s`" % (label + "<family>" if label.endswith(":") else label), gloss, label)
+
     def test_ring_percentiles_and_max_come_from_the_last_256_cycles(self):
         self.st.cycle(5.0)                                   # one slow boot cycle: 5000 ms
         for i in range(300):                                 # 0..299 ms; the ring keeps 44..299
@@ -578,6 +590,10 @@ class GoalIoCounters(unittest.TestCase):
             self.assertIn(k, doc)
         self.assertIn("`memos.shared`", doc)
         self.assertIn("- `heap`:", doc, "the heap block is a documented top-level block (tests/test_perf_heap_block.py pins its keys)")
+        # the proto-2 full frames' meter and the row it files (the 2026-09-19 review: no test read the doc for either, and the
+        # merge base's copy passed every doc-reading test)
+        self.assertIn("`chatFullWhy` (every whole session frame", doc, "the reason map is documented under pusher")
+        self.assertIn("- The kernel files one `chatFull` row", doc, "the client-diag row a full to a base holder files")
 
     def test_the_pushers_shared_loads_count_under_memos_shared_not_under_goals_loads(self):
         # `goals.loads` is the writer's loader alone; the pusher's read-only loads ride load_goals_shared and

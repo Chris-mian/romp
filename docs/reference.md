@@ -2055,10 +2055,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   uuid-anchored chat wire sent, counted once the frame has left, so a frame the
   per-client dedup swallowed is no more one here than under `sends`; by the
   reason the sender had for it: `noBase`
-  for a first send or a reset, `baseGone` for a fork or a rewind,
-  `lastGone:<family>` for a held last edge the next list no longer carried,
-  `changeAt0` for a change at the list's first event, the targeted push's
-  shape, `changeBelowFirst`, `inverted`, `empty`; a caught-up client is owed
+  for a first send, a reset, or the repost of a session whose built list is
+  empty and the first content frame after it (an empty list records no base,
+  so a just-created session is re-sent whole once per client per repost
+  window until it has content; the reconnect-only reads of the held set are
+  unaffected, since a client whose redial is unresolved holds no base for any
+  session); `baseGone` for a fork or a rewind;
+  `lastGone:<family>` for a held last edge the next list no longer carried;
+  `changeAt0` for a change at the list's first event against a held base, a
+  genuine first-event change or a no-baseline send, by whichever sender
+  (`sends.full.chat.targeted` below tells the senders apart);
+  `changeBelowFirst` for a change at or before the held first edge;
+  `inverted` for a base whose last edge sits before its first; `empty` for a
+  list with no events sent to a client holding a base; and `other` for a
+  shape none of these names, also the label the rest fold under once the map
+  holds as many labels as the sends map; a caught-up client is owed
   deltas, so `lastGone` is the recurrence meter for a base anchored on a key
   that vanished, an input echo's or the command chip's).
   `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
@@ -2512,11 +2523,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `sends`: `full`, `delta`, `deduped`, each a map from slot name (`chat`,
   `feed`, `bars`, `taborder`, ...) to `count` and `bytes`. A deduplicated frame
   was built and compared, then not sent. Every frame the targeted one-session
-  push sent (the SDK connect handshake, the Codex backend's stream events, a
-  create, a fork or a promote; the `push.session` stage above), its tab strip
-  and the cold-tab gate's status included, is counted under its slot with a
-  `.targeted` suffix (`chat.targeted`, `status.targeted`, `taborder.targeted`),
-  so a full from that road reads apart from the pusher's cycle.
+  push sent, its tab strip and the cold-tab gate's status included, is counted
+  under its slot with a `.targeted` suffix (`chat.targeted`,
+  `status.targeted`, `taborder.targeted`), so a full from that road reads
+  apart from the pusher's cycle. The suffix is the road's, whatever the stage
+  mark: the two backend hand-offs (the SDK connect handshake, the Codex
+  backend's stream events) run under the `push.session` stage above as their
+  thread's default mark, while a create, a fork or a promote calls the push
+  from a request handler and runs under that request's
+  `http.<METHOD>.<route>` mark.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
   loader (`load_goals`) and `save_goals`; the pusher's read-only loads go
   through the shared store cache and show under `memos.shared`, not here. A
