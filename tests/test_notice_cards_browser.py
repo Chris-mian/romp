@@ -159,7 +159,14 @@ const ownerless = await page.evaluate((s) => {
            nmClick: nm ? (nm.onclick === null) : null, dialogsBefore, dialogsAfter, reviveOffered: revive, grouped: (JSON.parse(localStorage.getItem("romp:settings") || "{}").grouped !== false) };
 }, sel(id7));
 const byName = await post({ name: "notes", key: "k", title: "t" });
-process.stdout.write("RESULT:" + JSON.stringify({ first, second, latched, done2, stillThere, toasts, rearmed, afterClear, undone, revision, expiry, refused, errors, diag, r7, ownerless, byName }) + "\n");
+// a card posted onto a board of the user's (card boards phase three, the producer's half): the kernel creates the board on
+// first use, the frame carries its definition, and the pane names the board beside the producer until phase four's view
+const r8 = await post({ id: cfg.sid, key: "figboard", title: "A figure on its own board", producer: "cli", board: "figures", category: "new" });
+const id8 = "notice:" + cfg.sid + ":figboard:" + (r8.notice || {}).rev;
+await page.waitForSelector(sel(id8), { state: "attached", timeout: 60000 }).catch(() => {});
+await page.waitForFunction((s) => { const c = document.querySelector(s); return !!c && /on Figures/.test((c.querySelector(".fask-nprod") || {}).textContent || ""); }, sel(id8), { timeout: 30000 }).catch(() => {});
+const onBoard = { post: r8, card: await cardFacts(id8) };
+process.stdout.write("RESULT:" + JSON.stringify({ first, second, latched, done2, stillThere, toasts, rearmed, afterClear, undone, revision, expiry, refused, errors, diag, r7, ownerless, byName, onBoard }) + "\n");
 await browser.close();
 """
 
@@ -302,6 +309,18 @@ class NoticeCardsServed(unittest.TestCase):
                          "plain text: a span, no title, no dead class, no click handler: %r" % o)
         self.assertEqual((o["dialogsBefore"], o["dialogsAfter"], o["reviveOffered"]), (0, 0, False), "a click on it opens nothing and offers no revive")
         self.assertEqual((r["byName"].get("ok"), r["byName"].get("error")), (False, 'no session answers to "notes"'), "the reserved word as a name is refused")
+
+    def test_a_card_posted_onto_a_board_of_yours_is_created_on_first_use_and_named_beside_the_producer(self):
+        # plans/notice-cards.md, "The card command names its board": the post carries board and category; the kernel answers with
+        # the resolved pair and the created word; the pane reads the board's title off the frame's boards beside the producer
+        r = self._result()
+        ob = r["onBoard"]
+        self.assertTrue(ob["post"].get("ok"), ob["post"])
+        self.assertEqual((ob["post"]["notice"]["board"], ob["post"]["notice"]["category"], ob["post"]["notice"].get("created")), ("figures", "new", "board"))
+        c = ob["card"]
+        self.assertIsNotNone(c, "the card is on the board")
+        self.assertEqual(c["col"], "col-asks-list", "the pane files a category the feed lacks under the feed's default column (Working) until phase four's view; the kernel's column stays the needsYou mapping for an older pane")
+        self.assertEqual(c["prod"], "via cli · on Figures", "the board's title beside the producer: %r" % c)
 
     def test_an_expired_notice_leaves_at_the_next_build_and_a_disallowed_action_is_refused_at_the_door(self):
         r = self._result()
