@@ -22,7 +22,7 @@ function sample(): FeedViewState {
     threads: [],   // the card-prune tests below assert on CARD state; the thread exemption has its own
     cols: ["completed"], order: ["asks", "completed", "needsInput"],
     focused: false,
-    focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,   // the focused section's own block layout and fold (T410), at their defaults
+    focusOrder: [], focusW: {}, focusCols: [], focusFolded: false, board: "",   // the focused section's own block layout and fold (T410), at their defaults
   };
 }
 
@@ -63,7 +63,7 @@ test("an itemId containing a colon is not mis-attributed by the prune", () => {
   // its FIRST colon would read this card as "blocked" and prune state that is very much live.
   const s: FeedViewState = {
     v: 1, sec: { "blocked:sess-7": "bg" }, tree: ["blocked:sess-7:n1"], nodes: [], logs: [], asks: [],
-    threads: [], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,
+    threads: [], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false, board: "",
   };
   const pruned = pruneViewState(s, new Set(["blocked:sess-7"]));
   assert.deepEqual(pruned.sec, { "blocked:sess-7": "bg" }, "the colon-bearing id survives");
@@ -94,7 +94,7 @@ test("the cap is a backstop that trims cheap state first and section choices las
     nodes: Array.from({ length: 10 }, (_, i) => `a:n${i}`),
     logs: Array.from({ length: 10 }, (_, i) => `a:l${i}`),
     asks: ["a"],
-    threads: ["sid-1"], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,
+    threads: ["sid-1"], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false, board: "",
   };
   const capped = capViewState(big, 20);
   assert.equal(viewStateSize(capped), 20);
@@ -110,7 +110,7 @@ test("a folded thread SURVIVES the card prune — that is the whole point of it"
   // card would silently re-expand the thread and the next card would arrive unfolded.
   const s: FeedViewState = {
     v: 1, sec: { "card-a": "bg" }, tree: [], nodes: [], logs: [], asks: [], threads: ["sid-quiet"], cols: [], order: [],
-    focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false,
+    focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false, board: "",
   };
   const pruned = pruneViewState(s, new Set<string>());   // no live cards at all
   assert.deepEqual(pruned.threads, ["sid-quiet"]);
@@ -330,7 +330,7 @@ test("feed.ts hydrates the four section fields and currentViewState writes them"
   for (const c of ["focusOrder = st.focusOrder.slice();", "focusW = { ...st.focusW };", "for (const k of st.focusCols) collapsedFocusCols.add(k);", "focusFolded = st.focusFolded;"]) {
     assert.ok(FEED.includes(c), `hydrate restores ${c}`);
   }
-  assert.match(FEED, /focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded \};/);
+  assert.match(FEED, /focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded, board: activeBoardId \};/);
 });
 
 test("executed: the column-key gate keeps known keys once, so a repeated key can never read as a complete order (T410 review)", () => {
@@ -345,4 +345,24 @@ test("executed: the column-key gate keeps known keys once, so a repeated key can
   const ok = parseViewState(JSON.stringify({ v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [],
     focused: true, focusOrder: ["needsInput", "asks", "completed"], focusW: {}, focusCols: [] }));
   assert.deepEqual(ok.focusOrder, ["needsInput", "asks", "completed"], "a complete order of three distinct keys stands, in its order");
+});
+
+// ── phase four: the board pick ────────────────────────────────────────────────────────────────────────────────────
+test("the board pick round-trips, an id outside the board grammar or naming the feed reads as the feed, and the prune and the cap keep it", () => {
+  const s = { ...emptyViewState(), board: "figures" };
+  assert.equal(parseViewState(serializeViewState(s)).board, "figures");
+  assert.equal(parseViewState(JSON.stringify({ v: 1, board: "Bad Id" })).board, "", "outside the grammar: the feed");
+  assert.equal(parseViewState(JSON.stringify({ v: 1, board: "feed" })).board, "", "the feed spelled out is the feed");
+  assert.equal(parseViewState(JSON.stringify({ v: 1 })).board, "", "a blob saved before phase four reads as the feed");
+  assert.equal(pruneViewState(s, new Set()).board, "figures", "prune-exempt: a view switch names no card");
+  assert.equal(capViewState({ ...s, asks: Array.from({ length: 5000 }, (_, i) => "a" + i) }, 10).board, "figures", "the cap never trims it");
+  assert.match(FEED, /activeBoardId = st\.board;/, "the pane hydrates the pick"); assert.match(FEED, /focusFolded, board: activeBoardId \};/, "and writes it back");
+});
+
+test("a data board's column fold is keyed <board>:<category> and survives the round trip; junk and a bare data key are dropped; the order gate stays the feed's", () => {
+  const s = { ...emptyViewState(), cols: ["asks", "figures:kept", "Bad:Key", "kept", "figures:kept"], order: ["figures:new", "completed", "asks", "needsInput"] };
+  const back = parseViewState(serializeViewState(s));
+  assert.deepEqual(back.cols, ["asks", "figures:kept"], "the feed's key and the board-keyed fold, once each; junk and a bare category dropped");
+  assert.deepEqual(back.order, ["completed", "asks", "needsInput"], "the order admits the feed's three alone (a data board's order is phase five's)");
+  assert.equal(pruneViewState(s, new Set()).cols.length, 5, "prune-exempt as before");
 });

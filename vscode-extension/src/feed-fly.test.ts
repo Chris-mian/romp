@@ -15,7 +15,7 @@ test("render() captures rects BEFORE the reconcile and flies changed cards AFTER
   // capture must precede the column reconciles… — and, since 2026-09-04, happens only when a card CAN have
   // moved (a column change, an arrival, a departure: feed-flip.ts), because the capture and the fly each
   // force a layout of the whole document on the main thread every pane shares
-  assert.match(FEED, /const flipFirst = needFlip \? captureCardRects\(cols\) : new Map<string, FlipState>\(\);[\s\S]*?reconcileCol\(cols\.asks/);
+  assert.match(FEED, /const flipFirst = needFlip \? captureCardRects\(cols\) : new Map<string, FlipState>\(\);[\s\S]*?for \(const k of activeCols\(\)\) reconcileCol\(cols\.lists\[k\]/);   // the per-board reconcile loop (phase four)
   // …and the fly runs after the DOM (and scroll) settle (the identity-alias step sits just before it)
   assert.match(FEED, /list\.scrollTop = prevScroll;[\s\S]*?\/\/ FLIP step 2[\s\S]*?if \(needFlip\) flyColumnChanges\(flipFirst, cols\);/);
 });
