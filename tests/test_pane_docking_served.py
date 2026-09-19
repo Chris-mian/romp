@@ -86,6 +86,7 @@ const seed = (on) => (() => {
     if (localStorage.getItem("__pd_seeded")) return;
     localStorage.setItem("__pd_seeded", "1");
     localStorage.setItem("romp-panes", JSON.stringify(__PANES__));
+    localStorage.setItem("romp-pane-grow", JSON.stringify({ chat: 60, fleet: 34, feed: 40, files: 40 }));   // a real value, so "byte-identical" is not two absences
     localStorage.removeItem("romp-layout");
     if (__ON__) localStorage.setItem("romp:settings", JSON.stringify({ paneDocking: true, panes: { timeline: true, fleet: true, feed: true } }));
     else localStorage.setItem("romp:settings", JSON.stringify({ panes: { timeline: true, fleet: true, feed: true } }));
@@ -477,6 +478,7 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertEqual(o["final"]["store"]["grow"], o["store0"]["grow"], "romp-pane-grow untouched by four drops")
         self.assertEqual(o["final"]["store"]["panes"], o["store0"]["panes"], "romp-panes untouched")
         self.assertEqual(json.loads(o["store0"]["panes"]), {"chat": True, "fleet": True, "feed": True, "timeline": True, "files": False})
+        self.assertEqual(json.loads(o["store0"]["grow"]), {"chat": 60, "fleet": 34, "feed": 40, "files": 40}, "the seeded grow store, as seeded")
 
     def test_8_a_plain_press_over_content_wears_the_contents_cursor_and_arms_nothing(self):
         o = self._on()
