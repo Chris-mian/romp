@@ -453,6 +453,14 @@ linked issue. The plan avoids it by keeping the old keys as the OFF-path source 
   (a kernel STATE file plus a `/version` mesh, the task-tracking model) is a separate product decision,
   not this kit.
 
+**Panes as data (2026-09-19): the pane SET becomes a registry, designed in `plans/panes-as-data.md`.** The kit
+positions whatever panes the shell lists; today that list is five constants echoed by hand across the shell.
+That design makes a pane a record (id, title, source, on, experimental, protocol) with the board registry's
+door (`define`, `list`, `show`, `remove`; `STATE/panes/<id>.json`), has the shell render its rail, tabs,
+markup, CSS and broadcast from the list, and has this kit's `ROW_ORDER`, `growKey`, `defaultDock` and
+`paneTitle` read the same list (its phase two), so a registry pane is a leaf like any other. Nothing in this
+plan changes for it; the two fixed lists named above are the seam it replaces.
+
 **Resolved (2026-09-18): a close PARKS the iframe, it does not unmount** (section 5). The open question
 this doc first carried, unmount a closed pane versus keep it mounted-but-hidden, is decided for parking:
 a close removes the leaf from the tree but keeps the iframe mounted and hidden with its socket and state,
