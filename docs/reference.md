@@ -294,6 +294,42 @@ confirmation. If the CLI refuses the toggle (for example, the account has
 extra usage turned off), a toast says why and the pick reverts to off;
 the control never silently disappears.
 
+### Always fast, and retrying an upgrade after a downgrade
+
+Two switches under **Settings**, **Automation**, **Model**, both off by default, both
+kernel-side (stored on the kernel like the judges' Fast mode boxes, stamped, and
+following to every connected machine's kernel):
+
+- **Always fast** runs every session in fast mode whenever its model allows it
+  (Opus-only, billed at a premium). The kernel arms the CLI's fast-mode opt-in at
+  each connect for a session whose model is Opus, and when a session lands on Opus
+  later, by a pick or by an automatic fallback, it reconnects to arm it as soon as
+  the session is quiet: no turn in flight, queued, or opened by the CLI itself (a
+  background task's notification starts one), no question waiting on you, no
+  subagent, no background task, so
+  nothing is cut (the wait is said once in the kernel log, with what is running;
+  the kernel looks once more the instant before the reconnect and stands down if
+  the CLI has started work since); turning the switch on or off reaches every
+  running session the same way. A session you set to **Slow** from its
+  statusline stays slow until you set it to **Fast** again, and a comment thread
+  launched slow, or forked from a slow session, counts as such a pick. If the CLI refuses fast mode for a
+  session with a reason (extra usage off, an organisation gate), the kernel log
+  says so once and that session runs at normal speed until the reason clears (the
+  CLI reporting fast on for it, or your own Fast or Slow pick on it); the switch is
+  never the literal `/fast on`, which on a non-Opus session would make the CLI
+  change model.
+- **Retry upgrades after downgrades** acts when a session's model changes to a
+  lower tier without a pick, the automatic fallback the Completed card reports
+  (`Model changed automatically: … → …`). Every ten minutes the kernel asks for
+  the picked model again by reconnecting the session as soon as it is quiet, the
+  same rule as above, so nothing is cut; a fresh CLI starts on the pick
+  (or the account default when nothing is picked). A session that already sits
+  below its pick when you turn the switch on is taken up at once. A fallback that
+  happens again is logged once per attempt; its card follows the board's usual
+  rule, nothing new while the swap's card stands, a fresh one once you cleared it. When a turn is served on the picked tier, a second
+  Completed card says the session is back (`Model back on …`) and the retry ends.
+  A pick of your own ends it too, as does turning the switch off.
+
 ### Per-session billing (login vs API key)
 
 An SDK session bills either the machine's Claude login (subscription usage) or
@@ -1546,30 +1582,53 @@ its version). The host answers at once: `ok` with `when` `now` when its CLI is
 idle, `at-turn-end` when a turn is open (the exec waits for that turn's
 `result`, the event, never a timer), or `ok` false with a reason when it cannot
 hand its descriptors over, in which case the kernel attaches to the old host as
-before and files a `host.reexec-refused` row. To re-exec, the host drains its
-stdin pump and its journal writer, writes a handoff file
+before and files a `host.reexec-refused` row. To re-exec, the host holds its
+stdout reader (no further record is taken off the CLI; bytes not yet read stay
+in the pipe, which survives the exec), drains its stdin pump and its journal
+writer, drains the attached kernel's socket backlog to the last byte (five
+seconds at most), and then decides with nothing awaited between the decision
+and the exec: the CLI is quiet, meaning no turn re-opened and the reader's
+stream buffer holds no bytes, or the exec is deferred to the next `result`,
+the event, and the reader runs on meanwhile (a `reexec-deferred` line names
+the reason: output arriving, or a kernel that did not drain in time). Quiet, it
+writes any record read during the drains to the journal itself so the count
+it hands over and the journal agree, writes a handoff file
 (`hosts/<sid>/reexec.json`: the CLI's pid, start time, spawn time and
-conversation id, the three pipe descriptors, the read count, the open requests
-and the acknowledged offset), marks the descriptors inheritable, closes its
-socket, tells an attached kernel `reexec-now`, and calls `execv` on the same
-pid: the CLI stays its child, the pipes stay open (descriptors survive an
-execve), the lease holder's pid and start time are unchanged, so `hostAck`
-still names this host and the replay offset holds, and the journal is
-reopened from its segment files (the index rebuilt from the files, the next
-offset from the last record). The new host adopts the CLI through the pipe
-transport over the inherited descriptors (on Linux it confirms them against
-the CLI's own `/proc` descriptors before trusting the handoff), re-serves the
-socket, writes the lease with the new version, and waits for the kernel's
-attach; the kernel, told `reexec-now`, treats the socket's close as the
-planned handover, not a host death: no `host.died` row, no orphan replay, no
-resume, one re-attach from the same acknowledged offset, and a
-`host.reexeced` row. A re-exec that fails before the exec leaves the old host
-running and says so (a `reexec-failed` line in the host's log, the refusal row
-from the kernel); one that fails inside the new process, on a handoff that does
-not check out, makes the new host exit with the CLI still running, which the
-kernel's existing orphan road handles as a host death: the CLI finishes its
-turn on end-of-file and the session resumes from the transcript. The worst
-case is the pre-host behaviour for one session, never a dead one.
+conversation id, the three pipe descriptors, the read count, the open turns,
+the open requests and the acknowledged offset), marks the descriptors
+inheritable, writes `reexec-now` to the kernel (its backlog empty, the frame
+reaches the socket at once; a kernel whose socket is full at that instant
+misses it and reads the close as unplanned, the lease holding for its next
+connect), closes its socket, and calls `execv` on the same pid: the CLI stays
+its child, the pipes stay open (descriptors survive an execve), the lease
+holder's pid and start time are unchanged, so `hostAck` still names this host
+and the replay offset holds, and the journal is reopened from its segment
+files (the index rebuilt from the files entry for entry as the live one held
+it, the next offset from the last record, a deleted segment's offsets
+unreadable). The new host confirms the inherited descriptors against the
+CLI's own `/proc` descriptors on Linux before trusting the handoff, adopts the
+CLI through the pipe transport over them, re-serves the socket, writes the
+lease with the new version (in that order, so a kernel that reads the new
+version finds a listener; the kernel's wait for the re-executed host also
+connects before it trusts the lease), and waits for the kernel's attach; the
+kernel, told `reexec-now`, treats the socket's close as the planned handover,
+not a host death: no `host.died` row, no orphan replay, no resume, one
+re-attach from the same acknowledged offset, and a `host.reexeced` row. A
+re-exec that fails before the exec leaves the old host running and says so (a
+`reexec-failed` line in the host's log; a `fault` to an attached kernel, which
+files a `host.reexec-failed` row, as does a kernel whose wait for the
+re-executed host runs out); one that fails inside the new process, on a
+handoff that does not check out, makes the new host exit with the CLI still
+running, which the kernel's existing orphan road handles as a host death: the
+CLI finishes its turn on end-of-file and the session resumes from the
+transcript. The worst case is the pre-host behaviour for one session, never a
+dead one. What the guarantee covers: every record parsed off the CLI before
+the exec is in the journal, numbered as the kernel was told; every byte still
+in the pipe reaches the new host. What it cannot cover is a line the SDK's
+reader has split across two chunks (its framer holds the first part between
+reads), which with the stream buffer empty at the check is a record the CLI
+is mid-write on at that instant, outside any turn: lost to the journal only,
+never to the CLI.
 
 A message the kernel cannot handle does not end the session's CLI. The kernel
 handles each streamed message on its own: when a handler raises, it logs the
