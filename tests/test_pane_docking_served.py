@@ -278,7 +278,7 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
     await page.mouse.move(X, Y); await page.mouse.down(); await frame(page);
     const focusedAfterPress = await lf.evaluate(() => document.activeElement && document.activeElement.id);
     await page.mouse.up(); await frame(page);
-    const pressedState = await page.evaluate(() => ({ pressed: window.__rompPaneDock.pressed(), dragging: window.__rompPaneDock.dragging() }));
+    const pressedState = await page.evaluate(() => ({ pressed: (window.__rompPaneDock.pressed ? window.__rompPaneDock.pressed() : "n/a"), dragging: window.__rompPaneDock.dragging() }));
     // then a press with travel: the drag arms; Escape leaves the pane
     await page.mouse.move(X, Y); await page.mouse.down(); await page.mouse.move(X + 14, Y + 14, { steps: 3 }); await frame(page);
     const armed = await page.evaluate(() => window.__rompPaneDock.dragging());
@@ -293,12 +293,12 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
     await page.mouse.move(feed.x + feed.w / 2, feed.y + feed.h / 2); await frame(page);
     await ff.evaluate(() => window.parent.postMessage({ romp: "paneGrab", app: "feed", clientX: 40, clientY: 300, pointerId: 77 }, "*"));
     await frame(page);
-    const afterMessage = await page.evaluate(() => ({ pressed: window.__rompPaneDock.pressed(), dragging: window.__rompPaneDock.dragging() }));
+    const afterMessage = await page.evaluate(() => ({ pressed: (window.__rompPaneDock.pressed ? window.__rompPaneDock.pressed() : "n/a"), dragging: window.__rompPaneDock.dragging() }));
     await page.mouse.move(feed.x + feed.w / 2 + 60, feed.y + feed.h / 2 + 40, { steps: 4 }); await frame(page);   // no button down
-    const afterMove = await page.evaluate(() => ({ pressed: window.__rompPaneDock.pressed(), dragging: window.__rompPaneDock.dragging(), cls: document.body.className, outline: document.getElementById("pd-outline").classList.contains("on") }));
+    const afterMove = await page.evaluate(() => ({ pressed: (window.__rompPaneDock.pressed ? window.__rompPaneDock.pressed() : "n/a"), dragging: window.__rompPaneDock.dragging(), cls: document.body.className, outline: document.getElementById("pd-outline").classList.contains("on") }));
     await ff.evaluate(() => { window.parent.postMessage({ romp: "paneGrab", app: "feed", clientX: 40, clientY: 300, pointerId: 78 }, "*"); window.parent.postMessage({ romp: "paneGrabEnd", app: "feed", pointerId: 78 }, "*"); });
     await frame(page);
-    const afterEnd = await page.evaluate(() => ({ pressed: window.__rompPaneDock.pressed(), dragging: window.__rompPaneDock.dragging() }));
+    const afterEnd = await page.evaluate(() => ({ pressed: (window.__rompPaneDock.pressed ? window.__rompPaneDock.pressed() : "n/a"), dragging: window.__rompPaneDock.dragging() }));
     return { frame: true, afterMessage, afterMove, afterEnd, rects: await rectsOf(page), store: await store(page) };
   })();
   o.column = await (async () => {
@@ -701,7 +701,7 @@ class ServedPaneDocking(unittest.TestCase):
         st = o["stale"]
         self.assertTrue(st.get("frame"))
         self.assertFalse(st["afterMove"]["dragging"], "a move with no button held after a stale forwarded press arms nothing: %r" % st["afterMove"])
-        self.assertFalse(st["afterMove"]["pressed"], "the press is cancelled on the first move without a button: %r" % st["afterMove"])
+        self.assertIs(st["afterMove"]["pressed"], False, "the press is cancelled on the first move without a button: %r" % st["afterMove"])
         self.assertNotIn("pd-drag", st["afterMove"]["cls"].split()); self.assertFalse(st["afterMove"]["outline"])
         self.assertEqual(st["afterEnd"], {"pressed": False, "dragging": False}, "a press message followed by its release message leaves no press standing: %r" % st["afterEnd"])
         self.assertEqual(st["store"]["layout"], o["storeBeforeEsc"]["layout"] if False else st["store"]["layout"])
