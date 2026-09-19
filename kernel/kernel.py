@@ -4090,22 +4090,25 @@ def _codex_postal_tools_on():
     return jd._state_str("codex-postal-tools", "").strip().lower() != "off"
 
 
-_CODEX_POSTAL_SAID = [False]     # a Codex postal tool's bus fault (unreachable, no answer) said once per fault spell: re-armed by the next answer
+_CODEX_POSTAL_SAID = set()       # the Codex postal tools' bus faults said once per fault spell, keyed by cause ("unreachable",
+#                                  "no-answer"): the next answer of any status clears the set
 
 
-def _codex_postal_log(tool, sid, cause, once=False):
+def _codex_postal_log(tool, sid, cause, once=None):
     """The kernel log's one line for a Codex postal tool call that failed, naming the tool, the session and the cause
     (the review of 2026-09-19: _codex_postal_call never raises, so the backend's raise-only log line never fired, and
     a refused bus, a hung bus and a store raise each reached the session as a failed result with an empty kernel
-    log, the one cross-session surface). The two bus faults (`once`) are said once per fault spell, after
-    _INTR_MARKS_WRITE_SAID: every Codex session's every call fails the same way until the bus answers again, and
-    _codex_postal_http re-arms the latch on its next answer. A store raise is no spell and is said every time. The
-    write is wrapped: a stderr that cannot be written (ENOSPC) must not turn the per-fault sentence the session gets
-    into the generic one."""
+    log, the one cross-session surface). The two bus faults are said once per fault spell PER CAUSE (`once` names
+    the cause, "unreachable" or "no-answer"), after _INTR_MARKS_WRITE_SAID: every Codex session's every call fails
+    the same way until the bus answers again, and _codex_postal_http clears the set on its next answer. One boolean
+    for both causes (the second review of 2026-09-19) let a bus that refused and then hung, with no answer between,
+    log only the refusal, so the log read "could not be reached" while requests were being written and left
+    unanswered. A store raise is no spell and is said every time. The write is wrapped: a stderr that cannot be
+    written (ENOSPC) must not turn the per-fault sentence the session gets into the generic one."""
     if once:
-        if _CODEX_POSTAL_SAID[0]:
+        if once in _CODEX_POSTAL_SAID:
             return
-        _CODEX_POSTAL_SAID[0] = True
+        _CODEX_POSTAL_SAID.add(once)
     try:
         sys.stderr.write("codex postal tool %s for session %s: %s%s\n"
                          % (tool or "?", sid or "?", cause,
@@ -4120,7 +4123,7 @@ def _codex_postal_http(method, path, payload=None, tool="", sid=""):
     CODEX_POSTAL_TIMEOUT_S (written True: the bus may have acted, and the caller's sentence says so, the distinction
     _bus_send_relay draws as `unknown`), else the bus's status with its JSON body (a dict, {} when unparsable).
     `tool` and `sid` name the call in the kernel log's line for either fault (_codex_postal_log, once per fault
-    spell); an answer of any status ends the spell."""
+    spell per cause); an answer of any status ends the spell."""
     conn = http.client.HTTPConnection("127.0.0.1", _bus_port(), timeout=CODEX_POSTAL_TIMEOUT_S)
     try:
         try:
@@ -4131,14 +4134,14 @@ def _codex_postal_http(method, path, payload=None, tool="", sid=""):
             conn.request(method, path, data, headers)
         except Exception as e:
             _codex_postal_log(tool, sid, "the mail service could not be reached, nothing written (%s: %s)"
-                              % (type(e).__name__, str(e)[:120]), once=True)
+                              % (type(e).__name__, str(e)[:120]), once="unreachable")
             return 0, {"error": "The mail service could not be reached just now (%s)." % e.__class__.__name__}, False
         try:
             resp = conn.getresponse()
             raw = resp.read()
         except Exception as e:
             _codex_postal_log(tool, sid, "the request was written and no answer came within %.0f s (%s: %s)"
-                              % (CODEX_POSTAL_TIMEOUT_S, type(e).__name__, str(e)[:120]), once=True)
+                              % (CODEX_POSTAL_TIMEOUT_S, type(e).__name__, str(e)[:120]), once="no-answer")
             return -1, {"error": "No answer from the mail service within %.0f s (%s)."
                         % (CODEX_POSTAL_TIMEOUT_S, e.__class__.__name__)}, True
     finally:
@@ -4146,7 +4149,7 @@ def _codex_postal_http(method, path, payload=None, tool="", sid=""):
             conn.close()
         except Exception:
             pass
-    _CODEX_POSTAL_SAID[0] = False                 # an answer, whatever its status, ends the fault spell: the latch re-arms
+    _CODEX_POSTAL_SAID.clear()                    # an answer, whatever its status, ends the fault spell for both causes: the latch re-arms
     try:
         body = json.loads(raw.decode("utf-8", "replace") or "{}")
     except Exception:
@@ -21176,13 +21179,20 @@ def _bus_token_mark():
 
 def _bus_port_census(port, source):
     """One boot census line, and one more per change: the bus port the kernel dials, whether the record or the environment
-    named it, and the mismatch with the environment when there is one (the operator's pointer at the pair)."""
+    named it, and the mismatch with the environment when there is one (the operator's pointer at the pair). The write is
+    wrapped the way _codex_postal_log's is (the second review of 2026-09-19): the dial runs on every loopback call, outside
+    the Codex postal request's try, so a stderr that could not be written (ENOSPC) raised out of a first dial into
+    _codex_postal_call's catch-all, the session got the generic sentence instead of the per-fault one, and the bus was
+    never dialed. Said or not, the census stands as said: the memory is set before the write."""
     cur = (int(port), source)
     if _BUS_PORT_SAID[0] == cur:
         return
     _BUS_PORT_SAID[0] = cur
     note = "" if int(port) == BUS_PORT else " (ROMP_POSTAL_PORT says %d: the environment and the bus disagree; the record wins)" % BUS_PORT
-    sys.stderr.write("romp-kernel: postal bus dialed on 127.0.0.1:%d from the %s%s\n" % (int(port), source, note))
+    try:
+        sys.stderr.write("romp-kernel: postal bus dialed on 127.0.0.1:%d from the %s%s\n" % (int(port), source, note))
+    except Exception:
+        pass
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
 _REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port

@@ -431,15 +431,29 @@ class ParityWithTheBus(unittest.TestCase):
             self.assertEqual(call("set_working", dict(args)), (not theirs[1], theirs[0]), args)
 
 
+class _DeadStderr(io.TextIOBase):
+    """A stderr that cannot be written (ENOSPC): every write raises."""
+
+    def write(self, s):
+        raise OSError(28, "No space left on device")
+
+
 class TheKernelLogNamesAFault(unittest.TestCase):
     """The kernel log's line for a failed call (the review, 2026-09-19): the callable never raises, so the backend's
     raise-only log line never fires, and before this a refused bus, a hung bus and a store raise each reached the
     session as a failed result and left the kernel log, the one cross-session surface, empty. One line naming the
-    tool, the session and the cause: the two bus faults once per fault spell, re-armed by the bus's next answer
-    (the _INTR_MARKS_WRITE_SAID shape), a store raise every time; the sentence to the session is unchanged."""
+    tool, the session and the cause: the two bus faults once per fault spell per cause, re-armed by the bus's next
+    answer (the _INTR_MARKS_WRITE_SAID shape, keyed by cause), a store raise every time; the sentence to the session
+    is unchanged."""
 
     def setUp(self):
-        km._CODEX_POSTAL_SAID[0] = False
+        km._CODEX_POSTAL_SAID.clear()
+        # the bus-port dial's census line (_bus_port_census) lands on stderr on a process's FIRST dial, and the dial
+        # sits outside the request's try; a capture of all of stderr then counts it (2 lines, not 1) or, with stderr
+        # dead, takes its raise before the request (the second review, 2026-09-19: each test alone red, in file order
+        # green, a worker collecting this class first red). One dial here says it before any capture; the census's
+        # own wrap is pinned below by re-creating a first dial inside the dead capture.
+        km._bus_port()
 
     def _stderr_of(self, fn):
         err = io.StringIO()
@@ -485,10 +499,7 @@ class TheKernelLogNamesAFault(unittest.TestCase):
                 self.assertIn(piece, line)
 
     def test_a_stderr_that_cannot_be_written_does_not_swallow_the_sentence(self):
-        class _Dead(io.TextIOBase):
-            def write(self, s):
-                raise OSError(28, "No space left on device")
-        with contextlib.redirect_stderr(_Dead()):
+        with contextlib.redirect_stderr(_DeadStderr()):
             with bus({"refuse": True}):
                 out = call("check_inbox", {})
             with mock.patch.object(km, "_set_working_note", side_effect=OSError(28, "No space left on device")):
@@ -497,6 +508,47 @@ class TheKernelLogNamesAFault(unittest.TestCase):
                                       "check retries."))
         self.assertEqual(out2[0], False)
         self.assertIn("No space left", out2[1], "the store's own raise, not the log write's")
+
+    def test_a_first_dials_census_line_on_a_dead_stderr_does_not_swallow_the_sentence_either(self):
+        # the census write in _bus_port_census reached production unwrapped (the second review, 2026-09-19): a port
+        # or source change after boot makes a Codex call's dial say the census, and with stderr unwritable the raise
+        # reached _codex_postal_call's catch-all, so the session got the generic sentence, not the per-fault one, and
+        # the bus was never dialed. Resetting the census's memory re-creates a first dial inside the dead capture.
+        km._BUS_PORT_SAID[0] = None
+        with contextlib.redirect_stderr(_DeadStderr()):
+            with bus({"refuse": True}):
+                out = call("check_inbox", {})
+        self.assertEqual(out, (False, "The mail service could not be reached just now; your mail waits and the next "
+                                      "check retries."), "the per-fault sentence: the census write raised out of the dial")
+
+    def test_a_spell_whose_cause_changes_with_no_answer_between_is_said_once_per_cause(self):
+        # one slot for two causes (the second review, 2026-09-19): the latch was one boolean for both bus faults,
+        # re-armed only by an answer, so a bus that refused and then hung, with no answer between, logged only the
+        # refusal, and the log read "could not be reached" while requests were being written and left unanswered.
+        # Keyed by cause: one line per cause per spell, the same cause again adding none, an answer clearing both.
+        def refuse_then_hang():
+            with bus({"refuse": True}):
+                a = call("check_inbox", {})
+            with bus({"hang": True}, {"hang": True}):
+                return a, call("check_sent", {}), call("list_agents", {})
+        (a, b, c), lines = self._stderr_of(refuse_then_hang)
+        self.assertEqual((a[0], b[0], c[0]), (False, False, False))
+        self.assertEqual(len(lines), 2, "one line per cause, the second hang adding none: %r" % lines)
+        self.assertIn("could not be reached", lines[0])
+        self.assertIn("check_inbox", lines[0])
+        self.assertIn("no answer came", lines[1])
+        self.assertIn("check_sent", lines[1])
+        self.assertNotIn("list_agents", "\n".join(lines), "the second hang of the spell adds no line")
+        # an answer of any status ends the spell for both causes: the next refusal is said again
+        with bus({"status": 200, "body": {"agents": []}}):
+            call("list_agents", {})
+
+        def refused_again():
+            with bus({"refuse": True}):
+                return call("check_inbox", {})
+        _, lines = self._stderr_of(refused_again)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("could not be reached", lines[0])
 
 
 class TheBusNamesTheToolForCodex(unittest.TestCase):
@@ -534,7 +586,7 @@ class TheBusNamesTheToolForCodex(unittest.TestCase):
         pm._drain = lambda sid: {"messages": list(box["messages"])}
         pm._kernel_post = lambda path, body, timeout=None: posted.append((path, body)) or {"injected": True}
         pm._push_disabled = lambda: False
-        pm._name_for_id = lambda sid, rows=None: "api"    # no kernel to ask; the oversize note names the recipient
+        pm._name_for_id = lambda sid, rows=None: {SID: "api", WEB: "web"}.get(sid, sid)   # no kernel to ask; the oversize note names the recipient
         pm._log = lambda m: None
         os.environ.pop("ROMP_SESSIONS_FILE", None)
         try:
@@ -565,6 +617,24 @@ class TheBusNamesTheToolForCodex(unittest.TestCase):
             self.assertGreater(said, pm._PUSH_MAX_BYTES, "a bounce naming a size under the limit explains nothing")
             self.assertTrue(pm._push(WEB, rows[WEB]), "the same message fits a shell recipient's banner")
             self.assertEqual([p for p, _ in posted], ["/deliver"])
+            # the shell recipient's own bounce measurement was unasserted (the second review, 2026-09-19): the message
+            # above sits ON the cap as a shell body, rides the wake and never reaches _bounce_oversize, so a bounce
+            # measuring with the tool banner unconditionally stayed green. A message from the Codex session to the
+            # shell recipient (a sender equal to the recipient gets no note, so the sender is the peer), one byte
+            # over as a shell body, is bounced with the shell body's size in the note; measured with the tool banner
+            # the note would read 2 bytes more.
+            over = {"id": "m-over", "from": "api", "from_id": SID, "body": "", "kind": "coordinate"}
+            over["body"] = "x" * (pm._PUSH_MAX_BYTES - pm._deliver_body_bytes(WEB, [over]) + 1)
+            n_shell = pm._deliver_body_bytes(WEB, [over])
+            self.assertEqual(n_shell, pm._PUSH_MAX_BYTES + 1)
+            box["messages"] = [over]
+            del posted[:]
+            self.assertFalse(pm._push(WEB, rows[WEB]), "nothing rode the wake: one byte over as a shell body")
+            self.assertEqual(posted, [], "no /deliver post for the shell row")
+            notes = [n for n in pm.read_box(SID, consume=False) if "undeliverable to 'web'" in n["body"]]
+            self.assertEqual(len(notes), 1, notes)
+            said = int(re.search(r"is (\d+) bytes as delivered", notes[0]["body"]).group(1))
+            self.assertEqual(said, n_shell, "the note reports the shell body's size, the banner THIS recipient gets")
         finally:
             pm._drain, pm._kernel_post, pm._push_disabled, pm._name_for_id, pm._log = saved[:5]
             restore_env("ROMP_SESSIONS_FILE", saved[5])
