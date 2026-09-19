@@ -190,10 +190,13 @@ class RailRendering(unittest.TestCase):
         self.assertNotIn("spendColor", self.js)
         self.assertNotIn("spendWinsHTML", self.js)
 
-    def test_the_hover_is_the_per_host_breakdown_in_the_quiet_lowercase_italic(self):
+    def test_the_hover_is_one_block_per_account_with_the_machines_named_in_the_strips_host_dress(self):
+        # the user 2026-09-19: three machines on one login drew three identical columns; the block is per account, the
+        # machines one line beneath it in the tab strip's quiet italic host dress (the per-host .ru-tip-host heading is gone)
         css = km._landing()
-        self.assertIn(".ru-tip-host{font:italic 400 10px", css)
-        self.assertIn("text-transform:lowercase", css)
+        self.assertNotIn(".ru-tip-host{", css)
+        self.assertIn(".ru-tip-machines .host-prefix{color:var(--dim,#9aa0a6);font-weight:400;font-style:italic;font-size:0.86em}", css)
+        self.assertIn("function acctBlocksHTML(sets,manyMachines)", self.js)
         # a host section can carry BOTH its login's windows and its key's spend (per-session auth),
         # and the spend rows are numbers only — no track span
         self.assertIn("function winDet(u,det)", self.js)
@@ -209,9 +212,20 @@ class RailRendering(unittest.TestCase):
         self.assertIn("function notices(u)", self.js)
         self.assertIn("var local=rows.length?rows[0].usage:null;\nnotices(local);", self.js)
 
-    def test_the_tooltip_names_each_account_only_when_there_is_more_than_one(self):
-        self.assertIn("var many=sets.length>1;", self.js)
-        self.assertIn("many?'<div class=ru-tip-host>'", self.js)
+    def test_the_tooltip_names_the_machines_only_when_there_is_more_than_one(self):
+        self.assertIn("var manyMachines=(sets.length+NOREPORT.length)>1;", self.js)
+        self.assertIn("if(manyMachines)h+='<div class=ru-tip-machines>'", self.js)
+        self.assertIn("if(d._acct)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';", self.js, "the account line heads its block whenever the login is known")
+        self.assertIn('"noReport": _usage_no_report()', open(os.path.join(BIN, "romp-kernel")).read(), "the route names the machines up with no report")
+        with km._remotes_lock:
+            saved = dict(km._remotes); km._remotes.clear()
+            km._remotes.update({"TESTHOSTB": {"host": "TESTHOSTB", "status": "up", "usage": {"t": 1}},
+                                "TESTHOSTC": {"host": "TESTHOSTC", "status": "up"}, "TESTHOSTD": {"host": "TESTHOSTD", "status": "down"}})
+        try:
+            self.assertEqual(km._usage_no_report(), ["TESTHOSTC"], "up with no report: named; a reporting or a down machine is not")
+        finally:
+            with km._remotes_lock:
+                km._remotes.clear(); km._remotes.update(saved)
 
     def test_the_route_reads_the_cached_poll_rather_than_dialling_per_request(self):
         # a dashboard refresh must not cost an ssh round-trip per attached host: _fleet_usage reads the
