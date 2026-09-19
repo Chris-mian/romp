@@ -35,7 +35,7 @@ import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
-import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, splitHeldAgainstFrame, OVERLAY_KINDS, type Region, type Run, type Gap, type Ev } from "./chat-regions";
+import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, setAsideNotice, runsOf, turnsBeforeTail, splitHeldAgainstFrame, OVERLAY_KINDS, type Region, type Run, type Gap, type Ev } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
@@ -14250,6 +14250,30 @@ function showLandingNotice(sid: string, t: number | null | undefined): void {
   landingNoticeEl.classList.remove("pulse");   // a pulse cut short by the hide (no animationend) must not replay on this re-show (low 1)
   landingNoticeEl.style.display = "";
 }
+/** The set-aside notice for a `rebased` frame (2026-09-19): the same notice element, an informational message with the
+ *  count; a click dismisses it (cancelLanding has no live ask to cancel, so it just hides). Never silent. */
+function showSetAsideNotice(sid: string, n: number): void {
+  // independent of the reveal-progress guard showLandingNotice keeps (2026-09-19 round two, the LOW): a set-aside must
+  // never be silent, so it shows even while a reveal line is up, and carries its OWN tooltip, not the landing notice's.
+  const content = document.getElementById("content");
+  if (!content || !content.parentNode) return;
+  if (!landingNoticeEl) {
+    landingNoticeEl = document.createElement("div");
+    landingNoticeEl.className = "tx-landing-notice";
+    landingNoticeEl.addEventListener("click", () => cancelLanding());
+  }
+  landingNoticeEl.title = "these earlier messages are no longer part of this session; click to dismiss";
+  landingNoticeEl.textContent = setAsideNotice(n);
+  landingNoticeSid = sid;
+  if (!landingNoticeEl.isConnected) {
+    const anchor = document.createElement("div");
+    anchor.className = "tx-loading-anchor";
+    anchor.appendChild(landingNoticeEl);
+    content.parentNode.insertBefore(anchor, content);
+  }
+  landingNoticeEl.classList.remove("pulse");
+  landingNoticeEl.style.display = "";
+}
 function hideLandingNotice(): void {
   if (landingNoticeEl) {
     if (pulseEnd) { landingNoticeEl.removeEventListener("animationend", pulseEnd); pulseEnd = null; }   // a pulse the hide cuts short never fires animationend: its handler leaves with it (low 2)
@@ -17447,7 +17471,13 @@ function upsert(msg: any) {
     // has an empty split.before, so it applies.
     for (const r of runsOf(prev.regions)) {
       if (!r.events.length || r.lo < tl || (r.hi != null && r.hi <= tl)) continue;   // above tailLo (kept) or straddling (its before is kept, the rest is a legit retraction)
-      if (splitHeldAgainstFrame(r.events, frameEv, txRow).before.some(txRow)) { desyncWhy = "would-drop-held"; break; }
+      if (splitHeldAgainstFrame(r.events, frameEv, txRow).before.some(txRow)) {
+        // a `rebased` full may set aside a run the frame shares NO key with (a fork / rewind abandoned it, the kernel
+        // confirmed it gone from the transcript); a run the frame PARTIALLY carries is a loss (a lying low tailLo),
+        // refused even with the flag, so a false or lying rebased can never drop content (2026-09-19 round two, M1b).
+        if (msg.rebased && !sharesAnyUuid(msg.events, r.events as unknown as ChatEvent[])) continue;
+        desyncWhy = "would-drop-held"; break;
+      }
     }
   }
   const keepResident = kept || !!desyncWhy;
@@ -17530,6 +17560,15 @@ function upsert(msg: any) {
         if (first && !frameKeys.has(first) && prev.events.some((e) => frameKeys.has(keyOf(e as unknown as Ev) ?? ""))) chatDiagRow("regions-dropped", { id: msg.id, why: "regions-less", heldRuns: 0, heldEvents: prev.events.length, frameEvents: events.length });
       }
       events = all;
+      if (msg.rebased && prev) {
+        // rebased: the kernel says the held tail run's turns are gone from the current session (a fork or a rewind).
+        // This is the ONE place rows leave on purpose (the user 2026-09-19). The merge above already set them aside;
+        // say so, never silently: a diag row and the landing notice with the count.
+        const keptKeys = new Set<string>(); for (const e of all) { const k = keyOf(e as unknown as Ev); if (k) keptKeys.add(k); }
+        let setAside = 0;
+        for (const e of prev.events) { const ev = e as unknown as Ev; if (transcriptRow(ev) && !keptKeys.has(keyOf(ev) ?? "")) setAside++; }
+        if (setAside) { chatDiagRow("regions-dropped", { id: msg.id, why: "rebased", heldRuns: runsOf(prev.regions || []).length, setAside }); showSetAsideNotice(msg.id, setAside); }
+      }
     } else if (prev?.regions) {
       // the kernel could not name where its tail starts: no regions without a tail start (chat-proto2-exec.test.ts pins the rule), so
       // the held runs go with this frame. Said in the journal (2026-09-19), so the kernel's null frames become countable; nothing on the
@@ -17747,6 +17786,16 @@ function clearRefusedLatch(id: string): void {
 // chain; skeleton-delta = a delta for a tab held as skeleton (a contract violation). The return-to-tab harness
 // counts asks by it — a nobase on a reconnect row means the skeleton branch missed a frame type.
 type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta";   // (reattach retired with the detached client, T386 stage 2)
+/** The page's resident TAIL run's first event key for `id`, sent with a needFull so the kernel serves the repair full
+ *  from the held base (a superset, nothing dropped) or, when those turns are gone from the transcript, sets them aside
+ *  via `rebased` (CONTENT THAT EXISTS NEVER GETS DROPPED, the user 2026-09-19). undefined when the page holds no tail run. */
+function heldTailFirstKey(id: string): string | undefined {
+  const rs = sessions.get(id)?.regions;
+  if (!rs) return undefined;
+  const tail = rs.find((r) => r.kind === "run" && r.hi == null) as Run | undefined;
+  const first = tail && tail.events.length ? tail.events[0] : undefined;
+  return first ? (keyOf(first as unknown as Ev) ?? undefined) : undefined;
+}
 function requestFullSession(id: string, why: NeedFullWhy): void {
   if (!id) return;
   if (awaitingFull.has(id)) {
@@ -17758,7 +17807,10 @@ function requestFullSession(id: string, why: NeedFullWhy): void {
     return;
   }
   awaitingFull.add(id);
-  vscodeApi?.postMessage({ type: "needFull", id, why });
+  const ask: { type: "needFull"; id: string; why: NeedFullWhy; heldTailFirst?: string } = { type: "needFull", id, why };
+  const held = heldTailFirstKey(id);
+  if (held) ask.heldTailFirst = held;   // the held tail run first key: the kernel serves the repair from it (a superset) or sets it aside (rebased); omitted when the page holds no tail run
+  vscodeApi?.postMessage(ask);
   pendingFullWhy.set(id, why);   // the reason, for upsert's merge-or-replace decision when the answer lands (round 2, item 3)
 }
 // A relay's reopen (romp:hostRelayUp) releases that host's parked full asks (2026-09-19). After it the remote kernel holds a

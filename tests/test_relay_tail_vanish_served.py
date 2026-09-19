@@ -47,7 +47,8 @@ WID = "vanishlab"
 PAIRS = 600   # ~1200 events; the tail holds the last ~125 turns, so a middle read point stays far from it
 MID_TURN = 200   # the read point: a middle turn far from BOTH the head and the resident tail (~turn 475+), so a gap persists to the tail
 SCENARIOS = ["taillo_low", "straddle_lying", "tailrun_drop", "anchor_in_history",
-             "equal_hi_legit", "straddle_legit", "loop", "from_into_history", "not_proto2_rebase"]
+             "equal_hi_legit", "straddle_legit", "loop", "from_into_history", "not_proto2_rebase", "rebased_fork",
+             "straddle_lying_rebased", "rebased_superset"]
 TAIL_RUN_LO = 475   # the parked tail run's first turn (regions [gap 0-137, run 137-263, gap, run 475-null]); tailrun_drop aims a frame's tailLo here
 
 
@@ -89,6 +90,7 @@ const snapshot = async () => page.evaluate((c) => {
     tailPresent: !!tailRun, tailLast: tailRun ? tailRun.last : null,
     neighbors: c.neighbors.filter((u) => dom.includes(u)), domLen: dom.length, needFull: window.__needFull || 0,
     regionsDropped: window.__diag.filter((d) => d.what === "regions-dropped").map((d) => d.why),
+    notice: (() => { const n = document.querySelector(".tx-landing-notice"); return n && getComputedStyle(n).display !== "none" ? (n.textContent || "") : null; })(),
   };
 }, { readUuid: cfg.readUuid, neighbors: cfg.neighbors });
 
@@ -106,7 +108,7 @@ const park = async () => {
 const inject = async (name, before) => {
   const base = { id: cfg.remote, ev: cfg.frameEvents, nm: cfg.sessionName, lo: before.readRunLo, hi: before.readRunHi,
                  anchor: before.readRunLast, delta: cfg.deltaEvents, fromHi: cfg.eventsFromHi, fromMid: cfg.eventsFromMid,
-                 midLo: cfg.midTailLo, fromLow: cfg.fromLow, tailLo: cfg.tailRunLo };
+                 midLo: cfg.midTailLo, fromLow: cfg.fromLow, tailLo: cfg.tailRunLo, fork: cfg.eventsFork, forkLo: cfg.forkLo };
   if (name === "loop") {
     // round two HIGH: a kernel that answers every needFull with the SAME refused shape. Re-post the guard-3-refused
     // frame five times; the page must latch and stop asking after the second, not storm one ask per frame.
@@ -136,6 +138,15 @@ const inject = async (name, before) => {
     // reconciled onto 1877: a NON-proto-2 full frame for a proto-2 session re-bases (regions dropped) with a diag row and
     // no throw; the page shows the frame's current content (a later landing takes the older wire, 1877's regions-less path).
     else if (a.name === "not_proto2_rebase") window.postMessage({ type: "session", id: a.id, events: a.ev, name: a.nm, status: st }, "*");
+    // the kernel-side fix's page half (2026-09-19): a `rebased` full frame (a fork / rewind whose held turns are gone
+    // from the transcript) is an AUTHORIZED set-aside. guard 3 does NOT refuse it; the page sets the stale runs aside
+    // under the notice with a count, and asks no full. Its tailLo (a low fork turn) carries none of the held runs.
+    else if (a.name === "rebased_fork") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.fork, tailLo: a.forkLo, rebased: true, headKnown: false, name: a.nm, status: st }, "*");
+    // M1b (2026-09-19 round two): a LYING rebased flag on the straddle_lying shape (tailLo inside the read run, only the
+    // tail's last turns) must be REFUSED like an unflagged one -- the frame shares keys with the held tail run, so it is a
+    // loss, not an authorized set-aside. And a rebased flag on a genuine SUPERSET (re-carries the run) removes nothing.
+    else if (a.name === "straddle_lying_rebased") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, tailLo: a.midLo, rebased: true, headKnown: false, name: a.nm, status: st }, "*");
+    else if (a.name === "rebased_superset") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.fromMid, tailLo: a.midLo, rebased: true, headKnown: false, name: a.nm, status: st }, "*");
   }, { ...base, name });
   await page.waitForTimeout(2500);
 };
@@ -270,6 +281,8 @@ class RelayVanishGuards(unittest.TestCase):
                        "eventsFromHi": cls._range_pairs(cwd, 263, PAIRS), "eventsFromMid": cls._range_pairs(cwd, MID_TURN, PAIRS),
                        "midTailLo": MID_TURN,   # a turn INSIDE the read run [137,263]; straddle merge keeps it lossless
                        "tailRunLo": TAIL_RUN_LO,   # the tail run's own lo; tailrun_drop aims a frame's tailLo here (the tail run guard 3 never checked)
+                       "eventsFork": cls._range_pairs(cwd, 50, 56),   # a fork's short new tail (turns 50-55), below both held runs: nothing of them is carried
+                       "forkLo": 50,
                        "fromLow": 40}, f)       # a numeric-`from` truncation point inside the read run's events (below the read point at ~index 126): LOW a
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
@@ -367,6 +380,52 @@ class RelayVanishGuards(unittest.TestCase):
                            % (before.get("storeCount", 0), after.get("storeCount", 0), after.get("regions")))
         self.assertEqual(after.get("needFull", 0) - before.get("needFull", 0), 0,
                          "[straddle_legit] a full was asked (guard 3 refused a legitimate frame): needFull %r->%r" % (before.get("needFull"), after.get("needFull")))
+        self.assertTrue(after.get("readPresent"))
+
+    def test_rebased_frame_sets_aside_under_the_notice_and_asks_no_full(self):
+        # the kernel-side fix's page half (2026-09-19, the user's priority CONTENT THAT EXISTS NEVER GETS DROPPED): a
+        # `rebased` full frame is the ONE authorized set-aside, when the held turns are gone from the current session (a
+        # fork / rewind). guard 3 must NOT refuse it; the page applies it, sets the stale runs aside, says how many under
+        # the notice, and asks NO full. Red at the base (no rebased handler): guard 3 refuses it as would-drop-held, the
+        # store is kept, a needFull is asked, and no set-aside notice shows.
+        before, after = self._scenario("rebased_fork")
+        self.assertTrue(before.get("readPresent") and before.get("hasGap"), "premise: a scrolled-back read with a hole: %r" % before.get("regions"))
+        self.assertIn("rebased", after.get("regionsDropped") or [],
+                      "[rebased_fork] the set-aside is countable (a regions-dropped row, why rebased): diag=%r" % (after.get("regionsDropped"),))
+        self.assertLess(after.get("storeCount", 0), before.get("storeCount", 0),
+                        "[rebased_fork] the gone turns were set aside (the store shrank to the fork's tail): before=%d after=%d regions=%r"
+                        % (before.get("storeCount", 0), after.get("storeCount", 0), after.get("regions")))
+        self.assertEqual(after.get("needFull", 0) - before.get("needFull", 0), 0,
+                         "[rebased_fork] an authorized set-aside asks NO full (guard 3 did not refuse it): needFull %r->%r" % (before.get("needFull"), after.get("needFull")))
+        self.assertTrue(after.get("notice") and "set aside" in after["notice"],
+                        "[rebased_fork] never silently: the notice names the set-aside: %r" % after.get("notice"))
+
+    def test_m1b_a_lying_rebased_flag_is_refused_like_an_unflagged_frame(self):
+        # M1b: guard 3 no longer blanket-exempts a rebased frame; a run the frame PARTIALLY carries (shares a key) is a
+        # loss and is refused even with the flag, so a false or lying flag can never drop content. Red at the base (the
+        # `!msg.rebased` exemption applied the frame: the store dropped 536 to 291 and the read point vanished).
+        before, after = self._scenario("straddle_lying_rebased")
+        self.assertTrue(before.get("readPresent") and before.get("hasGap"))
+        self.assertGreaterEqual(after.get("storeCount", 0), before.get("storeCount", 0),
+                                "[straddle_lying_rebased] a lying rebased flag dropped the store (M1b): before=%d after=%d regions=%r"
+                                % (before.get("storeCount", 0), after.get("storeCount", 0), after.get("regions")))
+        self.assertTrue(after.get("readPresent"), "[straddle_lying_rebased] the parked read point stays: %r" % after.get("regions"))
+        self.assertGreaterEqual(after.get("needFull", 0) - before.get("needFull", 0), 1,
+                                "[straddle_lying_rebased] refused like an unflagged frame: a full is asked: needFull %r->%r" % (before.get("needFull"), after.get("needFull")))
+        self.assertNotIn("rebased", after.get("regionsDropped") or [], "[straddle_lying_rebased] nothing was set aside: %r" % after.get("regionsDropped"))
+
+    def test_m1b_a_rebased_flag_on_a_superset_removes_nothing(self):
+        # M1b: a rebased frame that re-carries the held run applies as a superset and sets NOTHING aside (no diag, no
+        # notice, no ask). Red at the base only in that the base never runs this shape; green both by construction, a
+        # control that the flag does not force a drop when the content is present.
+        before, after = self._scenario("rebased_superset")
+        self.assertTrue(before.get("hasGap"))
+        self.assertGreater(after.get("storeCount", 0), before.get("storeCount", 0),
+                           "[rebased_superset] the superset applied and filled the hole: before=%d after=%d regions=%r"
+                           % (before.get("storeCount", 0), after.get("storeCount", 0), after.get("regions")))
+        self.assertEqual(after.get("needFull", 0) - before.get("needFull", 0), 0, "[rebased_superset] no full asked: %r->%r" % (before.get("needFull"), after.get("needFull")))
+        self.assertNotIn("rebased", after.get("regionsDropped") or [], "[rebased_superset] a rebased flag on a superset sets nothing aside: %r" % after.get("regionsDropped"))
+        self.assertIsNone(after.get("notice"), "[rebased_superset] no set-aside notice for a superset: %r" % after.get("notice"))
         self.assertTrue(after.get("readPresent"))
 
     def test_high_a_repeated_refused_frame_does_not_storm_needfull(self):
