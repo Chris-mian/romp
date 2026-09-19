@@ -17181,29 +17181,34 @@ function upsert(msg: any) {
     emptyFrameDiagSent.add(msg.id);
     vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "empty-session-frame", data: { id: msg.id, held: prev.events.length } });
   }
-  // GUARDS (the dropped-history fix, 2026-09-19: the full-frame branch and the tailLo-low face): a full frame the page cannot safely place onto
-  // the regions it holds is REFUSED, not applied — applying one throws away the reader's scrolled-back history. Only
-  // for a same-transcript re-send (shares a uuid, so not a /clear fork) of a REGIONS session:
-  //  (2) not proto 2, or proto 2 with no numeric tailLo → the merge below is skipped and the frame's window replaces
-  //      every held run (executed in the investigation: 1446 events → 251, regions → []);
-  //  (3) a tailLo at or below a held HISTORY run's LO whose events the frame does NOT re-carry → the merge drops that run
-  //      WHOLE (r.lo >= tailLo) (the reported "1 hour ago" directly above "now"). Only tl <= r.lo drops a run; a run
-  //      ending at or straddling tailLo is kept losslessly (r.hi <= tailLo whole; the straddle arm keeps the part the
-  //      frame does not carry and insertRun coalesces), so refusing those would drop a LEGITIMATE larger window's new
-  //      content and then ask a full that returns the same (round two MEDIUM).
-  // Keep the held regions and resident events (the keepResidentEvents shape), file one client-diag row, and (for the
-  // shapes a full frame can heal) ask for a frame upsert CAN place.
+  // GUARD 3 (the dropped-history fix, 2026-09-19, reconciled onto PR 1877): the no-tailLo and non-proto-2 / regions-less
+  // cases are 1877's by design: a full frame is authoritative for [tailLo, end); a frame whose tail start the kernel
+  // could not name leaves no regions, files one regions-dropped row, and a landing takes the older wire. What remains
+  // here is the one shape 1877's merge-by-position does not catch: a proto-2 full frame whose NUMERIC tailLo claims to
+  // cover a held run (r.lo >= tailLo, or a run past tailLo) while its events start LATER than that tailLo says, so the
+  // merge drops that run's earlier held transcript rows WHOLE across a hole. Refuse it (keep the held regions + resident
+  // events, the keepResidentEvents shape) and ask for a frame upsert CAN place; 1877's merge then lands the held runs,
+  // nothing lost. The test below is the merge's own loss rule (splitHeldAgainstFrame.before over every claimed run, the
+  // TAIL run included), not a tailLo comparison: a frame that re-carries a run's events from tailLo shares its first key
+  // and loses nothing, so it applies; rows dropped AT OR AFTER the frame's content are legit retractions 1877 keeps
+  // (round two MEDIUM). A repeated identical refusal is latched below.
   let desyncWhy: string | null = null;
-  if (!kept && prev && prev.regions && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
-    if (msg.proto !== 2) desyncWhy = "not-proto2";
-    else {
-      const tl: number | null = typeof msg.tailLo === "number" ? msg.tailLo : (msg.headKnown ? 0 : null);
-      if (tl == null) desyncWhy = "no-taillo";
-      else {
-        const fk = new Set((msg.events as Array<{ uuid?: string; key?: string }>).map((e) => keyOf(e)).filter((k): k is string => !!k));
-        if (runsOf(prev.regions).some((r) => r.hi != null && tl <= r.lo && r.events.some((e) => !fk.has(keyOf(e as { uuid?: string; key?: string }) ?? ""))))
-          desyncWhy = "taillo-below-held";
-      }
+  if (!kept && prev && prev.regions && msg.proto === 2 && typeof msg.tailLo === "number" && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
+    const tl = msg.tailLo;
+    const frameEv = msg.events as unknown as Ev[];
+    const txRow = (e: Ev): boolean => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent) && !OVERLAY_KINDS.has(String(e.kind ?? ""));
+    // The MERGE's own loss rule (1877's splitHeldAgainstFrame reads the run against the frame), not a tailLo comparison.
+    // 1877 merges by position: a run wholly above tailLo stays; a run at or past it (r.lo >= tailLo) is dropped WHOLE; a
+    // straddling run keeps its part BEFORE the frame's first shared key. A frame authoritative for [tailLo, end) may
+    // legitimately drop rows AT OR AFTER its content (retracted / behind, split.dropped / afterLast -- 1877 applies
+    // those). The LOSS is a run the frame claims to cover (r.lo >= tailLo) whose held transcript rows lie BEFORE the
+    // frame's first shared key (split.before): the frame's real content starts later than its tailLo says, so those rows
+    // are history it does not carry -- the mismapped-low tailLo that drops the tail run whole (HIGH 1) or wipes the sole
+    // tail run (HIGH 2). Refuse and ask; a frame that re-carries the run's events from tailLo shares its first key and
+    // has an empty split.before, so it applies.
+    for (const r of runsOf(prev.regions)) {
+      if (!r.events.length || r.lo < tl || (r.hi != null && r.hi <= tl)) continue;   // above tailLo (kept) or straddling (its before is kept, the rest is a legit retraction)
+      if (splitHeldAgainstFrame(r.events, frameEv, txRow).before.some(txRow)) { desyncWhy = "would-drop-held"; break; }
     }
   }
   const keepResident = kept || !!desyncWhy;
@@ -17224,10 +17229,8 @@ function upsert(msg: any) {
         emptyFrameDiagSent.add(msg.id + ":" + desyncWhy);
         vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync", data: { id: msg.id, why: desyncWhy, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
       }
-      // Ask only for shapes a full frame can heal: a lying tailLo, or a non-proto-2 re-send (which otherwise shows stale
-      // content forever with no self-heal, round two low b). A no-tailLo proto-2 frame keeps its resident tail and fills
-      // gaps on scroll, so it asks nothing (the keepResidentEvents shape).
-      if (desyncWhy === "taillo-below-held" || desyncWhy === "not-proto2") requestFullSession(msg.id, "gap");
+      // guard 3 asks for a frame upsert CAN place; PR 1877's merge-by-position then lands the held runs, nothing lost.
+      requestFullSession(msg.id, "gap");
     } else if (n === 2) {
       // the ask did not change what the kernel sends: stop asking, and say so ONCE with the count so the loop is not silent
       vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync-loop", data: { id: msg.id, why: desyncWhy, count: n, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
@@ -17295,6 +17298,11 @@ function upsert(msg: any) {
       // takes the older wire). A merge into a key-sharing held tail is a parked decision, not this change.
       chatDiagRow("regions-dropped", { id: msg.id, why: "no-tail-lo", heldRuns: runsOf(prev.regions).length, frameEvents: events.length });
     }
+  } else if (!keepResident && prev && prev.regions && msg.proto !== 2 && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
+    // a NON-proto-2 full frame for a session the page holds as proto 2 cannot join the regions wire: it re-bases to the
+    // frame's window (regions dropped) and the page shows the kernel's current content; a later landing takes the older
+    // wire (PR 1877's regions-less path). Countable, not silent -- round two's not-proto-2 case, reconciled onto 1877.
+    chatDiagRow("regions-dropped", { id: msg.id, why: "not-proto2", heldRuns: runsOf(prev.regions).length, frameEvents: (msg.events || []).length });
   }
   const hasGap = !!regions && regions.some((r) => r.kind === "gap");
   const s: Session = {
@@ -17487,7 +17495,13 @@ const emptyFrameDiagSent = new Set<string>();   // sids whose empty session fram
 // needFull storm. The page asks once, and after a SECOND identical refusal keeps the held state and stops asking; a frame
 // with different coordinates, or a delta that applies (clearRefusedLatch), resumes. Bounds the page half of the loop.
 const refusedFrameLatch = new Map<string, { key: string; count: number }>();
-function clearRefusedLatch(id: string): void { refusedFrameLatch.delete(id); }
+function clearRefusedLatch(id: string): void {
+  const prior = refusedFrameLatch.get(id);
+  refusedFrameLatch.delete(id);
+  emptyFrameDiagSent.delete(id + ":would-drop-held");   // re-arm the desync row so a recurrence after the clear is filed again (not silenced for the page's life)
+  // a storm that has now cleared: file its REAL count once (the n === 2 row said only that a loop had started)
+  if (prior && prior.count >= 2) vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync-loop", data: { id, count: prior.count, cleared: true } });
+}
 // `why` is a one-word diagnostic the kernel ignores (2026-09-07): gap = a delta past what we hold; nobase = a
 // delta for a session we hold nothing of; skeleton-click = the active tab is a skeleton; prefetch = the idle
 // chain; skeleton-delta = a delta for a tab held as skeleton (a contract violation). The return-to-tab harness

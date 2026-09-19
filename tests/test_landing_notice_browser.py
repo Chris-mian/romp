@@ -385,9 +385,8 @@ const reask12 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => 
 const target12 = await onScreen(deepA12);
 const trail12 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").map((m) => ({ ok: m.ok, trail: (m.trail || []).slice(-4) })), sentAt12);
 // ROAD 13 (round nine, medium 1; a fresh page): a proto-2 frame whose tailLo the kernel could not name (the boot frame re-posted with tailLo
-// null, headKnown false). Guard 2 (the dropped-history fix, 2026-09-19) KEEPS the held regions across it instead of dropping to the frame's
-// window; its head gap is asked by the region protocol (loadTurns). With that fetch HELD on the wire, a card click must not be refused as
-// busy: the in-flight fetch is re-pointed onto the anchor (pointer-fetch-window) and, once the page is released, the target lands.
+// null, headKnown false) leaves the page with no regions and its head asked by loadOlder; with that fetch HELD on the wire, a card click
+// must not be refused as busy: the fetch is re-pointed onto the anchor and, once the older page is released, the target lands.
 await reboot();
 // the kernel would answer the page's own full-frame ask (a tail delta missing its anchor asks needFull) with a frame that names tailLo and
 // rebuilds the regions within a frame or two, so that ask is parked too: the fallback must stand while the road runs
@@ -401,13 +400,13 @@ await page.evaluate((f) => { if (f) window.postMessage(f, "*"); }, frame13);
 await painted();
 const regions13 = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
 const heldIn13a = await page.evaluate(() => (window.__heldIn || []).slice());
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // the top edge of the KEPT head gap: asked by the region protocol (loadTurns), parked
-await page.waitForFunction(() => (window.__heldRaw || []).some((d) => { try { const t = JSON.parse(d).type; return t === "loadTurns" || t === "loadOlder"; } catch (e) { return false; } }), null, { timeout: 8000 }).catch(() => {});
-const heldGap13 = await page.evaluate(() => (window.__heldRaw || []).filter((d) => { try { const t = JSON.parse(d).type; return t === "loadTurns" || t === "loadOlder"; } catch (e) { return false; } }).length);
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // the top edge: the head asked by loadOlder (the fallback), parked
+await page.waitForFunction(() => (window.__heldRaw || []).some((d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } }), null, { timeout: 8000 }).catch(() => {});
+const heldOlder13 = await page.evaluate(() => (window.__heldRaw || []).filter((d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } }).length);
 const askState13 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);
 const sentAt13 = await page.evaluate(() => window.__sent.length);
-const deep13 = "11111111-2222-3333-4444-" + pad(100);   // a HEAD-GAP turn (not the resident tail): the click needs a fetch, so it re-points the in-flight one
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep13, anchorT: cfg.base + 100 });
+const deep13 = "11111111-2222-3333-4444-" + pad(2 * 100);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep13, anchorT: cfg.base + 2 * 100 });
 await painted();
 const trail13 = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));
 const toast13 = await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; });
@@ -494,7 +493,7 @@ await noticeHidden(); await painted();
 const targetB15 = await onScreen(deepB15);
 await page.waitForTimeout(700);                                                       // past the cut animation's own length: a listener the hide did not remove would still be there
 const afterCut15 = await page.evaluate(() => ({ add: window.__aeAdd, remove: window.__aeRemove, cls: !!document.querySelector(".tx-landing-notice.pulse"), shown: (() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; })() }));
-process.stdout.write("RESULT:" + JSON.stringify({ listeners15, cut15, afterCut15, first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldGap13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7a, turnAttr7a, point7a, realign7a, rowB7Before, pointB7Before, rowB7Held, pointB7Held, rowB7After, pointB7After, held7b, askState7b, fillWrites7b, runNBefore7b, runNAfter7b, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+process.stdout.write("RESULT:" + JSON.stringify({ listeners15, cut15, afterCut15, first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7a, turnAttr7a, point7a, realign7a, rowB7Before, pointB7Before, rowB7Held, pointB7Held, rowB7After, pointB7After, held7b, askState7b, fillWrites7b, runNBefore7b, runNAfter7b, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -690,26 +689,17 @@ class ServedLandingNotice(WindowLab):
         self.assertIsNotNone(r["target12"]); self.assertTrue(r["target12"]["visible"], "…and landed on screen: %r (rows %r)" % (r["target12"], r["trail12"]))
 
     def test_an_older_fetch_in_flight_does_not_refuse_a_landing_the_anchor_lands_when_the_older_page_arrives(self):
-        # round nine, medium 1 (updated 2026-09-19 for guard 2): the boot frame re-posted with tailLo null now KEEPS the held
-        # regions (never drops to the frame's window); its head gap is asked by the region protocol (loadTurns), that fetch held,
-        # and a card click during it must not be refused as busy — it re-points the in-flight fetch and the anchor lands.
+        # round nine, medium 1: the boot frame re-posted with tailLo null (no regions; the head asked by loadOlder), that fetch held, a card click
         r = self._result()
         self.assertTrue(r["hadFrame13"], "the boot frame was captured for the re-post (an init script, before the page's scripts)")
-        regs13 = r["regions13"]
-        self.assertIsInstance(regs13, list, "guard 2 kept the regions across the tailLo-null frame (not dropped): %r" % (regs13,))
-        self.assertTrue(any(x["kind"] == "gap" for x in regs13) and any(x["kind"] == "run" and x["hi"] is None for x in regs13),
-                        "the tailLo-null frame kept the held regions (a head gap above the resident tail run), never the frame's window alone: %r" % (regs13,))
-        self.assertGreaterEqual(r["heldGap13"], 1, "the head gap was asked by the region protocol (loadTurns) and the ask is parked: %r" % r["heldGap13"])
-        self.assertGreaterEqual(r["askState13"].get("gapLoading", 0), 1, "…so a gap fetch is in flight when the card is clicked: %r" % r["askState13"])
+        self.assertIn(r["regions13"], (None, []), "the tailLo-null frame left the page with no regions: %r" % r["regions13"])
+        self.assertGreaterEqual(r["heldOlder13"], 1, "the head was asked by loadOlder (the fallback) and the ask is parked: %r" % r["heldOlder13"])
+        self.assertTrue(r["askState13"]["loadingOlder"], "…so an older fetch is in flight when the card is clicked: %r" % r["askState13"])
         self.assertNotIn("pointer-fetch-busy", r["trail13"] or [], "the click was not refused as busy: %r" % r["trail13"])
-        # the click RESOLVED, not refused: it re-pointed the in-flight gap fetch (pointer-fetch-window, its own coverage in
-        # roads 1/9/12) or landed the anchor once resident (pointer-exact). Which one is timing (was the anchor resident at
-        # click time), so either is a pass; the guarantee is that a held gap fetch never turned the click into a busy refusal.
-        self.assertTrue(any(w in (r["trail13"] or []) for w in ("pointer-fetch-window", "pointer-exact")),
-                        "the click resolved (re-pointed the in-flight fetch, or landed the resident anchor): %r" % r["trail13"])
+        self.assertIn("pointer-fetch-older", r["trail13"] or [], "the in-flight fetch was re-pointed onto the anchor: %r" % r["trail13"])
         self.assertNotEqual(r["toast13"], "still going to the earlier message", "no untrue busy toast: %r" % r["toast13"])
         self.assertEqual(r["asks13"]["busy"], 0, "no busy row filed: %r" % r["asks13"])
-        self.assertIsNotNone(r["target13"]); self.assertTrue(r["target13"]["visible"], "the target landed on screen once the page arrived (asks after the click %r): %r" % (r["asks13"], r["target13"]))
+        self.assertIsNotNone(r["target13"]); self.assertTrue(r["target13"]["visible"], "the target landed on screen once the older page arrived (asks after the click %r): %r" % (r["asks13"], r["target13"]))
 
     def test_the_notices_pulse_is_one_shot_and_a_later_landing_does_not_replay_it(self):
         # the follow-up after PR 1584, low 1: a real second click pulses once; the class leaves on the animation's end; the notice re-shown

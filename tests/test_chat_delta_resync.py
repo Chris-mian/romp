@@ -132,21 +132,6 @@ def test_needfull_handler_is_wired_in_the_kernel():
     assert '("chat", sid)' in body, "must drop the dedup slot so the full send lands"
 
 
-def test_needfull_repeats_are_deduped_within_a_short_window():
-    """Round two HIGH (the kernel half): the kernel answers each needFull by resetting the client's chat base and
-    pushing a full frame at once, with no dedupe. A page that keeps refusing the SAME coordinates (a wrong/missing
-    tailLo) would loop the kernel into an unbounded needFull/full-frame storm. A repeat for the same sid inside a short
-    window must be answered with nothing new. Source-pin the window and the per-(client,sid) guard, before the reset."""
-    assert isinstance(km._NEEDFULL_DEDUP_S, (int, float)) and 0 < km._NEEDFULL_DEDUP_S <= 10, "a short dedupe window"
-    src = inspect.getsource(km)
-    i = src.find('msg.get("type") == "needFull"')
-    assert i > 0
-    body = src[i:i + 2000]
-    assert "_NEEDFULL_DEDUP_S" in body, "the needFull handler must dedupe repeats within the window"
-    assert "needFullAt" in body, "a per-(client,sid) last-answer time gates the repeat"
-    assert body.find("_NEEDFULL_DEDUP_S") < body.find("_client_reset_chat_sid(client, sid)"), "the dedupe gate precedes the reset/push, so a repeat answers with nothing new"
-
-
 def test_chat_diff_append_starts_at_the_previous_total():
     """Why a moved baseline strands clients at all: for a pure append the diff returns the PREVIOUS
     build's total, so the baseline's length is exactly where the next suffix begins."""

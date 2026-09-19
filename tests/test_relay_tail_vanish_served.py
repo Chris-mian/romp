@@ -46,8 +46,9 @@ REMOTE = HOST + ":" + SID_R
 WID = "vanishlab"
 PAIRS = 600   # ~1200 events; the tail holds the last ~125 turns, so a middle read point stays far from it
 MID_TURN = 200   # the read point: a middle turn far from BOTH the head and the resident tail (~turn 475+), so a gap persists to the tail
-SCENARIOS = ["taillo_low", "no_taillo", "not_proto2", "anchor_in_history",
-             "equal_hi_legit", "straddle_legit", "loop", "from_into_history"]
+SCENARIOS = ["taillo_low", "straddle_lying", "tailrun_drop", "anchor_in_history",
+             "equal_hi_legit", "straddle_legit", "loop", "from_into_history", "not_proto2_rebase"]
+TAIL_RUN_LO = 475   # the parked tail run's first turn (regions [gap 0-137, run 137-263, gap, run 475-null]); tailrun_drop aims a frame's tailLo here
 
 
 DRIVER = r"""
@@ -67,9 +68,11 @@ await page.addInitScript((rid) => {
   try { localStorage.setItem("romp-vscode-state-chat", JSON.stringify({ activeId: rid })); } catch (e) {}
   // count the page's full-frame asks (round two: the needFull storm and the guard-3 refusal both post one): a hook on
   // the socket send, installed before any page script opens one.
-  window.__needFull = 0;
+  window.__needFull = 0; window.__diag = [];
   try { const W = window.WebSocket, OS = W.prototype.send;
-    W.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type === "needFull") { window.__needFull++; return; } } catch (e) {} return OS.call(this, d); }; } catch (e) {}
+    W.prototype.send = function (d) { try { const m = JSON.parse(d);
+      if (m && m.type === "needFull") { window.__needFull++; return; }
+      if (m && m.type === "clientDiag") window.__diag.push({ what: m.what, why: (m.data || {}).why }); } catch (e) {} return OS.call(this, d); }; } catch (e) {}
 }, cfg.remote);
 
 const snapshot = async () => page.evaluate((c) => {
@@ -77,12 +80,15 @@ const snapshot = async () => page.evaluate((c) => {
   const runs = rs.filter((r) => r.kind === "run");
   const dom = Array.from(document.querySelectorAll("#content .turn[data-uuid]")).map((t) => t.getAttribute("data-uuid"));
   const readRun = rs.find((r) => r.kind === "run" && r.hi != null && r.lo > 0) || null;
+  const tailRun = rs.find((r) => r.kind === "run" && r.hi == null) || null;
   return {
     regions: rs, storeCount: runs.reduce((n, r) => n + (r.n || 0), 0),
     hasGap: rs.some((r) => r.kind === "gap" && r.lo > 0),
     midGap: rs.some((r) => r.kind === "gap" && readRun && r.lo >= (readRun.hi || 0)),   // the hole between the read run and the tail
     readPresent: dom.includes(c.readUuid), readRunLo: readRun ? readRun.lo : 0, readRunHi: readRun ? readRun.hi : 0, readRunLast: readRun ? readRun.last : null,
+    tailPresent: !!tailRun, tailLast: tailRun ? tailRun.last : null,
     neighbors: c.neighbors.filter((u) => dom.includes(u)), domLen: dom.length, needFull: window.__needFull || 0,
+    regionsDropped: window.__diag.filter((d) => d.what === "regions-dropped").map((d) => d.why),
   };
 }, { readUuid: cfg.readUuid, neighbors: cfg.neighbors });
 
@@ -100,7 +106,7 @@ const park = async () => {
 const inject = async (name, before) => {
   const base = { id: cfg.remote, ev: cfg.frameEvents, nm: cfg.sessionName, lo: before.readRunLo, hi: before.readRunHi,
                  anchor: before.readRunLast, delta: cfg.deltaEvents, fromHi: cfg.eventsFromHi, fromMid: cfg.eventsFromMid,
-                 midLo: cfg.midTailLo, fromLow: cfg.fromLow };
+                 midLo: cfg.midTailLo, fromLow: cfg.fromLow, tailLo: cfg.tailRunLo };
   if (name === "loop") {
     // round two HIGH: a kernel that answers every needFull with the SAME refused shape. Re-post the guard-3-refused
     // frame five times; the page must latch and stop asking after the second, not storm one ask per frame.
@@ -112,9 +118,13 @@ const inject = async (name, before) => {
   }
   await page.evaluate((a) => {
     const st = { state: "idle", sinceEpoch: null };
+    // guard 3 (would-drop-held): a proto-2 full frame carrying only the live tail's last turns with a tailLo that makes
+    // the merge drop a held run whole. taillo_low: tailLo at the read run's lo. straddle_lying: tailLo INSIDE the read
+    // run (200 in [137,263)) -- the tail run [475,None) is dropped whole (HIGH 1). tailrun_drop: tailLo at the tail run's
+    // own lo (475) -- the tail run dropped whole (HIGH 2, the tail run guard 3 never examined before).
     if (a.name === "taillo_low") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, tailLo: a.lo, headKnown: false, name: a.nm, status: st }, "*");
-    else if (a.name === "no_taillo") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, headKnown: false, name: a.nm, status: st }, "*");
-    else if (a.name === "not_proto2") window.postMessage({ type: "session", id: a.id, events: a.ev, name: a.nm, status: st }, "*");
+    else if (a.name === "straddle_lying") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, tailLo: a.midLo, headKnown: false, name: a.nm, status: st }, "*");
+    else if (a.name === "tailrun_drop") window.postMessage({ type: "session", id: a.id, proto: 2, events: a.ev, tailLo: a.tailLo, headKnown: false, name: a.nm, status: st }, "*");
     else if (a.name === "anchor_in_history") window.postMessage({ type: "chatTail", id: a.id, afterUuid: a.anchor, events: a.delta }, "*");
     // MEDIUM: a legitimate LARGER window whose tailLo sits at the read run's hi (equal_hi) or inside it (straddle),
     // re-carrying the run + the hole to the tail: must APPLY (fill the hole), not be refused.
@@ -123,6 +133,9 @@ const inject = async (name, before) => {
     // LOW a: a numeric-`from` delta that would truncate INTO the loaded history (below the tail run's start) must not
     // eat the parked read point: refuse before truncating and keep the reader's place.
     else if (a.name === "from_into_history") window.postMessage({ type: "chatTail", id: a.id, from: a.fromLow, events: a.delta }, "*");
+    // reconciled onto 1877: a NON-proto-2 full frame for a proto-2 session re-bases (regions dropped) with a diag row and
+    // no throw; the page shows the frame's current content (a later landing takes the older wire, 1877's regions-less path).
+    else if (a.name === "not_proto2_rebase") window.postMessage({ type: "session", id: a.id, events: a.ev, name: a.nm, status: st }, "*");
   }, { ...base, name });
   await page.waitForTimeout(2500);
 };
@@ -256,6 +269,7 @@ class RelayVanishGuards(unittest.TestCase):
                        # legitimate larger windows for the MEDIUM: turns [read-run hi .. end] and [mid-of-read-run .. end]
                        "eventsFromHi": cls._range_pairs(cwd, 263, PAIRS), "eventsFromMid": cls._range_pairs(cwd, MID_TURN, PAIRS),
                        "midTailLo": MID_TURN,   # a turn INSIDE the read run [137,263]; straddle merge keeps it lossless
+                       "tailRunLo": TAIL_RUN_LO,   # the tail run's own lo; tailrun_drop aims a frame's tailLo here (the tail run guard 3 never checked)
                        "fromLow": 40}, f)       # a numeric-`from` truncation point inside the read run's events (below the read point at ~index 126): LOW a
         driver = os.path.join(cls.lab, "driver.mjs")
         with open(driver, "w") as f:
@@ -312,14 +326,19 @@ class RelayVanishGuards(unittest.TestCase):
         self.assertEqual(after.get("neighbors"), before.get("neighbors"),
                          "[%s] the read point's neighbours dropped: before=%r after=%r" % (name, before.get("neighbors"), after.get("neighbors")))
 
-    def test_guard3_taillo_below_a_held_run_never_drops_the_read_point(self):
+    def test_guard3_a_taillo_at_a_held_runs_lo_drops_nothing(self):
         self._assert_scenario("taillo_low", expect_read_drop=True)
 
-    def test_guard2_full_frame_without_a_taillo_keeps_the_held_runs(self):
-        self._assert_scenario("no_taillo", expect_read_drop=True)
+    def test_guard3_a_lying_taillo_inside_the_read_run_never_drops_the_tail_run(self):
+        # HIGH 1: a frame with tailLo INSIDE the read run [137,263) carrying only the live tail's last turns; the merge
+        # would keep [137,200) and drop the held TAIL run [475,None) WHOLE. Guard 3 (the merge's loss rule over the tail
+        # run too) refuses it. Red at 84ed73df (tl<=r.lo missed the read run and never examined the tail run: store shrank).
+        self._assert_scenario("straddle_lying", expect_read_drop=True)
 
-    def test_guard2_non_proto2_full_frame_keeps_the_held_runs(self):
-        self._assert_scenario("not_proto2", expect_read_drop=True)
+    def test_guard3_a_taillo_at_the_tail_runs_lo_never_wipes_the_tail_run(self):
+        # HIGH 2: a frame whose tailLo is at the tail run's own lo, carrying only a few turns, would drop the tail run
+        # (the whole scrolled-back thread after a heal) WHOLE. Red at 84ed73df (guard 3 examined only r.hi != null runs).
+        self._assert_scenario("tailrun_drop", expect_read_drop=True)
 
     def test_guard1_a_delta_anchored_in_a_history_run_drops_nothing(self):
         self._assert_scenario("anchor_in_history", expect_read_drop=False)
@@ -369,6 +388,21 @@ class RelayVanishGuards(unittest.TestCase):
                         "[from_into_history] a numeric-from truncation ate the parked read point (round two low a): regions after=%r" % after.get("regions"))
         self.assertGreaterEqual(after.get("storeCount", 0), before.get("storeCount", 0),
                                 "[from_into_history] the store held: before=%d after=%d" % (before.get("storeCount", 0), after.get("storeCount", 0)))
+
+    def test_compose_a_non_proto2_full_frame_rebases_with_a_diag_and_no_throw(self):
+        # reconciled onto PR 1877: a NON-proto-2 full frame for a session held as proto 2 cannot join the regions wire.
+        # It RE-BASES to the frame's window (regions dropped) and the page shows the kernel's current content; the choice
+        # is countable (a regions-dropped row, why "not-proto2"), never a throw, and a later landing takes the older wire
+        # (1877's regions-less path). This is the round-two not-proto-2 case's home now (guard 2 dropped).
+        before, after = self._scenario("not_proto2_rebase")
+        self.assertTrue(before.get("readPresent")); self.assertTrue(before.get("hasGap"))
+        self.assertIsNone(type(self).result.get("died"), "the not-proto-2 frame threw: %r" % type(self).result.get("died"))
+        self.assertNotIn("not-proto2", before.get("regionsDropped") or [], "no re-base diag before the frame")
+        self.assertIn("not-proto2", after.get("regionsDropped") or [],
+                      "[not_proto2_rebase] the re-base is countable: a regions-dropped row (why not-proto2): diag=%r" % (after.get("regionsDropped"),))
+        self.assertFalse(after.get("hasGap"), "[not_proto2_rebase] the page re-based to the frame's window (regions-less, 1877 owns the landing): regions=%r" % after.get("regions"))
+        self.assertGreater(after.get("domLen", 0), 0, "[not_proto2_rebase] the page shows the frame's current content, not a blank: %r" % after.get("regions"))
+
 
 
 if __name__ == "__main__":

@@ -48720,11 +48720,6 @@ _DEDUP_VOLATILE = ("now", "buildId")
 # always documented to ride on (feed.ts: "host reposts ~1×/min for color fade") and nothing beyond it.
 # So an UNCHANGED view costs one repost a minute instead of ~30.
 _DEDUP_REPOST_S = 60.0
-# A client's repeated needFull for the SAME sid inside this window is answered with nothing new: the last full is still
-# the answer, so re-resetting and re-pushing it would only feed a page that cannot place the frame (a wrong/missing
-# tailLo it keeps refusing) into an unbounded needFull/full-frame storm (the dropped-history fix, round two HIGH; the
-# page latches too, this bounds the kernel half). Short: a genuine second gap after it is still answered promptly.
-_NEEDFULL_DEDUP_S = 2.0
 
 
 def _dedup_sig(msg, s):
@@ -67037,14 +67032,10 @@ class Handler(BaseHTTPRequestHandler):
             # whole session (_send_chat's full path fires when echat has no entry for the sid) and the
             # delta stream re-bases from there. Per-CLIENT, so one stale pane never re-sends for the rest.
             sid = str(msg["id"])
-            # A repeat within a short window gets nothing new: the last full is still the answer, and re-resetting +
-            # re-pushing the SAME coordinates to a page that keeps refusing them (a wrong/missing tailLo) is the kernel
-            # half of an unbounded needFull storm (round two HIGH). Bound it; a genuine later gap is still answered.
-            _now = time.time()
-            _seen = client.setdefault("needFullAt", {})
-            if _now - _seen.get(sid, 0.0) < _NEEDFULL_DEDUP_S:
-                return
-            _seen[sid] = _now
+            # Answer EVERY needFull: the page bounds a REFUSED-frame loop itself (render.ts refusedFrameLatch stops after
+            # the second identical refusal), so the kernel must not dedup here. A kernel dedup dropped a GENUINE second gap
+            # ask inside its window and, with the page's awaitingFull still set, the tab then discarded every later delta
+            # and never re-asked until a reconnect (round two MEDIUM). A legit repeat gets the frame again.
             _client_reset_chat_sid(client, sid)               # …and drop the dedup slot, so the full send lands
             self._push_one(client)                            # repair NOW, not on the next 0.5-3s tick
             return
