@@ -18921,6 +18921,28 @@ def _commands_for_cwd(cwd):
         return (ent or {}).get("commands", []), True
 
 
+# What the kernel accepts for a Codex session today (_route_meta_command): the composer's "/" palette for a Codex sid
+# lists these and nothing else. /mcp is listed although the route refuses it, because the composer intercepts a bare
+# "/mcp" client-side (it opens the MCP panel, whose Codex answer names the servers in ~/.codex/config.toml) and it never
+# reaches the kernel; a native /clear and /new, then /compact, add their rows here as they register in
+# _CODEX_SLASH_HANDLERS (2026-09-19).
+_CODEX_COMMANDS = (
+    {"name": "model", "description": "Switch this session's model (applies at its next turn)", "argumentHint": "<gpt-…>"},
+    {"name": "effort", "description": "Set this session's reasoning effort (applies at its next turn)", "argumentHint": "<level>"},
+    {"name": "mcp", "description": "Show this session's MCP servers"},
+)
+
+
+def _commands_for_sid(sid):
+    """(commands, warming) for the composer's "/" palette on `sid`: a Codex session gets the fixed list of commands
+    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised /clear and /compact the route
+    now refuses, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
+    durable records, so a dead Codex lane's composer is answered the same way."""
+    if sid and _session_backend(sid, None) == "codex":
+        return [dict(c) for c in _CODEX_COMMANDS], False
+    return _commands_for_cwd(_cwd_of(sid) if sid else "")
+
+
 # The persisted half of the cache (the user 2026-08-13, whose first "/" on the devbox took seconds): the
 # probe boots a whole `claude` process, and the in-memory cache died with every kernel restart — which is
 # most days, several times, on a repo that deploys by restarting. One JSON file holds every cwd's last
@@ -19382,7 +19404,7 @@ def _drive(msg, client):
         # a typed "/model X" / "/effort X" / "/fast X" is a SETTING, not a message: it takes the kernel's
         # own setter — registry, sdk-defaults, pick memory and the reconnect's --model all follow — never
         # the CLI as literal text (see _route_meta_command). Everything else is the CLI's.
-        if _route_meta_command(be, sid, str(msg["text"]), client):
+        if _route_meta_command(be, sid, str(msg["text"]), client, qid=_wire_qid(msg)):   # the press-minted copy id rides a refusal (2026-09-19)
             _push_soon()
         else:
             if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_wire_paths(msg)) is None:
@@ -24769,7 +24791,9 @@ def _deliver_text(sid, text, plain=False):
         if meta.get("refused_effort"):
             return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused"):
-            return False, "no running backend owns %s — the command was not delivered" % sid, False
+            if be is _UNOWNED:
+                return False, "no running backend owns %s — the command was not delivered" % sid, False
+            return False, str(meta["refused"]), False   # the route's words: a Codex refusal (2026-09-19)
         return True, "", bool(meta.get("queued"))
     res = _send_or_park(be, sid, text, user="<!-- romp-tag: " not in text)
     if res is None:
@@ -35641,12 +35665,21 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     return False
 
 
-def _compact_or_park(be, sid):
+def _compact_or_park(be, sid, state=None):
     """The ONE compaction entry — the chat's compact button (WS "compact") and POST /compact both land
     here, so there is never a second compaction path. Not quiet (open turn / compacting / queue ahead /
     account hold) → park as a ("compact",) op, which fires ALONE at turn end; quiet → /compact NOW with
     the instant 'compacting' cue. Returns True when parked (queued), False when fired now — the route
-    tells its caller which ("compacting now" vs "queued")."""
+    tells its caller which ("compacting now" vs "queued").
+
+    A Codex session is refused before any park or stamp (2026-09-19): it has no /compact text to execute,
+    and the old path sent the word to the model and stamped a compacting cue for a compaction that never
+    started. `state` receives {"refused": words} for POST /compact; the chat hears it as a broadcast warn
+    (no socket reaches here) and the bell keeps it. Returns None, the existing 'neither parked nor fired'
+    value. The native compaction replaces this arm."""
+    if be is not None and be is _codex():
+        _refuse_codex_slash(be, sid, "/compact", state=state)
+        return None
     if _gate_or_park(sid, ("compact",)):
         return True
     if _user_send(be, sid, "/compact") is False:        # the click is the user's (T315); a refusal shows no cue
@@ -35684,7 +35717,11 @@ def _compact_request(who):
         return {"ok": False, "error":
                 "no live session named '%s' — a dead session has no context to compact; revive it first"
                 % who}
-    return {"ok": True, "queued": _compact_or_park(Sessions.backend_for(sid), sid)}
+    meta = {}
+    queued = _compact_or_park(Sessions.backend_for(sid), sid, state=meta)
+    if meta.get("refused"):
+        return {"ok": False, "error": meta["refused"]}   # a Codex session: the route's own words (2026-09-19)
+    return {"ok": True, "queued": queued}
 
 
 def _set_model_or_park(be, sid, value, floating=False):
@@ -35795,7 +35832,7 @@ def _set_fast_or_park(be, sid, value):
     return (be.set_fast(sid, value), False)
 
 
-def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
+def _route_setter_command(be, sid, text, client=None, floating=False, state=None):
     """A "/model X", "/effort X" or "/fast on|off" — typed into the chat composer or sent by the timeline
     lane menu — goes through the kernel's OWN setters (_set_*_or_park), never to the CLI as literal text.
     `floating` rides the lane menu's "Latest" row to _set_model_or_park (forget the family's pin).
@@ -35888,10 +35925,82 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     return True
 
 
+def _route_meta_command(be, sid, text, client=None, floating=False, state=None, qid=None):
+    """The one route every typed or sent slash command takes (the composer's sendMessage arm, the lane menu's
+    sendCommand arm, POST /send and `romp send` through _deliver_text), in front of the setter body it used to
+    BE (_route_setter_command: its arms and docstring are unchanged). A Codex session takes only what romp
+    itself performs: /model X and /effort X through the setter arms. Every other slash-shaped text — /clear,
+    /compact, /new, /fast, a bare /model, a skill — is refused here, ABOVE the setter body's one-token guard
+    (which returned False for a bare /clear and let it fall to _send_or_park as prose the model then answered),
+    by the same predicate that parks (_is_slash_command), so the refused set equals the parked set and a refused
+    command is never a ("command",) op. _CODEX_SLASH_HANDLERS is the seam a native /clear or /compact plugs
+    into: a head registered there takes the text instead of the refusal. `qid` is the press-minted copy id
+    (the sendMessage arm's _wire_qid), carried on the refusal frame so the chat retires the bubble it drew. The
+    Claude Code and unowned routes are unchanged and take the setter body directly: a dead Codex session routes
+    to _UNOWNED (CodexBackend.owns is False once dead) and keeps the unowned refusal, so the identity test is
+    the existing arms' `be is _codex()`, not _session_backend. Cost: _is_slash_command (a regex) runs FIRST, so
+    plain prose never calls _codex(), which takes a lock and may construct the backend (a mkdir and a registry
+    read, cached after, and False after a failed construction; the setter arms already paid it per command);
+    slash-shaped text on any backend now pays that one cached read (2026-09-19)."""
+    if _is_slash_command(text) and be is not None and be is not _UNOWNED and be is _codex():
+        head = (text or "").strip().split()[0]
+        handler = _CODEX_SLASH_HANDLERS.get(head)
+        if handler is not None:
+            return handler(be, sid, text, client, state, qid)
+        if head in _CODEX_SETTER_HEADS and _route_setter_command(be, sid, text, client, floating=floating, state=state):
+            return True
+        return _refuse_codex_slash(be, sid, text, client=client, state=state, qid=qid)
+    return _route_setter_command(be, sid, text, client, floating=floating, state=state)
+
+
 def _not_claude_code_reason(be):
     """The tail of a refusal for an op only the Claude Code backend performs: which backend has the
     session instead (Codex), or that none does (the unowned route)."""
     return "this one runs in Codex" if (be is not None and be is _codex()) else "no running backend owns this one"
+
+
+# The setter arms own these for a Codex session (one Codex value each, _route_setter_command); every other slash-shaped
+# text is refused for it (_route_meta_command, 2026-09-19).
+_CODEX_SETTER_HEADS = ("/model", "/effort")
+# head -> handler(be, sid, text, client, state, qid) -> bool. Empty in this change: a native /clear and /new, then a
+# native /compact, register here, and the refusal stops for each by that one registration (2026-09-19).
+_CODEX_SLASH_HANDLERS = {}
+_CODEX_VALUE_EXAMPLE = {"/model": "/model gpt-5", "/effort": "/effort high"}
+
+
+def _codex_slash_refusal(head):
+    """The sentence a slash command a Codex session cannot take is answered with, in the user's terms (the
+    precedent is _not_claude_code_reason's 'this one runs in Codex'): never 'backend', never a romp noun."""
+    if head in _CODEX_SETTER_HEADS:
+        return ("This session runs in Codex: %s takes one Codex value here (for example %s); nothing was sent."
+                % (head, _CODEX_VALUE_EXAMPLE[head]))
+    return "This session runs in Codex, which has no %s; nothing was sent." % head
+
+
+def _refuse_codex_slash(be, sid, text, client=None, state=None, qid=None):
+    """Refuse a slash command for a Codex session without any backend call, visibly on every surface the press
+    could be watched from: the delivering socket's warn frame (render.ts toasts it; with `sid` and `qid` the chat
+    also retires the press's optimistic bubble and puts the words back in an empty composer), or a broadcast to
+    every chat pane when no socket carried the op (a POST route, the pusher's drain: the _apply_pending_ops
+    precedent, whose `id` the chat handler ignores); state["refused"], so POST /send and `romp send` answer
+    ok:false with the same words; one stderr line; and a _sync_notice(kind="refused") row, so the bell keeps it
+    after the toast fades. Evaluates no gate (_ops_gate) and parks nothing: a refusal is not an op. Returns True:
+    the command was taken (refused), so no caller sends it on. `be` is the handler-table signature's slot
+    (_CODEX_SLASH_HANDLERS), unused by the refusal itself (2026-09-19)."""
+    head = (text or "").strip().split()[0]
+    why = _codex_slash_refusal(head)
+    if state is not None:
+        state["refused"] = why
+    frame = {"type": "warn", "text": why, "sid": str(sid)}
+    if qid:
+        frame["qid"] = qid
+    if client:
+        client["send"](json.dumps(frame))
+    else:
+        _send_to_app("chat", dict(frame, id=str(sid)))
+    _sync_notice("%s: %s" % (_name_of(sid) or str(sid)[:8], why), ok=False, kind="refused")
+    sys.stderr.write("codex slash command %s for %s refused: not a Codex command; nothing sent\n" % (head, sid))
+    return True
 
 
 def _vouched_model(value):
@@ -36057,6 +36166,7 @@ def _apply_pending_ops(now=None):
                         elif op[0] != "cwd":
                             _inflight_ops[sid] = op       # (a move hands nothing over below: not recorded)
                     refused = False
+                    said = False                          # the refusal was worded already (the Codex arm below): no generic toast, no backend blamed
                     if op[0] == "send":
                         changed = True
                         _deliver_send_batch(be, sid, run)
@@ -36077,9 +36187,22 @@ def _apply_pending_ops(now=None):
                         # send batch (or forwarded mid-turn) it reaches the model as text instead of executing
                         # (the user 2026-08-13: /autocompact absorbed mid-turn got a polite reply and no
                         # setting change). Echo stamped at fire time, like a delivered send.
-                        refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
+                        if be is not None and be is _codex():
+                            # parked before the route refused these (or by a caller that skips the route: a follow-up body
+                            # that is bare slash text): drained ONCE through the same refusal, with the copy's id so the
+                            # chat retires its bubble; never handed to the backend, never replayed (2026-09-19)
+                            _refuse_codex_slash(be, sid, op[1], qid=_op_qid(op))
+                            refused = True
+                            said = True
+                        else:
+                            refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
                     elif op[0] == "compact":
-                        refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
+                        if be is not None and be is _codex():
+                            _refuse_codex_slash(be, sid, "/compact")   # a parked battery click on a Codex lane: the same refusal (2026-09-19)
+                            refused = True
+                            said = True
+                        else:
+                            refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
@@ -36108,11 +36231,14 @@ def _apply_pending_ops(now=None):
                         if refused:
                             # the backend refused the handover (a session it no longer holds): no echo for a command the
                             # session never got, no compacting cue for a compaction that never started, and the refusal
-                            # is visible (the commit-14 review's third item); the op is popped, never replayed forever
-                            what = "/compact" if op[0] == "compact" else str(op[1])[:60]
-                            sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
-                            _send_to_app("chat", {"type": "warn", "id": sid,
-                                                  "text": "%s was not delivered: the session's backend refused it" % what})
+                            # is visible (the commit-14 review's third item); the op is popped, never replayed forever.
+                            # A refusal the kernel itself worded (`said`: the Codex arm, which asked no backend and wrote
+                            # its own line) gets neither the backend-blaming line nor the generic toast (2026-09-19)
+                            if not said:
+                                what = "/compact" if op[0] == "compact" else str(op[1])[:60]
+                                sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
+                                _send_to_app("chat", {"type": "warn", "id": sid,
+                                                      "text": "%s was not delivered: the session's backend refused it" % what})
                             continue
                         # the backend HAS a turn-opening op: its cue, the hold and the end of this pass follow
                         # regardless of `took` (which is always True here — a ✕ on an in-flight op is refused and
@@ -48544,11 +48670,21 @@ def _client_reset_chat_sid(client, sid):
     session and drop its dedup slot — under the client's slot lock, for the same reason (review find,
     2026-09-04): the pusher's _send_chat must land as a whole before or after these pops, or a tail decided
     before them lands after them, echat is written back, and the repair push sends a chatTail the renderer
-    cannot apply (render.ts latches awaitingFull until a full session lands: the tab froze until reconnect)."""
+    cannot apply (render.ts latches awaitingFull until a full session lands: the tab froze until reconnect).
+    …and mark the sid asked-whole for this client (askedFull, 2026-09-19), so no strip sender lists it as a
+    skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
         client.get("sent", {}).pop(("chat", sid), None)
         _release_skeleton_locked(client, sid)   # a needFull for a skeleton tab (a click, the idle prefetch) loads it
+        # The client asked for this sid WHOLE (2026-09-19). A set that does not exist yet cannot be released from: on a
+        # redial's fresh client the release above is a no-op, and the repair push's own _resolve_reconnect then built the
+        # set from the active hint and an empty echat, re-listed the asked sid, and answered the ask with a status frame,
+        # which never clears the page's one-shot latch (render.ts awaitingFull): the tab stayed a skeleton until clicked
+        # and the idle prefetch chain was dead for the socket's life. The mark is honored wherever echat is
+        # (_resolve_reconnect, _held_as_skeleton_by_all), consumed by the full that answers the ask (beside the echat
+        # write in _send_chat_locked and _send_chat_proto2), and dropped whole by _client_reset_chat_base.
+        client.setdefault("askedFull", set()).add(sid)
 
 
 
@@ -48574,8 +48710,9 @@ def _client_reset_chat_base(client):
     with _client_lock(client):
         client.get("echat", {}).clear()
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
-        # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set
-        client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None)
+        # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set;
+        # and the asked-whole marks (2026-09-19): it asked nothing either, and the connect push below serves the set
+        client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None); client.pop("askedFull", None)
         # A SKELETON client (a later chat column, ?skeleton=1 at its handshake, 2026-09-11): the pop above took the
         # `reconnect` the handshake armed, with the set a pre-ready pusher cycle may have built into a document that
         # could not hear it. Re-armed HERE, from the survivor, so the ready arm's connect push serves the page the same
@@ -48604,9 +48741,11 @@ def _client_reset_chat_base(client):
 # with a `skeleton` list — every listed tab except the active one, cheapest transcript first — the active
 # tab's full session, and a small status frame per skeleton tab so its chip stays honest. A skeleton tab
 # loads on the user's click (activeTab / needFull) or on the client's idle prefetch (needFull), and any full
-# send releases it; `ready` (a renderer that just evaluated) clears the whole set. Every read and write of the
-# set happens under the client's slot lock, and every frame that MENTIONS the set is enqueued under that same
-# lock, so the client's queue order matches: a tabOrder still naming X is always ahead of X's full.
+# send releases it; `ready` (a renderer that just evaluated) clears the whole set. A needFull marks the sid
+# asked-whole for that client (`askedFull`, 2026-09-19): no strip sender lists an asked sid, and the full that
+# answers it clears the mark. Every read and write of the set (and of the mark) happens under the client's slot
+# lock, and every frame that MENTIONS the set is enqueued under that same lock, so the client's queue order
+# matches: a tabOrder still naming X is always ahead of X's full.
 
 def _release_skeleton_locked(c, sid):
     """Forget that `c` holds `sid` as a skeleton tab, and drop the status slot that stood in for its chat.
@@ -48789,12 +48928,15 @@ def _held_as_skeleton_by_all(sid, clients):
     there is at least one. The cold-tab gate's question (2026-09-14): a tab no connected page is looking at, on a kernel
     that has not built it since the boot, is not built by the pusher's loop or the per-session push; the page's click
     (activeTab) or idle prefetch (needFull) releases the skeleton first, and the very next push builds it. The user's
-    ruling: the selected tab first, tabs present in the strip next over later refreshes, hidden tabs never until shown."""
+    ruling: the selected tab first, tabs present in the strip next over later refreshes, hidden tabs never until shown.
+    A sid the client has asked for whole (askedFull, a needFull; 2026-09-19) is never held, in either read below: the
+    resolve excludes it as it excludes a held one, and the gate's status for it would be a second silent answer to the ask."""
     if not clients:
         return False
     for c in clients:
         with _client_lock(c):
-            if sid in (c.get("skeleton") or ()):
+            asked = c.get("askedFull") or ()          # the sids this client asked for whole: never a skeleton to the gate
+            if sid in (c.get("skeleton") or ()) and sid not in asked:
                 continue
             # A client that declared the diet but whose set is not resolved yet (its redial or skeleton dial armed
             # `reconnect`, and no strip sender has reached it: round two, low 2, a connect push targeting another column)
@@ -48805,7 +48947,7 @@ def _held_as_skeleton_by_all(sid, clients):
             _act = c.get("active")
             _held_here = (_act and sid != str(_act)) or (not _act and c.get("dietSkeleton") and c.get("kind") == "relay")
             if (c.get("reconnect") or c.get("skeletonOnReady")) and _held_here \
-                    and sid not in (c.get("echat") or {}):
+                    and sid not in (c.get("echat") or {}) and sid not in asked:   # asked as held: the resolve's own rule
                 continue
             return False
     return True
@@ -48854,7 +48996,12 @@ def _resolve_reconnect(c, chat_list):
     # it, a second strip sender racing this one popped False, sent a keyless strip and a FULL for some sid, and
     # this sender then wrote a set still naming that sid — held whole by the client yet served only status frames
     # from then on, a tab frozen until clicked. The stats cost ~100 µs under the RLock; and a sid the client already
-    # holds whole (echat) is excluded outright, so a full that won the race can never be re-listed.
+    # holds whole (echat) is excluded outright, so a full that won the race can never be re-listed — as is a sid the
+    # client has asked for whole (askedFull, 2026-09-19): a needFull's repair push can be the redial's FIRST strip
+    # sender, with no set yet for its reset to release from, and the set built here re-listed the asked sid and answered
+    # the ask with a status frame the page's one-shot latch cannot clear (a tab a skeleton until clicked, and the idle
+    # prefetch chain dead for the socket's life; _client_reset_chat_sid). The ask is newer information than the set;
+    # the full that answers it consumes the mark.
     with _client_lock(c):
         if not c.pop("reconnect", False):
             return False
@@ -48874,6 +49021,7 @@ def _resolve_reconnect(c, chat_list):
             c["ready"] = True
         act = c.get("active")
         held = c.get("echat") or {}
+        asked = c.get("askedFull") or ()       # …and the sids it asked for whole (2026-09-19): excluded as the held ones are
         if not act:
             # No active hint. A RELAY client that DIETED (skeleton=1 at the handshake: `dietSkeleton`, kind `relay`)
             # still gets the diet with no session watched: EVERY transcript-bearing tab is a skeleton and none is the
@@ -48887,11 +49035,11 @@ def _resolve_reconnect(c, chat_list):
             # fail-safe whole push here until a served lab drives it (the follow-up). A non-diet reconnect (a plain page
             # whose blob named no tab) keeps the whole push too: the kernel cannot know what it shows.
             if c.get("dietSkeleton") and c.get("kind") == "relay":
-                skel = [sid for sid in _skeleton_for(c, "", chat_list) if sid not in held]
+                skel = [sid for sid in _skeleton_for(c, "", chat_list) if sid not in held and sid not in asked]
                 c["skeleton"] = set(skel)
                 c["skeletonOrder"] = skel
             return not fresh
-        skel = [sid for sid in _skeleton_for(c, str(act), chat_list) if sid not in held]
+        skel = [sid for sid in _skeleton_for(c, str(act), chat_list) if sid not in held and sid not in asked]
         c["skeleton"] = set(skel)
         c["skeletonOrder"] = skel
     return not fresh
@@ -48913,17 +49061,45 @@ def _send_tab_order(c, tab_order, tab_meta, live):
         _send_client(c, ("taborder",), _tab_order_frame(tab_order, tab_meta, live, c))
 
 
+def _note_needfull_status(c, sid):
+    """One client-diag row (the _note_history_reply shape, what needFullStatus) when a strip sender has listed a sid this
+    client asked for whole (2026-09-19): the tripwire in _send_chat_or_status's status branch. By construction it cannot
+    fire: the set has one writer, _resolve_reconnect, which excludes an asked sid as it excludes a held one, and every other
+    touch shrinks the set. If it ever does, the row names the client (cid, kind) and the sid, and the caller falls through
+    to the full instead of answering the ask with a status frame, the defect this guards: the page's one-shot ask (render.ts
+    awaitingFull) is cleared only by a session frame, so a status left the tab a skeleton until clicked and the idle prefetch
+    chain dead for the socket's life, with no row anywhere. The fall-through still meets the `skeletonOnReady or reconnect`
+    guard that follows: with the flag armed the row is filed and the session frame waits for the strip sender's push, so the
+    fall-through is not a guaranteed full. Called under the client's slot lock; the file's own failure is swallowed, as every
+    diag row's is."""
+    try:
+        _client_diag_append(jd.STATE / "client-diag.jsonl",
+                            json.dumps({"t": int(time.time()), "wid": str(c.get("wid") or ""), "surface": "kernel", "what": "needFullStatus",
+                                        "data": {"sid": str(sid), "cid": c.get("cid"), "kind": c.get("kind")}}) + "\n")
+    except Exception:
+        pass
+
+
 def _send_chat_or_status(c, m, ms, change_from, led_changed):
     """_send_chat for the pusher's per-client loop: a sid the client holds as a skeleton gets a ~400 B status
     frame on its own ("status", sid) slot (deduped, so an unchanged status costs nothing) instead of its chat,
     and the lazy full serialization stays unmaterialized. A skeleton sid never reaches _send_chat_locked, so
     echat has no entry and `sent` no ("chat", sid) slot for it — the moment it is released the existing full
-    path fires exactly as for a never-sent session."""
+    path fires exactly as for a never-sent session. A sid the client asked for whole (askedFull) is never a
+    skeleton to this function: a set naming one is the tripwire's case (_note_needfull_status, 2026-09-19),
+    said on the record and answered with the full."""
     with _client_lock(c):
         sid = m["id"]
         if sid in (c.get("skeleton") or ()):
-            _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": m.get("status")})
-            return ms
+            if sid in (c.get("askedFull") or ()):
+                # The tripwire (2026-09-19): the client asked for this sid whole (a needFull), and a strip sender listed it
+                # all the same. Unreachable by construction (the set's one writer, _resolve_reconnect, excludes an asked
+                # sid); if it fires, one client-diag row says which client and sid, and the ask is answered with the full
+                # below instead of a status frame the page's one-shot latch cannot clear (a tab a skeleton until clicked).
+                _note_needfull_status(c, sid)
+            else:
+                _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": m.get("status")})
+                return ms
         if c.get("skeletonOnReady") or c.get("reconnect"):
             # A skeleton client BEFORE its bundle's ready (the chat split, 2026-09-11): the handshake's `reconnect` woke
             # a pusher cycle into a document that cannot hear it yet, and the ready arm's reset re-sends whatever it
@@ -50143,6 +50319,10 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # (a floored list shorter than the tail) moves nowhere and still names its turn.
     head_from, tail_lo = _tail_run_start(sid, evs, head_from, int(time.time()))
     _release_skeleton_locked(c, sid)
+    # …and the full IS the answer to a needFull (2026-09-19): the mark _client_reset_chat_sid set is consumed here, where
+    # the echat entry that keeps the sid out of any later set is written; not inside the release, which a click reaches
+    # too (an activeTab must not settle an ask no full has answered)
+    (c.get("askedFull") or set()).discard(sid)
     m_send = dict(m)
     m_send["events"] = evs[head_from:]
     m_send["proto"] = 2
@@ -50253,6 +50433,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         return ms
     head_from = max(0, total - WIRE_TAIL)
     _release_skeleton_locked(c, sid)                  # a full send loads a skeleton tab, whoever sent it (2026-09-07)
+    (c.get("askedFull") or set()).discard(sid)        # …and answers a needFull (2026-09-19): the mark goes with the echat write, as in _send_chat_proto2
     if head_from == 0:
         if ms is None:
             ms = json.dumps(m)                        # materialize the lazy serialization, once
@@ -58853,7 +59034,7 @@ sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an 
 sync:"romp moved commits between your machines by itself: a push to a remote, a pull from one, or an ask that a peer fast-forward itself. Successes are logged as well as failures, so this is the record of what romp did to your machines; the network panel shows a sync while it is still running",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo on the feed restores them",
-refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults",
+refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /clear or /compact): nothing was sent, and the entry names it",
 undelivered:"something you sent never reached a session: the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
@@ -64425,7 +64606,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(snap), "application/json", cache="no-cache")
             if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
                 sid = (q.get("sid") or [""])[0]
-                cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
+                cmds, warming = _commands_for_sid(sid)       # a Codex sid gets the list the kernel takes for it (2026-09-19)
                 return self._send(200, json.dumps({"commands": cmds, "warming": warming}),
                                   "application/json", cache="no-cache")
             if p == "/palette":                               # the session-identity palette: active swatches for the tab
