@@ -472,7 +472,7 @@ class _PerfStats:
     SLOTS = 32
     JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
-            "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
+            "kernelSample", "autoPauseOnLimit", "usagePoll", "retryUpgrade", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
     STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst",
               "jobsPass", "jobs.prelude") \
@@ -2180,6 +2180,8 @@ def _version_info():
             "judgeFast": jd._state_str("judge-fast", "off"),   # RAW "on" | "off": the TRIAGE tier's Fast mode box (T300: one per tier)
             "distillFast": jd._state_str("distill-fast", "off"), "indexFast": jd._state_str("index-fast", "off"),
             "fastRefused": jd._fast_refused(),   # tier -> {reason, model, t}: the CLI declined a fast ask; the gear's box says why
+            "alwaysFast": jd._state_str("always-fast", "off"),       # RAW "on" | "off": Settings, Automation, Model (2026-09-17)
+            "retryUpgrade": jd._state_str("retry-upgrade", "off"),
             # One dict with every kernel-side setting, lifted by a PEER kernel's /version poll onto its
             # /tunnels row so its gear can mark controls where machines disagree (the user 2026-08-14).
             # The top-level fields above stay: this tab's own gear and older kernels read those.
@@ -2201,7 +2203,8 @@ def _version_info():
                          "commentEffort": jd._state_str("comment-effort", "session"),
                          "commentFast": jd._state_str("comment-fast", "session"),
                          "judgeFast": jd._state_str("judge-fast", "off"),
-                         "distillFast": jd._state_str("distill-fast", "off"), "indexFast": jd._state_str("index-fast", "off")},
+                         "distillFast": jd._state_str("distill-fast", "off"), "indexFast": jd._state_str("index-fast", "off"),
+                         "alwaysFast": jd._state_str("always-fast", "off"), "retryUpgrade": jd._state_str("retry-upgrade", "off")},
             # every gt-gated store's last-applied gesture stamp (epoch-ms ints, nothing path-shaped):
             # the gear stamps its next gesture above these instead of trusting the device clock.
             # Top-level, not lifted into /tunnels rows — a remote's newer stamp reaches the dashboard
@@ -10341,6 +10344,41 @@ def _retry_resume_at():
     return min(outs) if outs else None
 
 
+RETRY_UPGRADE_TICK_S = 30             # how often the retry after a downgrade looks for a due session (the attempts themselves
+_retry_upgrade_last = [0.0]           #   are sdk_backend.RETRY_UPGRADE_S apart): the fallback's cause is outside romp's view
+#                                       (the user 2026-09-17: a trigger in the task's context, which ages out of the window),
+#                                       the same exception USAGE_POLL_SECS below documents; the reconnect the attempt asks
+#                                       for keys on the turn's end, the event.
+
+
+def _model_switches_applied():
+    """A Model switch (Always fast, Retry upgrades after downgrades) just applied here — the gear's own gesture or a
+    peer's propagated pick: the SDK backend acts on the sessions already running (apply_model_switches), so the flip is
+    not a promise for the next connect only (review 2026-09-17). No backend, nothing; a failure is said, never raised
+    into the settings door."""
+    be = _sdk()
+    if be is None or not hasattr(be, "apply_model_switches"):
+        return
+    try:
+        be.apply_model_switches()
+    except Exception:
+        sys.stderr.write("model switches: %s\n" % traceback.format_exc())
+
+
+def _retry_upgrade_tick(now):
+    """Retry upgrades after downgrades (Settings, Automation, Model): every RETRY_UPGRADE_TICK_S, the SDK backend asks for the
+    picked model again on every session whose model fell back and whose attempt is due (retry_model_upgrades reads the
+    switch itself, so off costs a file stat), and carries any switch's ask still waiting for a quiet session — the
+    backstop behind the live-work events that carry them first. No backend, nothing."""
+    if now - _retry_upgrade_last[0] < RETRY_UPGRADE_TICK_S:
+        return
+    _retry_upgrade_last[0] = now
+    be = _sdk()
+    if be is None or not hasattr(be, "retry_model_upgrades"):
+        return
+    be.retry_model_upgrades(now)
+
+
 USAGE_POLL_SECS = 900                 # the meters are EXTERNAL state with no event feed — polling is
 _usage_poll_last = [0.0]              # the designed read (the same exception as CI watchers); 15 min
 #                                       keeps history current at ~100 calls/day, far under any budget
@@ -18407,6 +18445,10 @@ def _sdk_locked():
             # observes the transition; the judge store owns the card; the kernel wires the two
             type(_sdk_backend).on_model_fallback = staticmethod(
                 lambda sid, frm, to: (jd.mint_fallback_card(sid, frm, to), _push_soon()))
+            # …and the way back (the user 2026-09-17, Retry upgrades after downgrades): a parent turn served on the
+            # picked model again after a fallback mints the completed card saying the session is back — the same shape
+            type(_sdk_backend).on_model_restored = staticmethod(
+                lambda sid, frm, to: (jd.mint_restored_card(sid, frm, to), _push_soon()))
             # a producer inside the backend posts a NOTICE CARD through the same door every producer takes (T370,
             # plans/notice-cards.md): the backend resolves it with getattr, so its tests' bare stand-ins carry no hook
             type(_sdk_backend).on_notice = staticmethod(post_notice)
@@ -18856,6 +18898,28 @@ def _commands_for_cwd(cwd):
                                "ts": (ent or {}).get("ts", 0.0), "warming": True, "err": ""}
             threading.Thread(target=_do_warm_commands, args=(cwd,), daemon=True).start()
         return (ent or {}).get("commands", []), True
+
+
+# What the kernel accepts for a Codex session today (_route_meta_command): the composer's "/" palette for a Codex sid
+# lists these and nothing else. /mcp is listed although the route refuses it, because the composer intercepts a bare
+# "/mcp" client-side (it opens the MCP panel, whose Codex answer names the servers in ~/.codex/config.toml) and it never
+# reaches the kernel; a native /clear and /new, then /compact, add their rows here as they register in
+# _CODEX_SLASH_HANDLERS (2026-09-19).
+_CODEX_COMMANDS = (
+    {"name": "model", "description": "Switch this session's model (applies at its next turn)", "argumentHint": "<gpt-…>"},
+    {"name": "effort", "description": "Set this session's reasoning effort (applies at its next turn)", "argumentHint": "<level>"},
+    {"name": "mcp", "description": "Show this session's MCP servers"},
+)
+
+
+def _commands_for_sid(sid):
+    """(commands, warming) for the composer's "/" palette on `sid`: a Codex session gets the fixed list of commands
+    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised /clear and /compact the route
+    now refuses, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
+    durable records, so a dead Codex lane's composer is answered the same way."""
+    if sid and _session_backend(sid, None) == "codex":
+        return [dict(c) for c in _CODEX_COMMANDS], False
+    return _commands_for_cwd(_cwd_of(sid) if sid else "")
 
 
 # The persisted half of the cache (the user 2026-08-13, whose first "/" on the devbox took seconds): the
@@ -19319,7 +19383,7 @@ def _drive(msg, client):
         # a typed "/model X" / "/effort X" / "/fast X" is a SETTING, not a message: it takes the kernel's
         # own setter — registry, sdk-defaults, pick memory and the reconnect's --model all follow — never
         # the CLI as literal text (see _route_meta_command). Everything else is the CLI's.
-        if _route_meta_command(be, sid, str(msg["text"]), client):
+        if _route_meta_command(be, sid, str(msg["text"]), client, qid=_wire_qid(msg)):   # the press-minted copy id rides a refusal (2026-09-19)
             _push_soon()
         else:
             if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_wire_paths(msg)) is None:
@@ -24712,7 +24776,9 @@ def _deliver_text(sid, text, plain=False):
         if meta.get("refused_effort"):
             return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused"):
-            return False, "no running backend owns %s — the command was not delivered" % sid, False
+            if be is _UNOWNED:
+                return False, "no running backend owns %s — the command was not delivered" % sid, False
+            return False, str(meta["refused"]), False   # the route's words: a Codex refusal (2026-09-19)
         return True, "", bool(meta.get("queued"))
     res = _send_or_park(be, sid, text, user="<!-- romp-tag: " not in text)
     if res is None:
@@ -35559,12 +35625,21 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     return False
 
 
-def _compact_or_park(be, sid):
+def _compact_or_park(be, sid, state=None):
     """The ONE compaction entry — the chat's compact button (WS "compact") and POST /compact both land
     here, so there is never a second compaction path. Not quiet (open turn / compacting / queue ahead /
     account hold) → park as a ("compact",) op, which fires ALONE at turn end; quiet → /compact NOW with
     the instant 'compacting' cue. Returns True when parked (queued), False when fired now — the route
-    tells its caller which ("compacting now" vs "queued")."""
+    tells its caller which ("compacting now" vs "queued").
+
+    A Codex session is refused before any park or stamp (2026-09-19): it has no /compact text to execute,
+    and the old path sent the word to the model and stamped a compacting cue for a compaction that never
+    started. `state` receives {"refused": words} for POST /compact; the chat hears it as a broadcast warn
+    (no socket reaches here) and the bell keeps it. Returns None, the existing 'neither parked nor fired'
+    value. The native compaction replaces this arm."""
+    if be is not None and be is _codex():
+        _refuse_codex_slash(be, sid, "/compact", state=state)
+        return None
     if _gate_or_park(sid, ("compact",)):
         return True
     if _user_send(be, sid, "/compact") is False:        # the click is the user's (T315); a refusal shows no cue
@@ -35602,7 +35677,11 @@ def _compact_request(who):
         return {"ok": False, "error":
                 "no live session named '%s' — a dead session has no context to compact; revive it first"
                 % who}
-    return {"ok": True, "queued": _compact_or_park(Sessions.backend_for(sid), sid)}
+    meta = {}
+    queued = _compact_or_park(Sessions.backend_for(sid), sid, state=meta)
+    if meta.get("refused"):
+        return {"ok": False, "error": meta["refused"]}   # a Codex session: the route's own words (2026-09-19)
+    return {"ok": True, "queued": queued}
 
 
 def _set_model_or_park(be, sid, value, floating=False):
@@ -35713,7 +35792,7 @@ def _set_fast_or_park(be, sid, value):
     return (be.set_fast(sid, value), False)
 
 
-def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
+def _route_setter_command(be, sid, text, client=None, floating=False, state=None):
     """A "/model X", "/effort X" or "/fast on|off" — typed into the chat composer or sent by the timeline
     lane menu — goes through the kernel's OWN setters (_set_*_or_park), never to the CLI as literal text.
     `floating` rides the lane menu's "Latest" row to _set_model_or_park (forget the family's pin).
@@ -35818,10 +35897,82 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None):
     return True
 
 
+def _route_meta_command(be, sid, text, client=None, floating=False, state=None, qid=None):
+    """The one route every typed or sent slash command takes (the composer's sendMessage arm, the lane menu's
+    sendCommand arm, POST /send and `romp send` through _deliver_text), in front of the setter body it used to
+    BE (_route_setter_command: its arms and docstring are unchanged). A Codex session takes only what romp
+    itself performs: /model X and /effort X through the setter arms. Every other slash-shaped text — /clear,
+    /compact, /new, /fast, a bare /model, a skill — is refused here, ABOVE the setter body's one-token guard
+    (which returned False for a bare /clear and let it fall to _send_or_park as prose the model then answered),
+    by the same predicate that parks (_is_slash_command), so the refused set equals the parked set and a refused
+    command is never a ("command",) op. _CODEX_SLASH_HANDLERS is the seam a native /clear or /compact plugs
+    into: a head registered there takes the text instead of the refusal. `qid` is the press-minted copy id
+    (the sendMessage arm's _wire_qid), carried on the refusal frame so the chat retires the bubble it drew. The
+    Claude Code and unowned routes are unchanged and take the setter body directly: a dead Codex session routes
+    to _UNOWNED (CodexBackend.owns is False once dead) and keeps the unowned refusal, so the identity test is
+    the existing arms' `be is _codex()`, not _session_backend. Cost: _is_slash_command (a regex) runs FIRST, so
+    plain prose never calls _codex(), which takes a lock and may construct the backend (a mkdir and a registry
+    read, cached after, and False after a failed construction; the setter arms already paid it per command);
+    slash-shaped text on any backend now pays that one cached read (2026-09-19)."""
+    if _is_slash_command(text) and be is not None and be is not _UNOWNED and be is _codex():
+        head = (text or "").strip().split()[0]
+        handler = _CODEX_SLASH_HANDLERS.get(head)
+        if handler is not None:
+            return handler(be, sid, text, client, state, qid)
+        if head in _CODEX_SETTER_HEADS and _route_setter_command(be, sid, text, client, floating=floating, state=state):
+            return True
+        return _refuse_codex_slash(be, sid, text, client=client, state=state, qid=qid)
+    return _route_setter_command(be, sid, text, client, floating=floating, state=state)
+
+
 def _not_claude_code_reason(be):
     """The tail of a refusal for an op only the Claude Code backend performs: which backend has the
     session instead (Codex), or that none does (the unowned route)."""
     return "this one runs in Codex" if (be is not None and be is _codex()) else "no running backend owns this one"
+
+
+# The setter arms own these for a Codex session (one Codex value each, _route_setter_command); every other slash-shaped
+# text is refused for it (_route_meta_command, 2026-09-19).
+_CODEX_SETTER_HEADS = ("/model", "/effort")
+# head -> handler(be, sid, text, client, state, qid) -> bool. Empty in this change: a native /clear and /new, then a
+# native /compact, register here, and the refusal stops for each by that one registration (2026-09-19).
+_CODEX_SLASH_HANDLERS = {}
+_CODEX_VALUE_EXAMPLE = {"/model": "/model gpt-5", "/effort": "/effort high"}
+
+
+def _codex_slash_refusal(head):
+    """The sentence a slash command a Codex session cannot take is answered with, in the user's terms (the
+    precedent is _not_claude_code_reason's 'this one runs in Codex'): never 'backend', never a romp noun."""
+    if head in _CODEX_SETTER_HEADS:
+        return ("This session runs in Codex: %s takes one Codex value here (for example %s); nothing was sent."
+                % (head, _CODEX_VALUE_EXAMPLE[head]))
+    return "This session runs in Codex, which has no %s; nothing was sent." % head
+
+
+def _refuse_codex_slash(be, sid, text, client=None, state=None, qid=None):
+    """Refuse a slash command for a Codex session without any backend call, visibly on every surface the press
+    could be watched from: the delivering socket's warn frame (render.ts toasts it; with `sid` and `qid` the chat
+    also retires the press's optimistic bubble and puts the words back in an empty composer), or a broadcast to
+    every chat pane when no socket carried the op (a POST route, the pusher's drain: the _apply_pending_ops
+    precedent, whose `id` the chat handler ignores); state["refused"], so POST /send and `romp send` answer
+    ok:false with the same words; one stderr line; and a _sync_notice(kind="refused") row, so the bell keeps it
+    after the toast fades. Evaluates no gate (_ops_gate) and parks nothing: a refusal is not an op. Returns True:
+    the command was taken (refused), so no caller sends it on. `be` is the handler-table signature's slot
+    (_CODEX_SLASH_HANDLERS), unused by the refusal itself (2026-09-19)."""
+    head = (text or "").strip().split()[0]
+    why = _codex_slash_refusal(head)
+    if state is not None:
+        state["refused"] = why
+    frame = {"type": "warn", "text": why, "sid": str(sid)}
+    if qid:
+        frame["qid"] = qid
+    if client:
+        client["send"](json.dumps(frame))
+    else:
+        _send_to_app("chat", dict(frame, id=str(sid)))
+    _sync_notice("%s: %s" % (_name_of(sid) or str(sid)[:8], why), ok=False, kind="refused")
+    sys.stderr.write("codex slash command %s for %s refused: not a Codex command; nothing sent\n" % (head, sid))
+    return True
 
 
 def _vouched_model(value):
@@ -35987,6 +36138,7 @@ def _apply_pending_ops(now=None):
                         elif op[0] != "cwd":
                             _inflight_ops[sid] = op       # (a move hands nothing over below: not recorded)
                     refused = False
+                    said = False                          # the refusal was worded already (the Codex arm below): no generic toast, no backend blamed
                     if op[0] == "send":
                         changed = True
                         _deliver_send_batch(be, sid, run)
@@ -36007,9 +36159,22 @@ def _apply_pending_ops(now=None):
                         # send batch (or forwarded mid-turn) it reaches the model as text instead of executing
                         # (the user 2026-08-13: /autocompact absorbed mid-turn got a polite reply and no
                         # setting change). Echo stamped at fire time, like a delivered send.
-                        refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
+                        if be is not None and be is _codex():
+                            # parked before the route refused these (or by a caller that skips the route: a follow-up body
+                            # that is bare slash text): drained ONCE through the same refusal, with the copy's id so the
+                            # chat retires its bubble; never handed to the backend, never replayed (2026-09-19)
+                            _refuse_codex_slash(be, sid, op[1], qid=_op_qid(op))
+                            refused = True
+                            said = True
+                        else:
+                            refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
                     elif op[0] == "compact":
-                        refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
+                        if be is not None and be is _codex():
+                            _refuse_codex_slash(be, sid, "/compact")   # a parked battery click on a Codex lane: the same refusal (2026-09-19)
+                            refused = True
+                            said = True
+                        else:
+                            refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
@@ -36038,11 +36203,14 @@ def _apply_pending_ops(now=None):
                         if refused:
                             # the backend refused the handover (a session it no longer holds): no echo for a command the
                             # session never got, no compacting cue for a compaction that never started, and the refusal
-                            # is visible (the commit-14 review's third item); the op is popped, never replayed forever
-                            what = "/compact" if op[0] == "compact" else str(op[1])[:60]
-                            sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
-                            _send_to_app("chat", {"type": "warn", "id": sid,
-                                                  "text": "%s was not delivered: the session's backend refused it" % what})
+                            # is visible (the commit-14 review's third item); the op is popped, never replayed forever.
+                            # A refusal the kernel itself worded (`said`: the Codex arm, which asked no backend and wrote
+                            # its own line) gets neither the backend-blaming line nor the generic toast (2026-09-19)
+                            if not said:
+                                what = "/compact" if op[0] == "compact" else str(op[1])[:60]
+                                sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
+                                _send_to_app("chat", {"type": "warn", "id": sid,
+                                                      "text": "%s was not delivered: the session's backend refused it" % what})
                             continue
                         # the backend HAS a turn-opening op: its cue, the hold and the end of this pass follow
                         # regardless of `took` (which is always True here — a ✕ on an in-flight op is refused and
@@ -50284,6 +50452,14 @@ def _set_judge_fast(v, gt=None):     return _set_judge_state("judge-fast", v, {"
 # model cannot run fast (jd.fast_capable); the value is kept then, and the judges simply ask nothing (jd._tier_fast).
 def _set_distill_fast(v, gt=None):   return _set_judge_state("distill-fast", v, {"on", "off"}, gt=gt)
 def _set_index_fast(v, gt=None):     return _set_judge_state("index-fast", v, {"on", "off"}, gt=gt)
+# The two MODEL switches (Settings, Automation, Model; the user 2026-09-17), off by default, on the judge-knob machinery
+# (validated, stamped, propagated to every linked kernel) and read by the SDK backend by path at use time:
+# Always fast — every session runs Claude Code's fast mode whenever its model can (sdk_backend fast_effective, at connect
+# and when the live model changes; a session put on Slow from its statusline is left alone); Retry upgrades after
+# downgrades — a session whose model changed to a lower tier without a pick asks for its pick again every ten minutes at
+# a turn boundary until a turn is served on it (sdk_backend retry_model_upgrades, ticked from the jobs loop).
+def _set_always_fast(v, gt=None):    return _set_judge_state("always-fast", v, {"on", "off"}, gt=gt)
+def _set_retry_upgrade(v, gt=None):  return _set_judge_state("retry-upgrade", v, {"on", "off"}, gt=gt)
 _JUDGE_FAST_TIERS = (("judgeFast", "judge-fast", "triage", _set_judge_fast, lambda: jd._triage_model()),
                      ("distillFast", "distill-fast", "distilling", _set_distill_fast, lambda: jd._distill_model()),   # EFFECTIVE:
                      ("indexFast", "index-fast", "indexing", _set_index_fast, lambda: jd._index_model()))           # follow resolves
@@ -50349,7 +50525,8 @@ _JUDGE_SETTING_FIELDS = (("judgeModel", _set_judge_model), ("indexModel", _set_i
                          ("commentModel", _set_comment_model), ("commentEffort", _set_comment_effort),
                          ("commentFast", _set_comment_fast),
                          ("judgeFast", _set_judge_fast),       # fast mode per tier, "on" | "off" (T300)
-                         ("distillFast", _set_distill_fast), ("indexFast", _set_index_fast))
+                         ("distillFast", _set_distill_fast), ("indexFast", _set_index_fast),
+                         ("alwaysFast", _set_always_fast), ("retryUpgrade", _set_retry_upgrade))   # the model switches (2026-09-17)
 
 # The per-field PICK STAMPS this leg carried from 2026-08-30 (each field's STATE-file mtime in a
 # body "stamps" dict, preserved by utime at the receiver — the distill-pick stomp fix) are
@@ -50376,6 +50553,8 @@ def _apply_judge_settings(body):
             setter(str(body.get(key) or ""), gt=_gt)
     _pop_stale_notice()   # HTTP legs have no delivering dashboard socket — discard the verdict so
     #                       no later message handled on a kept-alive connection's thread inherits it
+    if isinstance(body, dict) and ("alwaysFast" in body or "retryUpgrade" in body):
+        _model_switches_applied()   # a peer's pick lands here: the running sessions follow it here too (2026-09-17)
     if jd._distill_model() != _dm_before:
         # Switching the distill tier's EFFECTIVE model is a discrete recovery event (the user
         # 2026-08-18, who pointed the tier away from an outage-scoped model and expected the failed
@@ -50402,7 +50581,8 @@ def _apply_judge_settings(body):
             "commentEffort": jd._state_str("comment-effort", "session"),
             "commentFast": jd._state_str("comment-fast", "session"),
             "judgeFast": jd._state_str("judge-fast", "off"),
-            "distillFast": jd._state_str("distill-fast", "off"), "indexFast": jd._state_str("index-fast", "off")}
+            "distillFast": jd._state_str("distill-fast", "off"), "indexFast": jd._state_str("index-fast", "off"),
+            "alwaysFast": jd._state_str("always-fast", "off"), "retryUpgrade": jd._state_str("retry-upgrade", "off")}
 
 
 def _propagate_judge_settings(body):
@@ -50626,7 +50806,8 @@ def _adopt_peer_settings(host, rver):
 _GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "task-tracking",
               "judge-model", "index-model", "judge-effort", "index-effort", "judge-concurrency",
               "distill-model", "distill-effort", "comment-model", "comment-effort", "comment-fast",
-              "judge-fast", "distill-fast", "index-fast")
+              "judge-fast", "distill-fast", "index-fast",
+              "always-fast", "retry-upgrade")   # the model switches (2026-09-17)
 
 
 def _setting_stored_gt(name):
@@ -56917,6 +57098,10 @@ def _jobs_pass(now, live_map):
     except Exception:                     # turns, so the turn-end refresh never fired and usage-history
         sys.stderr.write("usage-poll: %s\n" % traceback.format_exc())   # sat stale — blinding the judge
     #                                       quota gate and the headroom line
+    try:                                  # Retry upgrades after downgrades (the user 2026-09-17): a session whose model
+        _job_stage('retryUpgrade', lambda: _retry_upgrade_tick(now))        # fell back asks for its pick again on a cadence;
+    except Exception:                     # the reconnect that carries it waits for the turn's end
+        sys.stderr.write("retry-upgrade: %s\n" % traceback.format_exc())
     try:                                  # a monthly spend cap (no readable reset) also engages it — else it storms forever
         _job_stage('autoPauseOnSpend', lambda: _auto_pause_on_spend_limit(now, live_map))
     except Exception:
@@ -58667,7 +58852,7 @@ sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an 
 sync:"romp moved commits between your machines by itself: a push to a remote, a pull from one, or an ask that a peer fast-forward itself. Successes are logged as well as failures, so this is the record of what romp did to your machines; the network panel shows a sync while it is still running",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo on the feed restores them",
-refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults",
+refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /clear or /compact): nothing was sent, and the entry names it",
 undelivered:"something you sent never reached a session: the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
@@ -64239,7 +64424,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(snap), "application/json", cache="no-cache")
             if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
                 sid = (q.get("sid") or [""])[0]
-                cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
+                cmds, warming = _commands_for_sid(sid)       # a Codex sid gets the list the kernel takes for it (2026-09-19)
                 return self._send(200, json.dumps({"commands": cmds, "warming": warming}),
                                   "application/json", cache="no-cache")
             if p == "/palette":                               # the session-identity palette: active swatches for the tab
@@ -67485,6 +67670,25 @@ class Handler(BaseHTTPRequestHandler):
             if _jgt is not None:
                 threading.Thread(target=_propagate_judge_settings,
                                  args=({"commentFast": str(msg["fast"]), "gt": _jgt},), daemon=True).start()
+            else:
+                _tell_stale_gesture(client, msg)
+        elif msg and msg.get("type") in ("setAlwaysFast", "setRetryUpgrade") and msg.get("enabled") is not None:
+            # the Automation pane's two model switches (the user 2026-09-17): checkboxes stored as on/off, read by the SDK backend
+            # at connect and on a model change (Always fast) and by its retry tick (Retry upgrades after downgrades). The
+            # boolean is checked like the judge boxes' (_as_bool), a malformed frame is refused with a warn, unwritten;
+            # an applied pick fans out to every linked kernel under its gesture stamp.
+            _sfield, _sset = {"setAlwaysFast": ("alwaysFast", _set_always_fast),
+                              "setRetryUpgrade": ("retryUpgrade", _set_retry_upgrade)}[msg["type"]]
+            _sfe, serr = _as_bool(msg.get("enabled"), "enabled")
+            if serr:
+                _refuse_ws_flag(client, msg["type"], serr, "enabled", msg.get("enabled"))
+                return
+            _sfv = "on" if _sfe else "off"
+            _jgt = _sset(_sfv, gt=_gesture_ms(msg))
+            if _jgt is not None:
+                threading.Thread(target=_propagate_judge_settings,
+                                 args=({_sfield: _sfv, "gt": _jgt},), daemon=True).start()
+                _model_switches_applied()   # the sessions already running follow the flip (a reconnect at their turn's end)
             else:
                 _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") in ("setJudgeFast", "setDistillFast", "setIndexFast") and msg.get("enabled") is not None:

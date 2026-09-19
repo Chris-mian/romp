@@ -60,7 +60,7 @@ import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, t
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
-import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody } from "./send-pending";
+import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -6013,7 +6013,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (s.status.ctx) {
     const cr = el("div", "tab-tip-row tab-tip-ctx");          // extra vertical room — the battery bar is tall
     const ck = el("span", "tab-tip-k"); ck.textContent = "Context"; cr.appendChild(ck);
-    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
+    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
     cr.appendChild(bar); tip.appendChild(cr);
   }
   // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then Recent.
@@ -15579,8 +15579,18 @@ function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null)
 // Context "battery": a small bar that FILLS with the context-used %, recolors as it fills, with the % written inside (the shared
 // renderer draws it); CLICK → /compact the session, same as the timeline's battery click. The chat's bar keeps its id: the lighter
 // in-place refresh finds it by id.
+// A Codex session has no /compact (2026-09-19): its battery is the same bar (the click stays attached; compactActiveSession
+// declines it), marked inert with the reason setCtxBar puts in the tooltip. The mark is applied where the status FILLS the bar,
+// not at construction, so the one live #ctx-bar the light in-place refresh reuses follows a tab switch either way: a Codex
+// status marks it, any other status lifts the mark again.
+const CODEX_NO_COMPACT = "this session runs in Codex, which has no /compact";
+function markCtxBarFor(bar: HTMLElement, st: Status): void {
+  if (st.backend === "codex") { delete bar.dataset.compacts; bar.dataset.inertWhy = CODEX_NO_COMPACT; }
+  else if (bar.dataset.inertWhy) { delete bar.dataset.inertWhy; bar.dataset.compacts = "1"; }
+}
 function ctxBar(): HTMLElement { const bar = buildCtxBar(compactActiveSession); bar.id = "ctx-bar"; return bar; }
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false): void {
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false, st?: Status): void {
+  if (st) markCtxBarFor(bar, st);
   setCtxBarWith(bar, ctxStr, compacting, ctxColor, ctxOver, (scan, fresh) => applyCompactSweep(scan, 3200, fresh));
 }
 function compactActiveSession(bar: HTMLElement): void {
@@ -15588,6 +15598,7 @@ function compactActiveSession(bar: HTMLElement): void {
   if (!s || !vscodeApi) return;
   // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
   if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+  if (s.status.backend === "codex") return;   // a bar built for another session and reused across a tab switch: the kernel refuses anyway; no click cue for a click that cannot compact (2026-09-19)
   vscodeApi.postMessage({ type: "compactSession", id: activeId });
   bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
 }
@@ -15993,7 +16004,7 @@ function updateStatusline() {
   syncMetaControls(meta, s.status);
   right.appendChild(meta);
   const bar = ctxBar();
-  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
+  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
   right.appendChild(bar);
   sl.appendChild(right);
   // stop/interrupt button: beside the state chip, after its timer, inside the left unit (the user
@@ -18508,10 +18519,33 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     warnToast(m.text);
   }
   else if (m.type === "warn" && typeof m.text === "string" && m.text) {
-    // A warn arriving while a create is in flight IS that create's verdict (a name the kernel won't take,
+    // A warn that names a session (sid) is the kernel's refusal of something sent INTO that session: a slash command
+    // a Codex session cannot take, refused before any backend saw it (2026-09-19). It is never a create's verdict,
+    // whatever is in flight. When it also names the press (qid) no echo will ever land for that copy, so the
+    // optimistic bubble ends on THIS event, the kernel's verdict, and the words go back into an EMPTY composer (the
+    // hostIsDown refusal's idiom: a draft is never overwritten); a refusal that names no press (a battery click, a POST
+    // route, the pusher's drain of a compact op) only toasts.
+    if (typeof m.sid === "string" && m.sid) {
+      let back: string | null = null;
+      if (typeof m.qid === "string" && m.qid) {
+        const list = pendingSent.get(m.sid) || [];
+        const dropped = dropPending(list, "", undefined, m.qid);   // by id alone: the text argument is inert
+        if (dropped) {
+          if (list.length) pendingSent.set(m.sid, list); else pendingSent.delete(m.sid);
+          const s = sessions.get(m.sid); if (s) reconcileOptimistic(s);
+          const v = views.get(m.sid); if (v) v.stale = true;
+          if (m.sid === activeId) appendActive();
+        }
+        const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+        back = m.sid === activeId && ta ? refusedRestoreText(dropped, ta.value) : null;
+        if (back !== null && ta) { ta.value = back; ta.dispatchEvent(new Event("input", { bubbles: true })); }   // the cancelResult restore's idiom: the draft listener re-persists it
+      }
+      warnToast(back !== null ? m.text + " It's back in the box." : m.text);
+    }
+    // A sid-less warn arriving while a create is in flight IS that create's verdict (a name the kernel won't take,
     // an unreadable parent, the SDK setup hint). It gets a dialog naming the reason and takes the
     // provisional tab down with it; a toast would slide past the one moment it needed to be read.
-    if (provisionalId) failProvisional(m.text); else warnToast(m.text);
+    else if (provisionalId) failProvisional(m.text); else warnToast(m.text);
   }
   else if (m.type === "spendCeiling" && typeof m.text === "string" && m.text) {
     // the spend guard's word (T350): a session crossed the hourly spend ceiling, or fell back under it. Its OWN type,
@@ -18909,7 +18943,7 @@ setInterval(() => {
   const meta = document.getElementById("spinner-meta");
   if (meta) syncMetaControls(meta, s.status);
   const bar = document.getElementById("ctx-bar");
-  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
+  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
 }, 1000);
 
 // the last message we delivered per session — so a Ctrl+C interrupt can put it back
