@@ -34,10 +34,9 @@ import { initStrip } from "./strip";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
 import { applyTheme } from "./theme";
 import { hostsGear, openGear } from "./gear-host";
-import { canPreview, fileUrl } from "./preview";
+import { canPreview } from "./preview";
 import { sanitizeMd } from "./md-sanitize";
-import { Marked } from "marked";
-import { stripRemoteLoads } from "./file-preview";
+import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
 import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
@@ -2046,18 +2045,6 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
 // inert DOM BEFORE adoption (no request ever starts). Should the sanitizer itself fail (no DOM to build it on, as in a
 // document stand-in), the body falls to PLAIN TEXT: nothing unsanitized ever reaches the page, and the card still says its
 // words; the served lab reads the rendered form.
-// a plain renderer of its own: the chat's markdown module carries the math grammar and KaTeX, which the feed bundle
-// must not (feed-bundle pins); a notice body is prose, code and links
-const noticeMarked = new Marked({ gfm: true, breaks: true });
-function noticeBodyNodes(md: string): Node[] {
-  try {
-    const clean = sanitizeMd(noticeMarked.parse(md) as string);
-    stripRemoteLoads(clean, (typeof window !== "undefined" && window.location ? window.location.origin : ""), "");
-    return Array.from(clean.childNodes);
-  } catch (e) {
-    return [document.createTextNode(md)];
-  }
-}
 
 // The notice FACE, one body for the card and the card's modal (round four of PR 1831): the producer line (and the board the
 // card belongs to when it is not the feed's), the body through the sanitizer, the attachment (the pinned picture where the page
@@ -2070,20 +2057,7 @@ function fillNoticeFace(it: AskItem, nt: NonNullable<AskItem["notice"]>, onBoard
   nBody.replaceChildren();
   if (nt.body && nt.body.trim()) nBody.append(...noticeBodyNodes(nt.body));
   nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
-  nAttach.replaceChildren();
-  const att = nt.attachment;
-  let canPrev = false;
-  try { canPrev = canPreview(); } catch (e) { canPrev = false; }   // no location (a document stand-in): no fetch, the file's name instead
-  if (att && att.allowed && att.kind === "image" && canPrev) {
-    const img = el("img", "fask-nimg") as HTMLImageElement;
-    img.src = fileUrl(att.path, it.sid) + (att.pin ? "&pin=" + encodeURIComponent(att.pin) : "");
-    img.alt = att.path.split("/").pop() || "attachment";
-    img.title = att.path;
-    nAttach.appendChild(img);
-  } else if (att && att.allowed) {
-    const f = el("span", "fask-nfile"); f.textContent = att.path.split("/").pop() || att.path; f.title = att.path + " (" + (att.kind || "file") + ")";
-    nAttach.appendChild(f);
-  }
+  nAttach.replaceChildren(...noticeAttachmentNodes(nt.attachment as any, it.sid));
   nAttach.style.display = nAttach.childNodes.length ? "" : "none";
   nActions.replaceChildren();
   for (const act of nt.actions || []) {

@@ -1,6 +1,7 @@
 import { marked } from "marked";
 import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
-import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { sanitizeMd, userContentTarget } from "./md-sanitize";
+import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
@@ -333,7 +334,7 @@ interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?
 interface ModelFallback { pick: string; pickValue: string; live: string; cause: string; category?: string; retry: { on: boolean; everyMin: number; armed: boolean; nextIn: number | null; attempts: number } }
 // A row of the chat's approval box (#notices): a needs-you notice with actions, as build_session ships status.notices
 // (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
-interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string;
+interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
                        actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
 interface Status { notices?: ChatNotice[] | null; state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
@@ -13955,7 +13956,7 @@ if (typeof ResizeObserver === "function") {
 // and a follow-mode reader is written to the new bottom; a scrolled-up reader is untouched (their top line never
 // moved). Event-based (the observer), no timer.
 if (typeof ResizeObserver === "function") {
-  for (const boxId of ["bg-tasks", "footer"]) {
+  for (const boxId of ["notices", "bg-tasks", "footer"]) {   // the approval box is a box below too (the review of PR 1890, low a)
     const box = document.getElementById(boxId);
     if (!box) continue;
     let lastH = -1;                                           // -1 = not yet measured (observe fires once on attach)
@@ -14609,51 +14610,80 @@ function renderSubHead(): void {
 // delivers and Deny drops, both actions of the quarantine kind the kernel runs through the bus's act road (the same
 // noticeAction wire the feed card posts; the kernel answers noticeActionDone by the row's id). The rows are status.notices,
 // so the box vanishes on the decision with the frame that drops the row, and the tab's ask ring (status.needsYou) goes with
-// it. Rebuilt on every status change like renderBgTasks (awaitKey carries the rows); the buttons latch on a click and let go
-// on the kernel's answer. A Deny first opens the optional note back to the sender, inline (the feed card asks in a prompt).
+// it. Rendered on every status change like renderBgTasks (awaitKey carries the rows), but RECONCILED IN PLACE, keyed by the
+// notice id (the review of PR 1890, medium 1): a rebuild that replaced every row destroyed a pressed button before its mouseup
+// (a second hold landing mid-press: no click, nothing posted, nothing latched) and wiped a row's refusal line at the next
+// status change. A row's buttons and its refusal line are rebuilt only when its own actions change; its title, body and
+// attachment are updated when they change; a row that left leaves. The clicks ride ONE delegate on the stable #notices
+// container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
+// and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
+interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify((n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])); }
+function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
+function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
+  const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
+  b.dataset.act = act; b.dataset.idx = String(idx);
+  return b;
+}
+// the row's two faces: the actions as the kernel stored them, and the deny step (the optional note back to the sender: the
+// one click-time input the quarantine kind takes, two choices and a way back)
+function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
+  const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
+  if (!acts || !note) return;
+  acts.replaceChildren(); note.style.display = "none";
+  (n.actions || []).forEach((act, i) => {
+    const deny = act.kind === "quarantine" && !!act.body && (act.body as any).verdict === "deny";
+    acts.appendChild(noticeButton(act.label, deny ? "ntc-deny" : "ntc-ok", deny ? "ntc-deny-step" : "ntc-go", i));
+  });
+}
+function noticeRowDenyStep(row: HTMLElement, idx: number): void {
+  const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLTextAreaElement>(".ntc-note");
+  if (!acts || !note) return;
+  acts.replaceChildren(noticeButton("Deny & send note", "ntc-deny", "ntc-deny-note", idx), noticeButton("Deny without note", "ntc-deny", "ntc-deny-bare", idx), noticeButton("Back", "ntc-back", "ntc-back", idx));
+  note.style.display = ""; note.focus();
+}
+function buildNoticeRow(n: ChatNotice, sid: string): NoticeRowEl {
+  const row = document.createElement("div") as NoticeRowEl; row.className = "ntc-row"; row.dataset.item = n.itemId;
+  const title = document.createElement("div"); title.className = "ntc-title";
+  const body = document.createElement("div"); body.className = "ntc-body";
+  const att = document.createElement("div"); att.className = "ntc-attach"; att.style.display = "none";
+  const note = document.createElement("textarea"); note.className = "ntc-note"; note.placeholder = "optional: tell the sender why (delivered to them as postal mail)"; note.style.display = "none";
+  const acts = document.createElement("div"); acts.className = "ntc-actions";
+  const err = document.createElement("div"); err.className = "ntc-err"; err.style.display = "none";
+  row.append(title, body, att, note, acts, err);
+  updateNoticeRow(row, n, sid);
+  return row;
+}
+function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
+  const title = row.querySelector<HTMLElement>(".ntc-title"), body = row.querySelector<HTMLElement>(".ntc-body"), att = row.querySelector<HTMLElement>(".ntc-attach");
+  if (title && row._title !== (n.title || "")) { title.textContent = n.title || "Needs you"; row._title = n.title || ""; }
+  if (body && row._body !== (n.body || "")) { body.replaceChildren(...noticeBodyNodes(n.body || "")); body.style.display = n.body && n.body.trim() ? "" : "none"; row._body = n.body || ""; }
+  const attKey = JSON.stringify(n.attachment || null);
+  if (att && row._att !== attKey) { att.replaceChildren(...noticeAttachmentNodes(n.attachment, sid)); att.style.display = att.childNodes.length ? "" : "none"; row._att = attKey; }
+  const sig = noticeActionsSig(n);
+  if (row._sig !== sig) {   // the row's OWN change: its buttons rebuilt from the stored actions, its refusal line cleared
+    row._sig = sig; noticeRowPlain(row, n);
+    const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) { err.textContent = ""; err.style.display = "none"; }
+  }
+}
 function renderNotices(): void {
   const host = document.getElementById("notices");
   if (!host) return;
-  host.replaceChildren();
   const s = activeId && !snapView ? liveSession(activeId) : null;
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
-  if (!s || !activeId || !rows.length) { host.style.display = "none"; return; }
+  if (!s || !activeId || !rows.length) { host.replaceChildren(); host.style.display = "none"; return; }
   host.style.display = "";
-  const sid = activeId;
+  const want = new Set(rows.map((n) => n.itemId));
+  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
+  let prev: HTMLElement | null = null;
   for (const n of rows) {
-    const row = document.createElement("div"); row.className = "ntc-row"; row.dataset.item = n.itemId;
-    const title = document.createElement("div"); title.className = "ntc-title"; title.textContent = n.title || "Needs you";
-    const body = document.createElement("div"); body.className = "ntc-body"; body.textContent = n.body || ""; body.title = n.body || "";
-    const note = document.createElement("textarea"); note.className = "ntc-note"; note.placeholder = "optional: tell the sender why (delivered to them as postal mail)"; note.style.display = "none";
-    const acts = document.createElement("div"); acts.className = "ntc-actions";
-    const err = document.createElement("div"); err.className = "ntc-err"; err.style.display = "none";
-    const button = (label: string, cls: string): HTMLButtonElement => { const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label; return b; };
-    const latch = (clicked: HTMLButtonElement, label: string) => { for (const b of Array.from(acts.querySelectorAll("button")) as HTMLButtonElement[]) b.disabled = true; clicked.textContent = label + "…"; err.style.display = "none"; };
-    const go = (act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
-      const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
-      vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid, kind, body: act.body, ...(input ? { input } : {}) });
-      latch(clicked, act.label);
-    };
-    const plain = () => {
-      acts.replaceChildren(); note.style.display = "none";
-      for (const act of n.actions || []) {
-        const deny = act.kind === "quarantine" && !!act.body && (act.body as any).verdict === "deny";
-        const b = button(act.label, deny ? "ntc-deny" : "ntc-ok");
-        b.onclick = (ev) => { ev.stopPropagation(); if (deny) denyStep(act); else go(act, b); };
-        acts.appendChild(b);
-      }
-    };
-    const denyStep = (act: ChatNotice["actions"][number]) => {
-      // the note back to the sender is the one click-time input the quarantine kind takes: two choices and a way back
-      acts.replaceChildren(); note.style.display = ""; note.focus();
-      const withNote = button("Deny & send note", "ntc-deny"); withNote.onclick = (ev) => { ev.stopPropagation(); const t = note.value.trim(); go(act, withNote, t ? { note: t } : undefined); };
-      const bare = button("Deny without note", "ntc-deny"); bare.onclick = (ev) => { ev.stopPropagation(); go(act, bare); };
-      const back = button("Back", "ntc-back"); back.onclick = (ev) => { ev.stopPropagation(); plain(); };
-      acts.append(withNote, bare, back);
-    };
-    plain();
-    row.append(title, body, note, acts, err);
-    host.appendChild(row);
+    let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
+    if (!row) { row = buildNoticeRow(n, s.id); if (prev) prev.after(row); else host.prepend(row); }
+    else {
+      updateNoticeRow(row, n, s.id);
+      if (row.previousElementSibling !== prev) { if (prev) prev.after(row); else host.prepend(row); }   // the frame's order; a move only when out of place (a move re-inserts the node, and a press on it would be lost)
+    }
+    prev = row;
   }
 }
 
@@ -18801,7 +18831,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the kernel's answer to an approval-box click (renderNotices), by the row's id: a refusal re-arms the row's buttons and
   // says why in the row; a success drops the row at once (the next status frame confirms: the notice expired or was dismissed)
   else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
-    const row = document.querySelector<HTMLElement>('#notices .ntc-row[data-item="' + m.itemId.replace(/["\\]/g, "\\$&") + '"]');
+    const row = document.querySelector<HTMLElement>(noticeRowSelector(m.itemId));
     if (row) {
       if (m.ok) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
       else {
@@ -20447,6 +20477,36 @@ setupSettings();
 // Tab-bar clicks are DELEGATED to the stable #tabs container (installed once), not hung on the per-tab nodes
 // that renderTabs() rebuilds on every push — so selecting a tab or clicking its ✕ (Close/End session) always
 // lands, even mid-rebuild. Each tab/✕ carries its data-act + data-id (see renderTabs, ./actions).
+// The approval box's clicks, delegated to the stable #notices container (installed once), never to the rows renderNotices
+// reconciles: a press survives a rebuild (the review of PR 1890, medium 1). Each button names its act and the index of the
+// stored action it stands for; the notice is read from the ACTIVE session's frame at click time, never a stale closure.
+(() => {
+  const host = document.getElementById("notices");
+  if (!host) return;
+  const rowOf = (el: HTMLElement): HTMLElement | null => el.closest(".ntc-row") as HTMLElement | null;
+  const noticeOf = (row: HTMLElement): ChatNotice | null => {
+    const s = activeId ? liveSession(activeId) : null;
+    return ((s && s.status && s.status.notices) || []).find((n) => n.itemId === row.dataset.item) || null;
+  };
+  const go = (row: HTMLElement, n: ChatNotice, act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
+    const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
+    vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid: activeId, kind, body: act.body, ...(input ? { input } : {}) });
+    for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) b.disabled = true;   // every button of the row latches: one decision per message
+    clicked.textContent = ((clicked as any)._idle || clicked.textContent) + "…";
+    const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) err.style.display = "none";
+  };
+  const pick = (el: HTMLElement): [HTMLElement, ChatNotice, ChatNotice["actions"][number]] | null => {
+    const row = rowOf(el); const n = row && noticeOf(row); const act = n && (n.actions || [])[Number(el.dataset.idx)];
+    return row && n && act ? [row, n, act] : null;
+  };
+  delegate(host, {
+    "ntc-go": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
+    "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
+    "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
+  });
+})();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),
 // not the per-task rows that renderBgTasks() rebuilds on every push, so the click always lands.
 (() => {

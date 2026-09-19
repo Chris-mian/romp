@@ -24387,7 +24387,10 @@ def _chat_notices(sid):
     """The chat page's approval box (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): this session's
     standing needs-you notices that carry actions, as the box lists them (today a held peer message with its Approve and Deny).
     The same projection the feed card reads, the cleared ledger applied, each action with its kind; a decision (the expire row)
-    or a Clear drops the row with the next frame. [] for a session with none, and on any fault."""
+    or a Clear drops the row with the next frame. None before the first feed build since start, as needsYou (the review of PR
+    1890, low d: the box never shows before the ring); [] for a session with none, and on any fault."""
+    if _feed_needs_input[0] is None:
+        return None
     try:
         out = []
         for r in _notice_projection(sid, int(time.time()), _cleared_ids()):
@@ -24395,6 +24398,7 @@ def _chat_notices(sid):
                 continue
             out.append({"itemId": _notice_item_id(sid, r.get("key"), r.get("rev") or 0), "key": r.get("key"), "rev": int(r.get("rev") or 0),
                         "title": r.get("title") or "", "body": r.get("body") or "", "producer": r.get("producer") or "",
+                        "attachment": r.get("attachment"),          # the feed card's pinned picture, on the row too (one face)
                         "actions": [dict(a, kind=_notice_action_kind(a)) for a in (r.get("actions") or [])]})
         return out
     except Exception:
@@ -34038,7 +34042,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # row reads the same (needsInput === true). Only True is a verdict.
         sig.append(_feed_needs_input_of(sid) is True)
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple(n["itemId"] for n in _chat_notices(sid)))
+        sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))

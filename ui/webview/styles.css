@@ -1076,6 +1076,8 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ntc-btn.ntc-back { border-color: transparent; opacity: 0.7; }
 .ntc-note { font: inherit; font-size: 0.86em; min-height: 44px; resize: vertical; border: 1px solid var(--box-border); border-radius: 6px; background: transparent; color: var(--fg); padding: 4px 6px; }
 .ntc-err { font-size: 0.82em; color: #e5484d; }
+.ntc-attach .fask-nimg { display: block; max-width: 100%; max-height: 160px; border-radius: 6px; }   /* the pinned picture, the feed card's face */
+.ntc-attach .fask-nfile { font-size: 0.86em; opacity: 0.85; }
 /* level 1: the header BAR at the top of the box ("Awaiting 3 · 2 agents · 1 command" idle, "In the background ·
    2 agents · 1 command" working — 2026-09-06). No own border/radius — the box provides them; a bottom border
    appears when expanded, separating it from the list below. */

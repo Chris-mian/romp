@@ -35,30 +35,68 @@ def _held(mid):
 
 
 class ChatNotices(unittest.TestCase):
+    # the suite runs every module in one process over one state root: these tests restore the SHARED files they append to (the
+    # owner-less home, its archive and index, the cleared ledger) and unlink only their own sid's files (the review of PR 1890,
+    # low c, the 1885 round-two rule)
+    @staticmethod
+    def _shared():
+        out = {}
+        f = km.jd.STATE / "cleared.jsonl"
+        out["cleared.jsonl"] = f.read_bytes() if f.exists() else None
+        for d in ("notices", "notices-archive"):
+            dd = km.jd.STATE / d
+            if dd.exists():
+                for f in dd.iterdir():
+                    if f.name.startswith("notes"):
+                        out[d + "/" + f.name] = f.read_bytes()
+        return out
+
     def setUp(self):
-        for d in (km.jd.STATE / "notices", km.jd.STATE / "notices-archive"):
-            if d.exists():
-                for f in d.iterdir():
-                    f.unlink()
-        ledger = km.jd.STATE / "cleared.jsonl"
-        if ledger.exists():
-            ledger.unlink()
+        self._before = self._shared()
         km.jd.NAMES.mkdir(parents=True, exist_ok=True)
         (km.jd.NAMES / SID).write_text("web\t%s\t#1EA1EB\t#ffffff\n" % (km.jd.STATE / "notes-api"))
         km.NAMES = km.jd.NAMES
         km._live_scope.names = None
         km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
+        self._needs = km._feed_needs_input[0]
+        km._feed_needs_input[0] = frozenset()             # a feed build happened: the slice answers (the gate is its own test)
 
     def tearDown(self):
-        # remove what the tests wrote into the shared root: the names entry, the notice files, the ledger
-        for f in (km.jd.NAMES / SID, km.jd.STATE / "cleared.jsonl"):
+        km._feed_needs_input[0] = self._needs
+        for f in (km.jd.NAMES / SID, km.jd.STATE / "notices" / (SID + ".jsonl"), km.jd.STATE / "notices-archive" / (SID + ".jsonl"),
+                  km.jd.STATE / "notices-archive" / (SID + ".revs.json")):
             if f.exists():
                 f.unlink()
-        for d in (km.jd.STATE / "notices", km.jd.STATE / "notices-archive"):
-            if d.exists():
-                for f in d.iterdir():
+        after = self._shared()
+        for rel in set(after) | set(self._before):
+            f = km.jd.STATE / rel
+            before = self._before.get(rel)
+            if before is None:
+                if f.exists():
                     f.unlink()
+            elif after.get(rel) != before:
+                f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(before)
         km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
+
+    def test_the_slice_is_absent_before_the_first_feed_build_as_needs_you_is(self):
+        # the review of PR 1890, low d: the box must never show before the ring; both read the first feed build since start
+        km._feed_needs_input[0] = None
+        km.post_notice(SID, "m1", "t", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
+        self.assertIsNone(km._chat_notices(SID), "None, as needsYou is None then")
+        km._feed_needs_input[0] = frozenset()
+        self.assertEqual(len(km._chat_notices(SID)), 1, "the first build lets the slice answer")
+        self.assertIn('sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))', KSRC, "the signature reads the absent slice as empty")
+
+    def test_the_row_carries_the_attachment_the_feed_card_shows(self):
+        # the review of PR 1890, low e: one face for both surfaces; the row copies the stored attachment verdict as the card does
+        att = {"path": str(km.jd.STATE / "notes-api" / "accuracy.png"), "kind": "image", "allowed": True, "why": "", "pin": "abc.png"}
+        with km._notice_lock:
+            km._notice_append(SID, {"op": "post", "t": 100, "key": "fig", "rev": 1, "sid": SID, "title": "A figure", "body": "", "producer": "figure", "needsYou": True,
+                                    "attachment": att, "actions": [{"label": "Send again", "kind": "send", "body": {"text": "please regenerate"}}]})
+        rows = km._chat_notices(SID)
+        self.assertEqual(rows[0]["attachment"], att)
+        km.post_notice(SID, "m1", "t", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
+        self.assertIsNone([r for r in km._chat_notices(SID) if r["key"] == "m1"][0]["attachment"], "a held message carries none")
 
     def test_the_box_lists_needs_you_notices_with_actions_each_action_with_its_kind(self):
         # getattr: at the base before the box the helper is absent, and the test reds on its behaviour
@@ -112,7 +150,7 @@ class ChatNotices(unittest.TestCase):
         self.assertIn('"needsYou": needs_you,', src)
         self.assertIn('"notices": _chat_notices(sid),', src, "beside needsYou on the STATUS, so a status-only delta carries a decision")
         self.assertIn("sig.append(_feed_needs_input_of(sid) is True)\n", KSRC)
-        self.assertIn('sig.append(tuple(n["itemId"] for n in _chat_notices(sid)))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
+        self.assertIn('sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
         labels = km._CHAT_SIG_LABELS
         self.assertEqual(labels[labels.index("needs") + 1], "notices", "one label per signature position, the new one right after needs (the builder appends them in that order)")
 

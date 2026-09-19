@@ -34,6 +34,8 @@ from test_live_paused_window_browser import _free_port  # noqa: E402
 
 SID = "11111111-2222-3333-4444-555555555555"
 MID = "aaaaaaaa-bbbb-cccc-dddd-000000000102"
+MID2 = "aaaaaaaa-bbbb-cccc-dddd-000000000103"    # lands while Approve is pressed (the review of PR 1890, medium 1)
+MID3 = "aaaaaaaa-bbbb-cccc-dddd-000000000104"    # lands after the refusal: the row's refusal line must stay
 TEXT = "the README draft is ready for a look, could you check the parser section before the release?"
 
 DRIVER = r"""
@@ -60,24 +62,50 @@ const facts = () => page.evaluate((s) => { const box = document.getElementById("
     note: r ? (r.querySelector(".ntc-note") || {}).style?.display : null, err: r ? ((r.querySelector(".ntc-err") || {}).textContent || "") : null,
     errShown: r ? (r.querySelector(".ntc-err") || {}).style?.display : null,
     aboveBg: (() => { const bg = document.getElementById("bg-tasks"); return !!(box && bg && box.compareDocumentPosition(bg) & Node.DOCUMENT_POSITION_FOLLOWING); })(),
+    rows: box ? Array.from(box.querySelectorAll(".ntc-row")).map((x) => x.getAttribute("data-item")) : [],
+    atBottom: (() => { const c = document.getElementById("content"); return c ? (c.scrollHeight - c.scrollTop - c.clientHeight) < 2 : null; })(),
+    scrollable: (() => { const c = document.getElementById("content"); return c ? c.scrollHeight > c.clientHeight + 40 : null; })(),
     tabClasses: tab ? Array.from(tab.classList) : null }; }, rowSel);
+const hold = (mid, body) => fs.writeFileSync(cfg.qdir + "/" + mid + ".json", JSON.stringify({ mid, to: "web", toId: cfg.sid, frm: "api", frmId: "11111111-2222-3333-4444-666666666666",
+  body, kind: "coordinate", origin: "TESTHOST", via: "peer", at: Math.floor(Date.now() / 1000) - 60 }));
+const rowSelOf = (mid) => '#notices .ntc-row[data-item="notice:' + cfg.sid + ":" + mid + ':1"]';
 // (1) the box and its row from the first frames; the ring trails the feed build by at most one frame
 await page.waitForFunction((s) => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && !!document.querySelector(s); }, rowSel, { timeout: 90000 }).catch(() => {});
 await page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && Array.from(tab.classList).some((c) => c.startsWith("ring-")); }, null, { timeout: 60000 }).catch(() => {});
 const first = await facts();
-// (2) Approve: the latch, the kernel's refusal (no bus), the re-arm and the reason in the row
+// (2) Approve PRESSED while a second hold lands (the review of PR 1890, medium 1): the frame that adds the second row must not
+// destroy the pressed button; the release is a click: latched, posted, the kernel's refusal (no bus) re-arms with the reason
 let approve = null;
 if (first.row) {
-  const latched = await page.evaluate((s) => { const r = document.querySelector(s); const b = Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Approve"); b.click();
-    return Array.from(r.querySelectorAll("button")).map((x) => ({ label: x.textContent, disabled: x.disabled })); }, rowSel);
+  const btn = page.locator(rowSel + " button", { hasText: /^Approve$/ }).first();
+  const bb = await btn.boundingBox();
+  await page.evaluate((s) => { window.__pressed = Array.from(document.querySelector(s).querySelectorAll("button")).find((x) => x.textContent === "Approve"); }, rowSel);
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await page.mouse.down();
+  hold(cfg.mid2, "a second message, held while the first's Approve is pressed");
+  await page.waitForSelector(rowSelOf(cfg.mid2), { timeout: 90000 }).catch(() => {});
+  const midPress = await facts();
+  // the pressed button must be the SAME element after the frame (the old code replaced every row, so the press had nothing to
+  // land on); the box grew upward with its new row, so the pointer follows the button to where it now sits before the release
+  midPress.pressedSurvived = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Approve");
+    return !!(window.__pressed && document.contains(window.__pressed) && b === window.__pressed); }, rowSel);
+  const bb2 = await btn.boundingBox();
+  await page.mouse.move(bb2.x + bb2.width / 2, bb2.y + bb2.height / 2);
+  await page.mouse.up();
+  const latched = await page.evaluate((s) => { const r = document.querySelector(s); return Array.from(r.querySelectorAll("button")).map((x) => ({ label: x.textContent, disabled: x.disabled })); }, rowSel);
   await page.waitForFunction((s) => { const e = document.querySelector(s + " .ntc-err"); return e && e.style.display !== "none" && (e.textContent || "").length > 0; }, rowSel, { timeout: 40000 }).catch(() => {});
-  approve = { latched, after: await facts() };
+  approve = { midPress, latched, after: await facts() };
+  // (2b) a THIRD hold lands: the first row's refusal line stays (its own actions did not change), the rows keep their order
+  hold(cfg.mid3, "a third message, held after the refusal");
+  await page.waitForSelector(rowSelOf(cfg.mid3), { timeout: 90000 }).catch(() => {});
+  approve.afterThird = await facts();
 }
 // (3) Deny: the inline note step, Back, then Deny without note: refused the same way
 let deny = null;
 if (first.row) {
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
   const step = await facts();
+  step.atBottomAfterNote = (await facts()).atBottom;
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Back").click(); }, rowSel);
   const back = await facts();
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
@@ -90,8 +118,8 @@ if (first.row) {
 // (4) the decision, as the runner records a success: an expire row in the notice store; the row and the ring leave
 let decided = null;
 if (first.row) {
-  fs.appendFileSync(cfg.notices, JSON.stringify({ op: "expire", t: Math.floor(Date.now() / 1000), key: cfg.mid, rev: 1, sid: cfg.sid }) + "\n");
-  await page.waitForFunction((s) => !document.querySelector(s), rowSel, { timeout: 90000 }).catch(() => {});
+  for (const mid of [cfg.mid, cfg.mid2, cfg.mid3]) fs.appendFileSync(cfg.notices, JSON.stringify({ op: "expire", t: Math.floor(Date.now() / 1000), key: mid, rev: 1, sid: cfg.sid }) + "\n");
+  await page.waitForFunction(() => !document.querySelector("#notices .ntc-row"), null, { timeout: 90000 }).catch(() => {});
   await page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && !Array.from(tab.classList).some((c) => c === "ring-waiting-on-you"); }, null, { timeout: 60000 }).catch(() => {});
   decided = await facts();
 }
@@ -134,17 +162,23 @@ class HeldMailChatServed(unittest.TestCase):
              "model": "claude-fable-5-1", "liveModel": "Fable 5.1"}))
         t0 = int(time.time()) - 3600
         iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
-        recs = [{"type": "user", "uuid": "u1", "parentUuid": None, "timestamp": iso(t0), "sessionId": SID,
-                 "message": {"role": "user", "content": "a question about the notes api"}},
-                {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": iso(t0 + 2), "sessionId": SID,
-                 "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn",
-                             "content": [{"type": "text", "text": "the notes api keeps its shape."}]}}]
+        # sixty closed turns: the transcript scrolls, so "at the bottom" is a real position the boxes below could push (low a)
+        recs, parent = [], None
+        for i in range(60):
+            u, a = "u%d" % i, "a%d" % i
+            recs.append({"type": "user", "uuid": u, "parentUuid": parent, "timestamp": iso(t0 + 4 * i), "sessionId": SID,
+                         "message": {"role": "user", "content": "question %d about the notes api" % i}})
+            recs.append({"type": "assistant", "uuid": a, "parentUuid": u, "timestamp": iso(t0 + 4 * i + 2), "sessionId": SID,
+                         "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn",
+                                     "content": [{"type": "text", "text": "answer %d: the notes api keeps its shape." % i}]}})
+            parent = a
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         cls.held = os.path.join(cls.state, "postal", "quarantine", MID + ".json")
         Path(cls.held).write_text(json.dumps(
             {"mid": MID, "to": "web", "toId": SID, "frm": "api", "frmId": "11111111-2222-3333-4444-666666666666", "body": TEXT,
              "kind": "coordinate", "origin": "TESTHOST", "via": "peer", "at": int(time.time()) - 600}))
         cls.notices = os.path.join(cls.state, "notices", SID + ".jsonl")
+        cls.qdir = os.path.join(cls.state, "postal", "quarantine")
         cls.port = _free_port()
         cls.token = "testtok-heldchat"
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token)
@@ -175,7 +209,8 @@ class HeldMailChatServed(unittest.TestCase):
             cfg = os.path.join(self.lab, "heldchat.json")
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
-                json.dump({"chat": base + "/chat?token=" + self.token, "token": self.token, "sid": SID, "mid": MID, "notices": self.notices}, f)
+                json.dump({"chat": base + "/chat?token=" + self.token, "token": self.token, "sid": SID, "mid": MID, "mid2": MID2, "mid3": MID3,
+                           "notices": self.notices, "qdir": self.qdir, "text": TEXT}, f)
             driver = os.path.join(self.lab, "heldchat.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=500,
@@ -202,6 +237,23 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertEqual(f["buttons"], [{"label": "Approve", "disabled": False}, {"label": "Deny", "disabled": False}], "two actions of the kind, no Edit")
         self.assertIsNotNone(f["tabClasses"], "the session's tab")
         self.assertIn("ring-waiting-on-you", f["tabClasses"], "the ask ring: a held message blocks the session until decided: %r" % f["tabClasses"])
+        self.assertTrue(f["scrollable"], "the transcript scrolls (sixty turns), so the bottom is a real position")
+        self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a)")
+
+    def test_a_press_survives_a_hold_landing_mid_press_and_the_refusal_line_survives_the_next_hold(self):
+        r = self._result()
+        a = r["approve"]
+        self.assertIsNotNone(a)
+        self.assertEqual(len(a["midPress"]["rows"]), 2, "the second hold's row landed while Approve was pressed: %r" % a["midPress"]["rows"])
+        self.assertTrue(a["midPress"]["pressedSurvived"], "the pressed button is the same element after the frame that added a row (reconciled in place, never replaced)")
+        self.assertEqual(a["latched"], [{"label": "Approve…", "disabled": True}, {"label": "Deny", "disabled": True}], "the release was a click: latched (the review of PR 1890, medium 1)")
+        self.assertIn("Refused: postal bus unreachable", a["after"]["err"], "the kernel answered the click")
+        t = a["afterThird"]
+        self.assertEqual(len(t["rows"]), 3, "the third hold's row joined: %r" % t["rows"])
+        self.assertEqual(t["rows"][0], "notice:%s:%s:1" % (SID, MID), "the first row kept its place")
+        self.assertIn("Refused: postal bus unreachable", t["err"], "the first row's refusal line survived the frame that added a row")
+        self.assertEqual(t["errShown"], "")
+        self.assertTrue(t["atBottom"], "still at the bottom with three rows")
 
     def test_approve_reaches_the_kernel_and_the_refusal_re_arms_the_row_saying_why(self):
         r = self._result()
@@ -218,6 +270,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(d)
         self.assertEqual([b["label"] for b in d["step"]["buttons"]], ["Deny & send note", "Deny without note", "Back"])
         self.assertEqual(d["step"]["note"], "", "the note textarea shows")
+        self.assertTrue(d["step"]["atBottomAfterNote"], "the note step grew the box: the at-bottom reader stayed at the bottom (low a)")
         self.assertEqual([b["label"] for b in d["back"]["buttons"]], ["Approve", "Deny"], "Back returns to the two actions"); self.assertEqual(d["back"]["note"], "none")
         self.assertTrue(all(b["disabled"] for b in d["latched"]["buttons"]), "latched on the decision: %r" % d["latched"]["buttons"])
         self.assertIn("Refused: postal bus unreachable", d["after"]["err"])
@@ -227,7 +280,7 @@ class HeldMailChatServed(unittest.TestCase):
         r = self._result()
         d = r["decided"]
         self.assertIsNotNone(d)
-        self.assertFalse(d["row"], "the row left with the frame that dropped it")
+        self.assertFalse(d["row"], "the row left with the frame that dropped it"); self.assertEqual(d["rows"], [], "all three decided")
         self.assertEqual(d["boxDisplay"], "none", "no row: the box hides")
         self.assertNotIn("ring-waiting-on-you", d["tabClasses"] or [], "the ask ring left with the decision: %r" % d["tabClasses"])
 
