@@ -17,7 +17,7 @@ abstract method, so the duck-typing can't drift.
 
 Method groups:
   liveness/identity — owns, live_sessions
-  control           — send, interrupt, set_model, set_mode, set_effort, set_fast, clear
+  control           — send, interrupt, set_model, set_mode, set_effort, set_fast, clear, compact
   lifecycle         — spawn, resume, move, connect, kill, rename
   coordination      — working_note, set_working_note, wake   (backend-agnostic: the kernel keeps the note in
                       its own store, and the SDK backend wakes a session by an enqueue)
@@ -172,6 +172,20 @@ class SessionBackend(ABC):
         omission — and deliberately without the word "backend", which reaches a toast."""
         return ("this session can't start a fresh conversation from here — "
                 "start a new session instead")
+
+    def compact(self, sid: str) -> str:
+        """Compact the conversation in place with the backend's OWN compaction (2026-09-19): the model's context is
+        summarized on the backend's side and the conversation continues from the summary. "" on success (the
+        backend's compacting() bracket is up from here); "busy" when a turn is in flight (the kernel parks the op
+        and retries at turn end); any other string is the reason, shown to the user verbatim. Codex implements it
+        as thread/compact/start on the session's thread (CodexBackend.compact), bracketed by compacting() from
+        before the request until the thread's own status says the compaction turn ended. The Claude Code backend
+        does not implement it: a typed /compact on an SDK session, and the compact button's "/compact", still go to
+        the CLI as literal text, which executes it (SdkBackend.send brackets it); the kernel routes to this verb
+        only for a backend that defines it (kernel _native_compact). The default is a refusal in move()'s idiom,
+        worded for no backend in particular, so a new backend never reads as compactable by omission — and
+        deliberately without the word "backend", which reaches a toast."""
+        return "this session can't compact its conversation from here"
 
     def launch_error(self, sid: str):
         """Why this session's CLI could NOT start — {text, at, limit} — or None when it started fine (and

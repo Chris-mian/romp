@@ -353,6 +353,19 @@ class Chain(unittest.TestCase):
         self.assertEqual(cb["logicalParentUuid"], recs[1]["uuid"])   # the pre-compaction leaf
         self.assertEqual(recs[3]["parentUuid"], cb["uuid"])          # the chain continues off it
 
+    def test_a_manual_compaction_is_marked_so_and_an_emitted_one_stays_auto(self):
+        # the backend feeds this writer itself for a compaction romp asked for (runtime 0.153.3 sends no
+        # thread/compacted for a thread/compact/start; CodexBackend keys on the thread's status, 2026-09-19) and
+        # marks it manual; a notification off the wire carries no trigger and keeps the automatic reading
+        n = norm()
+        recs = feed(n,
+                    item_completed(user_item("start", "u1")),
+                    ("thread/compacted", {"threadId": TID, "turnId": "t1", "trigger": "manual"}),
+                    ("thread/compacted", {"threadId": TID, "turnId": "t1"}))
+        cbs = [r for r in recs if r.get("subtype") == "compact_boundary"]
+        self.assertEqual([c["compactMetadata"]["trigger"] for c in cbs], ["manual", "auto"])
+        assert_chain(self, recs)
+
     def test_turn_failed_is_error_card(self):
         n = norm()
         recs = feed(n,

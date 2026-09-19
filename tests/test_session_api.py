@@ -85,6 +85,25 @@ class AbcContract(unittest.TestCase):
         sdk = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
         self.assertNotIn("\n    def clear(self, sid", sdk, "the SDK backend leaves /clear to the CLI")
 
+    def test_compact_is_a_concrete_default_that_refuses_and_codex_implements_it(self):
+        # compact (2026-09-19: Codex compacts a conversation natively, thread/compact/start) is a CONCRETE default on
+        # the ABC in move()'s and clear()'s idiom — a backend with no compaction verb of its own answers with the
+        # reason, never "" (which would read as a compaction started), never "busy" (which would park a retry
+        # forever) and never a raise; worded for no backend in particular and without the word "backend", which
+        # reaches a toast. CodexBackend implements it; the SDK backend does not (a typed /compact goes to the CLI
+        # as text, which executes it), asserted at the source level like the abstract set.
+        self.assertNotIn("compact", ABSTRACT, "compact is a concrete default (a backend without one inherits the refusal)")
+        why = sb.SessionBackend.compact(object(), "sid")
+        self.assertIsInstance(why, str)
+        self.assertTrue(why, "the default is a REASON, not an empty success")
+        self.assertNotEqual(why, "busy")
+        self.assertIn("compact", why)
+        self.assertNotIn("backend", why, "a toast in the user's terms")
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"), encoding="utf-8").read()
+        self.assertIn("\n    def compact(self, sid):", src, "CodexBackend implements compact")
+        sdk = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        self.assertNotIn("\n    def compact(self, sid", sdk, "the SDK backend leaves /compact to the CLI")
+
     def test_sdk_backend_honors_every_abstract_method(self):
         # SdkBackend is SDK-gated so it can't import the ABC when the dep is absent; it conforms by
         # duck-typing. Assert at the SOURCE level (no SDK dep needed) that it DEFINES each abstract method,

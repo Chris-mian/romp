@@ -339,6 +339,37 @@ class _PermanentRequestRejection(RuntimeError):
         self.client_generation = client_generation
 
 
+def _is_compaction_refusal(error):
+    """The app-server's answer to a turn/start while a compaction turn runs on the thread (live probe of runtime
+    0.153.3 through the pinned client, 2026-09-19): -32603 "failed to submit turn input: ActiveTurnNotSteerable {
+    turn_kind: Compact }", which the pinned SDK raises as InternalRpcError. A STATE, not a failure: the compaction
+    is the turn in flight and turn/start is refused until it ends, so the worker latches the compacting bracket
+    and waits for the bracket's end instead of backing off into it (_is_permanent_request_rejection classes the
+    code as retryable, so before this the worker retried every 0.25 to 5 s for the compaction's whole run, and
+    would have filed each refusal as a turn failure). Duck-typed like its sibling: the backend imports before the
+    optional SDK is installed."""
+    if getattr(error, "code", None) != -32603 and error.__class__.__name__ != "InternalRpcError":
+        return False
+    message = str(getattr(error, "message", "") or error)
+    return "ActiveTurnNotSteerable" in message and "Compact" in message
+
+
+class _CompactionInFlight(RuntimeError):
+    """turn/start was refused because a compaction turn is running on the thread (_is_compaction_refusal,
+    2026-09-19). `compact_ends` is the session's bracket-end counter as the worker read it beside the request's
+    thread id, and `compact_idles` the count of idle statuses seen for the thread beside it: _work latches the
+    bracket only while BOTH are unchanged, because an advance of either means the compaction the server named has
+    already been SEEN to end — its statuses travel on the global queue and the refusal on the worker's request, two
+    paths with no ordering between them (the probe saw the refusal land 4 ms before the compaction's own active
+    status; the inverse order is the same race) — and a re-latch then would stand until nothing. The end counter
+    alone missed a compaction romp did not start (no bracket to end: its idle advances it by nothing), hence the
+    idle count (review find, 2026-09-19)."""
+    def __init__(self, cause, compact_ends, compact_idles=0):
+        super().__init__(str(cause) or cause.__class__.__name__)
+        self.compact_ends = compact_ends
+        self.compact_idles = compact_idles   # the thread's idle count beside the request: the second key (2026-09-19)
+
+
 class _HandshakeTimeout(RuntimeError):
     """The handshake clock ran out and the child was ended (_handshake). Its own class because its retry floor
     differs: re-probing a child that never answers costs the whole clock again, under _client_lock, so the
@@ -530,6 +561,21 @@ class _Session:
         self.turn_id = None           # the active turn (interrupt/steer target), else None
         self.clearing = False         # the clear bracket (CodexBackend.clear, 2026-09-19): latched before
                                       # thread/start, dropped when the new tid is durable or the attempt raises
+        self.compacting = False       # the compaction bracket (CodexBackend.compact, 2026-09-19): latched before
+                                      # thread/compact/start, or by the worker on the server's Compact refusal; ended
+                                      # by the thread's idle status after an active one, a loud status, the client's
+                                      # death, kill, or a turn/start the server accepted (_end_compact_locked)
+        self.compact_active_seen = False  # an "active" thread status (or the refusal, which says the same) seen while
+                                          # the bracket stands: only an idle AFTER it ends the bracket, so the previous
+                                          # turn's stale idle, drained late from the global queue, cannot
+        self.compact_ends = 0         # advanced by every end of the bracket: the worker's Compact refusal re-latches
+                                      # only while it is unchanged since its request went out (_CompactionInFlight)
+        self.compact_idles = 0        # every "idle" status seen for the thread, bracket or no bracket (_compact_status;
+                                      # review find, 2026-09-19): the refusal's second staleness key. A compaction romp
+                                      # did not start has no bracket to end, so its idle advances compact_ends by
+                                      # nothing; a refusal handled after that idle would re-latch a compaction already
+                                      # over, with no status left to end it. A previous turn's late idle costs one
+                                      # extra refused retry, never a wedge.
         self.turn_ended = False       # a turn ended under mode_lock; _run_turn pokes for it after the release
         self.loaded = False           # thread/resume done in THIS process
         self.loaded_client_generation = None  # ...on WHICH app-server (client generation): a
@@ -1154,7 +1200,9 @@ class CodexBackend:
 
     def _global_pump(self, client):
         """Drain notifications NOT routed to a registered turn (thread status, rate limits, token
-        usage between turns). Feeds the owning session's normalizer so nothing is dropped."""
+        usage between turns). Feeds the owning session's normalizer so nothing is dropped. The thread's status
+        is also the compaction bracket's deciding event (_compact_status, 2026-09-19): read here first, outside
+        norm_lock, before the normalizer sees the notification."""
         while True:
             try:
                 n = client.next_notification()
@@ -1164,23 +1212,42 @@ class CodexBackend:
                     if self._client is client:
                         self._record_client_failure_locked(e, client)
                 for _, s in self._session_items():
+                    ended = False
                     with s.lock:
+                        if s.compacting and not s.dead:
+                            # the app-server is gone, and the compaction's outcome with it (2026-09-19): the bracket
+                            # ends LOUDLY — a red card, as every launch error, cleared by the next accepted turn — and
+                            # no divider is written for an end nobody saw; the failure path rebuilds the client
+                            self._end_compact_locked(s)
+                            s.launch_error = {"text": "The Codex app-server ended while this conversation was "
+                                                      "compacting — %s" % (str(e) or e.__class__.__name__),
+                                              "at": time.time(), "limit": False}
+                            ended = True
                         queued = bool(s.queue) and not s.dead
+                    if ended:
+                        try:
+                            self._save_registry(s, fields=("launchError",))
+                        except Exception:
+                            self.log("compaction end registry save: %s" % traceback.format_exc())
+                        self.push_session(s.sid)
                     if queued:
                         self._ensure_worker(s)
                         s.kick.set()
                 return
             try:
                 p = _dump(getattr(n, "payload", None))
+                method = getattr(n, "method", "")
                 tid = p.get("threadId")
                 s = next((s for _, s in self._session_items() if s.tid == tid), None)
                 if s:
+                    if self._compact_status(s, method, p):
+                        continue                          # the bracket's end: written, poked and pushed there (2026-09-19)
                     wrote = False
                     with s.norm_lock:
                         # Placeholder recovery replaces the normalizer under this same lock. Recheck
                         # after acquiring it: a pre-lock `s.norm` test could race to None here.
                         if s.norm:
-                            recs = s.norm.handle(getattr(n, "method", ""), p)
+                            recs = s.norm.handle(method, p)
                             if recs:
                                 self._append(s, recs)
                                 wrote = True
@@ -1336,14 +1403,19 @@ class CodexBackend:
         change moves the generation (send, set_model, set_mode, set_effort, resume all bump it and kick), so
         busy() flips back to True right then, before the worker wakes and clears the tuple, and a pick pressed
         after that one parks behind the retry in press order. A new client generation is the worker's own
-        clear (it is kicked for it), a scheduling quantum later."""
+        clear (it is kicked for it), a scheduling quantum later.
+
+        A standing compaction bracket reads busy too (2026-09-19; a widening of "turn in flight" the server itself
+        makes): the compaction runs as its own turn on the app-server, which refuses a turn/start for its whole run
+        (live probe), so the kernel's drain and gates hold as they would for an open turn, and a drive op it
+        hands over right after a compaction fire sees busy() True and arms no hold (_after_turn_opening)."""
         s = self._session(sid)
         if not s:
             return None
         with s.lock:
             if s.dead:
                 return None
-            if s.turn_id:
+            if s.turn_id or s.compacting:
                 return True
             parked = s.turn_rejection is not None and s.turn_rejection[0] == s.change_generation
             return bool(s.queue) and not parked
@@ -1360,6 +1432,20 @@ class CodexBackend:
             if s.dead:
                 return None
             return bool(s.clearing)
+
+    def compacting(self, sid):
+        """AUTHORITATIVE 'is a compaction in progress right now' (SessionBackend.compacting): the bracket compact()
+        latches before thread/compact/start, or the worker latches on the server's Compact refusal, and the observed
+        idle-after-active thread status ends (_compact_status). None when no session or ended. The kernel's
+        _compacting reads it first, so the chip, the chat's compacting element, the drive-op gates, the drain's gate,
+        the nudge skip and the /sessions rows all follow with no kernel literal change (2026-09-19)."""
+        s = self._session(sid)
+        if not s:
+            return None
+        with s.lock:
+            if s.dead:
+                return None
+            return bool(s.compacting)
 
     # ── control ──────────────────────────────────────────────────────────────────────────────────
     def send(self, sid, text):
@@ -1598,7 +1684,14 @@ class CodexBackend:
         to the kernel and would otherwise land on the fresh thread — a message typed BEFORE the /clear, answered
         without its context — so it answers "busy" too; a queue PARKED on a permanent rejection rides into the
         fresh thread instead (busy() says not busy for it, and this explicit change is what re-arms it, as
-        set_mode does). "busy" is the kernel's word to park on (it retries at the turn's end) and is never shown.
+        set_mode does). A standing compaction bracket (s.compacting, CodexBackend.compact) answers "busy" too
+        (review find, 2026-09-19): the compaction runs as its own turn on the app-server, and busy() already reads
+        it, but the kernel's gate read and this handover are two steps with no atomicity by design, so a clear
+        that slipped through would swap the tid under the bracket — and the pump matches the compaction's active
+        and idle statuses to a session by tid, so after the swap they would match nothing and the bracket would
+        stand until a kill. "busy" is the kernel's word to park on and is never shown: the parked clear runs at the
+        turn's end poke, at a compacted bracket's end (its boundary write pokes), or within the pusher's half-second
+        backstop after a loud end (systemError or notLoaded only push and kick; 2026-09-19).
 
         The bracket: s.clearing is latched before thread/start and dropped when the new tid is durable (the
         deciding event) or the attempt raises; clearing() publishes it. The swap's order: the fresh file is
@@ -1623,8 +1716,8 @@ class CodexBackend:
                 if s.dead:
                     return "this session has ended — revive it first"
                 parked = s.turn_rejection is not None and s.turn_rejection[0] == s.change_generation
-                if s.turn_id or (s.queue and not parked):
-                    return "busy"
+                if s.turn_id or s.compacting or (s.queue and not parked):
+                    return "busy"                  # s.compacting: the compaction bracket, see the docstring (2026-09-19)
                 cwd, mode, model, name = s.cwd, s.mode, s.model, s.name
                 s.clearing = True
             self.push_session(sid)             # the chip reads "clearing" from here
@@ -1719,6 +1812,224 @@ class CodexBackend:
             self.push()
             self.push_session(sid)
         return ""
+
+    def compact(self, sid):
+        """Compact the conversation in place with Codex's own compaction (SessionBackend.compact, 2026-09-19):
+        thread/compact/start on the session's thread. Built on what the live probe of runtime 0.153.3 through the
+        pinned client showed: the request is acked {} in about a millisecond (the ack means queued, nothing more);
+        the compaction then runs as ITS OWN server turn (about 4 s on a two-turn thread) whose one item is
+        contextCompaction; a turn/start meanwhile is refused with "ActiveTurnNotSteerable { turn_kind: Compact }";
+        thread/compacted never arrives; and the pinned client's router parks that unregistered turn's notifications
+        and discards them at its turn/completed — so the ONLY evidence that reaches this backend is the thread's
+        status on the global queue: active, then idle. The bracket (s.compacting; compacting() publishes it, busy()
+        reads True under it) is therefore latched HERE, before the RPC, so an active status that lands during the
+        round trip is seen while it stands, and ended by _compact_status on the first idle AFTER an active (a stale
+        idle, the previous turn's tail drained late from the global queue, is ignored), which also writes the
+        compact_boundary record through the normalizer's thread/compacted writer — the backend's own call, since the
+        runtime sends no notification for it. Loud ends: a systemError status (the failed compaction's shape: the
+        live leg of 2026-09-19 forced one with a model the account cannot use, and Codex answered the active status
+        with systemError and no idle, the turn's own error staying on the discarded turn queue), a notLoaded status,
+        the client's death, a raising request. The same leg compacted a thread resumed on a FRESH app-server (the
+        precondition below, proven live: ack in 11 ms, active 80 ms later, idle 1.8 s after the ack, a turn after
+        it answered), and showed thread/resume itself publishing the thread's idle status just before the request —
+        exactly the stale idle the active-seen rule ignores. A turn/start the server ACCEPTS while a bracket compact() latched stands ends it with a log
+        line and no divider: the accepted turn is the exact event that no compaction is active (a compaction the
+        server acked and never ran, or one that finished before the request; its late statuses meet no bracket).
+        The worker attempts a turn/start under a bracket with no active seen yet — the server is the authority from
+        the ack on — and stands down under one that has (_work): the answer is exact either way.
+
+        "" on success (the bracket is up); "busy" when a turn is open, a compaction already stands (the kernel parks
+        a second press and runs it after, as the SDK's second press does), or a send is queued but not yet taken by
+        the worker (the belt clear() has; a queue PARKED on a permanent rejection is not that, as busy() reads it) —
+        the kernel's word to park on, never shown; else the reason, shown verbatim. The worker's own loading
+        precondition comes first: on a fresh app-server (a kernel restart, a rebuilt client) the thread is not loaded
+        until thread/resume, and the worker's 2026-09-11 note records the server refusing a request on an unloaded
+        thread, so an unloaded thread is prepared here, under the turn lock as _run_turn holds it (set_mode's
+        non-blocking take still refuses meanwhile), a raise answered in words and never parked — a compaction has no
+        retry queue. A pending-/failed- placeholder has no thread to compact and is refused in words rather than
+        minted; a conversation with no records (a fresh spawn, a fresh /clear) is refused before any request, since
+        a compaction the server acks and never takes up would leave the bracket standing until a message probes it.
+        The normalizer is built BEFORE the latch and outside norm_lock (_ensure_norm takes it): a session revived or
+        restored in this process that has not run a turn has none, and the boundary writer would otherwise meet
+        s.norm None inside the pump's try and lose the record silently; built here it also seeds last_uuid from the
+        file, which is what makes the boundary's logicalParentUuid the true leaf.
+
+        Esc does not stop a running compaction (interrupt() needs a turn id romp never learns: the pinned wheel has
+        no thread/turns/list binding and thread/read's full hydration is deprecated by the server) and a kill leaves
+        it to finish server-side. The bracket is in memory: the app-server is the kernel's child and ends with it,
+        so a kernel restart mid-compaction loses only the divider of a compaction that completed in the last seconds
+        before the restart, and a compaction romp did not start (Codex's own, or one whose bracket a restart lost)
+        re-latches the bracket through the worker's Compact refusal. A thread/resume during a foreign compaction is
+        unprobed. Codex takes no compaction instructions; the kernel refuses words after the head before reaching
+        here."""
+        s = self._session(sid)
+        if not s:
+            return _contract.SessionBackend.compact(self, sid)
+        c = self._get_client()
+        if c is None:
+            return self._client_failure_text()
+        if not s.mode_lock.acquire(blocking=False):
+            return "busy"
+        try:
+            with s.lock:
+                if s.dead:
+                    return "this session has ended — revive it first"
+                parked = s.turn_rejection is not None and s.turn_rejection[0] == s.change_generation
+                if s.turn_id or s.compacting or (s.queue and not parked):
+                    return "busy"
+                if s.tid.startswith("pending-") or s.tid.startswith("failed-"):
+                    return "this session has no conversation to compact yet"
+                loaded = s.loaded and s.loaded_client_generation == self._client_generation_for(c)
+            if not loaded:
+                try:
+                    if not self._prepare_thread(s, c):
+                        return "this session has ended — revive it first"
+                except Exception as e:
+                    self.log("compact %s: thread preparation failed: %s" % (s.name, e))
+                    return "Couldn't compact this conversation: %s" % str(e)[:200]
+            norm = self._ensure_norm(s)
+            with s.norm_lock:
+                empty = norm.last_uuid is None
+            if empty:
+                return "this conversation has nothing to compact yet"
+            with s.lock:
+                if s.dead:
+                    return "this session has ended — revive it first"
+                s.compacting = True
+                s.compact_active_seen = False
+                s.state = "compacting"
+                s.since = time.time()
+                tid = s.tid
+            self.push_session(sid)                 # the chip flips now; the ack is not the deciding event
+            try:
+                c.thread_compact(tid)
+            except Exception as e:
+                with s.lock:
+                    self._end_compact_locked(s)
+                self.push_session(sid)
+                self.log("compact %s: %s" % (s.name, e))
+                return "Couldn't compact this conversation: %s" % str(e)[:200]
+        finally:
+            s.mode_lock.release()
+        return ""
+
+    def _end_compact_locked(self, s):
+        """End the compaction bracket; the caller holds s.lock (2026-09-19). Every end comes through here so the
+        bracket-end counter advances with each — the clean idle-after-active end and the loud status end
+        (_compact_status), the client's death (_global_pump), kill, a raising thread/compact/start (compact) and the
+        worker's accepted turn/start (_run_turn_in_mode) — which is what lets a Compact refusal that reaches the
+        worker after the compaction it names has ended stand down (_CompactionInFlight). The state falls back to
+        waiting from compacting only; the worker's accepted turn sets working right after."""
+        s.compacting = False
+        s.compact_active_seen = False
+        s.compact_ends += 1
+        if s.state == "compacting":
+            s.state = "waiting"
+            s.since = time.time()
+
+    def _compact_status(self, s, method, p):
+        """The pump's half of the compaction bracket (2026-09-19; the other halves are compact() and the worker's
+        Compact refusal). Read for every global notification of the session's thread, outside norm_lock, and only
+        while the bracket stands: False otherwise (the normalizer sees the notification as before), True when this
+        notification ENDED the bracket, in which case the record, the poke and the push were done here.
+
+        thread/status/changed: "active" marks that the compaction turn has been seen running; the first "idle" AFTER
+        it is the deciding event — the compact_boundary is written through the normalizer's thread/compacted writer,
+        the same golden-covered record an emitted notification would have written (uuid cb-<last turn id> with
+        _mint's suffix on a repeat, parentUuid None, logicalParentUuid the pre-compaction leaf; no summary record,
+        since Codex exposes no summary text), marked manual, THEN the bracket ends and the worker is kicked (a queue
+        parked on the bracket drains): the record lands before the end is published, so a reader that sees the
+        session no longer compacting also finds the divider. Runtime 0.153.3 sends no thread/compacted for a
+        thread/compact/start and the pinned client's router discards the compaction turn's items, so the observed
+        idle-after-active is the backend's own call to write it (live probe). An idle with NO active seen is the
+        previous turn's tail — its idle status and its turn/completed leave the server at the same instant on two
+        queues the pump and the worker drain independently, so a stale idle can be read after the latch — and is
+        ignored. Named residual: if BOTH the previous turn's active and idle are still unread at the latch (the pump
+        lagging a whole turn), the bracket ends falsely on that idle with a boundary written, busy() drops, a parked
+        send's turn/start meets the Compact refusal and re-latches, and the real idle writes a second boundary; the
+        envelope carries no time the pinned client exposes, so no exact fix exists with it. The same stale idle has a
+        second face on the REFUSAL path (review find, 2026-09-19): a compaction romp did not start has no bracket, so
+        its idle ends nothing here, and the worker's Compact refusal handled after it would re-latch a compaction
+        already over — hence compact_idles, bumped for EVERY idle before the bracket test, the refusal's second
+        staleness key (_CompactionInFlight). A failed compaction is told apart by the status itself (live leg
+        2026-09-19, a model the account cannot use set on the thread at thread/resume): after the active status
+        Codex sends "systemError" for the thread, and NO idle; the compaction turn's error notification (willRetry
+        false, "Error running remote compact task: …") and its turn/completed with status failed carry the turn id,
+        so the pinned router parks and discards them, and systemError is the whole signal that reaches this queue.
+        thread/turns/list afterwards lists that turn as failed with the message, and the thread stays usable: a
+        fresh app-server resumed it and ran a turn. So the idle-after-active writer never runs for a failed
+        compaction, and "systemError" ends the bracket LOUDLY with no divider — as launch_error, the red card the
+        next accepted turn clears, worded as Codex not having compacted; the failure's own message is not on this
+        queue (a thread/turns/list read after the end would carry it: a follow-up, since it is one more RPC on the
+        pump's thread). "notLoaded" ends it the same way, worded as the thread having stopped being available
+        (it also follows romp's own thread/archive, and possibly eviction).
+
+        thread/compacted for the thread while the bracket stands: the record is written here, marked manual, and the
+        bracket ends; the idle that follows finds no bracket, so it is written once. Reachable only with a future
+        runtime AND a future client that deliver it globally: runtime 0.153.3 never sends it, and the pinned client's
+        router parks a turn-stamped one under its (unregistered) turn and discards it at that turn's completion, so
+        under the pin the idle path is the one that runs (review find, 2026-09-19)."""
+        loud = None
+        with s.lock:
+            kind = None
+            if method == "thread/status/changed":
+                status = p.get("status")
+                kind = status.get("type") if isinstance(status, dict) else status
+                if kind == "idle":
+                    s.compact_idles += 1               # bracket or no bracket: the refusal's second staleness key
+            if not s.compacting:
+                return False
+            if method == "thread/compacted":
+                params = dict(p, trigger="manual")
+            elif method == "thread/status/changed":
+                if kind == "active":
+                    s.compact_active_seen = True
+                    return False
+                if kind == "idle":
+                    if not s.compact_active_seen:
+                        return False                   # the previous turn's tail (see above)
+                    params = {"threadId": s.tid, "trigger": "manual"}
+                elif kind == "systemError":
+                    params = None                  # the failed compaction's shape (live leg 2026-09-19): no idle follows
+                    loud = ("Codex could not compact this conversation (it reported systemError); "
+                            "the conversation continues as it was")
+                elif kind == "notLoaded":
+                    params = None
+                    loud = ("This conversation stopped being available while it was compacting (Codex reported "
+                            "notLoaded); nothing was compacted as far as romp can tell")
+                else:
+                    return False
+            else:
+                return False
+        wrote = False
+        if params is not None:
+            with s.norm_lock:
+                if s.norm:
+                    recs = s.norm.handle("thread/compacted", params)
+                    if recs:
+                        self._append(s, recs)
+                        wrote = True
+            if not wrote:
+                self.log("compaction of %s ended with no normalizer to write its boundary" % s.name)
+        with s.lock:
+            if s.compacting:                           # kill may have ended it meanwhile: one end, one advance
+                self._end_compact_locked(s)
+            if loud:
+                s.launch_error = {"text": loud, "at": time.time(), "limit": False}
+            queued = bool(s.queue) and not s.dead
+        if wrote:                                      # notify OUTSIDE norm_lock (see _append)
+            self.poke()
+        if loud:
+            try:
+                self._save_registry(s, fields=("launchError",))
+            except Exception:
+                self.log("compaction end registry save: %s" % traceback.format_exc())
+            self.log("compaction of %s ended: %s" % (s.name, loud))
+        self.push_session(s.sid)
+        if queued:
+            self._ensure_worker(s)
+        s.kick.set()                                   # a worker parked on the bracket wakes; an idle one re-checks and waits
+        return True
 
     # ── lifecycle ────────────────────────────────────────────────────────────────────────────────
     def _publish_spawn_name(self, s, bg="", fg=""):
@@ -1847,9 +2158,13 @@ class CodexBackend:
         if not s:
             return False
         with s.lock:
-            prior = (s.dead, s.loaded, s.name, s.cwd, s.state, s.since, s.change_generation)
+            prior = (s.dead, s.loaded, s.name, s.cwd, s.state, s.since, s.change_generation,
+                     s.compacting, s.compact_active_seen)
             s.dead = False
             s.loaded = False               # the worker thread/resumes before the next turn
+            s.compacting = False           # a bracket kill ended, or a late latch on the dead row (review find,
+            s.compact_active_seen = False  # 2026-09-19): the revived row starts with none; a compaction that outlived
+                                           # the kill finishes server-side and gets no divider, as kill's rule says
             if name and not s.name:
                 s.name = name              # ADVISORY only: adopting the caller's echo overwrote
             #                                a rename that landed while the revive was in flight,
@@ -1869,7 +2184,7 @@ class CodexBackend:
                 # revive rendered a live lane beside its own reviveFailed message, and the next
                 # kernel restart silently killed it again (the r28 verification, executed)
                 (s.dead, s.loaded, s.name, s.cwd, s.state, s.since,
-                 s.change_generation) = prior
+                 s.change_generation, s.compacting, s.compact_active_seen) = prior
                 raise
         if queued:
             self._ensure_worker(s)
@@ -1883,6 +2198,9 @@ class CodexBackend:
         save_error = None
         with s.lock:
             s.dead = True
+            if s.compacting:
+                self._end_compact_locked(s)    # the compaction finishes server-side; romp cannot stop it, and writes
+                                               # nothing for a session it ended (2026-09-19)
             turn_id, tid, worker = s.turn_id, s.tid, s.worker
             # Persist the lifecycle mutation before releasing the session lock. A concurrent resume
             # must order after this write instead of being overwritten by a delayed kill snapshot.
@@ -2135,7 +2453,16 @@ class CodexBackend:
                         queued = bool(s.queue)
                         rejection = s.turn_rejection
                         change_generation = s.change_generation
+                        compaction_seen = s.compacting and s.compact_active_seen
                     if not queued:
+                        break
+                    if compaction_seen:
+                        # A compaction turn is running on the thread (2026-09-19): the server refuses turn/start until
+                        # it ends, so no attempt is made. The bracket's end kicks (_compact_status); no timer, no
+                        # backoff, no launch_error — waiting is a state, not a failure. A bracket compact() latched
+                        # with NO active seen yet is not this: the worker attempts, since the server is the authority
+                        # from the ack on (the live probe's refusal preceded the active status), and the answer is
+                        # exact either way — accepted ends the bracket, refused latches it with the active seen.
                         break
                     client_generation = self._client_generation_now()
                     if rejection == (change_generation, client_generation):
@@ -2149,6 +2476,30 @@ class CodexBackend:
                                 s.turn_rejection = None
                     try:
                         progressed = self._run_turn(s)
+                    except _CompactionInFlight as e:
+                        with s.lock:
+                            dead = s.dead
+                            stale = s.compact_ends != e.compact_ends or s.compact_idles != e.compact_idles
+                            if not dead and not stale:
+                                s.compacting = True
+                                s.compact_active_seen = True   # the server said the compaction turn is active
+                                if s.state != "compacting":
+                                    s.state = "compacting"
+                                    s.since = time.time()
+                        if dead:
+                            # a kill landed between the request and this handler (it found no bracket to end, so the
+                            # counters are unchanged): no latch on a dead row, which resume() would revive as compacting
+                            # with nothing left to end it (review find, 2026-09-19); the loop exits on the dead row
+                            break
+                        if stale:
+                            # the compaction the server named has been seen to end since this request went out (its
+                            # statuses reached the pump first): a re-latch would stand until nothing. Retry at once;
+                            # retry_delay is untouched, since nothing failed.
+                            self.log("compaction refusal for %s arrived after its end; retrying" % s.name)
+                            continue
+                        self.log("compaction in flight on %s: the turn waits for its end" % s.name)
+                        self.push_session(s.sid)
+                        break                          # the untimed wait: the bracket's end kicks
                     except _PermanentRequestRejection as e:
                         self.log("%s rejected (%s): %s" % (e.operation, s.name, e))
                         try:
@@ -2269,12 +2620,16 @@ class CodexBackend:
                 params["effort"] = s.effort
             tid = s.tid
             change_generation = s.change_generation
+            compact_ends = s.compact_ends          # the bracket-end counter beside the request (_CompactionInFlight)
+            compact_idles = s.compact_idles        # ...and the thread's idle count, its second staleness key
         # Do not hold the lifecycle lock across an app-server RPC: kill must stay prompt even when
         # turn/start itself stalls. Sends may append meanwhile; the snapshotted prefix stays in place.
         client_generation = self._client_generation_for(c)
         try:
             started = c.turn_start(tid, [{"type": "text", "text": t} for t in batch], params)
         except Exception as e:
+            if _is_compaction_refusal(e):
+                raise _CompactionInFlight(e, compact_ends, compact_idles) from e   # a state the worker latches, never a failure (2026-09-19)
             if _is_permanent_request_rejection(e):
                 raise _PermanentRequestRejection(
                     e, "turn", change_generation, client_generation) from e
@@ -2282,12 +2637,21 @@ class CodexBackend:
         turn_id = started.turn.id
         ack_persisted = False
         stream_failed = False
+        bracket_ended = None
         try:
             with s.lock:
                 if s.queue[:len(batch)] != batch or s.queue_ids[:len(batch_ids)] != batch_ids:
                     raise RuntimeError("Codex send queue prefix changed during turn/start")
                 del s.queue[:len(batch)]
                 del s.queue_ids[:len(batch_ids)]
+                if s.compacting:
+                    # An ACCEPTED turn is the exact event that no compaction is active on the thread (2026-09-19): a
+                    # bracket compact() latched that the server never took up (acked, no active status ever), or
+                    # whose compaction finished before this request went out. Ended here, with no divider written
+                    # for it — its statuses, if they come late, meet no bracket — and the line below says which.
+                    bracket_ended = ("finished server-side before this accepted turn" if s.compact_active_seen
+                                     else "started nothing on this thread")
+                    self._end_compact_locked(s)
                 s.turn_id = turn_id
                 s.state = "working"
                 s.since = time.time()
@@ -2306,6 +2670,8 @@ class CodexBackend:
                 ack_persisted = True
             if ack_mismatch:
                 self.log("registry queue ACK mismatch for %s; preserving durable queue" % s.sid)
+            if bracket_ended:
+                self.log("codex compaction %s (%s): no divider for it" % (bracket_ended, s.name))
             self.push_session(s.sid)
             if killed_during_start:
                 try:

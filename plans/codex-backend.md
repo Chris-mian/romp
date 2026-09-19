@@ -136,6 +136,7 @@ machinery on such boxes without it.
 | `item/*` dynamicToolCall | the postal tools the kernel services (below): `tool_use` named `mcp__romp-postal-service__<tool>` (the item's `namespace` when set) + `tool_result` from its `inputText` content, `is_error` when `success` is false or status failed |
 | `item/*` webSearch | `tool_use` `WebSearch` {query} + result |
 | `item/completed` contextCompaction | `system`/`compact_boundary`, uuid = the item id, `logicalParentUuid` = the pre-compaction leaf (the stitch the FileAdapter follows), `compactMetadata.trigger` `"auto"` (every compaction inside a turn romp started is automatic). The item completes only after the runtime replaced the history, so a failed compaction writes nothing; `item/started` writes nothing (no content yet). The read side's replay window arms on the summary record, never on this boundary (the event-model change this row depends on), so the prompt that directly follows a pre-turn boundary survives even when it repeats earlier text. `thread/compacted` (deprecated on Codex 0.153.3 and never sent; turn-scoped in the pinned client, so it could only ever arrive on a registered turn's queue, never the global pump) → the same record when no item wrote it for that turn: boundaries per turn = max(items, notifications) |
+| `thread/compacted` | `system`/`compact_boundary` with `logicalParentUuid` = pre-compaction leaf (the stitch the FileAdapter follows). Runtime 0.153.3 does NOT emit it for a `thread/compact/start` (live probe, 2026-09-19): that compaction runs as its own turn the pinned client never registers, so the backend feeds this writer itself when the thread's status goes active and then idle (`CodexBackend._compact_status`), with `compactMetadata.trigger: "manual"`; a notification off the wire keeps `"auto"` |
 | turn failed / terminal `error` | assistant record flagged `isApiErrorMessage` (the error-card tag) |
 | `thread/tokenUsage/updated` | not a record — feeds `live_sessions().context` |
 | `plan`, `subAgentActivity`, `collabAgentToolCall` | **phase 2** (skipped, logged once) |
@@ -220,3 +221,13 @@ reason given there.)
   Revisit if it confuses the judges.
 - Codex compaction exposes no summary text — the card's "what compaction kept"
   tab stays empty for Codex sessions (absent, not faked).
+- A standalone compaction (`thread/compact/start`) is bracketed by the thread's
+  status, not by a notification: the boundary keys on idle-after-active, a
+  turn/start during it is refused with `ActiveTurnNotSteerable { turn_kind:
+  Compact }` and read as the bracket standing, and a compaction that fails
+  server-side answers the active status with `systemError` and no idle (live
+  leg 2026-09-19, a model the account cannot use set at `thread/resume`; the
+  turn's own `error` and failed `turn/completed` carry the turn id and never
+  leave the pinned router), so it ends the bracket loudly with no boundary.
+  `thread/turns/list` afterwards lists the failed turn with the message: a
+  follow-up could fetch it for the notice.
