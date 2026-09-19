@@ -13789,6 +13789,20 @@ class SdkBackend:
         with s._lock:
             return s.inflight > 0 or bool(s._pending)
 
+    def count_says_open(self, sid: str) -> "bool | None":
+        """Whether the open-turn COUNT ALONE says a turn is open: inflight > 0 with nothing queued to start. The drain's
+        held-working belt reads this, never busy(): busy() also answers True for a queued turn about to run, and the
+        feeder holds _pending with inflight zero in states where the hold is correct (a parked deploy restart or a quiesce
+        with the lease refreshed, an armed reconnect after an effort, model or auth switch, a pending rewind before it arms,
+        the gap between send() enqueuing and the feeder popping); in each the transcript rests with its last turn closed
+        because no turn is running, and a belt on busy() would call a proper hold a stale count (1876's review, 2026-09-19).
+        None when we don't run this sid."""
+        s = self.sessions.get(sid)
+        if not s:
+            return None
+        with s._lock:
+            return s.inflight > 0 and not s._pending
+
     def compacting(self, sid: str) -> "bool | None":
         """Authoritative 'is a /compact in progress' (see SessionBackend.compacting): set when /compact is
         delivered, cleared event-based by the compact_boundary or the /compact turn's ResultMessage — so a
