@@ -57561,11 +57561,15 @@ enqueue(msg);};   // the handoff to the bundle is the ONE deferred step (see the
 // watchdog-close row, when there is one, went down the quiet socket before the abandon (the foreground
 // path sends none), so it lands only if that socket still carried writes; for an armed socket the "-quiet"
 // raise abandon() queues for the redial is the record that survives. send() queues while the socket is
-// down, so the row rides the reconnect. A handshake that never opened fires onclose too (every 1.5 s redial
+// down, so the row rides the reconnect; the kernel stamps every clientDiag row with whether the socket that
+// carried it declared the redial (its dial record, set at accept and never consumed), and the row's own
+// bundleReady, readyAcked and readyQueued are this page's state at the close, the dial term's inputs, so the two
+// together name the redial's kind: declared, or gated off by a bundle not yet ready, a ready still queued, or a
+// ready no caps frame answered (2026-09-10). A handshake that never opened fires onclose too (every 1.5 s redial
 // of an outage — an 8 h outage is ~19k of them, and their timings would be the PREVIOUS socket's): those
 // are counted and reported as one wsconnfail row on the next open, never queued one by one.
 ws.onclose=function(ev){netState("down");
-if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected}});}catch(e){}}
+if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected,bundleReady:bundleReady,readyAcked:readyAcked,readyQueued:readyQueued}});}catch(e){}}
 else{if(!failedConnects)firstFailT=Date.now();failedConnects++;}
 if(stalePending&&openSock===this){var cw=stalePending;stalePending="";raiseStale(cw+"-closed");}   // the reconnected socket died before its resync: nothing is coming on it, and the view IS stale
 try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}
@@ -66978,6 +66982,17 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 rec = {"t": int(time.time()), "wid": str(client.get("wid") or ""),
                        "surface": str(msg.get("surface") or ""), "what": str(msg.get("what") or ""),
+                       # whether the socket that CARRIED the row declared the redial (?reconnect=1): the socket's dial
+                       # record, `redial`, set at accept beside the consumable `reconnect` and never popped, so every row
+                       # a socket carries reads the same value on every pane. Not the flag: _resolve_reconnect pops it on
+                       # a chat socket's first strip, _client_reset_chat_base pops it at ready, nothing pops it on the
+                       # other panes, and the ?skeleton=1 arm sets it for a column that declared no redial. The shim
+                       # queues its `wsclose` row while the socket is down and flushes it onto the redial, so with the
+                       # row's own bundleReady, readyAcked and readyQueued (the shim's state at the close) the log tells
+                       # a declared redial from the ones the dial term gated off (2026-09-10: everConnected alone, true on
+                       # every such row, could not). The wsopen row the accept files carries the same value, but it names
+                       # the socket by cid and this row does not, so the two cannot be joined without the stamp.
+                       "reconnect": bool(client.get("redial")),
                        "data": msg.get("data")}
                 # past the size cap the file becomes .1 and a new one starts; the check, rename and write are one
                 # locked step, since every pane's socket posts from its own handler thread
@@ -67525,6 +67540,9 @@ class Handler(BaseHTTPRequestHandler):
             # dialling fresh for its life: the bundle posts ready once, so no later socket carries one and no caps
             # frame follows. Every redial of such a page is served whole, the cost before 2026-09-07, never a
             # false skeleton.
+            # The dial record the clientDiag handler stamps rows with: set here alone, never consumed, and the same
+            # value _note_ws_open files on this socket's wsopen row below (`reconnect` is its consumable twin).
+            client["redial"] = True
             client["reconnect"] = True
             _rp = (q.get("proto") or [""])[0]           # the chat wire the page's bundle declared at its ready, carried on the
             if _rp in ("1", "2"):                       #  redial's dial term (round 2, item 4): a redial posts no ready of its own,
