@@ -34,7 +34,7 @@ import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
-import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
+import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, splitHeldAgainstFrame, OVERLAY_KINDS, type Region, type Run, type Gap, type Ev } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
@@ -60,7 +60,7 @@ import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, t
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
-import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody } from "./send-pending";
+import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -6013,7 +6013,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (s.status.ctx) {
     const cr = el("div", "tab-tip-row tab-tip-ctx");          // extra vertical room — the battery bar is tall
     const ck = el("span", "tab-tip-k"); ck.textContent = "Context"; cr.appendChild(ck);
-    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
+    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
     cr.appendChild(bar); tip.appendChild(cr);
   }
   // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then Recent.
@@ -11448,6 +11448,12 @@ function scrollToAnchor(uuid: string): boolean {
       // chatHead lands it when the page arrives, or re-attempts, which asks the window then. (CI's mid-run road was a different shape: its
       // restore wrote before any fetch existed and fell to the not-rendered path below, round ten.)
       if (loadingOlder.has(activeId)) { pendingOlderAnchor.set(activeId, uuid); pendingOlderKeepY.delete(activeId); pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false; }
+      // a session with NO regions (a frame whose tailLo the kernel could not name) asks the OLDER wire, never a window (2026-09-19, the
+      // client merge guard's I4): a window's run has no regions to join and the insert refuses it (insertRegionRun), where the tail run
+      // it used to mint at turn 0 landed the older window after the newest events. loadOlder before firstUuid lands by key (chatHead
+      // prepends), re-attempting until the anchor is resident, the road the in-flight re-point above already takes: one round trip per
+      // wire chunk of distance instead of one window, for a rare shape, and the landing lands by keep offset when one is armed.
+      if (!s.regions && fetchOlderForAnchor(activeId, uuid)) { pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false; }
       if (requestAround(activeId, uuid)) {   // the ask's record holds the anchor (round eight); the older wire's marks below are chatHead's alone
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-window"); return false;
       }
@@ -15579,8 +15585,18 @@ function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null)
 // Context "battery": a small bar that FILLS with the context-used %, recolors as it fills, with the % written inside (the shared
 // renderer draws it); CLICK → /compact the session, same as the timeline's battery click. The chat's bar keeps its id: the lighter
 // in-place refresh finds it by id.
+// A Codex session has no /compact (2026-09-19): its battery is the same bar (the click stays attached; compactActiveSession
+// declines it), marked inert with the reason setCtxBar puts in the tooltip. The mark is applied where the status FILLS the bar,
+// not at construction, so the one live #ctx-bar the light in-place refresh reuses follows a tab switch either way: a Codex
+// status marks it, any other status lifts the mark again.
+const CODEX_NO_COMPACT = "this session runs in Codex, which has no /compact";
+function markCtxBarFor(bar: HTMLElement, st: Status): void {
+  if (st.backend === "codex") { delete bar.dataset.compacts; bar.dataset.inertWhy = CODEX_NO_COMPACT; }
+  else if (bar.dataset.inertWhy) { delete bar.dataset.inertWhy; bar.dataset.compacts = "1"; }
+}
 function ctxBar(): HTMLElement { const bar = buildCtxBar(compactActiveSession); bar.id = "ctx-bar"; return bar; }
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false): void {
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false, st?: Status): void {
+  if (st) markCtxBarFor(bar, st);
   setCtxBarWith(bar, ctxStr, compacting, ctxColor, ctxOver, (scan, fresh) => applyCompactSweep(scan, 3200, fresh));
 }
 function compactActiveSession(bar: HTMLElement): void {
@@ -15588,6 +15604,7 @@ function compactActiveSession(bar: HTMLElement): void {
   if (!s || !vscodeApi) return;
   // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
   if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+  if (s.status.backend === "codex") return;   // a bar built for another session and reused across a tab switch: the kernel refuses anyway; no click cue for a click that cannot compact (2026-09-19)
   vscodeApi.postMessage({ type: "compactSession", id: activeId });
   bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
 }
@@ -15993,7 +16010,7 @@ function updateStatusline() {
   syncMetaControls(meta, s.status);
   right.appendChild(meta);
   const bar = ctxBar();
-  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
+  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
   right.appendChild(bar);
   sl.appendChild(right);
   // stop/interrupt button: beside the state chip, after its timer, inside the left unit (the user
@@ -16160,6 +16177,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   refreshSettledPreviews();
   reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
   reaskOutstandingGaps(Array.from(gapLoading), h);   // …and re-send every loadTurns still outstanding for that host: a relay drop fires no romp:wsdown, so gapLoading kept its keys and, with the guard now correct, the gap would stay suppressed until a reload (2026-09-15)
+  clearAsksForHost(h);   // …and that host's parked full asks (2026-09-19): an ask sent on the relay socket that died, or one the kernel answered with a status frame where a full was owed, is never answered on this road, and latched it would refuse every later delta for its tab until a reload (clearAsksForHost says why a flushed ask is cleared too)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
   // one with no active tab at all. Its pusher builds and flushes a client's active tab first; every tab is
@@ -17128,6 +17146,12 @@ function sharesAnyUuid(a: ChatEvent[], b: ChatEvent[]): boolean {
   return false;
 }
 
+/** One client-diag row from the chat's frame merge (2026-09-19): a named writer, so the executed harness over upsert
+ *  (chat-proto2-exec.test.ts, a Proxy scope) records the rows instead of tripping on a bare postMessage. */
+function chatDiagRow(what: string, data: Record<string, unknown>): void {
+  vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what, data });
+}
+
 function upsert(msg: any) {
   retryCmtCreates(String(msg.id || ""));   // a session frame = the kernel re-parsed → retry a lag-refused create (T106)
   // The LOCAL kernel's own machine name rides its session frames (the kernel's _self_host, as the tabOrder
@@ -17161,22 +17185,55 @@ function upsert(msg: any) {
     if (tailLo != null) {
       // the frame's tail run joins the regions the page holds: history wholly above it stays; a held run starting at or past it is
       // superseded (the frame carries everything from there); a held run STRADDLING it (the held tail, when the kernel's cut moved
-      // down after an append and the frame's tail is the few turns past the cut) keeps its part before the frame's start, minus
-      // the keys the frame carries, and the two touch, so insertRun makes them one run (the merge-base merged such a frame into
-      // the held run; dropping the held tail here blanked 640 events to 2 in the landing lab, 2026-09-13)
-      const frameKeys = new Set((events as Array<{ uuid?: string; key?: string }>).map((e) => keyOf(e)).filter((k): k is string => !!k));
+      // down after an append and the frame's tail is the few turns past the cut) keeps its part before the frame's start and the two
+      // touch, so insertRun makes them one run (the merge-base merged such a frame into the held run; dropping the held tail here
+      // blanked 640 events to 2 in the landing lab, 2026-09-13).
+      // The invariants this branch keeps (the client merge guard, 2026-09-19; the reading is chat-regions.ts splitHeldAgainstFrame):
+      //   I1 the runs' events, concatenated, are s.events after every mutation (the client-injected tail group joins the tail run at
+      //      the next regionsAbsorbTail, so it rides no held run here, where eventsFromRegions would resurrect it mid-list);
+      //   I2 a full frame is authoritative for [tailLo, end): a held event whose key the frame lacks and whose POSITION is at or after
+      //      the frame's first shared key leaves the model (retracted, or the frame is behind); one before that key is history the
+      //      frame did not carry and stays above as [r.lo, tailLo). No held event is placed by key absence alone: the key filter this
+      //      replaces filed the client's newest rows above an older frame's tail (s.events t3,t1,t2: the bottom of the view showed
+      //      older content, the next delta duplicated the row, a later afterUuid resolving to the first copy truncated the frame's tail);
+      //   I3 the tail run's last event is the kernel's last as of the newest frame applied: the resident newest row is displaced only
+      //      by a frame that carries the span it sits in, and a frame that is BEHIND (its last transcript key resident, a transcript
+      //      row of the page's dropped after it) is applied as sent and filed once as frame-behind, so a stale full from the kernel is
+      //      countable instead of invisible. A rewind's or a retraction's full takes the same road and is a legitimate shorter list;
+      //      rewindPending tells a client-initiated rewind's row apart in the journal.
+      const transcriptRow = (e: Ev): boolean => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent) && !OVERLAY_KINDS.has(String(e.kind ?? ""));
+      const frameEvents = events as unknown as Ev[];
       const held: Run[] = [];
+      let behind: { heldLo: number; heldLast: string; dropped: number; afterLast: number } | null = null;
       for (const r of (prev?.regions ? runsOf(prev.regions) : [])) {
         if (!r.events.length) continue;
         if (r.hi != null && r.hi <= tailLo) { held.push(r); continue; }
-        if (r.lo >= tailLo) continue;
-        const before = r.events.filter((e) => !frameKeys.has(keyOf(e as { uuid?: string; key?: string }) ?? ""));
+        const split = splitHeldAgainstFrame(r.events, frameEvents, transcriptRow);   // the run overlaps the frame's span: read it before deciding what stays
+        if (split.behind && !behind) behind = { heldLo: r.lo, heldLast: (keyOf(r.events.filter(transcriptRow).pop()) ?? "").slice(-12), dropped: split.dropped.length, afterLast: split.afterLast };
+        if (r.lo >= tailLo) continue;   // the frame carries everything from there: nothing of it is held (the reading above still ran)
+        const before = split.before.filter((e) => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent));   // I1: the client's own group rides no held run
         if (before.length) held.push({ kind: "run", lo: r.lo, hi: tailLo, events: before });   // emptied by the frame's own keys: nothing of it is left to hold
       }
       regions = insertRun(regionsFromRuns(held), { kind: "run", lo: tailLo, hi: null, events: events.slice() });
       const all: ChatEvent[] = [];
       for (const r of regions) if (r.kind === "run") for (const e of r.events) all.push(e as ChatEvent);
+      if (behind) chatDiagRow("frame-behind", { id: msg.id, tailLo, ...behind, frameLast: (keyOf(frameEvents.filter(transcriptRow).pop()) ?? "").slice(-12), rewindPending: pendingRewind.has(msg.id) });
+      if (prev && !prev.regions && prev.events.length && !held.length) {
+        // a session with NO regions (an earlier frame could not name its tail start) whose older wire prepended history it now holds
+        // in s.events alone: with no run to live in, that history goes with this frame's tail run. Said in the journal (2026-09-19),
+        // as the regions the null frame dropped are; a fresh full that carries the page's whole list files nothing
+        const frameKeys = new Set<string>();
+        for (const e of frameEvents) { const k = keyOf(e); if (k) frameKeys.add(k); }
+        const first = keyOf(prev.events[0] as unknown as Ev);
+        if (first && !frameKeys.has(first) && prev.events.some((e) => frameKeys.has(keyOf(e as unknown as Ev) ?? ""))) chatDiagRow("regions-dropped", { id: msg.id, why: "regions-less", heldRuns: 0, heldEvents: prev.events.length, frameEvents: events.length });
+      }
       events = all;
+    } else if (prev?.regions) {
+      // the kernel could not name where its tail starts: no regions without a tail start (chat-proto2-exec.test.ts pins the rule), so
+      // the held runs go with this frame. Said in the journal (2026-09-19), so the kernel's null frames become countable; nothing on the
+      // client can place a window or a page for this session until a frame names its tail start (insertRegionRun refuses, scrollToAnchor
+      // takes the older wire). A merge into a key-sharing held tail is a parked decision, not this change.
+      chatDiagRow("regions-dropped", { id: msg.id, why: "no-tail-lo", heldRuns: runsOf(prev.regions).length, frameEvents: events.length });
     }
   }
   const hasGap = !!regions && regions.some((r) => r.kind === "gap");
@@ -17360,7 +17417,8 @@ function notifyShell(kind: string, text: string, sid?: string): void {
 
 // Sessions we've asked the kernel to re-send in full after a delta gap. ONE ask per desync: the pusher runs
 // every 0.5-3s and would otherwise re-ask on every rejected delta until the reply lands. Cleared in upsert(),
-// so the next gap can ask again.
+// so the next gap can ask again; by dismissSession for a tab that left the strip (no answer is coming for it); and
+// by the relay's reopen for that host's sids (clearAsksForHost, below) (2026-09-19).
 const awaitingFull = new Set<string>();
 const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked (kept for the reconnect's diagnostics; every full frame merges into the held runs, T386 stage 2)
 const emptyFrameDiagSent = new Set<string>();   // sids whose empty session frame was filed once (see upsert / frame-merge.ts)
@@ -17370,10 +17428,33 @@ const emptyFrameDiagSent = new Set<string>();   // sids whose empty session fram
 // counts asks by it — a nobase on a reconnect row means the skeleton branch missed a frame type.
 type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta";   // (reattach retired with the detached client, T386 stage 2)
 function requestFullSession(id: string, why: NeedFullWhy): void {
-  if (!id || awaitingFull.has(id)) return;
+  if (!id) return;
+  if (awaitingFull.has(id)) {
+    // Refused while the sid is latched (2026-09-19). One ask per desync stands, but the refusal was invisible: a latch whose
+    // answer never comes (a status frame where a full was owed, a tab that left the strip, a relay that dropped) held the tab
+    // at its last applied content until a reload, and the journal had no row to show it. One row per refused DELTA names the
+    // sid and the reason; a repeated click's or the idle chain's dedup is by design and files nothing. Observability only.
+    if (why === "gap" || why === "nobase" || why === "skeleton-delta") vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "delta-refused", data: { sid: id, why } });
+    return;
+  }
   awaitingFull.add(id);
   vscodeApi?.postMessage({ type: "needFull", id, why });
   pendingFullWhy.set(id, why);   // the reason, for upsert's merge-or-replace decision when the answer lands (round 2, item 3)
+}
+// A relay's reopen (romp:hostRelayUp) releases that host's parked full asks (2026-09-19). After it the remote kernel holds a
+// fresh client for this page, so whatever the page asks next is answered with a full; left latched, an ask that will never
+// be answered would refuse every later delta for its tab until a reload. Two asks are in that state: one sent on the relay
+// socket that died (its answer went with the socket), and one the kernel answered with a status frame where a full was owed
+// (the sibling kernel fix). A third kind IS answered: an ask federation held as bookkeeping while the relay was down and
+// flushed onto the fresh socket just before this event fires (flushPending, then the dispatch). It is cleared with the
+// others, which can cost one duplicate full (the idle chain may pick that tab again before the flushed answer lands);
+// accepted for parity with the local road, whose shim flushes its queue before firing romp:wsup and whose whole-store
+// clears below run after that flush. That host's sids only: an empty host is the local kernel, whose event is romp:wsup,
+// and the local socket's reopen already releases EVERY ask, remote hosts' included (the clears below, unchanged here). A
+// detach dismisses the host's tabs (closed frames stamped hostDrop), and their latches go with them through dismissSession.
+function clearAsksForHost(h: string): void {
+  if (!h) return;
+  for (const sid of Array.from(awaitingFull)) if (hostOf(sid) === h) { awaitingFull.delete(sid); pendingFullWhy.delete(sid); }
 }
 // A reconnect mints a FRESH kernel-side client (its echat starts empty, so full frames are already
 // guaranteed) — but an ask parked against the dead socket would gag the new socket's repair path
@@ -17527,14 +17608,21 @@ const loadingOlder = new Set<string>();                 // sessions with a loadO
 
 // ── history regions (T386 stage 2): runs the page holds, gaps it asks for by turn span ──────────────────────────
 /** A window or a page becomes a run among the session's regions; s.events follows (the runs' events in turn order). */
-function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]): void {
-  const rs = s.regions ?? regionsFromRuns([{ kind: "run", lo: s.tailLo ?? 0, hi: null, events: s.events.slice() }]);
-  s.regions = insertRun(rs, { kind: "run", lo, hi, events });
+/** A page's or a window's run joins the session's regions by its kernel turn span; true when it did. FALSE, touching nothing, for a
+ *  session with no regions (2026-09-19, the client merge guard's I4: no run is ever minted with a lo the kernel did not name). This used
+ *  to mint a tail run at turn 0 for such a session (a frame whose tailLo the kernel could not name), and a non-overlapping OLDER window
+ *  then touched that run, mergeRuns found no shared key and no lower lo, and the older window landed AFTER the newest events
+ *  (t250,t251,t252,w96,w97: the bottom of the view was history, permanent for an idle session, and headKnown flipped true so no gap
+ *  ever asked again). A regions-less session's landing takes the older wire instead (scrollToAnchor), which lands by key. */
+function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]): boolean {
+  if (!s.regions) return false;
+  s.regions = insertRun(s.regions, { kind: "run", lo, hi, events });
   eventsFromRegions(s);
   const hasGap = s.regions.some((r) => r.kind === "gap");
   s.headKnown = !hasGap || s.regions[0].kind === "run";
   s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
   s.headTotal = hasGap ? null : s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);
+  return true;
 }
 const gapLoading = new Set<string>();                                        // "sid:lo:hi" of the page asks in flight
 const gapKey = (sid: string, lo: number, hi: number): string => sid + ":" + lo + ":" + hi;
@@ -17635,8 +17723,9 @@ function chatTurns(msg: any): void {
     return;
   }
   stripOptimistic(s);
-  insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
+  const placed = insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
+  if (!placed) { landTrail.push("turns-unplaced"); vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), kind: "unplaced" }); return; }   // no regions to place the page in (2026-09-19): the ask is freed above, nothing changed, so nothing rebuilds
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) { schedulePrebuild(); return; }
@@ -17950,10 +18039,12 @@ function chatWindow(msg: any) {
   const s = sessions.get(msg.id);
   if (!rec) {
     if (s && !msg.missing && !msg.fault && Array.isArray(msg.span) && (msg.events || []).length) {
-      stripOptimistic(s); insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s);
-      const v0 = views.get(msg.id);
-      if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
-      if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
+      stripOptimistic(s); const placed = insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s);
+      if (placed) {   // a stray the page cannot place (no regions, 2026-09-19) has no record to consume and rebuilds nothing: the trail's word below is all
+        const v0 = views.get(msg.id);
+        if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
+        if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
+      }
     }
     landTrail.push("window-stray");
     return;
@@ -18004,8 +18095,32 @@ function chatWindow(msg: any) {
   // T386 stage 2: the window becomes a RUN among the session's regions by its turn span; the gaps on either side shrink or split and
   // a touching run merges (chat-regions.ts insertRun). The tail run is never detached, so there is no strip, no re-attach, no walk.
   stripOptimistic(s);
-  insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]);
+  const placed = insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
+  if (!placed) {
+    // the regions went between the ask and its reply (a frame that could not name its tail start, 2026-09-19): the window has no run
+    // to live in, so nothing is inserted and nothing rebuilds (a view moves on new information only); the pre-jump is undone and the
+    // row filed. No toast: the next landing attempt takes the older wire for a regions-less session (scrollToAnchor) and lands the
+    // anchor by key, so a "could not be loaded" word here would be a false interrupt. Who makes that next attempt depends on what
+    // armed the landing. A seek (setActive's; armSeek has that one caller) is durable, landActive re-arms from it on every pass, so a
+    // seek-backed landing is left to the seek. A notch's or a comment tick's jump and the reload restore arm no seek, and landActive
+    // nulls the armed anchor at the end of the pass that asked the window, so without a re-arm here the click ended silently with the
+    // pre-jump undone (the review of 2026-09-19): such a landing is re-armed from the ask's record the way a placed navigation's is
+    // below, and showActive runs the pass now. Only while the older wire can answer (olderOnServer, or a fetch in flight the attempt
+    // re-points): otherwise the pass would ask the same window again and the two would ping-pong, so a dead end keeps its row and
+    // ends here. A canceled ask's refusal is silent, as its fault is.
+    if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled || wasLanding)) {
+      const cRestore = document.getElementById("content");
+      if (preJumpOrigin != null && cRestore) writeScroll(cRestore, preJumpOrigin, "land-cancel", false, cRestore.scrollTop);
+      if (!cancelled) { landTrail.push("window-unplaced"); vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), anchor: anchorUuid, kind: "unplaced" }); }
+      const seekCovers = !!seek && seek.sid === msg.id && seek.uuid === anchorUuid;
+      if (!cancelled && anchorUuid && ask.nav && !seekCovers && (olderOnServer(s) || loadingOlder.has(msg.id))) {
+        pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = ask.t; pendingAnchorKind = ask.kind; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
+        showActive();
+      }
+    }
+    return;
+  }
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) { schedulePrebuild(); return; }
@@ -18212,6 +18327,7 @@ function dismissSession(id: string, why: DismissWhy, doomed?: ReadonlySet<string
   if (wasActive) stashActiveDraft(id);   // FIRST: what is on screen belongs to this id, whatever happens next
   sessions.delete(id);
   onDismiss(skeletonTabs, id);   // a tab that left the strip (✕, the kernel's omission, a host drop) has nothing left to load (2026-09-07)
+  awaitingFull.delete(id); pendingFullWhy.delete(id);   // …and its parked full ask goes with it (2026-09-19): a tab that left the strip gets no answer, and a latch outliving the tab is an ask nothing will answer
   liveAsks.delete(id);
   ledgers.delete(id);
   if (why === "close" || why === "end") {
@@ -18494,14 +18610,47 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
       const s = sessions.get(m.sid);
       if (s && typeof m.value === "boolean") (s as any)[m.flag] = m.value;
     }
+    if (m.gesture === "command" && typeof m.sid === "string" && typeof m.flag === "string" && m.sid && m.flag) {
+      // a refused setEffort or setFast pick (the kernel's catalog check on a Codex session, a dormant session's fast
+      // toggle, a session no backend owns): the pick's local loader (metaPending, armed by pickValue with its 20 s
+      // timer) ends on THIS event, as the timeline's dim does on the same frame; the kernel's state did not change,
+      // so no push follows to repaint the badge, hence the active tab's line repaints here. A frame with no flag
+      // names no pick and only toasts (the shape the timeline's HTTP road builds for a refused /compact; the kernel
+      // sends none to this page).
+      metaPending.delete(`${m.sid}:${m.flag}`);
+      if (m.sid === activeId) updateStatusline();
+    }
     notifyShell("refused", m.text, typeof m.sid === "string" ? m.sid : "");
     warnToast(m.text);
   }
   else if (m.type === "warn" && typeof m.text === "string" && m.text) {
-    // A warn arriving while a create is in flight IS that create's verdict (a name the kernel won't take,
+    // A warn that names a session (sid) is the kernel's refusal of something sent INTO that session: a slash command
+    // a Codex session cannot take, refused before any backend saw it (2026-09-19). It is never a create's verdict,
+    // whatever is in flight. When it also names the press (qid) no echo will ever land for that copy, so the
+    // optimistic bubble ends on THIS event, the kernel's verdict, and the words go back into an EMPTY composer (the
+    // hostIsDown refusal's idiom: a draft is never overwritten); a refusal that names no press (a battery click, a POST
+    // route, the pusher's drain of a compact op) only toasts.
+    if (typeof m.sid === "string" && m.sid) {
+      let back: string | null = null;
+      if (typeof m.qid === "string" && m.qid) {
+        const list = pendingSent.get(m.sid) || [];
+        const dropped = dropPending(list, "", undefined, m.qid);   // by id alone: the text argument is inert
+        if (dropped) {
+          if (list.length) pendingSent.set(m.sid, list); else pendingSent.delete(m.sid);
+          const s = sessions.get(m.sid); if (s) reconcileOptimistic(s);
+          const v = views.get(m.sid); if (v) v.stale = true;
+          if (m.sid === activeId) appendActive();
+        }
+        const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+        back = m.sid === activeId && ta ? refusedRestoreText(dropped, ta.value) : null;
+        if (back !== null && ta) { ta.value = back; ta.dispatchEvent(new Event("input", { bubbles: true })); }   // the cancelResult restore's idiom: the draft listener re-persists it
+      }
+      warnToast(back !== null ? m.text + " It's back in the box." : m.text);
+    }
+    // A sid-less warn arriving while a create is in flight IS that create's verdict (a name the kernel won't take,
     // an unreadable parent, the SDK setup hint). It gets a dialog naming the reason and takes the
     // provisional tab down with it; a toast would slide past the one moment it needed to be read.
-    if (provisionalId) failProvisional(m.text); else warnToast(m.text);
+    else if (provisionalId) failProvisional(m.text); else warnToast(m.text);
   }
   else if (m.type === "spendCeiling" && typeof m.text === "string" && m.text) {
     // the spend guard's word (T350): a session crossed the hourly spend ceiling, or fell back under it. Its OWN type,
@@ -18899,7 +19048,7 @@ setInterval(() => {
   const meta = document.getElementById("spinner-meta");
   if (meta) syncMetaControls(meta, s.status);
   const bar = document.getElementById("ctx-bar");
-  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
+  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
 }, 1000);
 
 // the last message we delivered per session — so a Ctrl+C interrupt can put it back

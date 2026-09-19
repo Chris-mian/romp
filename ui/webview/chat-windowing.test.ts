@@ -317,3 +317,25 @@ test("the skeleton prefetch never builds a tab the strip does not show (the user
   const ato = RENDER.slice(RENDER.indexOf("\nfunction applyTabOrder("), RENDER.indexOf("\nfunction syncTabKeysWithStrip("));
   assert.match(ato, /\n  renderTabs\(\);\s*\n\s*syncTabKeysWithStrip\(\);\s*\n\}/, "…whose bare renderTabs() is the reveal's repaint for a peer's view or lens change");
 });
+
+test("the client merge guard (2026-09-19): no run is minted with a lo the kernel did not name, a refused page or window rebuilds nothing, and a regions-less landing takes the older wire, never a window", () => {
+  const irr = RENDER.slice(RENDER.indexOf("function insertRegionRun("), RENDER.indexOf("\nconst gapLoading"));
+  assert.match(irr, /function insertRegionRun\(s: Session, lo: number, hi: number, events: ChatEvent\[\]\): boolean \{/, "the insert answers whether it placed the run");
+  assert.doesNotMatch(irr, /s\.tailLo \?\? 0/, "the fallback tail run at turn 0 is gone: it put an older window after the newest events");
+  assert.match(irr, /if \(!s\.regions\) return false;/, "a session with no regions inserts no window and no page");
+  const turns = RENDER.slice(RENDER.indexOf("function chatTurns(msg: any): void {"), RENDER.indexOf("\n/** A fill moves nothing"));
+  assert.match(turns, /const placed = insertRegionRun\(s, span\[0\], span\[1\], \(msg\.events \|\| \[\]\) as ChatEvent\[\]\);/);
+  assert.match(turns, /if \(!placed\) \{ landTrail\.push\("turns-unplaced"\); vscodeApi\?\.postMessage\(\{ type: "locateDiag", id: msg\.id, ok: false, trail: landTrail\.slice\(\), kind: "unplaced" \}\); return; \}/, "a refused page frees its ask and rebuilds nothing");
+  const win = RENDER.slice(RENDER.indexOf("function chatWindow(msg: any) {"), RENDER.indexOf("\n// ── (the detached client's way back"));
+  const stray = win.slice(0, win.indexOf("const cancelled = rec.cancelled;"));
+  assert.match(stray, /const placed = insertRegionRun\(s, Math\.max\(0, msg\.span\[0\]\), msg\.span\[1\], \(msg\.events \|\| \[\]\) as ChatEvent\[\]\); reconcileOptimistic\(s\);\s*\n\s*if \(placed\) \{/, "a stray window's refusal pushes window-stray and nothing else");
+  const at = win.indexOf('landTrail.push("window-unplaced")');
+  assert.ok(at > 0, "the trail names the refusal");
+  const refusal = win.slice(win.lastIndexOf("if (!placed)", at), at + 400);
+  assert.match(refusal, /writeScroll\(cRestore, preJumpOrigin, "land-cancel", false, cRestore\.scrollTop\)/, "the pre-jump origin is put back");
+  assert.match(refusal, /kind: "unplaced"/);
+  assert.doesNotMatch(refusal, /landToast|clearSeek/, "a refusal neither toasts nor ends the seek: the seek is armed and the next attempt takes the older wire");
+  const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
+  assert.match(sca, /if \(loadingOlder\.has\(activeId\)\) \{[^\n]*\}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(!s\.regions && fetchOlderForAnchor\(activeId, uuid\)\) \{ pendingAnchor = uuid; anchorPendingOlder = true; landTrail\.push\("pointer-fetch-older"\); return false; \}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(requestAround\(activeId, uuid\)\) \{/,
+               "after the in-flight re-point and before the window ask: a session with no regions asks the older wire, which lands by key");
+});
