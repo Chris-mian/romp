@@ -51,6 +51,12 @@ try { browser = await chromium.launch(cfg.launch || {}); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
+// the payload explains a failure (2026-09-20: test one went red once in a whole-suite run and the assertion was lost with the log):
+// the browser's console errors, and every wait of the first leg timed and marked, so a timeout names itself rather than surfacing
+// as a missing ring or a False read downstream
+const consoleErrors = []; page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(String(m.text()).slice(0, 300)); });
+const waits = {};
+const timed = async (label, p) => { const t0 = Date.now(); const ok = await p.then(() => true).catch(() => false); waits[label] = { ok, ms: Date.now() - t0 }; return ok; };
 // the bottom box's observer pass is an EVENT (render.ts, "romp:box-below": one per pass, with the height that pass acted on). The lab
 // records the last pass per box before the page's scripts run, and a read of the bottom holds until the box's current height is the
 // one the last pass reported (settled): the flake of 2026-09-19 (main red at bee556e8) read scrollTop between the box's growth and
@@ -98,10 +104,11 @@ const hold = (mid, body) => fs.writeFileSync(cfg.qdir + "/" + mid + ".json", JSO
   body, kind: "coordinate", origin: "TESTHOST", via: "peer", at: Math.floor(Date.now() / 1000) - 60 }));
 const rowSelOf = (mid) => '#notices .ntc-row[data-item="notice:' + cfg.sid + ":" + mid + ':1"]';
 // (1) the box and its row from the first frames; the ring trails the feed build by at most one frame
-await page.waitForFunction((s) => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && !!document.querySelector(s); }, rowSel, { timeout: 90000 }).catch(() => {});
-const settled1 = await settled();   // the box appeared: the reader's re-pin is on the pass this holds at
-await page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && Array.from(tab.classList).some((c) => c.startsWith("ring-")); }, null, { timeout: 60000 }).catch(() => {});
-const first = await facts(); first.settled = settled1;
+await timed("row", page.waitForFunction((s) => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && !!document.querySelector(s); }, rowSel, { timeout: 90000 }));
+const settled1 = await timed("settled", page.waitForFunction(settledFn, null, { timeout: 15000 }));   // the box appeared: the reader's re-pin is on the pass this holds at
+await timed("ring", page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && Array.from(tab.classList).some((c) => c.startsWith("ring-")); }, null, { timeout: 60000 }));
+const first = await facts(); first.settled = settled1; first.waits = Object.assign({}, waits);
+first.geometry = await page.evaluate(() => { const c = document.getElementById("content"); const b = document.getElementById("notices"); return c ? { sh: c.scrollHeight, st: c.scrollTop, ch: c.clientHeight, box: b ? b.getBoundingClientRect().height : null } : null; });
 // (1b) follow mode across a box's growth (2026-09-19, the second cause behind main's red): a write to the bottom owes one scroll event,
 // its echo; the approval box growing before that event is dispatched put the reader a box's height above the NEW bottom at the echo's
 // at-bottom read, and the record said scrolled-up, so the box's pass had nothing to re-pin. Deterministic here: the reader moves up
@@ -175,7 +182,7 @@ if (first.row) {
   await page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && !Array.from(tab.classList).some((c) => c === "ring-waiting-on-you"); }, null, { timeout: 60000 }).catch(() => {});
   decided = await facts();
 }
-process.stdout.write("RESULT:" + JSON.stringify({ first, race, approve, deny, decided, errors }) + "\n");
+process.stdout.write("RESULT:" + JSON.stringify({ first, race, approve, deny, decided, errors, consoleErrors }) + "\n");
 await browser.close();
 """
 
@@ -279,19 +286,21 @@ class HeldMailChatServed(unittest.TestCase):
 
     def test_the_held_message_shows_in_the_approval_box_above_the_background_box_and_the_tab_wears_the_ask_ring(self):
         r = self._result()
-        self.assertEqual(r["errors"], [], "no page error")
         f = r["first"]
-        self.assertTrue(f["row"], "the row is in the box (kernel log tail: %s)" % open(self.klog).read()[-800:])
+        # every message of this leg carries the payload that explains it (2026-09-20): the timed waits, the console errors, the kernel log tail
+        why = lambda: "waits: %r; console errors: %r; kernel log tail: %s" % (f.get("waits"), r.get("consoleErrors"), open(self.klog).read()[-800:])
+        self.assertEqual(r["errors"], [], "no page error (%s)" % why())
+        self.assertTrue(f["row"], "the row is in the box (%s)" % why())
         self.assertEqual((f["boxDisplay"], f["boxVisible"]), ("", True))
         self.assertTrue(f["aboveBg"], "the approval box sits above the background box")
         self.assertEqual(f["title"], "New message from api")
         self.assertIn(TEXT, f["body"], "the message text is the row's body")
         self.assertEqual(f["buttons"], [{"label": "Approve", "disabled": False}, {"label": "Deny", "disabled": False}], "two actions of the kind, no Edit")
         self.assertIsNotNone(f["tabClasses"], "the session's tab")
-        self.assertIn("ring-waiting-on-you", f["tabClasses"], "the ask ring: a held message blocks the session until decided: %r" % f["tabClasses"])
+        self.assertIn("ring-waiting-on-you", f["tabClasses"], "the ask ring: a held message blocks the session until decided: %r (%s)" % (f["tabClasses"], why()))
         self.assertTrue(f["scrollable"], "the transcript scrolls (sixty turns), so the bottom is a real position")
-        self.assertTrue(f["settled"], "the box's height is the one its last observer pass reported: the event the read holds at (pass: %r)" % f["pass"])
-        self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a), read settled")
+        self.assertTrue(f["settled"], "the box's height is the one its last observer pass reported: the event the read holds at (pass: %r; %s)" % (f["pass"], why()))
+        self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a), read settled (geometry: %r; pass: %r; %s)" % (f.get("geometry"), f["pass"], why()))
 
     def test_a_bottom_writes_echo_keeps_follow_mode_when_the_box_grows_before_it_is_dispatched(self):
         r = self._result()
