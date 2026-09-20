@@ -285,6 +285,156 @@ class Listing(ViaOp):
         self.assertEqual((sent[1]["error"], sent[1]["items"]), ("no session named", []))
 
 
+class Growth(ViaOp):
+    """Pass two, section 9.4: the pane watches ONE session and the pusher cycle says artifactsChanged when its transcript's version
+    (mtime, size) moved, one frame per move, nothing for a client watching nothing. The transcript is a real file here, so the
+    version read is the kernel's own stat; the cycle is the real one (_pusher_cycle), the client a fake artifacts socket."""
+
+    def setUp(self):
+        super().setUp()
+        Path(self.path).write_text('{"type": "user", "uuid": "u0"}\n')
+        os.utime(self.path, (1_700_000_000, 1_700_000_000))
+        self.frames = []
+        self.client = {"app": "artifacts", "wid": "w9", "alive": True, "sent": {}, "send": lambda raw: self.frames.append(json.loads(raw))}
+        with km._clients_lock:
+            km._clients.append(self.client)
+
+    def tearDown(self):
+        with km._clients_lock:
+            if self.client in km._clients:
+                km._clients.remove(self.client)
+        super().tearDown()
+
+    def grow(self, t):
+        with open(self.path, "a") as f:
+            f.write('{"type": "assistant", "uuid": "a%d"}\n' % t)
+        os.utime(self.path, (t, t))
+
+    def test_the_watch_records_the_session_and_its_version_and_the_unwatch_drops_it(self):
+        km.Handler._dispatch_ws(None, {"type": "watchArtifacts", "sid": SID}, self.client)
+        st = os.stat(self.path)
+        self.assertEqual((self.client.get("artifacts"), self.client.get("artifactsVer")), (SID, [int(st.st_mtime), int(st.st_size)]), "the watch, stamped with the version at watch time")
+        km.Handler._dispatch_ws(None, {"type": "watchArtifacts", "sid": SID, "unwatch": True}, self.client)
+        self.assertEqual((self.client.get("artifacts"), self.client.get("artifactsVer")), (None, None), "unwatched")
+
+    def test_a_pusher_cycle_signals_once_per_version_move_and_never_for_the_same_bytes(self):
+        km.Handler._dispatch_ws(None, {"type": "watchArtifacts", "sid": SID}, self.client)
+        km._pusher_cycle()
+        self.assertEqual([f for f in self.frames if f["type"] == "artifactsChanged"], [], "the version at watch time: no signal for the same bytes")
+        self.grow(1_700_000_010)
+        km._pusher_cycle()
+        got = [f for f in self.frames if f["type"] == "artifactsChanged"]
+        st = os.stat(self.path)
+        self.assertEqual(got, [{"type": "artifactsChanged", "sid": SID, "version": [int(st.st_mtime), int(st.st_size)]}], "one frame for the growth, carrying the version")
+        km._pusher_cycle()
+        self.assertEqual(len([f for f in self.frames if f["type"] == "artifactsChanged"]), 1, "no growth, no second frame")
+        self.grow(1_700_000_020)
+        km._pusher_cycle()
+        self.assertEqual(len([f for f in self.frames if f["type"] == "artifactsChanged"]), 2, "the next growth, the next frame")
+
+    def test_a_client_watching_nothing_is_never_signalled(self):
+        self.grow(1_700_000_030)
+        km._pusher_cycle()
+        self.assertEqual([f for f in self.frames if f["type"] == "artifactsChanged"], [])
+
+
+class Memo(ViaOp):
+    """Pass two, section 9.4: the walk is incremental per session. The memo keeps the last walked turn's position and fork-stable id;
+    a listing after growth walks only the turns after it (the walk is wrapped here to record what it was handed) and merges, the
+    latest mention still winning; a prefix that changed (another id at the memo's position) walks the whole session again."""
+
+    def setUp(self):
+        super().setUp()
+        self.clear_memo()
+        self.walked = []
+        real = km._artifacts_walk
+        self.real_walk = real
+        km._artifacts_walk = lambda turns, sid, link_cache=None: (self.walked.append([t.get("id") for t in turns]) or real(turns, sid, link_cache=link_cache))
+
+    def tearDown(self):
+        km._artifacts_walk = self.real_walk
+        self.clear_memo()
+        super().tearDown()
+
+    @staticmethod
+    def clear_memo():
+        memo = getattr(km, "_ARTIFACTS_MEMO", None)   # absent at the base: the red is then the behaviour (a whole walk every time), never this name
+        if memo is not None:
+            with km._ARTIFACTS_MEMO_LOCK:
+                memo.clear()
+
+    def turn(self, tid, t, atoms):
+        return {"id": tid, "t": t, "atoms": atoms}
+
+    def test_a_listing_after_growth_walks_only_the_new_turns_and_merges_with_the_latest_mention_winning(self):
+        w = self.w
+        real = w.file("report.md", b"# r")
+        t1 = self.turn("T1", 100, [_write(100, real)])
+        t2 = self.turn("T2", 200, [_write(200, str(w.cwd / "notes.md"))])
+        r = self.listing([t1, t2])
+        self.assertEqual(self.walked, [["T1", "T2"]], "the first listing walks the whole session")
+        self.assertEqual([it["name"] for it in r["items"]], ["notes.md", "report.md"])
+        t3 = self.turn("T3", 300, [_atom("assistant", 300, text="the report at %s and the plot at %s" % (real, str(w.cwd / "figures" / "loss.png")))])
+        r = self.listing([t1, t2, t3])
+        self.assertEqual(self.walked[-1], ["T3"], "growth: only the new turn is walked")
+        by = {it["name"]: it for it in r["items"]}
+        self.assertEqual((by["report.md"]["t"], by["report.md"]["via"]), (300, "rendered"), "the latest mention wins across the memo and the new turns")
+        self.assertEqual([it["name"] for it in r["items"]], ["loss.png", "report.md", "notes.md"], "newest first over the merged map")
+        r = self.listing([t1, t2, t3])
+        self.assertEqual(self.walked[-1], [], "no growth: nothing walked")
+
+    def test_a_changed_prefix_walks_the_whole_session_again(self):
+        w = self.w
+        t1 = self.turn("T1", 100, [_write(100, str(w.cwd / "a.md"))]); t2 = self.turn("T2", 200, [_write(200, str(w.cwd / "b.md"))])
+        self.listing([t1, t2])
+        t2b = self.turn("T2-rebuilt", 200, [_write(200, str(w.cwd / "c.md"))])
+        r = self.listing([t1, t2b])
+        self.assertEqual(self.walked[-1], ["T1", "T2-rebuilt"], "another id at the memo's position: the memo is stale, the whole session is walked")
+        self.assertEqual([it["name"] for it in r["items"]], ["c.md", "a.md"], "b.md, from the stale memo, is gone")
+
+    def test_a_turn_without_an_id_never_seeds_a_memo(self):
+        w = self.w
+        turns = [{"t": 100, "atoms": [_write(100, str(w.cwd / "a.md"))]}]
+        self.listing(turns); self.listing(turns)
+        self.assertEqual(self.walked, [[None], [None]], "no fork-stable id: walked whole both times, never a partial walk over an unverifiable prefix")
+
+
+class Focus(ViaOp):
+    """Pass two, section 9.5: the chat's active tab reaches the window's Artifacts clients too, on the relay and on ready."""
+
+    def setUp(self):
+        super().setUp()
+        self.saved_focus = (dict(km._ACTIVE_CHAT_BY_WID), dict(km._ACTIVE_CHAT_NONCE_BY_WID))
+        self.made = []
+
+    def tearDown(self):
+        with km._clients_lock:
+            for c in self.made:
+                if c in km._clients:
+                    km._clients.remove(c)
+        km._ACTIVE_CHAT_BY_WID.clear(); km._ACTIVE_CHAT_BY_WID.update(self.saved_focus[0])
+        km._ACTIVE_CHAT_NONCE_BY_WID.clear(); km._ACTIVE_CHAT_NONCE_BY_WID.update(self.saved_focus[1])
+        super().tearDown()
+
+    def client(self, app, wid):
+        frames = []
+        c = {"app": app, "wid": wid, "alive": True, "sent": {}, "_frames": frames, "send": lambda raw: frames.append(json.loads(raw))}
+        with km._clients_lock:
+            km._clients.append(c)
+        self.made.append(c)
+        return c
+
+    def test_the_relay_of_a_chat_switch_reaches_the_windows_artifacts_client_beside_its_feed(self):
+        chat, feed, art, other = self.client("chat", "w5"), self.client("feed", "w5"), self.client("artifacts", "w5"), self.client("artifacts", "w6")
+        km._relay_active_chat(chat, SID, nonce=3)
+        self.assertEqual([f for f in art["_frames"] if f["type"] == "activeChat"], [{"type": "activeChat", "id": SID, "nonce": 3}], "the Artifacts pane of the window learns the tab")
+        self.assertEqual([f for f in feed["_frames"] if f["type"] == "activeChat"], [{"type": "activeChat", "id": SID, "nonce": 3}], "the feed as before")
+        self.assertEqual([f for f in other["_frames"] if f["type"] == "activeChat"], [], "another window's pane hears nothing")
+
+    def test_the_ready_arm_hands_the_focus_to_an_artifacts_client_too(self):
+        self.assertIn('if client.get("app") in ("feed", "artifacts"):\n                _send_active_chat(client)', KSRC, "the ready arm's audience")
+
+
 def _has(tc, needle, hay):
     tc.assertIn(needle, hay)
 
@@ -334,6 +484,20 @@ class Shell(unittest.TestCase):
             self.assertNotIn(gone, st, "the bespoke key is gone: no field, no default, no normalization")
         self.assertIn("delete (s as Record<string, unknown>).showArtifactsControl;", st, "a browser that stored the retired key sees it dropped at load, like the repo's other retired keys")
         self.assertNotIn("rs-artctl", open(os.path.join(ROOT, "ui", "webview", "gear.js")).read(), "the bespoke gear row is gone: the generic Panes row is the control")
+
+    def test_the_shell_unions_the_columns_open_tabs_and_tells_every_protocol_pane_and_relays_the_active_tab_to_them(self):
+        # pass two, sections 9.2 and 9.5
+        js = km._LANDING_COLLAPSE_JS
+        _has(self, "function tellAll(m){KEYS.forEach(function(k){tell(document.getElementById('f-'+k),m);});}", js)
+        _has(self, "window.__rompTellPanes=tellAll;", js)
+        _has(self, "if(!m||m.romp!=='chatTabs'||!Array.isArray(m.tabs))return;", js)
+        _has(self, "if(f.contentWindow===e.source)src=f.id;", js)   # the column's set is keyed by its frame, never by anything the message claims
+        _has(self, "function chatTabsUnion(){var order=(window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat']),out=[],seen={};", js)
+        _has(self, "Object.keys(TABSETS).filter(function(id){return !!document.getElementById(id);})", js)   # a closed column's set leaves with its frame
+        _has(self, "function chatTabsMsg(){return {romp:'chatTabs',tabs:chatTabsUnion()};}", js)
+        _has(self, "tell(f,panesMsg());tell(f,chatTabsMsg());", js)   # a pane loaded after the columns is told the open tabs too
+        fjs = km._LANDING_FOCUS_JS
+        _has(self, "if(window.__rompTellPanes){window.__rompTellPanes(ac);}", fjs)
 
     def test_the_pane_is_in_the_one_ordering_after_files_and_the_viewer_set(self):
         self.assertEqual(km._PANE_ORDER[-1], ("artifacts", "Artifacts")); self.assertEqual(km._PANE_ORDER[-2], ("files", "Files"))

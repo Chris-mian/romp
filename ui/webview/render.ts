@@ -6654,6 +6654,7 @@ function renderTabs() {
   auditTabOrder(ids);
   noteColumnEmptiness(ids);   // a later column none of whose members the kernel lists any more tells the shell (the chat split)
   noteOrphanState();          // …and state held for a session another column shows is offered to the shell (the chat split)
+  postChatTabs(ids.filter((id) => heldHere(id) && !isSubId(id) && !isProvisionalId(id)));   // …and this column's OWN open tabs to the shell, which unions the columns for the panes that list them (plans/artifacts-pane.md 9.2)
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name tabs; the
   // real sessions keep running, just hidden from this view. No tag → visibleIds === ids (unchanged).
   const only = onlyTag();
@@ -12701,6 +12702,27 @@ function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): numbe
 // the cached DOM is just revealed.
 // Tell the extension which tab is active, so it can publish it to the romp
 // timeline (which outlines the open lane). activeId may be null (no session).
+// The OPEN TABS of this column, for the shell's union (plans/artifacts-pane.md 9.2; the chat owner's word, 2026-09-20): the
+// strip's MEMBERSHIP in strip order (stripLists: the kernel's order plus a just-arrived tab, less a closing one) narrowed to
+// the tabs THIS column holds (the chat split's partition, heldHere), never the display-narrowed subset, so the demo filter and
+// a folded section do not scope another pane while the other column's sessions do not ride this one's set (the follow lab
+// caught the whole membership going out: the partition is a display rule here, so it is applied by name). A subagent viewer
+// and a provisional tab are not sessions and are not posted. {id, name, color} per tab, the id host-prefixed for a remote tab;
+// posted only when the set, its order, a name or a colour changed (a signature compare, the way activeTab is deduped), and
+// never from a page without a shell.
+let chatTabsSig = "";
+function postChatTabs(ids: string[]): void {
+  if (!(window.parent && window.parent !== window)) return;
+  const tabs = ids.map((id) => {
+    const s = sessions.get(id); const m = tabMeta.get(id);
+    const color = (s && s.color) || (m && m.color) || null;
+    return { id, name: (s && s.name) || (m && m.name) || id, color: color ? { bg: color.bg, fg: color.fg } : null };
+  });
+  const sig = JSON.stringify(tabs);
+  if (sig === chatTabsSig) return;
+  chatTabsSig = sig;
+  try { window.parent.postMessage({ romp: "chatTabs", tabs }, "*"); } catch (e) { /* no shell */ }
+}
 let activeTabNonce = 0;   // one per announcement (T416 round two): the kernel echoes it on the relayed activeChat frame, so the feed's pending record clears on the echo of its own switch and never on a stranger's
 function notifyActive() {
   const nonce = ++activeTabNonce;

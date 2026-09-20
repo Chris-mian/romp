@@ -97,8 +97,12 @@ test("the chat tells the shell its tab on every switch with its announcement num
 test("the shell hands the chat's tab to the feed pane, from a child frame of this page only", () => {
   assert.match(KERNEL, /if\(!window\.__rompPaneSourceOk\|\|!window\.__rompPaneSourceOk\(e\)\)return;var m=e&&e\.data;if\(!m\|\|m\.romp!=='activeTab'\)return;/,
     "a chat column of this page, same origin, in the pane protocol: the shell's one source check, fail-closed (plans/panes-as-data.md section 5)");
-  assert.match(KERNEL, /var ff=document\.getElementById\('f-feed'\);try\{ff&&ff\.contentWindow&&ff\.contentWindow\.postMessage\(\{romp:'activeChat',id:\(typeof m\.id==='string'\?m\.id:null\),nonce:\(typeof m\.nonce==='number'\?m\.nonce:null\),gesture:!!m\.gesture\},'\*'\);\}catch\(x\)\{\}\}\);/,
+  // the relay reaches every protocol pane since the Artifacts pane's second pass (plans/artifacts-pane.md 9.5): the frame is built once,
+  // handed to the collapse script's poster when it exists, else to the feed alone as before; the nonce rides it either way (T416)
+  assert.match(KERNEL, /var ac=\{romp:'activeChat',id:\(typeof m\.id==='string'\?m\.id:null\),nonce:\(typeof m\.nonce==='number'\?m\.nonce:null\),gesture:!!m\.gesture\};/,
     "the feed pane gets {romp:'activeChat', id, nonce, gesture}");
+  assert.match(KERNEL, /if\(window\.__rompTellPanes\)\{window\.__rompTellPanes\(ac\);\}/, "…through the poster that reaches every protocol pane");
+  assert.match(KERNEL, /else\{var ff=document\.getElementById\('f-feed'\);try\{ff&&ff\.contentWindow&&ff\.contentWindow\.postMessage\(ac,'\*'\);\}catch\(x\)\{\}\}/, "…the feed alone where the poster is absent");
   assert.equal((KERNEL.match(/\{romp:'revealCard',itemId:[^}]*,gesture:true\}/g) || []).length, 2, "both revealCard posts (the bell click, the notification tap) carry the reader's gesture (round three)");
 });
 

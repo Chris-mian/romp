@@ -227,10 +227,13 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   `kernel.py:64172`); the chat posts one signal about its tabs, `{romp:'activeTab', id, nonce, gesture}` on every
   switch (`render.ts:12711`), which the shell forwards to the feed alone (`kernel.py:60911`).
 - **The chat column posts its tab set.** `renderTabs` (`render.ts:6636`) posts `{romp:'chatTabs', tabs}` to the shell,
-  `tabs` the strip's rows in strip order as `{id, name, color}` (the id host-prefixed for a remote tab, the name as the
-  strip shows it, the identity colour as `{bg, fg}` or null), only when the set or its order changed (a keyed compare,
-  the way `activeTab` is deduped). A column's set is its partition of the strip (`chat-columns.ts` `ownerOf`), so the
-  union over the columns is what the user sees open.
+  `tabs` the strip's MEMBERSHIP in strip order (`stripLists`: the kernel's order plus a just-arrived tab, less a closing
+  one; never the display-narrowed subset, so the demo filter and a folded section do not scope another pane) narrowed
+  to the tabs THIS column holds (`heldHere`, the chat split's partition, which the strip applies as a display rule; the
+  follow lab caught the whole membership going out, the other column's sessions included), a subagent viewer and a
+  provisional tab left out, as `{id, name, color}` (the id host-prefixed for a remote tab, the name as the strip shows
+  it, the identity colour as `{bg, fg}` or null), only when the set, its order, a name or a colour changed (a signature
+  compare, the way `activeTab` is deduped). The union over the columns is what the user sees open.
 - **The shell unions and broadcasts.** The landing keeps one map, column id to its last posted set, unions the sets in
   column order and posts `{romp:'chatTabs', tabs}` to every pane iframe whose `data-protocol` is `romp` (the same
   `tell` that carries the pane-set broadcast, `kernel.py:64048`), on every change and on each pane iframe's load (the
@@ -272,8 +275,10 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   bare sid on the client (`client["artifacts"]`). In the pusher cycle (`_pusher_cycle`, `kernel.py:58907`), for each live
   `artifacts` client with a watched sid, the kernel reads that session's transcript version, the `(mtime, size)` of its
   file (the first component of `_chat_build_sig`, `kernel.py:34372`, through `_session_row`), one stat per cycle per
-  watching client, and when it differs from the last version sent to that client, sends `artifactsChanged {sid,
-  version}` on the `("artifactsChanged", sid)` dedup slot. Nothing else is pushed; an unwatched session costs nothing;
+  watching client, and when it differs from the last version sent to that client, sends ONE `artifactsChanged {sid,
+  version}` frame (the version compare is the dedup; the watch op stamps the version at watch time, so the listing the
+  pane asks for beside the watch is not answered by a signal for the same bytes). Nothing else is pushed; an unwatched
+  session costs nothing;
   a pane off screen keeps its watch but re-asks only when shown again (it marks the listing stale on the signal). The
   request-and-response design stands: the listing is still asked for, and the signal is the event that says when.
 - **Why a signal and not the listing itself.** The listing can be hundreds of entries with a stat each; the pane may be
@@ -299,8 +304,8 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   `kernel.py:57100`) and mirrors it to the window's feed clients and on a feed's `ready` (`_send_active_chat`,
   `kernel.py:57043`). Pass two widens both roads to the Artifacts pane: the shell relays `activeChat` to every pane
   iframe with `data-protocol` `romp` (the feed included, as today), and the kernel sends its `activeChat` frame to the
-  window's `artifacts` clients too (the relay's fan-out and the `ready` arm), so a reloaded pane knows the focused
-  session before any switch. The id arrives host-prefixed for a remote tab (federation's fan-out, `federation.ts:435`),
+  window's `artifacts` clients too (the relay's fan-out and the `ready` arm, the pane posting `ready` as the Files pane
+  does), so a reloaded pane knows the focused session before any switch. The id arrives host-prefixed for a remote tab (federation's fan-out, `federation.ts:435`),
   which is the id the listing needs.
 - **Locked, the pane stays on the picked session; only the lock button changes the lock** (the manager's correction
   of 2026-09-20, the user's words: unlocked, the pane mirrors whatever session was picked OR most recently selected in a
