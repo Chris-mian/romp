@@ -44,9 +44,12 @@ test("the pieces outside the kernel: the fresh setting read like the Files contr
   // the pane is an EXPERIMENTAL record in the kernel's _CODE_PANES (plans/panes-as-data.md, phase three): the gear's generic Panes row
   // (gear.js renderRegistryRows, off by default for an experimental pane) is its control; the bespoke showArtifactsControl key is gone
   assert.match(KERNEL, /\{"id": "artifacts", "title": "Artifacts", "source": "\/artifacts", "on": False, "experimental": True\}/, "the record: off by default, asked for in the gear");
-  assert.doesNotMatch(SETTINGS, /showArtifactsControl/, "no bespoke setting key");
+  assert.doesNotMatch(SETTINGS, /showArtifactsControl: boolean|showArtifactsControl: false|s\.showArtifactsControl =/, "no bespoke setting key: no field, no default, no normalization (only the retired key's drop at load, pinned below)");
   assert.doesNotMatch(GEAR, /rs-artctl|showArtifactsControl/, "no bespoke gear row");
-  assert.match(GEAR, /p\.builtin \? '' : 'A pane defined at the kernel \(romp pane\)\. '/, "the generic row's words fit a shipped record");
+  assert.match(GEAR, /var BUILTIN_HINTS = \{ artifacts: 'A session\\'s written, shown and dropped files as a list and a grid of large thumbnails\.' \};/, "the shipped record's row says what the pane shows (its first landing's words)");
+  assert.match(GEAR, /\(p\.builtin \? \(\(BUILTIN_HINTS\[p\.id\] \|\| ''\) && BUILTIN_HINTS\[p\.id\] \+ ' '\) : 'A pane defined at the kernel \(romp pane\)\. '\)/, "a data pane's row says it is defined at the kernel");
+  assert.match(GEAR, /'Off' \+ \(p\.experimental \? ' \(the default for an experimental pane\)' : ''\)/, "the experimental default is said only where it applies");
+  assert.match(SETTINGS, /delete \(s as Record<string, unknown>\)\.showArtifactsControl;/, "the retired key is dropped at load, like the repo's other retired keys");
   assert.match(BUILD, /"\.\.\/ui\/webview\/artifacts\.ts",/); assert.match(BUILD, /"\.\.\/ui\/webview\/artifacts-pane\.css",/);
   const ART = fs.readFileSync(path.join(UI, "artifacts.ts"), "utf8");
   assert.match(ART, /ask\(\{ type: "listArtifacts", sid: selected, reqId: lastReq \}\);/, "one request, by id");

@@ -66,7 +66,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   // T404: General opens with the account, then the panes (the Files control among them), Appearance, Permissions, This machine, the
   // shortcuts; Debug opens with the judges' debug views, then the diagnostics (Updates went to General)
   const G = ps.general;
-  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-artctl") < G.indexOf("data-section=appearance>Appearance<")
+  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-filesctl") < G.indexOf("data-section=appearance>Appearance<")
             && G.indexOf("data-section=appearance>Appearance<") < G.indexOf(">Permissions<") && G.indexOf(">Permissions<") < G.indexOf("id=rs-fileedit") && G.indexOf("id=rs-fileedit") < G.indexOf(">This machine<")
             && G.indexOf(">This machine<") < G.indexOf("id=rs-conserve") && G.indexOf("id=rs-conserve") < G.indexOf("id=rs-updates") && G.indexOf("id=rs-updates") < G.indexOf(">Keyboard shortcuts<"),
             "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");

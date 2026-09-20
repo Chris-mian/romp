@@ -329,7 +329,10 @@ class Shell(unittest.TestCase):
         _has(self, "if(en){if(!(k in DPX)&&f&&!f.getAttribute('src')&&f.getAttribute('data-src'))f.setAttribute('src',f.getAttribute('data-src'));", js)
         _has(self, "var gf=document.getElementById('f-'+k);if(po[k]&&gf&&!gf.getAttribute('src')&&gf.getAttribute('data-src'))gf.setAttribute('src',gf.getAttribute('data-src'));", js)
         _has(self, "function optOn(){var on={};OPT.forEach(function(k){on[k]=!DPX[k];});", js)   # an experimental record is off in the gear until asked for
-        self.assertNotIn("showArtifactsControl", open(os.path.join(ROOT, "ui", "webview", "settings.ts")).read(), "the bespoke key is gone")
+        st = open(os.path.join(ROOT, "ui", "webview", "settings.ts")).read()
+        for gone in ("showArtifactsControl: boolean", "showArtifactsControl: false", "s.showArtifactsControl ="):
+            self.assertNotIn(gone, st, "the bespoke key is gone: no field, no default, no normalization")
+        self.assertIn("delete (s as Record<string, unknown>).showArtifactsControl;", st, "a browser that stored the retired key sees it dropped at load, like the repo's other retired keys")
         self.assertNotIn("rs-artctl", open(os.path.join(ROOT, "ui", "webview", "gear.js")).read(), "the bespoke gear row is gone: the generic Panes row is the control")
 
     def test_the_pane_is_in_the_one_ordering_after_files_and_the_viewer_set(self):

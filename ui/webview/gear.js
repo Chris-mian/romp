@@ -466,6 +466,9 @@ function initGear(post, opts) {
   // registry holds any; the gear reads it from the shell (the settings page is a same-origin frame of it, and on VS Code's
   // panel there is no dashboard and no list). A row's box writes settings.panes[id]; the shell's reconcile reads it (absent
   // means on for a normal pane, off for an experimental one).
+  // what a SHIPPED record beyond the hand-written five shows, for its generic Panes row (the registry's rows carry no description;
+  // plans/panes-as-data.md phase three): the Artifacts pane's words are its first landing's row's
+  var BUILTIN_HINTS = { artifacts: 'A session\'s written, shown and dropped files as a list and a grid of large thumbnails.' };
   function registryPanes() {
     try { var doc = (window.parent && window.parent !== window) ? window.parent.document : document; var raw = doc.body.getAttribute('data-panes'); var arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr.filter(function (p) { return p && typeof p.id === 'string'; }) : []; } catch (e) { return []; }
   }
@@ -479,7 +482,10 @@ function initGear(post, opts) {
       var v = pans[p.id]; cb.checked = (typeof v === 'boolean') ? v : !p.experimental;
       var span = document.createElement('span'); var b = document.createElement('b'); b.textContent = String(p.title || p.id);
       var sub = document.createElement('span'); sub.className = 'rs-sub';
-      sub.textContent = (p.experimental ? 'Experimental. ' : '') + (p.builtin ? '' : 'A pane defined at the kernel (romp pane). ') + 'Off (the default for an experimental pane), its column and its button are gone from this browser; on, the rail\'s toggle shows it.';
+      // the hint: what a shipped record shows (BUILTIN_HINTS, the words its first landing's row carried), or that a data pane is
+      // defined at the kernel; then the row's meaning, the experimental default said only where it applies (the 1922 read, lows a and b)
+      sub.textContent = (p.experimental ? 'Experimental. ' : '') + (p.builtin ? ((BUILTIN_HINTS[p.id] || '') && BUILTIN_HINTS[p.id] + ' ') : 'A pane defined at the kernel (romp pane). ')
+        + 'Off' + (p.experimental ? ' (the default for an experimental pane)' : '') + ', its column and its button are gone from this browser; on, the rail\'s toggle shows it.';
       span.appendChild(b); span.appendChild(sub); lab.appendChild(cb); lab.appendChild(span); box.appendChild(lab);
       cb.addEventListener('change', function () { var st = load(); var pp = (st.panes && typeof st.panes === 'object') ? st.panes : panesOf(st); pp[p.id] = cb.checked; st.panes = pp; save(st); });
     });

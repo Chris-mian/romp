@@ -376,6 +376,9 @@ class TheLanding(unittest.TestCase):
         _has(self, "body:not(.po-docs) #gv-docs,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files):not(.po-artifacts) #gv-docs{display:none}", page,
              "the first data gutter hides with its pane off or with no shown column before it (the shipped columns from the records)")
         _has(self, "body:not(.po-notes) #gv-notes,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files):not(.po-artifacts):not(.po-docs):not(.po-lab) #gv-notes{display:none}", page)
+        mob = page[page.index("#chat-pane,#fleet-pane,#feed-pane,#files-pane,#tl-pane{display:contents!important}"):]
+        _has(self, "#artifacts-pane,#docs-pane,#lab-pane,#notes-pane{display:contents!important}#f-artifacts.m-on,#f-docs.m-on,#f-lab.m-on,#f-notes.m-on{display:block}", mob[:600],
+             "the phone's rules for the generic panes ride the media block beside the hand five's: the tab, not the po flag, says which pane shows, and the shown tab's iframe displays")
         self.assertEqual(_attr_rows(page), _rows(NOTES, DOCS, LAB), "the attribute carries what the inline scripts and the pane bundles read, never the source")
         n_scripts = page.count("<script>")
         self.w.unseed("notes", "docs", "lab")
@@ -565,6 +568,8 @@ class TheInlineScripts(unittest.TestCase):
         self.assertIn("PANE['f-'+p.id]=p.id+'-pane';COLS.push('f-'+p.id);", km._LANDING_FOCUS_JS, "the focus ring's map and column list")
         self.assertIn("if(!(p.id in PN))PN[p.id]=String(p.title||p.id);", km._LANDING_ERRS_JS, "the bell's titles")
         self.assertIn("F[p.id]=document.getElementById('f-'+p.id);", km._LANDING_MOBILE_JS, "the phone's frames")
+        self.assertIn("var sf=F[p];if(sf&&sf.getAttribute&&!sf.getAttribute('src')&&sf.getAttribute('data-src'))sf.setAttribute('src',sf.getAttribute('data-src'));", km._LANDING_MOBILE_JS,
+                      "a phone shows a pane by its tab: the tap loads the shown pane's iframe once, generically (the 1922 read: a data pane's tab showed a blank pane)")
         self.assertIn("KEYS[p.id+'-pane']=p.id;", km._LANDING_JS, "a data pane's grow key")
         self.assertIn("gutter('gv-'+p.id,function(){for(var j=i-1;j>=0;j--){if(document.body.classList.contains('po-'+key(seq[j])))return seq[j];}return lastChat();},me);", km._LANDING_JS,
                       "one gutter per data pane, its left neighbour the rightmost shown column before it")

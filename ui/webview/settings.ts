@@ -93,6 +93,7 @@ export function loadSettings(): RompSettings {
       s.paneDocking = s.paneDocking === true;   // the pane docking kit opt-in (fresh key): only the literal true turns it on; a store from before the key, or any other value, reads OFF
 
       delete (s as Record<string, unknown>).filesControl;   // the T317-era key (merged in by that gear's whole-object save): never read, gone on the next save
+      delete (s as Record<string, unknown>).showArtifactsControl;   // the Artifacts control's key, retired by panes-as-data phase three (the pane is an experimental record; the gear's Panes row is its control): never read, gone on the next save
       s.chatScheme = chatScheme(s.chatScheme);   // unknown/legacy values normalize to "default"
       s.panes = paneSet(s.panes);   // every optional pane present; only an explicit false hides one
       s.backend = effectiveDefaultBackend(s.backend);   // a saved default of the retired terminal backend (or any unknown value) reads as Claude Code, never undefined (T331)

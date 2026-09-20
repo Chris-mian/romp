@@ -56262,6 +56262,17 @@ def _data_pane_markup(panes=None):
     return "".join(out)
 
 
+def _data_pane_mobile_css(panes=None):
+    """The phone's rule for the generic panes, inside the mobile media block: the pane element is display:contents whatever its po
+    class (the hand-written five's rule beside it), so the tab, not the desktop flag, says which pane shows."""
+    ids = [p["id"] for p in _generic_panes(panes)]
+    if not ids:
+        return ""
+    # the pane wrappers dissolve (the tab bar, not the po class, says which pane shows), and the shown tab's iframe displays
+    return (",".join("#%s-pane" % i for i in ids) + "{display:contents!important}"
+            + ",".join("#f-%s.m-on" % i for i in ids) + "{display:block}")
+
+
 def _data_pane_css(panes=None):
     """The column rules for the generic panes: a grow var and the hide by its po-<id> class, and the gutter's hides (its own
     pane off, or no shown column before it), the hand-written rules' shape."""
@@ -63461,6 +63472,10 @@ function filesCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settings')
 function show(p){if(p==='files'&&!filesCtlM())p='chat';   // the Files tab is hidden while its control is off: the chat shows instead
 if(!F[p])return;for(var i=0;i<B.length;i++)if(B[i].getAttribute('data-pane')===p&&B[i].hidden)return;   // a tab the controller hid (its pane is off in the gear's Panes section) is not a place to go
 document.body.setAttribute('data-tab',p);for(var k in F)if(F[k])F[k].classList.toggle('m-on',k===p);   // a pane this shell lacks is skipped, never a TypeError
+// a phone shows a pane by its TAB, not by its po flag, so the tab is where a lazy pane's iframe loads, once: the generic panes
+// (plans/panes-as-data.md; the registry's data panes, whose src is otherwise set only by the desktop apply on po) and the
+// optional five alike; a src already set is left alone (the 1922 read: a data pane's tab showed a blank pane)
+var sf=F[p];if(sf&&sf.getAttribute&&!sf.getAttribute('src')&&sf.getAttribute('data-src'))sf.setAttribute('src',sf.getAttribute('data-src'));
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}
 // a tab switch changes what is on screen: re-tell the panes (the collapse script's broadcast; absent only
@@ -65485,6 +65500,7 @@ def _landing():
             # the Outline (fleet) rides the tab bar like every other pane (the user 2026-07-11, who couldn't
             # access the outline view in the mobile UI — it was desktop-only before)
             "#chat-pane,#fleet-pane,#feed-pane,#files-pane,#tl-pane{display:contents!important}"
+            + _data_pane_mobile_css(panes) +   # the GENERIC panes likewise: on a phone the tab, not the po flag, says which pane shows (plans/panes-as-data.md)
             ".chat-col,.gv-chat{display:none!important}"   # one pane at a time here: split columns never show (nor are made, see _LANDING_SPLIT_JS)
             # reset the desktop iframe absolute-fill (the bare `iframe` reset below re-flows them as tab panes)
             ".pane>iframe{position:static;inset:auto;width:100%;height:100%}"
