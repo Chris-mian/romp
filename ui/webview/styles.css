@@ -2765,6 +2765,12 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    the plain box shows, never a transparent card (T337c). */
 .turn-postal-service.postal-service-in .notice:not(.notice-slim) {
   background: oklch(from var(--notice-rail, var(--box-bg)) var(--postal-wash-l, 0.263) var(--postal-wash-c, 0.03) h); }
+/* an OUTGOING mail box wears the NEUTRAL box border, never the recipient's identity colour (the user 2026-09-19: the
+   2px identity border-left read as an extra bracket-shaped stroke at the box's left, beside the session's own gutter
+   rail). The identity lives in the head chips (T390) and the gutter rail; the sent box carries only its own border and
+   content. Incoming cards keep the peer-colour rail + tint by design; the provisional queued-bubble keeps its dashed edge. */
+.turn-postal-service.postal-service-out .notice:not(.notice-slim):not(.queued-bubble) {
+  border-left-color: var(--box-border); border-left-width: 1px; }
 /* the postal meta never shrinks, and it GROWS to the head's right edge: it holds the kind word and, after it, the
    delivery icon (margin-left auto inside it), so the icon sits at the edge as before and, when a phone-width head
    wraps, the kind word and the icon move to the next line as ONE unit (T313) */
