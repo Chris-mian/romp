@@ -5,6 +5,9 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { isPaneDockingOn, PANE_DOCKING_CLASS, paneTitle } from "./panedock-main";
 import * as PDM from "./panedock-main";
+import * as fs from "node:fs";
+import * as path from "node:path";
+const ENGINE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "panedock-main.ts"), "utf8");
 // the frame helpers are read by name off the module so a build at a base without them still builds and the test reds on its behaviour
 const frameOnce = (PDM as unknown as Record<string, (f: () => void) => number>).frameOnce;
 const cancelFrame = (PDM as unknown as Record<string, (h: number) => void>).cancelFrame;
@@ -84,4 +87,18 @@ test("frameOnce arms one animation frame, runs at once without one; cancelFrame 
     assert.equal(h2, 0, "no requestAnimationFrame: run at once, handle 0"); assert.equal(now, 1);
     assert.doesNotThrow(() => cancelFrame(5), "no cancelAnimationFrame: inert");
   } finally { g.window = saved; }
+});
+
+// The engine's divider drag reads the pure half the way the design says (plans/pane-docking.md section 12): the press records the
+// pair's sizes (a0, b0) and the tree; a move clamps the ABSOLUTE travel against them with the tree's own minimum; the frame
+// applies dragEdge to the press tree; the release lands the last position and persists ONCE; Escape puts the press tree back.
+test("the engine's divider drag: press geometry, absolute travel, one commit, Escape restores the press tree", () => {
+  assert.match(ENGINE, /const a0 = split \? edge\.avail \* split\.ratios\[edge\.i\] : 0, b0 = split \? edge\.avail \* split\.ratios\[edge\.i \+ 1\] : 0;/, "the pair's sizes at the press");
+  assert.match(ENGINE, /d\.want = edgeClamp\(d\.a0, d\.b0, raw, this\.minFrac\(d\.edge\) \* d\.edge\.avail\);/, "a move clamps the absolute travel against the press, with the tree's minimum in px");
+  assert.match(ENGINE, /const tree = dragEdge\(d\.start\.tree, d\.edge\.path, d\.edge\.i, d\.want, d\.edge\.avail, this\.minFrac\(d\.edge\)\);/, "the frame applies the travel to the PRESS tree");
+  assert.doesNotMatch(ENGINE, /clampDelta|d\.last\b/, "no clamp against the current tree, no incremental step");
+  const endDiv = ENGINE.slice(ENGINE.indexOf("private endDiv(commit: boolean): void {"), ENGINE.indexOf("// boot only in a browser TOP document"));
+  assert.match(endDiv, /if \(d\.raf\) \{ cancelFrame\(d\.raf\); d\.raf = 0; \}\n\s*if \(commit\) this\.applyDiv\(\);/, "the release cancels the armed frame and lands the last recorded position itself");
+  assert.equal((endDiv.match(/this\.persist\(\)/g) || []).length, 1, "one persist, on the commit path only");
+  assert.match(endDiv, /if \(commit\) this\.persist\(\);\n\s*else \{[^]*?this\.lay = d\.start;/, "Escape: the press tree back, nothing written");
 });

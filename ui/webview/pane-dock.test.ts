@@ -11,6 +11,10 @@ import {
   bandPxOf, roundRect, colNumberOf, ownerColumn, planTabDrop, type Shown,
 } from "./pane-dock";
 import { layout, leaves, isSplit, has, type Split, type Layout } from "./pane-tree";
+import * as PDock from "./pane-dock";
+// the divider drag's pure half is read by name off the module so a build at a base without it still builds and the pins red on behaviour
+const edgeClamp = (PDock as unknown as Record<string, (a0: number, b0: number, px: number, minPx: number) => number>).edgeClamp;
+const dragEdge = (PDock as unknown as Record<string, (start: Split, path: number[], i: number, px: number, avail: number, minFrac: number) => Split>).dragEdge;
 
 const R = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
 const chat = { pane: CHAT, rect: R(0, 0, 600, 800) }, fleet = { pane: FLEET, rect: R(607, 0, 300, 800) }, feed = { pane: FEED, rect: R(914, 0, 400, 800) };
@@ -223,4 +227,40 @@ test("seedLayout: a pane the grow store never named takes the mean of the named 
   assert.deepEqual(w, { [CHAT]: 600, [FEED]: 400, "later-pane": 500 }, "60 : 40 : 50 (the mean of 60 and 40), so a pane defined after the store was written opens at a fair width");
   const empty = layout(seedLayout({ row: [CHAT, "notes-pane"], band: false, bandPx: 0, grow: {} }).tree, { x: 0, y: 0, w: 1000, h: 500 }, 0);
   assert.deepEqual(empty.map((r) => Math.round(r.rect.w)), [500, 500], "no store at all: equal weights, as before");
+});
+
+// A divider drag is ABSOLUTE against the press (plans/pane-docking.md section 12, the 1927 read): every frame moves the edge
+// by the pointer's whole travel from the press, applied to the tree as it was at the press, and the clamp holds against the
+// pair's sizes at the press. Clamping the travel against the tree the drag rewrote each frame shrank the window every frame
+// and the edge converged on half its range (1000 px pair, 500 px of travel: the edge stopped near 250).
+test("edgeClamp: the travel is held so neither side drops under the minimum, against the PRESS geometry; a pair too small to seat two minimums does not move", () => {
+  assert.equal(typeof edgeClamp, "function", "the kit exports its clamp");
+  assert.equal(edgeClamp(600, 400, 100, 120), 100, "inside the window: the pointer's travel as is");
+  assert.equal(edgeClamp(600, 400, 500, 120), 280, "far right: the right pane stops at the minimum (400 - 120)");
+  assert.equal(edgeClamp(600, 400, -900, 120), -480, "far left: the left pane stops at the minimum (120 - 600)");
+  assert.equal(edgeClamp(600, 400, 280, 120), 280, "the clamp's own value passes unchanged");
+  assert.equal(edgeClamp(100, 100, 30, 120), 0, "a pair that cannot seat two minimums does not move");
+  assert.equal(edgeClamp(300, 400, 60, 75), 60, "the minimum is the caller's (the engine's, a quarter of the tree or 120 px)");
+});
+
+test("dragEdge: a horizontal edge follows the pointer's absolute travel from the press to the minimum (120 px) and no further; the start tree is never touched", () => {
+  assert.equal(typeof dragEdge, "function", "the kit exports its per-frame drag");
+  // chat 600 | outline 300 | feed 400 over 1300 px: the outline|feed edge (i = 1); the engine's minimum is min(0.25, 120/avail)
+  const start: Split = { dir: "row", kids: [{ pane: CHAT }, { pane: FLEET }, { pane: FEED }], ratios: [600 / 1300, 300 / 1300, 400 / 1300] };
+  const frozen = JSON.stringify(start);
+  const avail = 1300, minFrac = Math.min(0.25, 120 / avail);
+  const px = (n: Split) => n.ratios.map((r) => Math.round(r * avail));
+  // three frames of one drag, each from the SAME start with the pointer's whole travel: the edge is at the pointer
+  assert.deepEqual(px(dragEdge(start, [], 1, 50, avail, minFrac)), [600, 350, 350], "50 px right: the outline takes 50 from the feed");
+  assert.deepEqual(px(dragEdge(start, [], 1, 150, avail, minFrac)), [600, 450, 250], "150 px right, from the start, not from the frame before");
+  const clamp = edgeClamp(300, 400, 900, minFrac * avail);
+  assert.equal(clamp, 280, "the clamp against the press geometry: the feed's 400 less the 120 minimum");
+  assert.deepEqual(px(dragEdge(start, [], 1, clamp, avail, minFrac)), [600, 580, 120], "at the clamp the feed sits at the real minimum, 120 px");
+  assert.deepEqual(px(dragEdge(start, [], 1, 900, avail, minFrac)), [600, 580, 120], "the tree's own clamp agrees: past it, the edge goes no further");
+  assert.deepEqual(px(dragEdge(start, [], 1, edgeClamp(300, 400, -900, minFrac * avail), avail, minFrac)), [600, 120, 580], "far left: the outline at the minimum");
+  assert.equal(JSON.stringify(start), frozen, "the press tree is the drag's fixed reference and is never mutated: Escape restores it as it was");
+  // the commit is the last frame's tree, the same function of start and travel (the engine writes the store once after it)
+  const committed = dragEdge(start, [], 1, 150, avail, minFrac);
+  assert.deepEqual(dragEdge(start, [], 1, 150, avail, minFrac), committed, "the release lands the last recorded position: a pure function of the press and the travel");
+  assert.deepEqual(px(dragEdge(start, [], 1, 0, avail, 0)), [600, 300, 400], "no travel: the start");
 });

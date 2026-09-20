@@ -117,3 +117,13 @@ export function followTail(distBefore: number, heightBefore: number, heightAfter
 export function followTailShrink(stick: boolean, dh: number): boolean {
   return stick && dh < 0;
 }
+/** The transcript RE-FLOWED under a follow-mode reader (plans/pane-docking.md section 12, the 1927 read): a divider drag that
+ *  narrows the chat column wraps every line longer, the view GROWS, and the browser keeps scrollTop, so a reader at the true
+ *  bottom is silently the growth above it; a widening shrinks the view and the clamp moves them (followTailShrink's case).
+ *  Neither followTail (the append rebuild's) nor followBoxBelow (the boxes' observer's) runs on a resize. The rule: the view's
+ *  RECORDED follow mode (`stick`, the pre-change truth) and a WIDTH change decide, and any height change then writes the
+ *  reader to the new bottom; a height change with the width unchanged is an append's or a box's, and stays theirs. A
+ *  scrolled-up reader is untouched (the browser's scroll anchoring keeps their line). Pure, so node executes it. */
+export function followReflow(stick: boolean, widthChanged: boolean, dh: number): boolean {
+  return stick && widthChanged && dh !== 0;
+}

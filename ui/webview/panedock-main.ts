@@ -36,7 +36,7 @@ import {
 import { paneSourceOk } from "./pane-source";
 import {
   BAND, CHAT, FEED, FILES, FLEET, GUTTER, LAYOUT_KEY, RING, type Payload, type Shown, type Zone,
-  bandPxOf, colNumberOf, crossedSlop, grabbable, growKey, isChatPane, landingRect, planTabDrop, reconcileShown, roundRect, seedLayout, zoneAt,
+  bandPxOf, colNumberOf, crossedSlop, dragEdge, edgeClamp, grabbable, growKey, isChatPane, landingRect, planTabDrop, reconcileShown, roundRect, seedLayout, zoneAt,
 } from "./pane-dock";
 
 export const PANE_DOCKING_CLASS = "pane-docking";
@@ -139,7 +139,7 @@ const CONTROL_SEL = "button,a,input,textarea,select,[role=button],[contenteditab
 const TOP_RUN_SEL = "#tabbar,#tabs,.tab-strip-end,.fileview-bar";
 
 interface Press { pane: PaneId; frame: HTMLIFrameElement | null; win: Window; x0: number; y0: number; armed: boolean; zone: Zone | null }
-interface DivDrag { edge: EdgeRect; x0: number; y0: number; last: number; want: number | null; raf: number; start: Layout; tl0: string }
+interface DivDrag { edge: EdgeRect; x0: number; y0: number; want: number | null; raf: number; start: Layout; tl0: string; a0: number; b0: number }
 
 function byId(id: string): HTMLElement | null { return document.getElementById(id); }
 /** One layout per animation frame for a divider drag (plans/pane-docking.md section 12): arm `f` for the next frame and return its
@@ -747,17 +747,18 @@ class Engine {
     // Escape restores the pre-drag tree and band height live and writes nothing. No landing line.
     if (!this.lay) return;
     const tl0 = this.col ? this.col.style.getPropertyValue("--tl") : "";
-    this.div = { edge, x0: e.clientX, y0: e.clientY, last: 0, want: null, raf: 0, start: parse(serialise(this.lay)) as Layout, tl0 };
+    // the pair's sizes AT THE PRESS are the drag's frame of reference: every frame applies the pointer's absolute travel to the
+    // tree as it was at the press, and the clamp holds against these (the 1927 read: clamping against the tree the drag rewrote
+    // every frame shrank the window each frame and the edge stopped at half its range)
+    const split = this.splitAt(edge.path);
+    const a0 = split ? edge.avail * split.ratios[edge.i] : 0, b0 = split ? edge.avail * split.ratios[edge.i + 1] : 0;
+    this.div = { edge, x0: e.clientX, y0: e.clientY, want: null, raf: 0, start: parse(serialise(this.lay)) as Layout, tl0, a0, b0 };
     document.body.classList.add(RESIZE_CLASS);
     const mv = (ev: Event) => this.onDivMove(ev as PointerEvent);
     const up = () => this.endDiv(true);
-    // Escape must reach the drag wherever the keyboard sits: the press prevents the default, so a focused pane keeps the keyboard
-    // and its document, not this one, sees the key; the drag hears keydown in every same-origin pane document for its duration
-    const esc = (ev: Event) => { const k = ev as KeyboardEvent; if (k.key !== "Escape" || !this.div) return; k.preventDefault(); k.stopPropagation(); this.endDiv(false); };
-    const docs: Document[] = [];
-    for (const f of this.allFrames()) { try { const dd = f.contentDocument; if (dd) { dd.addEventListener("keydown", esc, true); docs.push(dd); } } catch { /* a foreign document: unreadable, and it has no keyboard here */ } }
+    // Escape reaches the drag from a focused pane through the engine's own keydown wiring on every pane document (wire, onKey)
     window.addEventListener("pointermove", mv, true); window.addEventListener("pointerup", up, true);
-    this.divOff = () => { window.removeEventListener("pointermove", mv, true); window.removeEventListener("pointerup", up, true); docs.forEach((dd) => { try { dd.removeEventListener("keydown", esc, true); } catch { /* gone */ } }); };
+    this.divOff = () => { window.removeEventListener("pointermove", mv, true); window.removeEventListener("pointerup", up, true); };
   }
 
   private splitAt(path: number[]): { ratios: number[] } | null {
@@ -765,17 +766,6 @@ class Engine {
     let n: any = this.lay.tree;
     for (const i of path) { if (!n || !n.kids || !n.kids[i]) return null; n = n.kids[i]; }
     return n && n.kids ? (n as { ratios: number[] }) : null;
-  }
-
-  private clampDelta(edge: EdgeRect, px: number): number {
-    // neither side of the edge drops under min(120 px, a quarter of the pair): the shipped clamp, in px
-    const split = this.splitAt(edge.path);
-    if (!split) return 0;
-    const a = edge.avail * split.ratios[edge.i], b = edge.avail * split.ratios[edge.i + 1];
-    const mn = Math.min(MIN_PX, (a + b) * 0.25);
-    const lo = mn - a, hi = b - mn;
-    if (lo > hi) return 0;
-    return px < lo ? lo : px > hi ? hi : px;
   }
 
   private minFrac(edge: EdgeRect): number { return Math.min(0.25, MIN_PX / Math.max(1, edge.avail)); }
@@ -793,26 +783,22 @@ class Engine {
       d.want = Math.max(BAND_MIN, Math.min(Math.round(window.innerHeight * 0.7), Math.round(bottom - e.clientY)));
     } else {
       const raw = d.edge.dir === "row" ? e.clientX - d.x0 : e.clientY - d.y0;
-      d.want = this.clampDelta(d.edge, raw);
+      d.want = edgeClamp(d.a0, d.b0, raw, this.minFrac(d.edge) * d.edge.avail);   // against the press geometry, the tree's own minimum in px: the edge follows the pointer to it and no further
     }
     if (!d.raf) d.raf = frameOnce(() => this.applyDiv());
   }
 
-  /** The frame's one layout for the divider drag: the band's height, or a `resize` of the edge by the pointer's travel since
-   *  the last applied position (the tree keeps the sum, the pair trades). */
+  /** The frame's one layout for the divider drag: the band's height, or the edge moved by the pointer's ABSOLUTE travel from the
+   *  press, applied to the tree as it was at the press (dragEdge: the tree keeps the sum, the pair trades, nothing compounds). */
   private applyDiv(): void {
     const d = this.div;
     if (!d) return;
     d.raf = 0;
     if (d.want === null) return;
     if (d.edge.fixed) { if (this.col) this.col.style.setProperty("--tl", d.want + "px"); return; }
-    if (!this.lay || d.want === d.last) return;
-    const step = d.want - d.last; d.last = d.want;
-    const tree = resize(this.lay.tree, d.edge.path, d.edge.i, step / d.edge.avail, this.minFrac(d.edge));
+    if (!this.lay) return;
+    const tree = dragEdge(d.start.tree, d.edge.path, d.edge.i, d.want, d.edge.avail, this.minFrac(d.edge));
     this.lay = { ...this.lay, tree }; this.render();
-    // the edge list was rebuilt by render: keep this drag on the same edge (same path and index)
-    const same = Array.from(this.divEdges.values()).find((x) => x.dir === d.edge.dir && x.i === d.edge.i && x.path.join(",") === d.edge.path.join(","));
-    if (same) d.edge = same;
   }
 
   private endDiv(commit: boolean): void {

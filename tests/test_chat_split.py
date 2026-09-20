@@ -163,7 +163,7 @@ class SplitSourcePins(unittest.TestCase):
             self.assertIn(needle, split, needle)
         self.assertNotIn("setTimeout", split, "nothing is timed")
         # the rectangle's element beside the divider drag's landing line: a child of .col, never a flex item of the row
-        self.assertIn("</div><div id=col-ghost></div>", self.html)   # the tab drag's overlay follows the pane row (the divider landing line retired, plans/pane-docking.md section 12)
+        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=col-ghost></div>', self.html)   # the tab drag's overlay follows the pane row, whose last pane is the Artifacts record (the divider landing line retired, plans/pane-docking.md section 12)
         # the zones ride the panes (position:relative) above the iframe and the cross (z 7); the edge above the column zone
         self.assertIn(".col-drop{position:absolute;inset:0;z-index:8}", self.html)
         self.assertIn(".col-drop.col-drop-edge{left:auto;z-index:10}", self.html)   # round two LOW c: above the bottom band (z 9) so the edge owns the bottom-right corner

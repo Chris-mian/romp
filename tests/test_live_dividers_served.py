@@ -6,7 +6,13 @@ four divider drags the dashboard has and reads, for each:
   - mid-drag, at three sample points, the two panes' widths (or heights) equal the pointer's split within a pixel;
   - the release persists the drag's store ONCE (a Storage.setItem count on the key), never per frame;
   - Escape restores the pre-drag sizes live and writes nothing;
-  - the iframes keep their content across the drag (a probe set in each frame survives: no reload).
+  - the iframes keep their content across the drag (a probe set in each frame survives: no reload);
+  - a far drag stops at the pair's real minimum (120 px) with the edge at the pointer up to it (the kit's clamp holds against
+    the geometry at the PRESS, never against the tree the drag rewrote the frame before);
+  - the chat's reader survives the reflow: one at the true bottom stays within 2 px of it at three samples through a narrowing
+    drag (the transcript wraps longer and the view grows under them); one scrolled up keeps the line they read where it was
+    ON SCREEN within a pixel (the browser's scroll anchoring holds their turn while the transcript above it re-wraps; the
+    chat's own strip compensation holds it when the tab strip wraps to another row as the pane narrows).
 The four: (1) the shipped column gutters (kit off), (2) the sessions band's height divider (kit off), (3) the chat's vertical
 split divider (kit off, a session moved down), (4) the docking kit's dividers (kit on: a divider between columns and one
 between rows). The lab also measures the cost the design names: frames per second from the shell's requestAnimationFrame
@@ -137,6 +143,42 @@ async function dragH(gutterSel, leftSel, rightSel, samples, { release = true, es
   if (escape) { await page.mouse.up(); await frame(page); rec.afterUp = { L: await rect(page, leftSel), R: await rect(page, rightSel), writes: key ? ((await writes(page))[key] || 0) - (w0[key] || 0) : null }; }
   return rec;
 }
+// the chat's reader through a drag: the transcript's scroller (#content), its distance from the bottom, its height and width
+const recordScrollWrites = () => chatFr.evaluate(() => { const c = document.getElementById("content"); const d = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+  window.__stw = []; if (c.__stwHooked) return true; c.__stwHooked = true;
+  Object.defineProperty(c, "scrollTop", { configurable: true, get() { return d.get.call(this); },
+    set(v) { window.__stw.push({ to: v, from: d.get.call(this), by: String(new Error().stack || "").split("\n").slice(2, 5).map((l) => l.trim().replace(/\(.*\//, "(").slice(0, 60)) }); d.set.call(this, v); } });
+  return true; });
+const readerAt = () => chatFr.evaluate(() => { const c = document.getElementById("content"); const a = document.querySelector(".turn[data-lab-anchor]");
+  return { dist: c.scrollHeight - c.scrollTop - c.clientHeight, top: c.scrollTop, sh: c.scrollHeight, ch: c.clientHeight, w: c.clientWidth, turns: c.querySelectorAll(".turn").length,
+    anchor: a ? Math.round((a.getBoundingClientRect().top - c.getBoundingClientRect().top) * 100) / 100 : null, screen: a ? Math.round(a.getBoundingClientRect().top * 100) / 100 : null,
+    ctop: Math.round(c.getBoundingClientRect().top * 100) / 100, strip: (() => { const tb = document.getElementById("tabbar"); return tb ? Math.round(tb.getBoundingClientRect().height * 100) / 100 : 0; })(),
+    writes: (window.__stw || []).splice(0) }; });
+// a drag on the chat | Outline gutter reading the chat's reader at every sample (a narrowing drag: the pointer moves left)
+async function dragReader(samples, place) {
+  await chatFr.evaluate(() => document.querySelectorAll(".turn[data-lab-anchor]").forEach((n) => n.removeAttribute("data-lab-anchor")));
+  if (place === "bottom") await chatFr.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });
+  else {
+    // scrolled up: the turn a third of the way down the transcript with its top a pixel above the scroller's top, so the turn
+    // before it is wholly out of view and the browser's scroll anchor is this turn's first line (the browser holds the top of
+    // the first visible node: with the previous turn's last block a sliver in view, that block's own re-wrap would push every
+    // line under it down the screen); a screen or more of transcript above re-wraps, and the reader is well above the bottom
+    await chatFr.evaluate(() => { const c = document.getElementById("content");
+      const turns = Array.from(c.querySelectorAll(".turn")).filter((n) => n.getBoundingClientRect().height > 0);   // the laid-out turns (a turn folded away has no box)
+      const t = turns[Math.floor(turns.length / 3)];
+      t.setAttribute("data-lab-anchor", "1"); c.scrollTop += t.getBoundingClientRect().top - c.getBoundingClientRect().top + 1; });
+  }
+  await frame(page); await frame(page); await recordScrollWrites();
+  const g = await rect(page, "#gv-a"); const x0 = g.x + g.w / 2, y0 = g.y + g.h / 2;
+  const rec = { place, before: await readerAt(), chatW0: (await rect(page, "#chat-pane")).w, points: [] };
+  await page.mouse.move(x0, y0); await page.mouse.down(); await frame(page);
+  for (const dx of samples) { await page.mouse.move(x0 + dx, y0, { steps: 4 }); await frame(page); await frame(page); rec.points.push({ dx, reader: await readerAt(), chatW: (await rect(page, "#chat-pane")).w }); }
+  await page.keyboard.press("Escape"); await frame(page); await page.mouse.up(); await frame(page); await frame(page);
+  rec.after = await readerAt();
+  return rec;
+}
+out.readerBottom = await dragReader([-120, -240, -340], "bottom");
+out.readerUp = await dragReader([-120, -240, -340], "up");
 // (1) the shipped chat | Outline gutter (gv-a, both shown)
 out.gutter = await dragH("#gv-a", "#chat-pane", "#fleet-pane", [-120, -60, 80], { key: "romp-pane-grow" });
 out.gutterEscape = await dragH("#gv-a", "#chat-pane", "#fleet-pane", [-90, 60], { escape: true, key: "romp-pane-grow" });
@@ -249,6 +291,7 @@ async function dragKit(dir, samples, { escape = false } = {}) {
 }
 out.kitRow = await dragKit("row", [-100, -50, 70]);
 out.kitRowEscape = await dragKit("row", [-80, 60], { escape: true });
+out.kitRowFar = await dragKit("row", [1200, -1200], { escape: true });   // past the clamp both ways: the right pane, then the left, at the minimum
 // a divider between rows: dock the feed into the chat's bottom half by its ring (the docking kit's own drag), then drag that divider
 {
   const rs = await rectsOf(); const feed = rs["feed-pane"], chat = rs["chat-pane"];
@@ -262,6 +305,7 @@ out.kitRowEscape = await dragKit("row", [-80, 60], { escape: true });
 }
 out.kitCol = await dragKit("col", [-60, 40, -20]);
 out.kitColEscape = await dragKit("col", [50, -40], { escape: true });
+out.kitColFar = await dragKit("col", [900, -900], { escape: true });
 await ctxB.close();
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -352,8 +396,25 @@ class ServedLiveDividers(unittest.TestCase):
     def _within(self, a, b, tol, msg):
         self.assertLessEqual(abs(a - b), tol, "%s: %r vs %r" % (msg, a, b))
 
-    def test_every_divider_resizes_live_persists_once_restores_on_escape_and_keeps_the_panes_content(self):
-        r = self._drive()
+    _res = None
+
+    def _result(self):
+        # one drive per class (the driver runs every leg in one browser session); a driver failure or a skip is cached and
+        # re-raised by every test, so the record is measured once and each leg's verdict stands on its own
+        cls = type(self)
+        if cls._res is None:
+            try:
+                cls._res = ("ok", self._drive())
+            except (AssertionError, unittest.SkipTest) as e:
+                cls._res = ("err", e)
+        kind, val = cls._res
+        if kind == "err":
+            raise val
+        return val
+
+    def test_the_shipped_dividers_resize_live_persist_once_restore_on_escape_keep_the_panes_content_and_the_cost_is_measured(self):
+        # the shipped column gutter, the band's height divider, the chat's vertical split (kit off), the probes, the cost
+        r = self._result()
         self.assertEqual(r["errors"], [], "no page error")
         self.assertEqual(r["panesOn"], ["po-chat", "po-feed", "po-files", "po-fleet", "po-timeline"], "every pane on for the drags")
         # (1) the shipped column gutter: mid-drag the left pane's right edge follows the pointer (less the gutter's half), the pair's sum holds
@@ -395,6 +456,44 @@ class ServedLiveDividers(unittest.TestCase):
         self._within(ve["after"]["T"]["h"], ve["before"]["T"]["h"], 1.0, "Escape restores the split's heights: %r" % {"before": ve["before"], "after": ve["after"], "points": ve["points"]})
         self.assertEqual(ve["after"]["writes"], 0)
         self.assertEqual(r["probesAfterAll"], {"chat": True, "feed": True}, "the iframes keep their content through every drag")
+        # (5) the cost, measured: reported in the body; asserted only to have been measured
+        c = r["cost"]
+        self.assertGreater(c["frames"], 10, "frames were sampled during the drag: %r" % c)
+        self.assertIsNotNone(c["fps"])
+
+    def test_the_chats_reader_survives_the_reflow_at_the_bottom_and_scrolled_up(self):
+        # the chat's reader through a narrowing drag on the chat | Outline gutter: at the true bottom, and scrolled up
+        r = self._result()
+        # (1b) the chat's reader through a narrowing drag (the 1927 read: the transcript wraps longer, the view grows, and the browser
+        # keeps scrollTop, so a reader at the true bottom was left above it): the reflow rule (followReflow, scroll-keep.ts) keeps
+        # them at the bottom at every sample; a scrolled-up reader keeps the line they read where it was on screen (the browser's
+        # scroll anchoring holds their turn, the chat's strip compensation holds it when the tab strip wraps to another row)
+        rb = r["readerBottom"]
+        self.assertLessEqual(rb["before"]["dist"], 2, "the reader starts at the true bottom: %r" % rb["before"])
+        self.assertGreater(rb["points"][-1]["reader"]["sh"], rb["before"]["sh"] + 40, "the narrowing drag grew the view (the lines wrapped longer): %r" % [pt["reader"]["sh"] for pt in rb["points"]])
+        widths = [pt["chatW"] for pt in rb["points"]]
+        self.assertEqual(widths, sorted(widths, reverse=True), "each sample narrows the chat further: %r" % widths)
+        self.assertLess(widths[0], rb["chatW0"] - 100, "the first sample already 120 px narrower than before the press")
+        for pt in rb["points"]:
+            self.assertLessEqual(pt["reader"]["dist"], 2, "mid-drag, at %d px, the bottom reader is within 2 px of the bottom: %r" % (pt["dx"], pt["reader"]))
+        self.assertLessEqual(rb["after"]["dist"], 2, "and after Escape's restore")
+        ru = r["readerUp"]
+        self.assertIsNotNone(ru["before"]["anchor"], "the anchor turn was found")
+        self.assertGreater(ru["before"]["dist"], 200, "the reader is scrolled up: %r" % ru["before"])
+        self.assertGreater(ru["before"]["top"], 300, "with a screen or more of transcript above them to re-wrap: %r" % ru["before"])
+        for pt in ru["points"]:
+            self.assertIsNotNone(pt["reader"]["screen"], "the anchor turn is on the page mid-drag")
+            self._within(pt["reader"]["screen"], ru["before"]["screen"], 1.0, "a scrolled-up reader keeps the line they read where it was on screen, within a pixel, at %d px: %r" % (pt["dx"], ru))
+        self._within(ru["after"]["screen"], ru["before"]["screen"], 1.0, "and after Escape's restore")
+        # the writes the chat made to their position are its strip compensation only (the tab strip wrapping to another row moves
+        # the scroller down by that row, and the chat scrolls by the same amount so the line stays put on screen); the transcript
+        # re-wrapping above them is the browser's scroll anchoring, no write
+        moved = sum(w["to"] - w["from"] for pt in ru["points"] for w in pt["reader"]["writes"])
+        self._within(moved, ru["points"][-1]["reader"]["ctop"] - ru["before"]["ctop"], 1.5, "every write the chat made to a scrolled-up reader's position is its strip compensation: the sum is the scroller's own move down the page")
+
+    def test_the_kits_dividers_between_columns_and_rows_resize_live_persist_once_and_restore_on_escape(self):
+        # the docking kit on: no landing line; the divider between columns and, after docking the feed under the chat, between rows
+        r = self._result()
         # (4) the docking kit: no ghost element; the divider between columns and the one between rows resize their pair live
         self.assertFalse(r["kitGhost"], "the kit's landing line is gone")
         k = r["kitRow"]
@@ -413,11 +512,28 @@ class ServedLiveDividers(unittest.TestCase):
             self._within(pt["sum"], kc["points"][0]["sum"], 1.5, "the pair trades height")
         self.assertEqual(kc["after"]["writes"], 1)
         self.assertTrue(r["kitColEscape"]["after"]["layoutRestored"])
-        # (5) the cost, measured: reported in the body; asserted only to have been measured
-        c = r["cost"]
-        self.assertGreater(c["frames"], 10, "frames were sampled during the drag: %r" % c)
-        self.assertIsNotNone(c["fps"])
 
+    def test_a_far_drag_on_the_kits_dividers_stops_at_the_panes_minimum_with_the_edge_at_the_clamp(self):
+        # the kit's clamp against the press geometry: the pushed pane at 120 px both ways on each divider, the edge stopped there
+        r = self._result()
+        # (4b) the far drags: the kit's clamp holds against the geometry at the PRESS (the 1927 read: against the tree the drag
+        # rewrote every frame, the window shrank each frame and the edge stopped at half its range); the pane the pointer pushes
+        # sits at the real minimum, 120 px, and the edge stops there
+        kf = r["kitRowFar"]
+        self.assertNotIn("error", kf, kf)
+        far_r, far_l = kf["points"]
+        self._within(far_r["R"]["w"], 120.0, 1.5, "far right on the column divider: the right pane at the minimum, 120 px: %r" % far_r)
+        self._within(far_r["sum"], kf["points"][0]["sum"], 1.5, "the pair trades width at the clamp too")
+        self.assertLess(far_r["edge"], far_r["pointer"] - 100, "the edge stopped at the clamp, short of the pointer")
+        self._within(far_l["L"]["w"], 120.0, 1.5, "far left: the left pane at the minimum, 120 px: %r" % far_l)
+        self.assertTrue(kf["after"]["layoutRestored"], "Escape restores the layout after the far drags")
+        kcf = r["kitColFar"]
+        self.assertNotIn("error", kcf, kcf)
+        far_d, far_u = kcf["points"]
+        self._within(far_d["R"]["h"], 120.0, 1.5, "far down on the row divider: the bottom pane at the minimum, 120 px: %r" % far_d)
+        self.assertLess(far_d["edge"], far_d["pointer"] - 100, "the edge stopped at the clamp")
+        self._within(far_u["L"]["h"], 120.0, 1.5, "far up: the top pane at the minimum: %r" % far_u)
+        self.assertTrue(kcf["after"]["layoutRestored"])
 
 if __name__ == "__main__":
     unittest.main()

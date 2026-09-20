@@ -60774,7 +60774,7 @@ want=Math.max(48,Math.min(mx,px));if(!raf)raf=frameOnce(apply);}
 var keysOff=null;
 function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;
 window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
-function up(){apply();end();}
+function up(){end();apply();}   // end() first: the armed frame is cancelled on this path too, then the last recorded position lands itself
 function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});
 // ── pane gutters (chat|outline|feed|files, fixed order) sized by flex-grow. gv-a is always chat|outline; gv-b's
@@ -60867,7 +60867,7 @@ function mv(ev){want=Math.max(mn,Math.min(sum-mn,wL+(ev.clientX-sx)));if(!raf)ra
 var keysOff=null;
 function end(){document.body.classList.remove('drag','dragv');if(raf)cancelFrame(raf);raf=0;
 window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
-function up(){apply();end();try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}}
+function up(){end();apply();try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}}   // end() first (the armed frame cancelled, the listeners off), then apply() lands the last recorded position itself: a release in the same frame as the last move lands what was under the pointer, and no frame runs after
 function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=wL;end();nL=wL;setGrow(key(L.id),wL);setGrow(key(R.id),wR);}
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});}
 window.__rompGutter=gutter;   // the split's chat|chat gutters are wired through the same code
@@ -64244,7 +64244,7 @@ var dragKeys=window.__rompDragKeys||function(esc){window.addEventListener('keydo
 function apply(){raf=0;if(want===nT)return;nT=want;T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}
 function mv(ev){want=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));if(!raf)raf=frameOnce(apply);}
 function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
-function up(){apply();end();
+function up(){end();apply();
 var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio once: apply() pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
 function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=hT;end();nT=hT;T.style.flex=fT;B.style.flex=fB;}
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});}

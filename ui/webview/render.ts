@@ -94,7 +94,7 @@ import { focusAfterDismiss, emptyStateParts } from "./pane-focus";   // where fo
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";   // the @-mention card's rules, pure; the DOM is setupComposer's mention block and markMentions
 import type { MentionCandidate, MentionQuery } from "./composer-mention";
 import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } from "./comment-name";
-import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, reshowStick } from "./scroll-keep";
+import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, followReflow, reshowStick } from "./scroll-keep";
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
 import { localStrip, stripHost, readCloseAckMs } from "./tab-order";
@@ -12007,11 +12007,12 @@ function ensureView(id: string): View {
     // writer with a pre-change origin claimed it, as the append path does); what this write keeps is the view's saved
     // position and the latch's record for the next frame. A scrolled-up reader is untouched.
     if (typeof ResizeObserver === "function") {
-      let lastH = -1;                                        // -1 = not yet measured (observe fires once on attach)
+      let lastH = -1, lastW = -1;                            // -1 = not yet measured (observe fires once on attach); lastW: the view's width, a reflow's tell
       const view = v;                                        // the closure's own binding (the outer `v` is a let)
       v.ro = new ResizeObserver((entries) => {
         scheduleRailSticky();
         const h = entries[0]?.contentRect?.height ?? 0;
+        const w = entries[0]?.contentRect?.width ?? 0;
         const content = document.getElementById("content");
         // the tail's height change, named (T262f): which element grew or shrank under the reader — Chrome moves a
         // bottom reader for both without a pane write, so the scroll rows alone cannot say which element flapped
@@ -12021,7 +12022,13 @@ function ensureView(id: string): View {
           writeScroll(content, content.scrollHeight, "tail-shrink", true);
           view.scrollTop = content.scrollTop;
         }
-        lastH = h;
+        // a RE-FLOW (the pane's width changed: a divider drag narrowing or widening the column, plans/pane-docking.md section 12)
+        // under a follow-mode reader: the view's height moved with the wrapping, and a reader at the true bottom stays there
+        else if (content && lastH >= 0 && lastW >= 0 && activeId === id && view.shown && content.clientHeight > 0 && followReflow(view.stick, w !== lastW, h - lastH)) {
+          writeScroll(content, content.scrollHeight, "tail-reflow", true);
+          view.scrollTop = content.scrollTop;
+        }
+        lastH = h; lastW = w;
       });
       v.ro.observe(elv);
       // …and a MutationObserver (T262j): a tail node removed and re-appended within one task is invisible to the

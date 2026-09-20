@@ -159,6 +159,19 @@ out.escaped = snap();
 out.escapeWrites = WRITES.slice(out.move3.writes);
 frame();
 out.afterEscapeFrame = snap();
+// 3b) the release lands in the SAME frame as the last move (no frame between): the release itself applies the last recorded
+//     position, cancels the armed frame, and persists once; a frame afterwards writes nothing
+EL['gv-b'].fire('mousedown', { preventDefault() {}, clientX: 880 });
+winFire('mousemove', { clientX: 800 });
+out.sameFrameMoved = snap();
+winFire('mouseup', {});
+out.sameFrameReleased = snap();
+out.sameFrameReleaseWrites = WRITES.slice(out.sameFrameMoved.writes);
+out.sameFrameLaterFrame = frame();
+out.sameFrameAfterFrame = snap();
+layout({ chat: 880, feed: 120 });   // back to the widths the later steps assume (the stub has no layout engine)
+EL['gv-b'].fire('mousedown', { preventDefault() {}, clientX: 800 }); winFire('mousemove', { clientX: 880 }); frame(); winFire('mouseup', {});
+out.relaid = snap();
 // 4) a grab whose right pane is gone from the document
 const feed = EL['feed-pane'];
 delete EL['feed-pane'];
@@ -290,10 +303,24 @@ class PaneGutterDragExecutes(unittest.TestCase):
         self.assertEqual(e["framesArmed"], 0, "an armed frame is cancelled")
         self.assertEqual(a["grows"], e["grows"], "a later frame changes nothing")
 
+    def test_a_release_in_the_same_frame_as_the_last_move_lands_that_position_and_persists_once(self):
+        # chat 880 | feed 120 (the layout after Escape), the pointer 80 px left with no frame between the move and the release:
+        # the frame is armed and has not run when the button comes up
+        m, r, a = self.out["sameFrameMoved"], self.out["sameFrameReleased"], self.out["sameFrameAfterFrame"]
+        self.assertEqual(m["framesArmed"], 1, "the move armed a frame that has not run")
+        self.assertEqual(m["grows"]["--g-chat"], 880, "and wrote nothing itself")
+        self.assertEqual(self.out["sameFrameReleaseWrites"], [["--g-chat", 800], ["--g-feed", 200]], "the release applies the last recorded position itself: what was under the pointer is what lands")
+        self.assertEqual(r["framesArmed"], 0, "the armed frame is cancelled at the release, on this path too")
+        self.assertEqual(r["storeWrites"], m["storeWrites"] + 1, "and the store is written once")
+        self.assertEqual(r["store"], {"chat": 800, "fleet": 34, "feed": 200, "files": 40})
+        self.assertEqual(r["listeners"], {"move": 0, "up": 0, "esc": 0})
+        self.assertEqual(self.out["sameFrameLaterFrame"], 0, "no frame left to run")
+        self.assertEqual(a["writes"], r["writes"], "a later frame writes nothing")
+
     def test_a_grab_whose_pane_is_gone_arms_nothing(self):
         # the pair is resolved before anything else happens: no drag classes to leave the col-resize cursor stuck, no
         # normalisation writes, no window listeners
-        e, o = self.out["escaped"], self.out["orphan"]
+        e, o = self.out["relaid"], self.out["orphan"]
         self.assertEqual(o["writes"], e["writes"], "a grab with a missing pane writes nothing")
         self.assertFalse(o["drag"] or o["dragv"], "no drag class is left on the body")
         self.assertEqual(o["listeners"], {"move": 0, "up": 0, "esc": 0})
