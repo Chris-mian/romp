@@ -1,6 +1,6 @@
 # Judge prompt experiments: measuring a prompt change before it moves cards
 
-**Status:** a design note for a read before code (written 2026-09-20, romp_perf; the read is romp_manager's). The harness follows the read as its own pull request, cut from main, red first; no paid pass runs before the manager's go-ahead on the budget below. The category this serves is the one plans/needs-you.md (the cards owner) is redesigning; this note links it and does not restate it.
+**Status:** a design note for a read before code (written 2026-09-20 by the performance worker; the read is the manager's). The harness follows the read as its own pull request, cut from main, red first; no paid pass runs before the manager's go-ahead on the budget below. The category this serves is the one plans/needs-you.md (the cards owner) is redesigning; this note links it and does not restate it.
 
 ## Why now
 
@@ -17,7 +17,7 @@ The user's decision (2026-09-20, paraphrased): Completed must be safe to clear w
 
 ## The corpus
 
-Built once by a script under the harness, from the live state root read only, into `~/.cache/romp-perf/judge-corpus/<date>/`, never into the repository and never into a mail or a body. An **ending** is one finished turn of one session: the transcript up to that turn's result, the goal store as the judges held it before that turn (the store's verdict log and the override journal replayed up to the turn's evidence time, the same replay `load_goals` does), and the card placements the live judges filed for it. Endings are selected in four classes by a heuristic pre-pass over the turn's last assistant text and its to-do state, then confirmed by the labelling below:
+Built once by a script under the harness, from the live state root read only, into `~/.cache/romp-judge-experiments/corpus/<date>/`, never into the repository and never into a mail or a body. An **ending** is one finished turn of one session: the transcript up to that turn's result, the goal store as the judges held it before that turn (the store's verdict log and the override journal replayed up to the turn's evidence time, the same replay `load_goals` does), and the card placements the live judges filed for it. Endings are selected in four classes by a heuristic pre-pass over the turn's last assistant text and its to-do state, then confirmed by the labelling below:
 
 1. **Offers**: the turn ends by offering a next step it did not take ("I can also", "if you want, I could", "shall I").
 2. **Open questions**: the turn ends by asking the user something it needs answered.
@@ -37,7 +37,7 @@ Two tiers, each recorded per ending with its source.
 
 A script under `scripts/` (or a `--experiment` road in the judge module, whichever the read prefers) that, per arm:
 
-1. Copies the corpus into a fresh scratch state root under `~/.cache/romp-perf/judge-runs/<run>/<arm>/` and rebinds the judge module onto it (`_rebind_state`), so no run reads or writes the live root; the kernel is never started; `ROMP_CLAUDE_BIN` stays the real binary for paid passes and the tests' fake for the harness tests.
+1. Copies the corpus into a fresh scratch state root under `~/.cache/romp-judge-experiments/runs/<run>/<arm>/` and rebinds the judge module onto it (`_rebind_state`), so no run reads or writes the live root; the kernel is never started; `ROMP_CLAUDE_BIN` stays the real binary for paid passes and the tests' fake for the harness tests.
 2. Swaps the arm's prompt into the module attribute (`CLOSER_SYS`, `PLAN_SYS`, `UNBLOCK_SYS`: the current text for the baseline arm, a candidate file for each other arm).
 3. For each ending, runs the planner over the turn's segments and the closer over the turn (as `_ab_close_session` sweeps, on the ending's store copy), then the unblocker over the goals the pass blocked; records each top's rolled-up status and its column by the feed's rule.
 4. Runs the same ending a second time from the same store copy to count flaps (a placement that differs between two builds of the same evidence).
@@ -60,7 +60,7 @@ A candidate lands only when 1 is zero on the full corpus, 2 is at or below the b
 
 ## Roads not taken
 
-- **A synthetic corpus.** Invented endings would measure the prompt against the author's idea of an offer, not the user's history; the tests use synthetic fixtures, the experiment uses the real endings, under `~/.cache` only.
+- **A synthetic corpus.** Invented endings would measure the prompt against the author's idea of an offer, not the user's history; the tests use synthetic fixtures, the experiment uses the real endings, under `~/.cache/romp-judge-experiments` only.
 - **An A/B on the live kernel.** The judges' passes would move the user's real cards under two prompts at once; the harness runs on copies and the kernel never sees them.
 - **A prompt tweak first, measurement after.** The tweak is what moves cards; the measurement is the gate.
 - **The labeller alone as the truth.** One model grading another shares its blind spots; the user's recorded actions come first and the labeller's agreement with them is reported before its labels count.
