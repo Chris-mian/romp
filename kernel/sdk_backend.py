@@ -6076,11 +6076,26 @@ class SdkSession:
         timer. The counters are left as they are: an unsettled hold's turn was running (inflight > 0) and
         _on_session_gone reads that as the cut it is; a settled hold's CLI was between turns, and an idle
         death settles 'waiting' as before, its message owed and visible instead of lost until the next
-        spawn's scan."""
+        spawn's scan.
+
+        THE THREAD'S END IS NOT THE CLI'S when a session host keeps the CLI (on by default, T348): a kernel
+        restart's drain detaches every hosted session (`detached`, latched by drain_and_reap before the
+        shutdown so the teardown sends `detach`, never `end`) and the host keeps the CLI with its prompt
+        queue, the held text still in it. A re-head here seeded the next kernel's queue from the mirror and
+        that kernel fed the text again: the agent read it twice, or fused with what queued behind it. So
+        this stands down, with one log line, when the session is detached or when the sid's lease reads
+        'attach' (backend._lease_survives: the rule the boot heal and _reseed_echoes apply to leave a
+        surviving CLI what it holds); the next kernel's attach reads the hold from the host's replay. A host
+        that died with its CLI leaves a lease that does not hold, so the crash road below is unchanged."""
         u = getattr(self, "_untaken", None)
         if u is None:
             return
         self._untaken = None
+        if self.detached or self.backend._lease_survives(self.sid):
+            self.backend._log("sdk %s: the thread ended while it held a fed text, and the CLI lives on under its host "
+                              "(%s): nothing re-headed, the next kernel attaches to the queue the host kept"
+                              % (self.sid[:8], "detached" if self.detached else "a live host lease"))
+            return
         item = u.get("item", u["text"])
         try:
             seen = self.backend._text_landed(self.sid, u["text"], u.get("t"), u.get("off"), u.get("fsid"),
@@ -7055,6 +7070,7 @@ class SdkSession:
             #                             a raising _on_session_gone can never leak the slot)
             try:
                 self._release_hold_at_exit()   # the CLI's queue died with it: a held text goes back to the queue
+                #                                (unless a host kept the CLI: a detached session or a live lease stands down)
             except Exception as e:             # never in the way of _on_session_gone, which reaps the session
                 self.backend._log("sdk %s: the exit release of the feed hold failed: %s: %s"
                                   % (self.sid[:8], type(e).__name__, _mask_ids(e)), problem=True)

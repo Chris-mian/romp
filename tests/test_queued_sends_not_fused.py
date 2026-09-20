@@ -36,7 +36,10 @@ every consequence that keeps it sound:
     queued text into a new turn right after the interrupted result, while a SIGINT makes it exit without
     running the text): at the exit a held text that never landed goes back to the head of the queue for the
     next client; one the CLI took is left alone; an unreadable transcript flags, never re-feeds, on a
-    resumable conversation, and re-heads when no conversation ever materialised;
+    resumable conversation, and re-heads when no conversation ever materialised; and a thread that ends
+    while a session host keeps the CLI (the session detached by a kernel restart's drain, or the sid's lease
+    a live host's) is not the CLI's exit: the text is still in the CLI's queue, so nothing is re-headed and
+    the mirror the next kernel seeds from is left alone;
   * a stale move arm (the CLI accepted a set_cwd and never emitted the turn-less result) is dropped at a
     real turn's result and at the loop top, so it cannot switch the CLI-owned-turn count off for the
     session's life and re-open the fuse the count closes;
@@ -1217,6 +1220,92 @@ class OneFedTextAtATime(unittest.TestCase):
         echo = next(a for a in self.be.live_atoms(SID) if a.get("_echo_text") == "mid-turn note")
         self.assertTrue(echo.get("dropped"), "the possible loss is visible")
         self.assertTrue(any("could not be read" in l for l in self.lines), self.lines[-5:])
+
+    # -- the thread's end is not the CLI's when a session host keeps the CLI --
+    def _live_host_lease(self):
+        """A lease that reads 'attach' (host_lease_state): its CLI pid and its holder are THIS process (alive, start
+        time matching), the holder a host, the beat now. The reading _lease_survives makes for the boot heal."""
+        pid = os.getpid(); start = sb.proc_start(pid)
+        sb.write_lease(self.state, {"sid": SID, "fsid": FSID, "name": "web", "pid": pid, "start": start,
+                                    "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test",
+                                    "t": time.time()})
+        self.assertTrue(self.be._lease_survives(SID), "the lease reads 'attach'")
+
+    def test_a_thread_exit_that_leaves_the_cli_to_its_host_does_not_re_head_the_held_text(self):
+        """Session hosts are on by default: a kernel restart's drain latches `detached` on every hosted session
+        before the shutdown, this feeder thread ends, and the host keeps the CLI with its prompt queue, the held
+        text still in it. The exit release must stand down: nothing back at the head, the mirror the next
+        kernel seeds its queue from untouched, one log line. Before the guard the re-head put the text into the
+        mirror, the next kernel fed it again, and the agent read it twice or fused with what queued behind it."""
+        s, c = self.s, self._first_turn()
+        self.assertTrue(self.be.send(SID, "mid-turn note"))
+        self._wait(lambda: len(c.writes) == 2, "the note forwarded")
+        s.enqueue("behind the note")
+        c.phase = "after-result-1"
+        self._result_frame(c)
+        self._wait(lambda: s.inflight == 0 and s._untaken and s._untaken.get("settled"), "settled, untaken")
+        self.assertEqual((sb.read_reg(self.state, SID) or {}).get("queue"), ["behind the note"])
+        s.detached = True                                # drain_and_reap's latch: the host keeps the CLI, this thread ends
+        self._push(c, _EOF)                              # THIS kernel's stream ends; the CLI runs on under its host
+        self._wait(lambda: not s.thread.is_alive(), "the session thread ended with the stream")
+        self.assertIsNone(s._untaken, "the hold is released with the thread")
+        self.assertEqual(s.pending(), ["behind the note"], "the note is NOT re-headed: the CLI still holds it")
+        self.assertEqual((sb.read_reg(self.state, SID) or {}).get("queue"), ["behind the note"],
+                         "the mirror the next kernel seeds from is untouched")
+        echo = next(a for a in self.be.live_atoms(SID) if a.get("_echo_text") == "mid-turn note")
+        self.assertFalse(echo.get("dropped"), "and not a loss either")
+        self.assertTrue(any("lives on under its host (detached)" in l for l in self.lines), self.lines[-5:])
+        self.assertFalse(any("exited while it still held a fed text" in l for l in self.lines), self.lines[-5:])
+
+    def test_a_thread_exit_under_a_live_host_lease_does_not_re_head_the_held_text_either(self):
+        """The other reading of the same question: the session was never latched detached, but the sid's lease
+        is a live host's (it reads 'attach', the rule the boot heal and the echo reseed apply through
+        _lease_survives). The CLI lives on under that host, so the exit release stands down the same way. The
+        session is under a host by intent here (_host_intent, as every hosted session is from before its
+        attach): the connect loop's teardown drops a KERNEL child's lease before the finally this runs in, and
+        leaves a host's, so on the plain-child road the lease reading never fires and the plain exit re-heads
+        (the twin above)."""
+        s, c = self.s, self._first_turn()
+        self.assertTrue(self.be.send(SID, "mid-turn note"))
+        self._wait(lambda: len(c.writes) == 2, "the note forwarded")
+        c.phase = "after-result-1"
+        self._result_frame(c)
+        self._wait(lambda: s.inflight == 0 and s._untaken and s._untaken.get("settled"), "settled, untaken")
+        self._live_host_lease()
+        s._host_intent = True                            # a hosted session: the teardown leaves the host's lease
+        self.assertFalse(s.detached)
+        self._push(c, _EOF)
+        self._wait(lambda: not s.thread.is_alive(), "the session thread ended")
+        self.assertIsNone(s._untaken)
+        self.assertEqual(s.pending(), [], "nothing re-headed")
+        self.assertEqual((sb.read_reg(self.state, SID) or {}).get("queue"), [])
+        self.assertTrue(any("lives on under its host (a live host lease)" in l for l in self.lines), self.lines[-5:])
+
+    def test_the_exit_release_re_heads_at_a_plain_exit_and_stands_down_only_when_the_cli_lives_on(self):
+        """The predicate itself, on an unstarted session (no thread, no client): a plain CLI exit, no host and no
+        lease, re-heads as before (the end-to-end twin: ..._puts_a_held_text_back_at_the_head...); each survival
+        reading, `detached` and a lease that reads 'attach', stands down and leaves the queue and its mirror
+        alone. The landing scan is stubbed to answer 'never landed', the re-head's own road, so a stand-down
+        that let the scan run would show up here as a re-head."""
+        s = self.s
+        self.be._text_landed = lambda *a, **k: False
+        def hold(text):
+            s._untaken = {"text": text, "item": text, "fresh": False, "settled": True, "t": int(time.time()),
+                          "off": None, "fsid": None}
+        hold("plain exit"); s._release_hold_at_exit()
+        self.assertEqual(s.pending(), ["plain exit"], "no host anywhere: back at the head, as before")
+        self.assertEqual((sb.read_reg(self.state, SID) or {}).get("queue"), ["plain exit"])
+        s.detached = True
+        hold("detached"); s._release_hold_at_exit()
+        self.assertIsNone(s._untaken, "released all the same")
+        self.assertEqual(s.pending(), ["plain exit"], "detached: nothing added")
+        self.assertEqual((sb.read_reg(self.state, SID) or {}).get("queue"), ["plain exit"], "the mirror untouched")
+        s.detached = False
+        self._live_host_lease()
+        hold("under a lease"); s._release_hold_at_exit()
+        self.assertEqual(s.pending(), ["plain exit"], "a live host lease: nothing added")
+        self.assertEqual(sum("nothing re-headed" in l for l in self.lines), 2, self.lines)
+        self.assertEqual(sum("exited while it still held a fed text" in l for l in self.lines), 1, self.lines)
 
     # -- the feeder holds while a move is in flight --
     def _idle_after_the_first_turn(self):
