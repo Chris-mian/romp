@@ -5139,7 +5139,7 @@ class LazyIndex:
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
         files = doc.get("files")
-        self.source_files = None if files is None else {fsid: f["path"] for fsid, f in files.items()}
+        self.source_files = None if files is None else _source_files(files)
         self._user_facts = {}                             # the interrupt-marks tally's light facts by row (user_facts), bounded by _USER_FACTS_CAP
         with _MAT_LOCK:                                   # the add under the lock the userFacts gauge sums under: an add beside the sum raised
             _LIVE_INDEXES.add(self)                       #  "set changed size during iteration" and /perf answered 500 (1597 low 1)
@@ -6708,6 +6708,12 @@ def atom_model(atom):
     return msg.get("model") if isinstance(msg, dict) else None
 
 
+def _source_files(files):
+    """A document's files map as hydration reads it, fsid -> the path of the ingested file: one form for the index, the
+    atoms-only restore and the per-session map (2026-09-20)."""
+    return {fsid: f["path"] for fsid, f in files.items()}
+
+
 def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids, source_files=None):
     """The pre-cut atoms as the tree holds them: the identity fields from the record row (uuid, type, t, fsid, session,
     parentUuid), the recorded scalars over them, a _LazyBody where a message was, the lazy scalars under `lazy`, and
@@ -7027,7 +7033,7 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
         else:
             _t0 = time.perf_counter()
             prefix = _restore_prefix_atoms([json.loads(r_) for r_ in doc["atoms"]], rompuuid, doc["records"], fsids,
-                                           {fsid: f["path"] for fsid, f in doc["files"].items()})   # v6 string rows
+                                           _source_files(doc["files"]))   # v6 string rows
             ok_ = _pre_tree_identity(prefix, rompuuid) == doc.get("identity")
             _restore_ms("verify", _t0)                         # the atoms-only form: its rows built and its identity proven, one part
             if not ok_:
@@ -7052,7 +7058,7 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
         #        to a whole parse when the tail past the cut reaches the share (tailShare), so the settle rewrites the cut
     except Exception as e:                                     # noqa: BLE001 — a document the code cannot use is a fallback
         _asm_ckpt_note(leaf_path, "restore", repr(e)[:120]); return None
-    _LAZY_FILES[str(rompuuid)] = {fsid: f["path"] for fsid, f in doc["files"].items()}
+    _LAZY_FILES[str(rompuuid)] = _source_files(doc["files"])
     with _ASM_LOCK:
         gone = [_ASM_CACHE.pop(key, None)]
         while len(_ASM_CACHE) >= _ASM_CACHE_MAX:
@@ -7153,10 +7159,18 @@ def hydrate(atoms, rompuuid=None, by=None):
                 _hydrate_one(a, hit[0])
             filled += 1
             continue
+        msg = a.get("message")
+        if not isinstance(msg, _LazyBody):                  # another thread finished this atom between the memo miss above and
+            with _ASM_CKPT_LOCK:                            #  here (2026-09-20): its body is a plain dict with no source, and the
+                hit = _HYDRATED.get(u) if u else None       #  per-session map below could name a newer document and refuse an atom
+            if hit is not None:                             #  whose body is in place, the whole call with it. Its bookkeeping (a
+                _hydrate_one(a, hit[0])                     #  kind-u atom's tool result, the popped marker) may still be in flight:
+            filled += 1                                     #  finish it from the memo as the hit branch does, or count it filled
+            continue                                        #  when the entry is gone already
         # Resolve from the held body's document, not the last document restored for this session (2026-09-17).
         # A shallow atom copy keeps its sentinel and source. A missing bound source stays a loud failure; it must
         # never borrow a path from a different snapshot. Legacy unbound descriptors retain the old lookup.
-        path = getattr(a.get("message"), "source_path", _UNBOUND_LAZY_SOURCE)
+        path = msg.source_path
         if path is _UNBOUND_LAZY_SOURCE:
             sid = a.get("session_id") or rompuuid
             path = (_LAZY_FILES.get(str(sid)) or {}).get(a.get("fsid"))
