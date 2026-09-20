@@ -84,7 +84,10 @@ change it and send it again, or clear the box to drop it. Once the session has t
 message it is no longer yours to recall: the bubble's dashes close, its header reads **with
 the session**, and the ✎ goes. It stays that way until the message lands in the
 conversation — inside a running turn that is the session's next step, so a message sent
-mid-turn can sit there while the current step finishes. A queued slash command, and a
+mid-turn can sit there while the current step finishes. Several messages sent during one
+turn reach the session one at a time, in the order you sent them: the next waits, shown as
+queued, until the session has taken the one before it, so two messages are never joined
+into one. A queued slash command, and a
 notice romp itself queued, carry a **✕** instead: there is nothing to reword, so they just
 cancel. If the session took the message before you pressed, the bubble says so and the
 box is left as it was, so nothing is sent twice. One case to know about: a chat page

@@ -36453,8 +36453,10 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     2026-09-11: hold while working, and _apply_pending_ops MERGES the held run into one message at turn
     end). Otherwise hand
     it over NOW — a forwards_sends backend (SDK) takes a send even mid-turn and forwards it at the next tool
-    boundary, folds several queued sends into one turn, and holds them across an interrupt (the user
-    2026-07-17: "get user messages in as soon as possible; we don't have to interrupt but get them in"); the
+    boundary (the user 2026-07-17, who wanted messages in as soon as possible, without an interrupt), hands
+    a drained pile of queued sends to the CLI one message each, in order, the next held until the CLI has
+    taken the last (the user 2026-09-20, who accepted one message each for a drained pile, up to one turn
+    each, over the earlier fold of the pile into one turn), and holds them across an interrupt; the
     still-waiting message renders as a queued bubble (its echo is suppressed) until it forwards. `echo` is
     the parked op's author slot, kept for the op's on-disk shape (the SDK and Codex backends echo for
     themselves inside send(); no kernel-side echo exists since the tmux backend's removal, 2026-09-11).
@@ -36916,12 +36918,15 @@ def _vouched_model(value):
 
 
 def _deliver_send_batch(be, sid, run):
-    """Deliver a run of consecutive parked ('send', text, echo) ops AT ONCE (the user 2026-07-17: a pile of
-    queued messages should all go in together, not one turn each). A backend that forwards its own sends
-    (SDK, Codex) enqueues each — the SDK's inputs() folds them into ONE turn; a backend that can't (none
-    today; the tmux backend, until its removal 2026-09-11) has no fold, so MERGE them into a single message
-    (the user okayed merging for that backend). Nothing is echoed here: every backend echoes inside send()
-    (the kernel-side echo left with the tmux backend)."""
+    """Deliver a run of consecutive parked ('send', text, echo) ops in one pass, in park order. A backend that
+    forwards its own sends (SDK, Codex) enqueues each: the SDK's inputs() hands them to the CLI one message
+    each, the next held until the CLI has taken the last, so a drained pile reaches the agent as separate
+    messages, up to one turn each (the user 2026-09-20, who accepted one message each for a drained pile;
+    this replaces the 2026-07-17 fold of the run into one turn, under which two texts fed during one open
+    turn reached the agent fused). A backend that cannot forward (none today; the tmux backend, until its
+    removal 2026-09-11) has no queue of its own, so MERGE them into a single message (the user okayed merging
+    for that backend). Nothing is echoed here: every backend echoes inside send() (the kernel-side echo left
+    with the tmux backend)."""
     if not run:
         return
     if _forwards_sends(be):
@@ -36942,8 +36947,10 @@ def _apply_pending_ops(now=None):
     2026-07-02, compact-mid-turn): settings ops (model/effort) apply instantly and delivery continues,
     but a SEND or /COMPACT ends the pass — its turn/compaction must finish before the next op fires, so
     "compact, then two messages, then a model pick" lands as pressed. A leading RUN of consecutive sends
-    is delivered together, not one turn each (_deliver_send_batch — the user 2026-07-17, who wanted them sent all at
-    once; the SDK folds the run into one turn; a backend that cannot forward gets them merged).
+    is delivered in one pass (_deliver_send_batch): the SDK hands them to the CLI one message each, the next
+    held until the CLI has taken the last, so a drained pile reaches the agent one message each, up to one
+    turn each (the user 2026-09-20, who accepted this over the 2026-07-17 fold of the run into one turn); a
+    backend that cannot forward gets them merged.
     Event-gated throughout (_compacting
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes, plus
     _limit_hold's account gate — a queue held by a usage limit drains on the cycle after the API's own
