@@ -52,6 +52,8 @@ FIXTURE = json.load(open(os.path.join(HERE, "fixtures", "landing-code-panes.json
 
 SHIPPED = [("chat", "Chat", True), ("timeline", "Sessions", True), ("fleet", "Outline", False), ("feed", "Feed", True),
            ("files", "Files", False), ("artifacts", "Artifacts", False)]   # id, title, today's rail default (the Artifacts pane since 2026-09-19)
+EXPERIMENTAL = {"artifacts"}   # the shipped records the gear asks for before showing (plans/panes-as-data.md phase three: the Artifacts pane)
+ARTIFACTS_ROW = {"id": "artifacts", "title": "Artifacts", "protocol": "romp", "experimental": True, "on": False, "builtin": True}   # the generic build's row for the shipped record
 SHIPPED_IDS = [s[0] for s in SHIPPED]
 NOTES = {"id": "notes", "title": "Notes", "source": "pane:notes", "on": True}
 DOCS = {"id": "docs", "title": "Docs", "source": "http://TESTHOST:9/docs/", "on": True}          # a URL: protocol none
@@ -68,9 +70,10 @@ def _full(d):
 
 
 def _rows(*defs):
-    """The body attribute's rows for these records (what the inline scripts read)."""
-    return [{"id": d["id"], "title": d["title"], "protocol": d["protocol"], "experimental": d["experimental"], "on": d["on"]}
-            for d in sorted((_full(x) for x in defs), key=lambda r: r["id"])]
+    """The body attribute's rows for these data records (what the inline scripts read): the shipped Artifacts record first (the
+    generic build renders every pane after the hand-written five), then the data panes by id."""
+    return [ARTIFACTS_ROW] + [{"id": d["id"], "title": d["title"], "protocol": d["protocol"], "experimental": d["experimental"], "on": d["on"], "builtin": False}
+                              for d in sorted((_full(x) for x in defs), key=lambda r: r["id"])]
 
 
 class World:
@@ -157,12 +160,13 @@ class TheCodePanesRender(unittest.TestCase):
         for name, text in FIXTURE["slices"].items():
             self.assertTrue(got.get(name) == text, "the %s slice differs from the base rendering (fixture from %s): %d vs %d chars"
                             % (name, FIXTURE["made_from"], len(got.get(name, "")), len(text)))
-        # the markup's markers, never the inline scripts' quoted reads of the attribute
-        _lacks(self, ' data-panes="', h0); _lacks(self, " data-protocol=romp>", h0); _lacks(self, " data-protocol=none sandbox=", h0)
-        _lacks(self, "id=gv-notes", h0); _lacks(self, "/pane/", h0)
+        # with no data pane the attribute carries exactly the shipped record the generic build renders (the Artifacts pane), and
+        # none of a data pane's markers
+        self.assertEqual(_attr_rows(h0), [ARTIFACTS_ROW], "the attribute: the Artifacts record alone")
+        _lacks(self, " data-protocol=none sandbox=", h0); _lacks(self, "id=gv-notes", h0); _lacks(self, "/pane/", h0)
         self.w.seed(NOTES)
         h1 = km._landing()
-        self.assertTrue(h1 != h0, "a pane file changes the page"); _has(self, ' data-panes="', h1)
+        self.assertTrue(h1 != h0, "a pane file changes the page"); self.assertEqual([r["id"] for r in _attr_rows(h1)], ["artifacts", "notes"])
         s1 = slices(h1)
         self.assertTrue(s1["body_tag"] != got["body_tag"] and s1["rail_buttons"] != got["rail_buttons"], "the body tag and the rail carry the pane")
         self.w.unseed("notes")
@@ -209,7 +213,7 @@ class TheDoors(unittest.TestCase):
         self.assertEqual(st, 200, "GET /panes answers")
         rows = r["panes"]
         self.assertEqual([(p["id"], p["title"], p["on"]) for p in rows], SHIPPED, "the shipped panes, in the rail's order, with today's rail defaults as `on`")
-        self.assertTrue(all(p["builtin"] and p["protocol"] == "romp" and not p["experimental"] and p["source"] == "/" + p["id"] for p in rows), rows)
+        self.assertTrue(all(p["builtin"] and p["protocol"] == "romp" and p["experimental"] == (p["id"] in EXPERIMENTAL) and p["source"] == "/" + p["id"] for p in rows), rows)
         self.assertEqual(r["rev"], "0", "no data pane: the set's revision is zero")
         self.assertEqual(_rail(km._landing()), [(p["id"], p["title"]) for p in rows], "the rail renders the same records")
 
@@ -372,6 +376,9 @@ class TheLanding(unittest.TestCase):
         _has(self, "body:not(.po-docs) #gv-docs,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files):not(.po-artifacts) #gv-docs{display:none}", page,
              "the first data gutter hides with its pane off or with no shown column before it (the shipped columns from the records)")
         _has(self, "body:not(.po-notes) #gv-notes,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files):not(.po-artifacts):not(.po-docs):not(.po-lab) #gv-notes{display:none}", page)
+        mob = page[page.index("#chat-pane,#fleet-pane,#feed-pane,#files-pane,#tl-pane{display:contents!important}"):]
+        _has(self, "#artifacts-pane,#docs-pane,#lab-pane,#notes-pane{display:contents!important}#f-artifacts.m-on,#f-docs.m-on,#f-lab.m-on,#f-notes.m-on{display:block}", mob[:600],
+             "the phone's rules for the generic panes ride the media block beside the hand five's: the tab, not the po flag, says which pane shows, and the shown tab's iframe displays")
         self.assertEqual(_attr_rows(page), _rows(NOTES, DOCS, LAB), "the attribute carries what the inline scripts and the pane bundles read, never the source")
         n_scripts = page.count("<script>")
         self.w.unseed("notes", "docs", "lab")
@@ -384,7 +391,7 @@ class TheLanding(unittest.TestCase):
         _has(self, "<button data-pane=x>A &lt;b&gt;&amp;</button>", page)
         attr = re.search(r"data-panes=\"([^\"]*)\"", page).group(1)
         self.assertNotIn("<", attr); self.assertNotIn('"', attr)
-        self.assertEqual(_attr_rows(page)[0]["title"], "A <b>&")
+        self.assertEqual(next(r["title"] for r in _attr_rows(page) if r["id"] == "x"), "A <b>&")
 
 
 # ── the inline scripts read the attribute; the source check ─────────────────────────────────────────────────────────
@@ -496,8 +503,8 @@ class TheInlineScripts(unittest.TestCase):
         self.assertFalse(b["notesHidden"]); self.assertTrue(b["docs"], b)
         self.assertFalse(b["lab"]); self.assertTrue(b["labHidden"], "experimental: not in this dashboard until the gear's row asks")
         self.assertIsNone(b["labSrc"], "an experimental pane never loads until asked for")
-        self.assertEqual(b["told"], {"chat": True, "timeline": True, "fleet": False, "feed": True, "files": False, "artifacts": False, "docs": True, "notes": True},
-                         "the broadcast names the data panes beside the shipped ones (the experimental one is not in this dashboard)")
+        self.assertEqual(b["told"], {"chat": True, "timeline": True, "fleet": False, "feed": True, "files": False, "docs": True, "notes": True},
+                         "the broadcast names the data panes beside the shipped ones (the experimental ones, the Artifacts record and the lab pane, are not in this dashboard until the gear asks)")
         self.assertEqual(b["docsTold"], 0, "a URL pane (protocol none) is told nothing")
         self.assertEqual((r["off"]["notes"], r["off"]["store"]["notes"], r["off"]["told"]), (False, False, False), "the rail toggle, persisted, broadcast")
         self.assertFalse(r["labRefused"]["lab"])
@@ -561,10 +568,12 @@ class TheInlineScripts(unittest.TestCase):
         self.assertIn("PANE['f-'+p.id]=p.id+'-pane';COLS.push('f-'+p.id);", km._LANDING_FOCUS_JS, "the focus ring's map and column list")
         self.assertIn("if(!(p.id in PN))PN[p.id]=String(p.title||p.id);", km._LANDING_ERRS_JS, "the bell's titles")
         self.assertIn("F[p.id]=document.getElementById('f-'+p.id);", km._LANDING_MOBILE_JS, "the phone's frames")
+        self.assertIn("var sf=F[p];if(sf&&sf.getAttribute&&!sf.getAttribute('src')&&sf.getAttribute('data-src'))sf.setAttribute('src',sf.getAttribute('data-src'));", km._LANDING_MOBILE_JS,
+                      "a phone shows a pane by its tab: the tap loads the shown pane's iframe once, generically (the 1922 read: a data pane's tab showed a blank pane)")
         self.assertIn("KEYS[p.id+'-pane']=p.id;", km._LANDING_JS, "a data pane's grow key")
         self.assertIn("gutter('gv-'+p.id,function(){for(var j=i-1;j>=0;j--){if(document.body.classList.contains('po-'+key(seq[j])))return seq[j];}return lastChat();},me);", km._LANDING_JS,
                       "one gutter per data pane, its left neighbour the rightmost shown column before it")
-        self.assertIn('var seq=["fleet-pane", "feed-pane", "files-pane", "artifacts-pane"].concat(', km._LANDING_JS, "the shipped columns from the records, not a hand list")
+        self.assertIn('var seq=["fleet-pane", "feed-pane", "files-pane"].concat(', km._LANDING_JS, "the hand-written columns, then every generic pane (the Artifacts record, the data panes) from the attribute")
 
 
 _RELOAD_STUB = r"""

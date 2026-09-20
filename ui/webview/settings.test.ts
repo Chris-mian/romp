@@ -195,3 +195,16 @@ test("the Files control is hidden by default; showing it round-trips, and only t
   assert.deepEqual(Object.keys(JSON.parse(store["romp:settings"])).filter((k) => /filesControl/i.test(k)), ["showFilesControl"], "the next save leaves the old key behind and writes the fresh one");
   delete store["romp:settings"];
 });
+
+// The Artifacts control's key was retired by panes-as-data phase three (the pane is an experimental record; the gear's generic
+// Panes row is its control): a browser that stored it sees it dropped at load and gone on the next save, like the repo's other
+// retired keys (fileLinkPane, filesControl), never rewritten forever.
+test("a stored showArtifactsControl is dropped at load and gone after a save", () => {
+  delete store["romp:settings"];
+  store["romp:settings"] = JSON.stringify({ compact: true, showArtifactsControl: true });
+  const s = loadSettings() as unknown as Record<string, unknown>;
+  assert.equal("showArtifactsControl" in s, false, "dropped at load");
+  saveSettings({ compact: false });
+  assert.equal("showArtifactsControl" in JSON.parse(store["romp:settings"]), false, "gone on the next save");
+  delete store["romp:settings"];
+});

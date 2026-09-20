@@ -74,14 +74,13 @@ function mkEl(id, w, left, display) {
   };
 }
 const EL = {};
-['gh', 'gv-a', 'gv-b', 'gv-c', 'gv-d', 'f-timeline'].forEach((id) => { EL[id] = mkEl(id, 7, 0, 'flex'); });
+['gh', 'gv-a', 'gv-b', 'gv-c', 'f-timeline'].forEach((id) => { EL[id] = mkEl(id, 7, 0, 'flex'); });
 // chat 600 px at the left edge, the Outline pane hidden (so gv-b is the chat | feed gutter), feed 400 px
 // after the 7 px gutter: the divider sits at x = 600; the Files pane hidden until the last drags
 EL['chat-pane'] = mkEl('chat-pane', 600, 0, 'flex');
 EL['fleet-pane'] = mkEl('fleet-pane', 300, 0, 'none');
 EL['feed-pane'] = mkEl('feed-pane', 400, 607, 'flex');
 EL['files-pane'] = mkEl('files-pane', 300, 0, 'none');
-EL['artifacts-pane'] = mkEl('artifacts-pane', 300, 0, 'none');   // the Artifacts pane (2026-09-19): hidden throughout, present for the script's lists
 EL['gv-ghost'] = mkEl('gv-ghost', 7, 0, 'none');
 EL['gv-ghost'].style.display = 'none';
 const WL = {};
@@ -116,7 +115,7 @@ function snap() {
 // shown panes' widths, left to right, and places each after the one before it plus the 7 px gutter
 function layout(widths) {
   let x = 0;
-  [['chat', 'chat-pane'], ['fleet', 'fleet-pane'], ['feed', 'feed-pane'], ['files', 'files-pane'], ['artifacts', 'artifacts-pane']].forEach(([k, id]) => {
+  [['chat', 'chat-pane'], ['fleet', 'fleet-pane'], ['feed', 'feed-pane'], ['files', 'files-pane']].forEach(([k, id]) => {
     if (!(k in widths)) return;
     EL[id].offsetWidth = widths[k]; EL[id]._left = x; x += widths[k] + 7;
   });
@@ -214,8 +213,8 @@ class PaneGutterDragExecutes(unittest.TestCase):
 
     def test_boot_writes_the_five_default_grows_and_shows_no_ghost(self):
         b = self.out["boot"]
-        self.assertEqual(b["writes"], 5)   # the five default grows (the Artifacts pane since 2026-09-19)
-        self.assertEqual(b["grows"], {"--g-chat": 60, "--g-fleet": 34, "--g-feed": 40, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(b["writes"], 4)   # the four default grows of the hand-written columns (the Artifacts pane is a generic pane since phase three, rendered from its record)
+        self.assertEqual(b["grows"], {"--g-chat": 60, "--g-fleet": 34, "--g-feed": 40, "--g-files": 40})
         self.assertEqual(b["ghost"]["display"], "none")
         self.assertFalse(b["drag"] or b["dragv"])
         self.assertEqual(b["listeners"], {"move": 0, "up": 0}, "no drag listeners before a grab")
@@ -224,7 +223,7 @@ class PaneGutterDragExecutes(unittest.TestCase):
         g = self.out["grab"]
         # the two shown panes are written as their px widths (the hidden Outline pane keeps its grow)
         self.assertEqual(g["writes"], self.out["boot"]["writes"] + 2)
-        self.assertEqual(g["grows"], {"--g-chat": 600, "--g-fleet": 34, "--g-feed": 400, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(g["grows"], {"--g-chat": 600, "--g-fleet": 34, "--g-feed": 400, "--g-files": 40})
         # the ghost shows at the divider, spanning the row (its rect, not the pane's)
         self.assertEqual(g["ghost"], {"display": "block", "left": "600px", "top": "24px", "height": "760px"})
         self.assertTrue(g["drag"] and g["dragv"], "body.drag and body.dragv during the drag")
@@ -243,23 +242,23 @@ class PaneGutterDragExecutes(unittest.TestCase):
         self.assertEqual(self.out["releaseWrites"], [["--g-chat", 500], ["--g-feed", 500]],
                          "exactly the pair's two grows, written at release")
         self.assertEqual(r["writes"], m["writes"] + 2)
-        self.assertEqual(r["grows"], {"--g-chat": 500, "--g-fleet": 34, "--g-feed": 500, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(r["grows"], {"--g-chat": 500, "--g-fleet": 34, "--g-feed": 500, "--g-files": 40})
         self.assertEqual(r["ghost"]["display"], "none", "the ghost hides at release")
         self.assertFalse(r["drag"] or r["dragv"], "body.drag and body.dragv are removed")
-        self.assertEqual(r["store"], {"chat": 500, "fleet": 34, "feed": 500, "files": 40, "artifacts": 40}, "the grows persist at release")
+        self.assertEqual(r["store"], {"chat": 500, "fleet": 34, "feed": 500, "files": 40}, "the grows persist at release")
         self.assertEqual(r["listeners"], {"move": 0, "up": 0}, "the drag's window listeners are removed")
 
     def test_a_far_drag_clamps_the_ghost_and_the_release_at_the_pair_minimum(self):
         # chat 500 | feed 500: the pair's minimum is min(120, 1000 * 0.25) = 120, so the pointer at 1590
         # (asking for chat 1590) lands the divider at 880
         g2, m2, r2 = self.out["grab2"], self.out["move2"], self.out["release2"]
-        self.assertEqual(g2["grows"], {"--g-chat": 500, "--g-fleet": 34, "--g-feed": 500, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(g2["grows"], {"--g-chat": 500, "--g-fleet": 34, "--g-feed": 500, "--g-files": 40})
         self.assertEqual(g2["ghost"].get("left"), "500px", "the ghost shows at the new divider")
         self.assertEqual(m2["writes"], g2["writes"], "still no grow written while the pointer moves")
         self.assertEqual(m2["ghost"].get("left"), "880px", "the ghost clamps at the pair's minimum")
         self.assertEqual(self.out["release2Writes"], [["--g-chat", 880], ["--g-feed", 120]])
-        self.assertEqual(r2["grows"], {"--g-chat": 880, "--g-fleet": 34, "--g-feed": 120, "--g-files": 40, "--g-artifacts": 40})
-        self.assertEqual(r2["store"], {"chat": 880, "fleet": 34, "feed": 120, "files": 40, "artifacts": 40})
+        self.assertEqual(r2["grows"], {"--g-chat": 880, "--g-fleet": 34, "--g-feed": 120, "--g-files": 40})
+        self.assertEqual(r2["store"], {"chat": 880, "fleet": 34, "feed": 120, "files": 40})
         self.assertEqual(r2["ghost"]["display"], "none")
 
     def test_a_grab_whose_pane_is_gone_arms_nothing(self):
@@ -277,7 +276,7 @@ class PaneGutterDragExecutes(unittest.TestCase):
         # left is that pane's client left plus the dragged width, not the width alone
         o, g3, m3 = self.out["orphan"], self.out["grab3"], self.out["move3"]
         self.assertEqual(g3["writes"], o["writes"] + 3, "all three shown panes are normalised")
-        self.assertEqual(g3["grows"], {"--g-chat": 300, "--g-fleet": 200, "--g-feed": 200, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(g3["grows"], {"--g-chat": 300, "--g-fleet": 200, "--g-feed": 200, "--g-files": 40})
         self.assertEqual(g3["ghost"], {"display": "block", "left": "507px", "top": "24px", "height": "760px"},
                          "the line shows at the Outline | feed divider")
         self.assertEqual(m3["writes"], g3["writes"], "no grow written while the pointer moves")
@@ -289,8 +288,8 @@ class PaneGutterDragExecutes(unittest.TestCase):
         m3, r3 = self.out["move3far"], self.out["release3"]
         self.assertEqual(m3["ghost"]["left"], "407px", "the line clamps at a quarter of the pair")
         self.assertEqual(self.out["release3Writes"], [["--g-fleet", 100], ["--g-feed", 300]])
-        self.assertEqual(r3["grows"], {"--g-chat": 300, "--g-fleet": 100, "--g-feed": 300, "--g-files": 40, "--g-artifacts": 40}, "the chat grow is untouched")
-        self.assertEqual(r3["store"], {"chat": 300, "fleet": 100, "feed": 300, "files": 40, "artifacts": 40})
+        self.assertEqual(r3["grows"], {"--g-chat": 300, "--g-fleet": 100, "--g-feed": 300, "--g-files": 40}, "the chat grow is untouched")
+        self.assertEqual(r3["store"], {"chat": 300, "fleet": 100, "feed": 300, "files": 40})
         self.assertEqual(r3["ghost"]["display"], "none")
         self.assertFalse(r3["drag"] or r3["dragv"])
         self.assertEqual(r3["listeners"], {"move": 0, "up": 0})
@@ -301,15 +300,15 @@ class PaneGutterDragExecutes(unittest.TestCase):
         # what is shown at grab time: feed | files, then Outline | files, then chat | files
         r3, g5, g6, g7, r7 = self.out["release3"], self.out["grab5"], self.out["grab6"], self.out["grab7"], self.out["release7"]
         self.assertEqual(g5["writes"], r3["writes"] + 4, "all four shown panes are normalised")
-        self.assertEqual(g5["grows"], {"--g-chat": 300, "--g-fleet": 100, "--g-feed": 300, "--g-files": 200, "--g-artifacts": 40})
+        self.assertEqual(g5["grows"], {"--g-chat": 300, "--g-fleet": 100, "--g-feed": 300, "--g-files": 200})
         self.assertEqual(g5["ghost"], {"display": "block", "left": "714px", "top": "24px", "height": "760px"}, "the feed | files divider")
         self.assertEqual(self.out["release5Writes"], [["--g-feed", 250], ["--g-files", 250]], "the feed is the left pane while it is shown")
-        self.assertEqual(g6["grows"], {"--g-chat": 300, "--g-fleet": 250, "--g-feed": 250, "--g-files": 250, "--g-artifacts": 40}, "the hidden feed keeps its grow")
+        self.assertEqual(g6["grows"], {"--g-chat": 300, "--g-fleet": 250, "--g-feed": 250, "--g-files": 250}, "the hidden feed keeps its grow")
         self.assertEqual(g6["ghost"]["left"], "557px", "the Outline | files divider: the Outline's client left 307 plus its 250")
         self.assertEqual(self.out["release6Writes"], [["--g-fleet", 200], ["--g-files", 300]], "feed hidden: the Outline is the left pane")
         self.assertEqual(g7["ghost"]["left"], "500px")
         self.assertEqual(self.out["release7Writes"], [["--g-chat", 450], ["--g-files", 350]], "feed and Outline hidden: the chat is")
-        self.assertEqual(r7["store"], {"chat": 450, "fleet": 200, "feed": 250, "files": 350, "artifacts": 40}, "the grows persist at release")
+        self.assertEqual(r7["store"], {"chat": 450, "fleet": 200, "feed": 250, "files": 350}, "the grows persist at release")
         self.assertEqual(r7["ghost"]["display"], "none")
         self.assertFalse(r7["drag"] or r7["dragv"])
         self.assertEqual(r7["listeners"], {"move": 0, "up": 0})

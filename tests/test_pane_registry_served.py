@@ -157,9 +157,11 @@ let gf = null;
 for (let i = 0; i < 150 && !gf; i++) { for (const f of page.frames()) { if (await f.$("#rs-pane-notes").catch(() => null)) { gf = f; break; } } if (!gf) await page.waitForTimeout(100); }
 if (!gf) await die("no settings frame with the registry rows");
 out.gear = await gf.evaluate(() => Array.from(document.querySelectorAll("#rs-panes-data input")).map((i) => ({ id: i.id, checked: i.checked, label: i.parentNode.querySelector("b").textContent })));
-await gf.evaluate(() => { const i = document.getElementById("rs-pane-lab"); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); });
+await gf.evaluate(() => { for (const id of ["rs-pane-lab", "rs-pane-artifacts"]) { const i = document.getElementById(id); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); } });
 out.labAfterGear = await page.waitForFunction(() => { const b = document.querySelector(".rail-btn[data-pane=lab]"); return !!b && !b.hidden && document.body.classList.contains("po-lab"); }, null, { timeout: 10000 }).then(() => true).catch(() => false);
 out.labSrc = await page.evaluate(() => document.getElementById("f-lab").getAttribute("src"));
+out.artifactsAfterGear = await page.evaluate(() => { const b = document.querySelector(".rail-btn[data-pane=artifacts]"); const f = document.getElementById("f-artifacts");
+  return { hidden: !!b && b.hidden, on: document.body.classList.contains("po-artifacts"), src: f ? f.getAttribute("src") : "absent" }; });
 out.settingsPanes = await page.evaluate(() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").panes || null; } catch (e) { return null; } });
 
 // ---- 5. a define while the page is open ----
@@ -180,7 +182,7 @@ out.afterReload = { later: !!(await page.$(".rail-btn[data-pane=later]")), body:
 
 // ---- 6. the docking kit reads the list (plans/panes-as-data.md section 4): a data pane is a tree leaf with a ring, drops into a half-zone ----
 const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1)))));
-await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.paneDocking = true; s.showArtifactsControl = true; localStorage.setItem("romp:settings", JSON.stringify(s)); });
+await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.paneDocking = true; localStorage.setItem("romp:settings", JSON.stringify(s)); });
 await page.reload();
 await page.waitForSelector(".rail-btn[data-pane=notes]", { timeout: 20000 }).catch(async () => { await die("no notes rail button after the kit's reload"); });
 out.kitOn = await page.waitForFunction(() => !!(window.__rompPaneDock && window.__rompPaneDock.on() && window.__rompPaneDock.layout()), null, { timeout: 15000 }).then(() => true).catch(() => false);
@@ -221,6 +223,31 @@ if (cfg.shot) await page.screenshot({ path: cfg.shot.replace(/\.png$/, "-kit.png
 // the Artifacts pane (a shipped pane the kit's old lists never named) toggled on is a leaf too
 await page.evaluate(() => window.__rompPaneToggle("artifacts", true)); await frame(); await frame();
 out.kitArtifacts = { leaves: await leavesOf(), rect: (await rectsOf())["artifacts-pane"] || null };
+
+// ---- 7. a PHONE (the mobile layout: one pane at a time, the bottom tabs): a data pane's tab shows its page, loaded once by the tap ----
+const mctx = await browser.newContext({ viewport: { width: 420, height: 860 }, hasTouch: true, isMobile: true });
+// the pane's desktop flag OFF in this browser (a rail toggle from an earlier desktop visit): on a phone the pane shows by its TAB alone,
+// so its iframe must load from the tap, never from the desktop flag (the 1922 read: a tab tapped showed a blank pane)
+await mctx.addInitScript(() => { try { localStorage.setItem("romp-panes", JSON.stringify({ notes: false })); } catch (e) {} });
+const mp = await mctx.newPage();
+const notesRequests = [];
+mp.on("request", (rq) => { if (/\/pane\/notes\/(\?|$)/.test(rq.url())) notesRequests.push(rq.url()); });
+await mp.goto(cfg.url);
+await mp.waitForSelector("#mtabs button[data-pane=notes]", { timeout: 20000 }).catch(async () => { await die("no notes tab on the phone"); });
+await mp.waitForTimeout(800);
+out.phoneBefore = await mp.evaluate(() => ({ mobile: !!(window.__rompMobileOn && window.__rompMobileOn()), tab: document.body.getAttribute("data-tab"),
+  notesSrc: document.getElementById("f-notes").getAttribute("src"), tabs: Array.from(document.querySelectorAll("#mtabs button[data-pane]")).filter((b) => !b.hidden).map((b) => b.getAttribute("data-pane")) }));
+await mp.click("#mtabs button[data-pane=notes]");
+out.phoneLoaded = await mp.waitForFunction(() => { const f = document.getElementById("f-notes"); return f && f.getAttribute("src") === "/pane/notes/" && f.classList.contains("m-on"); }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+const mnf = await (async () => { for (let i = 0; i < 100; i++) { const f = mp.frames().find((fr) => fr.url().split("?")[0].endsWith("/pane/notes/")); if (f) return f; await mp.waitForTimeout(100); } return null; })();
+if (mnf) await mnf.waitForFunction(() => !!document.getElementById("t") && !!window.__rompReload, null, { timeout: 15000 }).catch(() => {});   // the page's document and its shim, not the navigation's blank
+out.phonePage = mnf ? await mnf.evaluate(() => ({ title: (document.getElementById("t") || {}).textContent || null, shim: typeof window.__rompReload })).catch(() => null) : null;
+out.phoneAfterTap = await mp.evaluate(() => ({ tab: document.body.getAttribute("data-tab"), notesSrc: document.getElementById("f-notes").getAttribute("src"),
+  visible: (() => { const r = document.getElementById("f-notes").getBoundingClientRect(); return r.width > 100 && r.height > 100; })() }));
+await mp.click("#mtabs button[data-pane=chat]"); await mp.waitForTimeout(300);
+await mp.click("#mtabs button[data-pane=notes]"); await mp.waitForTimeout(600);
+out.phoneRequests = notesRequests.length;
+await mctx.close();
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
@@ -327,6 +354,7 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertEqual((by["notes"]["text"], by["notes"]["hidden"], by["notes"]["on"]), ("Notes", False, True))
         self.assertEqual((by["docs"]["hidden"], by["docs"]["on"]), (False, True))
         self.assertTrue(by["lab"]["hidden"], "experimental: not in this dashboard until the gear asks: %r" % by["lab"])
+        self.assertTrue(by["artifacts"]["hidden"], "the Artifacts record is experimental too (plans/panes-as-data.md phase three): hidden until the gear asks: %r" % by["artifacts"])
         # the forged messages (the URL pane's on load; a same-origin frame nested in the notes pane's): read FIRST, so a red
         # names the door that opened (the 1919 read: the shortcuts modal opened in recording mode on a forged row)
         self.assertFalse(r["afterForged"]["keysOpen"], "a forged openKeys or hotkeyConfigure must not open the shortcuts modal: %r" % r["afterForged"])
@@ -335,8 +363,9 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertFalse(r["afterForged"]["fleet"], "a forged toggleFleet (the URL pane's, the nested frame's) must not open the Outline")
         self.assertFalse(any("forged" in t for t in r["afterForged"]["notices"]), "a forged notify must not reach the notification center: %r" % r["afterForged"])
         self.assertEqual(r["body"]["cls"], ["po-chat", "po-docs", "po-feed", "po-notes", "po-timeline"], r["body"])
-        self.assertEqual([(a["id"], a["protocol"], a["experimental"], a["on"]) for a in r["body"]["attr"]],
-                         [("docs", "none", False, True), ("lab", "romp", True, False), ("notes", "romp", False, True)])
+        self.assertEqual([(a["id"], a["protocol"], a["experimental"], a["on"], a["builtin"]) for a in r["body"]["attr"]],
+                         [("artifacts", "romp", True, False, True), ("docs", "none", False, True, False), ("lab", "romp", True, False, False), ("notes", "romp", False, True, False)],
+                         "the shipped record the generic build renders, then the data panes by id")
         # 2. the state-root pane: a shown column loading its page, which has the shim and the theme and hears the broadcast
         self.assertEqual(r["notesSrc"], "/pane/notes/")
         self.assertEqual((r["notesPage"]["title"], r["notesPage"]["shim"], r["notesPage"]["theme"]), ("Notes", "object", True), r["notesPage"])
@@ -352,10 +381,14 @@ class ServedPaneRegistry(unittest.TestCase):
         told = [b for b in _DocsServer.beacons if "panes" in b]
         self.assertEqual(told, [], "the URL pane is outside the protocol: no broadcast reaches it")
         # 4. the gear's rows
-        self.assertEqual(r["gear"], [{"id": "rs-pane-docs", "checked": True, "label": "Docs"}, {"id": "rs-pane-lab", "checked": False, "label": "Lab"}, {"id": "rs-pane-notes", "checked": True, "label": "Notes"}])
+        self.assertEqual(r["gear"], [{"id": "rs-pane-artifacts", "checked": False, "label": "Artifacts"}, {"id": "rs-pane-docs", "checked": True, "label": "Docs"},
+                                     {"id": "rs-pane-lab", "checked": False, "label": "Lab"}, {"id": "rs-pane-notes", "checked": True, "label": "Notes"}],
+                         "the generic rows: the shipped Artifacts record (off by default, experimental) and the data panes")
         self.assertTrue(r["labAfterGear"], "the gear's row brings the experimental pane into the dashboard and on screen: %r" % {k: r[k] for k in ("labAfterGear", "labSrc", "settingsPanes")})
         self.assertEqual(r["labSrc"], "/feed", "loaded when shown")
         self.assertEqual((r["settingsPanes"] or {}).get("lab"), True, "saved under its own id in the pane set")
+        self.assertEqual(r["artifactsAfterGear"], {"hidden": False, "on": True, "src": "/artifacts"},
+                         "the Artifacts row turned on: the rail button shows and the pane comes on screen (the live reconcile), and only then does its iframe load: %r" % r["artifactsAfterGear"])
         # 5. a define while the page is open: the offer with the panes' wording, no self-reload, the Reload click shows it
         self.assertEqual(r["define"].get("ok"), True, r["define"])
         self.assertTrue(r["offerShown"], "the moved pane-set revision on the keepalive stands the offer: %r" % r.get("banner"))
@@ -388,6 +421,15 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertLess(r["kitAfterDrop"]["rects"]["notes-pane"]["x"], r["kitAfterDrop"]["rects"]["feed-pane"]["x"])
         self.assertIn("notes-pane", r["kitAfterDrop"]["layout"] or "", "the layout store holds the data pane's leaf")
         self.assertIn("artifacts-pane", r["kitArtifacts"]["leaves"], "the Artifacts pane toggled on is a leaf too: %r" % r["kitArtifacts"]["leaves"])
+        # 7. the phone: a data pane's tab shows its page, loaded once by the tap (the 1922 read: the tab showed a blank pane)
+        pb = r["phoneBefore"]
+        self.assertTrue(pb["mobile"], "the phone layout: %r" % pb); self.assertEqual(pb["tab"], "chat")
+        self.assertIsNone(pb["notesSrc"], "the pane's desktop flag is off in this browser: nothing loaded before the tap, the iframe waits for its tab")
+        self.assertIn("notes", pb["tabs"]); self.assertNotIn("lab", pb["tabs"], "an experimental pane has no tab")
+        self.assertTrue(r["phoneLoaded"], "the tap loads the pane's page and shows it: %r" % r.get("phoneAfterTap"))
+        self.assertEqual(r["phoneAfterTap"]["tab"], "notes"); self.assertTrue(r["phoneAfterTap"]["visible"], "the pane fills the phone's screen: %r" % r["phoneAfterTap"])
+        self.assertEqual((r["phonePage"] or {}).get("title"), "Notes", "the page is up, its shim with it: %r" % r["phonePage"])
+        self.assertEqual(r["phoneRequests"], 1, "the page is requested once, however many times its tab is tapped: %r" % r["phoneRequests"])
         self.assertGreater((r["kitArtifacts"]["rect"] or {"w": 0})["w"], 60, "the Artifacts leaf has a rectangle: %r; after the drop: %r" % (r["kitArtifacts"], r["kitAfterDrop"]["rects"]))
 
 

@@ -134,12 +134,6 @@ var GEAR_HTML =
   '<span><b>Files</b>' +   // the row's name follows Sessions, Outline and Feed above it (T407, the user 2026-09-13); the id, the key and the default stand
   '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
   '</span></label>' +
-  // the Artifacts pane (plans/artifacts-pane.md, the user 2026-09-19): optional and experimental, so its control is asked for
-  // the way the Files control is (romp:settings.showArtifactsControl, a fresh key; only the literal true shows it)
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-artctl>' +
-  '<span><b>Artifacts</b>' +
-  '<span class=rs-sub>Adds the Artifacts toggle to the bottom of the dashboard, and the Artifacts tab on a phone: a session\'s written, shown and dropped files as a list and a grid of large thumbnails. Experimental; off (the default) hides them and closes the pane if it is open.</span>' +
-  '</span></label>' +
   // the pane docking kit (plans/pane-docking.md; the user 2026-09-18, who wants panes moved by their empty space, not a
   // title bar, and asked for it DEFAULT OFF): the shell's panedock-main.ts bundle reads paneDocking and, on, positions the
   // panes from a layout tree, arms a move from a pane's ring, its top row's empty run or Option-drag, and shows the
@@ -409,7 +403,6 @@ function initGear(post, opts) {
     csg = document.getElementById('rs-suggestcompact'),
     dd = document.getElementById('rs-defaultdir'),
     fsc = document.getElementById('rs-filesctl'),
-    arc = document.getElementById('rs-artctl'),
     pdk = document.getElementById('rs-panedock'),
     sr = document.getElementById('rs-striprows'),
     dn = document.getElementById('rs-dense'),
@@ -435,7 +428,7 @@ function initGear(post, opts) {
   // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
   // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
   // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
-  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, showArtifactsControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, showArtifactsControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
+  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -464,7 +457,6 @@ function initGear(post, opts) {
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
   if (dn) dn.addEventListener('change', function () { var s = load(); s.denseChrome = dn.checked; save(s); });
   if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });
-  if (arc) arc.addEventListener('change', function () { var s = load(); s.showArtifactsControl = arc.checked; save(s); });
   if (pdk) pdk.addEventListener('change', function () { var s = load(); s.paneDocking = pdk.checked; save(s); });   // the shell's engine hears the save (romp:settings in this document, the storage event from another) and starts or stops   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
   // the optional panes: the whole set is rewritten from the three boxes on every change (a missing key reads
   // as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
@@ -474,6 +466,9 @@ function initGear(post, opts) {
   // registry holds any; the gear reads it from the shell (the settings page is a same-origin frame of it, and on VS Code's
   // panel there is no dashboard and no list). A row's box writes settings.panes[id]; the shell's reconcile reads it (absent
   // means on for a normal pane, off for an experimental one).
+  // what a SHIPPED record beyond the hand-written five shows, for its generic Panes row (the registry's rows carry no description;
+  // plans/panes-as-data.md phase three): the Artifacts pane's words are its first landing's row's
+  var BUILTIN_HINTS = { artifacts: 'A session\'s written, shown and dropped files as a list and a grid of large thumbnails.' };
   function registryPanes() {
     try { var doc = (window.parent && window.parent !== window) ? window.parent.document : document; var raw = doc.body.getAttribute('data-panes'); var arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr.filter(function (p) { return p && typeof p.id === 'string'; }) : []; } catch (e) { return []; }
   }
@@ -487,7 +482,10 @@ function initGear(post, opts) {
       var v = pans[p.id]; cb.checked = (typeof v === 'boolean') ? v : !p.experimental;
       var span = document.createElement('span'); var b = document.createElement('b'); b.textContent = String(p.title || p.id);
       var sub = document.createElement('span'); sub.className = 'rs-sub';
-      sub.textContent = (p.experimental ? 'Experimental. ' : '') + 'A pane defined at the kernel (romp pane). Off, its column and its button are gone from this browser.';
+      // the hint: what a shipped record shows (BUILTIN_HINTS, the words its first landing's row carried), or that a data pane is
+      // defined at the kernel; then the row's meaning, the experimental default said only where it applies (the 1922 read, lows a and b)
+      sub.textContent = (p.experimental ? 'Experimental. ' : '') + (p.builtin ? ((BUILTIN_HINTS[p.id] || '') && BUILTIN_HINTS[p.id] + ' ') : 'A pane defined at the kernel (romp pane). ')
+        + 'Off' + (p.experimental ? ' (the default for an experimental pane)' : '') + ', its column and its button are gone from this browser; on, the rail\'s toggle shows it.';
       span.appendChild(b); span.appendChild(sub); lab.appendChild(cb); lab.appendChild(span); box.appendChild(lab);
       cb.addEventListener('change', function () { var st = load(); var pp = (st.panes && typeof st.panes === 'object') ? st.panes : panesOf(st); pp[p.id] = cb.checked; st.panes = pp; save(st); });
     });
@@ -2175,7 +2173,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); if (arc) arc.checked = s.showArtifactsControl === true; if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

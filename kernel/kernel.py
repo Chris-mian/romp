@@ -56104,10 +56104,14 @@ _CODE_PANES = tuple(_pane_check(d, allow_reserved=True)[0] for d in (
     {"id": "fleet", "title": "Outline", "source": "/fleet", "on": False},
     {"id": "feed", "title": "Feed", "source": "/feed", "on": True},
     {"id": "files", "title": "Files", "source": "/files", "on": False},
-    {"id": "artifacts", "title": "Artifacts", "source": "/artifacts", "on": False},   # plans/artifacts-pane.md (2026-09-19): optional, off by default
+    {"id": "artifacts", "title": "Artifacts", "source": "/artifacts", "on": False, "experimental": True},   # plans/artifacts-pane.md (2026-09-19): off by default and asked for in the gear (experimental); rendered by the generic build (phase three)
 ))
 assert all(_CODE_PANES), "a shipped pane's record failed its own check"
-_COLUMN_IDS = tuple(p["id"] for p in _CODE_PANES if p["id"] != "timeline")   # the shipped COLUMNS, left to right (the timeline is the bottom band): the gutter chains derive from this, never a hand list
+# THE HAND-WRITTEN LANDING renders these five (the chat, the Sessions band, the Outline, the Feed, the Files pane: the pins name
+# every line of theirs); every other pane in _pane_order(), a shipped record beyond them (the Artifacts pane) or a data pane,
+# is rendered by the GENERIC build below and rides body[data-panes] to the inline scripts (plans/panes-as-data.md, phase three).
+_HAND_PANES = ("chat", "timeline", "fleet", "feed", "files")
+_COLUMN_IDS = tuple(k for k in _HAND_PANES if k != "timeline")   # the hand-written COLUMNS, left to right (the timeline is the bottom band): the gutter chains start from these
 _PANES_MEMO = {"slot": None}        # (listing key, {"data": {id: defn}, "rev": digest}) or None
 _PANES_BAD = set()                  # (path, reason) already said
 _panes_lock = threading.Lock()      # define and remove serialise their read-check-write against each other
@@ -56186,8 +56190,15 @@ def _pane_order():
     return list(_CODE_PANES) + [d for _, d in sorted(_panes_data().items()) if d["id"] not in code_ids]
 
 
+def _generic_panes(panes=None):
+    """The panes the GENERIC build renders, in rail order: every pane of `panes` (a _pane_order() list; listed once when None)
+    that is not one of the hand-written five: the Artifacts record, then the data panes by id."""
+    panes = _pane_order() if panes is None else panes
+    return [p for p in panes if p["id"] not in _HAND_PANES]
+
+
 def _data_panes(panes=None):
-    """The data panes of `panes` (a _pane_order() list; listed once when None)."""
+    """The data-defined panes of `panes` (the records behind STATE/panes)."""
     panes = _pane_order() if panes is None else panes
     return panes[len(_CODE_PANES):]
 
@@ -56229,17 +56240,21 @@ def _pane_served_src(p):
 
 
 def _panes_attr(panes=None):
-    """The body attribute carrying the DATA panes to the inline scripts and the pane bundles, `data-panes="[...]"`; the
-    empty string with an empty registry, so the code panes' rendering is unchanged."""
-    rows = [{"id": p["id"], "title": p["title"], "protocol": p["protocol"], "experimental": p["experimental"], "on": p["on"]} for p in _data_panes(panes)]
+    """The body attribute carrying the GENERIC panes (the Artifacts record and the data panes) to the inline scripts and the
+    pane bundles, `data-panes="[...]"`: id, title, protocol, experimental, on, and builtin for a shipped record. The empty
+    string only when no pane follows the hand-written five."""
+    code = {p["id"] for p in _CODE_PANES}
+    rows = [{"id": p["id"], "title": p["title"], "protocol": p["protocol"], "experimental": p["experimental"], "on": p["on"], "builtin": p["id"] in code}
+            for p in _generic_panes(panes)]
     return (' data-panes="%s"' % _html_esc(json.dumps(rows, separators=(",", ":")))) if rows else ""
 
 
 def _data_pane_markup(panes=None):
-    """The pane row's markup for the data panes, after the shipped columns: a gutter and a .pane with a data-src iframe each (a
-    data pane loads when shown, the optional panes' rule); a URL source's iframe is sandboxed and marked protocol none."""
+    """The pane row's markup for the generic panes, after the hand-written columns: a gutter and a .pane with a data-src iframe
+    each (a generic pane loads when it comes ON SCREEN, never when merely enabled in the gear: the Artifacts page's first load
+    walks the remembered session, the feed owner's constraint); a URL source's iframe is sandboxed and marked protocol none."""
     out = []
-    for p in _data_panes(panes):
+    for p in _generic_panes(panes):
         pid = p["id"]
         extra = ' sandbox="allow-scripts allow-forms allow-popups"' if p["protocol"] == "none" else ""
         out.append('<div class=gv id=gv-%s></div><div class=pane id=%s-pane><iframe id=f-%s data-src="%s" data-protocol=%s%s></iframe></div>'
@@ -56247,12 +56262,23 @@ def _data_pane_markup(panes=None):
     return "".join(out)
 
 
+def _data_pane_mobile_css(panes=None):
+    """The phone's rule for the generic panes, inside the mobile media block: the pane element is display:contents whatever its po
+    class (the hand-written five's rule beside it), so the tab, not the desktop flag, says which pane shows."""
+    ids = [p["id"] for p in _generic_panes(panes)]
+    if not ids:
+        return ""
+    # the pane wrappers dissolve (the tab bar, not the po class, says which pane shows), and the shown tab's iframe displays
+    return (",".join("#%s-pane" % i for i in ids) + "{display:contents!important}"
+            + ",".join("#f-%s.m-on" % i for i in ids) + "{display:block}")
+
+
 def _data_pane_css(panes=None):
-    """The column rules for the data panes: a grow var and the hide by its po-<id> class, and the gutter's hides (its own
-    pane off, or no shown column before it), the shipped rules' shape."""
+    """The column rules for the generic panes: a grow var and the hide by its po-<id> class, and the gutter's hides (its own
+    pane off, or no shown column before it), the hand-written rules' shape."""
     out = []
-    before = list(_COLUMN_IDS)   # the shipped columns, left to right, from the records
-    for p in _data_panes(panes):
+    before = list(_COLUMN_IDS)   # the hand-written columns, left to right
+    for p in _generic_panes(panes):
         pid = p["id"]
         out.append("#%s-pane{flex:var(--g-%s,40) 1 0}body:not(.po-%s) #%s-pane{display:none}" % (pid, pid, pid, pid))
         out.append("body:not(.po-%s) #gv-%s,body%s #gv-%s{display:none}" % (pid, pid, "".join(":not(.po-%s)" % b for b in before), pid))
@@ -60423,8 +60449,8 @@ def _files_page():
 # path in the user turn (rule 3). Like the Files pane it receives no pushed view: one request-and-response op
 # (listArtifacts, at the socket) answered by the kernel that owns the session, and the picker's requestSessions for the
 # selector; the shim runs with the stale opt-out. Thumbnails and the large view ride the token-authed /file route with
-# the session's sid, never a new file server. Optional and off by default: the shell's Artifacts control
-# (romp:settings.showArtifactsControl, read like the Files control's) shows its rail toggle and phone tab.
+# the session's sid, never a new file server. Optional and off by default: the pane is an EXPERIMENTAL record in
+# _CODE_PANES (plans/panes-as-data.md, phase three), so the gear's Panes row shows its rail toggle when asked for.
 def _artifacts_page():
     try:
         css = (UI / "webview" / "artifacts-pane.css").read_text()
@@ -60750,8 +60776,8 @@ window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);})
 // left neighbour is the outline when shown else chat (so it's the chat|feed gutter when the outline is off);
 // gv-c's is the rightmost of feed, outline, chat that is shown. On grab we normalise every visible pane's grow
 // to its px width so the drag shifts only that pair; grows persist.
-var PANES=['chat-pane','fleet-pane','feed-pane','files-pane','artifacts-pane'];
-var GK='romp-pane-grow',grow={chat:60,fleet:34,feed:40,files:40,artifacts:40};
+var PANES=['chat-pane','fleet-pane','feed-pane','files-pane'];
+var GK='romp-pane-grow',grow={chat:60,fleet:34,feed:40,files:40};
 try{var g=JSON.parse(localStorage.getItem(GK)||'null');if(g)grow=Object.assign(grow,g);}catch(e){}
 function setGrow(k,v){grow[k]=v;row.style.setProperty('--g-'+k,v);}
 // the REGISTRY panes (plans/panes-as-data.md): body[data-panes] names them; each is a column after Files with the
@@ -60767,7 +60793,7 @@ window.__rompRegisterPane=function(id,k){KEYS[id]=k;if(PANES.indexOf(id)<0)PANES
 window.__rompUnregisterPane=function(id){var k=KEYS[id];delete KEYS[id];var i=PANES.indexOf(id);if(i>=0)PANES.splice(i,1);
 if(k){delete grow[k];row.style.removeProperty('--g-'+k);try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}}};
 function lastChat(){return (window.__rompLastChatPane&&window.__rompLastChatPane())||'chat-pane';}
-function key(id){return KEYS[id]||(id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':id==='files-pane'?'files':'artifacts');}
+function key(id){return KEYS[id]||(id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':'files');}
 function shown(id){var p=document.getElementById(id);return p&&getComputedStyle(p).display!=='none';}
 // a pane re-shown from the rail gets a grow comparable to the panes already visible, so it never slots back
 // in as a sliver after the others were dragged to extreme widths (grows are stored as px). Timeline is the
@@ -60826,8 +60852,6 @@ window.__rompGutter=gutter;   // the split's chat|chat gutters are wired through
 gutter('gv-a',function(){return lastChat();},'fleet-pane');
 gutter('gv-b',function(){return document.body.classList.contains('po-fleet')?'fleet-pane':lastChat();},'feed-pane');
 gutter('gv-c',function(){var c=document.body.classList;return c.contains('po-feed')?'feed-pane':c.contains('po-fleet')?'fleet-pane':lastChat();},'files-pane');
-// gv-d sits (files|feed|outline|chat)|artifacts: its left neighbour is the rightmost shown of those (the Artifacts pane, plans/artifacts-pane.md)
-gutter('gv-d',function(){var c=document.body.classList;return c.contains('po-files')?'files-pane':c.contains('po-feed')?'feed-pane':c.contains('po-fleet')?'fleet-pane':lastChat();},'artifacts-pane');
 // a registry pane's gutter: its left neighbour is the rightmost SHOWN column before it (Files, Feed, the Outline, a
 // registry pane defined before it, else the last chat column), the four rules above generalised
 (function(){var seq=""" + json.dumps([c + "-pane" for c in _COLUMN_IDS if c != "chat"]) + """.concat(DPANES.map(function(p){return p.id+'-pane';}));   // the shipped columns after the chat, from _CODE_PANES
@@ -60847,8 +60871,8 @@ window.addEventListener('romp-panes',autosize);   // re-fit when the Timeline to
 # all EVENT-based (no polling). Re-wires on every iframe (re)load; chat is the default focus on open. Inert on
 # mobile (one pane at a time; .pane is display:contents).
 _LANDING_FOCUS_JS = """
-(function(){var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-files':'files-pane','f-artifacts':'artifacts-pane','f-timeline':'tl-pane'};   // the Outline (key fleet) is its own pane
-var COLS=['f-chat','f-fleet','f-feed','f-files','f-artifacts'];   // the side-by-side column panes, left->right (the Outline's key is fleet; Files last)
+(function(){var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-files':'files-pane','f-timeline':'tl-pane'};   // the Outline (key fleet) is its own pane
+var COLS=['f-chat','f-fleet','f-feed','f-files'];   // the side-by-side column panes, left->right (the Outline's key is fleet; Files last)
 try{JSON.parse(document.body.getAttribute('data-panes')||'[]').forEach(function(p){PANE['f-'+p.id]=p.id+'-pane';COLS.push('f-'+p.id);});}catch(e){}   // the registry panes, after Files (plans/panes-as-data.md)
 var TL='f-timeline';                       // the timeline is a bottom BAND under the columns
 var curFocus='f-chat', lastCol='f-chat';   // for Shift-Up out of the timeline: return to the last column used
@@ -61188,7 +61212,7 @@ if(closed){e.preventDefault();e.stopPropagation();}}
 function settingsClose(){var f=document.getElementById('f-settings');
 try{var w=f&&f.contentWindow;return !!(w&&w.__rompSettingsClose&&w.__rompSettingsClose());}catch(e){return false;}}
 document.addEventListener('keydown',onEsc,true);
-['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
+['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].concat((function(){try{return JSON.parse(document.body.getAttribute('data-panes')||'[]').map(function(p){return 'f-'+p.id;});}catch(e){return [];}})()).forEach(function(id){var f=document.getElementById(id);if(!f)return;
 var wire=function(){try{if(f.contentDocument)f.contentDocument.addEventListener('keydown',onEsc,true);}catch(e){}};
 f.addEventListener('load',wire);wire();});
 window.__rompWireEsc=function(f){var wire=function(){try{if(f.contentDocument)f.contentDocument.addEventListener('keydown',onEsc,true);}catch(e){}};
@@ -63425,7 +63449,7 @@ document.addEventListener('focusout',refit);
 if(window.visualViewport){window.visualViewport.addEventListener('resize',refit);
 window.visualViewport.addEventListener('scroll',refit);}
 function hearBlur(f){try{if(!f.contentDocument)return;f.contentWindow.addEventListener('focusout',refit);}catch(e){}}   // cross-origin → nothing to hear
-['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
+['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].concat((function(){try{return JSON.parse(document.body.getAttribute('data-panes')||'[]').map(function(p){return 'f-'+p.id;});}catch(e){return [];}})()).forEach(function(id){var f=document.getElementById(id);if(!f)return;
 f.addEventListener('load',function(){hearBlur(f);});hearBlur(f);});   // now (already loaded) + on every (re)load, as the Alt+Arrow wiring does; the gear's document too (its login field)
 // The mobile LAYOUT, as the stylesheet decides it: the SAME media query the grid collapses on (_MOBILE_MQ,
 // one constant for the CSS and this probe), one pane at a time, bottom tabs, the po-* classes ignored. Read by
@@ -63436,7 +63460,7 @@ var MQ=(window.matchMedia&&matchMedia(""" + json.dumps(_MOBILE_MQ) + """))||null
 function mobileOn(){return !!(MQ&&MQ.matches);}
 window.__rompMobileOn=mobileOn;
 var bar=document.getElementById('mtabs');if(!bar)return;
-var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-fleet'),feed:document.getElementById('f-feed'),files:document.getElementById('f-files'),artifacts:document.getElementById('f-artifacts'),timeline:document.getElementById('f-timeline')};
+var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-fleet'),feed:document.getElementById('f-feed'),files:document.getElementById('f-files'),timeline:document.getElementById('f-timeline')};
 try{JSON.parse(document.body.getAttribute('data-panes')||'[]').forEach(function(p){F[p.id]=document.getElementById('f-'+p.id);});}catch(e){}   // the registry panes' frames (plans/panes-as-data.md); an experimental one has no tab button, so show() refuses it
 // ONLY the pane tabs (the user 2026-09-08, on the phone: the bell wore its OFF slash while its popover said
 // on). This list once took EVERY button in the bar, and show() toggled `.on` to data-pane===p on each — for
@@ -63445,11 +63469,13 @@ try{JSON.parse(document.body.getAttribute('data-panes')||'[]').forEach(function(
 // slash rule keys on, until the next paint event. A tab or a reveal decides which pane shows, nothing else.
 var B=bar.querySelectorAll('button[data-pane]'),KT='romp-mobile-tab';
 function filesCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showFilesControl===true);}catch(e){return false;}}   // the gear's Files-control setting (T317; off by default since T317b: shown only when the store holds the literal true under the fresh key, never the T317-era filesControl a whole-object save merged in): the same read the pane controller makes, which parses after this script
-function artifactsCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showArtifactsControl===true);}catch(e){return false;}}   // the Artifacts control, read as the Files control is
-function show(p){if(p==='files'&&!filesCtlM())p='chat';if(p==='artifacts'&&!artifactsCtlM())p='chat';   // the Files tab is hidden while its control is off: the chat shows instead
+function show(p){if(p==='files'&&!filesCtlM())p='chat';   // the Files tab is hidden while its control is off: the chat shows instead
 if(!F[p])return;for(var i=0;i<B.length;i++)if(B[i].getAttribute('data-pane')===p&&B[i].hidden)return;   // a tab the controller hid (its pane is off in the gear's Panes section) is not a place to go
 document.body.setAttribute('data-tab',p);for(var k in F)if(F[k])F[k].classList.toggle('m-on',k===p);   // a pane this shell lacks is skipped, never a TypeError
-if(p==='artifacts'){var af=document.getElementById('f-artifacts');if(af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));}   // a phone shows the pane by its tab, not by po: its iframe loads once, here
+// a phone shows a pane by its TAB, not by its po flag, so the tab is where a lazy pane's iframe loads, once: the generic panes
+// (plans/panes-as-data.md; the registry's data panes, whose src is otherwise set only by the desktop apply on po) and the
+// optional five alike; a src already set is left alone (the 1922 read: a data pane's tab showed a blank pane)
+var sf=F[p];if(sf&&sf.getAttribute&&!sf.getAttribute('src')&&sf.getAttribute('data-src'))sf.setAttribute('src',sf.getAttribute('data-src'));
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}
 // a tab switch changes what is on screen: re-tell the panes (the collapse script's broadcast; absent only
@@ -63975,12 +64001,12 @@ _STALE_JS = (
 # where the rail toggle only hides a loaded one.
 _LANDING_COLLAPSE_JS = """
 (function(){
-  var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true,files:false,artifacts:false},DEF=Object.assign({},po),stored={};
+  var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true,files:false},DEF=Object.assign({},po),stored={};
   try{var s=JSON.parse(localStorage.getItem(PK)||'null');if(s){stored=s;po=Object.assign(po,s);}}catch(e){}
   var qp=new URLSearchParams(location.search).get('panes');
-  if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false,files:false,artifacts:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
+  if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false,files:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
   function saveP(){try{localStorage.setItem(PK,JSON.stringify(po));}catch(e){}}
-  var LBL={chat:'chat',fleet:'fleet',feed:'feed',timeline:'timeline',files:'files pane',artifacts:'artifacts pane'};
+  var LBL={chat:'chat',fleet:'fleet',feed:'feed',timeline:'timeline',files:'files pane'};
   // THE FILES CONTROL'S OWN SETTING (T317, the user 2026-09-10): the gear's Files row (Settings, General, Panes; T407)
   // (romp:settings.showFilesControl, gear.js; hidden unless the store holds the literal true: OFF by default since T317b,
   // the user 2026-09-10, who wants the control asked for, not shipped. A FRESH key: the T317-era gear saved its merged-in
@@ -63992,8 +64018,6 @@ _LANDING_COLLAPSE_JS = """
   // over the pane clicked (ui/webview/file-route.ts). The gear writes the store from the feed iframe, another
   // document, so the storage listener below is the event that re-applies it here.
   function filesCtl(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showFilesControl===true);}catch(e){return false;}}
-  // the Artifacts control (plans/artifacts-pane.md, 2026-09-19): the same rule as the Files control's, a fresh key of its own
-  function artifactsCtl(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showArtifactsControl===true);}catch(e){return false;}}
   // the Task tracking switch (T404): kernel-side; /version says at boot (noteVersion), the gear says on the flip (a taskTracking message); absent reads on
   function taskTracking(){return window.__rompTaskTracking!==false;}
   window.__rompApplyPanes=function(){apply();};
@@ -64007,7 +64031,7 @@ _LANDING_COLLAPSE_JS = """
   // The chat routes a file-link click by it (ui/webview/file-route.ts fileLinkRoute: an OPEN Files pane takes
   // the click, since the pane being open IS the intent; the setting that once named a closed pane is gone, T404), and a
   // folder click the same way (browseRoute, render.ts openBrowse).
-  var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER]) + """;
+  var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER if k in _HAND_PANES]) + """;   // the hand-written five; the generic panes (the Artifacts record, the data panes) join from body[data-panes] below
   // THE REGISTRY PANES (plans/panes-as-data.md, phase one): body[data-panes] carries every data-defined pane (id, title,
   // protocol, experimental, on). Each joins KEYS and the OPTIONAL set below: its gear row (gear.js) decides whether it is
   // in this dashboard at all, its rail toggle whether it is on screen, `on` is its rail default, and an experimental one
@@ -64020,7 +64044,7 @@ _LANDING_COLLAPSE_JS = """
   // classes ignored, _LANDING_MOBILE_JS) it is the current tab, so a po.files left true by a desktop session
   // or an earlier bring-forward cannot silently steer a phone's file links into a tab nobody is looking at
   function panesMsg(){var mob=!!(window.__rompMobileOn&&window.__rompMobileOn()),tab=mob?document.body.getAttribute('data-tab'):null;
-    var on={};KEYS.forEach(function(k){on[k]=mob?(k===tab):!!po[k];});return {romp:'panes',on:on,avail:{files:filesCtl(),artifacts:artifactsCtl()}};}
+    var on={};KEYS.forEach(function(k){on[k]=mob?(k===tab):!!po[k];});return {romp:'panes',on:on,avail:{files:filesCtl()}};}
   function tell(f,m){try{if(f&&f.getAttribute&&f.getAttribute('data-protocol')==='none')return;f&&f.contentWindow&&f.contentWindow.postMessage(m,'*');}catch(e){}}   // a URL pane (protocol none) is told nothing: it is not in the protocol (plans/panes-as-data.md)
   function broadcast(){var m=panesMsg();KEYS.forEach(function(k){tell(document.getElementById('f-'+k),m);});}
   window.__rompPanesTell=broadcast;   // the mobile script re-tells on a tab switch / layout flip
@@ -64048,7 +64072,7 @@ _LANDING_COLLAPSE_JS = """
   function flagOf(k){return (k in stored)?!!stored[k]:DEF[k];}
   function reconcile(live){var on=optOn(),shown=false;
     OPT.forEach(function(k){var en=on[k],f=document.getElementById('f-'+k);
-      if(en){if(f&&!f.getAttribute('src')&&f.getAttribute('data-src'))f.setAttribute('src',f.getAttribute('data-src'));
+      if(en){if(!(k in DPX)&&f&&!f.getAttribute('src')&&f.getAttribute('data-src'))f.setAttribute('src',f.getAttribute('data-src'));   // a hand-written optional pane loads when enabled; a generic pane (DPX) only when it comes on screen (apply below)
         if(!(k in po)){po[k]=live?true:flagOf(k);if(live){shown=true;if(window.__rompGrowFair)window.__rompGrowFair(k);}}}   // live: the pane comes on screen, at a fair width (togglePane's bring-forward)
       else if(k in po)delete po[k];
       Array.prototype.forEach.call(document.querySelectorAll('.rail-btn[data-pane='+k+'],#mtabs button[data-pane='+k+']'),function(b){b.hidden=!en;});
@@ -64058,15 +64082,6 @@ _LANDING_COLLAPSE_JS = """
   function apply(){
     var ctl=filesCtl();
     document.body.classList.toggle('no-files-control',!ctl);
-    var actl=artifactsCtl();
-    document.body.classList.toggle('no-artifacts-control',!actl);
-    // the Artifacts pane's iframe is served with data-src (never loaded while its control is off OR the pane is off: no document,
-    // no socket, no listing walk of the remembered session on a dashboard load, the verifier's find of 2026-09-19); the pane
-    // coming on screen with the control on loads it ONCE (the optional panes' rule), and an open pane closes on the same
-    // apply when the control goes
-    var af=document.getElementById('f-artifacts');if(actl&&po.artifacts&&af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));
-    if(!actl&&po.artifacts){po.artifacts=false;if(qp===null)saveP();}
-    if(!actl&&window.__rompMobileOn&&window.__rompMobileOn()&&document.body.getAttribute('data-tab')==='artifacts'){try{window.__rompMobileTab&&window.__rompMobileTab('chat');}catch(e){}}
     var tt=taskTracking();
     document.body.classList.toggle('no-task-tracking',!tt);
     // tracking off (T404): an open Outline or Feed pane closes on the same apply (in memory only: the stored set stands, so the panes return on the next reload once tracking is on), and a phone on one of their tabs comes to the chat
@@ -64080,8 +64095,8 @@ _LANDING_COLLAPSE_JS = """
     document.body.classList.toggle('po-feed',!!po.feed);
     document.body.classList.toggle('po-timeline',!!po.timeline);
     document.body.classList.toggle('po-files',!!po.files);
-    document.body.classList.toggle('po-artifacts',!!po.artifacts);
-    DP.forEach(function(p){if(p&&p.id)document.body.classList.toggle('po-'+p.id,!!po[p.id]);});   // the registry panes' columns (plans/panes-as-data.md)
+    DP.forEach(function(p){if(!p||!p.id)return;var k=p.id;document.body.classList.toggle('po-'+k,!!po[k]);
+      var gf=document.getElementById('f-'+k);if(po[k]&&gf&&!gf.getAttribute('src')&&gf.getAttribute('data-src'))gf.setAttribute('src',gf.getAttribute('data-src'));});   // a generic pane's iframe loads ONCE, when the pane comes on screen (never when merely enabled: the Artifacts page's first load walks the remembered session)   // the registry panes' columns (plans/panes-as-data.md)
     Array.prototype.forEach.call(document.querySelectorAll('.rail-btn[data-pane]'),function(b){
       var k=b.getAttribute('data-pane');b.classList.toggle('on',!!po[k]);
       // tooltip carries the pane command's CURRENT binding (hover discoverability, the user 2026-08-10) —
@@ -64091,7 +64106,7 @@ _LANDING_COLLAPSE_JS = """
     try{window.dispatchEvent(new Event('romp-panes'));}catch(e){}   // nudge the timeline band to auto-fit when toggled
     broadcast();
   }
-  function togglePane(k,to){if(!(k in po))return;if(k==='files'&&!filesCtl())return;if(k==='artifacts'&&!artifactsCtl())return;var nv=(to===undefined)?!po[k]:!!to;
+  function togglePane(k,to){if(!(k in po))return;if(k==='files'&&!filesCtl())return;var nv=(to===undefined)?!po[k]:!!to;
     if(nv===!!po[k])return;   // already so (a relay's bring-forward on an open pane): nothing changed, so no re-apply and no broadcast claiming one
     if(nv&&!po[k]&&window.__rompGrowFair)window.__rompGrowFair(k);   // newly shown → fair width, not a sliver
     po[k]=nv;apply();saveP();}
@@ -64898,7 +64913,7 @@ def _landing():
             ".rail-btn[hidden]{display:none}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.12);border-color:rgba(156,210,255,0.35)}"
             # the Files control hidden by its gear setting (T317): the rail's toggle and the phone's tab both go
-            "body.no-files-control .rail-btn[data-pane=files],body.no-files-control #mtabs button[data-pane=files]{display:none}body.no-artifacts-control .rail-btn[data-pane=artifacts],body.no-artifacts-control #mtabs button[data-pane=artifacts]{display:none}"
+            "body.no-files-control .rail-btn[data-pane=files],body.no-files-control #mtabs button[data-pane=files]{display:none}"
             # the Task tracking switch off (T404): the Outline and Feed buttons and the phone's tabs for them are gone
             "body.no-task-tracking .rail-btn[data-pane=\"fleet\"],body.no-task-tracking .rail-btn[data-pane=\"feed\"],body.no-task-tracking #mtabs button[data-pane=\"fleet\"],body.no-task-tracking #mtabs button[data-pane=\"feed\"]{display:none}"
             # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the RIGHT (margin-left:auto on the
@@ -65369,10 +65384,8 @@ def _landing():
             # the four TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, outline, feed, files. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}#files-pane{flex:var(--g-files,40) 1 0}"
-            "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}"
             "body:not(.po-chat) #chat-pane{display:none}body:not(.po-fleet) #fleet-pane{display:none}body:not(.po-feed) #feed-pane{display:none}body:not(.po-files) #files-pane{display:none}"
-            "body:not(.po-artifacts) #artifacts-pane{display:none}"
-            + _data_pane_css(panes) +   # the REGISTRY panes' column and gutter rules (plans/panes-as-data.md); nothing with an empty registry
+            + _data_pane_css(panes) +   # the GENERIC panes' column and gutter rules (plans/panes-as-data.md)
             # split chat columns (the user 2026-09-08): every column past the first is a client-made .pane.chat-col
             # (_LANDING_SPLIT_JS) with its own /chat?col=N iframe and its own grow var, set inline. They ride the
             # chat group's toggle: off hides every column and the chat|chat gutters with it.
@@ -65390,8 +65403,6 @@ def _landing():
             "body:not(.po-chat) #gv-a,body:not(.po-fleet) #gv-a{display:none}"
             "body:not(.po-feed) #gv-b,body:not(.po-chat):not(.po-fleet) #gv-b{display:none}"
             "body:not(.po-files) #gv-c,body:not(.po-chat):not(.po-fleet):not(.po-feed) #gv-c{display:none}"
-            # gv-d sits (files|feed|outline|chat)|artifacts, hidden when the Artifacts pane is off or no column is shown to its left
-            "body:not(.po-artifacts) #gv-d,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files) #gv-d{display:none}"
             # ── timeline BOTTOM BAND (the user 2026-06-25): a full-width band UNDER the pane row, shown only when
             # po-timeline (the rail's Timeline toggle); the gh gutter above it resizes it (auto-fits otherwise).
             # Band + gutter both hide when the toggle is off, so the pane row fills the height.
@@ -65489,6 +65500,7 @@ def _landing():
             # the Outline (fleet) rides the tab bar like every other pane (the user 2026-07-11, who couldn't
             # access the outline view in the mobile UI — it was desktop-only before)
             "#chat-pane,#fleet-pane,#feed-pane,#files-pane,#tl-pane{display:contents!important}"
+            + _data_pane_mobile_css(panes) +   # the GENERIC panes likewise: on a phone the tab, not the po flag, says which pane shows (plans/panes-as-data.md)
             ".chat-col,.gv-chat{display:none!important}"   # one pane at a time here: split columns never show (nor are made, see _LANDING_SPLIT_JS)
             # reset the desktop iframe absolute-fill (the bare `iframe` reset below re-flows them as tab panes)
             ".pane>iframe{position:static;inset:auto;width:100%;height:100%}"
@@ -65791,10 +65803,7 @@ def _landing():
             "<div class=pane id=feed-pane><iframe id=f-feed data-src=/feed></iframe></div>"
             "<div class=gv id=gv-c></div>"
             "<div class=pane id=files-pane><iframe id=f-files src=/files></iframe></div>"
-            # the Artifacts pane (plans/artifacts-pane.md, 2026-09-19): rightmost, data-src (loaded once, when its control is on)
-            "<div class=gv id=gv-d></div>"
-            "<div class=pane id=artifacts-pane><iframe id=f-artifacts data-src=/artifacts></iframe></div>"
-            + _data_pane_markup(panes) +   # the REGISTRY panes, after Files (plans/panes-as-data.md); nothing with an empty registry
+            + _data_pane_markup(panes) +   # the GENERIC panes, after Files: the Artifacts record and the data panes (plans/panes-as-data.md)
             "</div>"
             "<div id=gv-ghost></div>"   # the divider drag's landing line (position:fixed; gutter() in _LANDING_JS moves it)
             "<div id=col-ghost></div>"   # a tab drag's provisional rectangle: the right half of the rightmost chat column (position:fixed; _LANDING_SPLIT_JS places it)
