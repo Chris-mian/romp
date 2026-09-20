@@ -7082,9 +7082,15 @@ def _hydrate_one(a, rec):
     if k == "a":
         a["message"] = _norm_message(rec.get("message"))
     elif k == "u":
-        a["message"] = _norm_message(rec.get("message"))
         if lz.get("tur") and isinstance(rec.get("toolUseResult"), dict):
-            a["toolUseResult"] = rec["toolUseResult"]
+            a["toolUseResult"] = rec["toolUseResult"]       # before the message, as kind k sets its skill text first (2026-09-20):
+        a["message"] = _norm_message(rec.get("message"))    #  a peer meeting the plain-dict body in hydrate's first loop counts the
+        #                                                      atom filled once its memo entry is gone, so the body a consumer is
+        #                                                      handed must be whole the instant the message lands. Written the other
+        #                                                      way round, a diff row or an answer built in that window read no tool
+        #                                                      result for one build. The marker pop below is the one write still in
+        #                                                      flight then, and a present marker costs a reader a hydrate call, never
+        #                                                      a body
     elif k == "c":
         a["message"] = {"role": "user", "content": [{"type": "text", "text": lz.get("disp", "")}]}
     elif k == "o":
@@ -7161,13 +7167,22 @@ def hydrate(atoms, rompuuid=None, by=None):
             filled += 1
             continue
         msg = a.get("message")
-        if not isinstance(msg, _LazyBody):                  # another thread finished this atom between the memo miss above and
+        if not hasattr(msg, "source_path"):                 # another thread finished this atom between the memo miss above and
             with _ASM_CKPT_LOCK:                            #  here (2026-09-20): its body is a plain dict with no source, and the
                 hit = _HYDRATED.get(u) if u else None       #  per-session map below could name a newer document and refuse an atom
-            if hit is not None:                             #  whose body is in place, the whole call with it. Its bookkeeping (a
-                _hydrate_one(a, hit[0])                     #  kind-u atom's tool result, the popped marker) may still be in flight:
-            filled += 1                                     #  finish it from the memo as the hit branch does, or count it filled
-            continue                                        #  when the entry is gone already
+            if hit is not None:                             #  whose body is in place, the whole call with it. Its bookkeeping (the
+                _hydrate_one(a, hit[0])                     #  popped marker) may still be in flight: finish it from the memo as the
+            filled += 1                                     #  hit branch does, or count it filled when the entry is gone already.
+            continue                                        #  Entry gone with the marker present: the peer's pop is in flight, its
+        #                                                      put having left the memo at once (a cap the record does not fit
+        #                                                      under); the body stands whole, since _hydrate_one writes the message
+        #                                                      last, and readers key on the body type, not the marker (2026-09-20).
+        #                                                      The test is the source slot, not the class: the module loader
+        #                                                      re-executes this file into the same module object at every import,
+        #                                                      rebinding _LazyBody, and a sentinel built before that fails isinstance
+        #                                                      against the new class, so it was counted filled, read nothing and
+        #                                                      left its marker for the caller's next body read to raise on. A None
+        #                                                      message has no slot either and counts filled as before (2026-09-20)
         # Resolve from the held body's document, not the last document restored for this session (2026-09-17).
         # A shallow atom copy keeps its sentinel and source. A missing bound source stays a loud failure; it must
         # never borrow a path from a different snapshot. Legacy unbound descriptors retain the old lookup.

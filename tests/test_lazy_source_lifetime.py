@@ -15,11 +15,13 @@ from tests.test_asm_checkpoint import Harness, SID, NOW, compacting_variant, em,
 class _PeerFill(dict):
     """A hydration memo whose first miss for one atom is the instant a peer thread finishes that same atom: its record
     memoized, its body in place, its lazy marker gone, before the caller has read the body for its source (2026-09-20).
-    The put and the fill happen by hand, under the lock the caller already holds, so no second hydrate call is needed."""
+    The put and the fill happen by hand, under the lock the caller already holds, so no second hydrate call is needed.
+    `puts` False is a peer whose put has left the memo already (a cap the record does not fit under): the atom is
+    filled and the memo holds nothing for it (2026-09-20)."""
 
-    def __init__(self, atom, path):
+    def __init__(self, atom, path, puts=True):
         super().__init__()
-        self.atom, self.path, self.fired = atom, str(path), False
+        self.atom, self.path, self.puts, self.fired = atom, str(path), puts, False
 
     def get(self, key, default=None):
         hit = super().get(key, default)
@@ -29,9 +31,21 @@ class _PeerFill(dict):
             with open(self.path, "rb") as fh:
                 fh.seek(at)
                 rec = json.loads(fh.read(ln))
-            self[key] = (rec, ln)
-            em._hydrate_one(self.atom, rec)
+            if self.puts:
+                self[key] = (rec, ln)
+            self.fill(rec)
         return hit
+
+    def fill(self, rec):
+        em._hydrate_one(self.atom, rec)
+
+
+class _PeerMidFill(_PeerFill):
+    """The same peer caught between its statements: the record memoized and the message set, the tool result and the
+    marker still to come, so the caller that meets the plain-dict body has a fill to finish from the memo (2026-09-20)."""
+
+    def fill(self, rec):
+        self.atom["message"] = em._norm_message(rec["message"])
 
 
 class _PausedAtom(dict):
@@ -51,19 +65,50 @@ class _PausedAtom(dict):
         return super().get(key, default)
 
 
+class _PausedFill(dict):
+    """An atom whose first message write from a thread other than its owner waits for a signal: that thread stands inside
+    _hydrate_one just after its message set, its memo put behind it, while the owner's call meets the plain-dict body
+    (2026-09-20)."""
+
+    def __init__(self, atom, owner):
+        super().__init__(atom)
+        self.owner, self.paused = owner, False
+        self.at_set, self.resume = threading.Event(), threading.Event()
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "message" and not self.paused and threading.current_thread() is not self.owner:
+            self.paused = True
+            self.at_set.set()
+            self.resume.wait(timeout=10)
+
+
+TOOL_RESULT = {"answers": {"which": "the first"}}     # a question tool's structured result: `answers` is a consumed key, so the
+#                                                        emit carries it on the atom and the lazy marker gets its tur bit
+
+
 class LazySourceLifetime(Harness):
     def tearDown(self):
         self.fresh()                                        # the event model is one module for every test module: the map
         super().tearDown()                                  #  entries, memoized bodies and assembly entries left here go with it
 
-    def make_document(self, directory, fsid, tag, section=True):
+    def make_document(self, directory, fsid, tag, section=True, tool=False):
+        """`tool` True puts a tool call, its result record (a kind-u atom whose toolUseResult is TOOL_RESULT) and the reply
+        before the cut, so a restored view holds a lazy atom with a tool result to fill (2026-09-20)."""
         parent = self.td / directory
         parent.mkdir()
         path = parent / (fsid + ".jsonl")
-        records = compacting_variant([
-            G.uline(G.T0, "prompt for " + tag, "user-" + tag),
-            G.aline(G.T0 + 5, "answer for " + tag, "assistant-" + tag, "user-" + tag),
-        ], tag)
+        before = [G.uline(G.T0, "prompt for " + tag, "user-" + tag)]
+        if tool:
+            result = G.trline(G.T0 + 6, "tu_assistant-%s_0" % tag, "result-" + tag, "assistant-" + tag, content="asked")
+            result["toolUseResult"] = dict(TOOL_RESULT)
+            before += [G.aline(G.T0 + 5, "answer for " + tag, "assistant-" + tag, "user-" + tag, tools=("AskUserQuestion",),
+                               stop="tool_use"),
+                       result,
+                       G.aline(G.T0 + 8, "noted for " + tag, "close-" + tag, "result-" + tag)]
+        else:
+            before.append(G.aline(G.T0 + 5, "answer for " + tag, "assistant-" + tag, "user-" + tag))
+        records = compacting_variant(before, tag)
         path.write_text("".join(json.dumps(r) + "\n" for r in records))
         tree = self.parse_leaf(path)
         self.assertTrue(em.asm_checkpoint_write(str(path), SID, tree=tree if section else None))
@@ -85,6 +130,9 @@ class LazySourceLifetime(Harness):
 
     def user_atom(self, tree, tag):
         return self.atom_of(tree, "user-" + tag)
+
+    def tool_atom(self, tree, tag):
+        return self.atom_of(tree, "result-" + tag)
 
     @staticmethod
     def index_atom(doc, path, uuid):
@@ -195,6 +243,71 @@ class LazySourceLifetime(Harness):
             self.assertEqual(em.hydrate([atom]), 1)         # the complete call fills the atom the held thread is about to read
             atom.resume.set()
             self.assertEqual(waiting.result(timeout=10), 1)
+        self.assertIsNone(atom.get("lazy"))
+        self.assertEqual(atom["message"]["content"], [{"type": "text", "text": "prompt for web"}])
+
+    def test_a_peers_fill_caught_between_its_statements_is_finished_from_the_memo(self):
+        """The first loop meets a plain-dict body while the peer's entry stands: the peer memoized its record and set
+        the message, its tool result and its marker still to come. The memo re-read under the lock finishes the fill
+        from the hit, so the call returns a whole atom, marker gone and tool result in place (2026-09-20)."""
+        first = self.make_document("web", G.FSID_A, "web", tool=True)
+        self.fresh()
+        atom = self.tool_atom(self.restore(first), "web")
+        self.assertTrue(atom["lazy"].get("tur"))
+        with mock.patch.object(em, "_HYDRATED", _PeerMidFill(atom, first)):
+            self.assertEqual(em.hydrate([atom]), 1)
+        self.assertIsNone(atom.get("lazy"))
+        self.assertEqual(atom["toolUseResult"], TOOL_RESULT)
+        self.assertEqual(atom["message"]["content"][0]["tool_use_id"], "tu_assistant-web_0")
+
+    def test_a_peers_finished_fill_whose_entry_left_the_memo_counts_the_atom_filled(self):
+        """The same plain-dict body with the entry gone: the peer filled the atom whole and its put left the memo at once
+        (a cap the record does not fit under). There is nothing to finish from; the atom counts as filled, and the
+        call neither reads a gone entry nor refuses the body (2026-09-20)."""
+        first = self.make_document("web", G.FSID_A, "web", tool=True)
+        self.fresh()
+        atom = self.tool_atom(self.restore(first), "web")
+        memo = _PeerFill(atom, first, puts=False)
+        with mock.patch.object(em, "_HYDRATED", memo):
+            self.assertEqual(em.hydrate([atom]), 1)
+        self.assertEqual(dict(memo), {})                    # the entry-gone arm is the one the call took
+        self.assertIsNone(atom.get("lazy"))
+        self.assertEqual(atom["toolUseResult"], TOOL_RESULT)
+
+    def test_a_kind_u_body_met_mid_fill_carries_its_tool_result(self):
+        """Two real threads under a cap of 0: the peer's put leaves the memo at once, and the peer is held inside
+        _hydrate_one just after its message set. The other thread's call then meets a plain-dict body with no entry to
+        finish from and returns; the tool result must already be on the atom, so _hydrate_one writes it before the
+        message and only the marker pop is still in flight (2026-09-20)."""
+        first = self.make_document("web", G.FSID_A, "web", tool=True)
+        self.fresh()
+        atom = _PausedFill(self.tool_atom(self.restore(first), "web"), threading.current_thread())
+        with mock.patch.object(em, "_HYDRATED_CAP", 0), ThreadPoolExecutor(max_workers=1) as pool:
+            peer = pool.submit(em.hydrate, [atom])
+            if not atom.at_set.wait(timeout=10):
+                peer.result(timeout=0)
+                self.fail("the peer never set the body")
+            with em._ASM_CKPT_LOCK:
+                self.assertEqual(dict(em._HYDRATED), {})    # the put self-evicted: this call takes the entry-gone arm
+            self.assertIsNotNone(atom.get("lazy"))          # the peer's marker pop is the write still to come
+            self.assertEqual(em.hydrate([atom]), 1)
+            self.assertEqual(atom.get("toolUseResult"), TOOL_RESULT)   # at return, not after the peer resumes
+            atom.resume.set()
+            self.assertEqual(peer.result(timeout=10), 1)
+        self.assertIsNone(atom.get("lazy"))
+        self.assertEqual(atom["toolUseResult"], TOOL_RESULT)
+
+    def test_a_sentinel_of_a_rebound_class_is_still_read(self):
+        """The module loader re-executes an existing name into the same module object, rebinding every class, so a body
+        built before a re-execution is no instance of the class the module holds afterward. The first loop keys on the
+        body's source slot, not its class: such a body is read, not counted filled and left in place with its marker
+        for the caller's next body read to raise on (2026-09-20)."""
+        first = self.make_document("web", G.FSID_A, "web")
+        self.fresh()
+        atom = self.user_atom(self.restore(first), "web")
+        rebound = type("_LazyBody", (dict,), {})           # the name after a re-execution: another class object
+        with mock.patch.object(em, "_LazyBody", rebound):
+            self.assertEqual(em.hydrate([atom]), 1)
         self.assertIsNone(atom.get("lazy"))
         self.assertEqual(atom["message"]["content"], [{"type": "text", "text": "prompt for web"}])
 
