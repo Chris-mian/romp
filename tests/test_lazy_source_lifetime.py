@@ -4,7 +4,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
-from tests.test_asm_checkpoint import Harness, SID, NOW, compacting_variant, em, G, _doc
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))          # a script run puts only tests/ on sys.path; the harness import wants the checkout root
+from tests.test_asm_checkpoint import Harness, SID, NOW, compacting_variant, em, G, _doc   # noqa: E402
 
 
 class _PeerFill(dict):
@@ -184,7 +189,9 @@ class LazySourceLifetime(Harness):
         self.restore(second)
         with ThreadPoolExecutor(max_workers=1) as pool:
             waiting = pool.submit(em.hydrate, [atom])
-            self.assertTrue(atom.at_read.wait(timeout=10))
+            if not atom.at_read.wait(timeout=10):
+                waiting.result(timeout=0)              # the worker failed before its body read: on main the first loop never
+                self.fail("the worker never reached the body read")   # reads the body, so its LazyBodyRead is the evidence, not a timeout
             self.assertEqual(em.hydrate([atom]), 1)         # the complete call fills the atom the held thread is about to read
             atom.resume.set()
             self.assertEqual(waiting.result(timeout=10), 1)

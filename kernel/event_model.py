@@ -4061,7 +4061,7 @@ class _Unhydrated:
         return "<unhydrated body of %s>" % self.uuid
 
 
-_UNBOUND_LAZY_SOURCE = object()    # compatibility for descriptors constructed without a verified document
+_UNBOUND_LAZY_SOURCE = object()    # compatibility for descriptors constructed without a verified document (2026-09-17)
 
 
 class _LazyBody(dict):
@@ -5139,7 +5139,8 @@ class LazyIndex:
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
         files = doc.get("files")
-        self.source_files = None if files is None else _source_files(files)
+        self.source_files = None if files is None else _source_files(files)   # the held view's own document, not the last
+        #                                                                         restore's (_restore_prefix_atoms, 2026-09-17)
         self._user_facts = {}                             # the interrupt-marks tally's light facts by row (user_facts), bounded by _USER_FACTS_CAP
         with _MAT_LOCK:                                   # the add under the lock the userFacts gauge sums under: an add beside the sum raised
             _LIVE_INDEXES.add(self)                       #  "set changed size during iteration" and /perf answered 500 (1597 low 1)
@@ -5592,7 +5593,7 @@ def _asm_doc_memo_put(key, mkey, doc):
             if _ASM_DOC_MEMO_BYTES[0] <= _ASM_DOC_MEMO_CAP or len(_ASM_DOC_MEMO) <= 1:
                 break
             _asm_doc_memo_drop(k_)
-_LAZY_FILES = {}                   # rompuuid -> {fsid: path}: fallback for legacy unbound descriptors; restored bodies own their source
+_LAZY_FILES = {}                   # rompuuid -> {fsid: path}: fallback for legacy unbound descriptors; restored bodies own their source (2026-09-17)
 _HYDRATED = {}                     # uuid -> the body fields read; dict order = LRU
 _HYDRATED_BYTES = [0]
 _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_bytes() // 32), 1024 * 1024)
