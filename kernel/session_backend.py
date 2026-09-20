@@ -172,8 +172,9 @@ class SessionBackend(ABC):
         own delivery: forwarding the message to the model at the next tool boundary, handing queued sends to
         the CLI one message each, in order (SdkSession._pending + its inputs() generator, which holds the
         next text until the CLI has taken the last, since 2026-09-08, when two texts sent during one turn
-        reached the agent as one fused message; that change supersedes the 2026-07-17 merge of several queued
-        sends into one turn for SDK sessions), and holding them across an interrupt until the turn settles.
+        reached the agent as one fused message; the user 2026-09-20 accepted one message each for a drained
+        pile, up to one turn each, over the 2026-07-17 fold of several queued sends into one turn for SDK
+        sessions), and holding them across an interrupt until the turn settles.
         The kernel then hands composer sends straight to send() the instant they arrive (the user 2026-07-17,
         who wanted them in as soon as possible), instead of parking them itself.
         False (default) means the backend has no such queue, so the kernel holds sends while a turn runs and
