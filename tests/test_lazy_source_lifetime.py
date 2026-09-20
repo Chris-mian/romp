@@ -41,8 +41,9 @@ class _PeerFill(dict):
 
 
 class _PeerMidFill(_PeerFill):
-    """The same peer caught between its statements: the record memoized and the message set, the tool result and the
-    marker still to come, so the caller that meets the plain-dict body has a fill to finish from the memo (2026-09-20)."""
+    """The same peer caught between its statements: the record memoized and the message set, the marker pop still to
+    come (the double sets the message alone so the arm's own _hydrate_one is what puts the tool result in place), so the
+    caller that meets the plain-dict body has a fill to finish from the memo (2026-09-20)."""
 
     def fill(self, rec):
         self.atom["message"] = em._norm_message(rec["message"])
@@ -248,8 +249,9 @@ class LazySourceLifetime(Harness):
 
     def test_a_peers_fill_caught_between_its_statements_is_finished_from_the_memo(self):
         """The first loop meets a plain-dict body while the peer's entry stands: the peer memoized its record and set
-        the message, its tool result and its marker still to come. The memo re-read under the lock finishes the fill
-        from the hit, so the call returns a whole atom, marker gone and tool result in place (2026-09-20)."""
+        the message, its marker pop still to come (the double leaves the tool result unset so the finish is observable).
+        The memo re-read under the lock finishes the fill from the hit, so the call returns a whole atom, marker gone
+        and tool result in place (2026-09-20)."""
         first = self.make_document("web", G.FSID_A, "web", tool=True)
         self.fresh()
         atom = self.tool_atom(self.restore(first), "web")
@@ -300,8 +302,10 @@ class LazySourceLifetime(Harness):
     def test_a_sentinel_of_a_rebound_class_is_still_read(self):
         """The module loader re-executes an existing name into the same module object, rebinding every class, so a body
         built before a re-execution is no instance of the class the module holds afterward. The first loop keys on the
-        body's source slot, not its class: such a body is read, not counted filled and left in place with its marker
-        for the caller's next body read to raise on (2026-09-20)."""
+        body's source slot, not its class: such a BOUND body is read, not counted filled and left in place with its
+        marker for the caller's next body read to raise on. An unbound body built before the re-execution still fails
+        loudly, since its stale source sentinel is no path; the product re-executes the module only at import time,
+        before any body exists (2026-09-20)."""
         first = self.make_document("web", G.FSID_A, "web")
         self.fresh()
         atom = self.user_atom(self.restore(first), "web")

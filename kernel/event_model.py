@@ -7181,7 +7181,10 @@ def hydrate(atoms, rompuuid=None, by=None):
         #                                                      re-executes this file into the same module object at every import,
         #                                                      rebinding _LazyBody, and a sentinel built before that fails isinstance
         #                                                      against the new class, so it was counted filled, read nothing and
-        #                                                      left its marker for the caller's next body read to raise on. A None
+        #                                                      left its marker for the caller's next body read to raise on. A bound
+        #                                                      body built before the re-execution is read now; an unbound one still
+        #                                                      fails loudly below, its stale source sentinel being no path (the
+        #                                                      product re-executes only at import, before any body exists). A None
         #                                                      message has no slot either and counts filled as before (2026-09-20)
         # Resolve from the held body's document, not the last document restored for this session (2026-09-17).
         # A shallow atom copy keeps its sentinel and source. A missing bound source stays a loud failure; it must
