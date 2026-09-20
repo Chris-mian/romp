@@ -108,6 +108,14 @@ for host routing, and one bundle `ui/webview/artifacts.ts`.
 
 ## 5. The shell hooks: a new app key, hidden by default, one place each
 
+> **Since panes-as-data phase three (PR 1922)** the pane is a code record in the kernel's `_CODE_PANES` (`id`
+> `artifacts`, experimental, off by default) rendered by the GENERIC pane build, and the gear's generic Panes row is
+> its control: `showArtifactsControl` and the hand-written hooks this section names (the `_PANE_ORDER` entry, the
+> `po-artifacts` line, the `gv-d` gutter, the `f-artifacts` iframe, the frame lists) are the FIRST landing's, kept
+> here as history. The iframe still takes its `src` only when the pane comes on screen (PR 1911 round two, M2), now
+> by the generic build's gate (`plans/panes-as-data.md`, section 7 item 3). Section 7 below, where it names the
+> registry as coming, is likewise overtaken.
+
 The pane is an app key `artifacts` in the shell's pane set (`kernel.py _PANE_ORDER`, entry `("artifacts", "Artifacts")`),
 so today's toggle control shows and hides it with no new mechanism:
 
