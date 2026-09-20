@@ -73,10 +73,13 @@ const fr = await frame();
 out.shown = { poClass: await page.evaluate(() => document.body.classList.contains("po-artifacts")), frame: !!fr, url: fr ? fr.url().replace(/\?.*$/, "") : null,
   iframeSrc: await page.evaluate(() => { const f = document.getElementById("f-artifacts"); return f ? (f.getAttribute("src") || null) : "absent"; }) };
 if (fr) {
-  await fr.waitForSelector("#art-session", { timeout: 30000 }).catch(() => {});
-  await fr.waitForFunction((sid) => Array.from(document.querySelectorAll("#art-session option")).some((o) => o.value === sid), cfg.sid, { timeout: 30000 }).catch(() => {});
-  out.selector = await fr.evaluate((sid) => ({ options: Array.from(document.querySelectorAll("#art-session option")).map((o) => o.value), names: Array.from(document.querySelectorAll("#art-session option")).map((o) => o.textContent) }), cfg.sid);
-  await fr.selectOption("#art-session", cfg.sid);
+  // the picker (pass two, plans/artifacts-pane.md 9.2 and 9.3): its rows are the chat's open tabs; the pane follows the chat's active tab, the one
+  // tab here, so the listing arrives with no pick; the card is read for the rows and closed
+  await fr.waitForSelector("#art-pick", { timeout: 30000 }).catch(() => {});
+  await fr.click("#art-pick", { timeout: 15000 }).catch(() => {});
+  await fr.waitForFunction((sid) => !!document.querySelector('#art-picker .ctx-item[data-sid="' + sid + '"]'), cfg.sid, { timeout: 30000 }).catch(() => {});
+  out.selector = await fr.evaluate(() => ({ options: Array.from(document.querySelectorAll("#art-picker .ctx-item[data-sid]")).map((r) => r.getAttribute("data-sid")), names: Array.from(document.querySelectorAll("#art-picker .ctx-item[data-sid] .session-name")).map((n) => n.textContent) }));
+  await fr.click('#art-picker .ctx-item[data-sid="' + cfg.sid + '"]', { timeout: 15000 }).catch(() => {});
   await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 4, null, { timeout: 60000 }).catch(() => {});
   await fr.waitForFunction(() => Array.from(document.querySelectorAll(".art-thumb img")).length >= 2 && Array.from(document.querySelectorAll(".art-thumb img")).every((i) => i.complete), null, { timeout: 30000 }).catch(() => {});
   out.list = await fr.evaluate(() => ({
@@ -84,7 +87,7 @@ if (fr) {
     thumbs: Array.from(document.querySelectorAll(".art-thumb img")).map((i) => ({ alt: i.alt, loaded: i.complete && i.naturalWidth > 0, src: i.getAttribute("src") })),
     count: (document.querySelector(".art-count") || {}).textContent, err: (document.querySelector(".art-err") || {}).textContent || "" }));
   // (3) the large view: a click on the first thumbnail opens the lightbox in place; ArrowRight steps to the second picture; the cue reads 2/2
-  await fr.click(".art-thumb");
+  await fr.click(".art-thumb", { timeout: 15000 }).catch(() => {});
   await fr.waitForSelector("#romp-lightbox img.romp-lightbox-img", { timeout: 10000 }).catch(() => {});
   const first = await fr.evaluate(() => { const i = document.querySelector("#romp-lightbox img.romp-lightbox-img"); return i ? i.alt : null; });
   await fr.press("body", "ArrowRight");
@@ -95,7 +98,7 @@ if (fr) {
   const back = await fr.evaluate(() => { const i = document.querySelector("#romp-lightbox img.romp-lightbox-img"); return i ? i.alt : null; });
   // the one extra control: send the picture to the Files pane (the shell's viewFile relay)
   const sendShown = await fr.evaluate(() => !!document.querySelector("#romp-lightbox .art-send"));
-  if (sendShown) await fr.click("#romp-lightbox .art-send");
+  if (sendShown) await fr.click("#romp-lightbox .art-send", { timeout: 15000 }).catch(() => {});
   await page.waitForFunction(() => (window.__relays || []).length > 0, null, { timeout: 10000 }).catch(() => {});
   const relays = await page.evaluate(() => window.__relays || []);
   const filesOn = await page.evaluate(() => document.body.classList.contains("po-files"));
@@ -142,7 +145,7 @@ class ArtifactsPaneServed(unittest.TestCase):
         os.makedirs(proj, exist_ok=True)
         Path(cls.state, "names", SID).write_text("web\t%s\t#1EA1EB\t#ffffff\n" % cwd)
         Path(cls.state, "sdk", SID + ".json").write_text(json.dumps(
-            {"sid": SID, "name": "web", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": SID, "alive": False,
+            {"sid": SID, "name": "web", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": SID, "alive": True,
              "model": "claude-fable-5-1", "liveModel": "Fable 5.1"}))
         # the files the thread names: two written (one deleted since), one rendered picture, one drop
         cls.report = os.path.join(cwd, "report.md"); Path(cls.report).write_text("# the parser report\n")
@@ -224,7 +227,7 @@ class ArtifactsPaneServed(unittest.TestCase):
         self.assertIsNone(r["ctlOn"]["iframeSrc"], "enabled but off screen loads nothing: no document, no listing walk on a dashboard load (round two, M2; the generic build gates the load on the rail flag)")
         self.assertTrue(r["shown"]["poClass"]); self.assertTrue(r["shown"]["frame"], "the pane's document is up")
         self.assertEqual(r["shown"]["iframeSrc"], "/artifacts", "the toggle loads the page once (data-src to src, the optional panes' rule)")
-        self.assertIn(SID, r["selector"]["options"], "the selector names the session")
+        self.assertIn(SID, r["selector"]["options"], "the picker lists the session (the chat's open tab)"); self.assertIn("web", r["selector"]["names"], "in the strip's label")
         rows = r["list"]["rows"]
         self.assertEqual([(x["name"], x["via"], x["missing"]) for x in rows],
                          [("sketch.png", "dropped", False), ("accuracy.png", "shown", False), ("report.md", "shown", False), ("scratch.md", "written", True)],

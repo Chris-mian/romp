@@ -201,9 +201,12 @@ What a protocol pane page may rely on, and nothing else (a specific pane's other
   on its socket), every non-keepalive frame handed to the window as a message, the build-drift and
   pane-set reload offer, the `?v=` build token.
 - **Inbound from the shell** (`window` messages): `{romp:"panes", on, avail}` (which panes are on screen
-  and which exist), `{romp:"paneFocus", dir, from}` (a focus arrived by the shell's Alt+Arrow), and, with
-  the docking kit on, the body class `pane-docking` and the injected grab detector (the docking plan,
-  section 3).
+  and which exist), `{romp:"paneFocus", dir, from}` (a focus arrived by the shell's Alt+Arrow),
+  `{romp:"chatTabs", tabs}` (the open tabs of the chat panes, the union of every chat column's strip in
+  column order, `{id, name, color}` each, on every change and on the pane's load) and `{romp:"activeChat",
+  id, nonce, gesture}` (the chat's most recently selected tab, relayed on every switch), both since the
+  Artifacts pane's second pass (`plans/artifacts-pane.md` sections 9.2 and 9.5), and, with the docking kit
+  on, the body class `pane-docking` and the injected grab detector (the docking plan, section 3).
 - **Outbound to the shell** (`window.parent.postMessage`): `{romp:"notify", kind, text}` (a line in the
   shell's bell), `{romp:"viewFile", ...}` (the file relay to the Files pane, as the artifacts pane uses),
   `{romp:"ready"}`, `{romp:"paneGrab"}` and `{romp:"paneGrabEnd"}` (the detector's, section 4).

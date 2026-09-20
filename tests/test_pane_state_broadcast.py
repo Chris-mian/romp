@@ -93,8 +93,9 @@ window.__rompMobileTab = (t) => { TABS.push(t); TAB = t; };
 __SEED__
 """
 _COLLAPSE_DRIVER = r"""
-const counts = () => Object.fromEntries(KEYS.map((k) => [k, (POSTED[k] || []).length]));
-const last = (k) => (POSTED[k] || []).slice(-1)[0];
+const panesOf = (k) => (POSTED[k] || []).filter((m) => m && m.romp === 'panes');   // the pane-set messages alone: a load also re-tells the open tabs since the Artifacts pane's second pass (chatTabs), not this test's subject
+const counts = () => Object.fromEntries(KEYS.map((k) => [k, panesOf(k).length]));
+const last = (k) => ((typeof panesOf === 'function' ? panesOf(k) : (POSTED[k] || []).filter((m) => m && m.romp === 'panes'))).slice(-1)[0];
 const out = {};
 out.boot = { counts: counts(), chat: last('chat'), files: last('files') };
 window.__rompPaneToggle('files', true);
@@ -123,8 +124,9 @@ console.log(JSON.stringify(out));
 # switched to the chat. Flipping the store back on (the gear's write, heard through the storage listener) shows
 # the control again and the pane can open.
 _HIDDEN_DRIVER = r"""
-const last = (k) => (POSTED[k] || []).slice(-1)[0];
-const counts = () => Object.fromEntries(KEYS.map((k) => [k, (POSTED[k] || []).length]));
+const last = (k) => ((typeof panesOf === 'function' ? panesOf(k) : (POSTED[k] || []).filter((m) => m && m.romp === 'panes'))).slice(-1)[0];
+const panesOf = (k) => (POSTED[k] || []).filter((m) => m && m.romp === 'panes');   // the pane-set messages alone: a load also re-tells the open tabs since the Artifacts pane's second pass (chatTabs), not this test's subject
+const counts = () => Object.fromEntries(KEYS.map((k) => [k, panesOf(k).length]));
 const out = {};
 out.boot = { cls: CLS.has('no-files-control'), poFiles: CLS.has('po-files'), store: JSON.parse(STORE['romp-panes'] || 'null'), chat: last('chat'), counts: counts() };
 window.__rompPaneToggle('files', true);          // a relay's bring-forward, the palette's command: refused
@@ -268,8 +270,9 @@ class Broadcast(unittest.TestCase):
 # off there leaves po and KEYS (togglePane refuses it, the broadcast omits it), wears hidden on its rail
 # button and phone tab, and never gets its src (the markup carries data-src); a pane on gets its src once.
 _OPT_DRIVER = r"""
-const counts = () => Object.fromEntries(KEYS.map((k) => [k, (POSTED[k] || []).length]));
-const last = (k) => (POSTED[k] || []).slice(-1)[0];
+const panesOf = (k) => (POSTED[k] || []).filter((m) => m && m.romp === 'panes');   // the pane-set messages alone: a load also re-tells the open tabs since the Artifacts pane's second pass (chatTabs), not this test's subject
+const counts = () => Object.fromEntries(KEYS.map((k) => [k, panesOf(k).length]));
+const last = (k) => ((typeof panesOf === 'function' ? panesOf(k) : (POSTED[k] || []).filter((m) => m && m.romp === 'panes'))).slice(-1)[0];
 const src = () => Object.fromEntries(KEYS.map((k) => [k, frames['f-' + k].getAttribute('src')]));
 const hidden = () => Object.fromEntries(KEYS.map((k) => [k, BTNS[k].hidden]));
 const out = {};
