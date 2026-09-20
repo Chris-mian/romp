@@ -22,6 +22,12 @@
 export const GRAB_HOVER_CLASS = "pd-grab-hover";
 export const KIT_CLASS = "pane-docking";
 export const STYLE_ID = "pd-grab-css";
+/** A pane page's OWN declaration of an empty background (plans/panes-as-data.md section 4): an element carrying this
+ *  attribute is a grab surface for ANY app, a registry pane's page included, read before the per-app lists below (which
+ *  stay as the shipped panes' declarations). The press must land on the declared element itself, never on a control
+ *  inside it. */
+export const EMPTY_ATTR = "data-pane-empty";
+export const EMPTY_ATTR_SEL = "[" + EMPTY_ATTR + "]";
 
 /** A pane page's empty background: the press must land on one of THESE elements itself (a container, not a card
  *  or a row inside it). Keyed by the page's app name (`window.__rompApp`). The chat is absent on purpose. */
@@ -38,13 +44,15 @@ export const CONTROL_SEL = "a, button, input, textarea, select, label, summary, 
 /** The subset of an Element the decision reads, so a node test can hand in a fake. */
 export interface TargetLike { matches(sel: string): boolean; closest(sel: string): unknown }
 
-/** Whether a press on `target` in the page for `app` is a press on the page's empty background. */
+/** Whether a press on `target` in the page for `app` is a press on the page's empty background: never on a control;
+ *  yes on an element the page declared with `data-pane-empty` (any app); else by the app's shipped list. */
 export function emptyPress(app: string, target: TargetLike | null): boolean {
-  const sel = EMPTY_BY_APP[app];
-  if (!sel || !target) return false;
+  if (!target) return false;
   try {
     if (target.closest(CONTROL_SEL)) return false;
-    return target.matches(sel);
+    if (target.matches(EMPTY_ATTR_SEL)) return true;
+    const sel = EMPTY_BY_APP[app];
+    return !!sel && target.matches(sel);
   } catch {
     return false;
   }
@@ -64,8 +72,9 @@ export function ensureStyle(doc: Document): void {
 }
 
 export function install(win: Window, app: string): void {
+  // every app: a registry pane's page declares its own surface with data-pane-empty (the shipped lists above are the
+  // shipped panes'); a page with neither, the chat, is inert here, and the shell never injects this into the chat anyway
   const doc = win.document;
-  if (!EMPTY_BY_APP[app]) return;
   const w = win as any;
   const expose = () => { w.__rompPaneGrab = { app, empty: (el: Element | null) => emptyPress(app, el) }; };   // read-only, for the served pins
   ensureStyle(doc);

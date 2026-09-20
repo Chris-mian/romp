@@ -67,7 +67,7 @@ def _transcript(cwd, pairs):
 
 
 NOTES_PAGE = """<!doctype html><html><head><meta charset=utf-8><link rel=stylesheet href=theme.css><script src=shim.js></script></head>
-<body><h1 id=t>Notes</h1><iframe id=inner src=inner.html></iframe><script>
+<body><h1 id=t>Notes</h1><div id=empty data-pane-empty style="height:260px"></div><iframe id=inner src=inner.html></iframe><script>
 window.__labMsgs=[];window.addEventListener('message',function(e){window.__labMsgs.push(e.data);});
 </script></body></html>"""
 
@@ -177,6 +177,50 @@ out.reloaded = await page.waitForFunction(() => window.__probe !== 1, null, { ti
 await page.waitForSelector(".rail-btn[data-pane=later]", { timeout: 20000 }).catch(() => {});
 await page.waitForTimeout(500);
 out.afterReload = { later: !!(await page.$(".rail-btn[data-pane=later]")), body: await body(), banner: await banner() };
+
+// ---- 6. the docking kit reads the list (plans/panes-as-data.md section 4): a data pane is a tree leaf with a ring, drops into a half-zone ----
+const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1)))));
+await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.paneDocking = true; s.showArtifactsControl = true; localStorage.setItem("romp:settings", JSON.stringify(s)); });
+await page.reload();
+await page.waitForSelector(".rail-btn[data-pane=notes]", { timeout: 20000 }).catch(async () => { await die("no notes rail button after the kit's reload"); });
+out.kitOn = await page.waitForFunction(() => !!(window.__rompPaneDock && window.__rompPaneDock.on() && window.__rompPaneDock.layout()), null, { timeout: 15000 }).then(() => true).catch(() => false);
+if (!out.kitOn) await die("the docking kit did not come on");
+await frame();
+const leavesOf = () => page.evaluate(() => { const lay = window.__rompPaneDock.layout(); const lv = (n) => n.pane ? [n.pane] : n.kids.flatMap(lv); return lay ? lv(lay.tree) : []; });
+const rectsOf = () => page.evaluate(() => Object.fromEntries(window.__rompPaneDock.rects().map((r) => { const el = document.getElementById(r.pane); const f = el && el.querySelector(":scope > iframe"); const b = f ? f.getBoundingClientRect() : null;
+  return [r.pane, Object.assign({}, r.rect, { frame: b ? { x: b.left, y: b.top, w: b.width, h: b.height } : null })]; })));
+out.kitLeaves = await leavesOf();
+out.kitRects = await rectsOf();
+out.kitTitleRail = await page.evaluate(() => Array.from(document.querySelectorAll(".rail-btn[data-pane]")).map((b) => [b.getAttribute("data-pane"), b.textContent]));
+// the notes page's own empty surface: a press there forwards to the shell and arms exactly the ring's press (the detector honours data-pane-empty)
+const nf2 = await frameEnding("/pane/notes/");
+if (!nf2) await die("no notes frame after the kit's reload");
+out.kitInjected = await nf2.waitForFunction(() => document.body.classList.contains("pane-docking") && !!window.__rompPaneGrab, null, { timeout: 15000 }).then(() => true).catch(() => false);
+const nOrigin = await page.evaluate(() => { const f = document.getElementById("f-notes"); const b = f.getBoundingClientRect(); return { x: b.left + f.clientLeft, y: b.top + f.clientTop }; });
+const spot = await nf2.evaluate(() => { const e = document.getElementById("empty"); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, under: (document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) || {}).id || "" }; });
+out.kitSpot = spot;
+await page.mouse.move(nOrigin.x + spot.x, nOrigin.y + spot.y); await frame();
+out.kitHover = await nf2.evaluate(() => ({ cls: document.body.className, cursor: getComputedStyle(document.body).cursor }));
+await page.mouse.down(); await frame();
+out.kitPressed = await page.evaluate(() => ({ pressed: window.__rompPaneDock.pressed(), dragging: window.__rompPaneDock.dragging() }));
+await page.keyboard.press("Escape"); await frame(); await page.mouse.up(); await frame();
+// a REAL drag from the notes pane's ring into the feed's left half: the layout changes, notes docks left of the feed
+const before = await rectsOf();
+const nr = before["notes-pane"], fr2 = before["feed-pane"];
+if (!nr || !fr2) await die("notes or feed is not a leaf: " + JSON.stringify(Object.keys(before)));
+const x0 = nr.x + 3, y0 = nr.y + nr.h / 2;   // the ring: the pane element's left padding
+await page.mouse.move(x0, y0); await page.mouse.down(); await frame();
+await page.mouse.move(x0 + 14, y0 + 14, { steps: 3 }); await frame();
+out.kitArmed = await page.evaluate(() => window.__rompPaneDock.dragging());
+await page.mouse.move(fr2.x + fr2.w * 0.2, fr2.y + fr2.h / 2, { steps: 8 }); await frame();
+out.kitZone = await page.evaluate(() => window.__rompPaneDock.zone());
+out.kitOutline = await page.evaluate(() => { const o = document.getElementById("pd-outline"); return o ? { on: o.classList.contains("on"), text: o.textContent } : null; });
+await page.mouse.up(); await frame();
+out.kitAfterDrop = { leaves: await leavesOf(), rects: await rectsOf(), layout: await page.evaluate(() => localStorage.getItem("romp-layout")) };
+if (cfg.shot) await page.screenshot({ path: cfg.shot.replace(/\.png$/, "-kit.png") });   // the kit on, the data pane docked left of the feed
+// the Artifacts pane (a shipped pane the kit's old lists never named) toggled on is a leaf too
+await page.evaluate(() => window.__rompPaneToggle("artifacts", true)); await frame(); await frame();
+out.kitArtifacts = { leaves: await leavesOf(), rect: (await rectsOf())["artifacts-pane"] || null };
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
@@ -322,6 +366,29 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertTrue(r["afterReload"]["later"], "the fresh page carries the new pane: %r" % r["afterReload"])
         self.assertIn("po-later", r["afterReload"]["body"]["cls"], "on: true, on screen")
         self.assertFalse((r["afterReload"]["banner"] or {}).get("shown"), "nothing to say on the current page")
+        # 6. the docking kit reads the list: a data pane toggled on is a tree leaf with a ring (the phase-one 0x0 fact closes)
+        self.assertTrue(r["kitOn"])
+        lv = r["kitLeaves"]
+        self.assertIn("notes-pane", lv, "the notes pane is a leaf: %r" % lv); self.assertIn("docs-pane", lv, "the URL pane is a leaf too (only the ring, no detector)"); self.assertIn("later-pane", lv)
+        self.assertEqual(lv.index("feed-pane") < lv.index("docs-pane") < lv.index("later-pane") < lv.index("notes-pane"), True, "the row's order, the rail's: %r" % lv)
+        for pid in ("notes-pane", "docs-pane"):
+            rc = r["kitRects"][pid]
+            self.assertGreater(rc["w"], 60, "%s has a rectangle: %r" % (pid, rc)); self.assertGreater(rc["h"], 100)
+            self.assertEqual((round(rc["frame"]["x"] - rc["x"]), round(rc["frame"]["y"] - rc["y"])), (6, 6), "the iframe sits inside the 6 px ring: %r" % rc)
+        self.assertIn(["notes", "Notes"], r["kitTitleRail"])
+        self.assertTrue(r["kitInjected"], "the detector is injected into the protocol pane's page and the kit's class is on its body")
+        self.assertEqual(r["kitSpot"]["under"], "empty", "the press lands on the page's declared empty surface: %r" % r["kitSpot"])
+        self.assertIn("pd-grab-hover", r["kitHover"]["cls"], "the open hand over the declared surface: %r" % r["kitHover"]); self.assertEqual(r["kitHover"]["cursor"], "grab")
+        self.assertTrue(r["kitPressed"]["pressed"], "a press on the page's declared empty surface arms the shell's press (data-pane-empty honoured for any app): %r" % r["kitPressed"])
+        self.assertTrue(r["kitArmed"], "the ring's press lifts the pane after the slop")
+        self.assertEqual(r["kitZone"], {"target": "feed-pane", "edge": "left"}, "the feed's left half-zone: %r" % r["kitZone"])
+        self.assertEqual(r["kitOutline"], {"on": True, "text": "Notes"}, "the live outline names the pane by its record's title: %r" % r["kitOutline"])
+        after = r["kitAfterDrop"]["leaves"]
+        self.assertLess(after.index("notes-pane"), after.index("feed-pane"), "dropped into the feed's left half: notes docks left of the feed: %r" % after)
+        self.assertLess(r["kitAfterDrop"]["rects"]["notes-pane"]["x"], r["kitAfterDrop"]["rects"]["feed-pane"]["x"])
+        self.assertIn("notes-pane", r["kitAfterDrop"]["layout"] or "", "the layout store holds the data pane's leaf")
+        self.assertIn("artifacts-pane", r["kitArtifacts"]["leaves"], "the Artifacts pane toggled on is a leaf too: %r" % r["kitArtifacts"]["leaves"])
+        self.assertGreater((r["kitArtifacts"]["rect"] or {"w": 0})["w"], 60, "the Artifacts leaf has a rectangle: %r; after the drop: %r" % (r["kitArtifacts"], r["kitAfterDrop"]["rects"]))
 
 
 if __name__ == "__main__":
