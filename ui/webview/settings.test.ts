@@ -153,6 +153,19 @@ test("the optional panes default to shown, a hide round-trips, and only an expli
   delete store["romp:settings"];
 });
 
+// A pane defined at the kernel (plans/panes-as-data.md, `romp pane`) has a row in the gear's Panes section under its own id:
+// the set keeps any boolean member beside the shipped three, so that row's choice survives a save, and a member that is
+// not a boolean is not a choice (the shell reads a missing member as the pane's own default: on, or off when experimental).
+test("a registry pane's choice rides the pane set beside the shipped three (plans/panes-as-data.md)", () => {
+  assert.deepEqual(paneSet({ timeline: true, fleet: false, feed: true, notes: false, lab: true }),
+    { timeline: true, fleet: false, feed: true, notes: false, lab: true });
+  assert.deepEqual(paneSet({ notes: "yes", docs: 0, lab: null }), { timeline: true, fleet: true, feed: true }, "a member that is not a boolean is not a choice");
+  delete store["romp:settings"];
+  saveSettings({ panes: { timeline: true, fleet: true, feed: true, notes: false } });
+  assert.deepEqual(loadSettings().panes, { timeline: true, fleet: true, feed: true, notes: false }, "the hidden registry pane survives a reload");
+  delete store["romp:settings"];
+});
+
 // The Files CONTROL's own setting (T317, the user 2026-09-10): whether the dashboard bar's Files toggle and the
 // phone's Files tab show at all. OFF by default (T317b, the user the same day: the control is asked for, not
 // shipped); only the literal true shows them, so a corrupt entry may cost the preference, never surprise the user

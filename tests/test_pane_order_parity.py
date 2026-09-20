@@ -54,8 +54,8 @@ class PaneOrderParity(unittest.TestCase):
         self.assertEqual(_pane_seq(rail), order)
         self.assertEqual(_pane_seq(mtabs), order)
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn("+ _rail_buttons_html() +", src)
-        self.assertIn("+ _mtab_buttons_html() +", src)
+        self.assertIn("+ _rail_buttons_html(panes) +", src)   # the landing lists the registry once and hands the list on (plans/panes-as-data.md)
+        self.assertIn("+ _mtab_buttons_html(panes) +", src)
 
     def test_the_initial_mobile_pane_keys_on_chat_not_position(self):
         _, mtabs = self._built()

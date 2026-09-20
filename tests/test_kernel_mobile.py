@@ -454,6 +454,7 @@ _FIT_HARNESS = r"""
 const PROPS = {}, SETS = [], RAF = [], WIN = {}, DOC = {}, VV = {}, CHAT = {}, LOADS = [];
 const on = (book) => (k, f) => { (book[k] = book[k] || []).push(f); };
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0;
 global.scrollTo = () => {};
 global.matchMedia = () => ({ matches: true });                 // a coarse pointer: the phone
@@ -645,6 +646,7 @@ back.append(pop); body.append(back);
 const WIN = {}, WSS = [], POSTS = [];
 const on = (book) => (k, f) => { (book[k] = book[k] || []).push(f); };
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0; global.scrollTo = () => {};
 global.matchMedia = () => ({ matches: true });
 global.requestAnimationFrame = () => 1;

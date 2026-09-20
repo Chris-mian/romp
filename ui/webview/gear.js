@@ -148,6 +148,10 @@ var GEAR_HTML =
   '<span><b>Pane docking</b>' +
   '<span class=rs-sub>Move panes by grabbing their empty space: the frame around a pane, the gap in its top row, or Option-drag (Alt) anywhere over it. A blue outline shows where the pane will land; drop it on another pane\'s left, right, top or bottom half. Off (the default) keeps the fixed layout.</span>' +
   '</span></label>' +
+  // the REGISTRY panes (plans/panes-as-data.md): one Panes row per data pane, rendered at open from the dashboard's own
+  // pane list (the shell's body attribute, read across the same-origin frame boundary), so a pane defined at the kernel
+  // shows up here without a gear release; an experimental pane wears the word and is off until its row is checked
+  '<div id=rs-panes-data></div>' +
   // APPEARANCE, a section of General since T404 (the user 2026-09-13; a tab of its own before, renamed from Colors 2026-08-28): the
   // theme, the colormap and the session palette; an older ask or remembered tab named appearance lands here (TAB_ALIASES)
   "<div class='rs-sec' data-section=appearance>Appearance</div>" +
@@ -466,6 +470,28 @@ function initGear(post, opts) {
   // as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
   function panesOf(s) { var p = (s && s.panes && typeof s.panes === 'object') ? s.panes : {}; return { timeline: p.timeline !== false, fleet: p.fleet !== false, feed: p.feed !== false }; }
   Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].addEventListener('change', function () { var s = load(); var p = panesOf(s); p[k] = pn[k].checked; s.panes = p; save(s); }); });
+  // the registry panes' rows (plans/panes-as-data.md): the dashboard emits its data panes as a body attribute when the
+  // registry holds any; the gear reads it from the shell (the settings page is a same-origin frame of it, and on VS Code's
+  // panel there is no dashboard and no list). A row's box writes settings.panes[id]; the shell's reconcile reads it (absent
+  // means on for a normal pane, off for an experimental one).
+  function registryPanes() {
+    try { var doc = (window.parent && window.parent !== window) ? window.parent.document : document; var raw = doc.body.getAttribute('data-panes'); var arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr.filter(function (p) { return p && typeof p.id === 'string'; }) : []; } catch (e) { return []; }
+  }
+  function renderRegistryRows(s) {
+    var box = document.getElementById('rs-panes-data'); if (!box) return;
+    var rows = registryPanes(); box.textContent = '';
+    var pans = (s && s.panes && typeof s.panes === 'object') ? s.panes : {};
+    rows.forEach(function (p) {
+      var lab = document.createElement('label'); lab.className = 'rs-row rs-panes-row';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'rs-pane-' + p.id;
+      var v = pans[p.id]; cb.checked = (typeof v === 'boolean') ? v : !p.experimental;
+      var span = document.createElement('span'); var b = document.createElement('b'); b.textContent = String(p.title || p.id);
+      var sub = document.createElement('span'); sub.className = 'rs-sub';
+      sub.textContent = (p.experimental ? 'Experimental. ' : '') + 'A pane defined at the kernel (romp pane). Off, its column and its button are gone from this browser.';
+      span.appendChild(b); span.appendChild(sub); lab.appendChild(cb); lab.appendChild(span); box.appendChild(lab);
+      cb.addEventListener('change', function () { var st = load(); var pp = (st.panes && typeof st.panes === 'object') ? st.panes : panesOf(st); pp[p.id] = cb.checked; st.panes = pp; save(st); });
+    });
+  }
   // the section is the dashboard's: VS Code's panels have no dashboard shell to hide a pane from
   if (!ownPage) Array.prototype.forEach.call(document.querySelectorAll('#rs-panes-sec,.rs-panes-row'), function (el) { el.hidden = true; });
   // ── the settings' value-picker DROPDOWNS (T117, the user 2026-08-27, screenshot: the Chat
@@ -2149,7 +2175,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); if (arc) arc.checked = s.showArtifactsControl === true; if (pdk) pdk.checked = (s.paneDocking === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); if (arc) arc.checked = s.showArtifactsControl === true; if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

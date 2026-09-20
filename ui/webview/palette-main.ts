@@ -14,6 +14,7 @@ import { hostPrefix } from "./host-prefix";   // pure display helper — safe he
 import { installMenuEcho } from "./tag-menu";   // model deps only (tag-lens/session-views) — no manager, no DOM cost
 import { loadSettings, OPTIONAL_PANES, type PaneSet } from "./settings";   // the gear's store, read at every palette open (no side effects at import)
 import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, tabChord, unboundTabKeys, TABKEYS_KEY } from "./tab-keys";   // per-tab hot keys (2026-09-10)
+import { paneSourceOk } from "./pane-source";   // the shell's source check, fail-closed (plans/panes-as-data.md section 5): a URL pane or a nested frame opens nothing here
 
 type SessionRow = { id: string; name: string; dir: string; bg: string };
 
@@ -166,6 +167,18 @@ installMenuEcho();
   // boot-time look at the iframe's src: a pane enabled later gains its command with the gear save, and a pane
   // hidden later loses it, no reload either way (review, 2026-09-10).
   const panes: Array<[string, string]> = [["chat", "chat"], ["timeline", "timeline"], ["fleet", "outline"], ["feed", "feed"], ["files", "files"]];
+  // the REGISTRY panes (plans/panes-as-data.md): the shell emits the data panes as a body attribute when the registry
+  // holds any, and each gets the same toggle command under its title; its availability rides romp:settings.panes[id]
+  const registry: Array<{ id: string; title: string; experimental: boolean }> = (() => {
+    try { const raw = document.body.getAttribute("data-panes"); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr.filter((p) => p && typeof p.id === "string").map((p) => ({ id: String(p.id), title: String(p.title || p.id), experimental: p.experimental === true })) : []; } catch { return []; }
+  })();
+  for (const r of registry) {
+    registerCommand({
+      id: "pane." + r.id, title: "Show or hide the " + r.title + " pane",
+      run: () => { if (w.__rompPaneToggle) w.__rompPaneToggle(r.id); },
+      when: () => { const v = loadSettings().panes[r.id]; return typeof v === "boolean" ? v : !r.experimental; },
+    });
+  }
   const optional = new Set<string>(OPTIONAL_PANES);
   for (const [key, label] of panes) {
     registerCommand({
@@ -279,7 +292,7 @@ installMenuEcho();
   registerCommand({ id: "keys.open", title: "Keyboard shortcuts", run: () => keys.open() });
   w.__rompKeysOpen = () => keys.open();
   w.__rompKeysClose = () => keys.close();   // false when not open — the Escape chain moves on
-  window.addEventListener("message", (e) => { if (e.data && e.data.romp === "openKeys") keys.open(); });
+  window.addEventListener("message", (e) => { if (!paneSourceOk(e)) return; if (e.data && e.data.romp === "openKeys") keys.open(); });
   // Sessions in the set with no chord bound leave it — never while the dialog is up (the one being recorded
   // has none yet), so the solo dialog's own close runs it too.
   function pruneUnboundHotkeys(): void {
@@ -301,6 +314,7 @@ installMenuEcho();
     });
   }
   window.addEventListener("message", (e) => {
+    if (!paneSourceOk(e)) return;   // a forged hotkeyConfigure would bind the user's next chord to a session id the foreign page chose (the 1919 read)
     const m = e.data;
     if (!m || m.romp !== "hotkeyConfigure" || typeof m.sid !== "string" || !m.sid) return;
     configureHotkey(m.sid, typeof m.name === "string" ? m.name : "", (e.source as Window | null) || null);

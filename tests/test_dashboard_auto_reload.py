@@ -58,6 +58,7 @@ function pane(busy, since, other) { return { contentWindow: { __rompReload: { bu
                                                               __rompShimPersist: function () { SHIM_PERSISTS.push(1); } } }; }   // an iframe the shell's walk visits; `other` answers past the fresh answer
 var DIAG = [];                                                  // what a pane's socket would carry up: the shell's held breadcrumb
 var window = { addEventListener: function (t, f) { (WLISTENERS[t] = WLISTENERS[t] || []).push(f); } };
+window.__rompPaneSourceOk = function () { return true; };   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 window.parent = window;
 window.__rompPersistForReload = function () { PERSISTED++; };
 var location = { pathname: "/", reload: function () { RELOADS++; if (REFUSE) throw new Error("host forbids reload"); } };
@@ -1155,7 +1156,7 @@ var document = { getElementById: function (id) { return id === "rstale" ? box : 
 var RL = { offer: null, held: null, announce: function () {}, offered: function () { return null; },
            noteVersion: function (v) { CALLS.push(["noteVersion", v.dist_ver]); }, checkBoot: function () { CALLS.push(["checkBoot"]); },
            accept: function () { CALLS.push(["accept"]); }, dismiss: function () { CALLS.push(["dismiss"]); } };
-var window = { addEventListener: function (t, f) { (LISTEN[t] = LISTEN[t] || []).push(f); }, __rompNotify: function (k, t) { CALLS.push(["notify", k, t]); }, __rompReload: RL, innerWidth: 800, innerHeight: 600 };
+var window = { addEventListener: function (t, f) { (LISTEN[t] = LISTEN[t] || []).push(f); }, __rompPaneSourceOk: function () { return true; }, __rompNotify: function (k, t) { CALLS.push(["notify", k, t]); }, __rompReload: RL, innerWidth: 800, innerHeight: 600 };
 var location = { reload: function () { RELOADS++; } };
 function fetch() { return { then: function () { return { then: function () { return { "catch": function () {} }; } }; } }; }   /* the poll never answers here */
 function setInterval() {}
