@@ -5,6 +5,9 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { isPaneDockingOn, PANE_DOCKING_CLASS, paneTitle } from "./panedock-main";
 import * as PDM from "./panedock-main";
+// the frame helpers are read by name off the module so a build at a base without them still builds and the test reds on its behaviour
+const frameOnce = (PDM as unknown as Record<string, (f: () => void) => number>).frameOnce;
+const cancelFrame = (PDM as unknown as Record<string, (h: number) => void>).cancelFrame;
 // read by name off the module so a build at a base without the export still builds and the test reds on its behaviour
 const titleMapOf = (PDM as unknown as Record<string, (b: ReadonlyArray<{ key: string; text: string }>, rows: unknown) => Record<string, string>>).titleMapOf;
 import * as PD from "./panedock-main";
@@ -59,4 +62,26 @@ test("paneTitle names a data pane and the Artifacts pane as the rail does; the s
   assert.equal(paneTitle("later-pane", titles), "later-pane", "a pane no record names is its id");
   assert.deepEqual(["chat-pane", "fleet-pane", "feed-pane", "files-pane", "tl-pane"].map((id) => paneTitle(id)), ["Chat", "Outline", "Feed", "Files", "Sessions"], "no map: the shipped words");
   assert.equal(titleMapOf([], "not an array") && Object.keys(titleMapOf([], null)).length, 0, "no rows: no titles, never a throw");
+});
+
+// One layout per animation frame for a divider drag (plans/pane-docking.md section 12): frameOnce arms the callback with the
+// window's requestAnimationFrame and returns its handle; a window without one (a test's stub) runs it at once and returns 0;
+// cancelFrame drops an armed callback and is inert for a 0 handle or a window without cancelAnimationFrame.
+test("frameOnce arms one animation frame, runs at once without one; cancelFrame drops an armed frame", () => {
+  assert.equal(typeof frameOnce, "function", "the engine exports its frame helper"); assert.equal(typeof cancelFrame, "function");
+  const g = globalThis as unknown as { window?: unknown };
+  const saved = g.window;
+  try {
+    const armed: Array<{ id: number; cb: () => void }> = []; let ids = 0; const cancelled: number[] = [];
+    g.window = { requestAnimationFrame: (cb: () => void) => { armed.push({ id: ++ids, cb }); return ids; }, cancelAnimationFrame: (h: number) => { cancelled.push(h); } };
+    let ran = 0;
+    const h = frameOnce(() => { ran++; });
+    assert.equal(h, 1, "the frame's handle"); assert.equal(ran, 0, "not run yet: the frame runs it"); assert.equal(armed.length, 1);
+    armed[0].cb(); assert.equal(ran, 1);
+    cancelFrame(2); assert.deepEqual(cancelled, [2]); cancelFrame(0); assert.deepEqual(cancelled, [2], "a 0 handle cancels nothing");
+    g.window = {};
+    let now = 0; const h2 = frameOnce(() => { now++; });
+    assert.equal(h2, 0, "no requestAnimationFrame: run at once, handle 0"); assert.equal(now, 1);
+    assert.doesNotThrow(() => cancelFrame(5), "no cancelAnimationFrame: inert");
+  } finally { g.window = saved; }
 });

@@ -13,7 +13,7 @@ def slices(html):
     """The rendering slices of a landing page, {name: text}. A slice that cannot be found is the empty string, so a
     comparison against the fixture fails on the slice by name."""
     body = re.search(r"<body class='[^']*'[^>]*>", html)
-    row_a, row_b = html.find("<div class=row>"), html.find("<div id=gv-ghost>")
+    row_a, row_b = html.find("<div class=row>"), html.find("<div id=col-ghost>")   # the row ends at the tab drag's overlay (the divider landing line retired, plans/pane-docking.md section 12)
     return {
         "body_tag": body.group(0) if body else "",
         "rail_buttons": "".join(re.findall(r"<div class=rail-btn data-pane=[^>]*>[^<]*</div>", html)),

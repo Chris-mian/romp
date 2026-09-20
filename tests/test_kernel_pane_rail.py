@@ -137,12 +137,10 @@ class PaneRailTest(unittest.TestCase):
         # rule: hidden until a drag shows it, fixed so its left is a viewport coordinate, the gutter's width,
         # never a hit target (so the gutter under it keeps its :hover at the grab), and above the focus ring
         # (.pane-focused::after is z-index 6) so a focused pane does not cover it
-        self.assertIn("<div id=gv-ghost></div>", self.html)
-        self.assertIn("#gv-ghost{display:none;position:fixed;width:7px;pointer-events:none;z-index:40;", self.html)
         # a child of .col right after the row closes (the files pane's close, then the row's) and before the
         # timeline's gutter: fixed, so a flex item of neither
-        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=gv-ghost></div>', self.html)   # the generic build's markup for the Artifacts record, last in the row
-        self.assertLess(self.html.index("<div id=gv-ghost></div>"), self.html.index("<div class=gh id=gh></div>"))
+        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=col-ghost></div>', self.html)   # the generic build's markup for the Artifacts record, last in the row
+        self.assertLess(self.html.index("<div id=col-ghost></div>"), self.html.index("<div class=gh id=gh></div>"))
 
     def test_timeline_is_the_rail_toggled_bottom_band(self):
         # the timeline is a full-width BAND below the pane row (the user 2026-06-25), toggled by the rail's

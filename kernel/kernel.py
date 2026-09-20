@@ -60767,11 +60767,16 @@ function cap(){return Math.round(window.innerHeight*0.7);}
 function autosize(){if(!document.body.classList.contains('po-timeline'))return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 var ghh=document.getElementById('gh');
 if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
+var tl0=col.style.getPropertyValue('--tl'),want=null,raf=0;   // live already; since section 12 one write per animation frame, and Escape restores the grab-time height
+function apply(){raf=0;if(want===null)return;col.style.setProperty('--tl',want+'px');}
 function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var ch=tlContentH();var mx=ch?ch+2:cap();
-col.style.setProperty('--tl',Math.max(48,Math.min(mx,px))+'px');}
-function up(){document.body.classList.remove('drag','dragh');
-window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
-window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});
+want=Math.max(48,Math.min(mx,px));if(!raf)raf=frameOnce(apply);}
+var keysOff=null;
+function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;
+window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
+function up(){apply();end();}
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});
 // ── pane gutters (chat|outline|feed|files, fixed order) sized by flex-grow. gv-a is always chat|outline; gv-b's
 // left neighbour is the outline when shown else chat (so it's the chat|feed gutter when the outline is off);
 // gv-c's is the rightmost of feed, outline, chat that is shown. On grab we normalise every visible pane's grow
@@ -60825,13 +60830,24 @@ var px={};PANES.forEach(function(id){if(shown(id))px[id]=document.getElementById
 Object.keys(px).forEach(function(id){setGrow(key(id),px[id]);});
 setGrow(key(leftId),px[leftId]+px[goneId]+7);
 try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}return true;};
-// A drag moves a LANDING LINE and the panes take their widths ONCE, at release. A grow write re-lays out the row
-// and with it every same-origin pane document in that frame, so writing the pair on every mousemove cost one
-// relayout of every pane per pointer step, a cost that grows with what the panes hold (seconds a step once a pane
-// holds a large document). So mousemove only positions #gv-ghost, a fixed line over the row where the divider will
-// land, and mouseup writes the two grows and persists them. The pair is resolved before the drag classes go on, so
-// a grab with no pair leaves no col-resize cursor behind.
-var ghost=document.getElementById('gv-ghost');
+// A drag resizes the pair LIVE, one layout per animation frame (plans/pane-docking.md section 12, the user 2026-09-20: what
+// they see while dragging is what they get, no landing line). A grow write re-lays out the row and with it every same-origin
+// pane document in that frame, which is why the 2026-09-08 drag deferred to a line: writing the pair on every mousemove cost
+// one relayout per pointer step. Coalescing the moves to the frame bounds that cost to one relayout per frame, the pane
+// documents re-lay through their own resize observers, and the store is written once at release. The pair is resolved
+// before the drag classes go on, so a grab with no pair leaves no col-resize cursor behind.
+// one layout per animation frame for the divider drags below (section 12): frameOnce arms a callback for the next frame and
+// returns its handle (a page without requestAnimationFrame runs it at once and returns 0); cancelFrame drops an armed one
+function frameOnce(f){if(window.requestAnimationFrame)return window.requestAnimationFrame(f)||1;f();return 0;}
+function cancelFrame(h){if(window.cancelAnimationFrame)window.cancelAnimationFrame(h);}
+window.__rompFrameOnce=frameOnce;window.__rompCancelFrame=cancelFrame;   // the split script's gutterV reads them (it parses after this one)
+// Escape ends a divider drag wherever the keyboard sits: the gutter press prevents the default, so a focused pane keeps the
+// keyboard and its document, not the shell's window, sees the key. dragKeys(esc) hears keydown on the window AND on every
+// same-origin pane document for the drag's duration, and returns the undo.
+function dragKeys(esc){var docs=[],fs=document.querySelectorAll?document.querySelectorAll('iframe'):[];Array.prototype.forEach.call(fs,function(f){try{var d=f.contentDocument;if(d&&d.addEventListener){d.addEventListener('keydown',esc,true);docs.push(d);}}catch(e){}});   // a document without querySelectorAll (a test's stub) has no panes to hear
+window.addEventListener('keydown',esc,true);
+return function(){docs.forEach(function(d){try{d.removeEventListener('keydown',esc,true);}catch(e){}});window.removeEventListener('keydown',esc,true);};}
+window.__rompDragKeys=dragKeys;
 function gutter(gid,leftPick,rightId){var h=document.getElementById(gid);if(!h)return;
 h.addEventListener('mousedown',function(e){e.preventDefault();
 var L=document.getElementById(leftPick()),R=document.getElementById(rightId);if(!L||!R)return;
@@ -60841,13 +60857,19 @@ document.body.classList.add('drag','dragv');
 // fresh browser ballooned the first column (served-test find, 2026-09-08; the split's fresh columns hit it every time)
 var px={};PANES.forEach(function(id){if(shown(id))px[id]=document.getElementById(id).offsetWidth;});
 Object.keys(px).forEach(function(id){setGrow(key(id),px[id]);});
-var wL=L.offsetWidth,wR=R.offsetWidth,sum=wL+wR,sx=e.clientX,mn=Math.min(120,sum*0.25),nL=wL,lx=L.getBoundingClientRect().left,rr=row.getBoundingClientRect();
-function show(){if(!ghost)return;ghost.style.top=rr.top+'px';ghost.style.height=rr.height+'px';ghost.style.left=(lx+nL)+'px';ghost.style.display='block';}
-function mv(ev){nL=Math.max(mn,Math.min(sum-mn,wL+(ev.clientX-sx)));show();}
-function up(){document.body.classList.remove('drag','dragv');if(ghost)ghost.style.display='none';
-setGrow(key(L.id),nL);setGrow(key(R.id),sum-nL);try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}
-window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
-show();window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+var wL=L.offsetWidth,wR=R.offsetWidth,sum=wL+wR,sx=e.clientX,mn=Math.min(120,sum*0.25),nL=wL,want=wL,raf=0;
+// LIVE (plans/pane-docking.md section 12, the user 2026-09-20): the pair takes its new widths as the pointer moves, ONE layout per
+// animation frame (a move records the pointer and arms a frame; the frame applies the latest position: a burst of moves costs one
+// relayout of the row, a frame without a move nothing); body.drag keeps the iframes pointer-transparent for the drag; the store is
+// written once, at release; Escape restores the grab-time widths live and writes nothing. No landing line.
+function apply(){raf=0;if(want===nL)return;nL=want;setGrow(key(L.id),nL);setGrow(key(R.id),sum-nL);}
+function mv(ev){want=Math.max(mn,Math.min(sum-mn,wL+(ev.clientX-sx)));if(!raf)raf=frameOnce(apply);}
+var keysOff=null;
+function end(){document.body.classList.remove('drag','dragv');if(raf)cancelFrame(raf);raf=0;
+window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
+function up(){apply();end();try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}}
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=wL;end();nL=wL;setGrow(key(L.id),wL);setGrow(key(R.id),wR);}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});}
 window.__rompGutter=gutter;   // the split's chat|chat gutters are wired through the same code
 gutter('gv-a',function(){return lastChat();},'fleet-pane');
 gutter('gv-b',function(){return document.body.classList.contains('po-fleet')?'fleet-pane':lastChat();},'feed-pane');
@@ -64214,11 +64236,18 @@ var deferred={};   // column numbers a peer dashboard's write dropped while thei
 // like any column, seeded on its session; to the kernel it is one more col client.
 function gutterV(gid,topId,botId,colN){var h=document.getElementById(gid);if(!h)return;
 h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.getElementById(topId),B=document.getElementById(botId);if(!T||!B)return;
-document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
-function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
-function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
-var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio: mv() already pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
-window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT,want=hT,raf=0,fT=T.style.flex,fB=B.style.flex;
+var frameOnce=window.__rompFrameOnce||function(f){f();return 0;},cancelFrame=window.__rompCancelFrame||function(){},keysOff=null;
+var dragKeys=window.__rompDragKeys||function(esc){window.addEventListener('keydown',esc,true);return function(){window.removeEventListener('keydown',esc,true);};};
+// live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter; since plans/pane-docking.md
+// section 12 one write per animation frame, and Escape restores the grab-time heights and writes nothing
+function apply(){raf=0;if(want===nT)return;nT=want;T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}
+function mv(ev){want=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));if(!raf)raf=frameOnce(apply);}
+function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
+function up(){apply();end();
+var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio once: apply() pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=hT;end();nT=hT;T.style.flex=fT;B.style.flex=fB;}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});}
 function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
 var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
 var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
@@ -65425,8 +65454,6 @@ def _landing():
             # in _LANDING_JS while a drag is held. Fixed, so its left is the viewport coordinate the script computes;
             # never a hit target, so it takes no hover or click of its own and the gutter under it keeps its :hover
             # at the grab; above the focus ring (.pane-focused::after, z-index 6) so a focused pane does not cover it.
-            "#gv-ghost{display:none;position:fixed;width:7px;pointer-events:none;z-index:40;"
-            "background:linear-gradient(90deg,transparent 3px,var(--accent,#9cd2ff) 3px,var(--accent,#9cd2ff) 4px,transparent 4px)}"
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
             # a TAB DRAG's zones and rectangle (the chat split, 2026-09-11; _LANDING_SPLIT_JS mounts them for the gesture's
             # length). A column zone covers its whole pane above the iframe and the cross (z 8); the edge zone at the rightmost
@@ -65805,7 +65832,6 @@ def _landing():
             "<div class=pane id=files-pane><iframe id=f-files src=/files></iframe></div>"
             + _data_pane_markup(panes) +   # the GENERIC panes, after Files: the Artifacts record and the data panes (plans/panes-as-data.md)
             "</div>"
-            "<div id=gv-ghost></div>"   # the divider drag's landing line (position:fixed; gutter() in _LANDING_JS moves it)
             "<div id=col-ghost></div>"   # a tab drag's provisional rectangle: the right half of the rightmost chat column (position:fixed; _LANDING_SPLIT_JS places it)
             # the timeline BOTTOM BAND: full-width below the pane row, with a row-resize gutter above it. Both
             # are hidden (CSS) unless po-timeline (the rail's Timeline toggle).

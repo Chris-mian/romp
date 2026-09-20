@@ -81,10 +81,16 @@ function resetDom() {
   for (const k in ROW) delete ROW[k];
 }
 const BODY = new Set(['po-chat', 'po-feed']);
+// the browser's animation frames, as a queue the driver drains with frame(): a divider move arms ONE callback and the frame
+// applies the latest position (plans/pane-docking.md section 12)
+const FRAMES = []; let FRAME_IDS = 0;
+function frame() { const fs = FRAMES.splice(0); fs.forEach((f) => f.cb()); return fs.length; }
 global.window = {
   innerHeight: 900,
   addEventListener: (k, f) => { (WL[k] = WL[k] || []).push(f); },
   removeEventListener: (k, f) => { WL[k] = (WL[k] || []).filter((g) => g !== f); },
+  requestAnimationFrame: (cb) => { const id = ++FRAME_IDS; FRAMES.push({ id, cb }); return id; },
+  cancelAnimationFrame: (id) => { const i = FRAMES.findIndex((f) => f.id === id); if (i >= 0) FRAMES.splice(i, 1); },
 };
 global.getComputedStyle = (el) => ({ display: el._display });
 global.document = {
@@ -107,7 +113,10 @@ function drag(gid, x0, x1) {
   snap.dragging = BODY.has('drag') && BODY.has('dragv');
   snap.listeners = { move: (WL['mousemove'] || []).length, up: (WL['mouseup'] || []).length };
   winFire('mousemove', { clientX: x1 });
-  snap.afterMove = grows();
+  snap.afterMoveNoFrame = grows();    // a move writes nothing itself: the frame does
+  snap.framesArmed = FRAMES.length;
+  frame();
+  snap.afterMove = grows();           // the frame writes the pair for the pointer's position: live
   winFire('mouseup', {});
   snap.afterUp = grows();
   snap.dragAfterUp = BODY.has('drag') || BODY.has('dragv');
@@ -234,9 +243,13 @@ class PaneGuttersExecute(unittest.TestCase):
         self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-chat2": 500, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40})
         self.assertTrue(a["dragging"], "body.drag + body.dragv while the pointer is held")
         self.assertEqual(a["listeners"], {"move": 1, "up": 1})
-        # a drag moves a LANDING LINE (main, 2026-09): the pointer's +100px writes nothing until the release…
-        self.assertEqual(a["afterMove"], a["afterDown"], "mousemove positions the ghost line; no pane re-lays out mid-drag")
-        # …then chat +100, chat2 -100, the others exactly where the grab left them
+        # a drag resizes the pair LIVE, one layout per animation frame (plans/pane-docking.md section 12): the pointer's +100px
+        # writes nothing itself, arms one frame, and the frame writes chat +100, chat2 -100, the others exactly where the grab
+        # left them; the release then writes no grow of its own
+        self.assertEqual(a["afterMoveNoFrame"], a["afterDown"], "the move itself writes nothing")
+        self.assertEqual(a["framesArmed"], 1, "one animation frame armed")
+        self.assertEqual(a["afterMove"]["--g-chat"], 700); self.assertEqual(a["afterMove"]["--g-chat2"], 400)
+        self.assertEqual(a["afterUp"], a["afterMove"], "the release changes no size: the frame already applied it")
         self.assertEqual(a["afterUp"]["--g-chat"], 700)
         self.assertEqual(a["afterUp"]["--g-chat2"], 400)
         self.assertEqual(a["afterUp"]["--g-feed"], a["afterDown"]["--g-feed"], "feed is untouched by the drag")

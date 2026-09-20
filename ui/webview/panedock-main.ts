@@ -126,8 +126,6 @@ const SHELL_CSS = [
   `#pd-outline.on{display:flex}`,
   `#pd-outline.free{background:transparent;box-shadow:inset 0 0 0 1px var(--accent,#9cd2ff)}`,
   `#pd-outline.refused{background:transparent;box-shadow:inset 0 0 0 1px var(--accent,#9cd2ff)}`,
-  // the divider drag's deferred landing line, the #gv-ghost dress
-  `#pd-ghost{display:none;position:fixed;pointer-events:none;z-index:40;background:linear-gradient(90deg,transparent 3px,var(--accent,#9cd2ff) 3px,var(--accent,#9cd2ff) 4px,transparent 4px)}`,
   // a TAB drag's hit areas (plans/pane-docking.md section 4: a tab is a drop payload under the kit's own zones): one
   // transparent layer per docked pane, above the pane and the shipped zones inside it, for the gesture's length
   `body.${PANE_DOCKING_CLASS} .pd-tabzone{position:absolute;z-index:12}`,
@@ -141,9 +139,20 @@ const CONTROL_SEL = "button,a,input,textarea,select,[role=button],[contenteditab
 const TOP_RUN_SEL = "#tabbar,#tabs,.tab-strip-end,.fileview-bar";
 
 interface Press { pane: PaneId; frame: HTMLIFrameElement | null; win: Window; x0: number; y0: number; armed: boolean; zone: Zone | null }
-interface DivDrag { edge: EdgeRect; x0: number; y0: number; live: boolean; last: number }
+interface DivDrag { edge: EdgeRect; x0: number; y0: number; last: number; want: number | null; raf: number; start: Layout; tl0: string }
 
 function byId(id: string): HTMLElement | null { return document.getElementById(id); }
+/** One layout per animation frame for a divider drag (plans/pane-docking.md section 12): arm `f` for the next frame and return its
+ *  handle; a window without requestAnimationFrame (a test's stub) runs it at once and returns 0. */
+export function frameOnce(f: () => void): number {
+  const w = window as unknown as { requestAnimationFrame?: (cb: () => void) => number };
+  if (typeof w.requestAnimationFrame === "function") return w.requestAnimationFrame(f) || 1;
+  f(); return 0;
+}
+export function cancelFrame(h: number): void {
+  const w = window as unknown as { cancelAnimationFrame?: (h: number) => void };
+  if (h && typeof w.cancelAnimationFrame === "function") w.cancelAnimationFrame(h);
+}
 function frameOfPane(id: PaneId): HTMLIFrameElement | null {
   const p = byId(id);
   return p ? (p.querySelector(":scope > iframe") as HTMLIFrameElement | null) : null;
@@ -156,7 +165,6 @@ class Engine {
   private lay: Layout | null = null;
   private style: HTMLStyleElement | null = null;
   private outline: HTMLElement | null = null;
-  private ghost: HTMLElement | null = null;
   private dividers: HTMLElement[] = [];
   private divEdges = new Map<HTMLElement, EdgeRect>();
   private press: Press | null = null;
@@ -211,7 +219,6 @@ class Engine {
     this.style = document.createElement("style"); this.style.id = STYLE_ID; this.style.textContent = SHELL_CSS;
     document.head.appendChild(this.style);
     this.outline = document.createElement("div"); this.outline.id = "pd-outline"; document.body.appendChild(this.outline);
-    this.ghost = document.createElement("div"); this.ghost.id = "pd-ghost"; document.body.appendChild(this.ghost);
     // the store, seeded once from the shipped keys when absent, then reconciled with what the rail shows
     let stored: Layout | null = null;
     try { stored = parse(localStorage.getItem(LAYOUT_KEY) || ""); } catch { stored = null; }
@@ -264,7 +271,6 @@ class Engine {
     this.dividers.forEach((d) => d.remove()); this.dividers = []; this.divEdges.clear();
     if (this.style) { this.style.remove(); this.style = null; }
     if (this.outline) { this.outline.remove(); this.outline = null; }
-    if (this.ghost) { this.ghost.remove(); this.ghost = null; }
     // the panes return to the flex row: every inline geometry the kit wrote goes
     this.allPaneEls().forEach((el) => { el.style.left = el.style.top = el.style.width = el.style.height = ""; });
     this.allFrames().forEach((f) => this.unwire(f));
@@ -485,6 +491,7 @@ class Engine {
   private onKey(e: KeyboardEvent): void {
     if (!this.on) return;
     if (e.key === "Escape" && this.press && this.press.armed) { e.preventDefault(); e.stopPropagation(); this.cancelPress(); return; }
+    if (e.key === "Escape" && this.div && e.type === "keydown") { e.preventDefault(); e.stopPropagation(); this.endDiv(false); return; }   // a divider drag: the pre-drag sizes, live, nothing written
     if (e.key === "Alt") this.setAlt(e.type === "keydown");
   }
   /** Option/Alt held: the open hand over every pane, content included (the cursor is inherited, so each pane
@@ -734,20 +741,23 @@ class Engine {
     const edge = this.divEdges.get(d);
     if (!edge) return;
     e.preventDefault();
-    // a horizontal edge moves a deferred landing line (a grow write reflows every pane document, so it lands once,
-    // at release); a vertical edge, and the band's edge, write live (a height trade inside one column is cheap)
-    const live = edge.dir === "col";
-    this.div = { edge, x0: e.clientX, y0: e.clientY, live, last: 0 };
+    // EVERY edge resizes LIVE, one layout per animation frame (plans/pane-docking.md section 12): a move records the clamped
+    // position and arms a frame; the frame applies the latest (a burst of moves costs one relayout, a frame without a move
+    // nothing); the iframes are pointer-transparent for the drag (RESIZE_CLASS); the store is written once, at release;
+    // Escape restores the pre-drag tree and band height live and writes nothing. No landing line.
+    if (!this.lay) return;
+    const tl0 = this.col ? this.col.style.getPropertyValue("--tl") : "";
+    this.div = { edge, x0: e.clientX, y0: e.clientY, last: 0, want: null, raf: 0, start: parse(serialise(this.lay)) as Layout, tl0 };
     document.body.classList.add(RESIZE_CLASS);
     const mv = (ev: Event) => this.onDivMove(ev as PointerEvent);
     const up = () => this.endDiv(true);
+    // Escape must reach the drag wherever the keyboard sits: the press prevents the default, so a focused pane keeps the keyboard
+    // and its document, not this one, sees the key; the drag hears keydown in every same-origin pane document for its duration
+    const esc = (ev: Event) => { const k = ev as KeyboardEvent; if (k.key !== "Escape" || !this.div) return; k.preventDefault(); k.stopPropagation(); this.endDiv(false); };
+    const docs: Document[] = [];
+    for (const f of this.allFrames()) { try { const dd = f.contentDocument; if (dd) { dd.addEventListener("keydown", esc, true); docs.push(dd); } } catch { /* a foreign document: unreadable, and it has no keyboard here */ } }
     window.addEventListener("pointermove", mv, true); window.addEventListener("pointerup", up, true);
-    this.divOff = () => { window.removeEventListener("pointermove", mv, true); window.removeEventListener("pointerup", up, true); };
-    if (!live && this.ghost && this.col) {
-      const rb = this.col.getBoundingClientRect(), r = edge.rect;
-      this.ghost.style.top = rb.top + r.y + "px"; this.ghost.style.height = r.h + "px"; this.ghost.style.width = GUTTER + "px";
-      this.ghost.style.left = rb.left + r.x + "px"; this.ghost.style.display = "block";
-    }
+    this.divOff = () => { window.removeEventListener("pointermove", mv, true); window.removeEventListener("pointerup", up, true); docs.forEach((dd) => { try { dd.removeEventListener("keydown", esc, true); } catch { /* gone */ } }); };
   }
 
   private splitAt(path: number[]): { ratios: number[] } | null {
@@ -774,44 +784,51 @@ class Engine {
     const d = this.div;
     if (!d) return;
     e.preventDefault();
-    const raw = d.edge.dir === "row" ? e.clientX - d.x0 : e.clientY - d.y0;
     if (d.edge.fixed) {
       // the band's edge: its height in px follows the pointer, through the shipped --tl (the observer re-renders)
       if (!this.col) return;
       const cb = this.col.getBoundingClientRect(), box = this.box();
       if (!box) return;
       const bottom = cb.top + box.y + box.h;
-      const px = Math.max(BAND_MIN, Math.min(Math.round(window.innerHeight * 0.7), Math.round(bottom - e.clientY)));
-      this.col.style.setProperty("--tl", px + "px");
-      return;
-    }
-    const px = this.clampDelta(d.edge, raw);
-    if (d.live) {
-      if (!this.lay || px === d.last) return;
-      const step = px - d.last; d.last = px;
-      const tree = resize(this.lay.tree, d.edge.path, d.edge.i, step / d.edge.avail, this.minFrac(d.edge));
-      this.lay = { ...this.lay, tree }; this.render();
-      // the edge list was rebuilt by render: keep this drag on the same edge (same path and index)
-      const same = Array.from(this.divEdges.values()).find((x) => x.dir === d.edge.dir && x.i === d.edge.i && x.path.join(",") === d.edge.path.join(","));
-      if (same) d.edge = same;
+      d.want = Math.max(BAND_MIN, Math.min(Math.round(window.innerHeight * 0.7), Math.round(bottom - e.clientY)));
     } else {
-      d.last = px;
-      if (this.ghost && this.col) { const cb = this.col.getBoundingClientRect(); this.ghost.style.left = cb.left + d.edge.rect.x + px + "px"; }
+      const raw = d.edge.dir === "row" ? e.clientX - d.x0 : e.clientY - d.y0;
+      d.want = this.clampDelta(d.edge, raw);
     }
+    if (!d.raf) d.raf = frameOnce(() => this.applyDiv());
+  }
+
+  /** The frame's one layout for the divider drag: the band's height, or a `resize` of the edge by the pointer's travel since
+   *  the last applied position (the tree keeps the sum, the pair trades). */
+  private applyDiv(): void {
+    const d = this.div;
+    if (!d) return;
+    d.raf = 0;
+    if (d.want === null) return;
+    if (d.edge.fixed) { if (this.col) this.col.style.setProperty("--tl", d.want + "px"); return; }
+    if (!this.lay || d.want === d.last) return;
+    const step = d.want - d.last; d.last = d.want;
+    const tree = resize(this.lay.tree, d.edge.path, d.edge.i, step / d.edge.avail, this.minFrac(d.edge));
+    this.lay = { ...this.lay, tree }; this.render();
+    // the edge list was rebuilt by render: keep this drag on the same edge (same path and index)
+    const same = Array.from(this.divEdges.values()).find((x) => x.dir === d.edge.dir && x.i === d.edge.i && x.path.join(",") === d.edge.path.join(","));
+    if (same) d.edge = same;
   }
 
   private endDiv(commit: boolean): void {
     const d = this.div;
     if (this.divOff) { this.divOff(); this.divOff = null; }
+    if (!d) { this.div = null; document.body.classList.remove(RESIZE_CLASS); return; }
+    if (d.raf) { cancelFrame(d.raf); d.raf = 0; }
+    if (commit) this.applyDiv();   // the last recorded position lands before the write
     this.div = null;
     document.body.classList.remove(RESIZE_CLASS);
-    if (this.ghost) this.ghost.style.display = "none";
-    if (!d) return;
-    if (commit && !d.live && !d.edge.fixed && this.lay && d.last) {
-      const tree = resize(this.lay.tree, d.edge.path, d.edge.i, d.last / d.edge.avail, this.minFrac(d.edge));
-      this.lay = { ...this.lay, tree };
-    }
     if (commit) this.persist();
+    else {
+      // Escape (or the kit going off mid-drag): the pre-drag tree and band height, live, nothing written
+      this.lay = d.start;
+      if (this.col) { if (d.tl0) this.col.style.setProperty("--tl", d.tl0); else this.col.style.removeProperty("--tl"); }
+    }
     this.render();
   }
 }

@@ -371,7 +371,7 @@ class TheLanding(unittest.TestCase):
              "a URL pane: the URL as given (no ?v=, no token), sandboxed, marked protocol none")
         _has(self, '<iframe id=f-lab data-src="/feed" data-protocol=romp></iframe>', page, "a kernel route as given")
         self.assertLess(page.index("id=artifacts-pane"), page.index("id=gv-docs")); self.assertLess(page.index("id=gv-docs"), page.index("id=gv-notes"))
-        self.assertLess(page.index("id=gv-notes"), page.index("<div id=gv-ghost>"), "the data panes sit in the pane row, after the shipped columns")
+        self.assertLess(page.index("id=gv-notes"), page.index("<div id=col-ghost>"), "the data panes sit in the pane row, after the shipped columns")
         _has(self, "#notes-pane{flex:var(--g-notes,40) 1 0}body:not(.po-notes) #notes-pane{display:none}", page)
         _has(self, "body:not(.po-docs) #gv-docs,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files):not(.po-artifacts) #gv-docs{display:none}", page,
              "the first data gutter hides with its pane off or with no shown column before it (the shipped columns from the records)")
