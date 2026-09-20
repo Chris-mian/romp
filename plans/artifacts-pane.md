@@ -284,13 +284,19 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 - **Why a signal and not the listing itself.** The listing can be hundreds of entries with a stat each; the pane may be
   off screen or on another session by the time it lands; the signal is a few bytes and lets the pane decide. The
   request path also stays the one road for the first paint and for a selection, so there is one listing builder.
+- **The watch survives the socket.** A socket (re)open mints a fresh client on the kernel, and its watch with it; the
+  pane re-arms on every (re)open (the shim's `romp:wsup` for the local kernel, federation's `romp:hostRelayUp` for a
+  host's relay), never on the shown session changing, and re-asks the listing, since a growth during the outage was
+  never signalled (round two, the medium; with no Refresh control left, this is the recovery).
 - **The incremental walk** (section 4, amended): `_ARTIFACTS_WALK_MEMO[sid] = {last: (index, turn id), mentions}`, in
   memory, no lock beyond the pusher's (the op runs on the socket thread; the memo is guarded by one lock). On a request
   the kernel reads the parse as today; if the memo's turn id is still the id of the turn at the memo's index (turn ids
   are fork-stable, `event_model.py:4144`; a serve or a fold leaves every previously emitted atom in place,
-  `event_model.py:7203`), it walks `turns[index+1:]` only, hydrating only those turns (`em.hydrate` takes the subset),
-  and merges the new mentions into the map (the latest mention wins, as before); otherwise it walks everything and
-  replaces the memo. The items step (stat, verdict, sort, cap) runs over the merged map every time. A session no longer
+  `event_model.py:7203`), it walks `turns[index:]`, the last walked turn INCLUDED (a turn keeps its id while it gains
+  atoms, so a file written later in the same turn lives in a turn already walked: the verifier's probe of round two, one
+  turn with two Writes listing the first alone), hydrating only those turns (`em.hydrate` takes the subset), and merges
+  their mentions into the map (the latest mention wins; a re-walked mention is the same mention); otherwise it walks
+  everything and replaces the memo. The items step (stat, verdict, sort, cap) runs over the merged map every time. A session no longer
   listed keeps a memo until the kernel restarts or the memo count passes a small cap (the least recently listed goes).
 - The design rule this follows: an exact event (the transcript's version moved) over a time heuristic; the pane never
   polls and the kernel never re-walks what it walked.

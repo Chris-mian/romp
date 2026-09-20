@@ -333,6 +333,7 @@ class Growth(ViaOp):
         self.assertEqual(len([f for f in self.frames if f["type"] == "artifactsChanged"]), 2, "the next growth, the next frame")
 
     def test_a_client_watching_nothing_is_never_signalled(self):
+        # a pin of the cost rule (green at the base by construction, where no signal exists): a client watching nothing costs nothing
         self.grow(1_700_000_030)
         km._pusher_cycle()
         self.assertEqual([f for f in self.frames if f["type"] == "artifactsChanged"], [])
@@ -376,14 +377,26 @@ class Memo(ViaOp):
         self.assertEqual([it["name"] for it in r["items"]], ["notes.md", "report.md"])
         t3 = self.turn("T3", 300, [_atom("assistant", 300, text="the report at %s and the plot at %s" % (real, str(w.cwd / "figures" / "loss.png")))])
         r = self.listing([t1, t2, t3])
-        self.assertEqual(self.walked[-1], ["T3"], "growth: only the new turn is walked")
+        self.assertEqual(self.walked[-1], ["T2", "T3"], "growth: the last walked turn (it may have grown) and the new turn, nothing before")
         by = {it["name"]: it for it in r["items"]}
         self.assertEqual((by["report.md"]["t"], by["report.md"]["via"]), (300, "rendered"), "the latest mention wins across the memo and the new turns")
         self.assertEqual([it["name"] for it in r["items"]], ["loss.png", "report.md", "notes.md"], "newest first over the merged map")
         r = self.listing([t1, t2, t3])
-        self.assertEqual(self.walked[-1], [], "no growth: nothing walked")
+        self.assertEqual(self.walked[-1], ["T3"], "no growth: the last walked turn alone, in case it grew")
+
+    def test_a_file_written_later_in_the_same_turn_lists_on_the_next_ask(self):
+        # round two, the high (the verifier's probe): a turn keeps its fork-stable id while it gains atoms, so the resumed walk must
+        # take the last walked turn again; at b1ae133d the second listing answered ['a.md'] alone
+        w = self.w
+        a, b = str(w.cwd / "a.md"), str(w.cwd / "b.md")
+        r = self.listing([self.turn("T1", 100, [_write(100, a)])])
+        self.assertEqual([it["name"] for it in r["items"]], ["a.md"])
+        r = self.listing([self.turn("T1", 100, [_write(100, a), _write(120, b)])])
+        self.assertEqual([it["name"] for it in r["items"]], ["b.md", "a.md"], "the file written later in the same turn lists: the last walked turn is walked again")
+        self.assertEqual(self.walked[-1], ["T1"], "…and only it")
 
     def test_a_changed_prefix_walks_the_whole_session_again(self):
+        # a pin of the fallback (green at the base by construction, where every listing walks whole): the memo must never trust a prefix another id sits on
         w = self.w
         t1 = self.turn("T1", 100, [_write(100, str(w.cwd / "a.md"))]); t2 = self.turn("T2", 200, [_write(200, str(w.cwd / "b.md"))])
         self.listing([t1, t2])
@@ -393,6 +406,7 @@ class Memo(ViaOp):
         self.assertEqual([it["name"] for it in r["items"]], ["c.md", "a.md"], "b.md, from the stale memo, is gone")
 
     def test_a_turn_without_an_id_never_seeds_a_memo(self):
+        # a pin of the fallback (green at the base by construction): an unverifiable prefix is never resumed from
         w = self.w
         turns = [{"t": 100, "atoms": [_write(100, str(w.cwd / "a.md"))]}]
         self.listing(turns); self.listing(turns)
@@ -491,7 +505,7 @@ class Shell(unittest.TestCase):
         _has(self, "function tellAll(m){KEYS.forEach(function(k){tell(document.getElementById('f-'+k),m);});}", js)
         _has(self, "window.__rompTellPanes=tellAll;", js)
         _has(self, "if(!m||m.romp!=='chatTabs'||!Array.isArray(m.tabs))return;", js)
-        _has(self, "if(f.contentWindow===e.source)src=f.id;", js)   # the column's set is keyed by its frame, never by anything the message claims
+        _has(self, "if(f.contentWindow===e.source)src=f.id;});if(!src||!(src==='f-chat'||src.indexOf('f-chat-')===0))return;", js)   # the set is keyed by the posting CHAT frame (a column or a bottom chat pane), never by anything the message claims, and another pane's post is ignored (round two, low a)
         _has(self, "function chatTabsUnion(){var order=(window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat']),out=[],seen={};", js)
         _has(self, "Object.keys(TABSETS).filter(function(id){return !!document.getElementById(id);})", js)   # a closed column's set leaves with its frame
         _has(self, "function chatTabsMsg(){return {romp:'chatTabs',tabs:chatTabsUnion()};}", js)

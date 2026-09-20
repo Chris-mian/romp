@@ -80,27 +80,34 @@ test("the picker's rows are the shell's union made safe; the shown session's row
   const rows = normalizeTabs([{ id: "S1", name: "web", color: { bg: "#1EA1EB", fg: "#fff" } }, { id: "TESTHOST:S2", name: "TESTHOST:api", color: null }, { id: "S1", name: "dup" }, { name: "no id" }, null]);
   assert.deepEqual(rows, [{ id: "S1", name: "web", color: { bg: "#1EA1EB", fg: "#fff" } }, { id: "TESTHOST:S2", name: "TESTHOST:api", color: null }], "one row per id, the first wins, a row without an id dropped, the order kept");
   assert.deepEqual(shownRow(rows, "TESTHOST:S2"), { row: rows[1], open: true });
-  assert.deepEqual(shownRow(rows, "11111111-2222-3333-4444-000000000931"), { row: { id: "11111111-2222-3333-4444-000000000931", name: "11111111", color: null }, open: false }, "a selection no tab shows: a stub, not open");
+  assert.deepEqual(shownRow(rows, "11111111-2222-3333-4444-000000000931"), { row: { id: "11111111-2222-3333-4444-000000000931", name: "11111111", color: null }, open: false }, "a selection no tab shows and never did: a stub, not open");
+  const known = new Map([["11111111-2222-3333-4444-000000000931", { id: "11111111-2222-3333-4444-000000000931", name: "tests", color: { bg: "#E5484D", fg: "#fff" } }]]);
+  assert.deepEqual(shownRow(rows, "11111111-2222-3333-4444-000000000931", known), { row: known.get("11111111-2222-3333-4444-000000000931")!, open: false }, "a tab that closed keeps its last known name and colour, marked not open (round two, low d)");
   assert.deepEqual(shownRow(rows, "TESTHOST:11111111-2222-3333-4444-000000000931").row!.name, "TESTHOST:11111111", "a remote stub keeps its host prefix");
   assert.deepEqual(shownRow(rows, null), { row: null, open: false });
 });
 
 test("the page: the picker in the strip's label and the menu card, the lock, the watch, the shell's signals, no Refresh, no native select", () => {
   const ART = fs.readFileSync(path.join(UI, "artifacts.ts"), "utf8");
-  assert.match(ART, /import \{ sessionLabelNodes \} from "\.\/host-prefix";/, "the strip's label, shared");
+  assert.match(ART, /import \{ sessionLabelNodes, hostOf \} from "\.\/host-prefix";/, "the strip's label, shared (and the host of a sid, for the re-arm)");
   assert.match(ART, /import \{ menuCard, showMenuCard, closeContextMenu \} from "\.\/ctx-menu";/, "the card is the menu builder's");
   assert.match(ART, /pick\.append\(\.\.\.sessionLabelNodes\(shown\.row\.name, shown\.row\.id, shown\.row\.color\)\);/, "the button wears the label");
   assert.match(ART, /b\.append\(\.\.\.sessionLabelNodes\(t\.name, t\.id, t\.color\)\); row\.appendChild\(b\);/, "each row wears the label");
   assert.match(ART, /const card = menuCard\(\{ className: "art-picker", id: "art-picker" \}\);/);
   assert.match(ART, /apply\(\{ type: "pick", id \}\)/, "a row click is a pick through the machine");
   assert.match(ART, /"art-lock": \(\) => apply\(\{ type: "toggleLock" \}\),/, "the lock button toggles through the machine");
-  assert.match(ART, /if \(m\.romp === "chatTabs"\) \{ tabs = normalizeTabs\(m\.tabs\); apply\(\{ type: "tabsChanged", tabs \}\); return; \}/, "the shell's union");
+  assert.match(ART, /if \(m\.romp === "chatTabs"\) \{ tabs = normalizeTabs\(m\.tabs\); for \(const t of tabs\) known\.set\(t\.id, t\); apply\(\{ type: "tabsChanged", tabs \}\); return; \}/, "the shell's union, every tab's name remembered");
   assert.match(ART, /if \(m\.romp === "activeChat" \|\| m\.type === "activeChat"\) \{ apply\(\{ type: "activeChat", id: typeof m\.id === "string" && m\.id \? m\.id : null \}\); return; \}/, "the shell's relay and the kernel's frame");
   assert.match(ART, /ask\(\{ type: "watchArtifacts", sid: watched, unwatch: true \}\);/, "the previous watch dropped on its own kernel");
   assert.match(ART, /if \(sid\) ask\(\{ type: "watchArtifacts", sid \}\);/, "the shown session watched");
   assert.match(ART, /if \(m\.type === "artifactsChanged"\) \{[^\n]*\n\s*if \(m\.sid !== sel\.sid\) return;[^\n]*\n\s*if \(onScreen\(\)\) requestListing\(\); else stale = true;/, "growth: re-ask on screen, stale off screen");
   assert.match(ART, /if \(!framed\) requestSessions\(\);/, "the picker's list only for a page with no shell");
   assert.match(ART, /vscodeApi\?\.postMessage\(\{ type: "ready" \}\);/, "the handshake every pane sends: the kernel's active chat comes on it (9.5)");
+  assert.match(ART, /window\.addEventListener\("romp:wsup", \(\) => rearm\(""\)\);/, "the watch re-armed on the local socket's (re)open (round two, medium)");
+  assert.match(ART, /window\.addEventListener\("romp:hostRelayUp", \(ev\) => rearm\(String\(\(ev as CustomEvent\)\.detail\?\.host \|\| ""\)\)\);/, "…and on a host's relay socket reopening");
+  assert.match(ART, /ask\(\{ type: "watchArtifacts", sid: sel\.sid \}\); watched = sel\.sid;\s*\n\s*if \(onScreen\(\)\) requestListing\(\); else stale = true;/, "the re-arm never depends on the sid changing, and re-asks the listing");
+  assert.match(ART, /if \(hadFocus\) document\.getElementById\(hadFocus\)\?\.focus\(\);/, "a repaint keeps the focus on the bar's button (round two, low c)");
+  assert.match(ART, /const shown = shownRow\(tabs, sel\.sid, known\);/, "the last known name for a closed tab (low d)");
   assert.doesNotMatch(ART, /art-refresh|"Refresh"|createElement\("select"\)|art-dot/, "no Refresh button, no native select, no identity dot");
   assert.match(ART, /localStorage\.setItem\(LOCK_KEY, on \? "1" : "0"\)/, "the lock persists per browser");
   const HP = fs.readFileSync(path.join(UI, "host-prefix.ts"), "utf8");

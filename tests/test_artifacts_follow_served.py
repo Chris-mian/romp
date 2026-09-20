@@ -53,6 +53,9 @@ page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 200)));
 // the pane enabled in the gear's Panes section; the chat split into two columns, the second holding api (the split script's own store)
 await page.addInitScript((a) => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.panes = Object.assign({}, s.panes || {}, { artifacts: true }); localStorage.setItem("romp:settings", JSON.stringify(s));
   localStorage.setItem("romp-chat-cols", JSON.stringify({ v: 2, cols: [{ n: 2, ids: a }] })); } catch (e) {} }, [cfg.api, cfg.docs]);
+// every frame's sockets, recorded as they are made, so the reconnect leg can drop the pane's own socket (the shim redials it)
+await page.addInitScript(() => { const W = window.WebSocket; const made = []; window.__sockets = made;
+  const P = function (...a) { const s = new W(...a); made.push(s); return s; }; P.prototype = W.prototype; Object.assign(P, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 }); window.WebSocket = P; });
 const findFrame = async (test) => { for (let i = 0; i < 150; i++) { const f = page.frames().find((fr) => test(fr.url())); if (f) return f; await page.waitForTimeout(200); } return null; };
 const isChat = (u) => /\/chat(\?|$)/.test(u), colOf = (u) => { const m = /[?&]col=(\d+)/.exec(u); return m ? Number(m[1]) : 1; };
 const boot = async () => {
@@ -126,6 +129,18 @@ if (fr) {
     + JSON.stringify({ type: "assistant", uuid: "a9", parentUuid: "u9", timestamp: iso(t + 1), sessionId: cfg.web, message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu9", name: "Write", input: { file_path: cfg.webCwd + "/notes/new-file.md", content: "# new" } }] } }) + "\n");
   const grew = await fr.waitForFunction(() => Array.from(document.querySelectorAll(".art-row .art-name")).some((n) => n.textContent === "new-file.md"), null, { timeout: 60000 }).then(() => true).catch(() => false);
   out.growth = { grew, ...(await shown()), refresh: await fr.evaluate(() => !!document.getElementById("art-refresh") || /Refresh/.test(document.body.textContent || "")) };
+  // (5b) the watch survives a socket drop and redial (round two, the medium): the pane's socket is closed, the shim redials it (a fresh
+  // client on the kernel, no watch), the pane re-arms on the reopen, and the next Write appended lists with no click
+  const sockets0 = await fr.evaluate(() => (window.__sockets || []).length);
+  await fr.evaluate(() => { window.__wsups = 0; window.addEventListener("romp:wsup", () => { window.__wsups++; }); });
+  await fr.evaluate(() => { for (const s of (window.__sockets || [])) { if (s.readyState === 1) s.close(); } });
+  const redialed = await fr.waitForFunction((n) => (window.__sockets || []).some((s, i) => i >= n && s.readyState === 1) && window.__wsups > 0, sockets0, { timeout: 60000 }).then(() => true).catch(() => false);
+  fs.writeFileSync(cfg.webCwd + "/notes/after-redial.md", "# after\n");
+  const t2 = Math.floor(Date.now() / 1000) + 5;
+  fs.appendFileSync(cfg.webTranscript, JSON.stringify({ type: "user", uuid: "u10", parentUuid: "a9", timestamp: iso(t2), sessionId: cfg.web, message: { role: "user", content: "one more after the redial" } }) + "\n"
+    + JSON.stringify({ type: "assistant", uuid: "a10", parentUuid: "u10", timestamp: iso(t2 + 1), sessionId: cfg.web, message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu10", name: "Write", input: { file_path: cfg.webCwd + "/notes/after-redial.md", content: "# after" } }] } }) + "\n");
+  const grewAfter = await fr.waitForFunction(() => Array.from(document.querySelectorAll(".art-row .art-name")).some((n) => n.textContent === "after-redial.md"), null, { timeout: 60000 }).then(() => true).catch(() => false);
+  out.reconnect = { sockets0, redialed, grewAfter, ...(await shown()) };
   // (6) a reload keeps the lock and the shown session
   await page.reload(); await page.waitForSelector("#f-chat", { timeout: 30000 });
   fr = await findFrame((u) => /\/artifacts(\?|$)/.test(u));
@@ -268,6 +283,14 @@ class ArtifactsFollowServed(unittest.TestCase):
         self.assertEqual((r["lockedStay"]["lock"], r["lockedStay"]["name"]), ("true", r["lockedStay"]["want"]), "locked: a switch in the first column left the pane where it was: %r" % r["lockedStay"])
         self.assertEqual((r["lockedPick"]["ok"], r["lockedPick"]["lock"], r["lockedPick"]["name"]), (True, "true", "web"), "locked: a pick replaces the session, the lock stays on: %r" % r["lockedPick"])
         self.assertEqual((r["reloaded"]["lock"], r["reloaded"]["name"], r["reloaded"]["stored"]), ("true", "web", "1"), "a reload keeps the lock and the shown session: %r" % r["reloaded"])
+
+    def test_the_watch_survives_a_socket_drop_and_redial_so_growth_still_lists(self):
+        # round two, the medium: a fresh client on the kernel has no watch; the pane re-arms on the shim's reopen signal
+        r = self._result()
+        rc = r["reconnect"]
+        self.assertTrue(rc["redialed"], "the pane's socket was dropped and the shim redialed it (a new open socket, romp:wsup fired): %r%s" % (rc, self.why(r)))
+        self.assertTrue(rc["grewAfter"], "a Write appended after the redial lists with no click: the watch was re-armed on the reopen: %r" % rc)
+        self.assertIn("after-redial.md", rc["rows"])
 
     def test_growth_lists_the_new_file_with_no_click_and_there_is_no_refresh_control(self):
         r = self._result()

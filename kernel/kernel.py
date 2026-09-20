@@ -59038,13 +59038,13 @@ def _pusher_cycle_jobs(now, live_map, any_client):
             #                               _pusher_cycle's finally into _pusher's while-True and ended the
             #                               pusher thread for the process's life (see _push's wire section)
             sys.stderr.write("push: %s\n" % traceback.format_exc())
-        try:
-            _artifacts_signal(now)        # the Artifacts pane's growth signal (plans/artifacts-pane.md 9.4): one stat per watching client
-        except Exception:
-            sys.stderr.write("artifacts signal: %s\n" % traceback.format_exc())
         finally:
             _t_push = time.monotonic() - _t_push
             _PERF_STATS.stage("push", _t_push)
+        try:
+            _artifacts_signal(now)        # the Artifacts pane's growth signal (plans/artifacts-pane.md 9.4): one stat per watching client; its own try, after the push's finally, so the push stage times the push alone (round two, low b)
+        except Exception:
+            sys.stderr.write("artifacts signal: %s\n" % traceback.format_exc())
     try:                                  # the turn-finished push (bell popover): AFTER the feed build above,
         _job_stage('turnNotify', lambda: _turn_notify_tick(now, live_map))      # so a bell event the same settle produced files its buzz first
     except Exception:
@@ -60599,15 +60599,19 @@ def _artifacts_mentions(sid, turns, link_cache=None):
     """The walk's mentions for `sid` over `turns`, INCREMENTAL (plans/artifacts-pane.md section 9.4): the memo keeps, per sid,
     the position and the fork-stable id of the last turn walked and the mentions map (path -> (t, via), the latest mention
     winning). When the turn at the memo's position still carries the memo's id (a serve or a fold left every earlier turn
-    in place, event_model _assemble), only the turns after it are walked, and hydrated, and their mentions merged; otherwise
-    (a full re-assembly, a turn without an id) the whole session is walked and the memo replaced. Returns (path, t, via)
-    triples for _artifacts_items, which stats and judges every entry on every answer. Nothing is written."""
+    in place, event_model _assemble), the walk resumes AT that turn (inclusive: a turn keeps its fork-stable id while it
+    gains atoms, so a file written later in the same turn lives in the turn already walked; the verifier of PR 1925
+    executed one turn with Write a.md then Write b.md and the resumed walk listed a.md alone) and only it and the turns
+    after it are walked, and hydrated, and their mentions merged (a re-walked mention is the same mention: the merge keeps
+    the latest by time); otherwise (a full re-assembly, a turn without an id) the whole session is walked and the memo
+    replaced. Returns (path, t, via) triples for _artifacts_items, which stats and judges every entry on every answer.
+    Nothing is written."""
     turns = list(turns or [])
     with _ARTIFACTS_MEMO_LOCK:
         memo = _ARTIFACTS_MEMO.get(sid)
     start, latest = 0, {}
     if memo is not None and memo["tid"] is not None and memo["idx"] < len(turns) and (turns[memo["idx"]] or {}).get("id") == memo["tid"]:
-        start = memo["idx"] + 1
+        start = memo["idx"]                            # inclusive: the last walked turn may have grown (round two, the high)
         latest = dict(memo["mentions"])
     for ap, t, via in _artifacts_walk(turns[start:], sid, link_cache=link_cache):
         cur = latest.get(ap)
@@ -64133,7 +64137,7 @@ _LANDING_COLLAPSE_JS = """
     return out;}
   function chatTabsMsg(){return {romp:'chatTabs',tabs:chatTabsUnion()};}
   window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='chatTabs'||!Array.isArray(m.tabs))return;
-    var src=null;Array.prototype.forEach.call(document.querySelectorAll('iframe'),function(f){if(f.contentWindow===e.source)src=f.id;});if(!src)return;
+    var src=null;Array.prototype.forEach.call(document.querySelectorAll('iframe'),function(f){if(f.contentWindow===e.source)src=f.id;});if(!src||!(src==='f-chat'||src.indexOf('f-chat-')===0))return;   // a chat frame's post alone (a column or a bottom chat pane): another protocol pane's frame carries no tabs
     TABSETS[src]=m.tabs.map(function(t){return t&&t.id?{id:String(t.id),name:String(t.name||t.id),color:(t.color&&typeof t.color==='object'&&t.color.bg)?{bg:String(t.color.bg),fg:String(t.color.fg||'')}:null}:null;}).filter(function(t){return !!t;});
     tellAll(chatTabsMsg());});
   // The OPTIONAL panes (the user 2026-09-10): the gear's Panes section (romp:settings.panes, per browser,

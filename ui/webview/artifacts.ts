@@ -27,7 +27,7 @@ import { initFileView, openFileView } from "./file-view";
 import { delegate } from "./actions";
 import { applyTheme } from "./theme";
 import { loadSettings, installSettingsSync, onExternalSettingsChange } from "./settings";
-import { sessionLabelNodes } from "./host-prefix";
+import { sessionLabelNodes, hostOf } from "./host-prefix";
 import { menuCard, showMenuCard, closeContextMenu } from "./ctx-menu";
 
 interface Listing { items: ArtifactItem[]; capped: boolean; max: number; error: string; sid: string }
@@ -38,6 +38,7 @@ const vscodeApi = typeof (window as any).acquireVsCodeApi === "function" ? (wind
 const framed = window.parent && window.parent !== window;   // a pane of a dashboard (the shell tells it tabs and the active chat), or a page opened alone
 
 let tabs: TabRow[] = [];                                    // the open tabs of the chat panes (the shell's union), the picker's rows
+const known = new Map<string, TabRow>();                    // every tab ever listed, by id: a selection no tab shows keeps its last known name (round two, low d)
 let sel: Selection = { sid: readSelected(), locked: readLock() };
 let listing: Listing | null = null;
 let loading = false;
@@ -70,6 +71,17 @@ function watch(sid: string | null): void {
   if (sid) ask({ type: "watchArtifacts", sid });
   watched = sid;
 }
+// A socket (re)open loses the watch: the kernel mints a fresh client for the new socket, so its watch is gone, and growth would stop
+// silently with no Refresh control left to recover it (the verifier of PR 1925, medium). Re-arm on every (re)open, never on the sid
+// changing: the local kernel's shim fires romp:wsup, a host's relay socket fires romp:hostRelayUp with its host; the listing is
+// re-asked too, since a growth during the outage was never signalled.
+function rearm(host: string): void {
+  if (!sel.sid || hostOf(sel.sid) !== host) return;
+  ask({ type: "watchArtifacts", sid: sel.sid }); watched = sel.sid;
+  if (onScreen()) requestListing(); else stale = true;
+}
+window.addEventListener("romp:wsup", () => rearm(""));
+window.addEventListener("romp:hostRelayUp", (ev) => rearm(String((ev as CustomEvent).detail?.host || "")));
 // every change of the selection goes through the machine; a changed session drops the listing, moves the watch and asks anew
 function apply(ev: SelectionEvent): void {
   const next = nextSelection(sel, ev);
@@ -92,6 +104,7 @@ function lockSvg(on: boolean): SVGElement {
 function paint(): void {
   const root = document.getElementById("artifacts-root");
   if (!root) return;
+  const hadFocus = document.activeElement && (document.activeElement.id === "art-pick" || document.activeElement.id === "art-lock") ? document.activeElement.id : "";   // the bar's buttons are rebuilt below: the focus returns to the same button (round two, low c)
   root.replaceChildren();
   const bar = el("div", "art-bar");
   const lock = el("button", "art-lock" + (sel.locked ? " on" : "")) as HTMLButtonElement; lock.dataset.act = "art-lock"; lock.id = "art-lock";
@@ -100,7 +113,7 @@ function paint(): void {
   lock.appendChild(lockSvg(sel.locked));
   const pick = el("button", "art-pick") as HTMLButtonElement; pick.dataset.act = "art-pick"; pick.id = "art-pick"; pick.title = "the session whose files are listed";
   pick.setAttribute("aria-haspopup", "menu");
-  const shown = shownRow(tabs, sel.sid);
+  const shown = shownRow(tabs, sel.sid, known);
   if (shown.row) {
     pick.append(...sessionLabelNodes(shown.row.name, shown.row.id, shown.row.color));
     if (!shown.open) { const no = el("span", "art-not-open"); no.textContent = "not open"; pick.appendChild(no); }
@@ -140,6 +153,7 @@ function paint(): void {
     body.appendChild(list);
   }
   root.append(bar, body);
+  if (hadFocus) document.getElementById(hadFocus)?.focus();
 }
 
 // ── the picker's card: the open tabs, one row per session in the strip's label, the shown one marked ────────────────
@@ -153,7 +167,7 @@ function openPicker(anchor: HTMLElement): void {
   for (const t of tabs) {
     const row = el("div", "ctx-item" + (t.id === sel.sid ? " current" : "")); row.setAttribute("role", "menuitem"); row.tabIndex = -1; row.dataset.sid = t.id; row.title = t.id;
     const b = el("span", "ctx-item-body"); b.append(...sessionLabelNodes(t.name, t.id, t.color)); row.appendChild(b);
-    row.addEventListener("click", () => { const id = t.id; closeContextMenu(); apply({ type: "pick", id }); });   // a pick never changes the lock (9.5)
+    row.addEventListener("click", () => { const id = t.id; closeContextMenu(); document.getElementById("art-pick")?.focus(); apply({ type: "pick", id }); });   // a pick never changes the lock (9.5); the focus lands on the button before the repaint, which keeps it there (low c)
     card.appendChild(row);
   }
   const r = anchor.getBoundingClientRect();
@@ -206,7 +220,7 @@ window.addEventListener("message", (ev) => {
     if (onScreen() && sel.sid && (stale || (!listing && !loading))) requestListing();   // shown again: a stale listing (a growth while off screen) is re-asked here
     return;
   }
-  if (m.romp === "chatTabs") { tabs = normalizeTabs(m.tabs); apply({ type: "tabsChanged", tabs }); return; }   // the shell's union of the chat columns' open tabs (9.2)
+  if (m.romp === "chatTabs") { tabs = normalizeTabs(m.tabs); for (const t of tabs) known.set(t.id, t); apply({ type: "tabsChanged", tabs }); return; }   // the shell's union of the chat columns' open tabs (9.2)
   if (m.romp === "activeChat" || m.type === "activeChat") { apply({ type: "activeChat", id: typeof m.id === "string" && m.id ? m.id : null }); return; }   // the shell's relay, or the kernel's frame on ready (9.5)
   if (m.type === "artifactsChanged") {
     if (m.sid !== sel.sid) return;   // a signal for a session no longer shown (a stale watch on another kernel): nothing to do
@@ -215,7 +229,7 @@ window.addEventListener("message", (ev) => {
   }
   if (m.type === "sessionList" && Array.isArray(m.items)) {
     if (framed) return;   // a dashboard pane lists the chat's open tabs, never the picker's thirty days
-    tabs = normalizeTabs(m.items.map((s: any) => ({ id: s.id, name: s.name || s.id, color: s.color || null })));
+    tabs = normalizeTabs(m.items.map((s: any) => ({ id: s.id, name: s.name || s.id, color: s.color || null }))); for (const t of tabs) known.set(t.id, t);
     paint(); if (sel.sid && !listing && !loading) requestListing();
     return;
   }

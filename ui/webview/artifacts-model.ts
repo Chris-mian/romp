@@ -62,11 +62,14 @@ export function nextSelection(s: Selection, ev: SelectionEvent): Selection {
     case "tabsChanged": return s;
   }
 }
-/** The shown session's row: the union's row for it, or a stub (the id's first eight characters) marked not open. */
-export function shownRow(tabs: TabRow[], sid: string | null): { row: TabRow | null; open: boolean } {
+/** The shown session's row: the union's row for it; else its last known row (the tab was open once this page's life), marked not
+ *  open; else a stub (the id's first eight characters), marked not open. */
+export function shownRow(tabs: TabRow[], sid: string | null, known?: Map<string, TabRow>): { row: TabRow | null; open: boolean } {
   if (!sid) return { row: null, open: false };
   const hit = tabs.find((t) => t.id === sid);
   if (hit) return { row: hit, open: true };
+  const seen = known && known.get(sid);
+  if (seen) return { row: seen, open: false };
   const i = sid.indexOf(":");
   return { row: { id: sid, name: (i > 0 ? sid.slice(0, i + 1) : "") + sid.slice(i + 1, i + 9), color: null }, open: false };
 }
