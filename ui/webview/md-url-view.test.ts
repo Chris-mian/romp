@@ -20,7 +20,8 @@ const SANITIZE = web("md-sanitize.ts");   // the one sanitizer both md() and mdB
 const CHAT_CSS = web("styles.css");
 const FEED_CSS = web("feed.css");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
-const GUIDE = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "guide.md"), "utf8");
+// the chat pane's own detail moved to the reference (CLAUDE.md "The documentation front pages")
+const REF = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "reference.md"), "utf8");
 
 // the chat's global anchor-click delegate (the same isolation chat-link-open.test.ts uses)
 const HANDLER = (RENDER.match(/closest\?\.\("a\[href\]"\)[\s\S]*?\}, true\);/) || [""])[0];
@@ -69,7 +70,7 @@ test("a ctrl-, meta- or shift-click on a same-origin .md keeps the tab: the modi
   assert.doesNotMatch(HANDLER, /addEventListener\("auxclick"/);
   assert.equal((RENDER.match(/addEventListener\("auxclick"/g) || []).length, 2,
     "only onMiddleClick (path pills) and the composer ✕'s stopper — both on spans/buttons, never on an anchor");
-  assert.match(GUIDE, /ctrl- or ⌘-click still opens the file in\s+a tab/, "the guide says so");
+  assert.match(REF, /ctrl- or ⌘-click still opens the file in\s+a tab/, "the reference says so");
 });
 
 test("the whole-backtick URL anchors (url-code-link) flow through the same delegate — no handler of their own", () => {
