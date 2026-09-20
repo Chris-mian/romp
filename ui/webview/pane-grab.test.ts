@@ -5,7 +5,11 @@
 // shell's own path). Fake targets stand in for elements: matches() and closest() are all the decision reads.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { emptyPress, forwardable, EMPTY_BY_APP, CONTROL_SEL, GRAB_HOVER_CLASS, KIT_CLASS } from "./pane-grab";
+import { emptyPress, forwardable, EMPTY_BY_APP, CONTROL_SEL, GRAB_HOVER_CLASS, KIT_CLASS, install } from "./pane-grab";
+import * as PG from "./pane-grab";
+// read by name off the module so a build at a base without the export still builds and each test reds on its behaviour (the base run measures it)
+const EMPTY_ATTR = (PG as unknown as Record<string, string>).EMPTY_ATTR;
+const EMPTY_ATTR_SEL = (PG as unknown as Record<string, string>).EMPTY_ATTR_SEL;
 
 /** A fake element: `self` is what it matches (its own selectors), `inside` what some ancestor (or itself) matches. */
 const fake = (self: string[], inside: string[] = []) => ({
@@ -65,4 +69,30 @@ test("the names the shell and the pages share", () => {
   assert.equal(KIT_CLASS, "pane-docking");
   assert.equal(GRAB_HOVER_CLASS, "pd-grab-hover");
   assert.ok(CONTROL_SEL.includes("svg *") && CONTROL_SEL.includes(".fitem") && CONTROL_SEL.includes("[data-sid]"));
+});
+
+// A registry pane's page declares its own empty background (plans/panes-as-data.md section 4): an element carrying
+// data-pane-empty is a grab surface for ANY app, read before the shipped per-app lists; a control inside it still yields;
+// and the detector installs for an app it never heard of, so a state-root pane's page gets the hand and the forward.
+test("data-pane-empty: a page-declared surface grabs for an unknown app; a control inside yields; the chat stays list-less", () => {
+  assert.equal(emptyPress("notes", fake(["[data-pane-empty]", "div"])), true, "the declared element itself, any app");
+  assert.equal(EMPTY_ATTR, "data-pane-empty"); assert.equal(EMPTY_ATTR_SEL, "[data-pane-empty]");
+  assert.equal(emptyPress("notes", fake(["div"])), false, "an undeclared element in an unknown app: no grab");
+  assert.equal(emptyPress("notes", { matches: (sel: string) => sel === "[data-pane-empty]", closest: (sel: string) => (sel === CONTROL_SEL ? {} : null) }), false, "a control inside the declared surface yields");
+  assert.equal(emptyPress("feed", fake(["[data-pane-empty]"])), true, "a shipped pane may declare too");
+  assert.equal(EMPTY_BY_APP.chat, undefined, "the chat's list stays absent: its grab surface is the strip's empty run");
+});
+
+test("install wires a page for any app: a registry pane's document gets the style, the wired flag and the read-only hook", () => {
+  const listeners: string[] = [];
+  const body = { classList: { contains: () => false, toggle() {}, remove() {} } };
+  const head = { appendChild() {} };
+  const doc = { body, head, documentElement: head, getElementById: () => null, createElement: () => ({ id: "", textContent: "" }), addEventListener: (k: string) => { listeners.push(k); } };
+  const win = { document: doc, parent: {} } as unknown as Window;
+  install(win, "notes");
+  const w = win as unknown as { __rompPaneGrabWired?: boolean; __rompPaneGrab?: { app: string; empty: (el: unknown) => boolean } };
+  assert.equal(w.__rompPaneGrabWired, true, "wired for an app outside the shipped lists");
+  assert.equal(w.__rompPaneGrab && w.__rompPaneGrab.app, "notes");
+  assert.deepEqual(listeners.sort(), ["pointerdown", "pointerleave", "pointermove"]);
+  assert.equal(w.__rompPaneGrab!.empty(fake(["[data-pane-empty]"]) as unknown as Element), true, "the hook answers by the declared surface");
 });

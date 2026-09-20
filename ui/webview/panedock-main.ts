@@ -67,15 +67,32 @@ export function isPaneDockingOn(rawSettings: string | null): boolean {
   }
 }
 
-/** The shell's title for a pane, for the free-floating outline (the keyboard palette's words, never chrome). */
-export function paneTitle(id: PaneId): string {
+/** The shell's title for a pane, for the free-floating outline (the keyboard palette's words, never chrome). `titles`
+ *  is the pane records' word by rail key (plans/panes-as-data.md section 4: the engine reads it off the rail's buttons
+ *  and the body's data-panes rows), so a data pane and the Artifacts pane are named as the rail names them; the shipped
+ *  four keep their words when no map is given. */
+export function paneTitle(id: PaneId, titles?: Record<string, string>): string {
+  const m = /^chat-pane-(\d+)$/.exec(id);
+  if (m) return "Chat " + m[1];
+  if (id === BAND) return (titles && titles.timeline) || "Sessions";
+  const key = growKey(id);
+  if (titles && typeof titles[key] === "string" && titles[key]) return titles[key];
   if (id === CHAT) return "Chat";
   if (id === FLEET) return "Outline";
   if (id === FEED) return "Feed";
   if (id === FILES) return "Files";
-  if (id === BAND) return "Sessions";
-  const m = /^chat-pane-(\d+)$/.exec(id);
-  return m ? "Chat " + m[1] : id;
+  return id;
+}
+
+/** The pane records' titles by rail key, read off the shell: the rail's pane buttons (every pane the kernel rendered,
+ *  shipped and data, in rail order) and the body's data-panes rows (a data pane's record). Pure over the two reads. */
+export function titleMapOf(railButtons: ReadonlyArray<{ key: string; text: string }>, dataPanes: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const b of railButtons) if (b.key && b.text) out[b.key] = b.text;
+  if (Array.isArray(dataPanes)) for (const r of dataPanes as Array<{ id?: unknown; title?: unknown }>) {
+    if (r && typeof r.id === "string" && typeof r.title === "string" && r.title) out[r.id] = r.title;
+  }
+  return out;
 }
 
 // The SHELL stylesheet, injected only while the kit is on (so the off DOM carries no node of the kit's).
@@ -263,6 +280,13 @@ class Engine {
     return this.allPaneEls().map((p) => p.querySelector(":scope > iframe") as HTMLIFrameElement | null).filter((f): f is HTMLIFrameElement => !!f);
   }
   private poOn(key: string): boolean { return document.body.classList.contains("po-" + key); }
+  /** The pane records' titles as the shell shows them (paneTitle's map): the rail's buttons and the data-panes rows. */
+  private titleMap(): Record<string, string> {
+    const btns = Array.from(document.querySelectorAll(".rail-btn[data-pane]")).map((b) => ({ key: b.getAttribute("data-pane") || "", text: (b.textContent || "").trim() }));
+    let rows: unknown = null;
+    try { rows = JSON.parse(document.body.getAttribute("data-panes") || "null"); } catch { rows = null; }
+    return titleMapOf(btns, rows);
+  }
   private shown(): Shown {
     const row: PaneId[] = [];
     if (this.poOn("chat") && byId(CHAT)) {
@@ -270,7 +294,13 @@ class Engine {
       // the side columns the chat split made, in DOM order (a bottom pane nests inside its parent and is no pane here)
       Array.from((this.row || document).querySelectorAll(".pane.chat-col")).forEach((el) => { if (el.id) row.push(el.id); });
     }
-    for (const id of [FLEET, FEED, FILES]) if (this.poOn(growKey(id)) && byId(id)) row.push(id);
+    // every other pane of the row, in DOCUMENT order, which is the rail's: the shipped columns and the registry's data
+    // panes alike (plans/panes-as-data.md section 4), shown when its po-<key> class is on (the pane controller's truth)
+    for (const el of this.allPaneEls()) {
+      const id = el.id;
+      if (!id || id === CHAT || isChatPane(id) || id === BAND || el.classList.contains("chat-col")) continue;
+      if (this.poOn(growKey(id))) row.push(id);
+    }
     let grow: Record<string, number> = {};
     try { const g = JSON.parse(localStorage.getItem(GROW_KEY) || "null"); if (g && typeof g === "object") grow = g; } catch { grow = {}; }
     const band = this.poOn("timeline") && !!byId(BAND);
@@ -549,11 +579,11 @@ class Engine {
     let r: Rect | null = zone ? landingRect(rects, zone, strips) : null;
     if (zone && zone.strip) {
       const joins = colNumberOf(p.pane) !== null && colNumberOf(zone.target) !== null && colNumberOf(p.pane) !== colNumberOf(zone.target);
-      if (joins) o.textContent = paneTitle(p.pane) + " joins";   // a chat pane's sessions join that strip (a group is separable, and rejoinable)
+      if (joins) o.textContent = paneTitle(p.pane, this.titleMap()) + " joins";   // a chat pane's sessions join that strip (a group is separable, and rejoinable)
       else { o.classList.add("refused"); o.textContent = "A pane is not a tab"; }
     }
-    else if (zone) o.textContent = paneTitle(p.pane);
-    else { o.classList.add("free"); o.textContent = paneTitle(p.pane); r = { x: pt.x - 80, y: pt.y - 40, w: 160, h: 80 }; }
+    else if (zone) o.textContent = paneTitle(p.pane, this.titleMap());
+    else { o.classList.add("free"); o.textContent = paneTitle(p.pane, this.titleMap()); r = { x: pt.x - 80, y: pt.y - 40, w: 160, h: 80 }; }
     if (r) { const rr = roundRect(r); o.style.left = rr.x + "px"; o.style.top = rr.y + "px"; o.style.width = rr.w + "px"; o.style.height = rr.h + "px"; }
   }
 

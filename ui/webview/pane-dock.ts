@@ -26,7 +26,10 @@ export const DEFAULT_BAND_PX = 200;
 export const LAYOUT_KEY = "romp-layout";
 
 export const CHAT = "chat-pane", FLEET = "fleet-pane", FEED = "feed-pane", FILES = "files-pane", BAND = "tl-pane";
-/** Today's row order for the dashboard panes (kernel.py's fixed DOM order); chat columns slot after the chat. */
+/** The shipped four the engine's title map falls back to. The ROW ORDER is no longer a list here: the shell's pane row
+ *  is rendered from the pane registry in rail order (plans/panes-as-data.md, phase two), and the engine reads it off
+ *  the DOM (`Shown.row`, in document order), so a data pane or a shipped pane this module never heard of takes its
+ *  place from that order alone. */
 export const ROW_ORDER: PaneId[] = [CHAT, FLEET, FEED, FILES];
 
 export interface Pt { x: number; y: number }
@@ -36,14 +39,13 @@ export type Zone = { target: PaneId; edge: Edge; strip?: false } | { target: Pan
 export function isChatPane(id: PaneId): boolean { return id === CHAT || /^chat-pane-\d+$/.test(id); }
 export function isBand(id: PaneId): boolean { return id === BAND; }
 
-/** The romp-pane-grow key of a pane id (`chat`, `fleet`, `feed`, `files`, `chat<n>` for a column). */
+/** The romp-pane-grow key of a pane id, which is also its rail key and its `po-` class (`chat`, `fleet`, `feed`,
+ *  `files`, `artifacts`, a data pane's own id; `chat<n>` for a column): the pane element's id without `-pane`, the
+ *  shell's naming rule for every pane it renders from the registry (plans/panes-as-data.md). */
 export function growKey(id: PaneId): string {
-  if (id === CHAT) return "chat";
-  if (id === FLEET) return "fleet";
-  if (id === FEED) return "feed";
-  if (id === FILES) return "files";
   const m = /^chat-pane-(\d+)$/.exec(id);
-  return m ? "chat" + m[1] : id;
+  if (m) return "chat" + m[1];
+  return id.endsWith("-pane") ? id.slice(0, -5) : id;
 }
 
 function inside(r: Rect, p: Pt): boolean { return p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h; }
@@ -142,7 +144,12 @@ export interface Shown {
 export function seedLayout(sh: Shown): Layout {
   const row = sh.row.length ? sh.row : [CHAT];
   const grow: Record<PaneId, number> = {};
-  for (const id of row) { const g = sh.grow[growKey(id)]; grow[id] = typeof g === "number" && g > 0 ? g : 1; }
+  // a pane the grow store never named (a data pane defined after the store was written, the Artifacts pane on an older
+  // store) takes a FAIR weight, the mean of the named ones: the shipped OFF path gives a new pane 40 beside 34..60, and the
+  // rail's re-show takes the average (__rompGrowFair); a weight of 1 beside those seeded an 8 px column (the phase-two read)
+  const known = row.map((id) => sh.grow[growKey(id)]).filter((g): g is number => typeof g === "number" && g > 0);
+  const fair = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 1;
+  for (const id of row) { const g = sh.grow[growKey(id)]; grow[id] = typeof g === "number" && g > 0 ? g : fair; }
   const tree = seedRowOverFixedBand(row, grow, sh.band ? BAND : null, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX);
   return { v: 1, tree, parked: [] };
 }
@@ -165,7 +172,7 @@ export function defaultDock(tree: Node, pane: PaneId): { target: PaneId; edge: E
     if (lastChat) return { target: lastChat, edge: "right" };
     return { target: ls[0], edge: "left" };
   }
-  return { target: ls[ls.length - 1], edge: "right" };   // files, and any pane this list does not know: the right end
+  return { target: ls[ls.length - 1], edge: "right" };   // files, the artifacts pane, a data pane: the right end (plans/panes-as-data.md section 4)
 }
 
 /** Reconcile a layout with what the shell SHOWS now: every leaf no longer shown is PARKED (its iframe stays
@@ -181,9 +188,9 @@ export function reconcileShown(cur: Layout, sh: Shown): Layout {
     const r = closePane(lay, p);
     if (r.ok) lay = r.layout;
   }
-  // open what is new, in row order (so the outline lands right of the chat before the feed asks for the outline)
-  const order = ROW_ORDER.concat(sh.row.filter((p) => !ROW_ORDER.includes(p)));
-  const missing = order.filter((p) => want.has(p) && !has(lay.tree, p));
+  // open what is new, in the ROW's order, which is the rail's (so the outline lands right of the chat before the feed
+  // asks for the outline, and a data pane after the shipped columns): the row is read off the DOM in document order
+  const missing = sh.row.filter((p) => want.has(p) && !has(lay.tree, p));
   let hint = sh.newChatDock || null;
   for (const p of missing) {
     if (leaves(lay.tree).every((q) => !want.has(q))) {

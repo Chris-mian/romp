@@ -8,7 +8,7 @@ import * as assert from "node:assert/strict";
 import {
   GUTTER, RING, SLOP, CHAT, FLEET, FEED, FILES, BAND,
   edgeZone, zoneAt, landingRect, grabbable, crossedSlop, growKey, seedLayout, defaultDock, reconcileShown,
-  bandPxOf, roundRect, colNumberOf, ownerColumn, planTabDrop,
+  bandPxOf, roundRect, colNumberOf, ownerColumn, planTabDrop, type Shown,
 } from "./pane-dock";
 import { layout, leaves, isSplit, has, type Split, type Layout } from "./pane-tree";
 
@@ -192,4 +192,35 @@ test("reconcileShown: a dock hint puts the next new chat column at the drop edge
   // the hint names a target that is not in the tree, or the pane itself: the default dock
   const stray = reconcileShown(base, { row: [CHAT, "chat-pane-2", FLEET, FEED], band: false, bandPx: 0, grow: {}, newChatDock: { target: "ghost", edge: "left" } });
   assert.deepEqual(leaves(stray.tree), [CHAT, "chat-pane-2", FLEET, FEED]);
+});
+
+// The kit reads the pane list (plans/panes-as-data.md, phase two): a pane the shell rendered from the registry (a data
+// pane, the Artifacts pane) is keyed by its element id without `-pane`, weighted by that key's grow, opened at the right
+// end after the shipped columns in the ROW's order (the rail's, read off the DOM), and needs no entry in this module.
+test("growKey: the pane element's id without -pane for every pane the registry renders, chat<n> for a column", () => {
+  assert.deepEqual(["artifacts-pane", "notes-pane", "docs-pane", "chat-pane-2"].map(growKey), ["artifacts", "notes", "docs", "chat2"]);
+});
+
+test("seedLayout weights a data pane by its own grow key, and reconcileShown opens data panes at the right end in row order", () => {
+  const sh: Shown = { row: [CHAT, FEED, "artifacts-pane", "notes-pane"], band: false, bandPx: 0, grow: { chat: 60, feed: 40, artifacts: 40, notes: 80 } };
+  const lay = seedLayout(sh);
+  const rects = layout(lay.tree, { x: 0, y: 0, w: 1000, h: 500 }, 0);
+  const w = Object.fromEntries(rects.map((r) => [r.pane, Math.round(r.rect.w)]));
+  assert.deepEqual(w, { [CHAT]: 273, [FEED]: 182, "artifacts-pane": 182, "notes-pane": 364 }, "60:40:40:80 of 1000 px: the data pane's key is its own, not its element id");
+  // a data pane turned on later opens at the right end; two at once open in the row's order (docs before notes, as the rail lists them)
+  const base = seedLayout({ row: [CHAT, FEED], band: false, bandPx: 0, grow: {} });
+  const next = reconcileShown(base, { row: [CHAT, FEED, "artifacts-pane", "docs-pane", "notes-pane"], band: false, bandPx: 0, grow: {} });
+  assert.deepEqual(leaves(next.tree), [CHAT, FEED, "artifacts-pane", "docs-pane", "notes-pane"]);
+  assert.deepEqual(defaultDock(next.tree, "later-pane"), { target: "notes-pane", edge: "right" }, "the right end: the pane this module never heard of docks after the last leaf");
+  const off = reconcileShown(next, { row: [CHAT, FEED, "notes-pane"], band: false, bandPx: 0, grow: {}, present: [CHAT, FEED, "artifacts-pane", "docs-pane", "notes-pane"] });
+  assert.deepEqual(leaves(off.tree), [CHAT, FEED, "notes-pane"]); assert.deepEqual(off.parked.sort(), ["artifacts-pane", "docs-pane"], "a data pane toggled off parks like any pane");
+});
+
+test("seedLayout: a pane the grow store never named takes the mean of the named weights, never a sliver", () => {
+  const sh: Shown = { row: [CHAT, FEED, "later-pane"], band: false, bandPx: 0, grow: { chat: 60, feed: 40 } };
+  const rects = layout(seedLayout(sh).tree, { x: 0, y: 0, w: 1500, h: 500 }, 0);
+  const w = Object.fromEntries(rects.map((r) => [r.pane, Math.round(r.rect.w)]));
+  assert.deepEqual(w, { [CHAT]: 600, [FEED]: 400, "later-pane": 500 }, "60 : 40 : 50 (the mean of 60 and 40), so a pane defined after the store was written opens at a fair width");
+  const empty = layout(seedLayout({ row: [CHAT, "notes-pane"], band: false, bandPx: 0, grow: {} }).tree, { x: 0, y: 0, w: 1000, h: 500 }, 0);
+  assert.deepEqual(empty.map((r) => Math.round(r.rect.w)), [500, 500], "no store at all: equal weights, as before");
 });

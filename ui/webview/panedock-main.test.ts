@@ -3,7 +3,10 @@
 // fail-safe default for an opt-in that gates a whole layout engine). No DOM.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { isPaneDockingOn, PANE_DOCKING_CLASS } from "./panedock-main";
+import { isPaneDockingOn, PANE_DOCKING_CLASS, paneTitle } from "./panedock-main";
+import * as PDM from "./panedock-main";
+// read by name off the module so a build at a base without the export still builds and the test reds on its behaviour
+const titleMapOf = (PDM as unknown as Record<string, (b: ReadonlyArray<{ key: string; text: string }>, rows: unknown) => Record<string, string>>).titleMapOf;
 import * as PD from "./panedock-main";
 // read by name off the module so a build without the export still builds and this test alone reds (the base run measures it)
 const speaksProtocol = (PD as unknown as Record<string, (f: { getAttribute(name: string): string | null }) => boolean>).speaksProtocol;
@@ -35,4 +38,25 @@ test("speaksProtocol: only the shell's data-protocol=none mark excludes a frame"
   assert.equal(speaksProtocol(frame({ "data-protocol": "romp" })), true, "a registry pane in the protocol");
   assert.equal(speaksProtocol(frame({})), true, "the shipped panes carry no mark and speak it");
   assert.equal(speaksProtocol(frame({ "data-protocol": "" })), true, "an empty mark is not the exclusion");
+});
+
+// The outline's words come from the pane records (plans/panes-as-data.md section 4): the engine reads the rail's buttons
+// (every pane the kernel rendered, shipped and data, by rail key) and the body's data-panes rows into one map, and
+// paneTitle names a pane by it; the shipped four keep their words when no map is given, a column is "Chat n".
+test("paneTitle names a data pane and the Artifacts pane as the rail does; the shipped words stand without a map", () => {
+  assert.equal((paneTitle as unknown as (id: string, t?: Record<string, string>) => string)("notes-pane", { notes: "Notebook" }), "Notebook", "the record's word first (the base names a data pane by its id)");
+  const titles = titleMapOf(
+    [{ key: "chat", text: "Chat" }, { key: "timeline", text: "Sessions" }, { key: "fleet", text: "Outline" }, { key: "feed", text: "Feed" },
+     { key: "files", text: "Files" }, { key: "artifacts", text: "Artifacts" }, { key: "notes", text: "Notes" }, { key: "", text: "stray" }],
+    [{ id: "notes", title: "Notebook" }, { id: "docs", title: "Docs" }, { id: 7, title: "x" }, { id: "bad" }]);
+  assert.deepEqual(titles, { chat: "Chat", timeline: "Sessions", fleet: "Outline", feed: "Feed", files: "Files", artifacts: "Artifacts", notes: "Notebook", docs: "Docs" },
+    "the rail's words, the records' titles over them, a keyless button and a malformed row dropped");
+  assert.equal(paneTitle("notes-pane", titles), "Notebook");
+  assert.equal(paneTitle("artifacts-pane", titles), "Artifacts");
+  assert.equal(paneTitle("docs-pane", titles), "Docs");
+  assert.equal(paneTitle("tl-pane", titles), "Sessions");
+  assert.equal(paneTitle("chat-pane-3", titles), "Chat 3", "a column keeps its number");
+  assert.equal(paneTitle("later-pane", titles), "later-pane", "a pane no record names is its id");
+  assert.deepEqual(["chat-pane", "fleet-pane", "feed-pane", "files-pane", "tl-pane"].map((id) => paneTitle(id)), ["Chat", "Outline", "Feed", "Files", "Sessions"], "no map: the shipped words");
+  assert.equal(titleMapOf([], "not an array") && Object.keys(titleMapOf([], null)).length, 0, "no rows: no titles, never a throw");
 });
