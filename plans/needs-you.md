@@ -16,8 +16,8 @@ category's colour, behind a settings row that is on by default. Completed must b
 undone, offered as a next step or asked about may land there.
 
 This note is phase one. Phase two is the renames and the colour; phase three is the box, on the user's word (they
-may build it themselves); the judges' change that makes Completed safe to clear is a separate document by the judges'
-owner, linked below.
+may build it themselves); the judges' change that makes Completed safe to clear is the judges' owner's note,
+`plans/judge-prompt-experiments.md`, linked below.
 
 ## The premises, checked in the code
 
@@ -178,10 +178,10 @@ transcript) had this shape; the box takes the shape and not the request store.
 ### Completed is safe to clear unread
 
 Nothing left undone, offered as a next step, or asked about may land in Completed: those are Needs you's. That is the
-judges' change (the closer's and the blocker's prompts and the verdict rules), whose design and measurement the
-judges' owner writes in `plans/completed-safe-to-clear.md` (forthcoming; this note links it by that path and the
-manager aligns the two). This note's part is the contract the column relies on: a card in Completed asks nothing of
-the user, so a Clear all over Completed loses nothing.
+judges' change, whose design, measurement and landing gate are the judges' owner's note,
+`plans/judge-prompt-experiments.md`: the closer's optional-offer clause inverted as the first candidate, the planner's
+done op and the unblocker's moot rule as the second and third surfaces. This note's part is the contract the column
+relies on: a card in Completed asks nothing of the user, so a Clear all over Completed loses nothing.
 
 ## Phases
 
