@@ -136,8 +136,9 @@ in `ui/webview/chat-split.test.ts`) and a pin in this design's tests asserts out
   `PANE` and `COLS` (the focus map) are built into module-level strings at import from `_PANE_ORDER`. They
   read one JSON the landing emits as an attribute, `<body data-panes='[...]'>` (the list of `{id, title,
   protocol, experimental, on}` for the DATA panes), and the inline scripts parse it (`JSON.parse(document.
-  body.dataset.panes)`) and EXTEND their baked five with it. The attribute is emitted only when the registry
-  holds a pane, so with an empty registry the code panes' rendering is unchanged (phase one's first pin);
+  body.dataset.panes)`) and EXTEND their baked five with it. The attribute carries every pane after the hand-written
+  five (since phase three the Artifacts record rides it too, marked `builtin`), so with no data pane the hand-written
+  panes' rendering is unchanged (phase one's first pin, re-cut deliberately at phase three);
   an attribute, not a script, so the inline count pin stays at 21 and no inline JS is added (the docking
   plan's section 10 rule). The three module-level strings keep their shape and their pinned substrings
   literal (the executed harnesses read them as constants); each gains a line that reads the attribute.
@@ -269,11 +270,14 @@ takes the census over the built landing, the bundles' sources and the built bund
    static root with `shim.js` and `theme.css`, the pane-set revision and the reload offer. Tier: `feature`
    (additive: the code panes' rendering unchanged with an empty registry, pinned slice by slice; the old stores untouched).
 2. **The docking kit reads the list** (section 4) and the grab detector's `data-pane-empty`. Tier: `feature`.
-3. **The artifacts pane folds in**: the feed owner's `artifacts` becomes a `_CODE_PANES` record (`{id:
-   "artifacts", title: "Artifacts", source: "/artifacts", on: false, experimental: true}`), its hand-written
-   hooks (the `_PANE_ORDER` entry, the label word, the `po-artifacts` class line, the column CSS, the
-   `f-artifacts` iframe) deleted for what the generic build emits, its page and its `showArtifactsControl`
-   kept (or mapped onto `experimental`, its call). Tier: `feature`, theirs or a joint one.
+3. **The artifacts pane folds in** (DONE, joint with the feed owner): the feed owner's `artifacts` is a `_CODE_PANES`
+   record (`{id: "artifacts", title: "Artifacts", source: "/artifacts", on: false, experimental: true}`), its
+   hand-written hooks (the `_PANE_ORDER` entry, the label word, the `po-artifacts` class line, the column CSS, the
+   `f-artifacts` iframe, every hand list) deleted for what the generic build emits (the generic build renders
+   every pane after the hand-written five, `_HAND_PANES`), its `showArtifactsControl` mapped onto `experimental`
+   (the gear's generic Panes row is the control; the bespoke key deleted, no migration), and a generic pane's iframe
+   takes its `src` only when the pane comes ON SCREEN, never when merely enabled (the Artifacts page's first load
+   walks the remembered session). Its page, its listing op and its bundle are untouched. Tier: `feature`, joint.
 4. **Bands and the phone**: a `band` member (a second fixed-px kid; the flex `.col`'s bottom slot
    generalised) and experimental panes on the phone. Tier: `feature`; if the `romp-panes` store's SHAPE ever
    changed for this (today a flat `{key: bool}`), that is a persisted-contract change and a `major-feature`

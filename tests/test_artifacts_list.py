@@ -10,7 +10,9 @@ missing, the route answering 404, the landing lacking the rail button), never a 
 Synthetic only: a hermetic state root, a private placeholder sid, invented paths under the test's own temp folder."""
 import inspect
 import io
+import html as html_mod
 import json
+import re
 import os
 import sys
 import tempfile
@@ -19,6 +21,7 @@ from pathlib import Path
 from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+ROOT = os.path.dirname(HERE)
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
@@ -287,51 +290,47 @@ def _has(tc, needle, hay):
 
 
 class Shell(unittest.TestCase):
-    """The dashboard grows a sixth pane, rightmost after Files, OFF by default and hidden behind its own control (the Files
-    control's shape, a fresh key): every hand-written pane list in the landing JS names it (the shipped naming pattern the
-    timeline owner asked for, exactly: artifacts-pane, f-artifacts with data-src, po-artifacts, --g-artifacts, the
-    _PANE_ORDER entry and its LBL word), so the registry folds it in by key and route."""
+    """The dashboard's sixth pane is a RECORD in the kernel's _CODE_PANES (plans/panes-as-data.md, phase three: id artifacts, title
+    Artifacts, source /artifacts, off by default, experimental), rendered by the GENERIC pane build like a data pane: its rail
+    button, its gutter and column after Files, its column and gutter rules, its row in body[data-panes] for the inline scripts
+    and the gear's Panes row, no phone tab (experimental). None of the hand-written hooks of its first landing remain, and its
+    bespoke control (showArtifactsControl) is gone: the gear's generic row, off by default, is the control; the iframe takes
+    its src only when the pane comes ON SCREEN (the round-two M2 constraint), never when merely enabled."""
 
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_landing_names_the_pane_in_every_hand_list(self):
+    def test_the_landing_renders_the_record_generically_and_no_hand_hook_remains(self):
         h = self.html
-        _has(self, "<div class=rail-btn data-pane=artifacts>Artifacts</div>", h); _has(self, "<button data-pane=artifacts>Artifacts</button>", h)
-        flat = h.replace('"\n            "', "")
-        _has(self, '<div class=gv id=gv-d></div><div class=pane id=artifacts-pane><iframe id=f-artifacts data-src=/artifacts></iframe></div>', flat)
-        self.assertLess(h.index("id=files-pane"), h.index("id=gv-d")); self.assertLess(h.index("id=gv-d"), h.index("id=artifacts-pane")); self.assertLess(h.index("id=artifacts-pane"), h.index("id=gh"))
-        _has(self, "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}", h); _has(self, "body:not(.po-artifacts) #artifacts-pane{display:none}", h)
-        _has(self, "body:not(.po-artifacts) #gv-d,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files) #gv-d{display:none}", h)
-        _has(self, "<body class='po-chat po-feed po-timeline'>", h)   # not po-artifacts: off by default
-        _has(self, "po={chat:true,fleet:false,feed:true,timeline:true,files:false,artifacts:false}", h)
-        _has(self, "po={chat:false,fleet:false,feed:false,timeline:false,files:false,artifacts:false}", h)
-        _has(self, "document.body.classList.toggle('po-artifacts',!!po.artifacts)", h); _has(self, "artifacts:'artifacts pane'", h)
-        _has(self, "'f-artifacts':'artifacts-pane'", km._LANDING_FOCUS_JS); _has(self, "var COLS=['f-chat','f-fleet','f-feed','f-files','f-artifacts']", km._LANDING_FOCUS_JS)
-        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach", km._LANDING_ESC_JS)
-        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-artifacts','f-timeline','f-settings'].forEach", km._LANDING_MOBILE_JS)
-        _has(self, "artifacts:document.getElementById('f-artifacts')", km._LANDING_MOBILE_JS)
-        _has(self, "var PANES=['chat-pane','fleet-pane','feed-pane','files-pane','artifacts-pane'];", h); _has(self, "grow={chat:60,fleet:34,feed:40,files:40,artifacts:40}", h)
-        _has(self, "id==='files-pane'?'files':'artifacts'", h)
-        _has(self, "gutter('gv-d',function(){var c=document.body.classList;return c.contains('po-files')?'files-pane':c.contains('po-feed')?'feed-pane':c.contains('po-fleet')?'fleet-pane':lastChat();},'artifacts-pane');", h)
+        rec = next(p for p in km._CODE_PANES if p["id"] == "artifacts")
+        self.assertEqual(rec, {"id": "artifacts", "title": "Artifacts", "source": "/artifacts", "on": False, "experimental": True, "protocol": "romp"})
+        _has(self, "<div class=rail-btn data-pane=artifacts>Artifacts</div>", h)
+        self.assertNotIn("<button data-pane=artifacts>", h, "experimental: no phone tab")
+        _has(self, '<div class=gv id=gv-artifacts></div><div class=pane id=artifacts-pane><iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div>', h)
+        self.assertLess(h.index("id=files-pane"), h.index("id=gv-artifacts")); self.assertLess(h.index("id=artifacts-pane"), h.index("id=gv-ghost"))
+        _has(self, "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}body:not(.po-artifacts) #artifacts-pane{display:none}", h)
+        _has(self, "body:not(.po-artifacts) #gv-artifacts,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files) #gv-artifacts{display:none}", h)
+        m = re.search(r"<body class='po-chat po-feed po-timeline' data-panes=\"([^\"]*)\">", h)
+        self.assertIsNotNone(m, "the record rides the attribute the inline scripts and the gear read")
+        rows = json.loads(html_mod.unescape(m.group(1)))
+        self.assertEqual(rows[0], {"id": "artifacts", "title": "Artifacts", "protocol": "romp", "experimental": True, "on": False, "builtin": True})
+        for gone in ("gv-d", "artifactsCtl", "no-artifacts-control", "showArtifactsControl", "po-artifacts',!!po.artifacts", "artifacts:false", "'f-artifacts':'artifacts-pane'", "artifacts:'artifacts pane'",
+                     "grow={chat:60,fleet:34,feed:40,files:40,artifacts:40}", "'files':'artifacts'"):
+            self.assertNotIn(gone, h, "a hand-written hook of the first landing remains: %r" % gone)
+        for name in ("_LANDING_FOCUS_JS", "_LANDING_ESC_JS", "_LANDING_MOBILE_JS", "_LANDING_COLLAPSE_JS", "_LANDING_JS"):
+            self.assertNotIn("artifacts", getattr(km, name), "%s names the pane by hand" % name)
         self.assertEqual(dict(km._PANE_ORDER).get("artifacts"), "Artifacts"); _has(self, "var PN=" + json.dumps(dict(km._PANE_ORDER)) + ";", km._LANDING_ERRS_JS)
 
-    def test_the_artifacts_controls_own_setting_hides_it_in_both_layouts_and_the_pane_loads_once_when_shown(self):
+    def test_the_generic_build_gates_the_load_on_the_pane_coming_on_screen_never_on_the_gear_alone(self):
+        # round two, M2: a dashboard load with the pane enabled in the gear but off screen must not load the page (its first load
+        # walks the remembered session's transcript). The generic build: the reconcile copies data-src to src for a HAND-written
+        # optional pane when enabled, never for a generic one (DPX); the apply copies it for a generic pane when its po flag is on.
         js = km._LANDING_COLLAPSE_JS
-        _has(self, "function artifactsCtl(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showArtifactsControl===true);}catch(e){return false;}}", js)
-        _has(self, "document.body.classList.toggle('no-artifacts-control',!actl);", js)
-        _has(self, "if(k==='artifacts'&&!artifactsCtl())return;", js)
-        _has(self, "return {romp:'panes',on:on,avail:{files:filesCtl(),artifacts:artifactsCtl()}};", js)
-        # round two, M2: the iframe loads when the pane comes ON SCREEN with the control on (the optional panes' rule), never on the
-        # control alone: a control on with the pane off used to load the page and walk the remembered session on every dashboard load
-        _has(self, "if(actl&&po.artifacts&&af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));", js)
-        self.assertNotIn("if(actl&&af&&!af.getAttribute('src')", js, "no load on the control alone")
-        _has(self, "if(!actl&&po.artifacts){po.artifacts=false;if(qp===null)saveP();}", js)
-        _has(self, "body.no-artifacts-control .rail-btn[data-pane=artifacts],body.no-artifacts-control #mtabs button[data-pane=artifacts]{display:none}", self.html)
-        mob = km._LANDING_MOBILE_JS
-        _has(self, "function artifactsCtlM(){try{var st=JSON.parse(localStorage.getItem('romp:settings')||'null');return !!(st&&st.showArtifactsControl===true);}catch(e){return false;}}", mob)
-        _has(self, "if(p==='artifacts'&&!artifactsCtlM())p='chat';", mob)
-        _has(self, "if(p==='artifacts'){var af=document.getElementById('f-artifacts');if(af&&!af.getAttribute('src')&&af.getAttribute('data-src'))af.setAttribute('src',af.getAttribute('data-src'));}", mob)   # a phone shows by its tab, not by po
+        _has(self, "if(en){if(!(k in DPX)&&f&&!f.getAttribute('src')&&f.getAttribute('data-src'))f.setAttribute('src',f.getAttribute('data-src'));", js)
+        _has(self, "var gf=document.getElementById('f-'+k);if(po[k]&&gf&&!gf.getAttribute('src')&&gf.getAttribute('data-src'))gf.setAttribute('src',gf.getAttribute('data-src'));", js)
+        _has(self, "function optOn(){var on={};OPT.forEach(function(k){on[k]=!DPX[k];});", js)   # an experimental record is off in the gear until asked for
+        self.assertNotIn("showArtifactsControl", open(os.path.join(ROOT, "ui", "webview", "settings.ts")).read(), "the bespoke key is gone")
+        self.assertNotIn("rs-artctl", open(os.path.join(ROOT, "ui", "webview", "gear.js")).read(), "the bespoke gear row is gone: the generic Panes row is the control")
 
     def test_the_pane_is_in_the_one_ordering_after_files_and_the_viewer_set(self):
         self.assertEqual(km._PANE_ORDER[-1], ("artifacts", "Artifacts")); self.assertEqual(km._PANE_ORDER[-2], ("files", "Files"))

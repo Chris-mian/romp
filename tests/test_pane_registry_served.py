@@ -157,9 +157,11 @@ let gf = null;
 for (let i = 0; i < 150 && !gf; i++) { for (const f of page.frames()) { if (await f.$("#rs-pane-notes").catch(() => null)) { gf = f; break; } } if (!gf) await page.waitForTimeout(100); }
 if (!gf) await die("no settings frame with the registry rows");
 out.gear = await gf.evaluate(() => Array.from(document.querySelectorAll("#rs-panes-data input")).map((i) => ({ id: i.id, checked: i.checked, label: i.parentNode.querySelector("b").textContent })));
-await gf.evaluate(() => { const i = document.getElementById("rs-pane-lab"); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); });
+await gf.evaluate(() => { for (const id of ["rs-pane-lab", "rs-pane-artifacts"]) { const i = document.getElementById(id); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); } });
 out.labAfterGear = await page.waitForFunction(() => { const b = document.querySelector(".rail-btn[data-pane=lab]"); return !!b && !b.hidden && document.body.classList.contains("po-lab"); }, null, { timeout: 10000 }).then(() => true).catch(() => false);
 out.labSrc = await page.evaluate(() => document.getElementById("f-lab").getAttribute("src"));
+out.artifactsAfterGear = await page.evaluate(() => { const b = document.querySelector(".rail-btn[data-pane=artifacts]"); const f = document.getElementById("f-artifacts");
+  return { hidden: !!b && b.hidden, on: document.body.classList.contains("po-artifacts"), src: f ? f.getAttribute("src") : "absent" }; });
 out.settingsPanes = await page.evaluate(() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").panes || null; } catch (e) { return null; } });
 
 // ---- 5. a define while the page is open ----
@@ -327,6 +329,7 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertEqual((by["notes"]["text"], by["notes"]["hidden"], by["notes"]["on"]), ("Notes", False, True))
         self.assertEqual((by["docs"]["hidden"], by["docs"]["on"]), (False, True))
         self.assertTrue(by["lab"]["hidden"], "experimental: not in this dashboard until the gear asks: %r" % by["lab"])
+        self.assertTrue(by["artifacts"]["hidden"], "the Artifacts record is experimental too (plans/panes-as-data.md phase three): hidden until the gear asks: %r" % by["artifacts"])
         # the forged messages (the URL pane's on load; a same-origin frame nested in the notes pane's): read FIRST, so a red
         # names the door that opened (the 1919 read: the shortcuts modal opened in recording mode on a forged row)
         self.assertFalse(r["afterForged"]["keysOpen"], "a forged openKeys or hotkeyConfigure must not open the shortcuts modal: %r" % r["afterForged"])
@@ -335,8 +338,9 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertFalse(r["afterForged"]["fleet"], "a forged toggleFleet (the URL pane's, the nested frame's) must not open the Outline")
         self.assertFalse(any("forged" in t for t in r["afterForged"]["notices"]), "a forged notify must not reach the notification center: %r" % r["afterForged"])
         self.assertEqual(r["body"]["cls"], ["po-chat", "po-docs", "po-feed", "po-notes", "po-timeline"], r["body"])
-        self.assertEqual([(a["id"], a["protocol"], a["experimental"], a["on"]) for a in r["body"]["attr"]],
-                         [("docs", "none", False, True), ("lab", "romp", True, False), ("notes", "romp", False, True)])
+        self.assertEqual([(a["id"], a["protocol"], a["experimental"], a["on"], a["builtin"]) for a in r["body"]["attr"]],
+                         [("artifacts", "romp", True, False, True), ("docs", "none", False, True, False), ("lab", "romp", True, False, False), ("notes", "romp", False, True, False)],
+                         "the shipped record the generic build renders, then the data panes by id")
         # 2. the state-root pane: a shown column loading its page, which has the shim and the theme and hears the broadcast
         self.assertEqual(r["notesSrc"], "/pane/notes/")
         self.assertEqual((r["notesPage"]["title"], r["notesPage"]["shim"], r["notesPage"]["theme"]), ("Notes", "object", True), r["notesPage"])
@@ -352,10 +356,14 @@ class ServedPaneRegistry(unittest.TestCase):
         told = [b for b in _DocsServer.beacons if "panes" in b]
         self.assertEqual(told, [], "the URL pane is outside the protocol: no broadcast reaches it")
         # 4. the gear's rows
-        self.assertEqual(r["gear"], [{"id": "rs-pane-docs", "checked": True, "label": "Docs"}, {"id": "rs-pane-lab", "checked": False, "label": "Lab"}, {"id": "rs-pane-notes", "checked": True, "label": "Notes"}])
+        self.assertEqual(r["gear"], [{"id": "rs-pane-artifacts", "checked": False, "label": "Artifacts"}, {"id": "rs-pane-docs", "checked": True, "label": "Docs"},
+                                     {"id": "rs-pane-lab", "checked": False, "label": "Lab"}, {"id": "rs-pane-notes", "checked": True, "label": "Notes"}],
+                         "the generic rows: the shipped Artifacts record (off by default, experimental) and the data panes")
         self.assertTrue(r["labAfterGear"], "the gear's row brings the experimental pane into the dashboard and on screen: %r" % {k: r[k] for k in ("labAfterGear", "labSrc", "settingsPanes")})
         self.assertEqual(r["labSrc"], "/feed", "loaded when shown")
         self.assertEqual((r["settingsPanes"] or {}).get("lab"), True, "saved under its own id in the pane set")
+        self.assertEqual(r["artifactsAfterGear"], {"hidden": False, "on": True, "src": "/artifacts"},
+                         "the Artifacts row turned on: the rail button shows and the pane comes on screen (the live reconcile), and only then does its iframe load: %r" % r["artifactsAfterGear"])
         # 5. a define while the page is open: the offer with the panes' wording, no self-reload, the Reload click shows it
         self.assertEqual(r["define"].get("ok"), True, r["define"])
         self.assertTrue(r["offerShown"], "the moved pane-set revision on the keepalive stands the offer: %r" % r.get("banner"))

@@ -52,13 +52,14 @@ await page.waitForSelector("#f-chat", { timeout: 30000 });
 await page.waitForTimeout(1500);
 out.off = await page.evaluate(() => { const b = document.querySelector('.rail-btn[data-pane="artifacts"]'); const f = document.getElementById("f-artifacts");
   return { railShown: !!b && getComputedStyle(b).display !== "none", iframeSrc: f ? (f.getAttribute("src") || null) : "absent", dataSrc: f ? f.getAttribute("data-src") : null,
-    poClass: document.body.classList.contains("po-artifacts"), noCtl: document.body.classList.contains("no-artifacts-control"),
+    poClass: document.body.classList.contains("po-artifacts"), railHidden: !!b && b.hidden,   // the pane controller hides the button of a pane the gear has not enabled (an experimental record is off in the gear by default)
     toggled: (() => { try { window.__rompPaneToggle("artifacts", true); } catch (e) {} return document.body.classList.contains("po-artifacts"); })() }; });
 await page.close();
-// (2) the control ON (the gear's row, written to the store as the gear writes it) and the Files control on too, so the relay has a pane to reach
+// (2) the pane ENABLED in the gear's Panes section (romp:settings.panes.artifacts true, written as the gear's generic row writes it: the pane is an
+// experimental record, plans/panes-as-data.md phase three) and the Files control on too, so the relay has a pane to reach
 page = await ctx.newPage();
 page.on("pageerror", (e) => out.errors.push("on: " + String(e).slice(0, 200)));
-await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.showArtifactsControl = true; s.showFilesControl = true; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {}
+await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.panes = Object.assign({}, s.panes || {}, { artifacts: true }); s.showFilesControl = true; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {}
   window.__relays = []; window.addEventListener("message", (e) => { const m = e.data; if (m && m.romp === "viewFile") window.__relays.push({ path: m.path, sid: m.sid, pane: m.pane }); }); });
 await page.goto(cfg.landing);
 await page.waitForSelector("#f-chat", { timeout: 30000 });
@@ -213,14 +214,14 @@ class ArtifactsPaneServed(unittest.TestCase):
         r = self._result()
         self.assertEqual(r["errors"], [], "no page error")
         o = r["off"]
-        self.assertFalse(o["railShown"], "no rail toggle while the control is off"); self.assertTrue(o["noCtl"])
+        self.assertFalse(o["railShown"], "no rail toggle while the pane is not enabled in the gear (an experimental record is off there by default)"); self.assertTrue(o["railHidden"])
         self.assertIsNone(o["iframeSrc"], "the iframe has no src: no document, no socket, no request"); self.assertEqual(o["dataSrc"], "/artifacts")
-        self.assertFalse(o["poClass"]); self.assertFalse(o["toggled"], "the toggle refuses the pane while its control is off")
+        self.assertFalse(o["poClass"]); self.assertFalse(o["toggled"], "the toggle refuses a pane the gear has not enabled")
 
     def test_the_control_on_shows_the_toggle_and_the_toggle_shows_the_pane_which_lists_the_threads_files_newest_first(self):
         r = self._result()
-        self.assertTrue(r["ctlOn"]["railShown"], "the control on: the rail toggle shows"); self.assertFalse(r["ctlOn"]["poClass"], "the pane stays off until toggled")
-        self.assertIsNone(r["ctlOn"]["iframeSrc"], "the control on loads nothing while the pane is off: no document, no listing walk on a dashboard load (round two, M2)")
+        self.assertTrue(r["ctlOn"]["railShown"], "enabled in the gear: the rail toggle shows"); self.assertFalse(r["ctlOn"]["poClass"], "the pane stays off until toggled")
+        self.assertIsNone(r["ctlOn"]["iframeSrc"], "enabled but off screen loads nothing: no document, no listing walk on a dashboard load (round two, M2; the generic build gates the load on the rail flag)")
         self.assertTrue(r["shown"]["poClass"]); self.assertTrue(r["shown"]["frame"], "the pane's document is up")
         self.assertEqual(r["shown"]["iframeSrc"], "/artifacts", "the toggle loads the page once (data-src to src, the optional panes' rule)")
         self.assertIn(SID, r["selector"]["options"], "the selector names the session")

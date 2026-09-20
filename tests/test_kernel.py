@@ -7512,7 +7512,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertNotIn("nav-typing", html)                           # the typing/dimming logic is gone
         # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat.
         # Fleet is its OWN pane now (the user 2026-06-24), so f-fleet maps to fleet-pane, not the chat pane.
-        self.assertIn("var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-files':'files-pane','f-artifacts':'artifacts-pane','f-timeline':'tl-pane'}", html)
+        self.assertIn("var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-files':'files-pane','f-timeline':'tl-pane'}", html)
         self.assertIn("classList.toggle('pane-focused'", html)
         self.assertIn("d.addEventListener('pointerdown',emit,true)", html)
         self.assertIn("d.addEventListener('focusin',emit,true)", html)

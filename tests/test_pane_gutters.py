@@ -207,7 +207,7 @@ class PaneGuttersExecute(unittest.TestCase):
 
     def test_1_boot_with_an_empty_store_sets_the_defaults_on_the_row(self):
         a = self.out["boot"]
-        self.assertEqual(a["grows"], {"--g-chat": 60, "--g-fleet": 34, "--g-feed": 40, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(a["grows"], {"--g-chat": 60, "--g-fleet": 34, "--g-feed": 40, "--g-files": 40})
         self.assertIsNone(a["store"], "booting alone writes nothing: the store fills on the first drag or fair grow")
 
     def test_2_a_fresh_columns_fair_grow_averages_only_finite_grows(self):
@@ -218,7 +218,7 @@ class PaneGuttersExecute(unittest.TestCase):
         self.assertEqual(a["grows"]["--g-chat2"], 50, "the average of chat 60 and feed 40 (fleet is hidden)")
         self.assertEqual(a["grows"]["--g-chat"], 60)
         self.assertEqual(a["grows"]["--g-feed"], 40)
-        self.assertEqual(a["store"], {"chat": 60, "fleet": 34, "feed": 40, "files": 40, "artifacts": 40, "chat2": 50}, "and it persists")
+        self.assertEqual(a["store"], {"chat": 60, "fleet": 34, "feed": 40, "files": 40, "chat2": 50}, "and it persists")
 
     def test_3_grow_fair_if_new_keeps_a_stored_width_and_fairs_a_missing_one(self):
         kept = self.out["ifNewKept"]
@@ -226,12 +226,12 @@ class PaneGuttersExecute(unittest.TestCase):
         self.assertEqual(kept["store"]["chat2"], 123)
         fair = self.out["ifNewFair"]
         self.assertEqual(fair["grows"]["--g-chat2"], 50, "nothing stored for it → the fair average")
-        self.assertEqual(fair["store"], {"chat": 60, "fleet": 34, "feed": 40, "files": 40, "artifacts": 40, "chat2": 50})
+        self.assertEqual(fair["store"], {"chat": 60, "fleet": 34, "feed": 40, "files": 40, "chat2": 50})
 
     def test_4_a_chat_chat_gutter_drag_moves_only_that_pair(self):
         a = self.out["dragChatChat"]
         # the grab normalises every SHOWN pane's grow to its px width; hidden fleet keeps its stored grow
-        self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-chat2": 500, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-chat2": 500, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40})
         self.assertTrue(a["dragging"], "body.drag + body.dragv while the pointer is held")
         self.assertEqual(a["listeners"], {"move": 1, "up": 1})
         # a drag moves a LANDING LINE (main, 2026-09): the pointer's +100px writes nothing until the release…
@@ -243,43 +243,43 @@ class PaneGuttersExecute(unittest.TestCase):
         self.assertEqual(a["afterUp"]["--g-fleet"], a["afterDown"]["--g-fleet"], "fleet is untouched by the drag")
         self.assertFalse(a["dragAfterUp"], "body.drag / body.dragv are removed on mouseup")
         self.assertEqual(a["listenersAfterUp"], {"move": 0, "up": 0}, "the drag's window listeners are removed")
-        self.assertEqual(a["store"], {"chat": 700, "fleet": 34, "feed": 400, "files": 40, "artifacts": 40, "chat2": 400}, "the store holds the dragged widths")
+        self.assertEqual(a["store"], {"chat": 700, "fleet": 34, "feed": 400, "files": 40, "chat2": 400}, "the store holds the dragged widths")
 
     def test_5_gv_a_pairs_the_rightmost_chat_column_with_fleet(self):
         a = self.out["dragGvA"]
         # fleet is shown for this drag, so it normalises too; the previous drag's widths are the px the
         # stubs report, so chat/chat2 re-normalise to 600/500 (a real pane's offsetWidth follows its grow)
-        self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-chat2": 500, "--g-fleet": 300, "--g-feed": 400, "--g-files": 40, "--g-artifacts": 40})
+        self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-chat2": 500, "--g-fleet": 300, "--g-feed": 400, "--g-files": 40})
         # +60px: the pair that moves is chat2|fleet, and the FIRST chat pane does not move
         self.assertEqual(a["afterUp"]["--g-chat2"], 560)
         self.assertEqual(a["afterUp"]["--g-fleet"], 240)
         self.assertEqual(a["afterUp"]["--g-chat"], 600, "chat is not gv-a's left neighbour once a column sits to its right")
         self.assertEqual(a["afterUp"]["--g-feed"], 400)
-        self.assertEqual(a["store"], {"chat": 600, "fleet": 240, "feed": 400, "files": 40, "artifacts": 40, "chat2": 560})
+        self.assertEqual(a["store"], {"chat": 600, "fleet": 240, "feed": 400, "files": 40, "chat2": 560})
 
     def test_6_unregistering_a_closed_column_drops_it_everywhere(self):
         a = self.out["unregister"]
         self.assertNotIn("--g-chat2", a["grows"], "its --g-chat2 var leaves .row")
         self.assertNotIn("chat2", a["store"], "and its grow leaves the store")
-        self.assertEqual(a["store"], {"chat": 600, "fleet": 240, "feed": 400, "files": 40, "artifacts": 40})
+        self.assertEqual(a["store"], {"chat": 600, "fleet": 240, "feed": 400, "files": 40})
         # a column made after the close averages chat 600 + feed 400 (fleet hidden again) = 500; had the
         # closed pane still counted (its element is still in the stub), the average would be 520
         b = self.out["fairAfterClose"]
         self.assertEqual(b["grows"]["--g-chat3"], 500)
         self.assertNotIn("--g-chat2", b["grows"])
-        self.assertEqual(b["store"], {"chat": 600, "fleet": 240, "feed": 400, "files": 40, "artifacts": 40, "chat3": 500})
+        self.assertEqual(b["store"], {"chat": 600, "fleet": 240, "feed": 400, "files": 40, "chat3": 500})
 
     def test_7_unregistered_ids_fall_back_to_the_fixed_keys(self):
         # no split, fleet hidden: gv-b's left neighbour is the first chat pane (lastChat() with no
         # __rompLastChatPane → 'chat-pane'), and key() resolves the fixed ids to chat / feed
         a = self.out["dragGvB"]
-        self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-fleet": 240, "--g-feed": 400, "--g-files": 40, "--g-artifacts": 40},
+        self.assertEqual(a["afterDown"], {"--g-chat": 600, "--g-fleet": 240, "--g-feed": 400, "--g-files": 40},
                          "only the fixed panes are registered; the closed columns are gone from the grab")
         # -20px: chat -20, feed +20; fleet (hidden) untouched
         self.assertEqual(a["afterUp"]["--g-chat"], 580)
         self.assertEqual(a["afterUp"]["--g-feed"], 420)
         self.assertEqual(a["afterUp"]["--g-fleet"], 240)
-        self.assertEqual(a["store"], {"chat": 580, "fleet": 240, "feed": 420, "files": 40, "artifacts": 40})
+        self.assertEqual(a["store"], {"chat": 580, "fleet": 240, "feed": 420, "files": 40})
 
     def test_8_a_new_column_takes_half_the_rightmost_column_after_every_shown_pane_is_normalised(self):
         # the chat split's honest half-width (2026-09-11): the stub panes report chat 600, chat2 500, feed 400 (the outline
@@ -287,8 +287,8 @@ class PaneGuttersExecute(unittest.TestCase):
         # then chat2 and the new chat3 each take 250; the hidden panes keep their stored grows
         a = self.out["splitGrow"]
         self.assertTrue(a["wrote"])
-        self.assertEqual(a["grows"], {"--g-chat": 600, "--g-chat2": 250, "--g-chat3": 250, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40, "--g-artifacts": 40})
-        self.assertEqual(a["store"], {"chat": 600, "fleet": 34, "feed": 400, "files": 40, "artifacts": 40, "chat2": 250, "chat3": 250}, "persisted, so __rompGrowFairIfNew keeps it when the column is made")
+        self.assertEqual(a["grows"], {"--g-chat": 600, "--g-chat2": 250, "--g-chat3": 250, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40})
+        self.assertEqual(a["store"], {"chat": 600, "fleet": 34, "feed": 400, "files": 40, "chat2": 250, "chat3": 250}, "persisted, so __rompGrowFairIfNew keeps it when the column is made")
         self.assertFalse(a["hidden"], "a hidden left pane is never written")
         self.assertFalse(a["missing"], "nor a missing one")
         self.assertEqual(a["after"], a["grows"], "…and the refusals changed nothing")
@@ -300,14 +300,14 @@ class PaneGuttersExecute(unittest.TestCase):
         # then chat takes 600 + 500 + the 7 px gutter that goes with the closing column
         a = self.out["splitShrink"]
         self.assertTrue(a["wrote"])
-        self.assertEqual(a["grows"], {"--g-chat": 1107, "--g-chat2": 500, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40, "--g-artifacts": 40})
-        self.assertEqual(a["store"], {"chat": 1107, "fleet": 34, "feed": 400, "files": 40, "artifacts": 40, "chat2": 500}, "persisted: the width survives a reload")
+        self.assertEqual(a["grows"], {"--g-chat": 1107, "--g-chat2": 500, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40})
+        self.assertEqual(a["store"], {"chat": 1107, "fleet": 34, "feed": 400, "files": 40, "chat2": 500}, "persisted: the width survives a reload")
         self.assertFalse(a["hiddenLeft"], "a hidden left pane is never written")
         self.assertFalse(a["missingGone"], "nor for a missing closing pane")
         self.assertEqual(a["after"], a["grows"], "…and the refusals changed nothing")
         u = a["unregistered"]
-        self.assertEqual(u["grows"], {"--g-chat": 1107, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40, "--g-artifacts": 40}, "the unregister that follows drops the closing column's key alone")
-        self.assertEqual(u["store"], {"chat": 1107, "fleet": 34, "feed": 400, "files": 40, "artifacts": 40})
+        self.assertEqual(u["grows"], {"--g-chat": 1107, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40}, "the unregister that follows drops the closing column's key alone")
+        self.assertEqual(u["store"], {"chat": 1107, "fleet": 34, "feed": 400, "files": 40})
 
 
 if __name__ == "__main__":

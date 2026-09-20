@@ -38,14 +38,15 @@ test("a row click walks the chat's ladder: an open Files pane takes it, else the
 
 test("the pieces outside the kernel: the fresh setting read like the Files control's, the gear's Panes row, the bundle entries", () => {
   const SETTINGS = fs.readFileSync(path.join(UI, "settings.ts"), "utf8");
-  assert.match(SETTINGS, /showArtifactsControl: boolean;/);
-  assert.match(SETTINGS, /showFilesControl: false, showArtifactsControl: false/, "off by default");
-  assert.match(SETTINGS, /s\.showArtifactsControl = s\.showArtifactsControl === true;/, "only the literal true shows it");
-  const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");
-  assert.match(GEAR, /<label class="rs-row rs-panes-row"><input type=checkbox id=rs-artctl>' \+\s*\n\s*'<span><b>Artifacts<\/b>'/, "a Panes row like the Files row above it");
-  assert.match(GEAR, /if \(arc\) arc\.addEventListener\('change', function \(\) \{ var s = load\(\); s\.showArtifactsControl = arc\.checked; save\(s\); \}\);/);
-  assert.match(GEAR, /if \(arc\) arc\.checked = s\.showArtifactsControl === true;/, "the box reads the store on open");
+  const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
   const BUILD = fs.readFileSync(path.resolve(process.cwd(), "esbuild.js"), "utf8");
+  const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");
+  // the pane is an EXPERIMENTAL record in the kernel's _CODE_PANES (plans/panes-as-data.md, phase three): the gear's generic Panes row
+  // (gear.js renderRegistryRows, off by default for an experimental pane) is its control; the bespoke showArtifactsControl key is gone
+  assert.match(KERNEL, /\{"id": "artifacts", "title": "Artifacts", "source": "\/artifacts", "on": False, "experimental": True\}/, "the record: off by default, asked for in the gear");
+  assert.doesNotMatch(SETTINGS, /showArtifactsControl/, "no bespoke setting key");
+  assert.doesNotMatch(GEAR, /rs-artctl|showArtifactsControl/, "no bespoke gear row");
+  assert.match(GEAR, /p\.builtin \? '' : 'A pane defined at the kernel \(romp pane\)\. '/, "the generic row's words fit a shipped record");
   assert.match(BUILD, /"\.\.\/ui\/webview\/artifacts\.ts",/); assert.match(BUILD, /"\.\.\/ui\/webview\/artifacts-pane\.css",/);
   const ART = fs.readFileSync(path.join(UI, "artifacts.ts"), "utf8");
   assert.match(ART, /ask\(\{ type: "listArtifacts", sid: selected, reqId: lastReq \}\);/, "one request, by id");
