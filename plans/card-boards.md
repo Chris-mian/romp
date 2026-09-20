@@ -41,9 +41,9 @@ generic model has to reach:
   `:5020`). The user docs say the same three (`docs/guide.md:319`).
 - **Every kernel-made card family sets its column by hand.** The provisional placeholder
   (`kernel.py:39773`, `working`), the awaiting card (`:39809`, `working`), the blocked placeholder
-  (`:39878`, `needs_input`), the parked handoff (`:42319`, `needs_input`), the quarantined peer mail
-  (`:44940`, `needs_input`) and the notice card (`:24125`, `needs_input` when the producer said the user
-  must act, else `completed`). `blocked.state` discriminates the families; there is no `kind` field.
+  (`:39878`, `needs_input`), the parked handoff (`:42319`, `needs_input`) and the notice card (`:24125`,
+  `needs_input` when the producer said the user must act, else `completed`; since 2026-09-19 the held
+  peer mail is a notice card too, `plans/notice-cards.md`). `blocked.state` discriminates the families; there is no `kind` field.
 - **The notification set is a kernel literal.** `_NOTIFY_COLUMNS = ("needs_input", "completed")`
   (`kernel.py:53688`) is the set whose entry rings the bell and the phone (`_feed_notifications`,
   `:53871`), and `_needs_you_count` (`:53948`) counts `needs_input` cards for the app badge.
@@ -55,8 +55,8 @@ generic model has to reach:
   Continue (`:1205` to `:1237`, rows two and three), the bell (`cardNotify`), the right-click menu's
   Notify me and Browse files (`showCardMenu`, on the shared menu builder since v0.16.0), and the
   modal's Follow up, Check status, Clear and Continue (`:3591` to `:3602`). Each posts its own wire
-  message (`askClear`, `askClearMany`, `askFollowUp`, `apiRetry`, `reviveSession`,
-  `quarantineDecision`, `noticeAction`, `cardNotify`, `showAskPath`, `showOnTimeline`, `openSession`).
+  message (`askClear`, `askClearMany`, `askFollowUp`, `apiRetry`, `reviveSession`, `noticeAction`,
+  `cardNotify`, `showAskPath`, `showOnTimeline`, `openSession`; `quarantineDecision` left 2026-09-19).
 - **The sorts are inline.** Each bucket sorts by `t` in the direction of the `newestFirst` preference
   (`feed.ts:5629`), then grouped mode re-sorts by the kernel's session order with a header per run
   (`:5640` to `:5665`). The View menu (`buildViewMenu`, `:4147`) offers exactly four rows: the sort
@@ -129,7 +129,7 @@ Rule      { when: Predicate; category: string /* one of the board's ids */ }
 Predicate { needsYou?: boolean; producer?: string; keyPrefix?: string }       // every present member must hold (AND);
                                                                //   the fixed set; a fourth predicate is a release
 OrderRule = "ownerRank"                                        // the fixed set; today's one entry (section 3)
-Kind      = "goal" | "placeholder" | "parked" | "quarantine" | "notice"   // the code's families (section 2); a data-defined
+Kind      = "goal" | "placeholder" | "parked" | "notice"   // the code's families (section 2; quarantine left 2026-09-19); a data-defined
                                                                //   board may name "notice" alone, since only a producer's
                                                                //   card can be posted to it
 ```
@@ -211,7 +211,7 @@ FEED_BOARD: Board = {
   order: [],                               // the owner rank joins here in phase three (section 3)
   notify: ["needs_input", "completed"],    // _NOTIFY_COLUMNS, kernel.py:53688
   needsYou: "needs_input",                 // _needs_you_count, kernel.py:53948
-  kinds: ["goal", "placeholder", "parked", "quarantine", "notice"],
+  kinds: ["goal", "placeholder", "parked", "notice"],
 }
 ```
 
@@ -248,8 +248,8 @@ definition names the kinds a board renders.
 - `placeholder`: `provisional`, `awaiting:<sid>` and `blocked:<sid>` cards. No sections; actions
   Clear (where the family allows it) and the bell.
 - `parked`: `blocked.state === "parkedHandoff"`; action Revive.
-- `quarantine`: `blocked.state === "quarantine"`; the held body shown in full; actions Approve and
-  Deny (the edit happens in the modal, not as a card action; the 1834 read, 2026-09-18).
+- (the `quarantine` kind left on 2026-09-19: a held message is a notice card, `plans/notice-cards.md`
+  "Action kinds and the held-mail card"; its Approve and Deny are the notice kind's stored actions.)
 - `notice`: `it.notice`; the producer label, the body through the sanitizer, the attachment; actions
   the record's own `actions` list (`noticeAction`), Clear and the bell. The one kind a data-defined
   board renders.
@@ -264,7 +264,7 @@ definition and nothing else (section 4 says which reads).
 
 **What a card must carry to belong to a board and a category.** The two fields of section 1,
 `board` and `category`, plus what it carries today: `itemId` (namespaced for a non-goal family, the
-`parked:`, `quarantine:`, `notice:<sid>:<key>:<rev>` pattern, so federation's unprefixed ids never
+`parked:`, `notice:<sid>:<key>:<rev>` pattern (and `quarantine:` in older clear logs), so federation's unprefixed ids never
 collide), `sid` and `name` (the session that routes the card's gestures and colours its chip; the
 owner-less case below), `text`, `t` (fixed at the post, never the clock), `live`, `turnId`, `tree`
 (empty for a non-goal), `column` (until phase two's transition ends), and the flavour object that
@@ -324,8 +324,8 @@ was filed under (an additive persisted field: the phase-three call-out in sectio
 `_notice_cards` copies them onto the card; a row from before the fields reads as `feed` and its
 `needsYou` mapping, so no migration touches a file.
 
-The producers inside the kernel that build cards by hand (the placeholders, the parked handoff, the
-quarantine) write `board: "feed"` and their category literal directly; they have no reason to name
+The producers inside the kernel that build cards by hand (the placeholders, the parked handoff)
+write `board: "feed"` and their category literal directly; they have no reason to name
 another board.
 
 **Owner-less cards.** romp_cards' current design (a notice with no session, mail of 2026-09-18) puts
@@ -591,6 +591,53 @@ nothing.
   is the loud one: the `posted` line names the board it created ("posted to a NEW board notse"),
   `romp board list` shows it, and `romp board remove` takes it away once its card is dismissed. A
   confirmation prompt would break every scripted producer.
+
+## 8. The board view switch (phase four, 2026-09-18)
+
+**The ask.** A card posted onto a board of the user's (`romp card -b figures`) shows today on the feed under the feed's
+default column with its board named beside the producer. Phase four gives every board its own view inside the feed pane:
+one board at a time, chosen from the View menu, so a data board's cards sit under THEIR categories, sorted by THEIR sort,
+and the feed itself renders byte-identically when the switch is on the feed (plans/card-boards.md, section 4 road 1 and
+section 6 phase 4).
+
+**The switch.** The View menu gains a Board group once a second board exists (with the feed alone the menu
+is exactly what it was): one `menuitemradio` row per definition the frame carries (the feed first, then the data
+boards in id order), the current one checked; the pick is the feed pane's own view state
+(`FeedViewState.board`, prune-exempt like `cols` and `order`, absent or "feed" meaning the feed) and survives a reload.
+A board created by `romp card -b` appears in the menu on the next frame with no reload (the frame's `boards` field);
+a pick that names a board the frame no longer carries (removed, or a remote host gone) falls back to the feed and says
+so in the disclosure line, never a blank pane. The pane's header row stays empty and no strip of board tabs appears:
+the board's name lives in the View menu's radio row (the many-sessions rule). A `?board=<id>` query on the feed page
+selects that definition at load and hides the Board row, the hook the docking kit's pane-per-board mounts on; the
+kernel's page passes the query through untouched (no new route, no inline JS).
+
+**The renderer under a board.** The active definition replaces the feed constant at the sites section 4 names: the
+column list, titles and chip classes come from `board.categories` (a data board's columns take the generic class
+`col-<id>` and the chip class of their `chip`); `askColumn` maps a card's category through the ACTIVE board's table; the
+bucket sort reads `board.sort` and `board.order`; grouped mode runs only when `board.groupBy === "session"` and the
+preference is on (the notes board groups nothing: no session runs, no combobox); the folds key on category id as today (a data board's fold stored as `<board>:<category>`, so a fold on one board never folds a same-named category on another). Three things stay the feed's in phase four and are phase five's for a data board: the focused-session section (the goal kind's road; on a data board the switch hides it), column reorder (a data board's chips wear no drag affordance; its columns keep the definition's order) and the sub-sorts.
+Only the cards whose `board` is the active one render; a card whose board names no known definition renders on the
+feed under the default category with an "unknown board" chip, the loud fallback section 4 names. The goal kind's roads
+(the title jump, the tree modal, the follow-up composer, the turn groups, the focused-session section) stay the feed's:
+a board without the goal kind never shows them. The bell, the phone and the badge are the kernel's and read the card's
+own board already (phase two and the 1861 rule): the switch changes what is SHOWN, never what needs the user.
+
+**The notes board's shape (romp_cards' to settle).** `romp board define notes` with three categories `new`, `kept`
+and `done` (chips neutral, working, completed), `defaultCategory: "new"`, `needsYou: "new"`, `notify: ["new"]`, a rule
+filing a needs-you post under `new`, newest first, no grouping. The owner-less cards keep their home on the feed (the
+Notes run at the top) until the user files them on a board with `-b`; the reserved owner key and the board id `notes`
+are different things and may coexist.
+
+**Tests, red first at the base.** The served lab (a hermetic kernel): `romp card -b notes -c new -t ...` against a
+kernel with no such board makes the board exist on the next frame with the defaults; `romp board define notes --json`
+gives it the shape above; the View menu's Board row lists it; the switch shows the card under `new` and hides the feed's
+cards; the pick survives a reload; the bell fires for `new` and the badge counts a needs-you card there while the switch
+is on the feed; `?board=notes` selects it at load with the Board row hidden; a define dropping `new` while a card stands
+there is refused naming it. The harness (`feed-render-incremental.test.ts`): the feed byte-identical under the switch on
+the feed (phase one's frames again, the same elements); a frame whose card names an unknown board renders the fallback
+chip; the Board row's radio vocabulary (`menuitemradio`, one checked) and the view-state round trip. Pins: the section-4
+census test (`board-def.test.ts`, "feed.ts reads the definition at the section-4 sites and nowhere else") re-aimed at
+the active board.
 
 ## Alternatives considered
 

@@ -254,3 +254,20 @@ test("a write refused because the publish itself failed names THAT cause: could 
   assert.match(g.texts()[1], /could not be read \(read failed: \[Errno 5\] Input\/output error\)/);
   assert.doesNotMatch(g.texts()[1], /could not be written/);
 });
+
+test("a pinned store's stand-down says the value is pinned, never that a file could not be read (one A round two)", () => {
+  // the kernel's pin gate (kernel.py _pinned_stand_down) files the refusal with `pinned` on the frame and no `why`: the first
+  // cut sent why "pinned on this machine", which the toast rendered as "Its settings file could not be read (pinned on this
+  // machine)", a falsehood about the user's disk (the verifier's find, 2026-09-19). No Apply anyway: a re-issue is refused again.
+  const g = lift();
+  g.frame({ type: "settingStale", setting: "task-tracking", storedGt: 1000, gt: 5000, kept: true, pinned: true,
+            gesture: { type: "setTaskTracking", enabled: false, origin: "remote" } });
+  assert.equal(g.box().children.length, 1);
+  assert.equal(g.texts()[0], "Task tracking: off was not applied on this machine. Keeping on. Kept: this machine's value is pinned.");
+  assert.doesNotMatch(g.texts()[0], /could not be read|could not be written/);
+  assert.equal(g.box().children[0].children.filter((c) => c.className === "rs-stale-toast-act").length, 0, "no Apply anyway against a pin");
+  // a remote kernel's refusal names that machine (the frame host-stamped by prefixInbound)
+  g.frame({ type: "settingStale", setting: "auto-nudge", storedGt: 1000, gt: 5001, kept: false, pinned: true, host: "TESTHOSTB",
+            gesture: { type: "setAutoNudge", enabled: true, origin: "remote" } });
+  assert.equal(g.texts()[1], "Auto Nudge: on was not applied on TESTHOSTB. Keeping off. Kept: TESTHOSTB's value is pinned.");
+});

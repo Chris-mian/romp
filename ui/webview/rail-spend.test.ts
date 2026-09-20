@@ -145,7 +145,7 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   }
   // host sections carry WINDOWS only now — spend is ONE fleet-level section (the user 2026-08-13:
   // one shared key reads as one number; each host records only its own turns, so the sum IS the number)
-  assert.ok(usageJS.includes("if(!keys.length)return '';"));
+  assert.ok(usageJS.includes("sets.forEach(function(e){if(!['fiveHour','sevenDay','fable'].some(function(k){return e.det[k];}))return;"), "a machine with no window block joins no account block (2026-09-19)");
   assert.ok(!usageJS.includes("spendOnly"), "spend renders for ANY host that has it");
   assert.ok(usageJS.includes("function fleetSpendHTML(sets)"));
   // the spend section renders even when NO host has window blocks (an all-keyed box, 2026-08-15) —
@@ -179,7 +179,9 @@ test("same-account hosts share the FRESHEST window reading — one truth per log
   // window fields shared; each host keeps its OWN key spend (dollars are host-local).
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
   assert.ok(usageJS.includes("function shareFreshest(live)"));
-  assert.ok(usageJS.includes("var a=r.usage&&r.usage.acct;if(a)(by[a]=by[a]||[]).push(r);"), "grouped on the digest; key-only hosts (no acct) stand alone");
+  assert.ok(usageJS.includes("var a=r.usage&&r.usage.acct;r.ownT=(typeof r.usage.t==='number')?r.usage.t:null;r.lag=false;if(a)(by[a]=by[a]||[]).push(r);"),
+    "grouped on the digest; key-only hosts (no acct) stand alone; each member keeps its OWN report time for the machines line (2026-09-19)");
+  assert.ok(usageJS.includes("r.lag=['fiveHour','sevenDay','fable'].some(function(w){var x=u[w],y=b[w];"), "a member whose own reading differed from the freshest is marked lagging");
   assert.ok(usageJS.includes("if(tr>tb)best=r;"), "freshest reading wins the group");
   assert.ok(usageJS.includes("['fiveHour','sevenDay','fable','t','limited','acctLabel'].forEach"), "window fields shared — spend deliberately not");
   assert.ok(usageJS.includes("shareFreshest(live);"), "…and it runs on every render");
@@ -190,21 +192,32 @@ test("the hover names WHICH login the window bars belong to (the tab hover's lab
   // the cross-host dedup stays on the opaque acct digest — acctLabel is display only
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
   assert.ok(usageJS.includes("if(u.acctLabel)det._acct=u.acctLabel;"));
-  assert.ok(usageJS.includes("if(d._acct&&keys.length)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';"),
-    "…and only beside actual window sections — key-only hosts' spend already says whose dollars");
+  assert.ok(usageJS.includes("if(d._acct)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';"),
+    "…as the account block's HEAD (2026-09-19); a key-only host has no block, so its spend already says whose dollars");
   assert.ok(KERNEL.includes('"acctLabel": _claude_account_label(),'));
   assert.ok(KERNEL.includes(".ru-tip-acct{"));
 });
 
-test("a multi-host breakdown lays hosts SIDE BY SIDE, one column each", () => {
-  // the user 2026-08-09: the per-host breakdown used to stack every host into one tall pillar;
-  // now each host is a flex column, and flex-wrap folds the mobile modal back to a stack on its own
+test("a multi-account breakdown lays ACCOUNTS side by side, one block each, the machines named under their block", () => {
+  // the user 2026-08-09: the per-host breakdown used to stack every host into one tall pillar; the user 2026-09-19: three
+  // machines on one login drew three identical columns, so the column is per ACCOUNT now (the meters once, the account
+  // line as the head, the machines one line beneath in the strip's host dress, a lagging one named, updated-ago once, the
+  // oldest of the group); flex-wrap still folds the mobile modal back to a stack on its own
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
   assert.ok(usageJS.includes("'<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'"));
-  // a single host keeps its plain un-columned layout — the column wrapper exists only when more
-  // than one host reports (blocks.length? guards the all-keyed box, whose hosts have NO window
+  assert.ok(usageJS.includes("function acctBlocksHTML(sets,manyMachines)"));
+  assert.ok(usageJS.includes("var a=e.acct||('host:'+e.host);var g=by[a];if(!g){g={members:[]};by[a]=g;groups.push(g);}g.members.push(e);"), "grouped by the account digest, in the panel's order");
+  assert.ok(usageJS.includes("if(manyMachines)h+='<div class=ru-tip-machines>'+g.members.map(function(e){return machineHTML(e.host)"), "the machines line, only when the mesh has more than one machine");
+  assert.ok(usageJS.includes("+(e.lag?'<span class=ru-tip-lag> lagging'+(e.ownT?', updated '+fmtAgo(e.ownT):'')+'</span>':'');}).join(', ')+'</div>';"), "a lagging machine named beside its name with its own report's age");
+  assert.ok(usageJS.includes("if(ts.length)h+='<div class=ru-tip-age>updated '+fmtAgo(Math.min.apply(null,ts))+'</div>';"), "updated-ago once per block: the oldest report of the group");
+  assert.ok(usageJS.includes("if(NOREPORT.length)h+='<div class=ru-tip-machines>no usage report yet from '+NOREPORT.map(machineHTML).join(', ')+'</div>';"), "a machine not reporting is named, never a column");
+  assert.ok(usageJS.includes("function machineHTML(name){return '<span class=\"ru-tip-machine host-prefix\">'+esc(name)+'</span>';}"), "the strip's quiet host dress");
+  assert.ok(KERNEL.includes(".ru-tip-machines .host-prefix{color:var(--dim,#9aa0a6);font-weight:400;font-style:italic;font-size:0.86em}"), "…byte for byte the tab's host-prefix declarations");
+  assert.ok(!usageJS.includes("function setHTML(e,many)") && !usageJS.includes("ru-tip-host"), "the per-host column and its heading are gone");
+  // a single account keeps its plain un-columned layout: the column wrapper exists only when more
+  // than one account reports (blocks.length? guards the all-keyed box, whose hosts have NO window
   // blocks at all — see expected-auth.test.ts)
-  assert.ok(usageJS.includes("var h=blocks.length?(many?"));
+  assert.ok(usageJS.includes("var h=blocks.length?(blocks.length>1?"));
   assert.ok(KERNEL.includes(".ru-tip-cols{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}"));
   assert.ok(KERNEL.includes(".ru-tip-col{flex:0 1 auto;min-width:200px}"));   // 200px floor since the sparks span the column (the user 2026-08-14)
 });

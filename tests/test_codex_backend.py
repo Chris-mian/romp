@@ -243,10 +243,10 @@ class FakeClient:
         return n
 
 
-def build(tmp=None, factory=None):
+def build(tmp=None, factory=None, **kw):
     tmp = tmp or tempfile.mkdtemp()
     fake = FakeClient()
-    be = cb.CodexBackend(tmp, client_factory=(factory or (lambda: fake)))
+    be = cb.CodexBackend(tmp, client_factory=(factory or (lambda: fake)), **kw)   # kw: postal=, log= (2026-09-19)
     return be, fake, tmp
 
 
@@ -271,6 +271,71 @@ class Conformance(unittest.TestCase):
             error_type("InternalRpcError", -32603, "internal error")))
         self.assertFalse(cb._is_permanent_request_rejection(
             error_type("CodexRpcError", -32001, "temporary backend failure")))
+
+    def test_only_an_unreadable_success_reply_is_a_response_model_mismatch(self):
+        # The pinned SDK validates a success reply against its generated models after the app-server
+        # has acted on the request, and raises pydantic's ValidationError when the models predate what
+        # the reply carries. The predicate must match exactly that class and nothing else the RPC layer
+        # can raise: a transient RuntimeError keeps its retry, a JsonRpcError keeps its park, a class
+        # named ValidationError without errors() is not the SDK's, a class carrying errors() under
+        # another name is not either, and the match itself is never a permanent request rejection.
+        def error_type(name, text, **attrs):
+            return type(name, (RuntimeError,), attrs)(text)
+
+        mismatch = error_type("ValidationError", "2 validation errors for ThreadResumeResponse",
+                              errors=lambda self: [{"loc": ("thread",), "type": "missing"}] * 2)
+        self.assertTrue(cb._is_response_model_mismatch(mismatch))
+        self.assertFalse(cb._is_permanent_request_rejection(mismatch))
+        self.assertFalse(cb._is_response_model_mismatch(RuntimeError("synthetic transient resume failure")))
+        self.assertFalse(cb._is_response_model_mismatch(
+            error_type("JsonRpcError", "thread not found", code=-32600, message="thread not found")))
+        self.assertFalse(cb._is_response_model_mismatch(
+            error_type("ValidationError", "a lookalike without errors()")))
+        self.assertFalse(cb._is_response_model_mismatch(
+            error_type("LooksLikeValidation", "the class name is the SDK's contract",
+                       errors=lambda self: [])))
+
+    def test_the_mismatch_line_names_the_sdk_in_use_and_the_failing_items_by_position(self):
+        # The one line the resume tolerance logs must name the SDK that raised (the installed
+        # distribution's version, since an already-importable copy wins over codexvenv and need not be
+        # the pin; the pin, worded as the pin, only when no version reads) and the thread items that
+        # failed, by position and each once. Never the first error's location: the item union is plain,
+        # pydantic reports members in declaration order, so every unknown item fails first on the first
+        # member's own field, and never an input, which for a 'missing' error is the whole item.
+        with mock.patch.object(cb, "_installed_sdk_version", lambda: "0.147.0"):
+            self.assertEqual(cb._sdk_for_mismatch_log(), "the installed SDK (openai-codex 0.147.0)")
+        with mock.patch.object(cb, "_installed_sdk_version", lambda: None):
+            self.assertEqual(cb._sdk_for_mismatch_log(), "the pinned SDK (%s)" % cb.SDK_PIN)
+
+        def mismatch(errs):
+            return type("ValidationError", (ValueError,),
+                        {"errors": lambda self: errs, "error_count": lambda self: len(errs)})()
+
+        def under(turn, item, member, field, kind="missing"):
+            return {"type": kind, "input": {"text": "SYNTHETIC-ITEM-INPUT-NEVER-LOGGED"},
+                    "loc": ("thread", "turns", turn, "items", item, member, field), "msg": "synthetic"}
+
+        one_item = mismatch([under(0, 26, "UserMessageThreadItem", "content"),
+                             under(0, 26, "SubAgentActivityThreadItem", "kind", "enum")])
+        self.assertEqual(cb._response_model_mismatch_summary(one_item),
+                         "2 validation errors over 1 item (thread.turns.0.items.26)")
+        two_items = mismatch([under(0, 3, "UserMessageThreadItem", "content"),
+                              under(0, 3, "SubAgentActivityThreadItem", "kind", "enum"),
+                              under(2, 0, "UserMessageThreadItem", "content"),
+                              {"type": "missing", "input": {}, "loc": ("thread", "sessionId"), "msg": "synthetic"}])
+        self.assertEqual(cb._response_model_mismatch_summary(two_items),
+                         "4 validation errors over 2 items (thread.turns.0.items.3, thread.turns.2.items.0) "
+                         "and 1 outside the items")
+        top_level = mismatch([{"type": "missing", "input": {}, "loc": ("thread",), "msg": "synthetic"}])
+        self.assertEqual(cb._response_model_mismatch_summary(top_level),
+                         "1 validation error, none under a thread item")
+        many = mismatch([under(t, 0, "UserMessageThreadItem", "content") for t in range(15)])
+        summary = cb._response_model_mismatch_summary(many)
+        self.assertTrue(summary.startswith("15 validation errors over 15 items (thread.turns.0.items.0, "), summary)
+        self.assertTrue(summary.endswith("thread.turns.11.items.0, and 3 more)"), summary)
+        for text in (cb._response_model_mismatch_summary(one_item), summary):
+            self.assertNotIn("SYNTHETIC-ITEM-INPUT-NEVER-LOGGED", text)
+            self.assertNotIn("UserMessageThreadItem", text)
 
 
 class ApprovalModes(unittest.TestCase):
@@ -661,6 +726,182 @@ class ExplicitBinFailures(unittest.TestCase):
         # errno line as the shape _client_failure_text frames — the managed path is left exactly alone
         err = OSError(2, "No such file or directory", "codex")
         self.assertEqual(self._probe(None, err), str(err))
+
+
+class PostalTools(unittest.TestCase):
+    """The six postal tools ride every Codex thread as Codex DYNAMIC TOOLS, and the kernel services the calls
+    (2026-09-19). thread/start and thread/resume carry `dynamicTools` (the bus's six specs, a KEEP-IN-SYNC copy in the
+    backend) and the bus's instructions as the thread's `developerInstructions`; the app-server's `item/tool/call`
+    server request reaches _handle_approval FIRST (before the declined-request warn), is bound to the session by its
+    threadId ONLY, forwards only the arguments the tool's schema declares, runs the kernel's callable with NO backend
+    lock held, and never raises out of the SDK's single reader thread. The FakeClient mints thread ids T-1, T-2, ...
+    in spawn order. Synthetic fixtures only (web/api, /TESTDIR, placeholder uuids); the fake postal takes no token."""
+    TOOLS = ["check_inbox", "check_sent", "list_agents", "recall_message", "send_message", "set_working"]
+
+    @staticmethod
+    def _call(tid, tool, args, turn="t-1", call="exec-1"):
+        # the request's params, as the probe recorded them on the wire (namespace null for a plain function spec)
+        return {"threadId": tid, "turnId": turn, "callId": call, "namespace": None, "tool": tool, "arguments": args}
+
+    def test_thread_start_and_resume_register_the_postal_tools_as_dynamic_tools(self):
+        be, fake, _ = build(postal=lambda *a: (True, ""))
+        sid = be.spawn("web", "/TESTDIR")
+        params = fake.called("thread_start")[0][1]
+        tools = params["dynamicTools"]
+        self.assertEqual(sorted(t["name"] for t in tools), self.TOOLS)
+        for t in tools:
+            self.assertEqual(t["type"], "function")
+            self.assertIsInstance(t["inputSchema"], dict)
+            self.assertTrue(t["description"],
+                            "a spec without a description refuses the whole thread/start (probed 2026-09-19)")
+        send = next(t for t in tools if t["name"] == "send_message")
+        self.assertIn("kind", send["inputSchema"]["required"])
+        self.assertEqual(params["developerInstructions"], cb.POSTAL_INSTRUCTIONS)
+        # the same on thread/resume: the registration persists server-side and passing it again is harmless
+        # (probed 2026-09-19). It ADDS nothing: ThreadResumeParams has no dynamic_tools at rust-v0.153.3, so a
+        # thread started without the tools stays without them for its life (the review of 2026-09-19)
+        self.assertTrue(be.kill(sid))
+        self.assertTrue(be.resume("web", sid))
+        self.assertTrue(be.send(sid, "again"))
+        self.assertTrue(until(lambda: len(fake.called("thread_resume")) == 1))
+        resume_params = fake.called("thread_resume")[0][2]
+        self.assertEqual(resume_params["dynamicTools"], tools)
+        self.assertEqual(resume_params["developerInstructions"], cb.POSTAL_INSTRUCTIONS)
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+
+    def test_a_pending_row_turned_real_by_prepare_thread_registers_the_tools_too(self):
+        # the create branch of _prepare_thread (a pending- or failed- row: a spawn whose thread/start failed,
+        # turned real on its first turn) is the third site that merges _postal_params into thread params; the
+        # registration test above drives spawn's and the resume's, and this one stayed unpinned until the review
+        # (2026-09-19). A failed- row takes the same branch, so one pending- case covers both.
+        be, fake, _ = build(postal=lambda *a: (True, ""))
+        sid = be.spawn("web", "/TESTDIR")
+        spawned = fake.called("thread_start")[0][1]["dynamicTools"]
+        s = be._session(sid)
+        s.tid = "pending-%s" % sid[:8]         # force the create path
+        s.loaded = False
+        self.assertTrue(be._prepare_thread(s, fake))
+        params = fake.called("thread_start")[-1][1]
+        self.assertEqual(params.get("dynamicTools"), spawned, "the spawn's own list, not a literal")
+        self.assertEqual(params.get("developerInstructions"), cb.POSTAL_INSTRUCTIONS)
+        self.assertFalse(s.tid.startswith("pending-"))
+
+    def test_a_postal_tool_call_mails_as_the_calling_thread_and_only_that_thread(self):
+        # the callable is ASSIGNED after construction in the four handler tests (a plain attribute write, which the
+        # stock backend accepts), so each goes red on its own assertion rather than on the constructor refusing the
+        # keyword; only the registration test above needs the keyword
+        seen = []
+
+        def postal(tool, sid, name, args):
+            seen.append((tool, sid, name, args))
+            return True, "Delivered to 'web'."
+        logs = []
+        be, fake, _ = build(log=logs.append)
+        be.postal = postal
+        be.spawn("web", "/TESTDIR")                      # T-1
+        api = be.spawn("api", "/TESTDIR")                # T-2
+        notices = []
+        be.notify = lambda app, msg: notices.append(msg)
+        out = be._handle_approval("item/tool/call", self._call("T-2", "send_message", {
+            "to": "web", "body": "the tests are green", "kind": "coordinate",
+            "from_id": "11111111-2222-3333-4444-555555555555",   # a forged sender: dropped, never forwarded
+            "id": "m-forged"}))                                    # not in send_message's schema: dropped too
+        self.assertEqual(seen, [("send_message", api, "api",
+                                 {"to": "web", "body": "the tests are green", "kind": "coordinate"})])
+        self.assertEqual(out, {"success": True, "contentItems": [{"type": "inputText", "text": "Delivered to 'web'."}]})
+        # a tool call is not a request for a human: no warn toast and no "declined" line (every send would
+        # otherwise toast a warning, the refuter's amendment 4)
+        self.assertEqual(notices, [])
+        self.assertFalse(any("declined" in line for line in logs), logs)
+
+    def test_the_postal_callable_runs_with_no_backend_lock_held(self):
+        # the bus's /send resolves its recipient through the kernel's GET /sessions, which calls live_sessions()
+        # here and takes _sessions_lock and every s.lock: a lock held across the call would make every send
+        # wait out the bus's kernel timeout and this side's bus timeout, silently (2026-09-19). Probed from
+        # ANOTHER thread on purpose: both locks are re-entrant, so a same-thread call passes under a held lock.
+        holder = {}
+        probe = {}
+
+        def postal(tool, sid, name, args):
+            be = holder["be"]
+
+            def other_thread():
+                probe["rows"] = be.live_sessions()
+                probe["sessions_lock"] = be._sessions_lock.acquire(timeout=2)
+                if probe["sessions_lock"]:
+                    be._sessions_lock.release()
+            t = threading.Thread(target=other_thread, daemon=True)
+            t.start()
+            t.join(3)
+            probe["finished"] = not t.is_alive()
+            return True, "ok"
+        be, fake, _ = build()
+        be.postal = postal
+        holder["be"] = be
+        sid = be.spawn("web", "/TESTDIR")
+        out = be._handle_approval("item/tool/call", self._call("T-1", "list_agents", {}))
+        self.assertIn("success", out, "the tool call is answered in the tool-result shape, not the SDK's {}")
+        self.assertTrue(out["success"])
+        self.assertTrue(probe.get("finished"), "live_sessions() from another thread blocked during the call")
+        self.assertTrue(probe.get("sessions_lock"), "_sessions_lock was held during the call")
+        self.assertIn(sid, probe["rows"])
+
+    def test_a_postal_fault_never_raises_out_of_the_reader_thread(self):
+        # the sibling of test_a_dead_stderr_never_raises_out_of_the_approval_handler: the handler runs inline on the
+        # SDK's single reader thread, and a raise there ends the transport for every Codex session; the raising
+        # logger goes in through the constructor (the wrap happens once, there)
+        def postal(tool, sid, name, args):
+            raise RuntimeError("bus down")
+
+        def dead_stderr(m):
+            raise OSError(28, "No space left on device")
+        be = cb.CodexBackend(tempfile.mkdtemp(), client_factory=FakeClient, log=dead_stderr)
+        be.postal = postal
+        be.spawn("web", "/TESTDIR")
+        out = be._handle_approval("item/tool/call", self._call("T-1", "check_inbox", {}))
+        self.assertIn("success", out, "answered in the tool-result shape, the fault inside it")
+        self.assertFalse(out["success"])
+        self.assertIn("bus down", out["contentItems"][0]["text"])
+        # a request with no params at all, or arguments that are not an object, is answered too
+        self.assertFalse(be._handle_approval("item/tool/call", None)["success"])
+        self.assertFalse(be._handle_approval("item/tool/call", self._call("T-1", "check_inbox", "nope"))["success"])
+        # a callable answering the wrong shape is a failed result, not a raise
+        be.postal = lambda *a: None
+        self.assertFalse(be._handle_approval("item/tool/call", self._call("T-1", "check_inbox", {}))["success"])
+
+    def test_without_a_postal_hook_no_tools_are_registered_and_a_call_is_refused(self):
+        logs = []
+        be, fake, _ = build(log=logs.append)
+        be.spawn("web", "/TESTDIR")
+        be.spawn("api", "/TESTDIR")
+        for call in fake.called("thread_start"):
+            self.assertNotIn("dynamicTools", call[1])
+            self.assertNotIn("developerInstructions", call[1])
+        self.assertEqual(sum("not registered" in line for line in logs), 1, "said once, not per spawn: %r" % logs)
+        # a registration persisted in an older rollout can still produce a call: refused, never a fake tool
+        out = be._handle_approval("item/tool/call", self._call("T-1", "send_message",
+                                                                 {"to": "api", "body": "hi", "kind": "coordinate"}))
+        self.assertFalse(out["success"])
+
+    def test_an_unknown_tool_or_an_unmatched_thread_is_refused_without_a_call(self):
+        seen = []
+        be, fake, _ = build()
+        be.postal = lambda *a: seen.append(a) or (True, "ok")
+        sid = be.spawn("web", "/TESTDIR")
+        out = be._handle_approval("item/tool/call", self._call("T-1", "read_secrets", {"path": "/etc/passwd"}))
+        self.assertEqual(set(out), {"success", "contentItems"}, "a refusal is a failed tool result, never the SDK's {}")
+        self.assertFalse(out["success"])
+        self.assertIn("read_secrets", out["contentItems"][0]["text"])
+        # a threadId no live session holds: refused with a retry sentence, even though exactly one session is
+        # live (never resolved by name or by the only live session, the refuter's amendment 2)
+        out = be._handle_approval("item/tool/call", self._call("T-9", "check_inbox", {}))
+        self.assertFalse(out["success"])
+        self.assertIn("again", out["contentItems"][0]["text"])
+        # a dead session's thread is no sender either
+        self.assertTrue(be.kill(sid))
+        out = be._handle_approval("item/tool/call", self._call("T-1", "check_inbox", {}))
+        self.assertFalse(out["success"])
+        self.assertEqual(seen, [])
 
 
 class Lifecycle(unittest.TestCase):
@@ -1135,6 +1376,154 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue(be.send(sid, "retry transient prepare"))
         self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid), timeout=3))
         self.assertEqual(fake.resume_attempts, 2)
+
+    def test_resume_reply_the_sdk_cannot_parse_still_runs_the_turn(self):
+        # A kernel restart resumes every durable thread before its next turn. The pinned SDK validates
+        # thread/resume's success reply against its generated models AFTER the app-server has resumed
+        # the thread, and that reply carries the whole thread history: one item kind the runtime writes
+        # that the models predate (a subAgentActivity whose kind the SDK's enum lacks) fails the item
+        # union for every member, so a thread holding a few dozen of them raised over a thousand
+        # validation errors from a resume that had succeeded. The backend reads nothing from that reply,
+        # yet it treated the raise as a failed turn: a launchError the size of the error text, no
+        # turn/start, the queue parked on the backoff forever, and only ending the session (losing the
+        # thread) recovered it (2026-09-19). The fake reaches the server (super records the call) and
+        # then fails exactly as the client does; the resume must count as done and the turn must run.
+        class ValidationError(ValueError):
+            """The SDK's reply validation failure, by shape: pydantic's class name, errors() and
+            error_count(), a str() that opens with the count and the response model, and inputs
+            that carry the values which failed (for a 'missing' error, the whole item)."""
+            def __init__(self):
+                super().__init__("3 validation errors for ThreadResumeResponse")
+
+            def errors(self):
+                # in pydantic's order: the item union is plain, so the FIRST member (UserMessageThreadItem)
+                # fails first, a 'missing' whose input is the whole item, and the member that names the
+                # drift (SubAgentActivityThreadItem.kind, an enum failure) comes later; a second item in
+                # a later turn fails the same way, so the line must name two positions, each once
+                item = {"type": "subAgentActivity", "kind": "completed",
+                        "text": "SYNTHETIC-ITEM-INPUT-NEVER-LOGGED"}
+                return [{"type": "missing", "input": item,
+                         "loc": ("thread", "turns", 0, "items", 3, "UserMessageThreadItem", "content"),
+                         "msg": "Field required"},
+                        {"type": "enum", "input": "completed",
+                         "loc": ("thread", "turns", 0, "items", 3, "SubAgentActivityThreadItem", "kind"),
+                         "msg": "Input should be 'started', 'interacted' or 'interrupted'"},
+                        {"type": "missing", "input": item,
+                         "loc": ("thread", "turns", 2, "items", 0, "UserMessageThreadItem", "content"),
+                         "msg": "Field required"}]
+
+            def error_count(self):
+                return 3
+
+        class UnreadableResumeReplyClient(FakeClient):
+            def thread_resume(self, tid, params=None):
+                super().thread_resume(tid, params)    # recorded: the server was reached and resumed it
+                raise ValidationError()
+
+        fake = UnreadableResumeReplyClient()
+        lines = []
+        be, _, tmp = build(factory=lambda: fake, log=lines.append)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.resume("web", sid))       # loaded is off again: the next turn resumes first
+        # the line names the SDK that raised, read from the installed distribution (an already-importable
+        # copy wins over codexvenv and need not be the pin); stubbed, so the wording is pinned, not the box
+        with mock.patch.object(cb, "_installed_sdk_version", lambda: "0.999.0", create=True):
+            self.assertTrue(be.send(sid, "hello after the restart"))
+            self.assertTrue(until(lambda: be.launch_error(sid) is not None
+                                  or (not be.busy(sid) and not be.pending_queued(sid))))
+            self.assertIsNone(be.launch_error(sid), "an unreadable resume reply was filed as a failed turn")
+            self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        self.assertEqual(len(fake.called("thread_resume")), 1)
+        self.assertEqual(len(fake.called("turn_start")), 1)
+        self.assertIsNone(be.launch_error(sid))
+        rows = json.loads((Path(tmp) / "codex" / "registry.json").read_text())
+        self.assertIsNone(rows[sid].get("launchError"))
+        # one line says what happened, in identifiers only: the session, the installed SDK, the count and
+        # the failing items by position, each once
+        mention = [l for l in lines if "thread/resume" in l]
+        self.assertEqual(len(mention), 1, lines)
+        self.assertIn(sid, mention[0])
+        self.assertIn("the installed SDK (openai-codex 0.999.0)", mention[0])
+        self.assertIn("3 validation errors over 2 items (thread.turns.0.items.3, thread.turns.2.items.0)",
+                      mention[0])
+        # not the first error's location: its member is whichever the union declares first, unrelated to
+        # the drift, and would send a reader after user messages that are fine
+        self.assertNotIn("UserMessageThreadItem", mention[0])
+        # and no line carries a value from the reply: not an input (transcript content for a
+        # text-bearing item kind), not the exception's own text (which lists every input)
+        joined = "\n".join(lines)
+        self.assertNotIn("SYNTHETIC-ITEM-INPUT-NEVER-LOGGED", joined)
+        self.assertNotIn("3 validation errors for ThreadResumeResponse", joined)
+
+    def test_a_resume_failure_under_another_name_still_fails_the_turn(self):
+        # The tolerance is for the SDK's reply validation class alone. A failure that merely carries an
+        # errors() method under another name is not it, and keeps today's path: the turn fails, the
+        # launchError names it, turn/start is never sent, and the send stays queued for the retry.
+        class LooksLikeValidation(RuntimeError):
+            def errors(self):
+                return [{"loc": ("thread",), "type": "missing"}]
+
+        class ResumeFailingClient(FakeClient):
+            def thread_resume(self, tid, params=None):
+                super().thread_resume(tid, params)
+                raise LooksLikeValidation("synthetic resume failure that is not a model mismatch")
+
+        fake = ResumeFailingClient()
+        be, _, _ = build(factory=lambda: fake)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.resume("web", sid))
+        self.assertTrue(be.send(sid, "hello after the restart"))
+        self.assertTrue(until(lambda: be.launch_error(sid) is not None))
+        self.assertTrue(be.launch_error(sid)["text"].startswith(
+            "codex turn failed: synthetic resume failure that is not a model mismatch"))
+        self.assertEqual(fake.called("turn_start"), [])
+        self.assertEqual(be.pending_queued(sid), ["hello after the restart"])
+
+    def test_a_turn_streaming_an_unknown_item_kind_completes(self):
+        # The resume tolerance would only move the failure one step later if the same item kind broke
+        # the turn's own stream. It does not: the pinned SDK's reader hands a notification its models
+        # cannot parse to the router as an unknown notification carrying the raw wire params (no
+        # model_dump), the backend's _dump passes that dict through, and the normalizer counts the kind
+        # as vocabulary it does not render. Delivered here exactly as the reader would: raw params on
+        # item/started, item/completed and the turn/completed whose items list it (2026-09-19).
+        item = {"type": "subAgentActivity", "id": "s-1", "kind": "completed", "agentPath": "helper",
+                "agentThreadId": "11111111-2222-4333-8444-666666666666"}
+
+        def raw(method, params):
+            return SimpleNamespace(method=method, payload=SimpleNamespace(params=params))
+
+        class RawItemClient(FakeClient):
+            def turn_start(self, tid, input_items, params=None):
+                self.hold_open = True          # super queues nothing: the stream is scripted below
+                self.scripts = [[]]
+                started = super().turn_start(tid, input_items, params)
+                turn_id = started.turn.id
+                q = self.turn_queues[turn_id]
+                ms = 1781100000000 + self._n * 100000
+                q.put(note("item/completed", {"threadId": tid, "turnId": turn_id, "completedAtMs": ms,
+                                              "item": {"type": "userMessage", "id": "u-1",
+                                                       "content": list(input_items)}}))
+                q.put(raw("item/started", {"threadId": tid, "turnId": turn_id, "item": item}))
+                q.put(raw("item/completed", {"threadId": tid, "turnId": turn_id,
+                                             "completedAtMs": ms + 500, "item": item}))
+                q.put(note("item/completed", {"threadId": tid, "turnId": turn_id, "completedAtMs": ms + 1000,
+                                              "item": {"type": "agentMessage", "id": "a-1",
+                                                       "text": "ack after the helper finished"}}))
+                q.put(raw("turn/completed", {"threadId": tid,
+                                             "turn": {"id": turn_id, "items": [item],
+                                                      "status": "completed"}}))
+                return started
+
+        fake = RawItemClient()
+        be, _, _ = build(factory=lambda: fake)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "run the helper"))
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        self.assertIsNone(be.launch_error(sid))
+        recs = [json.loads(l) for l in Path(be.transcript_path(sid)).read_text().splitlines()]
+        self.assertEqual([r["type"] for r in recs], ["user", "assistant"])
+        self.assertIn("ack after the helper finished", json.dumps(recs[-1]))
+        self.assertEqual(be._session(sid).norm.skipped, {"subAgentActivity": 1})
 
     def test_new_client_generation_retries_a_parked_permanent_rejection(self):
         class InvalidRequestError(RuntimeError):
@@ -1797,6 +2186,14 @@ for i in range(20):
             self.assertNotIn('"%s"' % metadata, profile)
         self.assertIn("network = { enabled = true }", profile)
         self.assertEqual(overrides[1], 'default_permissions="romp_workspace"')
+        # the postal tools never widen the profile (2026-09-19): the serve token and the Codex registry stay
+        # unmounted; a Codex session mails through kernel-serviced tool calls, not through a credential inside
+        for secret in ("serve-token", "registry.json"):
+            self.assertNotIn(secret, profile)
+        # dynamic tools ride the app-server's experimental API, which the pinned SDK's CodexConfig enables by
+        # default (experimental_api True, sent as capabilities.experimentalApi): the config must keep not
+        # overriding it, or every thread/start would be refused rather than fail here
+        self.assertNotIn("experimental_api", captured[0])
 
     def test_model_catalog_from_app_server(self):
         be, fake, _ = build()

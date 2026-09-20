@@ -19,8 +19,8 @@ export const PREDICATE_KEYS: readonly (keyof Predicate)[] = ["needsYou", "produc
 export interface Rule { when: Predicate; category: string; }
 export type OrderRule = "ownerRank";
 export const ORDER_RULES: readonly OrderRule[] = ["ownerRank"];
-export type KindId = "goal" | "placeholder" | "parked" | "quarantine" | "notice";
-export const KIND_IDS: readonly KindId[] = ["goal", "placeholder", "parked", "quarantine", "notice"];
+export type KindId = "goal" | "placeholder" | "parked" | "notice";   // the quarantine card is a notice card since 2026-09-19 (plans/notice-cards.md)
+export const KIND_IDS: readonly KindId[] = ["goal", "placeholder", "parked", "notice"];
 
 export interface Category { id: string; title: string; chip: Chip; }
 
@@ -43,6 +43,9 @@ export interface Board {
  *  category ids are the kernel's raw column values; this table is the feed definition's own mapping between the two, and
  *  it stays until the sweep that renames the CSS keys (not this change). */
 export type FeedColumnKey = "asks" | "needsInput" | "completed";
+/** A column's local key on ANY board: the feed's three names above, a data board's category ids as they are (phase four: the
+ *  renderer builds a data board's columns as `col-<category id>`, so the key IS the id; the feed keeps its CSS names). */
+export type ColumnKey = string;
 /** The kernel's raw column values, the feed board's category ids (AskItem.column is typed to them). */
 export type FeedCategory = "working" | "needs_input" | "completed";
 // a Map, never a plain object: a category is producer-facing from phase three, and a prototype-named one ("toString",
@@ -67,7 +70,7 @@ export const FEED_BOARD: Board = {
   order: ["ownerRank"],                       // what feed.ts does (PR 1831): the owner-less run first, then the session order, then time
   notify: ["needs_input", "completed"],       // kernel.py _NOTIFY_COLUMNS
   needsYou: "needs_input",                    // kernel.py _needs_you_count
-  kinds: ["goal", "placeholder", "parked", "quarantine", "notice"],
+  kinds: ["goal", "placeholder", "parked", "notice"],
 };
 
 // ── the kinds: the card families feed.ts renders, described ────────────────────────────────────────────────────────────
@@ -109,14 +112,9 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
   },
   placeholder: { id: "placeholder", sections: [{ id: "tasks", label: null, via: "makeAskCard" }], actions: [CLEAR, BELL], menu: MENU },
   parked: { id: "parked", sections: [], actions: [CLEAR, { id: "revive", label: "Revive", via: "makeAskCard" }, BELL], menu: MENU },
-  quarantine: {
-    id: "quarantine", sections: [],
-    actions: [{ id: "approve", label: "Approve", via: "makeAskCard" }, { id: "deny", label: "Deny", via: "makeAskCard" }, BELL],
-    menu: MENU,
-  },
   notice: {
     id: "notice",
-    sections: [{ id: "body", label: null, via: "noticeBodyNodes" }, { id: "attachment", label: null, via: "updateAskCard" }],
+    sections: [{ id: "body", label: null, via: "fillNoticeFace" }, { id: "attachment", label: null, via: "fillNoticeFace" }],   // the face's parts render in notice-face.ts, called from here
     actions: [{ id: "stored", label: null, via: "updateAskCard" }, CLEAR, BELL],   // the record's own actions (noticeAction)
     menu: MENU,
   },
@@ -126,7 +124,6 @@ export const FEED_KINDS: Readonly<Record<KindId, CardKind>> = {
 export function kindOf(card: { notice?: unknown; provisional?: unknown; blocked?: { state?: string } | null }): KindId {
   if (card.notice) return "notice";
   const st = card.blocked && card.blocked.state;
-  if (st === "quarantine") return "quarantine";
   if (st === "parkedHandoff") return "parked";
   if (card.provisional) return "placeholder";
   return "goal";
@@ -161,10 +158,18 @@ export function boardOf(card: { board?: string | null }): Board {
 
 // ── the reads feed.ts makes ───────────────────────────────────────────────────────────────────────────────────────────
 
-/** The renderer's local column key for a category id; an unknown id files under the board's default category, which is
- *  what the old mapping did for anything but the two named values. */
-export function columnOf(board: Board, category: string): FeedColumnKey {
-  return FEED_LOCAL_KEY.get(category) ?? FEED_LOCAL_KEY.get(board.defaultCategory) ?? "asks";
+/** The renderer's local column key for a category id on `board`: the feed's table for the feed (an unknown id files under
+ *  the feed's default category, what the old mapping did for anything but the two named values); on a data board the
+ *  category id itself when the board has it, else the board's default category (phase four). */
+export function columnOf(board: Board, category: string): ColumnKey {
+  if (board.id === FEED_BOARD.id) return FEED_LOCAL_KEY.get(category) ?? FEED_LOCAL_KEY.get(board.defaultCategory) ?? "asks";
+  return board.categories.some((c) => c.id === category) ? category : board.defaultCategory;
+}
+
+/** The board an id names among the ones the renderer knows, or null: the view switch's read (phase four). */
+export function boardById(id: string | null | undefined): Board | null {
+  if (!id || id === FEED_BOARD.id) return FEED_BOARD;
+  return dataBoards.get(id) || null;
 }
 
 /** Whether a card in `category` is one the board's badge counts (the interrupt rule every lens lets through). */
@@ -173,12 +178,12 @@ export function isNeedsYou(board: Board, category: string): boolean {
 }
 
 /** The board's columns in its order, as the local keys the layout and the view state use. */
-export function feedColumns(board: Board): readonly FeedColumnKey[] {
+export function feedColumns(board: Board): readonly ColumnKey[] {
   return board.categories.map((c) => columnOf(board, c.id));
 }
 
 /** The header triples ensureCols iterates: [local key, title, chip class suffix], in the board's order. */
-export function columnTable(board: Board): ReadonlyArray<readonly [FeedColumnKey, string, string]> {
+export function columnTable(board: Board): ReadonlyArray<readonly [ColumnKey, string, string]> {
   return board.categories.map((c) => [columnOf(board, c.id), c.title, c.chip] as const);
 }
 

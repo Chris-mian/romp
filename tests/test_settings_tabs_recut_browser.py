@@ -31,6 +31,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
+PANES_ROWS = 6      # Sessions, Outline, Feed, Files, Artifacts (2026-09-19) and the Pane docking switch: the driver's rows list names each
 sys.path.insert(0, HERE)
 import test_ship_reship_served as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
 
@@ -185,16 +186,17 @@ const out = {};
       return { subHeight: sr.height, roomAbove: rr.top - cr.top, roomBelow: cr.bottom - rr.bottom, up: row.classList.contains("rs-up"), subTop: sr.top, subBottom: sr.bottom, cardTop: cr.top, cardBottom: cr.bottom, viewport: window.innerHeight }; });
     await page.mouse.move(4, 4);
     await page.setViewportSize({ width: 1200, height: 800 }); await page.waitForTimeout(200);
-    // the off-dashboard hide's outcome (round two, low 4): the selector the hide uses takes the four Panes rows and their head; hidden,
+    // the off-dashboard hide's outcome (round two, low 4): the selector the hide uses takes the six Panes rows (the Pane docking switch
+    // joined Sessions, Outline, Feed and Files, plans/pane-docking.md phase two; the Artifacts row since 2026-09-19) and their head; hidden,
     // each reads display none and height 0; shown again, display flex (its trigger is the VS Code host, ownPage false, not this page)
     out.panesHide = await setF.evaluate(() => {
       const els = Array.from(document.querySelectorAll("#rs-panes-sec,.rs-panes-row"));
-      const rows = ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => document.getElementById(id).closest("label"));
-      const covered = rows.every((r) => els.includes(r));
+      const rows = ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-artctl", "rs-panedock"].map((id) => { const el = document.getElementById(id); return el ? el.closest("label") : null; });   // a row the gear lacks reads as not covered, never a dead driver
+      const covered = rows.every((r) => !!r && els.includes(r));
       els.forEach((el) => { el.hidden = true; });
-      const hidden = rows.map((r) => ({ display: getComputedStyle(r).display, height: r.getBoundingClientRect().height }));
+      const hidden = rows.filter(Boolean).map((r) => ({ display: getComputedStyle(r).display, height: r.getBoundingClientRect().height }));
       els.forEach((el) => { el.hidden = false; });
-      const shown = rows.map((r) => getComputedStyle(r).display);
+      const shown = rows.filter(Boolean).map((r) => getComputedStyle(r).display);
       return { count: els.length, covered, hidden, shown };
     });
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
@@ -446,14 +448,14 @@ class ServedSettingsTabs(unittest.TestCase):
         r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
         self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
 
-    def test_the_off_dashboard_hide_takes_all_four_panes_rows(self):
+    def test_the_off_dashboard_hide_takes_all_six_panes_rows(self):
         # round two, low 4: the outcome, not the class: hidden by the selector the hide uses, every row reads display none and height 0
         r = self._run(); h = r["panesHide"]; table = "\n  " + json.dumps(h) + " classes: " + json.dumps(r.get("panesRowClasses"))
-        self.assertTrue(h["covered"], "the hide's selector reaches all four Panes rows (the Files row too since this tidy)" + table)
-        self.assertEqual(h["count"], 5, "the head and the four rows, nothing else" + table)
+        self.assertTrue(h["covered"], "the hide's selector reaches all six Panes rows (the Files row since the T404 tidy, the Pane docking switch since phase two, the Artifacts row since 2026-09-19)" + table)
+        self.assertEqual(h["count"], PANES_ROWS + 1, "the head and the six rows, nothing else" + table)
         for x in h["hidden"]:
             self.assertEqual((x["display"], x["height"]), ("none", 0), "hidden: display none, height 0" + table)
-        self.assertEqual(h["shown"], ["flex"] * 4, "shown again: display flex" + table)
+        self.assertEqual(h["shown"], ["flex"] * PANES_ROWS, "shown again: display flex" + table)
 
     def test_the_fast_mode_boxes_popovers_stay_inside_the_card_at_a_short_window(self):
         # round two, the medium: the box's own popover, nested in the judge row, ran 15 px past the card at 380 px (48 at 300)

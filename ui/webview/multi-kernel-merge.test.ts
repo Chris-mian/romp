@@ -556,11 +556,14 @@ test("routeOutbound: the gear's kernel-side settings reach EVERY attached kernel
                      { type: "setCompactSuggest", enabled: true }]) {   // T248: no longer per-install
     const routes = routeOutbound(msg, new Set(["TESTHOST", "gpu1"]));
     assert.deepEqual(routes.map((r) => r.host).sort(), ["", "TESTHOST", "gpu1"].sort(), msg.type);
-    for (const r of routes) assert.deepEqual(r.msg, msg, "the kernels are host-blind: same message to each");
+    // the same setting to each kernel; since 2026-09-18 (plans/settings-across-machines.md, one A) each copy also says where the
+    // click came from relative to that kernel, "local" to this dashboard's own and "remote" to every attached host, the field a
+    // machine that pinned the store stands a remote click down on
+    for (const r of routes) assert.deepEqual(r.msg, { ...msg, origin: r.host === "" ? "local" : "remote" }, "the same message to each, its origin per copy");
   }
-  // with nothing attached it is the single-kernel path, byte for byte
+  // with nothing attached it is the single-kernel path: the one copy, stamped local
   assert.deepEqual(routeOutbound({ type: "setAutoNudge", enabled: true }),
-                   [{ host: "", msg: { type: "setAutoNudge", enabled: true } }]);
+                   [{ host: "", msg: { type: "setAutoNudge", enabled: true, origin: "local" } }]);
   // an explicit host still wins — the popover can ask ONE machine (that branch runs first)
   assert.deepEqual(routeOutbound({ type: "setAutoNudge", enabled: true, host: "gpu1" }, new Set(["gpu1"])),
                    [{ host: "gpu1", msg: { type: "setAutoNudge", enabled: true } }]);

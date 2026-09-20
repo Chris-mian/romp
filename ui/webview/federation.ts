@@ -162,6 +162,10 @@ export function prefixInbound(host: string, msg: any): any {
   // four of PR 1831: a remote card's dismissing action stayed on the board with its button latched until the next push)
   if (typeof out.itemId === "string") out.itemId = prefixNoticeId(host, out.itemId);
   if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => prefixNoticeId(host, x));
+  // a session frame's approval-box rows (status.notices, the chat's #notices box) carry notice ids too: prefixed like the feed's
+  // cards, so a remote host's noticeActionDone (prefixed above) finds the row it answers (the review of PR 1890, medium 2)
+  if (out.status && typeof out.status === "object" && !Array.isArray(out.status) && Array.isArray(out.status.notices))
+    out.status = { ...out.status, notices: out.status.notices.map((n: any) => (n && typeof n === "object" && typeof n.itemId === "string") ? { ...n, itemId: prefixNoticeId(host, n.itemId) } : n) };
   for (const k of OBJ_SID)
     if (Array.isArray(out[k]))
       out[k] = out[k].map((o: any) => _prefixIdBearing(host, o, "sid"));
@@ -385,7 +389,27 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   // change as applied everywhere: Auto Nudge switched off in the dashboard, still nudging the sessions
   // running on the other machine (the user 2026-08-14, whose two kernels had been disagreeing for days
   // with nothing on screen to say so). Broadcast, like the hover clear above.
-  if (KERNEL_SETTING.has(msg.type)) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
+  // Each copy carries its ORIGIN (plans/settings-across-machines.md, one A): "local" to this dashboard's own kernel,
+  // "remote" to every attached host, so a kernel whose user PINNED the store on that machine can stand a remote
+  // click down (a settingStale frame, why pinned) while its own dashboard's click still applies. A message without
+  // the field is read as remote by the kernel, the conservative reading for a dashboard from before this change.
+  // Phase two (the settings' machine selector): a kernel setting with a `hosts` list is SCOPED to those kernels alone, each
+  // copy with its origin and `scope: "pinned"`, the explicit intent a pinned store's gate honours and which pins the store
+  // there; a broadcast (no list) never carries the scope, so nothing changes for a kernel the selector never named.
+  if (KERNEL_SETTING.has(msg.type) && Array.isArray(msg.hosts) && msg.hosts.length) {
+    const { hosts, scope: _scope, ...rest } = msg;
+    return hosts.map((h: string) => ({ host: h || LOCAL, msg: { ...rest, origin: (h || LOCAL) === LOCAL ? "local" : "remote", scope: "pinned" } }));
+  }
+  // an EMPTY or malformed hosts list is no scope: the broadcast, with the field stripped (round two, low e: an empty list routed to nobody)
+  if (KERNEL_SETTING.has(msg.type)) { const { scope: _scope, hosts: _hosts, ...rest } = msg; return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg: { ...rest, origin: h === LOCAL ? "local" : "remote" } })); }
+  // a PIN is per machine (one A): this dashboard's own kernel alone, stamped local, the one origin its kernel takes a pin from;
+  // phase two: addressed to the picked kernels (`hosts`), each copy with its origin and the scope, so the arm accepts an
+  // explicit pin or un-pin from another machine's dashboard
+  if (msg.type === "setSettingPin") {
+    const { hosts, scope: _scope, ...rest } = msg;
+    const targets: string[] = Array.isArray(hosts) && hosts.length ? hosts : [LOCAL];
+    return targets.map((h) => ({ host: h || LOCAL, msg: { ...rest, origin: (h || LOCAL) === LOCAL ? "local" : "remote", ...(Array.isArray(hosts) && hosts.length ? { scope: "pinned" } : {}) } }));
+  }
 
   // The BOARD-WIDE Clear all (the feed footer's, T286; the session header's Clear all is askClearMany, routed
   // by its session id below) carries no session id, so it fell through to the local kernel alone and a merged

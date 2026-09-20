@@ -261,7 +261,7 @@ test("the kernel's queued copy at the tail is hidden for a send drawn as our own
 });
 
 test("render.ts appends the pending sends as ONE bare group at the tail, in send order; strips its own injections before applying kernel indices; carries no header or cue (T252d)", () => {
-  assert.match(RENDER, /s\.events\.push\(\{ kind: "queued", bare: true, texts: inject\.map\(mk\), uuid: OPT_PREFIX \+ inject\[0\]\.ts/,
+  assert.match(RENDER, /s\.events\.push\(\{ kind: "queued", bare: true, texts, uuid: OPT_PREFIX \+ inject\[0\]\.ts/,
     "one bare group pushed at the tail, the sends in list (send) order");
   assert.doesNotMatch(RENDER, /injectionGroups|placementIndex/, "the send-slot placement machinery is gone from render.ts");
   const fn = RENDER.split("function reconcileOptimisticInner(")[1].split("\nfunction ")[0];   // the guarded body (T262h)
@@ -368,11 +368,11 @@ test("the bare group's label counts lost and sending bubbles separately", () => 
   assert.match(bareGroupLabel(1, 1).title, /^The connection dropped after this was sent[\s\S]*The rest: on its way/);
   // render.ts builds the label from the bubbles' own states, and the ✕'s recount reads them back off the
   // surviving bubbles (data-lost) — never off the label's previous class
-  assert.match(RENDER, /const nLost = texts\.filter\(\(t\) => t\.lost\)\.length;\s*\n\s*fillBareLabel\(label, nLost, texts\.length - nLost\);/);
+  assert.match(RENDER, /const nLost = texts\.filter\(\(t\) => t\.lost\)\.length;\s*\n\s*const nHanded = [^\n]*\n\s*fillBareLabel\(label, nLost, texts\.length - nLost - nHanded, nHanded\);/);
   assert.match(RENDER, /if \(t\.optimistic && t\.lost\) bubble\.dataset\.lost = "1";/);
-  assert.match(RENDER, /const nLost = bubbles\.filter\(\(b\) => \(b as HTMLElement\)\.dataset\.lost === "1"\)\.length;\s*\n\s*fillBareLabel\(label, nLost, bubbles\.length - nLost\);/);
+  assert.match(RENDER, /const nLost = bubbles\.filter\(\(b\) => \(b as HTMLElement\)\.dataset\.lost === "1"\)\.length;\s*\n\s*const nHanded = bubbles\.filter\(\(b\) => \(b as HTMLElement\)\.dataset\.handed === "1"\)\.length;[^\n]*\n\s*fillBareLabel\(label, nLost, bubbles\.length - nLost - nHanded, nHanded\);/);   // the recount after a ✕ keeps the handed count (2026-09-19)
   assert.doesNotMatch(RENDER, /label\.classList\.contains\("lost"\)/);
-  assert.match(RENDER, /const span = el\("span", part\.lost \? "lost" : ""\);/, "only the lost part wears the warn color");
+  assert.match(RENDER, /const span = el\("span", part\.lost \? "lost" : part\.handed \? "handed" : ""\);/, "only the lost part wears the warn color; the handed part its own class (the accent)");
 });
 
 // ── (10) the kernel's own copy clears "not confirmed" ────────────────────────────────────────────
@@ -971,4 +971,38 @@ test("two identical presses, then one push with the first's echo AND the second'
   const landed: TailEvent[] = [...tail, { kind: "user", md: "x", uuid: "ux1", qid: p1.qid }, { kind: "queued", texts: [{ md: "x", qid: p2.qid, qts: 2 }] }];
   r = reconcilePending(landed, [p1, p2]);
   assert.deepEqual([r.landed.map((l) => l.p), r.keep, r.unqueue], [[p1], [p2], [p2]]);
+});
+
+// ── the hand-off (the user 2026-09-19) ────────────────────────────────────────────────────────
+// The kernel's QUEUED copy of a send is romp's to recall; once the SDK feeds it to the CLI the copy leaves the
+// queue and only the kernel's ECHO of it remains in the frame, and no recall exists there. The reconcile names
+// that state so the caller draws ours without the ✎ and says where the message is — the dashed "sending…"
+// bubble used to keep its ✎ after the hand-off, and the ✎ answered "too late".
+test("a send the kernel's ECHO covers with no queued copy is HANDED: the backend passed it on", () => {
+  const list = press([{ kind: "assistant", md: "…", uuid: "a1" }], TEXT);
+  const p = list[0];
+  // still in romp's queue: the group lists the copy (by id) and the kernel suppresses the echo → recallable
+  let r = reconcilePending([{ kind: "assistant", md: "…", uuid: "a1" }, { kind: "queued", texts: [{ md: TEXT, qid: p.qid, cancelable: false }] }], list);
+  assert.deepEqual([r.unqueue, r.handed], [[p], []], "a queued copy covers: still romp's to recall");
+  // fed to the CLI: the copy left the queue, the echo shows alone → handed, and still pending until the landing
+  r = reconcilePending([{ kind: "assistant", md: "…", uuid: "a1" }, { kind: "user", md: TEXT, uuid: p.qid }], list);
+  assert.deepEqual([r.inject.length, r.echoHide, r.handed], [1, [1], [p]], "the echo covers alone: taken by the session");
+  assert.equal(r.keep.length, 1, "…and the entry stays until the landing retires it");
+  // landed: retired as before, nothing handed
+  r = reconcilePending([{ kind: "assistant", md: "…", uuid: "a1" }, { kind: "user", md: TEXT, uuid: "u1", qid: p.qid }], list);
+  assert.deepEqual([r.landed.length, r.handed], [1, []]);
+});
+
+test("the bare header counts the handed ones apart — 'with the session' — and its title says what that means", () => {
+  const texts = (a: number, b: number, c: number) => bareGroupLabel(a, b, c).parts.map((p) => (p.handed ? "+" : p.lost ? "!" : "") + p.text);
+  assert.deepEqual(texts(0, 0, 1), ["+with the session"]);
+  assert.deepEqual(texts(0, 0, 2), ["+2 with the session"]);
+  assert.deepEqual(texts(0, 1, 1), ["sending…", "+with the session"]);
+  assert.deepEqual(texts(1, 1, 1), ["!not confirmed", "sending…", "+with the session"]);
+  assert.match(bareGroupLabel(0, 0, 1).title, /^taken by the session/);
+  assert.match(bareGroupLabel(0, 1, 1).title, /^on its way to the session[\s\S]*taken by the session/);
+  assert.match(bareGroupLabel(0, 1).title, /^on its way to the session — cancellable until the session takes it$/, "the two older states read exactly as before");
+  // the dress: the taken bubble closes its dashes into a quiet solid edge; its label part wears the accent
+  assert.match(CSS, /\.queued-bubble\.handed \{ border-style: solid;/);
+  assert.match(CSS, /\.queued-count \.handed \{ color: var\(--accent\); \}/);
 });

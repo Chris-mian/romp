@@ -5411,6 +5411,19 @@ class PushSessionCallback(unittest.TestCase):
         self.assertTrue(done.wait(5), "the callback fires, on its own thread")
         self.assertEqual(got, [self.SID])
 
+    def test_the_hand_off_to_the_cli_pushes_its_one_session(self):
+        # The pop in inputs() is the moment a queued copy leaves _pending for the CLI's stdin, where no recall
+        # exists: the chat's bubble must flip from "sending… ✎" to "taken by the session" NOW, not at the next
+        # full cycle (the user 2026-09-19: the ✎ stayed for the whole wait and answered "too late"). Source-
+        # pinned like the other inputs() rules (a nested closure); the callback's mechanics are the tests here.
+        import inspect
+        src = inspect.getsource(sb.SdkSession)
+        i = src.index("self._inflight_texts.append(item)")
+        k = src.index('yield {"type": "user",', i)
+        j = src.find("self.backend._push_session(self.sid)", i, k)
+        self.assertGreater(j, 0, "the targeted push sits between the pop and the yield that hands the text to the CLI")
+        self.assertIn("self.backend._poke()", src[i:j], "…after the poke that wakes the fleet cycle")
+
     def test_without_the_callback_it_falls_back_to_the_pusher_wake(self):
         # an older kernel (or a test) that didn't wire push_session still gets the pre-existing
         # behavior: the periodic pusher wake, never a silent no-op

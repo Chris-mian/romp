@@ -7,7 +7,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ORDER_RULES, FEED_BOARD, FEED_KINDS, FEED_LOCAL_KEY, CHIPS, SORT_FIELDS, KIND_IDS, RESERVED_BOARD_IDS,
-         kindOf, columnOf, columnTable, feedColumns, isNeedsYou, boardCheck, defaultBoard, adoptBoards, boardOf, knownBoards } from "./board-def";
+         kindOf, columnOf, columnTable, feedColumns, isNeedsYou, boardCheck, defaultBoard, adoptBoards, boardOf, knownBoards, boardById, type Board } from "./board-def";
 import { mergeHostFeeds } from "./federation";
 import { FEED_COLUMNS } from "./feed-view-state";
 
@@ -70,15 +70,29 @@ test("the sort, the grouping and the notification set equal the sources' literal
 });
 
 test("feed.ts reads the definition at the section-4 sites and nowhere else", () => {
-  assert.match(FEED, /import \{ FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, type FeedCategory \} from "\.\/board-def";/);
+  assert.match(FEED, /import \{ FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, boardById, knownBoards, type Board, type FeedCategory \} from "\.\/board-def";/);
   assert.match(FEED, /column: FeedCategory;/, "the record's column is typed to the feed board's category ids");
   assert.match(FEED, /board\?: string;[^\n]*\n\s*category\?: string;/, "the record carries its board and category (phase two), optional for an older kernel's frame");
-  assert.match(FEED, /return columnOf\(FEED_BOARD, it\.category \?\? it\.column\);/, "askColumn is the definition's table over the category, the column as the older frame's fallback");
+  assert.match(FEED, /return columnOf\(boardOf\(it\), it\.category \?\? it\.column\);/, "askColumn is the card's OWN board's table over the category, the column as the older frame's fallback (phase four: a feed card keeps its key whatever board shows)");
   assert.match(FEED, /\|\| isNeedsYou\(boardOf\(a\), a\.category \?\? a\.column\)\);/, "the lens's breakthrough is the card's OWN board's badge category, not a literal nor the feed's (the 1834 read, low 2; the 1861 read, medium)");
   assert.doesNotMatch(FEED, /\.column === "needs_input"/, "no hand comparison against the raw category id remains");
-  assert.equal((FEED.match(/for \(const \[key, label, chip\] of columnTable\(FEED_BOARD\)\)/g) || []).length, 2, "ensureCols and the focused section's twin");
-  assert.equal((FEED.match(/of feedColumns\(FEED_BOARD\)\)/g) || []).length, 4, "the four column loops (the stack, the focused layout, the order flip, the freeze badges)");
-  assert.match(FEED, /const FLY_COLS: readonly \("asks" \| "needsInput" \| "completed"\)\[\] = feedColumns\(FEED_BOARD\);/);
+  assert.equal((FEED.match(/for \(const \[key, label, chip\] of columnTable\(activeBoard\(\)\)\)/g) || []).length, 2, "ensureCols and the focused section's twin build the ACTIVE board's columns (phase four)");
+  assert.doesNotMatch(FEED, /columnTable\(FEED_BOARD\)/, "no column builder reads the feed constant by name");
+  assert.equal((FEED.match(/of activeCols\(\)\)/g) || []).length, 10, "the column loops read the active board: the stack, the focused layout, the order flip, the column builder's return, the fly capture, the fly, the buckets, the reconcile, the counts, the freeze badges");
+  assert.match(FEED, /const activeCols = \(\): readonly Column\[\] => feedColumns\(activeBoard\(\)\);/, "one read of the definition's column list");
+  assert.doesNotMatch(FEED, /feedColumns\(FEED_BOARD\)/);
+  assert.doesNotMatch(FEED, /FLY_COLS/, "the fly walks the active board's columns (phase four)");
+  // the census reaches every file that names the feed's columns (the 1886 read): the focused section (feed-focus.ts) stays the
+  // feed's and is gated on it, so its three literal keys are never asked of a data board's buckets; the view state's fold gate
+  // admits a data board's `<board>:<category>` keys beside the feed's three, and its order gate the feed's three alone
+  const FOCUS = read("ui", "webview", "feed-focus.ts"), VS = read("ui", "webview", "feed-view-state.ts");
+  assert.match(FEED, /const focusBuckets = showFocused && board === FEED_BOARD \? focusedEntries\(buckets, focusedSid, entrySid\) : null;/, "the section shows on the feed alone");
+  assert.match(FOCUS, /for \(const col of FEED_COLUMNS\) out\[col\] = buckets\[col\]/, "the section's entries read the feed's keys (feed-only by the gate above)");
+  assert.match(VS, /cols: foldKeys\(o\.cols\), order: col\(o\.order\)/, "folds admit a data board's keys; the order stays the feed's (phase five's for a data board)");
+  assert.match(FEED, /const foldKey = \(key: string\): string => \(activeBoard\(\) === FEED_BOARD \? key : activeBoard\(\)\.id \+ ":" \+ key\);/, "one fold-key helper");
+  assert.equal((FEED.match(/collapsedCols\.has\(foldKey\(key\)\)/g) || []).length, 2, "the fold click and the paint read it");
+  assert.match(FEED, /collapsedCols\.delete\(foldKey\(key\)\); else collapsedCols\.add\(foldKey\(key\)\);/, "and the click writes it");
+  assert.match(FEED, /if \(board === FEED_BOARD\) \{ name\.title = "drag to reorder"; wireColDrag\(name, col, key\); \}/, "the drag affordance is the feed's; a data board's chip is static");
   assert.doesNotMatch(FEED, /\[\["asks", "Working", "working"\]/, "the literal header table is gone from the renderer");
   assert.doesNotMatch(FEED, /for \(const key of \["asks", "needsInput", "completed"\]\)/, "no column loop spells the keys by hand");
   // what stays a literal in feed.ts on purpose (pinned there; asserted equal above): the two CSS default orders, the sort
@@ -92,7 +106,6 @@ const KIND_TABLE: Record<string, { sections: string[]; actions: string[]; menu: 
   goal: { sections: ["bg", "summary", "subgoals", "stall", "tasks"], actions: ["clear", "followUp", "checkStatus", "continue", "retry", "login", "capSwitch", "bell"], menu: ["notify", "browse"] },
   placeholder: { sections: ["tasks"], actions: ["clear", "bell"], menu: ["notify", "browse"] },
   parked: { sections: [], actions: ["clear", "revive", "bell"], menu: ["notify", "browse"] },
-  quarantine: { sections: [], actions: ["approve", "deny", "bell"], menu: ["notify", "browse"] },
   notice: { sections: ["body", "attachment"], actions: ["stored", "clear", "bell"], menu: ["notify", "browse"] },
 };
 // a top-level function's own source: from its declaration to the next top-level declaration
@@ -123,7 +136,7 @@ test("the kinds describe the card builder: each kind lists exactly the reviewed 
 
 test("kindOf discriminates by the flavour, as the renderer does", () => {
   assert.equal(kindOf({ notice: { producer: "cli" } }), "notice");
-  assert.equal(kindOf({ blocked: { state: "quarantine" } }), "quarantine");
+  assert.equal(kindOf({ blocked: { state: "quarantine" } }), "goal", "no quarantine kind since 2026-09-19: a held message is a notice card (an old flavour reads as the default)");
   assert.equal(kindOf({ blocked: { state: "parkedHandoff" } }), "parked");
   assert.equal(kindOf({ provisional: true }), "placeholder");
   assert.equal(kindOf({ blocked: { state: "apiError" } }), "goal", "an API error is a goal card with a chip, never a kind");
@@ -209,4 +222,17 @@ test("the federation merge folds every host's boards, the local host's definitio
 test("the cardPredict fan-back reads the card through askColumn (the 1837 round-two read, low 1)", () => {
   assert.match(FEED, /if \(top && askColumn\(top\) !== "asks"\) \{ optimisticFollowMove\(top\.itemId, kind\); moved = true; \}/);
   assert.doesNotMatch(FEED, /top\.column !== "working"/);
+});
+
+// ── phase four: a data board's column keys and the switch's lookup ──────────────────────────────────────────────────
+test("a data board's column key is its category id, an unknown category the board's default; the feed keeps its CSS names; boardById reads the held set", () => {
+  const FIG = { ...NOTES, id: "figures", title: "Figures" } as Board;
+  assert.equal(adoptBoards({ figures: FIG }), 1);
+  assert.equal(columnOf(FIG, "new"), "new"); assert.equal(columnOf(FIG, "kept"), "kept");
+  assert.equal(columnOf(FIG, "working"), "new", "a category the board lacks files under its default");
+  assert.equal(columnOf(FEED_BOARD, "working"), "asks", "the feed's keys are unchanged");
+  assert.deepEqual([...feedColumns(FIG)], ["new", "kept"]); assert.deepEqual(columnTable(FIG).map((t) => t[0]), ["new", "kept"]);
+  assert.equal(boardById("figures"), knownBoards()[1]); assert.equal(boardById("feed"), FEED_BOARD); assert.equal(boardById(""), FEED_BOARD);
+  assert.equal(boardById("gone"), null, "a board the frame does not carry is null: the renderer falls back and says so");
+  adoptBoards({});
 });

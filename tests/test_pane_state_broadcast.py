@@ -153,7 +153,7 @@ class HiddenControlBookmark(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         keys = [k for k, _ in km._PANE_ORDER]
-        stored = json.dumps({"chat": True, "fleet": False, "feed": True, "timeline": True, "files": False})
+        stored = json.dumps({"chat": True, "fleet": False, "feed": True, "timeline": True, "files": False, "artifacts": False})
         # the store is seeded through the harness's __SEED__ slot (the OptionalPanes convention): the declaration
         # line it once rewrote grew the optional-pane collections and no longer matched, leaving the slot unfilled
         harness = (_COLLAPSE_HARNESS.replace("__KEYS__", json.dumps(keys))
@@ -167,8 +167,8 @@ class HiddenControlBookmark(unittest.TestCase):
         self.assertFalse(self.out["poFiles"], "the bookmark's files pane is closed: the control is hidden")
         self.assertTrue(self.out["cls"])
         self.assertEqual(self.out["store"], self.stored, "the stored pane set is untouched: a bookmark is a view")
-        self.assertEqual(self.out["chat"]["on"], {"chat": True, "timeline": False, "fleet": False, "feed": False, "files": False})
-        self.assertEqual(self.out["chat"]["avail"], {"files": False})
+        self.assertEqual(self.out["chat"]["on"], {"chat": True, "timeline": False, "fleet": False, "feed": False, "files": False, "artifacts": False})
+        self.assertEqual(self.out["chat"]["avail"], {"files": False, "artifacts": False})
 
 
 class HiddenControl(unittest.TestCase):
@@ -187,7 +187,7 @@ class HiddenControl(unittest.TestCase):
         self.assertTrue(b["cls"], "body.no-files-control: the rail's toggle and the phone's tab are hidden by CSS")
         self.assertFalse(b["poFiles"], "the pane a desktop session left open closes on the same apply")
         self.assertEqual(b["store"]["files"], False, "…and the close is saved, so a reload stays closed")
-        self.assertEqual(b["chat"]["avail"], {"files": False}, "the panes are told the pane is unavailable: file links open over the pane clicked")
+        self.assertEqual(b["chat"]["avail"], {"files": False, "artifacts": False}, "the panes are told the pane is unavailable: file links open over the pane clicked")
         self.assertEqual(b["chat"]["on"]["files"], False)
 
     def test_the_pane_cannot_be_brought_forward_while_the_control_is_hidden(self):
@@ -202,7 +202,7 @@ class HiddenControl(unittest.TestCase):
     def test_the_gears_write_shows_the_control_again_and_the_pane_can_open(self):
         s = self.out["shown"]
         self.assertFalse(s["cls"], "the storage event re-applies: the control shows")
-        self.assertEqual(s["chat"]["avail"], {"files": True})
+        self.assertEqual(s["chat"]["avail"], {"files": True, "artifacts": False})
         r = self.out["reopened"]
         self.assertTrue(r["poFiles"], "and the pane opens again")
         self.assertEqual(r["chat"]["on"]["files"], True)
@@ -218,8 +218,8 @@ class Broadcast(unittest.TestCase):
 
     def test_the_boot_apply_tells_every_pane_the_set_as_the_flags_stand(self):
         self.assertEqual(self.out["boot"]["counts"], {k: 1 for k in self.keys}, "one message per pane at boot")
-        self.assertEqual(self.out["boot"]["chat"], {"romp": "panes", "on": {"chat": True, "timeline": True, "fleet": False, "feed": True, "files": False},
-                                                     "avail": {"files": True}})   # avail: the Files control's setting rides every tell (T317); on here by the store (off by default since T317b)
+        self.assertEqual(self.out["boot"]["chat"], {"romp": "panes", "on": {"chat": True, "timeline": True, "fleet": False, "feed": True, "files": False, "artifacts": False},
+                                                     "avail": {"files": True, "artifacts": False}})   # avail: the Files control's setting rides every tell (T317); on here by the store (off by default since T317b)
         self.assertEqual(self.out["boot"]["files"], self.out["boot"]["chat"], "every pane hears the same set")
 
     def test_a_toggle_is_the_event_and_a_no_change_toggle_is_silent(self):
@@ -238,8 +238,8 @@ class Broadcast(unittest.TestCase):
 
     def test_on_a_phone_on_means_the_tab_showing_not_the_flag(self):
         # po.files is true here (the toggle above), yet the phone on the chat tab reports it off
-        self.assertEqual(self.out["phoneChat"]["on"], {"chat": True, "timeline": False, "fleet": False, "feed": False, "files": False})
-        self.assertEqual(self.out["phoneFiles"]["on"], {"chat": False, "timeline": False, "fleet": False, "feed": False, "files": True})
+        self.assertEqual(self.out["phoneChat"]["on"], {"chat": True, "timeline": False, "fleet": False, "feed": False, "files": False, "artifacts": False})
+        self.assertEqual(self.out["phoneFiles"]["on"], {"chat": False, "timeline": False, "fleet": False, "feed": False, "files": True, "artifacts": False})
 
     def test_a_toggle_off_reports_the_pane_off(self):
         self.assertFalse(self.out["off"]["chat"]["on"]["files"])
@@ -254,7 +254,7 @@ class Broadcast(unittest.TestCase):
         js = km._LANDING_COLLAPSE_JS
         self.assertIn("var KEYS=" + json.dumps(self.keys) + ";", js)
         self.assertIn('var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER]) + """;', open(os.path.join(BIN, "romp-kernel")).read())
-        self.assertEqual(len(self.keys), 5)
+        self.assertEqual(len(self.keys), 6)   # the Artifacts pane since 2026-09-19
         # every key ships an iframe by the id the broadcast addresses, or a pane is silently never told
         html = km._landing()
         for k in self.keys:
@@ -323,11 +323,11 @@ class OptionalPanes(unittest.TestCase):
 
     def test_a_pane_hidden_in_the_gear_is_not_in_the_dashboard_at_boot(self):
         b = self.out["boot"]
-        self.assertEqual(b["chat"]["on"], {"chat": True, "timeline": True, "fleet": False, "files": False}, "the broadcast omits the hidden pane's key")
-        self.assertEqual(b["counts"], {"chat": 1, "timeline": 1, "fleet": 1, "feed": 0, "files": 1}, "the hidden pane is told nothing (it has no document)")
-        self.assertEqual(b["src"], {"chat": "/chat", "timeline": "/timeline", "fleet": "/fleet", "feed": None, "files": "/files"},
+        self.assertEqual(b["chat"]["on"], {"chat": True, "timeline": True, "fleet": False, "files": False, "artifacts": False}, "the broadcast omits the hidden pane's key")
+        self.assertEqual(b["counts"], {"chat": 1, "timeline": 1, "fleet": 1, "feed": 0, "files": 1, "artifacts": 1}, "the hidden pane is told nothing (it has no document)")
+        self.assertEqual(b["src"], {"chat": "/chat", "timeline": "/timeline", "fleet": "/fleet", "feed": None, "files": "/files", "artifacts": None},
                          "the shown optional panes load from data-src; the hidden one never gets a src")
-        self.assertEqual(b["hidden"], {"chat": False, "timeline": False, "fleet": False, "feed": True, "files": False}, "its rail button and phone tab are hidden")
+        self.assertEqual(b["hidden"], {"chat": False, "timeline": False, "fleet": False, "feed": True, "files": False, "artifacts": False}, "its rail button and phone tab are hidden")
         self.assertFalse(b["cls"], "no po-feed body class: the column is not shown")
         self.assertEqual(b["tabs"], ["chat"], "a phone left on the hidden pane's tab goes back to the chat")
         self.assertEqual(b["sets"], {"timeline": 1, "fleet": 1}, "src set once per shown pane")
@@ -337,7 +337,7 @@ class OptionalPanes(unittest.TestCase):
         self.assertEqual(r["counts"]["chat"], 1, "no re-apply, no broadcast: nothing changed")
         self.assertFalse(r["cls"])
         f = self.out["files"]
-        self.assertEqual(f["chat"]["on"], {"chat": True, "timeline": True, "fleet": False, "files": True})
+        self.assertEqual(f["chat"]["on"], {"chat": True, "timeline": True, "fleet": False, "files": True, "artifacts": False})
         self.assertNotIn("feed", f["store"], "romp-panes persists the set without the hidden key")
 
     def test_enabling_in_the_gear_loads_the_pane_and_restores_its_button_tab_and_key(self):
@@ -345,7 +345,7 @@ class OptionalPanes(unittest.TestCase):
         self.assertEqual(e["src"]["feed"], "/feed", "the storage event copies data-src to src")
         self.assertEqual(e["hidden"]["feed"], False)
         self.assertTrue(e["cls"], "the pane comes back with its default flag (on)")
-        self.assertEqual(e["chat"]["on"], {"chat": True, "timeline": True, "fleet": False, "feed": True, "files": True}, "the broadcast carries the key again")
+        self.assertEqual(e["chat"]["on"], {"chat": True, "timeline": True, "fleet": False, "feed": True, "files": True, "artifacts": False}, "the broadcast carries the key again")
         self.assertEqual(e["counts"]["feed"], 1, "the re-apply's broadcast reaches the iframe element (the page is still loading)")
         l = self.out["loaded"]
         self.assertEqual(l["counts"]["feed"], 2, "and its own load re-tells it, like any pane that boots after the shell")

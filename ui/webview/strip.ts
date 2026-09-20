@@ -672,6 +672,16 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
             : " No ssh path from this machine (it checked in over its own tunnel) — sync from its own dashboard.")
           : "");
       r.append(dot, nm);
+      // a PINNED machine's mark (plans/settings-across-machines.md, phase two): the host keeps one or more synchronized settings
+      // against the mesh; the glyph names them on hover, the same fact the settings' machine selector shows per row
+      const pinnedStores = Object.keys((t.settingsPinned as Record<string, boolean> | null) || {}).filter((k) => !!(t.settingsPinned as Record<string, boolean>)[k]);
+      if (pinnedStores.length) {
+        const pin = document.createElement("span");
+        pin.className = "sn-pin";
+        pin.textContent = "pinned";
+        pin.title = `${t.host} keeps its own value for ${pinnedStores.join(", ")}: other machines' picks are not applied there (Settings, the machine selector).`;
+        r.appendChild(pin);
+      }
       // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is
       // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
       const trust = document.createElement("select");

@@ -1,6 +1,7 @@
 import { marked } from "marked";
 import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
-import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
+import { sanitizeMd, userContentTarget } from "./md-sanitize";
+import { noticeBodyNodes, noticeAttachmentNodes, type NoticeAttachment } from "./notice-face";   // the notice face the feed card shows, for the approval box   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
@@ -34,7 +35,7 @@ import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
-import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
+import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, setAsideNotice, runsOf, turnsBeforeTail, splitHeldAgainstFrame, OVERLAY_KINDS, type Region, type Run, type Gap, type Ev } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
@@ -47,7 +48,7 @@ import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
-import { writeViewOrder } from "./view-order";
+import { applyViewOrder, readViewOrder, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
@@ -119,7 +120,7 @@ import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
 import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
-import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
+import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey, paneArranges } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
 import { turnWorkedSecs as workedSecsOf, workedFooterPlan } from "./worked-footer";
@@ -241,7 +242,7 @@ type ChatEvent = (
   // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
   // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
   // for, and how long is left when the API reported a reset (the user 2026-07-24).
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; paths?: string[]; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; paths?: string[]; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean; handed?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -326,7 +327,16 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // the add flow could read for a stored one), `why` the reason it is greyed when `available` is false
 interface AuthLogin { id?: string; value?: string; label?: string; machine?: boolean; available?: boolean; why?: string; expiresSoon?: boolean }
 interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean; logins?: AuthLogin[] }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+// The model picker's REQUESTED-model mark (the user 2026-09-17): the kernel sends this while a session's live model sits a
+// tier below its pick (an automatic fallback). pick/pickValue name the requested model (label, and the alias or id the
+// pick was made with); live is what answers; cause is "safeguards" once the CLI named the classifiers, else ""; retry says
+// whether Retry upgrades after downgrades is on, its cadence, and when the next attempt is due.
+interface ModelFallback { pick: string; pickValue: string; live: string; cause: string; category?: string; retry: { on: boolean; everyMin: number; armed: boolean; nextIn: number | null; attempts: number } }
+// A row of the chat's approval box (#notices): a needs-you notice with actions, as build_session ships status.notices
+// (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
+interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
+                       actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
+interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -531,7 +541,13 @@ function reconcileOptimisticInner(s: Session): void {
   // position. No "N queued messages" header to claim what we can't back. A copy hidden out of a HELD kernel
   // group (a usage limit holds every send) hands its reason to our bubble, so the wait still says what it is
   // waiting for.
-  s.events.push({ kind: "queued", bare: true, texts: inject.map(mk), uuid: OPT_PREFIX + inject[0].ts,
+  // a send the kernel's ECHO covers with no queued copy left (send-pending.ts `handed`, 2026-09-19): the backend passed it
+  // on — the SDK fed it to the CLI, which holds it behind the running turn until its next step — and no recall exists
+  // there, so the bubble loses its ✎ (a rescind could only answer "too late") and says where the message is. The kernel
+  // pushes this session the moment the copy leaves its queue (sdk_backend.py inputs()), so the flip is not a cycle late.
+  const handedSet = new Set(r.handed);
+  const texts = inject.map((p) => handedSet.has(p) ? { ...mk(p), cancelable: false, handed: true } : mk(p));
+  s.events.push({ kind: "queued", bare: true, texts, uuid: OPT_PREFIX + inject[0].ts,
                   held: inject.map((p) => heldBy.get(p)).find((h) => !!h) });
   // the signature is the texts alone: the tail slot moves with every kernel push by design, and chatTail's
   // incremental repaint strips our group before applying a kernel index, so the slot is never trusted
@@ -1192,6 +1208,12 @@ function clearSeek(): void {
  *  a PURE prepend re-anchored on the reader's own row + offset — never a yank to the abandoned target. */
 function releaseSeekFetch(sid: string): void {
   anchorPendingOlder = false;
+  pendingOlderMark.delete(sid);   // the abandoned landing's time and kind go with its claim (2026-09-19): a pure prepend carries none
+  // the wait's notice goes with the claim too (2026-09-19, review round two): the seek's backstop (failSeek), the seek note's cancel
+  // (cancelSeek) and a time-only navigation all release here, and on the older wire the notice waitOnOlderWire showed then stood with
+  // no ask behind it, beside the backstop's own toast, until a click, a later landing's reply or the socket's death (the chunk's chatHead
+  // reads the released claim as a scroll-back's and hides nothing). A window landing's notice is its live ask's record's and stands
+  if (landingNoticeSid === sid && !liveWindowAsk(sid)) hideLandingNotice();
   if (loadingOlder.has(sid)) {
     const content = document.getElementById("content");
     const v = views.get(sid);
@@ -4730,7 +4752,8 @@ function reflowQueuedGroup(turn: HTMLElement): void {
     // …from the SURVIVING bubbles' own states (data-lost), so a ✕ on the lost bubble leaves the rest
     // reading "sending…" — the label used to keep "not confirmed" for whoever remained
     const nLost = bubbles.filter((b) => (b as HTMLElement).dataset.lost === "1").length;
-    fillBareLabel(label, nLost, bubbles.length - nLost);
+    const nHanded = bubbles.filter((b) => (b as HTMLElement).dataset.handed === "1").length;   // taken by the session (renderQueued marks them)
+    fillBareLabel(label, nLost, bubbles.length - nLost - nHanded, nHanded);
     return;
   }
   const nCmd = bubbles.filter((b) => b.querySelector(".slash-cmd-chip")).length;
@@ -4751,12 +4774,12 @@ function strHash32(str: string): string {
 // The bare group's label from its bubbles' states (send-pending.ts bareGroupLabel): the lost part wears
 // the warn color, the sending part stays dim. Shared by the render and the ✕'s recount so the two can
 // never disagree.
-function fillBareLabel(label: HTMLElement, nLost: number, nSending: number): void {
-  const { parts, title } = bareGroupLabel(nLost, nSending);
+function fillBareLabel(label: HTMLElement, nLost: number, nSending: number, nHanded: number = 0): void {
+  const { parts, title } = bareGroupLabel(nLost, nSending, nHanded);
   label.replaceChildren();
   parts.forEach((part, i) => {
     if (i) label.appendChild(document.createTextNode(" · "));
-    const span = el("span", part.lost ? "lost" : "");
+    const span = el("span", part.lost ? "lost" : part.handed ? "handed" : "");
     span.textContent = part.text;
     label.appendChild(span);
   });
@@ -4772,7 +4795,7 @@ function fillBareLabel(label: HTMLElement, nLost: number, nSending: number): voi
 const pendingGroupNode = new Map<string, { sig: string; node: HTMLElement }>();
 function renderPendingGroup(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const sid = renderingSid || activeId || "";
-  const sig = JSON.stringify(ev.texts.map((t) => [t.md, !!t.lost, t.qts, t.imgPaths || null])) + "|" + JSON.stringify(ev.held || null)
+  const sig = JSON.stringify(ev.texts.map((t) => [t.md, !!t.lost, !!t.handed, t.qts, t.imgPaths || null])) + "|" + JSON.stringify(ev.held || null)
     + (ev.held && ev.held.resetsAt ? "|" + Math.floor(Date.now() / 60000) : "")   // a held countdown reads the minute: re-rendered as it ticks
   const fresh = renderQueued(ev);
   const cached = pendingGroupNode.get(sid);
@@ -4810,7 +4833,8 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     // progress romp cannot see — and the ✕ is its way back to the composer; the others in the same
     // group still read "sending…". One label, both counts when both states are present.
     const nLost = texts.filter((t) => t.lost).length;
-    fillBareLabel(label, nLost, texts.length - nLost);
+    const nHanded = texts.filter((t) => t.handed && !t.lost).length;   // taken by the session, not landed (send-pending.ts `handed`)
+    fillBareLabel(label, nLost, texts.length - nLost - nHanded, nHanded);
     if (ev.held) {   // the reason a hidden kernel copy carried (a usage limit holds every send): the wait says so
       label.appendChild(document.createTextNode(" · " + ev.held.what
         + (ev.held.resetsAt ? " · in " + fmtReset(ev.held.resetsAt, Math.floor(Date.now() / 1000)) : "")));
@@ -4864,13 +4888,16 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     // one phrase separating OUR unconfirmed echo from a real queued message, which the session has accepted
     // and is holding (the user 2026-07-16)
     if (t.optimistic && t.lost) bubble.title = "not confirmed — the connection dropped after this was sent; ✕ moves it back to the composer to send again";
+    // taken by the session (send-pending.ts `handed`, 2026-09-19): the copy left romp's queue for the CLI, which holds it
+    // behind the running turn until its next step — no ✎ (cancelable is off), the dashes close (styles.css .handed)
+    else if (t.optimistic && t.handed) { bubble.classList.add("handed"); bubble.dataset.handed = "1"; bubble.title = "taken by the session — it's waiting for the session's current step to finish; it can't be recalled now, and joins the conversation when the session reads it"; }
     else if (t.optimistic) bubble.title = "sent just now — romp hasn't confirmed the session has it yet";
     else if (t.landing) { bubble.classList.add("landing"); bubble.title = "the session has taken this — it joins the conversation as soon as its record lands"; }
     // a queued entry with NO ✕ (the user 2026-07-20): the queue lives inside the session's own CLI —
     // there is no recall — so instead of a cancel that would only ever say "too late", the tooltip says
     // where the message actually is. (SDK mid-turn forwards land here.)
     else if (!t.cancelable && t.idx !== undefined)
-      bubble.title = "queued in the session — it can't be recalled, and joins the conversation at the session's next step";
+      bubble.title = "queued inside the session's own process — it can't be recalled from here, and joins the conversation at the session's next step";
     const isCmd = renderSlashCmd(bubble, t.md);
     // what romp itself queued wears the LANDED romp grammar (T243, the user 2026-09-07), split exactly as the
     // landed message splits: a SYSTEM notice (restart / resume / a watch landing) is the gray notice card;
@@ -5754,7 +5781,15 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
     syncSessionsFromTabMeta(tabs, (id) => sessions.get(id), pendingTabMeta);
   }
   // Adopt the kernel order verbatim, keeping any just-arrived tab the push doesn't carry yet (see tab-order.ts).
-  const kernelOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  const seed = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  // …verbatim as the frame ARRIVES: on the browser page federation.js has already arranged it by the viewer's
+  // stored order at its merge point, so this is the arranged order. A page that never loads that layer (a VS Code
+  // webview — frame-listener.ts paneArranges) gets the kernel's raw seed, and until 2026-09-19 adopted it as-is:
+  // a drag wrote the store (commitTabOrder) and this very adoption undid it on the next push. Such a page
+  // arranges here, re-reading the store per frame as the manager does (view-order-wiring.test.ts). The frame's
+  // ID SET is unchanged, so every rule below — the omission teardown, the live keep, the reconcile — reads the
+  // same ids it always did; a page whose manager is MISSING is not this page (fedMissing shows the seed).
+  const kernelOrder = paneArranges(window as any) ? applyViewOrder(seed, readViewOrder()) : seed;
   ackClosingTabs(kernelOrder, report);
   // A kernel-owned tab the push no longer carries gets the SAME teardown the `closed` event runs — the
   // session map, its view, drafts and the active-tab reselect all go, not just the strip entry. Under
@@ -6478,13 +6513,28 @@ function makePlaceholderTab(id: string): HTMLElement {
     tab.style.setProperty("--chip-fg", meta.color.fg);
     tab.classList.add("colored");
   }
-  const swirl = el("img", "tab-ph-swirl") as HTMLImageElement;
-  swirl.src = mediaSrc("romp-swirl-glyph.svg"); swirl.alt = ""; swirl.onerror = () => swirl.remove();
-  tab.appendChild(swirl);
+  // The LOADED tab's structure from the first paint (plans/tab-placeholder-width.md, the user 2026-09-19): the strip used to
+  // jump as tabs settled, because a placeholder was a 12 px swirl and a label while a loaded tab is the dot slot, the label,
+  // the after-widgets and the ✕ glyph's width. The chip drawn through the ONE shared helper with an unknown status gives the
+  // dot widget's slot (the same 7 px box a loaded tab reserves); the swirl rides INSIDE that slot, centred and absolutely
+  // positioned, so it paints over it and costs no width. With the dot widget off there is no slot on either tab and no swirl.
+  applyTabStatus(tab, { id, status: {} });
+  const slot = tab.querySelector<HTMLElement>(".tab-dot");
+  if (slot) {
+    slot.classList.add("loading"); slot.title = "loading…";
+    const swirl = el("img", "tab-ph-swirl") as HTMLImageElement;
+    swirl.src = mediaSrc("romp-swirl-glyph.svg"); swirl.alt = ""; swirl.onerror = () => swirl.remove();
+    slot.appendChild(swirl);
+  }
   const label = el("span", "tab-label");
   if (meta?.name) label.replaceChildren(...hostNameNodes(meta.name, id));
   else label.textContent = "…";
   tab.appendChild(label);
+  appendTabAfterWidgets(tab, { id, status: {} });   // the hot-key keycap when one is assigned; the context gauge draws nothing without a fill
+  // the end spacer: the ✕ glyph's metrics with its visibility hidden, so the loaded tab's ✕ lands on the same width; never a
+  // control (a loading tab has no session to end and no drag: selection is its only power, tabs-first.test.ts)
+  const end = el("span", "tab-ph-end"); end.textContent = "×"; end.setAttribute("aria-hidden", "true");
+  tab.appendChild(end);
   return tab;
 }
 
@@ -10207,6 +10257,7 @@ function threadMetaStatus(th: CommentThread): Status {
   return { state: stuck ? "needsInput" : (threadBusy(th.state) ? "working" : "ready"),
            sinceEpoch: th.sinceEpoch || null, mode: th.mode || "", model: th.model || "",
            effort: th.effort || "default", fast: th.fast || "", backend: "sdk",
+           modelFallback: th.modelFallback ?? null,   // the popover's picker wears the requested-model mark too (2026-09-17)
            modelColor: th.modelColor, effortColor: th.effortColor,
            modelTone: (th as any).modelTone, effortTone: (th as any).effortTone } as Status;
 }
@@ -11378,6 +11429,26 @@ function cssEscape(s: string): string {
   return typeof (window as any).CSS?.escape === "function" ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
 }
 
+/** The older wire's wait (2026-09-19): a regions-less proto-2 session's landing rides loadOlder (a window has no regions to join, the
+ *  client merge guard's I4), one chunk per round trip until the anchor is resident, and chatHead re-arms it on every arrival. Both arms
+ *  of that wire in scrollToAnchor end here: the landing armed for chatHead, the trail's word, and, for a navigation, the SAME wait state
+ *  the window road shows (requestAround's notice). A reply chip, the reload restore and an unplaced window's re-arm arm no seek, so on
+ *  this wire nothing said a jump was under way, and the notice's click is the cancel (cancelLanding releases the fetch's claim); the
+ *  keep-offset re-land of the reader's own row (relandAsk) is no navigation and shows nothing, as its window ask would not. The click's
+ *  time and kind ride the fetch (pendingOlderMark), so chatHead's re-arm carries them and the pointer-exact row files with the anchorT
+ *  and kind the attempt row and the window ask's record both keep; a re-point of an in-flight fetch onto a newer click refreshes them.
+ *  onWireDown counts a live landing by the notice, so a socket death mid-walk files its wsdown-lost word and toasts, as a window landing's does. */
+function waitOnOlderWire(sid: string, uuid: string): false {
+  // the first attempt's datum stands across the seek's re-attempts on the anchor (its re-arm carries no time; a window ask's record
+  // stands the same way across pointer-fetch-waiting passes); a click on another anchor replaces it
+  const held = pendingOlderMark.get(sid);
+  const mark = held && held.uuid === uuid ? held : { uuid, t: pendingAnchorT ?? null, kind: pendingAnchorKind ?? pendingAnchorIntent ?? null };
+  pendingOlderMark.set(sid, mark);
+  pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older");
+  if (!relandAsk) showLandingNotice(sid, mark.t);
+  return false;
+}
+
 // Scroll the thread to the event carrying this source JSONL uuid (the deep-link
 // anchor) and flash it. Multiple events can share one line's uuid (a multi-block
 // assistant turn) — target the first. If it's not rendered yet, stash it as
@@ -11447,7 +11518,14 @@ function scrollToAnchor(uuid: string): boolean {
       // then the restore's attempt refused and its arm dropped). The fetch is re-pointed onto this anchor, as the index wire's is below, and
       // chatHead lands it when the page arrives, or re-attempts, which asks the window then. (CI's mid-run road was a different shape: its
       // restore wrote before any fetch existed and fell to the not-rendered path below, round ten.)
-      if (loadingOlder.has(activeId)) { pendingOlderAnchor.set(activeId, uuid); pendingOlderKeepY.delete(activeId); pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false; }
+      if (loadingOlder.has(activeId)) { pendingOlderAnchor.set(activeId, uuid); pendingOlderKeepY.delete(activeId); return waitOnOlderWire(activeId, uuid); }
+      // a session with NO regions (a frame whose tailLo the kernel could not name) asks the OLDER wire, never a window (2026-09-19, the
+      // client merge guard's I4): a window's run has no regions to join and the insert refuses it (insertRegionRun), where the tail run
+      // it used to mint at turn 0 landed the older window after the newest events. loadOlder before firstUuid lands by key (chatHead
+      // prepends), re-attempting until the anchor is resident, the road the in-flight re-point above already takes: one round trip per
+      // wire chunk of distance instead of one window, for a rare shape, and the landing lands by keep offset when one is armed. The wait
+      // shows the window road's notice and carries the click's time and kind to the landing (waitOnOlderWire, the follow-up of 2026-09-19).
+      if (!s.regions && fetchOlderForAnchor(activeId, uuid)) return waitOnOlderWire(activeId, uuid);
       if (requestAround(activeId, uuid)) {   // the ask's record holds the anchor (round eight); the older wire's marks below are chatHead's alone
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-window"); return false;
       }
@@ -12263,13 +12341,20 @@ function eventsFromRegions(s: Session): void {
 }
 /** The tail run takes whatever s.events holds past the history runs (a chatTail truncated and appended, an optimistic echo
  *  injected): the runs' events are s.events, so the tail's slice is the rest. */
-function regionsAbsorbTail(s: Session): void {
+function regionsAbsorbTail(s: Session): boolean {
   const rs = s.regions;
-  if (!rs) return;
+  if (!rs) return true;
   let n = 0;
   for (const r of rs) if (r.kind === "run" && r.hi != null) n += r.events.length;
   const tail = rs.find((r): r is Run => r.kind === "run" && r.hi == null);
-  if (tail) tail.events = s.events.slice(n);
+  if (!tail) return true;
+  // GUARD (the dropped-history fix, 2026-09-19, backstop for the chatTail anchor branch): s.events must still hold at least the history runs above
+  // the tail. When a truncation has eaten into them (s.events shorter than that count), slicing the tail from n
+  // would keep the tail's OLD label over a handful of events — the store would then agree the eaten rows are
+  // resident and never ask for them (a 7-event run keeping run[176,∞)). Refuse to relabel; the caller re-bases.
+  if (s.events.length < n) return false;
+  tail.events = s.events.slice(n);
+  return true;
 }
 function itemFirstEvent(it: DisplayItem): number { return it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices[0] : it.kind === "gap" ? it.before : it.index; }
 
@@ -13107,6 +13192,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
   renderLedger();  // swap in the active session's digest box (or hide if none)
   renderLiveAsk(); // swap in the active session's pending picker (or hide if none)
   renderBgTasks(); // swap in the active session's background-task box (or hide if none)
+  renderNotices(); // swap in the active session's approval box (or hide if none)
   let empty = document.getElementById("empty-state");
   // A SECTION AT A GLANCE: while snapView names a section, the pane shows its sessions instead of any
   // transcript: every view hidden, the composer disabled with a placeholder that says what to do (a message
@@ -13383,6 +13469,12 @@ function landActive(content: HTMLElement | null, v: View): void {
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind, keep: pendingAnchorKeepY != null };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // the older wire's notice comes down with the attempt that ends its wait (2026-09-19, review round two): landed, honest-failed, or
+  // handed to the window road, whose ask's record owns the notice from then on; an attempt that re-arms the wire (waitOnOlderWire), or
+  // another anchor's attempt while the wire's deep-link fetch is still in flight, leaves it up. Decided HERE, inside the pass, because
+  // compact mode's build defers this pass a frame past chatHead's reply, and a hide at the reply left that frame with no landing for
+  // onWireDown to count (a socket death in it lost the jump with no word)
+  if (att.anchor && activeId && landingNoticeSid === activeId && !liveWindowAsk(activeId) && !(loadingOlder.has(activeId) && pendingOlderAnchor.has(activeId) && !pendingOlderKeepY.has(activeId))) hideLandingNotice();
   // TIME-ONLY navigation (the user 2026-08-25, the fifth can't-locate shape): some producers — the
   // timeline's lane clicks, deep links, cards minted from segments with no anchorable atom — send
   // anchorT with NO uuid, and the by-id-only landing left the whole class dead-ending in the bare
@@ -13938,7 +14030,7 @@ if (typeof ResizeObserver === "function") {
 // and a follow-mode reader is written to the new bottom; a scrolled-up reader is untouched (their top line never
 // moved). Event-based (the observer), no timer.
 if (typeof ResizeObserver === "function") {
-  for (const boxId of ["bg-tasks", "footer"]) {
+  for (const boxId of ["notices", "bg-tasks", "footer"]) {   // the approval box is a box below too (the review of PR 1890, low a)
     const box = document.getElementById(boxId);
     if (!box) continue;
     let lastH = -1;                                           // -1 = not yet measured (observe fires once on attach)
@@ -13946,11 +14038,29 @@ if (typeof ResizeObserver === "function") {
       const h = entries[0]?.contentRect?.height ?? 0;
       const content = document.getElementById("content");
       const v = activeId ? views.get(activeId) : null;
-      if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick, h - lastH)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
+      const dh = h - lastH;
+      // Where the reader stood BEFORE the growth, from the geometry (2026-09-19, the load flake behind main's red at bee556e8). The
+      // recorded mode is the pre-growth truth only while nothing scrolled between the growth and this pass, and something can: a
+      // scroll event from any other cause in that window (the append path's tail rebuild anchoring the reader, a compensation
+      // write's echo) reads the GROWN geometry, sees the reader a box's height above the new bottom, and records scrolled-up; this
+      // pass then had nothing to re-pin, and the reader stayed above the bottom, text covered, for good. The browser keeps scrollTop
+      // across a growth (no clamp, no event of its own), so the pre-growth position is this geometry with the growth added back to
+      // #content's height; either truth re-pins. A shrink is the browser's clamp: the recorded mode alone, as before.
+      const wasAtBottom = !!(content && lastH >= 0 && dh > 0 && atBottomDist(content.scrollHeight - content.scrollTop - (content.clientHeight + dh)));
+      let repinned = false;
+      if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick || wasAtBottom, dh)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
         writeScroll(content, content.scrollHeight, "box-below", true);
         v.scrollTop = content.scrollTop;                      // keep the per-view saved position in sync
+        v.stick = true;                                       // the record agrees: a follow-mode reader, whichever truth said so
+        repinned = true;
       }
       lastH = h;
+      // the pass is the EVENT a reader of the bottom holds at (the same flake: under load a lab read scrollTop after the box grew
+      // and before this pass, and saw the reader a box's height above the bottom the write restores). One DOM event per pass, named
+      // by the box, carrying the height this pass acted on: a reader is settled when the box's current height is the one the last
+      // pass reported (a box at its max-height grows no further and passes no more, so "a pass came" is the wrong wait). Page-side,
+      // the way PR 1897's socket hold is lab-side.
+      window.dispatchEvent(new CustomEvent("romp:box-below", { detail: { id: boxId, height: h, repinned } }));
     });
     bro.observe(box);
   }
@@ -14151,6 +14261,30 @@ function showLandingNotice(sid: string, t: number | null | undefined): void {
   landingNoticeEl.classList.remove("pulse");   // a pulse cut short by the hide (no animationend) must not replay on this re-show (low 1)
   landingNoticeEl.style.display = "";
 }
+/** The set-aside notice for a `rebased` frame (2026-09-19): the same notice element, an informational message with the
+ *  count; a click dismisses it (cancelLanding has no live ask to cancel, so it just hides). Never silent. */
+function showSetAsideNotice(sid: string, n: number): void {
+  // independent of the reveal-progress guard showLandingNotice keeps (2026-09-19 round two, the LOW): a set-aside must
+  // never be silent, so it shows even while a reveal line is up, and carries its OWN tooltip, not the landing notice's.
+  const content = document.getElementById("content");
+  if (!content || !content.parentNode) return;
+  if (!landingNoticeEl) {
+    landingNoticeEl = document.createElement("div");
+    landingNoticeEl.className = "tx-landing-notice";
+    landingNoticeEl.addEventListener("click", () => cancelLanding());
+  }
+  landingNoticeEl.title = "these earlier messages are no longer part of this session; click to dismiss";
+  landingNoticeEl.textContent = setAsideNotice(n);
+  landingNoticeSid = sid;
+  if (!landingNoticeEl.isConnected) {
+    const anchor = document.createElement("div");
+    anchor.className = "tx-loading-anchor";
+    anchor.appendChild(landingNoticeEl);
+    content.parentNode.insertBefore(anchor, content);
+  }
+  landingNoticeEl.classList.remove("pulse");
+  landingNoticeEl.style.display = "";
+}
 function hideLandingNotice(): void {
   if (landingNoticeEl) {
     if (pulseEnd) { landingNoticeEl.removeEventListener("animationend", pulseEnd); pulseEnd = null; }   // a pulse the hide cuts short never fires animationend: its handler leaves with it (low 2)
@@ -14166,18 +14300,25 @@ function cancelLanding(): void {
   if (!sid) return;   // no notice showing: nothing to cancel
   const rec = liveWindowAsk(sid);   // the notice is the live ask's
   const target = rec?.anchor;
+  // the older wire's landing is named by the fetch's mark alone at the click (2026-09-19, review round two): landActive nulled the pending
+  // fields at the end of the pass that armed the wait, and the release below deletes the mark, so the row read the landing as nothing
+  // where the window road's row names its anchor from the record
+  const mark = rec ? null : pendingOlderMark.get(sid);
   hideLandingNotice();
   // the cancel marks ITS record and consumes only that record's origin and held gap (round eight): the reply still comes and fills in
   // place, a cancelled landing is not busy (round seven, medium 3: the live-ask gate frees now, so the reader's next click asks), the
   // reader stays where they are, and a later dead end never restores this landing's origin; the gap's glyph goes unless a page ask of
   // its own is on the wire for it
   if (rec) { rec.cancelled = true; rec.origin = null; rec.gap = null; }
+  // the older wire's landing has no ask record (waitOnOlderWire, 2026-09-19): its claim on the in-flight fetch is released the way the
+  // seek's ✕ releases it, so the chunk arrives as a pure prepend re-anchored on the reader's own row and chatHead re-arms nothing
+  if (!rec) releaseSeekFetch(sid);
   // the glyphs follow the truth, not the held record: every gap of the view that no ask names any more sheds its glyph (CI's page kept one
   // on a gap the record no longer matched, round seven)
   const gv = views.get(sid);
   if (gv) for (const g of Array.from(gv.el.querySelectorAll(".tx-gap.tx-gap-loading")) as HTMLElement[]) { if (!gapHasAsk(sid, { lo: Number(g.dataset.lo), hi: Number(g.dataset.hi) })) g.classList.remove("tx-gap-loading"); }
   landTrail.push("cancelled");
-  vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? pendingAnchor ?? undefined, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
+  vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? mark?.uuid ?? pendingAnchor ?? undefined, anchorT: mark?.t ?? pendingAnchorT ?? undefined, kind: mark?.kind ?? pendingAnchorKind ?? undefined, cancelled: true });
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
   clearSeek();
 }
@@ -14583,6 +14724,89 @@ function renderSubHead(): void {
     const note = el("div", "sub-head-note");
     note.textContent = "earlier part not shown";
     host.appendChild(note);
+  }
+}
+
+// The APPROVAL BOX (#notices; plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): the active session's
+// standing needs-you notices that carry actions, one row each, ABOVE the background box so a decision only the user can make
+// sits nearest the composer. Today that is a message a DIRECTED peer sent this session, held by the postal bus: Approve
+// delivers and Deny drops, both actions of the quarantine kind the kernel runs through the bus's act road (the same
+// noticeAction wire the feed card posts; the kernel answers noticeActionDone by the row's id). The rows are status.notices,
+// so the box vanishes on the decision with the frame that drops the row, and the tab's ask ring (status.needsYou) goes with
+// it. Rendered on every status change like renderBgTasks (awaitKey carries the rows), but RECONCILED IN PLACE, keyed by the
+// notice id (the review of PR 1890, medium 1): a rebuild that replaced every row destroyed a pressed button before its mouseup
+// (a second hold landing mid-press: no click, nothing posted, nothing latched) and wiped a row's refusal line at the next
+// status change. A row's buttons and its refusal line are rebuilt only when its own actions change; its title, body and
+// attachment are updated when they change; a row that left leaves. The clicks ride ONE delegate on the stable #notices
+// container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
+// and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
+interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify((n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])); }
+function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
+function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
+  const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
+  b.dataset.act = act; b.dataset.idx = String(idx);
+  return b;
+}
+// the row's two faces: the actions as the kernel stored them, and the deny step (the optional note back to the sender: the
+// one click-time input the quarantine kind takes, two choices and a way back)
+function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
+  const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
+  if (!acts || !note) return;
+  acts.replaceChildren(); note.style.display = "none";
+  (n.actions || []).forEach((act, i) => {
+    const deny = act.kind === "quarantine" && !!act.body && (act.body as any).verdict === "deny";
+    acts.appendChild(noticeButton(act.label, deny ? "ntc-deny" : "ntc-ok", deny ? "ntc-deny-step" : "ntc-go", i));
+  });
+}
+function noticeRowDenyStep(row: HTMLElement, idx: number): void {
+  const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLTextAreaElement>(".ntc-note");
+  if (!acts || !note) return;
+  acts.replaceChildren(noticeButton("Deny & send note", "ntc-deny", "ntc-deny-note", idx), noticeButton("Deny without note", "ntc-deny", "ntc-deny-bare", idx), noticeButton("Back", "ntc-back", "ntc-back", idx));
+  note.style.display = ""; note.focus();
+}
+function buildNoticeRow(n: ChatNotice, sid: string): NoticeRowEl {
+  const row = document.createElement("div") as NoticeRowEl; row.className = "ntc-row"; row.dataset.item = n.itemId;
+  const title = document.createElement("div"); title.className = "ntc-title";
+  const body = document.createElement("div"); body.className = "ntc-body";
+  const att = document.createElement("div"); att.className = "ntc-attach"; att.style.display = "none";
+  const note = document.createElement("textarea"); note.className = "ntc-note"; note.placeholder = "optional: tell the sender why (delivered to them as postal mail)"; note.style.display = "none";
+  const acts = document.createElement("div"); acts.className = "ntc-actions";
+  const err = document.createElement("div"); err.className = "ntc-err"; err.style.display = "none";
+  row.append(title, body, att, note, acts, err);
+  updateNoticeRow(row, n, sid);
+  return row;
+}
+function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
+  const title = row.querySelector<HTMLElement>(".ntc-title"), body = row.querySelector<HTMLElement>(".ntc-body"), att = row.querySelector<HTMLElement>(".ntc-attach");
+  if (title && row._title !== (n.title || "")) { title.textContent = n.title || "Needs you"; row._title = n.title || ""; }
+  if (body && row._body !== (n.body || "")) { body.replaceChildren(...noticeBodyNodes(n.body || "")); body.style.display = n.body && n.body.trim() ? "" : "none"; row._body = n.body || ""; }
+  const attKey = JSON.stringify(n.attachment || null);
+  if (att && row._att !== attKey) { att.replaceChildren(...noticeAttachmentNodes(n.attachment, sid)); att.style.display = att.childNodes.length ? "" : "none"; row._att = attKey; }
+  const sig = noticeActionsSig(n);
+  if (row._sig !== sig) {   // the row's OWN change: its buttons rebuilt from the stored actions, its refusal line cleared
+    row._sig = sig; noticeRowPlain(row, n);
+    const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) { err.textContent = ""; err.style.display = "none"; }
+  }
+}
+function renderNotices(): void {
+  const host = document.getElementById("notices");
+  if (!host) return;
+  const s = activeId && !snapView ? liveSession(activeId) : null;
+  const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
+  if (!s || !activeId || !rows.length) { host.replaceChildren(); host.style.display = "none"; return; }
+  host.style.display = "";
+  const want = new Set(rows.map((n) => n.itemId));
+  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
+  let prev: HTMLElement | null = null;
+  for (const n of rows) {
+    let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
+    if (!row) { row = buildNoticeRow(n, s.id); if (prev) prev.after(row); else host.prepend(row); }
+    else {
+      updateNoticeRow(row, n, s.id);
+      if (row.previousElementSibling !== prev) { if (prev) prev.after(row); else host.prepend(row); }   // the frame's order; a move only when out of place (a move re-inserts the node, and a press on it would be lost)
+    }
+    prev = row;
   }
 }
 
@@ -15556,6 +15780,37 @@ function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   return (st.model || "").toLowerCase().startsWith(value);
 }
 
+// The requested-model tooltip (the user 2026-09-17): why the pick is not answering, then what romp does about it —
+// the retry cadence when Retry upgrades after downgrades is on, else where to turn it on.
+function requestedModelTip(fb: ModelFallback): string {
+  const why = fb.cause === "safeguards" ? `Requested model blocked due to safety classifiers${fb.category ? ` (${fb.category})` : ""}.`
+    : `Requested model is not answering; ${fb.live || "a fallback model"} is.`;   // the cause is named only once the CLI's refusal frame named it
+  const r = fb.retry || { on: false, everyMin: 10, armed: false, nextIn: null, attempts: 0 };
+  const next = r.nextIn !== null && r.nextIn !== undefined ? ` Next attempt in ${Math.max(1, Math.ceil(r.nextIn / 60))} min.` : "";
+  // the cadence is promised only when a retry is ARMED (the kernel's standing retry, which the tick fires); the switch being
+  // on with nothing armed — a dormant session, whose next launch carries the pick — says what is true instead
+  if (r.armed) return `${why} Retrying every ${r.everyMin || 10} minutes.${next}`;
+  if (r.on) return `${why} Auto-retry is on; the requested model is asked for when the session next starts.`;
+  return `${why} Configure auto-retry in Settings, Automation.`;
+}
+// The requested row's permanent one-line sub-line (the menu vocabulary's .meta-item-sub, the mode rows' shape): the gist
+// of the tooltip, so the explanation never depends on a hover (the user 2026-09-17, whose hover showed nothing).
+function requestedModelSub(fb: ModelFallback): string {
+  const why = fb.cause === "safeguards" ? `blocked by safety classifiers${fb.category ? ` (${fb.category})` : ""}` : `not answering; ${fb.live || "a fallback"} is`;
+  const r = fb.retry || { on: false, everyMin: 10, armed: false, nextIn: null, attempts: 0 };
+  const what = r.armed ? `retrying every ${r.everyMin || 10} min` : r.on ? "auto-retry on" : "auto-retry off";
+  return `requested · ${why} · ${what}`;
+}
+// Is this picker row the REQUESTED model? A family row (value = the alias, "fable") when the pick's label is of that
+// family; a version row when its label is the pick's label or its id is the pick itself.
+function isRequestedFamily(fb: ModelFallback, value: string): boolean {
+  const pk = (fb.pick || "").toLowerCase(), pv = (fb.pickValue || "").toLowerCase(), v = (value || "").toLowerCase();
+  return !!v && (pk.startsWith(v) || pv === v || pv.startsWith("claude-" + v));
+}
+function isRequestedVersion(fb: ModelFallback, v: { label: string; value: string }): boolean {
+  return (fb.pick || "").toLowerCase() === (v.label || "").toLowerCase() || (!!fb.pickValue && fb.pickValue === v.value);
+}
+
 // "<sessionId>:<kind>" → set when the user picks a value, cleared when the session
 // republishes the value (or after 20s, if the CLI rejected/ignored the command).
 const metaPending = new Map<string, { was: string; until: number }>();
@@ -15622,6 +15877,7 @@ function closeMetaMenu() {
   metaMenuEl?.remove();
   metaMenuEl = null;
   onModelChoicesLoaded = null;   // the rebuild hook belongs to the menu it was set for
+  pruneTip();   // a tip up on a menu row drops with the menu (the rows leave without a blur or a mouseleave)
 }
 // The badge a menu anchors to, as it stands NOW: `btn` while it is still in the document, else the connected
 // badge of the same kind for the same session (a popover's by data-sid; the chat's carry none) that the last
@@ -15668,7 +15924,7 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
     closeMetaMenu();
   };
   let subEl: HTMLElement | null = null;
-  const closeSub = () => { subEl?.remove(); subEl = null; };
+  const closeSub = () => { subEl?.remove(); subEl = null; pruneTip(); };
   // An sdkOnly entry is dropped on Codex rather than shown-and-refused: the backend cannot apply it,
   // and a menu that lists a mode you can't have is worse than one that doesn't. Codex sessions read
   // their own vocabulary via metaChoices (docs/codex.md) before the same filter.
@@ -15714,6 +15970,22 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
     const rowIco = kind === "mode" ? el("span", "meta-ico mode-ico") : null;
     if (rowIco) rowIco.innerHTML = modeIconSvg(c.value);
     if (kind === "mode" && riskyMode(c.value)) item.classList.add("mode-risky");
+    // the REQUESTED model wears a yellow tick while a fallback answers instead (the user 2026-09-17): romp knows the
+    // pick and the live model differ and says why, and whether it is retrying, in the tooltip
+    const fb = kind === "model" ? (s.status.modelFallback || null) : null;
+    if (fb && !item.classList.contains("current") && isRequestedFamily(fb, c.value)) {
+      item.classList.add("requested");
+      setTip(item, requestedModelTip(fb));   // the one tooltip treatment (tip.ts): hover AND focus, above the menu
+      if (!c.sub) {                          // a bare-text row grows the sub-lined shape the mode rows wear
+        const label = item.textContent || c.label;
+        item.textContent = "";
+        const head = el("div"); head.textContent = label;
+        item.appendChild(head);
+      }
+      const rsub = el("div", "meta-item-sub");
+      rsub.textContent = requestedModelSub(fb);
+      item.appendChild(rsub);
+    }
     // model/effort rows wear THEIR OWN rank color (the user 2026-08-31: a picker whose rows are
     // all default-gray codes nothing) — the same /models-fed color+tone the badges use
     if (kind === "model" || kind === "effort") {
@@ -15759,6 +16031,11 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
       const lsub = el("div", "meta-item-sub");
       lsub.textContent = pinned ? "unpins — follows the newest " + c.label : "follows the newest " + c.label;
       latest.append(lhead, lsub);
+      if (fb && !latest.classList.contains("current") && !(fb.pickValue || "").toLowerCase().startsWith("claude-") && isRequestedFamily(fb, c.value)) {
+        latest.classList.add("requested");   // an alias pick IS the floating family: Latest is its row in the submenu
+        setTip(latest, requestedModelTip(fb));
+        lsub.textContent = requestedModelSub(fb) + " — " + lsub.textContent;
+      }
       latest.addEventListener("click", (e) => { e.stopPropagation(); pickValue(c.value, true); });
       latest.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); pickValue(c.value, true); }
@@ -15770,6 +16047,14 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
         const row = el("div", "meta-item" + (cur ? " current" : ""));
         row.tabIndex = 0;
         row.textContent = v.label;
+        let rowTip = "";
+        if (fb && !cur && isRequestedVersion(fb, v)) {
+          row.classList.add("requested");   // the requested version: the yellow tick, the same tooltip, the sub-line
+          rowTip = requestedModelTip(fb);
+          const vsub = el("div", "meta-item-sub");
+          vsub.textContent = requestedModelSub(fb);
+          row.appendChild(vsub);
+        }
         if (v.learned) {
           // LOUD, per the fail-loudly rule: this version is in no catalog list — a running session's CLI
           // reported it (kernel /models `learned`) — so the row says so instead of a stale menu hiding
@@ -15777,8 +16062,10 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
           const tag = el("span", "meta-item-sub");
           tag.textContent = " new";
           row.appendChild(tag);
-          row.title = "Reported by a running session's Claude Code; not yet in romp's version list";
+          const note = "Reported by a running session's Claude Code; not yet in romp's version list";
+          rowTip = rowTip ? rowTip + "\n" + note : note;   // a requested learned version keeps its explanation
         }
+        if (rowTip) setTip(row, rowTip);
         row.addEventListener("click", (e) => { e.stopPropagation(); pickValue(v.value); });
         row.addEventListener("keydown", (e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); pickValue(v.value); }
@@ -17140,6 +17427,12 @@ function sharesAnyUuid(a: ChatEvent[], b: ChatEvent[]): boolean {
   return false;
 }
 
+/** One client-diag row from the chat's frame merge (2026-09-19): a named writer, so the executed harness over upsert
+ *  (chat-proto2-exec.test.ts, a Proxy scope) records the rows instead of tripping on a bare postMessage. */
+function chatDiagRow(what: string, data: Record<string, unknown>): void {
+  vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what, data });
+}
+
 function upsert(msg: any) {
   retryCmtCreates(String(msg.id || ""));   // a session frame = the kernel re-parsed → retry a lag-refused create (T106)
   // The LOCAL kernel's own machine name rides its session frames (the kernel's _self_host, as the tabOrder
@@ -17162,34 +17455,143 @@ function upsert(msg: any) {
     emptyFrameDiagSent.add(msg.id);
     vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "empty-session-frame", data: { id: msg.id, held: prev.events.length } });
   }
-  let events: ChatEvent[] = kept && prev ? prev.events : (msg.events || (prev ? prev.events : []));
+  // GUARD 3 (the dropped-history fix, 2026-09-19, reconciled onto PR 1877): the no-tailLo and non-proto-2 / regions-less
+  // cases are 1877's by design: a full frame is authoritative for [tailLo, end); a frame whose tail start the kernel
+  // could not name leaves no regions, files one regions-dropped row, and a landing takes the older wire. What remains
+  // here is the one shape 1877's merge-by-position does not catch: a proto-2 full frame whose NUMERIC tailLo claims to
+  // cover a held run (r.lo >= tailLo, or a run past tailLo) while its events start LATER than that tailLo says, so the
+  // merge drops that run's earlier held transcript rows WHOLE across a hole. Refuse it (keep the held regions + resident
+  // events, the keepResidentEvents shape) and ask for a frame upsert CAN place; 1877's merge then lands the held runs,
+  // nothing lost. The test below is the merge's own loss rule (splitHeldAgainstFrame.before over every claimed run, the
+  // TAIL run included), not a tailLo comparison: a frame that re-carries a run's events from tailLo shares its first key
+  // and loses nothing, so it applies; rows dropped AT OR AFTER the frame's content are legit retractions 1877 keeps
+  // (round two MEDIUM). A repeated identical refusal is latched below.
+  let desyncWhy: string | null = null;
+  if (!kept && prev && prev.regions && msg.proto === 2 && typeof msg.tailLo === "number" && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
+    const tl = msg.tailLo;
+    const frameEv = msg.events as unknown as Ev[];
+    const txRow = (e: Ev): boolean => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent) && !OVERLAY_KINDS.has(String(e.kind ?? ""));
+    // The MERGE's own loss rule (1877's splitHeldAgainstFrame reads the run against the frame), not a tailLo comparison.
+    // 1877 merges by position: a run wholly above tailLo stays; a run at or past it (r.lo >= tailLo) is dropped WHOLE; a
+    // straddling run keeps its part BEFORE the frame's first shared key. A frame authoritative for [tailLo, end) may
+    // legitimately drop rows AT OR AFTER its content (retracted / behind, split.dropped / afterLast -- 1877 applies
+    // those). The LOSS is a run the frame claims to cover (r.lo >= tailLo) whose held transcript rows lie BEFORE the
+    // frame's first shared key (split.before): the frame's real content starts later than its tailLo says, so those rows
+    // are history it does not carry -- the mismapped-low tailLo that drops the tail run whole (HIGH 1) or wipes the sole
+    // tail run (HIGH 2). Refuse and ask; a frame that re-carries the run's events from tailLo shares its first key and
+    // has an empty split.before, so it applies.
+    for (const r of runsOf(prev.regions)) {
+      if (!r.events.length || r.lo < tl || (r.hi != null && r.hi <= tl)) continue;   // above tailLo (kept) or straddling (its before is kept, the rest is a legit retraction)
+      if (splitHeldAgainstFrame(r.events, frameEv, txRow).before.some(txRow)) {
+        // a `rebased` full may set aside a run the frame shares NO key with (a fork / rewind abandoned it, the kernel
+        // confirmed it gone from the transcript); a run the frame PARTIALLY carries is a loss (a lying low tailLo),
+        // refused even with the flag, so a false or lying rebased can never drop content (2026-09-19 round two, M1b).
+        if (msg.rebased && !sharesAnyUuid(msg.events, r.events as unknown as ChatEvent[])) continue;
+        desyncWhy = "would-drop-held"; break;
+      }
+    }
+  }
+  const keepResident = kept || !!desyncWhy;
+  let events: ChatEvent[] = keepResident && prev ? prev.events : (msg.events || (prev ? prev.events : []));
   pendingFullWhy.delete(msg.id);
+  if (desyncWhy && prev) {
+    // latch on the refused frame's coordinates so an identical re-send (a kernel that answers every needFull the same)
+    // cannot loop the page into an unbounded needFull storm (round two HIGH): ask once; a SECOND identical refusal keeps
+    // the held state and STOPS asking, with one counted diag row; different coordinates (or a delta that applies) resume.
+    const coordKey = String(msg.proto ?? "?") + ":" + (typeof msg.tailLo === "number" ? String(msg.tailLo) : "n") + ":"
+      + (keyOf(msg.events[0] as { uuid?: string; key?: string } | undefined) ?? "?") + ":"
+      + (keyOf(msg.events[msg.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? "?");
+    const prior = refusedFrameLatch.get(msg.id);
+    const n = prior && prior.key === coordKey ? prior.count + 1 : 1;
+    refusedFrameLatch.set(msg.id, { key: coordKey, count: n });
+    if (n === 1) {
+      if (!emptyFrameDiagSent.has(msg.id + ":" + desyncWhy)) {
+        emptyFrameDiagSent.add(msg.id + ":" + desyncWhy);
+        vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync", data: { id: msg.id, why: desyncWhy, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
+      }
+      // guard 3 asks for a frame upsert CAN place; PR 1877's merge-by-position then lands the held runs, nothing lost.
+      requestFullSession(msg.id, "gap");
+    } else if (n === 2) {
+      // the ask did not change what the kernel sends: stop asking, and say so ONCE with the count so the loop is not silent
+      vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync-loop", data: { id: msg.id, why: desyncWhy, count: n, proto: msg.proto ?? null, tailLo: (typeof msg.tailLo === "number" ? msg.tailLo : null) } });
+    }
+    // n > 2: the latch holds silently (held state kept, no ask) until the coordinates change or a delta applies
+  } else if (prev && !kept) {
+    clearRefusedLatch(msg.id);   // a full frame that APPLIES clears the refusal latch: the session is progressing again
+  }
   // T386 stage 2: a proto-2 full frame is the TAIL run (the kernel names its first turn, tailLo); history runs the page holds whose
   // spans end at or before it stay, and s.events is the runs' events in turn order. No full frame merges by reason any more: the
   // tail is always resident, so no re-attach exists.
-  let regions: Region[] | undefined = kept && prev ? prev.regions : undefined;
-  if (!kept && msg.proto === 2 && Array.isArray(msg.events)) {
+  let regions: Region[] | undefined = keepResident && prev ? prev.regions : undefined;
+  if (!keepResident && msg.proto === 2 && Array.isArray(msg.events)) {
     const tailLo: number | null = typeof msg.tailLo === "number" ? msg.tailLo : (msg.headKnown ? 0 : null);
     if (tailLo != null) {
       // the frame's tail run joins the regions the page holds: history wholly above it stays; a held run starting at or past it is
       // superseded (the frame carries everything from there); a held run STRADDLING it (the held tail, when the kernel's cut moved
-      // down after an append and the frame's tail is the few turns past the cut) keeps its part before the frame's start, minus
-      // the keys the frame carries, and the two touch, so insertRun makes them one run (the merge-base merged such a frame into
-      // the held run; dropping the held tail here blanked 640 events to 2 in the landing lab, 2026-09-13)
-      const frameKeys = new Set((events as Array<{ uuid?: string; key?: string }>).map((e) => keyOf(e)).filter((k): k is string => !!k));
+      // down after an append and the frame's tail is the few turns past the cut) keeps its part before the frame's start and the two
+      // touch, so insertRun makes them one run (the merge-base merged such a frame into the held run; dropping the held tail here
+      // blanked 640 events to 2 in the landing lab, 2026-09-13).
+      // The invariants this branch keeps (the client merge guard, 2026-09-19; the reading is chat-regions.ts splitHeldAgainstFrame):
+      //   I1 the runs' events, concatenated, are s.events after every mutation (the client-injected tail group joins the tail run at
+      //      the next regionsAbsorbTail, so it rides no held run here, where eventsFromRegions would resurrect it mid-list);
+      //   I2 a full frame is authoritative for [tailLo, end): a held event whose key the frame lacks and whose POSITION is at or after
+      //      the frame's first shared key leaves the model (retracted, or the frame is behind); one before that key is history the
+      //      frame did not carry and stays above as [r.lo, tailLo). No held event is placed by key absence alone: the key filter this
+      //      replaces filed the client's newest rows above an older frame's tail (s.events t3,t1,t2: the bottom of the view showed
+      //      older content, the next delta duplicated the row, a later afterUuid resolving to the first copy truncated the frame's tail);
+      //   I3 the tail run's last event is the kernel's last as of the newest frame applied: the resident newest row is displaced only
+      //      by a frame that carries the span it sits in, and a frame that is BEHIND (its last transcript key resident, a transcript
+      //      row of the page's dropped after it) is applied as sent and filed once as frame-behind, so a stale full from the kernel is
+      //      countable instead of invisible. A rewind's or a retraction's full takes the same road and is a legitimate shorter list;
+      //      rewindPending tells a client-initiated rewind's row apart in the journal.
+      const transcriptRow = (e: Ev): boolean => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent) && !OVERLAY_KINDS.has(String(e.kind ?? ""));
+      const frameEvents = events as unknown as Ev[];
       const held: Run[] = [];
+      let behind: { heldLo: number; heldLast: string; dropped: number; afterLast: number } | null = null;
       for (const r of (prev?.regions ? runsOf(prev.regions) : [])) {
         if (!r.events.length) continue;
         if (r.hi != null && r.hi <= tailLo) { held.push(r); continue; }
-        if (r.lo >= tailLo) continue;
-        const before = r.events.filter((e) => !frameKeys.has(keyOf(e as { uuid?: string; key?: string }) ?? ""));
+        const split = splitHeldAgainstFrame(r.events, frameEvents, transcriptRow);   // the run overlaps the frame's span: read it before deciding what stays
+        if (split.behind && !behind) behind = { heldLo: r.lo, heldLast: (keyOf(r.events.filter(transcriptRow).pop()) ?? "").slice(-12), dropped: split.dropped.length, afterLast: split.afterLast };
+        if (r.lo >= tailLo) continue;   // the frame carries everything from there: nothing of it is held (the reading above still ran)
+        const before = split.before.filter((e) => !isOptimistic(e as unknown as ChatEvent) && !isHeldGroup(e as unknown as ChatEvent));   // I1: the client's own group rides no held run
         if (before.length) held.push({ kind: "run", lo: r.lo, hi: tailLo, events: before });   // emptied by the frame's own keys: nothing of it is left to hold
       }
       regions = insertRun(regionsFromRuns(held), { kind: "run", lo: tailLo, hi: null, events: events.slice() });
       const all: ChatEvent[] = [];
       for (const r of regions) if (r.kind === "run") for (const e of r.events) all.push(e as ChatEvent);
+      if (behind) chatDiagRow("frame-behind", { id: msg.id, tailLo, ...behind, frameLast: (keyOf(frameEvents.filter(transcriptRow).pop()) ?? "").slice(-12), rewindPending: pendingRewind.has(msg.id) });
+      if (prev && !prev.regions && prev.events.length && !held.length) {
+        // a session with NO regions (an earlier frame could not name its tail start) whose older wire prepended history it now holds
+        // in s.events alone: with no run to live in, that history goes with this frame's tail run. Said in the journal (2026-09-19),
+        // as the regions the null frame dropped are; a fresh full that carries the page's whole list files nothing
+        const frameKeys = new Set<string>();
+        for (const e of frameEvents) { const k = keyOf(e); if (k) frameKeys.add(k); }
+        const first = keyOf(prev.events[0] as unknown as Ev);
+        if (first && !frameKeys.has(first) && prev.events.some((e) => frameKeys.has(keyOf(e as unknown as Ev) ?? ""))) chatDiagRow("regions-dropped", { id: msg.id, why: "regions-less", heldRuns: 0, heldEvents: prev.events.length, frameEvents: events.length });
+      }
       events = all;
+      if (msg.rebased && prev) {
+        // rebased: the kernel says the held tail run's turns are gone from the current session (a fork or a rewind).
+        // This is the ONE place rows leave on purpose (the user 2026-09-19). The merge above already set them aside;
+        // say so, never silently: a diag row and the landing notice with the count.
+        const keptKeys = new Set<string>(); for (const e of all) { const k = keyOf(e as unknown as Ev); if (k) keptKeys.add(k); }
+        let setAside = 0;
+        for (const e of prev.events) { const ev = e as unknown as Ev; if (transcriptRow(ev) && !keptKeys.has(keyOf(ev) ?? "")) setAside++; }
+        if (setAside) { chatDiagRow("regions-dropped", { id: msg.id, why: "rebased", heldRuns: runsOf(prev.regions || []).length, setAside }); showSetAsideNotice(msg.id, setAside); }
+      }
+    } else if (prev?.regions) {
+      // the kernel could not name where its tail starts: no regions without a tail start (chat-proto2-exec.test.ts pins the rule), so
+      // the held runs go with this frame. Said in the journal (2026-09-19), so the kernel's null frames become countable; nothing on the
+      // client can place a window or a page for this session until a frame names its tail start (insertRegionRun refuses, scrollToAnchor
+      // takes the older wire). A merge into a key-sharing held tail is a parked decision, not this change.
+      chatDiagRow("regions-dropped", { id: msg.id, why: "no-tail-lo", heldRuns: runsOf(prev.regions).length, frameEvents: events.length });
     }
+  } else if (!keepResident && prev && prev.regions && msg.proto !== 2 && msg.events && msg.events.length && sharesAnyUuid(msg.events, prev.events)) {
+    // a NON-proto-2 full frame for a session the page holds as proto 2 cannot join the regions wire: it re-bases to the
+    // frame's window (regions dropped) and the page shows the kernel's current content; a later landing takes the older
+    // wire (PR 1877's regions-less path). Countable, not silent -- round two's not-proto-2 case, reconciled onto 1877.
+    chatDiagRow("regions-dropped", { id: msg.id, why: "not-proto2", heldRuns: runsOf(prev.regions).length, frameEvents: (msg.events || []).length });
   }
   const hasGap = !!regions && regions.some((r) => r.kind === "gap");
   const s: Session = {
@@ -17211,16 +17613,16 @@ function upsert(msg: any) {
     // omits the key and keeps the last-known.
     githubRepo: ("githubRepo" in msg) ? (msg.githubRepo ?? null) : (prev ? prev.githubRepo : null),
     // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
-    headFrom: kept && prev ? prev.headFrom : (msg.headFrom ?? 0),
-    headTotal: kept && prev ? prev.headTotal : (msg.proto === 2 ? (regions ? (hasGap ? null : events.length) : (msg.headTotal ?? null)) : (msg.headTotal ?? events.length)),
+    headFrom: keepResident && prev ? prev.headFrom : (msg.headFrom ?? 0),
+    headTotal: keepResident && prev ? prev.headTotal : (msg.proto === 2 ? (regions ? (hasGap ? null : events.length) : (msg.headTotal ?? null)) : (msg.headTotal ?? events.length)),
     // the uuid-anchored wire (T323 stage 4b): the frame says its shape (proto 2); a frame without it is an index frame
-    proto: kept && prev ? prev.proto : (msg.proto === 2 ? 2 : undefined),
-    headKnown: kept && prev ? prev.headKnown : (msg.proto === 2 ? (regions ? !hasGap || regions[0].kind === "run" : !!msg.headKnown) : undefined),
-    firstUuid: kept && prev ? prev.firstUuid : (msg.proto === 2 ? (regions ? (keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null) : (msg.firstUuid ?? keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null)) : undefined),
-    lastUuid: kept && prev ? prev.lastUuid : (msg.proto === 2 ? (msg.lastUuid ?? null) : undefined),
+    proto: keepResident && prev ? prev.proto : (msg.proto === 2 ? 2 : undefined),
+    headKnown: keepResident && prev ? prev.headKnown : (msg.proto === 2 ? (regions ? !hasGap || regions[0].kind === "run" : !!msg.headKnown) : undefined),
+    firstUuid: keepResident && prev ? prev.firstUuid : (msg.proto === 2 ? (regions ? (keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null) : (msg.firstUuid ?? keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null)) : undefined),
+    lastUuid: keepResident && prev ? prev.lastUuid : (msg.proto === 2 ? (msg.lastUuid ?? null) : undefined),
     regions,
     pageTurns: typeof msg.pageTurns === "number" ? msg.pageTurns : (prev ? prev.pageTurns : undefined),
-    tailLo: regions ? turnsBeforeTail(regions) : (kept && prev ? prev.tailLo : (typeof msg.tailLo === "number" ? msg.tailLo : (msg.headKnown ? 0 : null))),   // the merged tail's start, not the frame's alone
+    tailLo: regions ? turnsBeforeTail(regions) : (keepResident && prev ? prev.tailLo : (typeof msg.tailLo === "number" ? msg.tailLo : (msg.headKnown ? 0 : null))),   // the merged tail's start, not the frame's alone
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
     hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
@@ -17270,7 +17672,7 @@ function upsert(msg: any) {
   if (forked) {
     const v = views.get(msg.id);
     if (v) { v.uo?.disconnect(); v.ro?.disconnect(); v.mo?.disconnect(); v.el.remove(); views.delete(msg.id); }
-  } else if (existed && !kept) {
+  } else if (existed && !keepResident) {
     // A full frame replaces every event object and can differ from what this view rendered ANYWHERE (it is
     // what the kernel sends a client it believes is behind): the tail path trusts v.rendered as the exact
     // first changed index, so the whole window rebuilds here instead. Full frames for a held session are the
@@ -17319,6 +17721,7 @@ function upsert(msg: any) {
       }
     }
     renderBgTasks();
+    renderNotices();
   } else if (!activeId) {
     // no tab is active (the awaited tab after a reload, the unfocused pane): the arriving view stays hidden and the
     // body paints its line over the boot loader — nothing adopted it above (T357)
@@ -17377,11 +17780,33 @@ function notifyShell(kind: string, text: string, sid?: string): void {
 const awaitingFull = new Set<string>();
 const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked (kept for the reconnect's diagnostics; every full frame merges into the held runs, T386 stage 2)
 const emptyFrameDiagSent = new Set<string>();   // sids whose empty session frame was filed once (see upsert / frame-merge.ts)
+// sid → the coordinates of the last REFUSED full frame and how many identical ones in a row (the dropped-history fix,
+// round two HIGH): a kernel that answers each needFull with the same refused shape would loop the page into an unbounded
+// needFull storm. The page asks once, and after a SECOND identical refusal keeps the held state and stops asking; a frame
+// with different coordinates, or a delta that applies (clearRefusedLatch), resumes. Bounds the page half of the loop.
+const refusedFrameLatch = new Map<string, { key: string; count: number }>();
+function clearRefusedLatch(id: string): void {
+  const prior = refusedFrameLatch.get(id);
+  refusedFrameLatch.delete(id);
+  emptyFrameDiagSent.delete(id + ":would-drop-held");   // re-arm the desync row so a recurrence after the clear is filed again (not silenced for the page's life)
+  // a storm that has now cleared: file its REAL count once (the n === 2 row said only that a loop had started)
+  if (prior && prior.count >= 2) vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "full-frame-desync-loop", data: { id, count: prior.count, cleared: true } });
+}
 // `why` is a one-word diagnostic the kernel ignores (2026-09-07): gap = a delta past what we hold; nobase = a
 // delta for a session we hold nothing of; skeleton-click = the active tab is a skeleton; prefetch = the idle
 // chain; skeleton-delta = a delta for a tab held as skeleton (a contract violation). The return-to-tab harness
 // counts asks by it — a nobase on a reconnect row means the skeleton branch missed a frame type.
 type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta";   // (reattach retired with the detached client, T386 stage 2)
+/** The page's resident TAIL run's first event key for `id`, sent with a needFull so the kernel serves the repair full
+ *  from the held base (a superset, nothing dropped) or, when those turns are gone from the transcript, sets them aside
+ *  via `rebased` (CONTENT THAT EXISTS NEVER GETS DROPPED, the user 2026-09-19). undefined when the page holds no tail run. */
+function heldTailFirstKey(id: string): string | undefined {
+  const rs = sessions.get(id)?.regions;
+  if (!rs) return undefined;
+  const tail = rs.find((r) => r.kind === "run" && r.hi == null) as Run | undefined;
+  const first = tail && tail.events.length ? tail.events[0] : undefined;
+  return first ? (keyOf(first as unknown as Ev) ?? undefined) : undefined;
+}
 function requestFullSession(id: string, why: NeedFullWhy): void {
   if (!id) return;
   if (awaitingFull.has(id)) {
@@ -17393,7 +17818,10 @@ function requestFullSession(id: string, why: NeedFullWhy): void {
     return;
   }
   awaitingFull.add(id);
-  vscodeApi?.postMessage({ type: "needFull", id, why });
+  const ask: { type: "needFull"; id: string; why: NeedFullWhy; heldTailFirst?: string } = { type: "needFull", id, why };
+  const held = heldTailFirstKey(id);
+  if (held) ask.heldTailFirst = held;   // the held tail run first key: the kernel serves the repair from it (a superset) or sets it aside (rebased); omitted when the page holds no tail run
+  vscodeApi?.postMessage(ask);
   pendingFullWhy.set(id, why);   // the reason, for upsert's merge-or-replace decision when the answer lands (round 2, item 3)
 }
 // A relay's reopen (romp:hostRelayUp) releases that host's parked full asks (2026-09-19). After it the remote kernel holds a
@@ -17467,10 +17895,24 @@ function chatTail(msg: any) {
   let from = (msg.from | 0) - (s.headFrom || 0);
   if (typeof msg.afterUuid === "string") {
     const kernelEvents = s.events.filter((e) => !isOptimistic(e) && !isHeldGroup(e));
-    const at = indexOfUuid(kernelEvents as { uuid?: string }[], msg.afterUuid);
+    // Resolve the anchor INSIDE THE TAIL RUN ONLY (the dropped-history fix, 2026-09-19: the chatTail anchor branch). When the reader has scrolled
+    // back, the resident list is several runs — the loaded HISTORY runs above the gap AND the always-resident tail
+    // run — and "the last event the client holds" is meaningful only in the tail. An anchor that resolves inside a
+    // history run (a repeated uuid whose earlier copy the page holds but the kernel anchors on its later one; a
+    // staler conn's delta) is PROOF of desync, not an instruction to truncate to it: `s.events.length = from` there
+    // deletes every row between that history run and the tail, and regionsAbsorbTail then relabels the store to
+    // AGREE (a 7-event run keeping its run[176,∞) label), so the page never asks for the hole and only a reload
+    // heals it. Treat an anchor outside the tail run exactly as a missing one: ask for the full frame, which upsert
+    // merges into the held runs without losing one.
+    const tailRun = s.regions ? (s.regions.find((r) => r.kind === "run" && r.hi == null) as Run | undefined) : undefined;
+    const tailStart = tailRun && tailRun.events.length
+      ? indexOfUuid(kernelEvents as { uuid?: string }[], keyOf(tailRun.events[0] as { uuid?: string; key?: string }) ?? "") : 0;
+    const inTail = tailStart >= 0 ? indexOfUuid(kernelEvents.slice(tailStart) as { uuid?: string }[], msg.afterUuid) : -1;
+    const at = inTail < 0 ? -1 : tailStart + inTail;
     if (at < 0) {
-      // the anchor is not resident: a gap between the held run and the kernel's tail. The page asks the full frame; upsert merges it into
-      // the held runs (the regions: no client is ever detached, T386 stage 2)
+      // the anchor is not in the tail run: a gap between a held run and the kernel's tail, or a desync (an anchor that
+      // resolved into a history run). The page asks the full frame; upsert merges it into the held runs (the regions:
+      // no client is ever detached, T386 stage 2)
       requestFullSession(msg.id, "gap");
       return;
     }
@@ -17503,10 +17945,21 @@ function chatTail(msg: any) {
     return;
   }
   if (from < 0) return;                            // below the loaded head → our resident tail is still valid
+  // A truncation must never eat into the HISTORY runs a reader scrolled back to load: a `from` below where the tail run
+  // begins would drop everything between a history run and the tail (the parked read point with it), and regionsAbsorbTail
+  // would then relabel a short tail over the hole. Ask for the full frame instead, keeping the resident runs whole -- the
+  // numeric-`from` analogue of guard 1's tail-run-only anchor (round two low a: guard 4's after-the-fact re-base lost the
+  // read point for good; refusing before the truncation keeps the reader's place). Only when history is actually held (a gap).
+  if (s.regions && s.regions.some((r) => r.kind === "gap")) {
+    let hist = 0;
+    for (const r of s.regions) if (r.kind === "run" && r.hi != null) hist += r.events.length;
+    if (from < hist) { requestFullSession(msg.id, "gap"); return; }
+  }
   stripOptimistic(s);                              // kernel coordinates from here on (re-injected below)
   const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
+  clearRefusedLatch(s.id);                         // a delta applied: the session is progressing, so a later refused full frame may ask again
   reconcileRewind(s, from);                        // pending-rewind overlay + the editable-bubble set, judged below the tail's start (see there)
   reconcileHeldCopies(s);                          // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
@@ -17515,7 +17968,7 @@ function chatTail(msg: any) {
   // EQUAL to the length and syncView's no-op fast path skips the repaint — the retired turn stayed on screen
   // for good (the user 2026-07-24: a ✕'d queued message left its "1 queued message" element behind). Mark the
   // view stale so the window is rebuilt from the events that actually remain.
-  regionsAbsorbTail(s);                            // the tail run is s.events past the history runs (T386 stage 2)
+  if (!regionsAbsorbTail(s)) requestFullSession(s.id, "gap");   // a delta ate into held history: re-base rather than relabel a short tail over it (the dropped-history fix, 2026-09-19)
   const shrank = s.events.length < wasLen;
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (s.proto === 2 && s.headKnown && !(s.regions && s.regions.some((r) => r.kind === "gap"))) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the WHOLE is resident (no gap): its count (T386 stage 2, low 7: a mid-transcript gap holds older history, so the resident count is not the total)
@@ -17563,14 +18016,21 @@ const loadingOlder = new Set<string>();                 // sessions with a loadO
 
 // ── history regions (T386 stage 2): runs the page holds, gaps it asks for by turn span ──────────────────────────
 /** A window or a page becomes a run among the session's regions; s.events follows (the runs' events in turn order). */
-function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]): void {
-  const rs = s.regions ?? regionsFromRuns([{ kind: "run", lo: s.tailLo ?? 0, hi: null, events: s.events.slice() }]);
-  s.regions = insertRun(rs, { kind: "run", lo, hi, events });
+/** A page's or a window's run joins the session's regions by its kernel turn span; true when it did. FALSE, touching nothing, for a
+ *  session with no regions (2026-09-19, the client merge guard's I4: no run is ever minted with a lo the kernel did not name). This used
+ *  to mint a tail run at turn 0 for such a session (a frame whose tailLo the kernel could not name), and a non-overlapping OLDER window
+ *  then touched that run, mergeRuns found no shared key and no lower lo, and the older window landed AFTER the newest events
+ *  (t250,t251,t252,w96,w97: the bottom of the view was history, permanent for an idle session, and headKnown flipped true so no gap
+ *  ever asked again). A regions-less session's landing takes the older wire instead (scrollToAnchor), which lands by key. */
+function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]): boolean {
+  if (!s.regions) return false;
+  s.regions = insertRun(s.regions, { kind: "run", lo, hi, events });
   eventsFromRegions(s);
   const hasGap = s.regions.some((r) => r.kind === "gap");
   s.headKnown = !hasGap || s.regions[0].kind === "run";
   s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
   s.headTotal = hasGap ? null : s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);
+  return true;
 }
 const gapLoading = new Set<string>();                                        // "sid:lo:hi" of the page asks in flight
 const gapKey = (sid: string, lo: number, hi: number): string => sid + ":" + lo + ":" + hi;
@@ -17671,8 +18131,9 @@ function chatTurns(msg: any): void {
     return;
   }
   stripOptimistic(s);
-  insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
+  const placed = insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
+  if (!placed) { landTrail.push("turns-unplaced"); vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), kind: "unplaced" }); return; }   // no regions to place the page in (2026-09-19): the ask is freed above, nothing changed, so nothing rebuilds
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) { schedulePrebuild(); return; }
@@ -17832,16 +18293,34 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 // real jump that top-aligns + flashes. The two were indistinguishable before, so every scroll-back arrival
 // jumped (the user 2026-08-02).
 const pendingOlderKeepY = new Map<string, number>();
+// sid → the click's time and kind riding the older wire's deep-link fetch, keyed to its anchor (2026-09-19): chatHead's re-arm carried
+// neither, so the pointer-exact locateDiag row of a regions-less navigation (the older wire carries every one since the client merge
+// guard) lacked the anchorT and kind the attempt row and the window ask's record both keep. Written by waitOnOlderWire, read once by
+// chatHead for the anchor it names (a mark for another anchor is a stale click's and is ignored), gone with the fetch's claim.
+const pendingOlderMark = new Map<string, { uuid: string; t: number | null; kind: string | null }>();
 function chatHead(msg: any) {
   loadingOlder.delete(msg.id);
-  const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
+  const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); pendingOlderMark.delete(sid); };
+  const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor, or an in-flight fetch re-pointed onto an anchor), not a scroll-back's
+  // the older wire's wait ends where its reply lands NOTHING (2026-09-19, review round two), never at the reply itself: a reply the pass
+  // below re-arms on (another chunk is needed) leaves the notice waitOnOlderWire showed standing, and the re-arm's attempt re-shows it in
+  // place, where a hide here first, with compact mode's deferred build pass between the two, opened a frame in which onWireDown counted
+  // no landing and a socket death then lost the jump with no word; the landed attempt brings it down inside the pass (landActive). A
+  // window landing's notice is its live ask's record's and stands through a scroll-back's reply
+  const endWait = () => { if (landingNoticeSid === msg.id && !liveWindowAsk(msg.id)) hideLandingNotice(); };
+  // a stale or missing reply drops the landing it carried (2026-09-19, review round two): its word in the trail, and the reader told as
+  // the fault tells them when no seek stands behind the navigation (a reply chip's, the reload restore's); a seek re-arms from its own
+  // record on the next pass and its backstop speaks for it. Before this the notice went down and nothing was said
+  const dropLanding = (word: string) => {
+    endWait();
+    if (msg.id === activeId && deepLink && anchorPendingOlder) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push(word); if (!(seek && seek.sid === msg.id)) landToast("the history could not be loaded just now"); }
+  };
   const s = sessions.get(msg.id);
-  if (!s) { forget(msg.id); return; }
+  if (!s) { forget(msg.id); endWait(); return; }
   if (msg.fault) {
     // the kernel could not answer this time (T402 round two, low 3): the wait ends, nothing is re-based, the next scroll asks again; a
     // deep link's fetch stands its landing down at once with the same word as a window's fault (round four, low 2), not at the backstop
-    const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
-    forget(msg.id);
+    forget(msg.id); endWait();
     if (msg.id === activeId && deepLink && anchorPendingOlder) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("head-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
     return;
   }
@@ -17850,9 +18329,9 @@ function chatHead(msg: any) {
   if (typeof msg.beforeUuid === "string") {
     // proto 2 (T323 stage 4b): the reply names the resident oldest; a stale one (the oldest moved on) is ignored,
     // a missing anchor is the honest end of the search, and `more: false` is the head: the count exists from here
-    if (msg.missing) { forget(msg.id); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base (a FAULT never reaches here: it returned above)
+    if (msg.missing) { forget(msg.id); dropLanding("head-missing"); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base (a FAULT never reaches here: it returned above)
     const next = prependHead(s.events as { uuid?: string }[], msg.beforeUuid, older as { uuid?: string }[]);
-    if (!next) { forget(msg.id); return; }
+    if (!next) { forget(msg.id); dropLanding("head-stale"); return; }
     s.events = next as ChatEvent[];
     s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
     if (msg.more === false) { s.headKnown = true; s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0); }
@@ -17863,18 +18342,22 @@ function chatHead(msg: any) {
     s.headFrom = from;
   }
   const v = views.get(msg.id);
-  if (msg.id !== activeId) { forget(msg.id); if (v) v.stale = true; return; }
+  if (msg.id !== activeId) { forget(msg.id); endWait(); if (v) v.stale = true; return; }   // a tab left mid-wait: its landing is dropped with the claim, and the wait's notice with it
   // re-anchor: reset the active view so it re-windows around the saved row (now further down s.events), and
   // put that row back where it was — the prepended older content sits above, off-screen, ready to scroll into.
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; }
   const anchorUuid = pendingOlderAnchor.get(msg.id);
   const keepY = pendingOlderKeepY.get(msg.id);
+  const mark = pendingOlderMark.get(msg.id);
   forget(msg.id);
   // A DEEP-LINK STILL WAITING TO LAND WINS (the user 2026-08-02). A scroll-back re-anchor is about where the
   // reader was; a pending deep-link is about where they asked to GO. Letting the arrival overwrite it sent
   // the click somewhere the user never named.
   if (anchorUuid && !pendingAnchor) {
-    pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+    // the click's time and kind ride through from the fetch's mark (2026-09-19), as the window road's re-arm carries them from its
+    // ask's record: the pointer-exact row files with both; a scroll-back's arrival, or a mark left by another click, carries neither
+    const m = mark && mark.uuid === anchorUuid ? mark : null;
+    pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = m ? m.t : null; pendingAnchorKind = m ? m.kind : null;
     flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
   }
@@ -17986,10 +18469,12 @@ function chatWindow(msg: any) {
   const s = sessions.get(msg.id);
   if (!rec) {
     if (s && !msg.missing && !msg.fault && Array.isArray(msg.span) && (msg.events || []).length) {
-      stripOptimistic(s); insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s);
-      const v0 = views.get(msg.id);
-      if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
-      if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
+      stripOptimistic(s); const placed = insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s);
+      if (placed) {   // a stray the page cannot place (no regions, 2026-09-19) has no record to consume and rebuilds nothing: the trail's word below is all
+        const v0 = views.get(msg.id);
+        if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
+        if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
+      }
     }
     landTrail.push("window-stray");
     return;
@@ -18040,8 +18525,32 @@ function chatWindow(msg: any) {
   // T386 stage 2: the window becomes a RUN among the session's regions by its turn span; the gaps on either side shrink or split and
   // a touching run merges (chat-regions.ts insertRun). The tail run is never detached, so there is no strip, no re-attach, no walk.
   stripOptimistic(s);
-  insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]);
+  const placed = insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
+  if (!placed) {
+    // the regions went between the ask and its reply (a frame that could not name its tail start, 2026-09-19): the window has no run
+    // to live in, so nothing is inserted and nothing rebuilds (a view moves on new information only); the pre-jump is undone and the
+    // row filed. No toast: the next landing attempt takes the older wire for a regions-less session (scrollToAnchor) and lands the
+    // anchor by key, so a "could not be loaded" word here would be a false interrupt. Who makes that next attempt depends on what
+    // armed the landing. A seek (setActive's; armSeek has that one caller) is durable, landActive re-arms from it on every pass, so a
+    // seek-backed landing is left to the seek. A notch's or a comment tick's jump and the reload restore arm no seek, and landActive
+    // nulls the armed anchor at the end of the pass that asked the window, so without a re-arm here the click ended silently with the
+    // pre-jump undone (the review of 2026-09-19): such a landing is re-armed from the ask's record the way a placed navigation's is
+    // below, and showActive runs the pass now. Only while the older wire can answer (olderOnServer, or a fetch in flight the attempt
+    // re-points): otherwise the pass would ask the same window again and the two would ping-pong, so a dead end keeps its row and
+    // ends here. A canceled ask's refusal is silent, as its fault is.
+    if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled || wasLanding)) {
+      const cRestore = document.getElementById("content");
+      if (preJumpOrigin != null && cRestore) writeScroll(cRestore, preJumpOrigin, "land-cancel", false, cRestore.scrollTop);
+      if (!cancelled) { landTrail.push("window-unplaced"); vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), anchor: anchorUuid, kind: "unplaced" }); }
+      const seekCovers = !!seek && seek.sid === msg.id && seek.uuid === anchorUuid;
+      if (!cancelled && anchorUuid && ask.nav && !seekCovers && (olderOnServer(s) || loadingOlder.has(msg.id))) {
+        pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = ask.t; pendingAnchorKind = ask.kind; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
+        showActive();
+      }
+    }
+    return;
+  }
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) { schedulePrebuild(); return; }
@@ -18068,6 +18577,7 @@ function chatWindow(msg: any) {
 // active real session (renderBgTasks reads activeId), so calling it for a viewer tab is a no-op.
 function awaitChanged(sid: string): void {
   if (sid === activeId) renderBgTasks();
+  if (sid === activeId) renderNotices();   // the approval box rides the same status key (its rows are part of awaitKey)
   const a = activeId ? liveSession(activeId) : null;
   if (a && a.sub && a.sub.parentId === sid) renderSubHead();
 }
@@ -18076,7 +18586,8 @@ function awaitKey(st: Status | undefined): string {
   if (!st) return "";
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
                          st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
-                         (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""])]);
+                         (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""]),
+                         (st.notices || []).map((n) => n.itemId + "/" + (n.actions || []).length)]);   // the approval box's rows (2026-09-19)
 }
 
 function statusOnly(msg: any) {
@@ -18588,6 +19099,19 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // 2026-07-29). A modal is the interrupt; the bell is the durable record you can come back to — the same
   // split the card-badge mirror already makes. Dismissing the dialog must not erase the fact that a message
   // of yours never landed.
+  // the kernel's answer to an approval-box click (renderNotices), by the row's id: a refusal re-arms the row's buttons and
+  // says why in the row; a success drops the row at once (the next status frame confirms: the notice expired or was dismissed)
+  else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
+    const row = document.querySelector<HTMLElement>(noticeRowSelector(m.itemId));
+    if (row) {
+      if (m.ok) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
+      else {
+        for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+        const e = row.querySelector<HTMLElement>(".ntc-err");
+        if (e) { e.textContent = "Refused: " + String(m.error || "the kernel did not say why"); e.style.display = ""; }
+      }
+    }
+  }
   else if (m.type === "err" && typeof m.text === "string" && m.text) {
     const copy = typeof m.copy === "string" ? m.copy : "";
     const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
@@ -20224,6 +20748,36 @@ setupSettings();
 // Tab-bar clicks are DELEGATED to the stable #tabs container (installed once), not hung on the per-tab nodes
 // that renderTabs() rebuilds on every push — so selecting a tab or clicking its ✕ (Close/End session) always
 // lands, even mid-rebuild. Each tab/✕ carries its data-act + data-id (see renderTabs, ./actions).
+// The approval box's clicks, delegated to the stable #notices container (installed once), never to the rows renderNotices
+// reconciles: a press survives a rebuild (the review of PR 1890, medium 1). Each button names its act and the index of the
+// stored action it stands for; the notice is read from the ACTIVE session's frame at click time, never a stale closure.
+(() => {
+  const host = document.getElementById("notices");
+  if (!host) return;
+  const rowOf = (el: HTMLElement): HTMLElement | null => el.closest(".ntc-row") as HTMLElement | null;
+  const noticeOf = (row: HTMLElement): ChatNotice | null => {
+    const s = activeId ? liveSession(activeId) : null;
+    return ((s && s.status && s.status.notices) || []).find((n) => n.itemId === row.dataset.item) || null;
+  };
+  const go = (row: HTMLElement, n: ChatNotice, act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
+    const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
+    vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid: activeId, kind, body: act.body, ...(input ? { input } : {}) });
+    for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) b.disabled = true;   // every button of the row latches: one decision per message
+    clicked.textContent = ((clicked as any)._idle || clicked.textContent) + "…";
+    const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) err.style.display = "none";
+  };
+  const pick = (el: HTMLElement): [HTMLElement, ChatNotice, ChatNotice["actions"][number]] | null => {
+    const row = rowOf(el); const n = row && noticeOf(row); const act = n && (n.actions || [])[Number(el.dataset.idx)];
+    return row && n && act ? [row, n, act] : null;
+  };
+  delegate(host, {
+    "ntc-go": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
+    "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
+    "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
+  });
+})();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),
 // not the per-task rows that renderBgTasks() rebuilds on every push, so the click always lands.
 (() => {

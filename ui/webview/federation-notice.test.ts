@@ -35,9 +35,24 @@ test("a remote host's notice card merges with its prefixed sid and name kept and
   assert.equal(merged.asks.length, 1, "a foreign clear of a goal id touches no notice");
 });
 
+test("a session frame's approval-box rows wear the host like the feed's notice cards, so a remote kernel's answer finds its row (the review of PR 1890, medium 2)", () => {
+  const frame = { type: "session", id: SID, name: "web", status: { state: "idle", needsYou: true, notices: [
+    { itemId: `notice:${SID}:m1:1`, key: "m1", rev: 1, title: "New message from api", body: "hello", producer: "postal", actions: [{ label: "Approve", kind: "quarantine", body: { mid: "m1", verdict: "approve" } }] }] } };
+  const inb = prefixInbound("TESTHOST", frame);
+  assert.equal(inb.id, `TESTHOST:${SID}`);
+  assert.equal(inb.status.notices[0].itemId, `TESTHOST:notice:${SID}:m1:1`, "the row's id is prefixed like the card's");
+  assert.deepEqual(inb.status.notices[0].actions, frame.status.notices[0].actions, "the action rides untouched");
+  assert.equal(frame.status.notices[0].itemId, `notice:${SID}:m1:1`, "a COPY: the inbound frame is not mutated");
+  const done = prefixInbound("TESTHOST", { type: "noticeActionDone", itemId: `notice:${SID}:m1:1`, ok: false, error: "x" });
+  assert.equal(done.itemId, inb.status.notices[0].itemId, "the answer and the row agree");
+  assert.deepEqual(prefixInbound("", frame).status.notices[0].itemId, `notice:${SID}:m1:1`, "the local host is the identity");
+  const bare = prefixInbound("TESTHOST", { type: "session", id: SID, status: { state: "idle" } });
+  assert.equal(bare.status.notices, undefined, "a frame without the slice gains nothing");
+});
+
 test("the dismissal of a notice card is a routed gesture: the feed posts askClear with the card's sid", () => {
   assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "askClear", itemId: it\.itemId, sid: it\.sid \}\);/);
-  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "noticeAction", itemId: it\.itemId, sid: it\.sid, route: act\.route, body: act\.body \}\);/, "an action carries the sid too");
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "noticeAction", itemId: it\.itemId, sid: it\.sid, kind, body: act\.body, \.\.\.\(input \? \{ input \} : \{\}\) \}\);/, "an action carries the sid too (and its kind, 2026-09-19)");
 });
 
 test("the owner-less notice cards' owner key is one literal in the kernel and the pane, and the pane ranks it first by the feed board's rule", () => {

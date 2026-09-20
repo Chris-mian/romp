@@ -26,7 +26,8 @@ test("the gear: the master row opens Task tracking, checked by default, with the
 
 test("the gear: the flip posts setTaskTracking with a stamp and nothing more; the kernel's echo dresses the dependents and tells the shell", () => {
   // round two, medium 4: the gear and the shell went off on the click while the kernel had refused the write
-  assert.match(GEAR, /if \(tk\) tk\.addEventListener\('change', function \(\) \{ post\(\{ type: 'setTaskTracking', enabled: tk\.checked, gt: gclock\.stamp\('task-tracking'\) \}\); \}\);/);
+  assert.match(GEAR, /if \(tk\) tk\.addEventListener\('change', function \(\) \{ post\(scoped\(\{ type: 'setTaskTracking', enabled: tk\.checked, gt: gclock\.stamp\('task-tracking'\) \}\)\); \}\);/,
+    "the post is gesture-stamped; scoped() adds the machine selector's pick and nothing else (phase two)");
   assert.doesNotMatch(GEAR, /gclock\.stamp\('task-tracking'\) \}\); tellShellTracking/, "no shell message on the click");
   assert.match(GEAR, /if \(!m \|\| m\.type !== 'taskTracking' \|\| typeof m\.on !== 'boolean'\) return;[^\n]*\n\s*if \(tk\) tk\.checked = m\.on;\s*\n\s*dressTracking\(m\.on\);\s*\n\s*tellShellTracking\(m\.on\);/,
     "the echo frame sets the box, dresses, and tells the shell");

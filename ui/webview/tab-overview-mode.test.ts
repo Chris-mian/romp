@@ -88,7 +88,7 @@ test("5. no tab renders as selected while the overview shows; selecting any tab 
   // the faded-label exemption for the active tab stands down in the mode: no residual selection cue among faded siblings
   assert.match(RENDER, /if \(s\.status\.faded && \(id !== activeId \|\| snapView\) && s\.color\) \{/);
   // the footer's hide is not a box below the reader: the boxes-below follow rule stands down while the overview owns #content
-  assert.match(RENDER, /if \(content && !snapView && lastH >= 0 && content\.clientHeight > 0 && v && v\.shown && followBoxBelow\(v\.stick, h - lastH\)\) \{/);
+  assert.match(RENDER, /if \(content && !snapView && lastH >= 0 && content\.clientHeight > 0 && v && v\.shown && followBoxBelow\(v\.stick \|\| wasAtBottom, dh\)\) \{/);
   // leaving the overview re-measures the message box, which a pick's draft swap measured under display:none
   assert.match(fn("function showActive("), /const wasSnap = document\.body\.classList\.contains\("snap-mode"\);[\s\S]*if \(wasSnap\) \{[^}]*growComposer\(ta\);/);
   // dense chrome mirrors the row's tab box too

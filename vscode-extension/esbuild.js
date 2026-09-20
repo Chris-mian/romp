@@ -43,6 +43,8 @@ const webview = {
     "../ui/webview/fleet-pane.css",      // fleet page layout — the kernel reads the same file live
     "../ui/webview/files.ts",            // the Files pane: the file viewer as its own column (kernel /files)
     "../ui/webview/files-pane.css",      // its page layout + the viewer's pane-resident variant; the kernel reads the same file live
+    "../ui/webview/artifacts.ts",        // the Artifacts pane: a session's written, shown and dropped files (kernel /artifacts)
+    "../ui/webview/artifacts-pane.css",  // its page layout; the kernel reads the same file live
     "../ui/webview/timeline-main.ts",    // VS Code timeline view: boot glue + ui/romp-timeline-view.js inlined
     "../ui/webview/timeline-pane.css",   // timeline wrapper styles — the kernel reads the same file live
     "../ui/webview/strip.css",           // the romp strip (VS Code-only bottom rail stand-in)
@@ -52,6 +54,8 @@ const webview = {
     "../ui/webview/age-color-global.ts",   // window.__rompAgeColor for the kernel's inline shell scripts (bell panel)
     "../ui/webview/api-health-global.ts",   // window.__rompApiHealthMerge: the API-health merge + reading rules for the shell's rail (T301)
     "../ui/webview/palette-main.ts",   // command palette + Cmd/Ctrl+O/P hotkeys for the kernel's shell page
+    "../ui/webview/panedock-main.ts",  // the pane docking engine (plans/pane-docking.md): a shell bundle, inert unless the gear's paneDocking switch is on
+    "../ui/webview/pane-grab.ts",      // the pane pages' grab detector: injected into each pane document by the engine while the kit is on (section 3, the empty space inside a pane)
     "../ui/webview/shell-perf.ts",     // the shell page's performance collector (a pane's long animation frames are reported to the top-level window)
     "../ui/webview/editor-chunk.ts",   // CodeMirror editing substrate — ON-DEMAND (file-view loads it by
                                        // script tag on first edit); nothing else may import it, so the

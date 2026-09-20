@@ -305,10 +305,16 @@ class ColdTabGate(unittest.TestCase):
         km._clients[:] = [c]
         km._push_session_now(S2)                             # the attach handshake's push
         self.assertEqual(self.built, [], "not built: the set resolved first and S2 is in it")
+        self.assertIsNone(getattr(km._SEND_ROAD, "name", None),
+                          "the cold-skip early return resets the road mark too (2026-09-19 review: the dispatch thread runs other pushes)")
         strip = self._frames(c, "tabOrder")[0]
         self.assertEqual(strip["skeleton"], [S3, S2], "the strip carried the set")
         self.assertEqual([f["id"] for f in self._frames(c, "session")], [], "no full handed over")
         self.assertEqual([f["id"] for f in self._frames(c, "status")], [S2], "its provisional status instead")
+        sends = km._PERF_STATS.snapshot()["sends"]["full"]        # every frame of this push reads under its road (2026-09-19)
+        self.assertEqual((sends.get("status.targeted") or {}).get("count"), 1, "the gate's status is counted under status.targeted: %r" % sends)
+        self.assertNotIn("status", sends, "not under the pusher's plain slot")
+        self.assertEqual((sends.get("taborder.targeted") or {}).get("count"), 1, "the strip too")
 
     def test_11_the_gate_reads_every_connected_client_not_only_this_pushs_targets(self):
         """Round two, low 2: a connect push targets one column; another connected column's watched tab must not be skipped."""
