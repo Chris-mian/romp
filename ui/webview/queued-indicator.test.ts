@@ -13,7 +13,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
   // idx = backend-queue position (SDK); park = _pending_ops position (compaction/model parking, any backend)
   // `optimistic` (romp's own unconfirmed echo) rides along at the end — see optimistic-send.test.ts
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; goalId\?: string; paths\?: string\[\]; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean; romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/);   // gist: a queued romp SYSTEM notice's user-facing head (2026-09-08); imgPaths: the echo's dragged-image thumbnails (2026-08-25); romp flags: T243; lost + qts: the pending entry's connection-drop state and its identity for the ✕ (2026-09-06)
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; goalId\?: string; paths\?: string\[\]; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean; romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean; handed\?: boolean \}\[\]/);   // gist: a queued romp SYSTEM notice's user-facing head (2026-09-08); imgPaths: the echo's dragged-image thumbnails (2026-08-25); romp flags: T243; lost + qts: the pending entry's connection-drop state and its identity for the ✕ (2026-09-06)
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
@@ -106,7 +106,7 @@ test("the ✕ only renders while a recall can still win (queue_recallable gates 
 
 test("a queued bubble with no ✕ says where the message actually is", () => {
   assert.match(RENDER, /else if \(!t\.cancelable && t\.idx !== undefined\)/);
-  assert.match(RENDER, /queued in the session — it can't be recalled, and joins the conversation at the session's next step/);
+  assert.match(RENDER, /queued inside the session's own process — it can't be recalled from here, and joins the conversation at the session's next step/);   // reworded 2026-09-19: WHERE it is, not just that it is queued
 });
 
 test("the qx click stashes the composer before/after so a failed cancel can undo the restore", () => {
@@ -263,7 +263,7 @@ test("the kernel flags a romp-injected queued entry from the same markers as a l
 });
 
 test("what romp itself queued wears the LANDED romp grammar, split as landed: notice card vs gray romp bubble (T243)", () => {
-  assert.match(RENDER, /romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean \}\[\]/, "the queued text shape carries the flags (+ the gist, 2026-09-08)");
+  assert.match(RENDER, /romp\?: boolean; rompSystem\?: boolean; rompAuto\?: boolean; gist\?: string; imgPaths\?: string\[\]; lost\?: string; qts\?: number; qid\?: string; hiddenByPending\?: boolean; landing\?: boolean; handed\?: boolean \}\[\]/, "the queued text shape carries the flags (+ the gist, 2026-09-08)");
   const body = RENDER.split("function renderQueued(")[1].split("\nfunction ")[0];
   assert.match(body, /const bubble = el\("div", "queued-bubble md" \+ \(t\.cancelable \? " cancelable" : ""\)\s*\n\s*\+ \(t\.romp \? " queued-romp" : ""\) \+ \(t\.rompSystem \? " queued-sys" : ""\)\);/);
   // a SYSTEM notice → the landed card's own builder, nested; a one-line notice gets no body repeating its head
@@ -329,4 +329,16 @@ test("the kernel's echo of a send another window made wears the sender's pending
   assert.match(RENDER, /note\.textContent = "sending…";/);
   assert.match(CSS, /\.turn\.echo \.echo-bubble \{ border-width: 1px; border-style: dashed; border-color: color-mix\(in srgb, var\(--you\) 65%, transparent\); opacity: 0\.85; \}/, "the width named too (T403): a style alone inherited a command row's medium width");
   assert.match(CSS, /\.echo-note \{ font-size: 0\.82em; color: var\(--dim\); letter-spacing: 0\.02em; text-align: right; \}/);
+});
+
+test("a pending send the session has TAKEN loses its ✎ and says where it is (the user 2026-09-19)", () => {
+  // send-pending.ts `handed`: the kernel's echo covers the send and no queued copy remains — the SDK fed it to the
+  // CLI, which holds it behind the running turn until its next step, and no recall exists there. The ✎ used to stay
+  // (and answer "too late"); now the bubble drops it, wears .handed and the bare header counts it "with the session".
+  assert.match(RENDER, /const handedSet = new Set\(r\.handed\);/);
+  assert.match(RENDER, /const texts = inject\.map\(\(p\) => handedSet\.has\(p\) \? \{ \.\.\.mk\(p\), cancelable: false, handed: true \} : mk\(p\)\);/);
+  assert.match(RENDER, /else if \(t\.optimistic && t\.handed\) \{ bubble\.classList\.add\("handed"\); bubble\.dataset\.handed = "1"; bubble\.title = "taken by the session — /);   // data-handed: the ✕ recount reads it
+  assert.match(RENDER, /const nHanded = texts\.filter\(\(t\) => t\.handed && !t\.lost\)\.length;/);
+  assert.match(RENDER, /fillBareLabel\(label, nLost, texts\.length - nLost - nHanded, nHanded\);/);
+  assert.match(RENDER, /\[t\.md, !!t\.lost, !!t\.handed, t\.qts, t\.imgPaths \|\| null\]/, "the cached group node re-renders when a bubble flips to handed");
 });

@@ -242,7 +242,7 @@ type ChatEvent = (
   // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
   // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
   // for, and how long is left when the API reported a reset (the user 2026-07-24).
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; paths?: string[]; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; goalId?: string; paths?: string[]; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; gist?: string; imgPaths?: string[]; lost?: string; qts?: number; qid?: string; hiddenByPending?: boolean; landing?: boolean; handed?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25); lost: client-only, the connection dropped after this unconfirmed send; qts: on OUR optimistic copy the pending entry's identity (its press time) so the ✕ removes ITS entry, on a kernel copy its enqueue stamp (T252c); qid: the copy's identity (T252c): minted at the press on OUR copy and posted with the send, so the kernel's copy wears the same one; the ✕ names it on both (send-pending.ts)
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -541,7 +541,13 @@ function reconcileOptimisticInner(s: Session): void {
   // position. No "N queued messages" header to claim what we can't back. A copy hidden out of a HELD kernel
   // group (a usage limit holds every send) hands its reason to our bubble, so the wait still says what it is
   // waiting for.
-  s.events.push({ kind: "queued", bare: true, texts: inject.map(mk), uuid: OPT_PREFIX + inject[0].ts,
+  // a send the kernel's ECHO covers with no queued copy left (send-pending.ts `handed`, 2026-09-19): the backend passed it
+  // on — the SDK fed it to the CLI, which holds it behind the running turn until its next step — and no recall exists
+  // there, so the bubble loses its ✎ (a rescind could only answer "too late") and says where the message is. The kernel
+  // pushes this session the moment the copy leaves its queue (sdk_backend.py inputs()), so the flip is not a cycle late.
+  const handedSet = new Set(r.handed);
+  const texts = inject.map((p) => handedSet.has(p) ? { ...mk(p), cancelable: false, handed: true } : mk(p));
+  s.events.push({ kind: "queued", bare: true, texts, uuid: OPT_PREFIX + inject[0].ts,
                   held: inject.map((p) => heldBy.get(p)).find((h) => !!h) });
   // the signature is the texts alone: the tail slot moves with every kernel push by design, and chatTail's
   // incremental repaint strips our group before applying a kernel index, so the slot is never trusted
@@ -4746,7 +4752,8 @@ function reflowQueuedGroup(turn: HTMLElement): void {
     // …from the SURVIVING bubbles' own states (data-lost), so a ✕ on the lost bubble leaves the rest
     // reading "sending…" — the label used to keep "not confirmed" for whoever remained
     const nLost = bubbles.filter((b) => (b as HTMLElement).dataset.lost === "1").length;
-    fillBareLabel(label, nLost, bubbles.length - nLost);
+    const nHanded = bubbles.filter((b) => (b as HTMLElement).dataset.handed === "1").length;   // taken by the session (renderQueued marks them)
+    fillBareLabel(label, nLost, bubbles.length - nLost - nHanded, nHanded);
     return;
   }
   const nCmd = bubbles.filter((b) => b.querySelector(".slash-cmd-chip")).length;
@@ -4767,12 +4774,12 @@ function strHash32(str: string): string {
 // The bare group's label from its bubbles' states (send-pending.ts bareGroupLabel): the lost part wears
 // the warn color, the sending part stays dim. Shared by the render and the ✕'s recount so the two can
 // never disagree.
-function fillBareLabel(label: HTMLElement, nLost: number, nSending: number): void {
-  const { parts, title } = bareGroupLabel(nLost, nSending);
+function fillBareLabel(label: HTMLElement, nLost: number, nSending: number, nHanded: number = 0): void {
+  const { parts, title } = bareGroupLabel(nLost, nSending, nHanded);
   label.replaceChildren();
   parts.forEach((part, i) => {
     if (i) label.appendChild(document.createTextNode(" · "));
-    const span = el("span", part.lost ? "lost" : "");
+    const span = el("span", part.lost ? "lost" : part.handed ? "handed" : "");
     span.textContent = part.text;
     label.appendChild(span);
   });
@@ -4788,7 +4795,7 @@ function fillBareLabel(label: HTMLElement, nLost: number, nSending: number): voi
 const pendingGroupNode = new Map<string, { sig: string; node: HTMLElement }>();
 function renderPendingGroup(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const sid = renderingSid || activeId || "";
-  const sig = JSON.stringify(ev.texts.map((t) => [t.md, !!t.lost, t.qts, t.imgPaths || null])) + "|" + JSON.stringify(ev.held || null)
+  const sig = JSON.stringify(ev.texts.map((t) => [t.md, !!t.lost, !!t.handed, t.qts, t.imgPaths || null])) + "|" + JSON.stringify(ev.held || null)
     + (ev.held && ev.held.resetsAt ? "|" + Math.floor(Date.now() / 60000) : "")   // a held countdown reads the minute: re-rendered as it ticks
   const fresh = renderQueued(ev);
   const cached = pendingGroupNode.get(sid);
@@ -4826,7 +4833,8 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     // progress romp cannot see — and the ✕ is its way back to the composer; the others in the same
     // group still read "sending…". One label, both counts when both states are present.
     const nLost = texts.filter((t) => t.lost).length;
-    fillBareLabel(label, nLost, texts.length - nLost);
+    const nHanded = texts.filter((t) => t.handed && !t.lost).length;   // taken by the session, not landed (send-pending.ts `handed`)
+    fillBareLabel(label, nLost, texts.length - nLost - nHanded, nHanded);
     if (ev.held) {   // the reason a hidden kernel copy carried (a usage limit holds every send): the wait says so
       label.appendChild(document.createTextNode(" · " + ev.held.what
         + (ev.held.resetsAt ? " · in " + fmtReset(ev.held.resetsAt, Math.floor(Date.now() / 1000)) : "")));
@@ -4880,13 +4888,16 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     // one phrase separating OUR unconfirmed echo from a real queued message, which the session has accepted
     // and is holding (the user 2026-07-16)
     if (t.optimistic && t.lost) bubble.title = "not confirmed — the connection dropped after this was sent; ✕ moves it back to the composer to send again";
+    // taken by the session (send-pending.ts `handed`, 2026-09-19): the copy left romp's queue for the CLI, which holds it
+    // behind the running turn until its next step — no ✎ (cancelable is off), the dashes close (styles.css .handed)
+    else if (t.optimistic && t.handed) { bubble.classList.add("handed"); bubble.dataset.handed = "1"; bubble.title = "taken by the session — it's waiting for the session's current step to finish; it can't be recalled now, and joins the conversation when the session reads it"; }
     else if (t.optimistic) bubble.title = "sent just now — romp hasn't confirmed the session has it yet";
     else if (t.landing) { bubble.classList.add("landing"); bubble.title = "the session has taken this — it joins the conversation as soon as its record lands"; }
     // a queued entry with NO ✕ (the user 2026-07-20): the queue lives inside the session's own CLI —
     // there is no recall — so instead of a cancel that would only ever say "too late", the tooltip says
     // where the message actually is. (SDK mid-turn forwards land here.)
     else if (!t.cancelable && t.idx !== undefined)
-      bubble.title = "queued in the session — it can't be recalled, and joins the conversation at the session's next step";
+      bubble.title = "queued inside the session's own process — it can't be recalled from here, and joins the conversation at the session's next step";
     const isCmd = renderSlashCmd(bubble, t.md);
     // what romp itself queued wears the LANDED romp grammar (T243, the user 2026-09-07), split exactly as the
     // landed message splits: a SYSTEM notice (restart / resume / a watch landing) is the gray notice card;
