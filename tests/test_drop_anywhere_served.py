@@ -26,10 +26,10 @@ import subprocess
 import tempfile
 import time
 import unittest
-from romp_load import load_source
 from pathlib import Path
 
 from tests.dist_copy import copy_dist
+from tests.test_ship_reship_served import kernel_env
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -39,9 +39,6 @@ EXT = os.path.join(ROOT, "vscode-extension")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-# the kernel refuses to boot with a retired key variable or a 1Password name in its environment (kernel/credentials.py
-# check_boot_environment): the lab's kernel env is scrubbed by the kernel's own rule, read from the module itself
-_cred = load_source("romp_credentials_dropanywhere", os.path.join(ROOT, "kernel", "credentials.py"))
 SID_A = "11111111-2222-4333-8444-000000000901"
 SID_B = "11111111-2222-4333-8444-000000000902"
 
@@ -185,18 +182,12 @@ class ServedDropAnywhere(unittest.TestCase):
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 100}, "seven_day": {"pct": 10}}))   # park sends
         cls.port = _free_port()
         cls.token = "testtok-dropanywhere"
-        cls.env = dict(os.environ,
-                       XDG_STATE_HOME=os.path.join(cls.lab, "xdg"),
-                       CLAUDE_CONFIG_DIR=claude,
-                       ROMP_MANAGER_PORT="1", ROMP_KERNEL_NO_OPEN="1",
-                       ROMP_SERVE_TOKEN=cls.token, ROMP_KERNEL_PORT=str(cls.port),
-                       ROMP_DIST_DIR=dist, ROMP_MODEL_CATALOG="off",
-                       # a postal bus of its own that is never started (the trio kernel_env gives every lab kernel):
-                       # the kernel's boot-time ensure must never take the machine's fixed bus port (tests/test_hermetic_kernel_postal.py)
-                       ROMP_POSTAL_PORT=str(_free_port()), ROMP_POSTAL_PEERS="0", ROMP_POSTAL_CLIENT_ONLY="1")
-        cls.env.pop("ROMP_STATE_DIR", None)
-        for k in [k for k in cls.env if k in _cred.RETIRED_VARS or _cred.is_op_env_name(k)]:   # the kernel's own boot rule (module top)
-            cls.env.pop(k, None)
+        # the lab kernel's environment comes through kernel_env (the shared allowlist), never dict(os.environ): a
+        # dict(os.environ) copy carries the session shell's ROMP_MANAGER_PID, and a dead one drains the kernel at boot
+        # so /healthz never answers (the served-lab environment-copy rule). kernel_env already supplies every variable
+        # this lab set (the roots, the serve port and token, the dist, the model catalog off, the never-started postal
+        # bus) and drops retired-key and 1Password names by construction (the allowlist), so no scrub is needed.
+        cls.env = kernel_env(cls.lab, claude, dist, cls.port, cls.token)
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")],
                                       stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=cls.env)
