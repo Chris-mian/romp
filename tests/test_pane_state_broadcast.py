@@ -75,6 +75,7 @@ const BTNS = {};
 KEYS.forEach((k) => { BTNS[k] = { hidden: false, title: '', getAttribute: (a) => (a === 'data-pane' ? k : null), classList: { toggle() {} }, addEventListener() {} }; });
 let TAB = 'chat', MOBILE = false;
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.localStorage = { getItem: (k) => (k in STORE ? STORE[k] : null), setItem: (k, v) => { STORE[k] = v; } };
 global.location = { search: '' };
 global.URLSearchParams = class { get() { return null; } };
@@ -418,6 +419,7 @@ _MOBILE_HARNESS = r"""
 const TOGGLES = [], TELLS = [], MQL = [], MSGS = [], STORE = {};
 let MATCHES = true, TAB = null;
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0;
 global.scrollTo = () => {};
 global.matchMedia = (q) => ({ get matches() { return MATCHES; }, query: q, addEventListener: (ev, f) => { if (ev === 'change') MQL.push(f); } });   // matches reads live, as a MediaQueryList's does
@@ -608,6 +610,7 @@ const frame = (id) => ({ contentWindow: { postMessage: (m) => POSTED[id].push(JS
   addEventListener: (ev, f) => { if (ev === 'load' && id === 'f-files') FILES_LOADS.push(f); if (ev === 'load' && id === 'f-settings') SETTINGS_LOADS.push(f); },
   removeEventListener: (ev, f) => { if (id === 'f-files') FILES_LOADS = FILES_LOADS.filter((g) => g !== f); } });
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.addEventListener = (ev, f) => { if (ev === 'message') LISTENERS.push(f); };
 global.__rompPaneToggle = (k, on) => TOGGLES.push([k, on]);
 global.__rompMobileTab = (t) => TABS.push(t);
@@ -870,6 +873,7 @@ _HELPER_DRIVER = r"""
 'use strict';
 const STORE = {};
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.localStorage = { getItem: (k) => (k in STORE ? STORE[k] : null) };
 __HELPER__
 const ask = () => ['timeline', 'fleet', 'feed', 'chat'].map((k) => window.__rompPaneEnabled(k));

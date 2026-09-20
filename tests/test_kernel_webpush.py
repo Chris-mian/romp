@@ -1953,6 +1953,7 @@ let PENDING = process.env.ROMP_TEST_PENDING ? JSON.parse(process.env.ROMP_TEST_P
 let DISPLAYED = process.env.ROMP_TEST_DISPLAYED ? JSON.parse(process.env.ROMP_TEST_DISPLAYED) : [], getnFail = false;
 const feedWin = { postMessage: (m) => POSTED.push(m) };
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 // the chat pane's active tab, as the same-origin iframe DOM the script reads: ROMP_TEST_ACTIVE at boot, reassignable
 let activeSid = process.env.ROMP_TEST_ACTIVE || '';
 const chatFrame = { contentDocument: { querySelector: () => (activeSid ? { getAttribute: () => activeSid } : null) } };

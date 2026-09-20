@@ -14,6 +14,7 @@ import { hostPrefix } from "./host-prefix";   // pure display helper — safe he
 import { installMenuEcho } from "./tag-menu";   // model deps only (tag-lens/session-views) — no manager, no DOM cost
 import { loadSettings, OPTIONAL_PANES, type PaneSet } from "./settings";   // the gear's store, read at every palette open (no side effects at import)
 import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, tabChord, unboundTabKeys, TABKEYS_KEY } from "./tab-keys";   // per-tab hot keys (2026-09-10)
+import { paneSourceOk } from "./pane-source";   // the shell's source check, fail-closed (plans/panes-as-data.md section 5): a URL pane or a nested frame opens nothing here
 
 type SessionRow = { id: string; name: string; dir: string; bg: string };
 
@@ -291,7 +292,7 @@ installMenuEcho();
   registerCommand({ id: "keys.open", title: "Keyboard shortcuts", run: () => keys.open() });
   w.__rompKeysOpen = () => keys.open();
   w.__rompKeysClose = () => keys.close();   // false when not open — the Escape chain moves on
-  window.addEventListener("message", (e) => { if (e.data && e.data.romp === "openKeys") keys.open(); });
+  window.addEventListener("message", (e) => { if (!paneSourceOk(e)) return; if (e.data && e.data.romp === "openKeys") keys.open(); });
   // Sessions in the set with no chord bound leave it — never while the dialog is up (the one being recorded
   // has none yet), so the solo dialog's own close runs it too.
   function pruneUnboundHotkeys(): void {
@@ -313,6 +314,7 @@ installMenuEcho();
     });
   }
   window.addEventListener("message", (e) => {
+    if (!paneSourceOk(e)) return;   // a forged hotkeyConfigure would bind the user's next chord to a session id the foreign page chose (the 1919 read)
     const m = e.data;
     if (!m || m.romp !== "hotkeyConfigure" || typeof m.sid !== "string" || !m.sid) return;
     configureHotkey(m.sid, typeof m.name === "string" ? m.name : "", (e.source as Window | null) || null);

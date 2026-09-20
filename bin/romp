@@ -1251,7 +1251,7 @@ if [[ "${1:-}" == "pane" ]]; then
         if [[ "$_pn_verb" == "list" ]]; then
             printf '%s' "$_resp" | python3 -c 'import json,sys
 rows = json.load(sys.stdin).get("panes") or []
-if not rows: print("romp pane: no panes defined (the five shipped panes are built in)"); raise SystemExit
+if not rows: print("romp pane: the kernel lists no panes"); raise SystemExit
 for b in rows:
     print("%s  %s  %s  %s%s%s" % (b.get("id", ""), b.get("title", ""), b.get("source", ""), b.get("protocol", ""), "  experimental" if b.get("experimental") else "", "  [builtin]" if b.get("builtin") else ""))'
             exit 0

@@ -33,6 +33,7 @@ import {
   type Edge, type EdgeRect, type Layout, type PaneId, type Rect,
   edges, has, layout as layoutRects, leaves, move, parse, resize, serialise,
 } from "./pane-tree";
+import { paneSourceOk } from "./pane-source";
 import {
   BAND, CHAT, FEED, FILES, FLEET, GUTTER, LAYOUT_KEY, RING, type Payload, type Shown, type Zone,
   bandPxOf, colNumberOf, crossedSlop, grabbable, growKey, isChatPane, landingRect, planTabDrop, reconcileShown, roundRect, seedLayout, zoneAt,
@@ -210,7 +211,7 @@ class Engine {
     on(document, "keydown", (e) => this.onKey(e as KeyboardEvent), true);
     on(document, "keyup", (e) => this.onKey(e as KeyboardEvent), true);
     on(window, "blur", () => this.setAlt(false));
-    on(window, "message", (e) => this.onGrabMessage(e as MessageEvent));
+    on(window, "message", (e) => { if (!paneSourceOk(e as MessageEvent)) return; this.onGrabMessage(e as MessageEvent); });   // the shell's one check, fail-closed, at the registration (plans/panes-as-data.md section 5; the frame lookup reads it again)
     this.obs = new MutationObserver(() => this.reconcile());
     this.obs.observe(this.col, { attributes: true, attributeFilter: ["style"] });
     this.allFrames().forEach((f) => this.wire(f));
@@ -426,7 +427,7 @@ class Engine {
    *  URL-source pane (data-protocol none, sandboxed) can still post to its parent, and is ignored here as it is by
    *  every shell handler (plans/panes-as-data.md section 5). */
   private protocolFrame(e: MessageEvent): HTMLIFrameElement | null {
-    if (!e.source || e.source === window || e.origin !== location.origin) return null;
+    if (!paneSourceOk(e)) return null;   // the shell's one check first, fail-closed (plans/panes-as-data.md section 5)
     const f = this.allFrames().find((x) => x.contentWindow === e.source) || null;
     return f && speaksProtocol(f) ? f : null;
   }

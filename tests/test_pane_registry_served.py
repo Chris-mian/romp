@@ -67,14 +67,22 @@ def _transcript(cwd, pairs):
 
 
 NOTES_PAGE = """<!doctype html><html><head><meta charset=utf-8><link rel=stylesheet href=theme.css><script src=shim.js></script></head>
-<body><h1 id=t>Notes</h1><script>
+<body><h1 id=t>Notes</h1><iframe id=inner src=inner.html></iframe><script>
 window.__labMsgs=[];window.addEventListener('message',function(e){window.__labMsgs.push(e.data);});
+</script></body></html>"""
+
+# a frame NESTED inside the notes pane (same origin as the shell, served from the pane's own directory): it forges the
+# shell's messages to the top window; the check rules on the immediate frame, so a nested frame is not a pane and nothing acts
+INNER_PAGE = """<!doctype html><html><body><script>
+try{top.postMessage({romp:'toggleFleet',to:'fleet'},'*');top.postMessage({romp:'notify',kind:'error',text:'forged from a nested frame'},'*');
+top.postMessage({romp:'openKeys'},'*');top.postMessage({romp:'hotkeyConfigure',sid:'11111111-2222-4333-8444-000000000301',name:'nested'},'*');}catch(e){}
 </script></body></html>"""
 
 # the URL pane's page, served by a SECOND origin: on load it forges three shell messages, and it beacons every message it
 # receives back to its own server (an image load needs no CORS), so the test can read that it was told nothing
 DOCS_PAGE = """<!doctype html><html><head><meta charset=utf-8></head><body><h1>Docs</h1><script>
-try{parent.postMessage({romp:'toggleFleet',to:'fleet'},'*');parent.postMessage({romp:'notify',kind:'error',text:'forged from the docs pane'},'*');parent.postMessage({romp:'reveal',pane:'fleet'},'*');}catch(e){}
+try{parent.postMessage({romp:'toggleFleet',to:'fleet'},'*');parent.postMessage({romp:'notify',kind:'error',text:'forged from the docs pane'},'*');parent.postMessage({romp:'reveal',pane:'fleet'},'*');
+parent.postMessage({romp:'openKeys'},'*');parent.postMessage({romp:'hotkeyConfigure',sid:'11111111-2222-4333-8444-000000000301',name:'forged'},'*');}catch(e){}
 window.addEventListener('message',function(e){var i=new Image();i.src='/beacon?m='+encodeURIComponent(JSON.stringify(e.data)).slice(0,300);});
 </script></body></html>"""
 
@@ -134,8 +142,11 @@ out.notesSrc = await page.evaluate(() => document.getElementById("f-notes").getA
 
 // ---- 3. the URL pane ----
 out.docs = await page.evaluate(() => { const f = document.getElementById("f-docs"); return { src: f.getAttribute("src"), sandbox: f.getAttribute("sandbox"), proto: f.getAttribute("data-protocol"), shown: document.body.classList.contains("po-docs"), w: Math.round(f.getBoundingClientRect().width) }; });
-await page.waitForTimeout(2500);   // the docs page's forged posts on load, and any broadcast it would beacon
+await page.waitForTimeout(2500);   // the docs page's and the nested frame's forged posts on load, and any broadcast the docs page would beacon
+out.nestedLoaded = await nf.evaluate(() => { const f = document.getElementById("inner"); return !!(f && f.contentDocument && f.contentDocument.readyState === "complete"); }).catch(() => false);
 out.afterForged = await page.evaluate(() => ({ fleet: document.body.classList.contains("po-fleet"),
+  keysOpen: (() => { const b = document.getElementById("rkeys-back"); return !!b && !b.hidden; })(),   // the shortcuts modal (palette-main openKeys / hotkeyConfigure)
+  tabKeys: localStorage.getItem("romp:tabkeys"),                                                     // a forged hotkeyConfigure would have remembered the chosen sid here
   notices: (() => { try { return JSON.parse(localStorage.getItem("romp:notices") || "[]").map((n) => n.text); } catch (e) { return []; } })() }));
 
 if (cfg.shot) await page.screenshot({ path: cfg.shot });   // a picture for a reviewer (ROMP_LAB_SHOT names the file; unset in CI)
@@ -212,6 +223,7 @@ class ServedPaneRegistry(unittest.TestCase):
         (panes / "docs.json").write_text(json.dumps({"id": "docs", "title": "Docs", "source": cls.docs_url, "on": True, "experimental": False, "protocol": "none"}))
         (panes / "lab.json").write_text(json.dumps({"id": "lab", "title": "Lab", "source": "/feed", "on": False, "experimental": True, "protocol": "romp"}))
         (panes / "notes" / "index.html").write_text(NOTES_PAGE)
+        (panes / "notes" / "inner.html").write_text(INNER_PAGE)
         cls.port = _free_port()
         cls.token = "testtok-paneregistry"
         cls.env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token,
@@ -271,6 +283,13 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertEqual((by["notes"]["text"], by["notes"]["hidden"], by["notes"]["on"]), ("Notes", False, True))
         self.assertEqual((by["docs"]["hidden"], by["docs"]["on"]), (False, True))
         self.assertTrue(by["lab"]["hidden"], "experimental: not in this dashboard until the gear asks: %r" % by["lab"])
+        # the forged messages (the URL pane's on load; a same-origin frame nested in the notes pane's): read FIRST, so a red
+        # names the door that opened (the 1919 read: the shortcuts modal opened in recording mode on a forged row)
+        self.assertFalse(r["afterForged"]["keysOpen"], "a forged openKeys or hotkeyConfigure must not open the shortcuts modal: %r" % r["afterForged"])
+        self.assertIsNone(r["afterForged"]["tabKeys"], "a forged hotkeyConfigure must not remember a session the foreign page chose: %r" % r["afterForged"]["tabKeys"])
+        self.assertTrue(r["nestedLoaded"], "the nested frame inside the notes pane loaded and posted: %r" % r.get("nestedLoaded"))
+        self.assertFalse(r["afterForged"]["fleet"], "a forged toggleFleet (the URL pane's, the nested frame's) must not open the Outline")
+        self.assertFalse(any("forged" in t for t in r["afterForged"]["notices"]), "a forged notify must not reach the notification center: %r" % r["afterForged"])
         self.assertEqual(r["body"]["cls"], ["po-chat", "po-docs", "po-feed", "po-notes", "po-timeline"], r["body"])
         self.assertEqual([(a["id"], a["protocol"], a["experimental"], a["on"]) for a in r["body"]["attr"]],
                          [("docs", "none", False, True), ("lab", "romp", True, False), ("notes", "romp", False, True)])
@@ -286,8 +305,6 @@ class ServedPaneRegistry(unittest.TestCase):
         # 3. the URL pane: sandboxed, the URL as given, protocol none; its forged messages change nothing; it is told nothing
         self.assertEqual(r["docs"], {"src": self.docs_url, "sandbox": "allow-scripts allow-forms allow-popups", "proto": "none", "shown": True, "w": r["docs"]["w"]})
         self.assertGreater(r["docs"]["w"], 60)
-        self.assertFalse(r["afterForged"]["fleet"], "a forged toggleFleet from the URL pane must not open the Outline")
-        self.assertFalse(any("forged" in t for t in r["afterForged"]["notices"]), "a forged notify must not reach the notification center: %r" % r["afterForged"])
         told = [b for b in _DocsServer.beacons if "panes" in b]
         self.assertEqual(told, [], "the URL pane is outside the protocol: no broadcast reaches it")
         # 4. the gear's rows

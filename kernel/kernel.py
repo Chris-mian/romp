@@ -56107,7 +56107,8 @@ _CODE_PANES = tuple(_pane_check(d, allow_reserved=True)[0] for d in (
     {"id": "artifacts", "title": "Artifacts", "source": "/artifacts", "on": False},   # plans/artifacts-pane.md (2026-09-19): optional, off by default
 ))
 assert all(_CODE_PANES), "a shipped pane's record failed its own check"
-_PANES_MEMO = {"slot": None}        # (directory stat key, {id: defn}) or None
+_COLUMN_IDS = tuple(p["id"] for p in _CODE_PANES if p["id"] != "timeline")   # the shipped COLUMNS, left to right (the timeline is the bottom band): the gutter chains derive from this, never a hand list
+_PANES_MEMO = {"slot": None}        # (listing key, {"data": {id: defn}, "rev": digest}) or None
 _PANES_BAD = set()                  # (path, reason) already said
 _panes_lock = threading.Lock()      # define and remove serialise their read-check-write against each other
 
@@ -56120,10 +56121,12 @@ def _pane_path(pid):
     return _pane_dir() / (str(pid) + ".json")
 
 
-def _panes_data():
-    """The data-defined panes, {id: defn}, memoized on the directory's stat and each file's (mtime_ns, size), the board
-    store's rule (_boards_data). A file that fails the check is skipped and named on stderr once per (file, reason). {} when
-    there is no directory."""
+def _panes_snapshot():
+    """ONE listing of STATE/panes -> {"data": {id: defn}, "rev": digest}: the data-defined panes and the pane set's revision
+    from the same directory listing and file stats, memoized on the directory's stat and each file's (mtime_ns, size), the
+    board store's rule (_boards_data). A file that fails the check is skipped and named on stderr once per (file, reason).
+    The landing takes the list once per build (_landing: `panes = _pane_order()`) and hands it to every builder, so a
+    build costs one listing (the 1919 read, low b), not one per builder."""
     d = _pane_dir()
     st = _stat_key(d)
     try:
@@ -56141,6 +56144,8 @@ def _panes_data():
     slot = _PANES_MEMO["slot"]
     if key is not None and slot is not None and slot[0] == key:
         return slot[1]
+    parts = ["%s:%d:%d" % f if f[1] is not None else f[0] for f in files]
+    rev = hashlib.sha1("|".join(parts).encode()).hexdigest()[:10] if parts else "0"
     out = {}
     for n in names:
         fp = d / n
@@ -56158,9 +56163,21 @@ def _panes_data():
                 sys.stderr.write("[panes] %s skipped: %s\n" % (fp, err))
             continue
         out[defn["id"]] = defn
+    snap = {"data": out, "rev": rev}
     if key is not None:
-        _PANES_MEMO["slot"] = (key, out)
-    return out
+        _PANES_MEMO["slot"] = (key, snap)
+    return snap
+
+
+def _panes_data():
+    """The data-defined panes, {id: defn} (one listing; see _panes_snapshot)."""
+    return _panes_snapshot()["data"]
+
+
+def _panes_rev():
+    """The pane set's revision: a short digest of the data panes' files (name, mtime, size), "0" with none. It rides every
+    keepalive beside the build token, and a page whose baked revision differs is OFFERED a reload (never a self-reload)."""
+    return _panes_snapshot()["rev"]
 
 
 def _pane_order():
@@ -56169,26 +56186,10 @@ def _pane_order():
     return list(_CODE_PANES) + [d for _, d in sorted(_panes_data().items()) if d["id"] not in code_ids]
 
 
-def _data_panes():
-    return _pane_order()[len(_CODE_PANES):]
-
-
-def _panes_rev():
-    """The pane set's revision: a short digest of the data panes' files (name, mtime, size), "0" with none. It rides every
-    keepalive beside the build token, and a page whose baked revision differs is OFFERED a reload (never a self-reload)."""
-    d = _pane_dir()
-    try:
-        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
-    except OSError:
-        return "0"
-    parts = []
-    for n in names:
-        try:
-            fs = os.stat(d / n)
-            parts.append("%s:%d:%d" % (n, fs.st_mtime_ns, fs.st_size))
-        except OSError:
-            parts.append(n)
-    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:10] if parts else "0"
+def _data_panes(panes=None):
+    """The data panes of `panes` (a _pane_order() list; listed once when None)."""
+    panes = _pane_order() if panes is None else panes
+    return panes[len(_CODE_PANES):]
 
 
 def define_pane(defn):
@@ -56227,18 +56228,18 @@ def _pane_served_src(p):
     return "/pane/%s/" % p["id"] if kind == "state" else p["source"]
 
 
-def _panes_attr():
+def _panes_attr(panes=None):
     """The body attribute carrying the DATA panes to the inline scripts and the pane bundles, `data-panes="[...]"`; the
-    empty string with an empty registry, so the five-pane landing stays byte-identical."""
-    rows = [{"id": p["id"], "title": p["title"], "protocol": p["protocol"], "experimental": p["experimental"], "on": p["on"]} for p in _data_panes()]
+    empty string with an empty registry, so the code panes' rendering is unchanged."""
+    rows = [{"id": p["id"], "title": p["title"], "protocol": p["protocol"], "experimental": p["experimental"], "on": p["on"]} for p in _data_panes(panes)]
     return (' data-panes="%s"' % _html_esc(json.dumps(rows, separators=(",", ":")))) if rows else ""
 
 
-def _data_pane_markup():
+def _data_pane_markup(panes=None):
     """The pane row's markup for the data panes, after the shipped columns: a gutter and a .pane with a data-src iframe each (a
     data pane loads when shown, the optional panes' rule); a URL source's iframe is sandboxed and marked protocol none."""
     out = []
-    for p in _data_panes():
+    for p in _data_panes(panes):
         pid = p["id"]
         extra = ' sandbox="allow-scripts allow-forms allow-popups"' if p["protocol"] == "none" else ""
         out.append('<div class=gv id=gv-%s></div><div class=pane id=%s-pane><iframe id=f-%s data-src="%s" data-protocol=%s%s></iframe></div>'
@@ -56246,12 +56247,12 @@ def _data_pane_markup():
     return "".join(out)
 
 
-def _data_pane_css():
+def _data_pane_css(panes=None):
     """The column rules for the data panes: a grow var and the hide by its po-<id> class, and the gutter's hides (its own
     pane off, or no shown column before it), the shipped rules' shape."""
     out = []
-    before = ["chat", "fleet", "feed", "files", "artifacts"]   # the shipped columns, left to right (the Artifacts pane last)
-    for p in _data_panes():
+    before = list(_COLUMN_IDS)   # the shipped columns, left to right, from the records
+    for p in _data_panes(panes):
         pid = p["id"]
         out.append("#%s-pane{flex:var(--g-%s,40) 1 0}body:not(.po-%s) #%s-pane{display:none}" % (pid, pid, pid, pid))
         out.append("body:not(.po-%s) #gv-%s,body%s #gv-%s{display:none}" % (pid, pid, "".join(":not(.po-%s)" % b for b in before), pid))
@@ -60829,7 +60830,7 @@ gutter('gv-c',function(){var c=document.body.classList;return c.contains('po-fee
 gutter('gv-d',function(){var c=document.body.classList;return c.contains('po-files')?'files-pane':c.contains('po-feed')?'feed-pane':c.contains('po-fleet')?'fleet-pane':lastChat();},'artifacts-pane');
 // a registry pane's gutter: its left neighbour is the rightmost SHOWN column before it (Files, Feed, the Outline, a
 // registry pane defined before it, else the last chat column), the four rules above generalised
-(function(){var seq=['fleet-pane','feed-pane','files-pane','artifacts-pane'].concat(DPANES.map(function(p){return p.id+'-pane';}));
+(function(){var seq=""" + json.dumps([c + "-pane" for c in _COLUMN_IDS if c != "chat"]) + """.concat(DPANES.map(function(p){return p.id+'-pane';}));   // the shipped columns after the chat, from _CODE_PANES
 DPANES.forEach(function(p){var me=p.id+'-pane',i=seq.indexOf(me);
 gutter('gv-'+p.id,function(){for(var j=i-1;j>=0;j--){if(document.body.classList.contains('po-'+key(seq[j])))return seq[j];}return lastChat();},me);});})();
 tf&&tf.addEventListener('load',function(){autosize();
@@ -60882,7 +60883,7 @@ try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*')
 // The chat pane's active tab, handed to the feed pane on this page (T416): the chat posts {romp:'activeTab',id} to its
 // parent on every switch, and the feed's current-session section moves on it at once, ahead of the kernel's relay of
 // the same post over the sockets, which then reconciles. From a child frame of this page only (a chat column).
-window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='activeTab'||!e.source||e.source===window||e.origin!==location.origin)return;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='activeTab')return;
 var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*');}catch(x){}});
 function moveFocus(dir){
   if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it, to the last chat pane worked in (a bottom pane too), else the last column
@@ -60934,7 +60935,7 @@ setFocus('f-chat');})();   // default: the chat section is ringed on open
 # REVEAL the chat pane (so the opened session is visible), NOT hide Fleet. to:'fleet' explicitly shows the
 # Fleet pane; no `to` flips it. The shell's pane controller exposes window.__rompPaneToggle(key,to?).
 _LANDING_FLEET_JS = """
-(function(){window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e.data;if(!m||m.romp!=='toggleFleet')return;
+(function(){window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e.data;if(!m||m.romp!=='toggleFleet')return;
 if(!window.__rompPaneToggle)return;
 if(m.to==='chat')window.__rompPaneToggle('chat',true);
 else if(m.to==='fleet')window.__rompPaneToggle('fleet',true);
@@ -60946,19 +60947,19 @@ else window.__rompPaneToggle('fleet');});})();
 # ({romp:'ready'}) — the timeline lanes render first (no parse), so the splash clears fast — with a 5s
 # backstop so a slow/closed pane can never trap the user behind it. Removed from the DOM after the fade.
 _LANDING_BOOT_JS = """
-// THE PANE PROTOCOL'S SOURCE CHECK (plans/panes-as-data.md, section 3): a message the shell acts on must come from a
-// same-origin frame of THIS document whose iframe is not marked data-protocol=none (a URL pane: a plain sandboxed
-// iframe that cannot speak the protocol, so a forged {romp:...} from it is dropped). A nested frame counts by the
-// top-level frame it sits in. The shell's own window and a window this document does not hold fail. Every shell
-// handler reads it defensively (absent only where a script is executed alone, in a test's stub).
+// THE PANE PROTOCOL'S SOURCE CHECK (plans/panes-as-data.md, section 5): a message the shell acts on must come from a
+// same-origin iframe of THIS document, the message's IMMEDIATE source, whose iframe is not marked data-protocol=none (a
+// URL pane: a plain sandboxed iframe that cannot speak the protocol, so a forged {romp:...} from it is dropped). The
+// shell's own window, a window this document does not hold, and a frame NESTED inside a pane all fail: a pane's own
+// document relays what it means to say. Defined by the first script on the page; every shell listener, inline and
+// bundled, reads it FAIL-CLOSED (no check, no message), and tests/test_pane_registry.py takes the census.
 window.__rompPaneSourceOk=function(e){try{if(!e||!e.source||e.source===window||e.origin!==location.origin)return false;
-var s=e.source;var n=0;while(s&&s!==window&&s.parent&&s.parent!==window&&s.parent!==s&&n++<16)s=s.parent;
-var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++){if(fs[i].contentWindow===s)return fs[i].getAttribute('data-protocol')!=='none';}
+var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++){if(fs[i].contentWindow===e.source)return fs[i].getAttribute('data-protocol')!=='none';}
 return false;}catch(x){return false;}};
 (function(){var boot=document.getElementById('romp-boot');if(!boot)return;var done=false;
 function hide(){if(done)return;done=true;boot.classList.add('gone');
 setTimeout(function(){if(boot.parentNode)boot.parentNode.removeChild(boot);},450);}
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;if(e&&e.data&&e.data.romp==='ready')hide();});
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;if(e&&e.data&&e.data.romp==='ready')hide();});
 setTimeout(hide,5000);})();
 """
 
@@ -61031,7 +61032,7 @@ tell(n);if(!back.hidden)renderList();}
 // before) — told on every repaint and on the panel's own query.
 function tell(n){var f=document.getElementById('f-settings');
 try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'logUnseen',n:(n===undefined?unseen():n)},'*');}catch(e){}}
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e.data;if(m&&m.romp==='logUnseenQuery')tell();});
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e.data;if(m&&m.romp==='logUnseenQuery')tell();});
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
 var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','sdk','sync','locate','cleared','refused','undelivered'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
@@ -61112,7 +61113,7 @@ save();paint();};
 // pane iframes can feed the center too; sid/itemId ride along as the entry's jump target. An entry naming a CARD
 // (itemId: the feed's badge mirror, a card still loaded in a pane hidden mid-page) is not this browser's while its
 // Feed pane is off (feedHere above); an entry naming only a session, or nothing, lands as ever.
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e&&e.data;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;
 if(m&&m.romp==='notify'&&m.text){if(m.itemId&&!feedHere())return;
 window.__rompNotify(m.kind||'error',m.text,
 (m.sid||m.itemId)?{sid:String(m.sid||''),itemId:String(m.itemId||'')}:null);}});
@@ -61128,7 +61129,7 @@ window.__rompColGone=function(c){delete stc[String(c)];paint();};   // a closed 
 var PN=""" + json.dumps(dict(_PANE_ORDER)) + """;   // key → rail label, from _PANE_ORDER (one list with the rail, the tabs and the drop row); timeline key stays internal — the pane outgrew the name (filter, tags, lane controls — the user 2026-08-24)
 try{JSON.parse(document.body.getAttribute('data-panes')||'[]').forEach(function(p){if(!(p.id in PN))PN[p.id]=String(p.title||p.id);});}catch(e){}   // the registry panes' titles (plans/panes-as-data.md)
 function paneLabel(k){k=String(k||'');return PN[k]||(k?k.charAt(0).toUpperCase()+k.slice(1):k);}   // the page's copy of _pane_label: the rail's word, else the key capitalised for a sentence (Settings), never a raw key (the 1715 lows, low 4)
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='wsState')return;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='wsState')return;
 var col=(m.app==='chat'&&window.__rompColOf)?window.__rompColOf(e.source):'';   // a split column reports under its own key (the sender frame says which)
 if(col){var sc=(m.state==='up')?'up':'down',pc=stc[col];stc[col]=sc;
 if(sc==='down'&&pc!=='down'&&shown('chat'))window.__rompNotify('conn','Kernel connection lost: chat split '+col+' (reconnecting)');else paint();return;}
@@ -62009,7 +62010,7 @@ pull(false);                                     // fill on load, independent of
 // (The old vertical-fit degrade ladder (fitRail/data-ruc, the user 2026-06-27/07-01) is gone: it shrank the
 // VERTICAL bars when the left rail ran out of height. The bars are HORIZONTAL in the bottom bar now and only
 // ~text-height tall, so they always fit — nothing to degrade.)
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e.data;if(m&&m.romp==='usage')render(m.usage);});})();
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e.data;if(m&&m.romp==='usage')render(m.usage);});})();
 """
 
 
@@ -62528,7 +62529,7 @@ open();};
 try{if(location.hash.indexOf('#settings')===0){var sh=location.hash.slice(9);if(sh.charAt(0)==='=')sh=sh.slice(1);
 try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}
 var so=function(){window.__rompOpenSettings(sh||undefined);};if(document.readyState==='complete')setTimeout(so,0);else window.addEventListener('load',so);}}catch(e){}   // a harness without a location object runs the rest
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e.data;if(!m)return;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e.data;if(!m)return;
 if(m.romp==='settings'){document.body.classList.toggle('settings-open',!!m.on);
 // closing hides the iframe that held the keyboard, which drops focus onto the shell body; put it back in the
 // chat (the dashboard's default focus, _LANDING_FOCUS_JS rings it) so the next keystroke lands in a pane — the
@@ -62761,7 +62762,7 @@ var _pendPair={},_pairs=null,_pairsBusy=false,_lastArgs=null,_lastUp=0;
 // Retired by the pane's own first payload from that host (its next post drops the name) — no timer.
 var _pend={};
 function pendingIn(h){for(var k in _pend){if(_pend[k].indexOf(h)>=0)return true;}return false;}
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='hostsPending')return;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='hostsPending')return;
 _pend[m.app||'?']=(m.hosts||[]).filter(function(h){return typeof h==='string';});
 if(!back.hidden&&_lastArgs)render.apply(null,_lastArgs);});
 // ITS CONNECTIONS (the user 2026-08-11): every up host's row expands into THAT machine's own
@@ -63481,7 +63482,7 @@ restart:function(){try{window.__rompRestart&&window.__rompRestart();}catch(e){}}
 errs:function(){try{window.__rompOpenErrs&&window.__rompOpenErrs();}catch(e){}}};
 Array.prototype.forEach.call(bar.querySelectorAll('button[data-act]'),function(b){
 b.addEventListener('click',function(){var f=A[b.getAttribute('data-act')];if(f)f();});});
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e.data;if(!m)return;if(m.romp==='reveal'&&m.pane)reveal(m.pane);// the chat header's Fleet pill / the fleet's back-to-chat post toggleFleet — on mobile that IS a tab switch
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e.data;if(!m)return;if(m.romp==='reveal'&&m.pane)reveal(m.pane);// the chat header's Fleet pill / the fleet's back-to-chat post toggleFleet — on mobile that IS a tab switch
 if(m.romp==='toggleFleet')userSwitch(m.to==='chat'?'chat':'fleet');});
 var shellOpened=false;   // T265: this socket's REOPEN is the kernel-restart signal — the shell asks /version whose kernel answered
 function shellWS(){try{var proto=location.protocol==='https:'?'wss://':'ws://';
@@ -63733,7 +63734,7 @@ function revealCard(itemId,sid){if(window.__rompPaneEnabled&&!window.__rompPaneE
 if(!feedReady){pendingCard={itemId:itemId,sid:sid};return;}
 var f=document.getElementById('f-feed');
 try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:itemId,sid:sid,gesture:true},'*');}catch(e){}}
-window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e&&e.data;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;
 if(m&&m.romp==='wsState'&&m.app==='chat'&&m.state==='up')chatUp=true;   // the chat pane's shim, on its socket's open: from here a tap is delivered live
 if(!(m&&m.romp==='ready'&&m.app==='feed'))return;
 feedReady=true;if(pendingCard){var c=pendingCard;pendingCard=null;revealCard(c.itemId,c.sid);}});
@@ -63926,7 +63927,7 @@ _STALE_JS = (
     # connection prompt is moot and retires itself; the user saw it on nearly every dashboard open, offering
     # a reload for a staleness that had already healed in the background. A latched BUILD prompt survives
     # (and re-asserts its wording): a resync delivers state, never new code, so only a reload answers it.
-    "window.addEventListener('message',function(e){if(window.__rompPaneSourceOk&&!window.__rompPaneSourceOk(e))return;var m=e&&e.data;"
+    "window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;"
     "if(m&&m.romp==='wsStale'){if(m.build){if(RL)RL.checkBoot();else buildStale=true;}else connStale=true;paint();}"
     "else if(m&&m.romp==='wsFresh'){connStale=false;paint();}});"
     # T132 (the user 2026-08-27): the banner is DRAGGABLE — movable out of the way so it can STAY up
@@ -64370,7 +64371,7 @@ if(c.pid===last&&!alone){var e=zone(p,'col-drop-edge',null,function(sid){if(e.ge
 e.style.width=edgeWidth(p.getBoundingClientRect().width)+'px';e.style.top=(c.n===from?drag.stripH:0)+'px';if(!canSplit())e.setAttribute('data-refused','1');}
 if(!belowOf(c.n)&&!fromBelow&&!(c.n===from&&colSize(from)===1)){var bz=zone(p,'col-drop-bottom',c.n,function(sid){if(bz.getAttribute('data-refused'))refusePane();else moveTab(sid,'down',c.n);});   // the bottom zone: split THIS column, the dragged tab to the new bottom pane. Suppressed where moveTab would refuse the drop: a target already split (belowOf), a bottom-pane source (fromBelow), or the source's OWN lone column (nothing to split off), matching the edge's !alone. A split adds a PANE, so a refused (capped) drop says refusePane
 bz.style.height=edgeWidth(p.getBoundingClientRect().height)+'px';if(!canSplit())bz.setAttribute('data-refused','1');}});}
-window.addEventListener('message',function(e){var m=e&&e.data;if(!m)return;
+window.addEventListener('message',function(e){if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m)return;
 if(m.romp==='tabDrag'){if(!m.on){drag=null;unmountZones();return;}   // the page's dragend: the zones go, whatever ended the drag
 if(!frameOfWin(e.source)||mobile()||typeof m.sid!=='string'||!m.sid)return;   // a chat column's dragstart, on the desktop
 drag={sid:m.sid,name:typeof m.name==='string'?m.name:'',from:Number(colOf(e.source))||1,stripH:Math.max(0,Number(m.stripH)||0)};mountZones();return;}
@@ -64701,20 +64702,21 @@ def _gear_glyph():
     return glyph
 
 
-def _rail_buttons_html():
+def _rail_buttons_html(panes=None):
     """The desktop rail's pane toggles, in _pane_order() (the shipped panes, then the data panes; plans/panes-as-data.md)."""
-    return "".join("<div class=rail-btn data-pane=%s>%s</div>" % (p["id"], _html_esc(p["title"])) for p in _pane_order())
+    return "".join("<div class=rail-btn data-pane=%s>%s</div>" % (p["id"], _html_esc(p["title"])) for p in (_pane_order() if panes is None else panes))
 
 
-def _mtab_buttons_html():
+def _mtab_buttons_html(panes=None):
     """The mobile bottom bar's pane tabs — the SAME order as the desktop rail, by construction.
     class=on keys on the chat KEY (the initially shown pane), never on position."""
     return "".join("<button data-pane=%s%s>%s</button>"
                    % (p["id"], " class=on" if p["id"] == "chat" else "", _html_esc(p["title"]))
-                   for p in _pane_order() if not p["experimental"])   # an experimental data pane has no phone tab (the plan, section 1)
+                   for p in (_pane_order() if panes is None else panes) if not p["experimental"])   # an experimental data pane has no phone tab (the plan, section 1)
 
 
 def _landing():
+    panes = _pane_order()   # ONE listing of the pane registry per build (plans/panes-as-data.md): every builder below takes this list
     # one flex row of up to FOUR independently-toggled panes (chat | fleet | feed | timeline) behind a far-left
     # rail; draggable gutters between visible panes; the rail also pins the ⛭ settings + ↻ refresh actions at
     # its bottom. Pane on/off + sizes persist in localStorage.
@@ -65370,7 +65372,7 @@ def _landing():
             "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}"
             "body:not(.po-chat) #chat-pane{display:none}body:not(.po-fleet) #fleet-pane{display:none}body:not(.po-feed) #feed-pane{display:none}body:not(.po-files) #files-pane{display:none}"
             "body:not(.po-artifacts) #artifacts-pane{display:none}"
-            + _data_pane_css() +   # the REGISTRY panes' column and gutter rules (plans/panes-as-data.md); nothing with an empty registry
+            + _data_pane_css(panes) +   # the REGISTRY panes' column and gutter rules (plans/panes-as-data.md); nothing with an empty registry
             # split chat columns (the user 2026-09-08): every column past the first is a client-made .pane.chat-col
             # (_LANDING_SPLIT_JS) with its own /chat?col=N iframe and its own grow var, set inline. They ride the
             # chat group's toggle: off hides every column and the chat|chat gutters with it.
@@ -65728,7 +65730,7 @@ def _landing():
             "body.theme-light #mtabs button{color:#5D574E}"
             "body.theme-light #mtabs button.on{color:#C2410C}"
             "body.theme-light #mtabs .mtabs-div{background:#DCD2C4}"
-            "</style></head><body class='po-chat po-feed po-timeline'" + _panes_attr() + ">"
+            "</style></head><body class='po-chat po-feed po-timeline'" + _panes_attr(panes) + ">"
             + _THEME_READER +
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             # the bell popover (2026-09-05; driven by _LANDING_PUSH_JS): the two switches that ONE bell
@@ -65792,7 +65794,7 @@ def _landing():
             # the Artifacts pane (plans/artifacts-pane.md, 2026-09-19): rightmost, data-src (loaded once, when its control is on)
             "<div class=gv id=gv-d></div>"
             "<div class=pane id=artifacts-pane><iframe id=f-artifacts data-src=/artifacts></iframe></div>"
-            + _data_pane_markup() +   # the REGISTRY panes, after Files (plans/panes-as-data.md); nothing with an empty registry
+            + _data_pane_markup(panes) +   # the REGISTRY panes, after Files (plans/panes-as-data.md); nothing with an empty registry
             "</div>"
             "<div id=gv-ghost></div>"   # the divider drag's landing line (position:fixed; gutter() in _LANDING_JS moves it)
             "<div id=col-ghost></div>"   # a tab drag's provisional rectangle: the right half of the rightmost chat column (position:fixed; _LANDING_SPLIT_JS places it)
@@ -65808,7 +65810,7 @@ def _landing():
             "<div class=pane-rail>"
             "<div class=rail-scroll>"
             # the pane toggles, from _PANE_ORDER — the ONE ordering the mobile tabs share
-            + _rail_buttons_html() +
+            + _rail_buttons_html(panes) +
             # the Claude /usage rate-limit bars (Pro/Max): three compact vertical bar-pairs (used % colored +
             # elapsed % slate), %-label, full detail on hover — side-by-side in the bottom bar.
             "<div id=rail-usage data-keycmd=usage.open></div>"
@@ -65870,7 +65872,7 @@ def _landing():
             "<nav id=mtabs>"
             # the pane tabs, from _PANE_ORDER — the desktop rail's exact order (the user 2026-08-30:
             # mobile is a re-layout, never a re-ordering)
-            + _mtab_buttons_html() +
+            + _mtab_buttons_html(panes) +
             # the rail's ACTIONS, reachable on mobile too (the user 2026-07-11): settings + the network
             # panel + a usage panel showing the desktop tooltip's window bars. data-act (not data-pane) —
             # they fire, they don't switch the shown pane.
