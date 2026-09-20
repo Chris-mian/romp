@@ -73,8 +73,9 @@ for host routing, and one bundle `ui/webview/artifacts.ts`.
   `.host-prefix` dress, the name bold in its identity colour, `hostNameNodes` of `ui/webview/host-prefix.ts`), which opens
   a `ctx-menu.ts` card listing exactly the sessions OPEN in the chat panes of this dashboard (every column's tabs, local
   and remote, the shell's `chatTabs` broadcast), one row per session in the same dress; beside it the lock (the Sessions
-  pane's padlock glyph). Unlocked, the pane follows the most recently selected chat tab (the shell's `activeChat` relay);
-  locked, it stays on the picked session; a pick locks. The lock and the picked session are remembered per browser
+  pane's padlock glyph). Unlocked, the pane shows whatever came last, a pick from the list or the most recently selected
+  chat tab (the shell's `activeChat` relay); locked, it stays on the picked session; only the lock button changes the
+  lock. The lock and the picked session are remembered per browser
   (`localStorage`, keys `romp:artifacts:sid` and `romp:artifacts:lock`). A page with no shell (opened alone) has no tabs to
   list and falls back to the picker's list (`requestSessions`), the first landing's behaviour.
 - **The list and the grid.** Under the selector, the images of the selection (`kind === "image"`, existing, not
@@ -301,12 +302,15 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   window's `artifacts` clients too (the relay's fan-out and the `ready` arm), so a reloaded pane knows the focused
   session before any switch. The id arrives host-prefixed for a remote tab (federation's fan-out, `federation.ts:435`),
   which is the id the listing needs.
-- **Locked, the pane stays on the picked session.** The lock button beside the picker wears the Sessions pane's padlock
-  (the glyph `_drawLockToggle` draws, `ui/romp-timeline-view.js:7100`: the body and the two shackle paths, seated when
-  locked and swung out when unlocked), accent when locked and faint when unlocked, with the same two-state tip. A pick
-  from the list locks (a pick the next tab switch would discard is no pick); the lock button toggles; unlocking jumps to
-  the current active tab at once. The lock and the picked sid persist per browser (`romp:artifacts:lock`,
-  `romp:artifacts:sid`); a fresh browser starts unlocked and following.
+- **Locked, the pane stays on the picked session; only the lock button changes the lock** (the manager's correction
+  of 2026-09-20, the user's words: unlocked, the pane mirrors whatever session was picked OR most recently selected in a
+  chat pane, whichever came last; locked, it stays on the picked one). So a pick never flips the lock: unlocked, a pick
+  shows that session until the next tab switch replaces it (the follow continues); locked, a pick replaces the locked
+  session and the lock stays on. The lock button beside the picker wears the Sessions pane's padlock (the glyph
+  `_drawLockToggle` draws, `ui/romp-timeline-view.js:7100`: the body and the two shackle paths, seated when locked and
+  swung out when unlocked), accent when locked and faint when unlocked, with the same two-state tip; unlocking keeps the
+  shown session until the next tab switch (no jump: nothing new was selected). The lock and the shown sid persist per
+  browser (`romp:artifacts:lock`, `romp:artifacts:sid`); a fresh browser starts unlocked and following.
 - The pure state machine is in `artifacts-model.ts` (`nextSelection(state, event)` over the events `activeChat`, `pick`,
   `toggleLock`, `tabsChanged`), unit-tested; the DOM reads it.
 
@@ -324,7 +328,8 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   third session the picker knows but no column shows: the list names exactly the two, in column order); the dress lab
   (computed styles: the card's background is the menu token's value, the row's host prefix italic and small, the name
   weight 600 in the session's identity colour); the growth lab (a new Write appended to the shown session's transcript
-  lists its file with no click, and no Refresh button exists); the lock lab (unlocked, a chat tab switch moves the pane;
-  locked, it stays; a pick locks; the lock survives a reload).
+  lists its file with no click, and no Refresh button exists); the lock lab (unlocked, a chat tab switch moves the pane,
+  and a pick is replaced by the next tab switch; locked, a tab switch leaves it and a pick holds; the lock survives a
+  reload).
 - Red first per test at the base, on behaviour (the op unanswered, the row absent, the style unchanged, the button
   present, the pane not following).
