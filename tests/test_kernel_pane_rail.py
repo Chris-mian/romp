@@ -54,7 +54,8 @@ class PaneRailTest(unittest.TestCase):
         order = ["id=chat-pane", "id=gv-a", "id=fleet-pane", "id=gv-b", "id=feed-pane", "id=gv-c", "id=files-pane", "id=gh", "id=tl-pane"]
         idxs = [self.html.index(tok) for tok in order]
         self.assertEqual(idxs, sorted(idxs), "row panes, then the gh gutter, then the timeline band")
-        self.assertNotIn("id=gv-d", self.html)                   # no 5th-pane gutter
+        self.assertIn("id=gv-artifacts", self.html)              # the Artifacts pane's gutter, rendered from its record by the generic build (plans/panes-as-data.md phase three)
+        self.assertNotIn("id=gv-e", self.html)                   # no 6th-pane gutter
         # the pane rail is the BOTTOM BAR (the user 2026-07-05): LAST child of .col, AFTER the timeline band —
         # no longer the first child of .row. So its markup falls after #tl-pane.
         self.assertGreater(self.html.index("class=pane-rail"), self.html.index("id=tl-pane"),
@@ -68,7 +69,7 @@ class PaneRailTest(unittest.TestCase):
 
     def test_default_layout_is_chat_feed_timeline(self):
         # default: Chat + Feed + Timeline on, Fleet off (the user 2026-06-25; inlined on <body> for first paint)
-        self.assertIn("<body class='po-chat po-feed po-timeline'>", self.html)
+        self.assertIn("<body class='po-chat po-feed po-timeline' data-panes=\"", self.html)
 
     def test_the_optional_panes_are_served_unloaded_and_the_controller_reads_the_gear(self):
         # The gear's Panes section (the user 2026-09-10): Sessions, the Outline and the Feed can be hidden from
@@ -87,7 +88,7 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("function reconcile(live){", self.html)
         self.assertIn("reconcile(true);apply();", self.html)
         # the default body class still ships chat+feed+timeline; the controller reconciles before its first apply
-        self.assertIn("<body class='po-chat po-feed po-timeline'>", self.html)
+        self.assertIn("<body class='po-chat po-feed po-timeline' data-panes=\"", self.html)
 
     def test_gutters_show_only_between_two_visible_panes(self):
         # gv-a sits chat|fleet → only when BOTH are shown
@@ -140,7 +141,7 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("#gv-ghost{display:none;position:fixed;width:7px;pointer-events:none;z-index:40;", self.html)
         # a child of .col right after the row closes (the files pane's close, then the row's) and before the
         # timeline's gutter: fixed, so a flex item of neither
-        self.assertIn("<iframe id=f-files src=/files></iframe></div></div><div id=gv-ghost></div>", self.html)
+        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=gv-ghost></div>', self.html)   # the generic build's markup for the Artifacts record, last in the row
         self.assertLess(self.html.index("<div id=gv-ghost></div>"), self.html.index("<div class=gh id=gh></div>"))
 
     def test_timeline_is_the_rail_toggled_bottom_band(self):

@@ -417,11 +417,15 @@ const menuStyleFor = (p) => 'padding:4px;background:' + p.menuBg + ';border:1px 
 const MENU_MARK_BOX = 'position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;'
   + 'display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;';
 const menuCheckStyleFor = (p) => MENU_MARK_BOX + 'background:' + p.accentSolid + ';color:#fff;';
+// the REQUESTED model's ✓ while an automatic fallback answers instead (the user 2026-09-17): the same mark box in the
+// working-state yellow — a status, not the accent — beside the blue ✓ on the model that answers (the chat's
+// .meta-item.requested::after, inlined for a foreign document)
+const menuRequestedStyleFor = (p) => MENU_MARK_BOX + 'background:' + p.workingBg + ';color:' + p.workingFg + ';';
 // the checkbox row's OFF mark (T413, the user 2026-09-14): an empty ring where the ✓ sits when on, so a tag row's box reads in both
 // states, in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground, under the 3 to 1 floor;
 // the muted text clears it in both themes); the shared menu (ui/webview/tag-menu.ts checkMark) draws the same from its tokens
 const menuRingStyleFor = (p) => MENU_MARK_BOX + 'border:1px solid ' + p.modelFg + ';background:transparent;';
-let MENU_STYLE = null, MENU_CHECK_STYLE = null, MENU_RING_STYLE = null;   // set by applyPal() below (dark by default)
+let MENU_STYLE = null, MENU_CHECK_STYLE = null, MENU_RING_STYLE = null, MENU_REQUESTED_STYLE = null;   // set by applyPal() below (dark by default)
 // THE TAG CHIP in the views menu (T283b, the user 2026-09-09: menus wear one vocabulary): the shared tag-lens
 // menu renders each tag as the tag chip itself acting as a toggle (ui/webview/tag-menu.ts tagChip + T283's
 // loop); this pane inlines the RESOLVED twin, since it may live in a foreign document that loads no module.
@@ -904,6 +908,7 @@ const PAL_DARK = {
   metaHoverFg: '#e6edf3',        // hover-brightened text (META_HOVER_FG)
   accent: ROMP_BLUE,             // the romp accent
   accentSolid: '#1EA1EB',        // the ✓-in-circle current mark (menu vocabulary)
+  workingBg: '#E0B020', workingFg: '#332600',   // the working-state yellow (styles.css --st-working-bg/fg): the picker's REQUESTED-model ✓
   faintFg: '#6e7681',            // faint gray (unlocked padlock)
   menuBg: '#252526',             // menu/card surface (menu vocabulary)
   menuFg: '#cccccc',             // menu/card body text
@@ -924,6 +929,7 @@ const PAL_LIGHT = {
   metaHoverFg: '#1F1E1D',
   accent: '#C2410C',             // light accent is CLAY, replacing the blue
   accentSolid: '#C2410C',
+  workingBg: '#8B6914', workingFg: '#ffffff',   // the light theme's working yellow (styles.css body.theme-light)
   faintFg: '#8A8378',
   menuBg: '#FBF6EF',               // mirrors the sheets' --vscode-menu-background (one menu vocabulary; swept 2026-08-31)
   menuFg: '#1F1E1D',
@@ -958,7 +964,7 @@ function applyPal() {
   MODEL_FG = p.modelFg; ACCENT = p.accent; META_HOVER_FG = p.metaHoverFg;
   MENU_FG = p.menuFg; HAIRLINE = p.hairline; OUTLINE_FG = p.outline;
   HOVER_BG = p.hoverBg; SEL_BG = p.selBg; INPUT_BG = p.inputBg; INPUT_FG = p.inputFg;
-  MENU_STYLE = menuStyleFor(p); MENU_CHECK_STYLE = menuCheckStyleFor(p); MENU_RING_STYLE = menuRingStyleFor(p);
+  MENU_STYLE = menuStyleFor(p); MENU_CHECK_STYLE = menuCheckStyleFor(p); MENU_RING_STYLE = menuRingStyleFor(p); MENU_REQUESTED_STYLE = menuRequestedStyleFor(p);
 }
 applyPal();
 function modelLabel(s) {
@@ -1090,11 +1096,22 @@ const EFFORT_CHOICES = [];
 // whose aliases the codex backend refuses. Empty until the codex backend has run (docs/codex.md).
 const CODEX_MODEL_CHOICES = [];
 const CODEX_EFFORT_CHOICES = [];
+// Why the Codex lists are empty, when they are: the payload's `codex.error` (the app-server client not up
+// yet, a failed model list), held from the last /models read so a lane menu with no list can say it
+// (render.ts CODEX_MODELS_ERROR, the chat's twin). An absent or non-string one clears it.
+let CODEX_MODELS_ERROR = '';
+function codexModelsError() { return CODEX_MODELS_ERROR; }   // read by the unit tests; a getter in module.exports would break the exports-line pins
 // The lane's effort menu lists the ladder TOP-DOWN (the user 2026-09-14): highest first, lowest last, as the
 // chat's statusline menu does (render.ts effortDisplayOrder, its twin). The kernel serves `efforts` low→high
 // because its rank ramp and the gear's settings selects read that order, and neither moves; each row carries
 // its own colour and isCurrentMeta matches by value, so only the order changes.
 function effortDisplayOrder(efforts) { return efforts.slice().reverse(); }
+function codexEffortChoices(model) {
+  // Per-model capabilities (2026-09-17); only an older kernel without this field uses its flat list.
+  if (!CODEX_MODEL_CHOICES.some((m) => Array.isArray(m.efforts))) return CODEX_EFFORT_CHOICES;
+  const row = CODEX_MODEL_CHOICES.find((m) => model ? m.value === model || m.model === model : m.isDefault);
+  return effortDisplayOrder(row?.efforts || []);
+}
 // Loaded once at page load and RE-LOADED on the kernel's {type:"models"} frame (TimelinePanel.refreshModels,
 // the frame's arm in both boots): the pick memory moved — a version pinned, a family un-pinned by Latest, a
 // refused pin dropped, from any surface or dashboard — or the catalog grew, and a family's `default` is
@@ -1114,6 +1131,7 @@ function loadModelChoices() {
       if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; for (const e of effortDisplayOrder(d.efforts)) EFFORT_CHOICES.push(e); }
       if (d.codex && Array.isArray(d.codex.models)) { CODEX_MODEL_CHOICES.length = 0; for (const m of d.codex.models) CODEX_MODEL_CHOICES.push(m); }
       if (d.codex && Array.isArray(d.codex.efforts)) { CODEX_EFFORT_CHOICES.length = 0; for (const e of effortDisplayOrder(d.codex.efforts)) CODEX_EFFORT_CHOICES.push(e); }
+      if (d.codex) CODEX_MODELS_ERROR = typeof d.codex.error === 'string' ? d.codex.error : '';
     }).catch(() => {});
   } catch (e) {}
   return Promise.resolve();
@@ -1121,6 +1139,32 @@ function loadModelChoices() {
 loadModelChoices();
 // Is this menu entry the lane's CURRENT value? Effort matches exactly; the model var holds a display
 // name ("Opus 4.8"), so match on the leading word — same rule as the chat view's isCurrentMeta.
+// The requested-model mark's tooltip and row matching (the user 2026-09-17), the chat's requestedModelTip /
+// isRequestedFamily / isRequestedVersion (render.ts) word for word: why the pick is not answering (the safety
+// classifiers and their category once the CLI named them), then the retry cadence when a retry is armed, that
+// auto-retry applies at the next start when only the switch is on, or where to turn it on.
+function requestedModelTip(fb) {
+  const why = fb.cause === 'safeguards' ? 'Requested model blocked due to safety classifiers' + (fb.category ? ' (' + fb.category + ')' : '') + '.'
+    : 'Requested model is not answering; ' + (fb.live || 'a fallback model') + ' is.';
+  const r = fb.retry || { on: false, everyMin: 10, armed: false, nextIn: null, attempts: 0 };
+  const next = r.nextIn !== null && r.nextIn !== undefined ? ' Next attempt in ' + Math.max(1, Math.ceil(r.nextIn / 60)) + ' min.' : '';
+  if (r.armed) return why + ' Retrying every ' + (r.everyMin || 10) + ' minutes.' + next;
+  if (r.on) return why + ' Auto-retry is on; the requested model is asked for when the session next starts.';
+  return why + ' Configure auto-retry in Settings, Automation.';
+}
+function requestedModelSub(fb) {
+  const why = fb.cause === 'safeguards' ? 'blocked by safety classifiers' + (fb.category ? ' (' + fb.category + ')' : '') : 'not answering; ' + (fb.live || 'a fallback') + ' is';
+  const r = fb.retry || { on: false, everyMin: 10, armed: false, nextIn: null, attempts: 0 };
+  const what = r.armed ? 'retrying every ' + (r.everyMin || 10) + ' min' : r.on ? 'auto-retry on' : 'auto-retry off';
+  return 'requested · ' + why + ' · ' + what;
+}
+function isRequestedFamily(fb, value) {
+  const pk = (fb.pick || '').toLowerCase(), pv = (fb.pickValue || '').toLowerCase(), v = (value || '').toLowerCase();
+  return !!v && (pk.startsWith(v) || pv === v || pv.startsWith('claude-' + v));
+}
+function isRequestedVersion(fb, v) {
+  return (fb.pick || '').toLowerCase() === (v.label || '').toLowerCase() || (!!fb.pickValue && fb.pickValue === v.value);
+}
 function isCurrentMeta(kind, s, value) {
   const cur = ((kind === 'model' ? s.model : s.effort) || '').toLowerCase();
   return kind === 'effort' ? cur === value : cur.startsWith(value);
@@ -3300,7 +3344,7 @@ class TimelinePanel {
     // a CODEX lane's pickers speak its own vocabulary (docs/codex.md) — those choices carry no
     // versions, so the family submenus below simply never arm for them
     const choices = s.backend === 'codex'
-      ? (kind === 'model' ? CODEX_MODEL_CHOICES : CODEX_EFFORT_CHOICES)
+      ? (kind === 'model' ? CODEX_MODEL_CHOICES : codexEffortChoices(s.model))
       : (kind === 'model' ? MODEL_CHOICES : EFFORT_CHOICES);
     for (const c of choices) {
       const cur = isCurrentMeta(kind, s, c.value);
@@ -3309,6 +3353,17 @@ class TimelinePanel {
       item.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;display:flex;align-items:center;');
       item.setAttribute('tabindex', '0');
       if (cur) { const ck = item.createSpan({ text: '✓' }); ck.setAttribute('style', MENU_CHECK_STYLE); }
+      // the REQUESTED model wears the yellow ✓ while an automatic fallback answers instead (the user 2026-09-17);
+      // the row's title says why and whether romp is retrying (the kernel's modelFallback on the lane's row)
+      const fb = kind === 'model' ? (s.modelFallback || null) : null;
+      if (fb && !cur && isRequestedFamily(fb, c.value)) {
+        const rq = item.createSpan({ text: '✓' }); rq.setAttribute('style', MENU_REQUESTED_STYLE);
+        item.setAttribute('title', requestedModelTip(fb));
+        // the permanent sub-line (the chat's .meta-item-sub, inlined): the explanation never depends on a hover
+        item.setAttribute('style', item.getAttribute('style') + 'flex-direction:column;align-items:flex-start;');
+        const rsub = item.createDiv({ text: requestedModelSub(fb) });
+        rsub.setAttribute('style', 'font-size:0.82em;opacity:0.6;');
+      }
       // A family with more than one live version wears the side-submenu affordance (the user
       // 2026-08-25): hovering (or right-arrow) reveals every version, each directly pickable with
       // the ✓ on the lane's current one; clicking the family itself picks its DEFAULT — the version
@@ -3332,6 +3387,11 @@ class TimelinePanel {
         const lsub = latest.createDiv({ text: pinned ? 'unpins — follows the newest ' + c.label : 'follows the newest ' + c.label });
         lsub.setAttribute('style', 'font-size:0.82em;opacity:0.6;');
         if (!pinned && cur) { const ck = latest.createSpan({ text: '✓' }); ck.setAttribute('style', MENU_CHECK_STYLE); }
+        else if (fb && !(fb.pickValue || '').toLowerCase().startsWith('claude-') && isRequestedFamily(fb, c.value)) {
+          const rq = latest.createSpan({ text: '✓' }); rq.setAttribute('style', MENU_REQUESTED_STYLE);   // an alias pick IS the floating family
+          latest.setAttribute('title', requestedModelTip(fb));
+          lsub.textContent = requestedModelSub(fb) + ' — ' + lsub.textContent;   // plain DOM: the hosts install no setText
+        }
         latest.addEventListener('mouseenter', () => { latest.style.background = HOVER_BG; });
         latest.addEventListener('mouseleave', () => { latest.style.background = 'transparent'; });
         latest.addEventListener('click', (e) => { e.stopPropagation(); pick(c.value, true); });
@@ -3353,6 +3413,13 @@ class TimelinePanel {
             row.setAttribute('title', "Reported by a running session's Claude Code; not yet in romp's version list");
           }
           if (cv) { const ck = row.createSpan({ text: '✓' }); ck.setAttribute('style', MENU_CHECK_STYLE); }
+          else if (fb && isRequestedVersion(fb, v)) {
+            const rq = row.createSpan({ text: '✓' }); rq.setAttribute('style', MENU_REQUESTED_STYLE);
+            const vsub = row.createDiv({ text: requestedModelSub(fb) });
+            vsub.setAttribute('style', 'font-size:0.82em;opacity:0.6;');
+            const note = row.getAttribute('title');   // a requested learned version keeps its explanation beside the learned note
+            row.setAttribute('title', note ? requestedModelTip(fb) + '\n' + note : requestedModelTip(fb));
+          }
           row.addEventListener('mouseenter', () => { row.style.background = HOVER_BG; });
           row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
           row.addEventListener('click', (e) => { e.stopPropagation(); pick(v.value); });
@@ -3392,6 +3459,20 @@ class TimelinePanel {
           if (first) first.focus();
         }
       });
+    }
+    if (s.backend === 'codex' && !choices.length) {
+      // A Codex menu with no list says why instead of opening blank (render.ts toggleMetaMenu's .meta-empty
+      // row, the chat's twin): the head names the missing list; the sub-line carries the kernel's
+      // `codex.error` from the last /models read, else that this model advertises no effort levels
+      // (codexEffortChoices answers [] for a model whose catalog entry lists none, and for a model the
+      // catalog does not know). A statement, not a choice: no pointer, no hover wash, no focus, no click.
+      // The row wears the menu rows' shape minus the pointer and inherits the menu's explicit font
+      // (MENU_STYLE), as every row here does: this pane may live in a foreign document (Obsidian).
+      const empty = menu.createDiv();
+      empty.setAttribute('style', 'padding:4px 8px;border-radius:4px;cursor:default;white-space:normal;max-width:280px;');
+      empty.createDiv({ text: kind === 'model' ? 'No model list from Codex' : 'No effort list from Codex' });
+      const why = empty.createDiv({ text: CODEX_MODELS_ERROR || (kind === 'model' ? 'no model list yet' : 'no effort levels from Codex for this model') });
+      why.setAttribute('style', 'font-size:0.82em;opacity:0.6;');
     }
     h.doc.body.appendChild(menu);   // a cross-document append ADOPTS the node; its listeners are kept
     // clamp to the host viewport so a right-edge lane's menu stays on-screen
@@ -6502,8 +6583,8 @@ class TimelinePanel {
         // CLICK the battery → send /compact to that live session; optimistically show the cue at once.
         if (s.live) {
           const hit = el('rect', { x: ctxColX, y: byTop, width: BAT_W, height: BAT_H, rx: 3, fill: 'transparent' });
-          hit.style.cursor = 'pointer';
-          const cmt = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">' + (isComp ? 'compacting' : ((cinfo ? cinfo.label : '') + ' context')) + '</span></div><div class="b">' + (isComp ? 'compaction in progress' : 'click to /compact this session') + '</div>';
+          hit.style.cursor = s.backend === 'codex' ? 'default' : 'pointer';   // a Codex lane has no /compact: nothing to click for (2026-09-19)
+          const cmt = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">' + (isComp ? 'compacting' : ((cinfo ? cinfo.label : '') + ' context')) + '</span></div><div class="b">' + (isComp ? 'compaction in progress' : (s.backend === 'codex' ? 'this session runs in Codex, which has no /compact' : 'click to /compact this session')) + '</div>';
           hit.addEventListener('mouseenter', (e) => this.showTip(cmt(), e));
           hit.addEventListener('mousemove', (e) => this.moveTip(e));
           hit.addEventListener('mouseleave', () => this.hideTip());
@@ -6516,6 +6597,7 @@ class TimelinePanel {
           // (it starts no drag: only the empty rowHit does), so there's nothing to wait for a release to confirm.
           hit.addEventListener('pointerdown', (e) => {
             if (e.button !== 0) return;
+            if (s.backend === 'codex') return;   // no stamp, no post for a lane the kernel would refuse (2026-09-19)
             e.stopPropagation(); this.hideTip();
             this._compactClicked[s.id] = (Date.now ? Date.now() : 0);
             this._compactSession(s.name); this.draw();
@@ -6709,7 +6791,8 @@ class TimelinePanel {
                       'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none' };
       if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash (same key as the span)
       if (!arrived && !mm.toThreadT) liveRiders = true;   // an un-arrived stub spans to the live edge: the tick cannot translate that
-      plot.appendChild(el('path', attrs));
+      const stubEl = el('path', attrs); stubEl.setAttribute('data-tl-stub', String(senderVisible ? mm.toId : mm.fromId));   // the lane-less end, for the served pins
+      plot.appendChild(stubEl);
       // same affordances as a full connector: own-color highlight overlay + wide transparent hit —
       // the SAME path each, so highlight and hover cover the whole half-elbow as one unit —
       // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
@@ -7122,4 +7205,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES };
+module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES, codexEffortChoices, codexModelsError };

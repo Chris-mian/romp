@@ -250,7 +250,7 @@ test("round seven fixes each carry a pin (T386 stage 2): a fault has its own wor
 
 test("round nine fixes each carry a pin (T386 stage 2): an older fetch in flight re-points, only a live ask is busy; the pipe's down edge clears like the socket's", () => {
   const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
-  assert.match(sca, /if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(loadingOlder\.has\(activeId\)\) \{ pendingOlderAnchor\.set\(activeId, uuid\); pendingOlderKeepY\.delete\(activeId\); pendingAnchor = uuid; anchorPendingOlder = true; landTrail\.push\("pointer-fetch-older"\); return false; \}/, "only a live window ask is busy; an older fetch in flight is re-pointed onto the anchor and arms the landing for chatHead's arrival");
+  assert.match(sca, /if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(loadingOlder\.has\(activeId\)\) \{ pendingOlderAnchor\.set\(activeId, uuid\); pendingOlderKeepY\.delete\(activeId\); return waitOnOlderWire\(activeId, uuid\); \}/, "only a live window ask is busy; an older fetch in flight is re-pointed onto the anchor and arms the landing for chatHead's arrival (waitOnOlderWire, the older wire's one arm since 2026-09-19)");
   assert.doesNotMatch(sca, /loadingOlder\.has\(activeId\) \|\| liveWindowAsk\(activeId\)/, "the unconditional refusal is gone");
   assert.match(RENDER, /if \(landedNow \|\| !anchorPendingOlder\) \{ pendingAnchor = null; pendingAnchorKeepY = null; \}/, "the reload restore's caller keeps its arm while an older fetch is pointed at the anchor");
   assert.match(RENDER, /^window\.addEventListener\("romp:wsdown", \(\) => onWireDown\(\)\);$/m, "the socket's down edge runs the one clear");
@@ -316,4 +316,46 @@ test("the skeleton prefetch never builds a tab the strip does not show (the user
   assert.match(RENDER, /captureViews\(m\.views \|\| null\);\s*\n\s*applyTabOrder\(m\.order, m\.tabs,/, "the kernel's tabOrder frame adopts the blob, then repaints through applyTabOrder…");
   const ato = RENDER.slice(RENDER.indexOf("\nfunction applyTabOrder("), RENDER.indexOf("\nfunction syncTabKeysWithStrip("));
   assert.match(ato, /\n  renderTabs\(\);\s*\n\s*syncTabKeysWithStrip\(\);\s*\n\}/, "…whose bare renderTabs() is the reveal's repaint for a peer's view or lens change");
+});
+
+test("the client merge guard (2026-09-19): no run is minted with a lo the kernel did not name, a refused page or window rebuilds nothing, and a regions-less landing takes the older wire, never a window", () => {
+  const irr = RENDER.slice(RENDER.indexOf("function insertRegionRun("), RENDER.indexOf("\nconst gapLoading"));
+  assert.match(irr, /function insertRegionRun\(s: Session, lo: number, hi: number, events: ChatEvent\[\]\): boolean \{/, "the insert answers whether it placed the run");
+  assert.doesNotMatch(irr, /s\.tailLo \?\? 0/, "the fallback tail run at turn 0 is gone: it put an older window after the newest events");
+  assert.match(irr, /if \(!s\.regions\) return false;/, "a session with no regions inserts no window and no page");
+  const turns = RENDER.slice(RENDER.indexOf("function chatTurns(msg: any): void {"), RENDER.indexOf("\n/** A fill moves nothing"));
+  assert.match(turns, /const placed = insertRegionRun\(s, span\[0\], span\[1\], \(msg\.events \|\| \[\]\) as ChatEvent\[\]\);/);
+  assert.match(turns, /if \(!placed\) \{ landTrail\.push\("turns-unplaced"\); vscodeApi\?\.postMessage\(\{ type: "locateDiag", id: msg\.id, ok: false, trail: landTrail\.slice\(\), kind: "unplaced" \}\); return; \}/, "a refused page frees its ask and rebuilds nothing");
+  const win = RENDER.slice(RENDER.indexOf("function chatWindow(msg: any) {"), RENDER.indexOf("\n// ── (the detached client's way back"));
+  const stray = win.slice(0, win.indexOf("const cancelled = rec.cancelled;"));
+  assert.match(stray, /const placed = insertRegionRun\(s, Math\.max\(0, msg\.span\[0\]\), msg\.span\[1\], \(msg\.events \|\| \[\]\) as ChatEvent\[\]\); reconcileOptimistic\(s\);\s*\n\s*if \(placed\) \{/, "a stray window's refusal pushes window-stray and nothing else");
+  const at = win.indexOf('landTrail.push("window-unplaced")');
+  assert.ok(at > 0, "the trail names the refusal");
+  const refusal = win.slice(win.lastIndexOf("if (!placed)", at), at + 400);
+  assert.match(refusal, /writeScroll\(cRestore, preJumpOrigin, "land-cancel", false, cRestore\.scrollTop\)/, "the pre-jump origin is put back");
+  assert.match(refusal, /kind: "unplaced"/);
+  assert.doesNotMatch(refusal, /landToast|clearSeek/, "a refusal neither toasts nor ends the seek: the seek is armed and the next attempt takes the older wire");
+  const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
+  assert.match(sca, /if \(loadingOlder\.has\(activeId\)\) \{[^\n]*\}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(!s\.regions && fetchOlderForAnchor\(activeId, uuid\)\) return waitOnOlderWire\(activeId, uuid\);\s*\n(\s*\/\/[^\n]*\n)*\s*if \(requestAround\(activeId, uuid\)\) \{/,
+               "after the in-flight re-point and before the window ask: a session with no regions asks the older wire, which lands by key");
+  // the older wire's wait (the follow-up of 2026-09-19): both arms end in waitOnOlderWire, which arms the landing, marks the click's time and
+  // kind for chatHead's re-arm and shows the window road's notice for a navigation (never for the keep-offset re-land)
+  assert.match(RENDER, /function waitOnOlderWire\(sid: string, uuid: string\): false \{[\s\S]*?pendingOlderMark\.set\(sid, mark\);\s*\n\s*pendingAnchor = uuid; anchorPendingOlder = true; landTrail\.push\("pointer-fetch-older"\);\s*\n\s*if \(!relandAsk\) showLandingNotice\(sid, mark\.t\);\s*\n\s*return false;/,
+               "the older wire's arm: the landing, the trail's word, the mark, the notice for a navigation");
+  // the review of 2026-09-19, round two: the notice comes down only where the wait ENDS, never at the reply itself (the pass re-arms the wire
+  // and re-shows it in place; a hide at the reply, with compact mode's deferred build pass between the two, opened a frame in which onWireDown
+  // counted no landing), and every release of the older wire's claim brings it down
+  const head = RENDER.slice(RENDER.indexOf("function chatHead(msg: any) {"), RENDER.indexOf("\n// Fetch the next older history chunk"));
+  assert.match(head, /const endWait = \(\) => \{ if \(landingNoticeSid === msg\.id && !liveWindowAsk\(msg\.id\)\) hideLandingNotice\(\); \};/, "chatHead brings the older wire's notice down where its wait ends; a window landing's notice is its live ask's record's and stands");
+  assert.doesNotMatch(head, /if \(deepLink && landingNoticeSid === msg\.id\) hideLandingNotice\(\);/, "…and never at the reply itself");
+  assert.match(head, /if \(msg\.fault\) \{\s*\n(\s*\/\/[^\n]*\n)*\s*forget\(msg\.id\); endWait\(\);/, "a fault ends it");
+  assert.match(head, /if \(msg\.missing\) \{ forget\(msg\.id\); dropLanding\("head-missing"\); requestFullSession\(msg\.id, "gap"\); return; \}/, "a missing anchor ends it with its word");
+  assert.match(head, /if \(!next\) \{ forget\(msg\.id\); dropLanding\("head-stale"\); return; \}/, "a stale reply ends it with its word");
+  assert.match(head, /landTrail\.push\(word\); if \(!\(seek && seek\.sid === msg\.id\)\) landToast\("the history could not be loaded just now"\);/, "…and the reader is told unless a seek stands behind the landing, whose backstop speaks for it");
+  assert.match(RENDER, /let scrolled = pendingAnchor \? scrollToAnchor\(pendingAnchor\) : false;\s*\n(\s*\/\/[^\n]*\n)*\s*if \(att\.anchor && activeId && landingNoticeSid === activeId && !liveWindowAsk\(activeId\) && !\(loadingOlder\.has\(activeId\) && pendingOlderAnchor\.has\(activeId\) && !pendingOlderKeepY\.has\(activeId\)\)\) hideLandingNotice\(\);/,
+               "the landed (or honest-failed) attempt brings the notice down inside the pass; an attempt that re-arms the wire, or another anchor's while the wire's landing is in flight, leaves it up");
+  assert.match(RENDER, /function releaseSeekFetch\(sid: string\): void \{\s*\n\s*anchorPendingOlder = false;\s*\n\s*pendingOlderMark\.delete\(sid\);[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(landingNoticeSid === sid && !liveWindowAsk\(sid\)\) hideLandingNotice\(\);/,
+               "the seek's release paths (the backstop, the seek note's cancel, a time-only navigation) end the older wire's wait with its notice");
+  assert.match(RENDER, /function cancelLanding\(\): void \{[\s\S]*?const mark = rec \? null : pendingOlderMark\.get\(sid\);[\s\S]*?if \(!rec\) releaseSeekFetch\(sid\);[\s\S]*?anchor: target \?\? mark\?\.uuid \?\? pendingAnchor \?\? undefined, anchorT: mark\?\.t \?\? pendingAnchorT \?\? undefined, kind: mark\?\.kind \?\? pendingAnchorKind \?\? undefined/,
+               "the notice's click on the older wire's landing releases the fetch's claim, and its row names the landing from the fetch's mark, read before the release deletes it");
 });

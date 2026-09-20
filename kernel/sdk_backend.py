@@ -4720,6 +4720,48 @@ def thinking_summaries_on(state_dir: Path) -> bool:
         return False
 
 
+# The gear's two MODEL switches (the user 2026-09-17), kernel-side bare stores like the judges' Fast mode boxes
+# (kernel.py _set_always_fast / _set_retry_upgrade: "on" or "off" with a .gt sidecar, propagated to every linked
+# kernel). Read here by path at use time, never cached per process (no jd import in this module; thinking_summaries_on
+# above is the precedent): absent, unreadable or anything but "on" reads off — off is the shipped default and the
+# opt-in must be provable.
+ALWAYS_FAST_STORE = "always-fast"       # every session runs fast mode whenever its model can (fast_effective)
+RETRY_UPGRADE_STORE = "retry-upgrade"   # a session whose model fell back asks for its pick again on a cadence (retry_model_upgrades)
+
+
+def _kernel_switch_on(state_dir, name: str) -> bool:
+    if not state_dir:
+        return False
+    try:
+        return (Path(state_dir) / name).read_text().strip() == "on"
+    except OSError:
+        return False
+
+
+def always_fast_on(state_dir) -> bool:
+    return _kernel_switch_on(state_dir, ALWAYS_FAST_STORE)
+
+
+def retry_upgrade_on(state_dir) -> bool:
+    return _kernel_switch_on(state_dir, RETRY_UPGRADE_STORE)
+
+
+def fast_capable(model) -> bool:
+    """Whether Claude Code's fast mode can run on `model` — an alias ("opus"), the CLI's pretty name ("Opus 5") or an
+    id ("claude-opus-5"): the Opus family, the one rule the judges (kernel/judge.py fast_capable) and the chat's badge
+    (status-controls.ts fastAvailable) apply. Empty or unknown is not: the flag is armed only where it can take."""
+    return "opus" in str(model or "").lower()
+
+
+RETRY_UPGRADE_S = 600.0   # ten minutes between attempts to get a fallen-back session onto its picked model again: the
+SWITCH_END_GRACE_S = 1200.0   # the host's end grace for a Model switch's reconnect: a CLI that opened a turn of its own in the instant
+#   between the quiet read and the host's `end` FINISHES it (stdin is closed; it exits at the turn's end) instead of dying at the
+#   default 120 s — three sessions were force-killed mid-turn that way on 2026-09-17 (the manager's default is for a user's own switch)
+
+#   fallback's cause is outside romp's view (the user 2026-09-17: a trigger in the task's context, which ages out of
+#   the window), so a fixed cadence is the designed read, the same exception the kernel's usage poll documents; each
+#   attempt itself waits for a turn boundary (request_reconnect), never cutting a turn.
+
 THINKING_SUMMARIES_KW = {"type": "adaptive", "display": "summarized"}   # the SDK's typed ThinkingConfigAdaptive
 
 
@@ -5030,6 +5072,32 @@ def _model_downgrade(frm, to):
     return a is not None and b is not None and b < a
 
 
+def model_fallback_row(pick, live, cause="", arm=None, retry_on=False, now=None, pending=False, category=""):
+    """The model picker's REQUESTED-model mark (the user 2026-09-17): while a session's live model sits a tier below
+    its pick, the picker draws a yellow tick beside the requested model with a tooltip saying why and whether romp is
+    retrying. None when no fallback stands (no pick, no live name, or the live tier at or above the pick's). `pick` is
+    the reg's model (an alias or an id), `live` the live label; `cause` is "safeguards" once the CLI's
+    model_refusal_fallback frame named the episode, else "" (unknown: a capacity fallback, or the frame not yet in);
+    `arm` is the standing upgrade retry ({next, attempts}) and `retry_on` the switch; `pending` (a /model pick of the
+    user's own still resolving) is the badge's switching-dots, never a fallback mark. `live` should be the model the API
+    last SERVED a parent reply on (the reg's servedModel): the per-turn init and a reconnect report the CONFIGURED model,
+    the pick, before anything is served, and a mark keyed on that would vanish at every turn start and reappear at the
+    first reply (review 2026-09-17). Pure over its inputs."""
+    if pending:
+        return None
+    pick_label = _alias_label(str(pick or ""))
+    if not pick_label or not live or not _model_downgrade(pick_label, live):
+        return None
+    now = time.time() if now is None else float(now)
+    nxt = None
+    if arm and arm.get("next"):
+        nxt = max(0, int(float(arm["next"]) - now))
+    return {"pick": pick_label, "pickValue": str(pick or ""), "live": str(live), "cause": str(cause or ""),
+            "category": str(category or ""),   # the API's refusal category when the CLI named one ("cyber", "bio", …)
+            "retry": {"on": bool(retry_on), "everyMin": int(RETRY_UPGRADE_S // 60), "armed": bool(arm),
+                      "nextIn": nxt, "attempts": int((arm or {}).get("attempts", 0) or 0)}}
+
+
 def _echo_queued_in(a: dict, queued) -> bool:
     """Whether echo atom `a` is in the surviving queue `queued` — its copies as {"md", "qid"} (a plain text is an
     id-less copy) — by identity where it has one (T252c, third review): an echo whose uuid a queued copy wears is
@@ -5220,7 +5288,8 @@ class SdkSession:
         # own feed — a nudge, a follow-up, a restart notice, relayed mail — or a turn the CLI opened by
         # itself: a background task's notification, a scheduled prompt, a peer's channel message, told by
         # the streamed record's origin stamp). None until an open is seen. Set at the two places a turn can
-        # open (the feeder's pop; _forward's stamped user atom while idle — see _note_turn_opener), stamped
+        # open (the feeder's pop; _forward's stamped user atom while nothing romp fed is in flight, see
+        # _note_turn_opener), stamped
         # beside lastStopAt by the Stop hook as lastTurnOpener, and read by the kernel's turn-finished push,
         # which buzzes the phone for the human's turns only (the user 2026-09-10: ten buzzes in fifty minutes
         # from one session reacting, turn after turn, to its own background subagents' completions).
@@ -5323,6 +5392,20 @@ class SdkSession:
         #   The CLI refuses /fast to a non-interactive client unless the connect carried the `fastMode`
         #   flag-settings opt-in, so this drives that key in _options at every connect. Per-session on
         #   purpose: fast mode draws credits at a higher rate, so it is never a remembered default.
+        self.fast_off = bool(reg.get("fastOff"))   # the user put THIS session on Slow explicitly (set_fast "off", the
+        #   reg's `fastOff`, 2026-09-17): the machine's Always fast switch (fast_effective) leaves such a session at normal
+        #   speed until its next "on" — a Slow pick that flipped back at the next reconnect would be a switch nobody asked for.
+        self.fast_rule_refused = reg.get("fastRuleRefused") or ""   # the reason the CLI gave when the machine's Always fast
+        #   switch (not this session's own ask) armed the flag and was refused (review 2026-09-17): fast_effective stops
+        #   re-arming while it stands. Its OWN memory, because fast_reason cannot hold it — a flagless connect reports
+        #   sdk_opt_in_required, which _adopt_fast_state blanks into fast_reason, and the switch would re-arm the flag
+        #   at the connect after that (refuse → reconnect → refuse, stretched to two connects). Cleared by an explicit
+        #   toggle of this session (set_fast: the user's gesture is new information) and by the CLI reporting fast on.
+        self._upgrade_retry = None   # Retry upgrades after downgrades (the user 2026-09-17): while set, {"from", "to",
+        #   "pick", "since", "next", "attempts"} — this session's model fell from `from` to `to` without a pick and the
+        #   kernel's tick asks for the pick again every RETRY_UPGRADE_S (retry_model_upgrades → request_reconnect); cleared
+        #   when a parent turn is SERVED on a model at least `from`'s tier again (_note_model_served), by a new pick
+        #   (set_model), or with the session. In memory only: a kernel restart reconnects every session on its pick anyway.
         self._fast_unlocked = False   # whether THIS connection was made with the opt-in flag — the
         #   per-CONNECTION snapshot of fast_opt, taken where _connect_once builds options and never
         #   persisted. Only an unlocked connection accepts literal '/fast on|off' sends; without the
@@ -5426,6 +5509,17 @@ class SdkSession:
         self._wake: asyncio.Event | None = None
         self._reconnect = False                 # the current break is a reconnect (not a shutdown)
         self._reconnect_when_idle = False        # a reconnect was requested mid-turn → apply at turn end
+        self._switch_wanted = ""    # a Model switch's standing ask for a reconnect ("always fast" / "retry upgrade"), applied by
+        #   _try_switch_reconnect the moment the session is QUIET (no turn in flight or queued, no live subagent or background
+        #   task), never at a bare turn's end: the deferred road fired at the result and force-killed a CLI with three subagents
+        #   and a background task still running inside it (2026-09-17). A switch is nobody's gesture on the session, so it cuts nothing.
+        self._switch_wait_said = ""  # the ask the 'waiting for quiet' line was said for, once per ask
+        self._switch_ask_pending = ""  # the switch ask handed to request_reconnect(defer=False) and not yet armed or dropped
+        self._reconnect_switch_why = ""  # the armed reconnect is a switch's ("always fast"/"retry upgrade"): the waker's last look reads it
+        self._fallback_cause = str(reg.get("fallbackCause") or "")   # "safeguards" once the CLI's refusal frame named the standing fallback (model_fallback_row)
+        self._served_model = str(reg.get("servedModel") or reg.get("liveModel") or "")   # the model the API last SERVED a parent reply on (the picker's mark)
+        self._fallback_category = str(reg.get("fallbackCategory") or "")   # the refusal's category beside the cause
+        self._refusal_this_turn = False   # a model_refusal_fallback frame landed in the turn in flight: the downgrade learn keeps its cause
         self._settled_msg = None                 # the ResultMessage whose settle ran last (its finally records
         #   it) — what _note_message_failure reads to say whether a failed result's turn still settled
         # The handshake as a cross-thread EVENT: set the moment a ClaudeSDKClient is up, cleared when
@@ -5460,6 +5554,20 @@ class SdkSession:
         #                              queue so no message can share its pre-turn window (the CLI batches
         #                              everything pre-start into ONE record — the 2026-08-25 fold); cleared
         #                              by the turn's first streamed message, an exact event, or a reconnect
+        # THE FED TEXT THE CLI HAS NOT YET TAKEN, the ping's rule generalised to every send: the CLI drains
+        # EVERY queued prompt it holds into ONE user message when it next reads its queue, at a turn's start
+        # (the pre-turn window above) or when a running turn ends, so two texts fed into it before that drain
+        # reach the agent fused: one message, the first text then the second, which the chat showed as one
+        # bubble wearing both (2026-09-08: a composer message and a reply sent during one open turn).
+        # inputs() therefore feeds ONE text and holds the rest until the CLI demonstrably TOOK it (the exact
+        # events are _untaken_taken's), so every queued text lands as its own record, in queue order.
+        # RUNTIME-ONLY: a reconnect defers while a hold is live (the CLI still owes the drain;
+        # _do_request_reconnect), the loop top hands any hold that reached it to the stranded reconcile, and
+        # a restart re-delivers the persisted queue. None, or {"text", "item" (the queue entry itself),
+        # "fresh" (fed from idle), "settled" (the turn it was fed into has since ended), "fault" (the landing
+        # scan raised: logged once, the hold escapes on the next turn frame), "t", "off", "fsid" (the
+        # transcript mark the landing scan starts at, _transcript_mark), plus the scan's own cursor keys}.
+        self._untaken = None
         # A RESTORED /compact must light the compacting bracket too (the user 2026-07-22). send() sets
         # _compacting when it enqueues a compact command, but a persisted queue lands here INSTEAD of
         # going through send() — any /compact still queued when the kernel died arrives this way. Without
@@ -5478,6 +5586,7 @@ class SdkSession:
         #   overwrite the first's future (a hang) or share it (one click answering both — a silently wrong
         #   permission). Each ask site holds this from present to resolve (PR #875 review, 2026-09-02).
         self._lock = threading.Lock()
+        self._persist_lock = threading.Lock()   # one queue-mirror snapshot and write at a time (_persist_queue)
         self._ready = threading.Event()
         # Boot-stagger hook (see BOOT_RESUME_CONCURRENCY): fired exactly once when this session's CLI
         # is demonstrably past its spawn+catch-up burst (first init message) or its thread dies —
@@ -5668,6 +5777,39 @@ class SdkSession:
         with self._lock:
             return list(self._inflight_texts)
 
+    def _busy_under_lock(self) -> bool:
+        """SdkBackend.busy's reading, for a caller already holding self._lock: a turn in flight, a text
+        queued and about to run, or a fed text the CLI still holds (_untaken). move() reads it in the
+        same hold as its arm, so no text can be popped between an idle reading and the arm the feeder
+        then holds on. Reads attributes only, never another method: busy() is duck-typed and the doubles
+        it is handed carry inflight, _pending and _lock alone."""
+        return self.inflight > 0 or bool(self._pending) or getattr(self, "_untaken", None) is not None
+
+    def _disarm_move_settle(self) -> None:
+        """Lower the move arm (_move_settle_expected) and wake the feeder, from either thread. A
+        standing arm HOLDS the queue (inputs()), and the feeder sleeps on _input_wake, so every site that
+        lowers the arm must wake it or the head stays held until some unrelated event does: move() lowers
+        it from the kernel thread (a refusal, a control error, a same-folder answer, an uncertain outcome),
+        _consume_move_settle from the session's own thread (the move's turn-less result, or a real result
+        proving the arm stale). The loop top clears the flag bare: the new client's inputs() is created
+        after it and reads the flag on its first pass.
+        The session's thread may have ended: asyncio.run closed its loop and self.loop is never nulled,
+        and move() lowers the arm from the kernel thread after a claim the CLI's exit can outrun. There is
+        no feeder left to wake then, and a raise here would leave move()'s exit half done (a RuntimeError
+        in place of the SDK's named error, cwdPending kept). Lowering the arm is the point: wake only an
+        open loop, and never raise."""
+        self._move_settle_expected = False
+        loop, wake = getattr(self, "loop", None), getattr(self, "_input_wake", None)
+        if loop is None or wake is None:
+            return
+        closed = getattr(loop, "is_closed", None)
+        if callable(closed) and closed():
+            return
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:     # closed between the check and the call
+            pass
+
     def unqueue(self, idx: int, expect: str | None = None, qid: str | None = None) -> str | None:
         """Remove the queued turn at position `idx` (the chat's queued list is this same _pending order)
         and return its raw text, or None if it's gone. Lets the user CANCEL a message they queued
@@ -5711,16 +5853,22 @@ class SdkSession:
         seed re-delivers it. Called on every mutation (enqueue / unqueue / the input generator's
         pop), from the kernel thread AND the loop thread — _update_reg serializes the writes. A
         turn already FED to the SDK is out of the persisted queue by design: it reaches the
-        transcript as a user atom, which is the cut-turn resume's territory, not replay's."""
-        with self._lock:
-            snap = list(self._pending)
-            metas = list(self._pending_meta)
-        qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts"), **({"paths": m["paths"]} if m.get("paths") else {})} if isinstance(m, dict) and m.get("qid") else {"text": t}
-                 for t, m in zip(snap, metas)]        # every position, so the restore aligns the run as a block
-        try:
-            self.backend._update_reg(self.sid, queue=snap, queueMeta=qmeta)
-        except Exception:
-            self.backend._log("persist queue (%s): %s" % (self.name, traceback.format_exc()))
+        transcript as a user atom, which is the cut-turn resume's territory, not replay's.
+        The snapshot and its write are ONE step (_persist_lock): the feeder's post-pop persist on the loop
+        thread and an enqueue's persist on the kernel thread each snapshot under _lock and write under
+        _update_reg's own lock, so the pair could interleave as snapshot-A (empty, after the pop), snapshot-B
+        (the new entry), write-B, write-A: a lost update that left the mirror without an entry _pending held
+        until the next mutation. Serializing whole persists keeps the last write the latest snapshot."""
+        with self._persist_lock:
+            with self._lock:
+                snap = list(self._pending)
+                metas = list(self._pending_meta)
+            qmeta = [{"text": t, "qid": m["qid"], "qts": m.get("qts"), **({"paths": m["paths"]} if m.get("paths") else {})} if isinstance(m, dict) and m.get("qid") else {"text": t}
+                     for t, m in zip(snap, metas)]        # every position, so the restore aligns the run as a block
+            try:
+                self.backend._update_reg(self.sid, queue=snap, queueMeta=qmeta)
+            except Exception:
+                self.backend._log("persist queue (%s): %s" % (self.name, traceback.format_exc()))
 
     def interrupt(self):
         """Escalating stop (the user 2026-07-10, terminal parity). The old body was `if self.loop and
@@ -5860,21 +6008,125 @@ class SdkSession:
         # a rewind-HELD queue must not defer the reconnect: those turns can't start until the
         # reconnect arms them (the input gate) — deferring on their account would deadlock the rewind
         held = bool(self._rewind_to and not self._rewind_armed)
-        if self.inflight == 0 and (held or not self._pending):
+        # A fed text the CLI has not yet TAKEN (_untaken) is in flight for this decision too: after a mid-turn
+        # feed's result the counters read idle while the text still sits in the CLI's queue, about to be
+        # drained into a turn, and a teardown then ended the CLI with it: the message reached no one romp
+        # could see, and nothing flagged it. A teardown is an EOF plus a grace, not a kill: the SDK transport's
+        # close() closes the CLI's stdin first and waits several seconds for it to exit on its own before it
+        # terminates and then kills the process, so a CLI that has already drained the text into a turn
+        # finishes that turn when it fits in the grace, and the text's record then exists in a transcript no
+        # frame reported; a turn that does not fit is cut with the process. Do not design against a kill here.
+        # The hold's release (the drained turn's first frame, _on_message) counts that turn, so the deferred
+        # arm fires at its result.
+        quiet = self.inflight == 0 and self._untaken is None
+        if quiet and (held or not self._pending):
             if not defer:
                 with self._sub_lock:             # the loop-side re-check the immediate form relies on: live work
                     busy_work = bool(self._subagents or self._bg_tasks)   # that registered since the caller looked
+                busy_work = busy_work or bool(getattr(self, "_cli_working", False))   # …or a turn the CLI opened itself
                 if busy_work:
                     self.backend._log("reconnect (%s): live work registered before the reconnect ran; not "
                                       "reconnected, ask again when it is quiet" % self.name)
+                    self._re_raise_switch_ask()
                     return
             self._reconnect = True
+            self._reconnect_switch_why = getattr(self, "_switch_ask_pending", "")   # a switch's reconnect, or "" for a user's own
+            self._switch_ask_pending = ""
             self._wake_set()
         elif defer:
             self._reconnect_when_idle = True   # the ResultMessage handler fires it when the turn ends
         else:
             self.backend._log("reconnect (%s): became busy before the reconnect ran; not reconnected, ask "
                               "again when it is quiet" % self.name)
+            self._re_raise_switch_ask()
+
+    def _re_raise_switch_ask(self):
+        """An immediate reconnect a switch asked for was dropped by the loop-side re-check (work registered between the
+        quiet read and the run): the ask stands again, so the next live-work event or tick carries it."""
+        why = getattr(self, "_switch_ask_pending", "")
+        self._switch_ask_pending = ""
+        if why and not getattr(self, "_switch_wanted", ""):
+            self._switch_wanted = why
+
+    def _release_hold_at_exit(self):
+        """THE CLI'S EXIT is the one event on which the CLI loses its prompt queue, and so the one event
+        besides a teardown (the loop top, above _reconcile_stranded) that must release a feed hold
+        (_untaken) itself: a hold whose text left the CLI's queue with no drain turn and no landed record
+        has no releasing frame, and it would park every later text for good, with the reconnect deferred
+        behind it. Verified on the installed CLI over stream-json against a logging stand-in Messages
+        endpoint (2026-09-08):
+          * the INTERRUPT control request is NOT a loss event: a text queued mid-turn survived it; the
+            interrupted turn's result (error_during_execution) was followed milliseconds later by a new init
+            and the queued text's own turn. The CLI's schema says the same (queued commands survive an
+            interrupt without `cancel_queued`, which the SDK's interrupt() never sends), so the settle marks
+            the hold settled as for any result and the drain's first frame releases it;
+          * a SIGINT (the stop ladder's second rung) made the CLI emit the interrupted result and EXIT
+            WITHOUT running the queued text; a kill emits nothing at all; a crash is a kill. In every case
+            the stream ends and this thread ends with it, which is where this runs (_run's finally, before
+            _on_session_gone reads the counters).
+        With the process gone the transcript is final, so its verdict is proof, the rule _mark_dropped_echoes
+        applies to a dead spawn: a scan that finds no record of the held text means the text reached no
+        turn, and it goes back to the HEAD of _pending with its id (ahead of what queued behind it, as it
+        was), persisted to the reg mirror, so the next client (the next send, the crash heal's respawn, the
+        boot reconcile) feeds it first and the chat shows it queued, with its cancel, meanwhile; a record
+        found means the CLI took it (its echo prunes on that record); a scan that cannot read the transcript
+        takes the flag path on a RESUMABLE conversation, never a re-feed on doubt, and re-heads when no
+        conversation ever materialised (resume_sid None: no init streamed, so the next client starts fresh
+        and a re-feed cannot duplicate; _reconcile_stranded's distinction). Never a silent block, never a
+        timer. The counters are left as they are: an unsettled hold's turn was running (inflight > 0) and
+        _on_session_gone reads that as the cut it is; a settled hold's CLI was between turns, and an idle
+        death settles 'waiting' as before, its message owed and visible instead of lost until the next
+        spawn's scan.
+
+        THE THREAD'S END IS NOT THE CLI'S when a session host keeps the CLI (on by default, T348): a kernel
+        restart's drain detaches every hosted session (`detached`, latched by drain_and_reap before the
+        shutdown so the teardown sends `detach`, never `end`) and the host keeps the CLI with its prompt
+        queue, the held text still in it. A re-head here seeded the next kernel's queue from the mirror and
+        that kernel fed the text again: the agent read it twice, or fused with what queued behind it. So
+        this stands down, with one log line, when the session is detached or when the sid's lease reads
+        'attach' (backend._lease_survives: the rule the boot heal and _reseed_echoes apply to leave a
+        surviving CLI what it holds); the next kernel's attach reads the hold from the host's replay. A host
+        that died with its CLI leaves a lease that does not hold, so the crash road below is unchanged."""
+        u = getattr(self, "_untaken", None)
+        if u is None:
+            return
+        self._untaken = None
+        if self.detached or self.backend._lease_survives(self.sid):
+            self.backend._log("sdk %s: the thread ended while it held a fed text, and the CLI lives on under its host "
+                              "(%s): nothing re-headed, the next kernel attaches to the queue the host kept"
+                              % (self.sid[:8], "detached" if self.detached else "a live host lease"))
+            return
+        item = u.get("item", u["text"])
+        try:
+            seen = self.backend._text_landed(self.sid, u["text"], u.get("t"), u.get("off"), u.get("fsid"),
+                                             cursor=u)
+        except Exception:
+            seen = None
+        if seen is False or (seen is None and not self.resume_sid):
+            with self._lock:
+                self._q_prepend([item], self._unfeed_locked([item]))   # back at the head under its own id
+            self._persist_queue()
+            if seen is False:
+                self.backend._log("sdk %s: the CLI exited while it still held a fed text (never landed): back "
+                                  "at the head of the queue for the next client" % self.sid[:8])
+            else:
+                # _reconcile_stranded's distinction: no init ever streamed, so no conversation materialised
+                # and the next client starts one fresh; a transcript the scan cannot read (typically: the
+                # CLI died before writing its first record, so the file does not exist) is no reason to
+                # flag the user's first message as never delivered when re-feeding it cannot duplicate
+                # anything the user can see.
+                self.backend._log("sdk %s: the CLI exited before any conversation materialised, holding a fed "
+                                  "text whose transcript could not be read (%s): back at the head of the "
+                                  "queue for the next client, which starts the conversation fresh"
+                                  % (self.sid[:8], u.get("scan_error") or "unreadable"))
+        elif seen:
+            self.backend._log("sdk %s: the CLI exited after taking the last fed text; nothing to re-feed"
+                              % self.sid[:8])
+        else:
+            self.backend._log("sdk %s: the CLI exited while it held a fed text and the transcript could not "
+                              "be read (%s): the text's echo is flagged, not re-fed on doubt"
+                              % (self.sid[:8], u.get("scan_error") or "unreadable"), problem=True)
+            self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending(), refeed=False)
 
     def _reconcile_stranded(self):
         """RECONCILE ACROSS A RECONNECT, at the loop's top where no client is connected so nothing can
@@ -5887,7 +6139,10 @@ class SdkSession:
         ran); this stays as the backstop for anything that still strands a turn here: settle the
         counters to idle. A not-yet-STARTED _pending turn survives as
         before (never fed to the dead client; the new inputs() re-feeds it). No-op on the first connect
-        and on a clean reconnect. Event-based on the reconnect itself, not a time/age heuristic.
+        and on a clean reconnect. Event-based on the reconnect itself, not a time/age heuristic. A SETTLED
+        feed hold that reaches the loop top (a text fed mid-turn whose turn ended, the CLI still holding it
+        for the drain: _untaken) is put back into `_inflight_texts` there, with inflight raised, so its text
+        takes the two branches below like any stranded turn.
 
         And the FED turn itself must not vanish with the client it was fed to (2026-08-16: a spawn's -m
         kickoff, fed just as an effort-pin's teardown fired, landed nowhere — not in _pending, not in the
@@ -6231,10 +6486,12 @@ class SdkSession:
         pm = pretty_model(raw)
         if pm and self._resolve_model_pending(pm):
             changed = True
-        if pm and pm != self.model:
-            self.model, changed = pm, True
         if raw and raw != getattr(self, "_model_id", ""):   # getattr: __new__-built test doubles skip __init__
-            self._model_id, changed = raw, True
+            self._model_id, changed = raw, True            # the id FIRST: the hook below reads it (review 2026-09-17: read
+        #                                                     after, a pick to Opus asked for nothing and the session stayed slow)
+        if pm and pm != self.model:
+            old, self.model, changed = self.model, pm, True
+            self._after_model_change(old, pm)   # Always fast: a pick to Opus lands here first (the control channel's refresh)
         upd = {}
         if self.model:
             upd["liveModel"] = self.model
@@ -6263,6 +6520,298 @@ class SdkSession:
             self._ctx_refresh_again = False
             await self._do_refresh_context()
 
+    def fast_effective(self) -> bool:
+        """Whether the NEXT connect carries the fastMode opt-in (the flag-settings key the CLI needs before it runs fast
+        mode for a non-interactive client): this session's own ask (fast_opt, the badge's On), or the machine's
+        Always fast switch (the gear, Settings, Automation, Model; the user 2026-09-17) when this session's model can run
+        fast mode — the Opus family, on the id the CLI last reported, else its pretty name, else the pick. Two things
+        beat the switch: the user put THIS session on Slow (fast_off), and the CLI refused fast mode for it with a
+        reason (fast_reason, the persisted liveFastReason — an org gate, extra usage off): re-arming the flag would
+        loop refuse → reconnect → refuse. The flag is all the rule ever arms — never the literal '/fast on', which on
+        a non-Opus session makes the CLI switch the model. _options and _amain read the same expression, so the
+        flag file and the per-connection snapshot cannot disagree."""
+        if getattr(self, "fast_opt", False):
+            return True
+        if getattr(self, "fast_off", False) or getattr(self, "fast_reason", "") or getattr(self, "fast_rule_refused", ""):
+            return False
+        if not always_fast_on(getattr(self.backend, "state_dir", None)):
+            return False
+        # ANY known face of the model being Opus arms the flag — the pick, the id the CLI last reported, its name. The
+        # flag is harmless where it cannot take (a non-Opus connect reports fast off with no reason, verified
+        # 2026-08-10), and keying on one face made the snapshot flap with the served model (review 2026-09-17: an Opus
+        # pick served a Sonnet fallback reconnected at every turn's end, the init's Opus arming a flag the served Sonnet
+        # then dropped at the connect). The user's case is the other way round — Opus served under a Fable pick — and the
+        # reported id carries it.
+        return any(fast_capable(x) for x in (getattr(self, "chosen_model", ""), getattr(self, "_model_id", ""), getattr(self, "model", "")))
+
+    def _after_model_change(self, old, pm):
+        """The live model just changed (a learn, a context refresh): the machine's Always fast switch may now want the
+        flag this connection was made without — a model that can run fast mode arrived, by a pick to Opus or a fallback
+        onto it. The flag rides the connect, so ask for one — through want_switch_reconnect, which applies it the moment
+        the session is quiet and never cuts a turn, a subagent or a background task. A session whose own ask stands
+        (fast_opt) is set_fast's to reconnect, not this. One ask per connection: a reconnect already requested or wanted
+        (the flag, or anything else) is not asked for again."""
+        try:
+            if self._switch_wanted or getattr(self, "_reconnect_when_idle", False) or getattr(self, "_reconnect", False):
+                return
+            if not getattr(self, "fast_opt", False) and not getattr(self, "_fast_unlocked", False) and self.fast_effective():
+                self.backend._log("always fast (%s): %s can run fast mode — reconnecting with the opt-in%s"
+                                  % (self.name, pm, "" if self.quiet() else " once the session is quiet"))
+                self.want_switch_reconnect("always fast")
+        except Exception as e:
+            self.backend._log("always fast (%s): %s" % (self.name, e), problem=True)
+
+    def live_work(self):
+        """(subagents, background tasks) running inside the CLI right now, read under the lock."""
+        lock = getattr(self, "_sub_lock", None)
+        if lock is None:
+            return 0, 0
+        with lock:
+            return len(getattr(self, "_subagents", ()) or ()), len(getattr(self, "_bg_tasks", ()) or ())
+
+    def quiet(self) -> bool:
+        """Nothing a reconnect would cut: no turn in flight, none queued, the CLI not producing, no live subagent, no
+        background task. `inflight` counts the turns the FEEDER handed over; a turn the CLI opens by itself (a background
+        task's notification, a scheduled prompt, a peer's channel message) never passes through it, so inflight stays 0
+        while the CLI works — `_cli_working`, the stream's own busy signal (_mark_producing at the first work atom, the
+        settle's 'waiting' at the Result), is what says so. Without it three sessions read as quiet on 2026-09-17 while
+        running dozens of tool calls a minute; the host's `end` closed their stdin and its 120 s grace killed them
+        mid-turn. The loop-side re-check in _do_request_reconnect(defer=False) and the waker's last look
+        (_switch_teardown_check) ask the same question."""
+        if getattr(self, "inflight", 0) or getattr(self, "_pending", None) or getattr(self, "_cli_working", False):
+            return False
+        if self._ask_parked():
+            return False   # a permission or picker ask waiting on the user: the turn is alive, only paused (audit 2026-09-17)
+        a, b = self.live_work()
+        return not (a or b)
+
+    def _ask_parked(self) -> bool:
+        """A permission prompt or a picker question is standing for this session: _mark_producing's own gate. A turn parked on
+        an ask read as quiet to the Model switches (no feed in flight, the CLI not producing), and a reconnect then cancelled
+        the ask and the tool call with it; the host road closed stdin so the answer could never land (audit 2026-09-17)."""
+        try:
+            pend = getattr(self.backend, "_pending_ask", None)
+            return bool(pend) and pend.get(self.sid) is not None
+        except Exception:
+            return False
+
+    def _busy_words(self) -> str:
+        parts = []
+        if getattr(self, "inflight", 0):
+            parts.append("a turn in flight")
+        elif getattr(self, "_cli_working", False):
+            parts.append("a turn the CLI opened itself")
+        elif getattr(self, "_pending", None):
+            parts.append("a queued turn")
+        if self._ask_parked():
+            parts.append("a question waiting on you")
+        a, b = self.live_work()
+        if a:
+            parts.append("%d subagent%s" % (a, "" if a == 1 else "s"))
+        if b:
+            parts.append("%d background task%s" % (b, "" if b == 1 else "s"))
+        return ", ".join(parts) or "live work"
+
+    def want_switch_reconnect(self, why: str) -> None:
+        """A Model switch (Always fast: `why` "always fast"; Retry upgrades after downgrades: "retry upgrade") wants this
+        session reconnected so the connect can carry what it decided (the flag, the pick). The ask stands until the session
+        is QUIET and is applied then, by _try_switch_reconnect at the exact events that end live work (the turn's result,
+        a subagent's stop, a background task's end) with the kernel's 30 s tick behind them as the backstop. Never the
+        deferred turn's-end reconnect: that road is a user's own gesture on the session (an effort or fast pick) and
+        accepts what it cuts; a machine-wide switch is nobody's gesture on this session and must cut nothing (2026-09-17,
+        a session whose three subagents and background task died at its turn's end for the flag). Any thread."""
+        if getattr(self, "ended", False):
+            return
+        self._switch_wanted = why
+        loop = getattr(self, "loop", None)
+        if loop is not None:
+            loop.call_soon_threadsafe(self._try_switch_reconnect)
+        else:
+            self._try_switch_reconnect()   # not connected yet (or a test double): the connect reads the switch itself
+
+    def _try_switch_reconnect(self) -> bool:
+        """Apply the standing switch ask if the session is quiet now; otherwise keep it, saying once what it waits for.
+        A reconnect already on its way carries the switch's decision, so the ask stands down to it. When the ask is
+        carried, the upgrade retry's next attempt counts from here, not from the tick that asked. Loop thread (the
+        hooks and the settle run there; want_switch_reconnect schedules onto it)."""
+        why = getattr(self, "_switch_wanted", "")
+        if not why or getattr(self, "ended", False):
+            return False
+        if getattr(self, "_reconnect", False) or getattr(self, "_reconnect_when_idle", False):
+            self._switch_wanted = self._switch_wait_said = ""
+            return False
+        if not self.quiet():
+            if self._switch_wait_said != why:
+                self._switch_wait_said = why
+                self.backend._log("%s (%s): waiting for the session to go quiet before the reconnect — %s running; "
+                                  "nothing is cut" % (why, self.name, self._busy_words()))
+            return False
+        self._switch_wanted = self._switch_wait_said = ""
+        self._switch_ask_pending = why
+        arm = getattr(self, "_upgrade_retry", None)
+        if arm:   # the cadence counts from the reconnect that carried the ask (never earlier than the tick's own stamp)
+            arm["next"] = max(arm.get("next", 0) or 0, time.time() + RETRY_UPGRADE_S)
+        self.backend._log("%s (%s): the session is quiet — reconnecting now" % (why, self.name))
+        self.request_reconnect(defer=False)   # the loop-side re-check stands: work that registered meanwhile drops it,
+        return True                           #   and the next event or tick asks again (the ask is re-raised below)
+
+    def _switch_teardown_check(self) -> bool:
+        """The waker's LAST look before a Model switch's reconnect tears the client down (the host's `end` closes the CLI's
+        stdin, which no later finding can reopen). True = vetoed: the CLI is at work (quiet() is false — typically a turn
+        it opened itself from a background task's notification in the seconds since the quiet read), so the reconnect
+        stands down and the switch's ask stands again for the next quiet moment. False = proceeding: the end grace on
+        this connection's host is raised to SWITCH_END_GRACE_S first, so a turn that starts in the instant left between
+        here and the `end` is finished, not killed at 120 s. A user's own reconnect (an effort or fast pick, no switch
+        why) is never touched here: that road accepts what it cuts."""
+        why = getattr(self, "_reconnect_switch_why", "")
+        if not (why and getattr(self, "_reconnect", False)) or getattr(self, "ended", False):
+            return False
+        if self.quiet():
+            host = getattr(self, "_host", None)
+            if host is not None:
+                try:
+                    host.end_grace = max(float(getattr(host, "end_grace", 0) or 0), SWITCH_END_GRACE_S)
+                except Exception as e:
+                    self.backend._log("%s (%s): could not lengthen the host's end grace: %s" % (why, self.name, e))
+            return False
+        self._reconnect = False
+        self._reconnect_switch_why = ""
+        self._switch_wanted = why
+        self._switch_wait_said = why   # the line below says it; no second 'waiting' line for the same ask
+        self.backend._log("%s (%s): the CLI started work between the ask and the reconnect — %s; the reconnect stands "
+                          "down and the ask waits for the next quiet moment; nothing is cut" % (why, self.name, self._busy_words()))
+        return True
+
+    def _maybe_seed_fallback_cause(self) -> None:
+        """A standing fallback with no cause on record (it happened under an earlier kernel, whose frame this one never
+        saw): read the CLI's transcript, from the end, for the last swap it recorded, off the loop thread. The picker's
+        tooltip otherwise says the requested model is not answering without saying why until the next fallback."""
+        try:
+            live = getattr(self, "_served_model", "") or getattr(self, "model", "")
+            if getattr(self, "_fallback_cause", "") or not model_fallback_row(self.chosen_model, live):
+                return
+            path = transcript_path(self.cwd, getattr(self, "resume_sid", None) or self.sid)
+            threading.Thread(target=self._seed_fallback_cause_from_transcript, args=(path, live),
+                             name="sdk-fbcause:%s" % self.name, daemon=True).start()
+        except Exception as e:
+            self.backend._log("fallback cause (%s): %s" % (self.name, e))
+
+    def _seed_fallback_cause_from_transcript(self, path, live, cap_bytes=24 << 20) -> bool:
+        """The last swap the transcript recorded, read from the file's end (bounded): a model_refusal_fallback record
+        after the last fallback marker names the safeguards refusal and its category; a marker with no refusal record
+        after it was a swap of another kind, and a record of 'local' scope swapped one reply, not the session. Seeds
+        the cause only when that record's fallback model is the tier now serving. Returns True when it seeded."""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                chunk = 1 << 20
+                tail = b""
+                pos = size
+                while pos > 0 and (size - pos) < cap_bytes:
+                    step = min(chunk, pos)
+                    pos -= step
+                    f.seek(pos)
+                    tail = f.read(step) + tail
+                    if b"model_refusal_fallback" in tail:
+                        break
+        except OSError:
+            return False
+        i_ref = tail.rfind(b'"model_refusal_fallback"')
+        if i_ref < 0:
+            return False
+        i_mark = max(tail.rfind(b'"type":"fallback"'), tail.rfind(b'"type": "fallback"'))
+        if i_mark > i_ref:
+            return False   # the last swap on record was not a refusal: say nothing
+        start = tail.rfind(b"\n", 0, i_ref) + 1
+        end = tail.find(b"\n", i_ref)
+        try:
+            rec = json.loads(tail[start:end if end >= 0 else None].decode("utf-8", "replace"))
+        except Exception:
+            return False
+        if str(rec.get("scope") or "session") == "local":
+            return False
+        to = str(rec.get("fallbackModel") or rec.get("fallback_model") or "")
+        if _model_rank(to) is None or _model_rank(to) != _model_rank(live):
+            return False
+        cat = str(rec.get("apiRefusalCategory") or rec.get("api_refusal_category") or "").strip()
+        self._fallback_cause = "safeguards"
+        self._fallback_category = cat
+        try:
+            self.backend._update_reg(self.sid, fallbackCause="safeguards", fallbackCategory=cat)
+        except Exception as e:
+            self.backend._log("fallback cause (%s): registry write failed: %s" % (self.name, e))
+        self.backend._log("fallback cause (%s): the transcript's last swap was a safeguards refusal%s — the picker's mark says so"
+                          % (self.name, (" (%s)" % cat) if cat else ""))
+        try:
+            self.backend._poke()
+        except Exception:
+            pass
+        return True
+
+    def _arm_if_below_pick(self) -> bool:
+        """Retry upgrades after downgrades, for a session ALREADY sitting below its pick: arm from the pick's label when the
+        switch is on, no arm stands, and the model last served ranks below the pick. Two callers: the switch flip
+        (apply_model_switches) and a host ATTACH after a kernel restart (review 2026-09-17: the arm is in memory only,
+        and an attach to a CLI that survived the restart replays no init and serves no new fallback, so a standing
+        fallback lost its retry — and the picker's tooltip promised a cadence nothing was running). Off: the switch
+        going off ends any arm (_retry_armed). Returns True when it armed."""
+        pick = getattr(self, "chosen_model", "") or ""
+        if not retry_upgrade_on(getattr(self.backend, "state_dir", None)):
+            self._retry_armed()
+            return False
+        if not pick or pick == "default" or getattr(self, "_upgrade_retry", None):
+            return False
+        live = getattr(self, "_served_model", "") or getattr(self, "model", "")
+        pr, lr = _model_rank(pick), _model_rank(live)
+        if pr is not None and lr is not None and lr < pr:
+            self._arm_upgrade_retry(_alias_label(pick), live)
+            return True
+        return False
+
+    def _arm_upgrade_retry(self, frm, to):
+        """A down-tier model change nobody asked for just landed (the card's branch in _learn_model): with the gear's
+        Retry upgrades after downgrades switch on, remember what to get back to and let the kernel's tick ask for it
+        (retry_model_upgrades). Off, or already armed: nothing."""
+        if getattr(self, "_upgrade_retry", None) or not retry_upgrade_on(getattr(self.backend, "state_dir", None)):
+            return
+        now = time.time()
+        self._upgrade_retry = {"from": frm, "to": to, "pick": getattr(self, "chosen_model", "") or "",
+                               "since": now, "next": now + RETRY_UPGRADE_S, "attempts": 0}
+        self.backend._log("retry upgrade (%s): %s fell back to %s — the picked model is asked for again every %d min, "
+                          "when the session is quiet, until a turn is served on it" % (self.name, frm, to, int(RETRY_UPGRADE_S // 60)))
+
+    def _retry_armed(self):
+        """The standing retry, or None — and None as well once the switch is off (review 2026-09-17: an arm that outlived
+        the switch went on suppressing and would have minted a "back on" card crediting a retry that never ran): the
+        arm clears the moment any reader finds the switch off, said once in the log."""
+        arm = getattr(self, "_upgrade_retry", None)
+        if arm and not retry_upgrade_on(getattr(self.backend, "state_dir", None)):
+            self._upgrade_retry = None
+            self.backend._log("retry upgrade (%s): the switch is off — standing down" % self.name)
+            return None
+        return arm
+
+    def _note_model_served(self, pm):
+        """A PARENT turn was served on `pm` while a retry stands (the AssistantMessage learn, never the init's report of
+        the configured model or a context refresh: the CLI running on the pick is not the API serving it). At or above
+        the tier the session fell from, the retry is done: the arm clears and the kernel-wired hook mints the completed
+        card saying the session is back (on_model_restored, the on_model_fallback idiom)."""
+        arm = self._retry_armed()
+        if not arm:
+            return
+        a, b = _model_rank(pm), _model_rank(arm.get("from"))
+        if a is None or b is None or a < b:
+            return
+        self._upgrade_retry = None
+        self.backend._log("retry upgrade (%s): back on %s after %d attempt(s)" % (self.name, pm, arm.get("attempts", 0)))
+        fb = getattr(type(self.backend), "on_model_restored", None)
+        if fb:
+            try:
+                fb(self.sid, arm.get("to"), pm)
+            except Exception as e:
+                self.backend._log("model-restored card (%s): %s" % (self.name, e), problem=True)
+
     def _adopt_fast_state(self, d) -> bool:
         """Adopt fast-mode truth from a CLI payload that carries it. The per-turn init message and the
         connect-time initialize response (get_server_info) share the exact field names (verified live
@@ -6280,6 +6829,15 @@ class SdkSession:
             fast = self._fast_expect
         self._fast_expect = ""
         reason = str(d.get("fast_mode_disabled_reason") or "")
+        # …and it is the CLI's own word that THIS connection was made without the flag. _amain snapshots _fast_unlocked
+        # from fast_effective at the connect, which for an ATTACH to a CLI that survived a kernel restart is the rule's
+        # wish today, not the spawn's fact (a switch turned on across the restart read as already armed, so the rule
+        # never asked and the session stayed slow; and set_fast would have sent a literal '/fast on' the CLI refuses).
+        # The readback corrects it, and the rule is asked again from the truth (2026-09-17).
+        relearn = False
+        if reason == "sdk_opt_in_required" and getattr(self, "_fast_unlocked", False):
+            self._fast_unlocked = False
+            relearn = True
         # 'sdk_opt_in_required' is NOT a refusal to respect — it is the one refusal romp is
         # BUILT to cure (set_fast reconnects with the fastMode flag-settings opt-in), and the
         # CLI stamps it on EVERY connect made without the flag (verified live 2026-08-10 on
@@ -6298,18 +6856,37 @@ class SdkSession:
         # sdk_opt_in_required, which blanks the reason above, so the badge comes BACK instead of
         # disappearing under the dead-control rule.
         refused_ask = bool(reason) and self.fast_opt and fast != "on"
+        # The machine's Always fast switch armed this connection's flag (no ask of the session's own — read BEFORE the
+        # clear below, so the user's own refused ask is never also charged to the switch) and the CLI answered with a
+        # reason: said once per reason in the log, loudly, and remembered in the session's fast_rule_refused, which
+        # fast_effective reads from here on — the next connect does not re-arm the flag, and a flagless connect's
+        # sdk_opt_in_required (blanked into fast_reason above) cannot erase that memory. The CLI reporting fast ON for
+        # this session lifts it: the reason is gone.
+        rule_refused = bool(reason) and not self.fast_opt and getattr(self, "_fast_unlocked", False) \
+            and always_fast_on(getattr(self.backend, "state_dir", None)) \
+            and reason != getattr(self, "fast_rule_refused", "")
+        rule_lifted = fast == "on" and bool(getattr(self, "fast_rule_refused", ""))
         if refused_ask:
             self.fast_opt = False
+        if rule_refused:
+            self.fast_rule_refused = reason
+        if rule_lifted:
+            self.fast_rule_refused = ""
         changed = fast != self.fast or reason != self.fast_reason
         self.fast, self.fast_reason = fast, reason
-        if changed or refused_ask:
+        if changed or refused_ask or rule_refused or rule_lifted:
             try:
                 kw = dict(liveFast=fast, liveFastReason=reason)
                 if refused_ask:
                     kw["fast"] = False
+                if rule_refused or rule_lifted:
+                    kw["fastRuleRefused"] = self.fast_rule_refused
                 self.backend._update_reg(self.sid, **kw)
             except Exception as e:
                 self.backend._log("fast-state persist (%s): registry write failed: %s" % (self.name, e))
+        if rule_refused:
+            self.backend._log("always fast (%s): the CLI refused fast mode — %s; this session runs at normal speed until "
+                              "that clears" % (self.name, _FAST_REFUSALS.get(reason, "the CLI reports %r" % reason)), problem=True)
         if refused_ask:
             why = _FAST_REFUSALS.get(reason, "the CLI reports %r" % reason)
             self.backend._log("fast mode (%s): the CLI refused the toggle — %s" % (self.name, reason),
@@ -6321,8 +6898,9 @@ class SdkSession:
                 self.backend._log("fast mode (%s): could not tell the chat about the refusal: %s"
                                   % (self.name, e))
             self.request_reconnect()
+        if relearn:
+            self._after_model_change(self.model, self.model)   # the flag this connection lacks, asked for from the truth
         return changed or refused_ask
-
     async def _do_adopt_server_info(self):
         """Fast-mode state at CONNECT, before any turn. The init message _adopt_fast_state feeds on
         only streams WITH a turn — so after a kernel restart every session's fast badge sat blank
@@ -6490,6 +7068,12 @@ class SdkSession:
         finally:
             self._fire_boot_settled()   # a dead thread must free its boot-stagger slot (first, so
             #                             a raising _on_session_gone can never leak the slot)
+            try:
+                self._release_hold_at_exit()   # the CLI's queue died with it: a held text goes back to the queue
+                #                                (unless a host kept the CLI: a detached session or a live lease stands down)
+            except Exception as e:             # never in the way of _on_session_gone, which reaps the session
+                self.backend._log("sdk %s: the exit release of the feed hold failed: %s: %s"
+                                  % (self.sid[:8], type(e).__name__, _mask_ids(e)), problem=True)
             self.backend._on_session_gone(self)
 
     async def _amain(self):
@@ -6531,6 +7115,23 @@ class SdkSession:
                     # would land it on the un-rewound branch (the exact wrong-branch delivery this guards)
                     blocked = blocked or bool(self._rewind_to and not self._rewind_armed)
                     blocked = blocked or self._ping_feeding   # the ping's record must not share its window
+                    # ONE FED TEXT AT A TIME: the last fed text is still in the CLI's queue, and the CLI drains
+                    # every queued prompt into one message when it next reads that queue, so a second feed now
+                    # would reach the agent fused with the first (2026-09-08). Hold until the CLI demonstrably
+                    # took it (_untaken_taken); mid-turn forwards still flow, one per take, so a message sent
+                    # mid-turn still reaches the running turn at its next step.
+                    blocked = blocked or self._untaken is not None
+                    # a MOVE is in flight: move() armed _move_settle_expected under this lock and the CLI is
+                    # relocating for its set_cwd. The CLI relocates FIRST and replies after, then emits an init
+                    # and a turn-less result; a text fed into that window could run a whole turn before the
+                    # move's own result arrived, and that turn's result would read the arm as stale and drop it
+                    # (_consume_move_settle), leaving the late turn-less result to settle as a turn end. Hold
+                    # the head until the arm is down: the move's result consumed, a real result dropping a
+                    # stale arm, move() lowering it at a refusal or an uncertain outcome (each wakes this
+                    # feeder, _disarm_move_settle), or the loop top's clear (a new inputs() follows it). The
+                    # move's own request rides the control channel, not this generator, so the hold never
+                    # delays it.
+                    blocked = blocked or self._move_settle_expected
                     # a reconnect is ARMED (_reconnect: the waker is about to tear this client down) →
                     # hold the head for the NEXT client. The settle wakes this feeder and arms a deferred
                     # reconnect in the same finally, both wakeups queued FIFO on the loop, so without
@@ -6548,16 +7149,29 @@ class SdkSession:
                     blocked = blocked or (self.inflight == 0 and self.backend.drain_holding())
                     fi = 0 if (self._pending and not blocked) else -1
                     item, _meta = self._pop_for_feed_locked(fi) if fi >= 0 else (None, None)
-                    fresh = item is not None and self.inflight == 0     # starting from idle, not mid-turn
+                    # starting from idle, not mid-turn. inflight counts the CLI's own turns too (a turn frame
+                    # at inflight 0 raises it, _on_message), so a text fed while the CLI runs a turn romp did
+                    # not feed (the drain of a mid-turn text, a notification-started turn) is mid-turn here
+                    # and its hold waits for a real take, not the running turn's next frame
+                    fresh = item is not None and self.inflight == 0
                     if item is not None:
                         # under the SAME lock as the pop: busy() reads inflight>0 or _pending, and the kernel's
                         # parked-op drain re-runs right after a delivery (2026-09-03) — a gap between the pop
                         # and this increment read as idle and could feed the op behind into this very turn
                         self.inflight += 1
                         self._inflight_texts.append(item)   # the fed-turn twin — see its init comment
+                        # the hold, armed under the same lock as the pop: nothing else feeds until the CLI has
+                        # taken this text (_untaken_taken clears it). The transcript mark is taken below,
+                        # before the yield: the CLI has not seen the text yet, so its record can only begin
+                        # at or after the file's size now (_transcript_mark's argument).
+                        self._untaken = {"text": str(item), "item": item, "fresh": fresh, "settled": False,
+                                         "t": int(time.time()), "off": None, "fsid": None}
                 if item is None:
                     await self._input_wake.wait()   # idle, or holding behind a wedged turn → wait for a change
                     continue
+                off, fsid = self.backend._transcript_mark(self.sid)
+                if self._untaken is not None:
+                    self._untaken["off"], self._untaken["fsid"] = off, fsid
                 self._persist_queue()               # the fed turn leaves the persisted queue (it lands in the transcript)
                 if fresh:
                     self.since = int(time.time())    # a new turn starts now (mid-turn forwards keep the turn's clock)
@@ -6570,6 +7184,11 @@ class SdkSession:
                     self._ping_feeding = True       # hold feeds until this turn's first streamed message
                 self._mark_producing()              # the one gate: a text fed under a standing prompt leaves the prompt's state
                 self.backend._poke()
+                # …and THIS session's frame now (2026-09-19): the copy just left _pending, so the chat's queued bubble for
+                # it goes and its echo shows, which the pane reads as "taken by the session" and drops the ✎ whose recall
+                # could no longer win (render.ts, send-pending.ts `handed`). The poke wakes the fleet cycle, seconds
+                # behind on a busy kernel; the targeted push lands the flip at once, as the connect handshake's does.
+                self.backend._push_session(self.sid)
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
 
@@ -6593,7 +7212,26 @@ class SdkSession:
             deliberate = bool(self._reconnect) and not self._host_attach_retries
             self._deliberate_connect = deliberate    # read by _on_host_hello, where the block runs under a host
             self._reconnect = False
+            self._reconnect_switch_why = ""
             self._ping_feeding = False   # a reconnect restarts the feed — a stale hold must not wedge it
+            # a move's turn-less result was owed by the client this iteration replaces; the new one will
+            # never emit it, and a standing arm keeps _on_message from counting the CLI's own turns and
+            # holds the queue (inputs()). _consume_move_settle drops it at a real result too.
+            self._move_settle_expected = False
+            # same: a feed hold never outlives its client. Its text is the reconcile's: already in the
+            # fed-turn twin while its turn runs; put back there when the hold was SETTLED (the turn ended,
+            # the CLI still held the text for the drain, the settle zeroed both counters), so the reconcile
+            # re-heads or flags it like any stranded turn instead of the text vanishing with the client.
+            # The reconnect arms defer while a hold is live, so this is the backstop for a teardown that
+            # armed some other way. On a resumable conversation that flag can be a false 'never delivered':
+            # the teardown closes stdin and gives the CLI a grace to exit on its own (_do_request_reconnect),
+            # long enough to finish the drained turn, and when it did the next build finds the record and
+            # prunes the flag (_mark_dropped_echoes is self-correcting).
+            u, self._untaken = self._untaken, None
+            if u is not None and u.get("settled"):
+                with self._lock:
+                    self._inflight_texts.append(u.get("item", u["text"]))
+                    self.inflight = max(self.inflight, 1)
             # the abandoned client's live subagents and background tasks died with it — retire them on
             # the teardown event itself (and tell the session what it lost, as a CLI death does)
             self._drop_live_work("reconnect")
@@ -6617,7 +7255,7 @@ class SdkSession:
             # _options composes the flag-settings file, so the two can never disagree. The CLI only
             # interprets literal '/fast on|off' sends on a connection made with the flag; set_fast
             # reads this to choose between the live send and an applying reconnect.
-            self._fast_unlocked = self.fast_opt
+            self._fast_unlocked = self.fast_effective()   # the session's own ask, or the machine's Always fast switch
             self._fast_expect = ""   # a fresh connection's first init speaks for the flag, not for any
             #   toggle sent on the old one — never hold a pre-reconnect expectation against it
             connected = False
@@ -6705,11 +7343,22 @@ class SdkSession:
                     # SDK already holds (get_server_info), so the badge exists pre-turn too — without
                     # this, nothing showed after a kernel restart until each session's next turn.
                     asyncio.ensure_future(self._do_adopt_server_info())
+                    if getattr(self, "_host_is_attach", False):
+                        self._arm_if_below_pick()   # an attach replays no init and serves nothing new: a standing fallback re-arms its retry here
+                        self._maybe_seed_fallback_cause()   # …and a standing fallback whose cause this kernel never saw reads it off the transcript
                     feeder = asyncio.ensure_future(client.query(inputs()))
                     recv = asyncio.ensure_future(self._drain(client, AssistantMessage, ResultMessage, SystemMessage))
                     waker = asyncio.ensure_future(self._wake.wait())
                     try:
-                        await asyncio.wait({recv, waker}, return_when=asyncio.FIRST_COMPLETED)
+                        while True:
+                            await asyncio.wait({recv, waker}, return_when=asyncio.FIRST_COMPLETED)
+                            if waker.done() and not recv.done() and self._switch_teardown_check():
+                                # a Model switch's reconnect found the CLI at work at the last moment (a turn it opened
+                                # itself since the quiet read): this client stays up, the ask waits for quiet again
+                                self._wake.clear()
+                                waker = asyncio.ensure_future(self._wake.wait())
+                                continue
+                            break
                     finally:
                         for tk in (feeder, recv, waker):
                             tk.cancel()
@@ -6851,7 +7500,7 @@ class SdkSession:
         self.backend._rewind_resolved(self.sid, "failed")
         self.backend._poke()
 
-    def _learn_model(self, pm, raw=""):
+    def _learn_model(self, pm, raw="", served=False):
         """Record a freshly-observed display model (from the init message or an assistant turn). Updates the
         live value AND persists it to the registry as `liveModel`, so a DORMANT / post-restart session still
         shows its model via live_sessions' registry path — the registry's `model` field is the user's CHOSEN
@@ -6865,11 +7514,28 @@ class SdkSession:
         `liveModelId`: the kernel's version pickers are SEEDED from a table and completed from these —
         the CLI is the authoritative source for what it serves, and a table alone went stale the day
         Fable 5.1 shipped. Written whenever it is newly known, even under an unchanged name, so a
-        long-running session contributes its version without a model change."""
+        long-running session contributes its version without a model change.
+
+        `served` (2026-09-17): the observation is a PARENT assistant turn served on `pm` — the evidence the retry after a
+        downgrade waits for (_note_model_served); the init's report of the configured model and a context refresh say
+        what the CLI runs, not what the API served, and pass False."""
         if not pm:
             return
         cleared = self._resolve_model_pending(pm)
         raw = (raw or "").strip()
+        prev_served = getattr(self, "_served_model", "")   # what the API served BEFORE this observation: the downgrade branch reads it
+        if served and pm:
+            prev = prev_served or self.model   # unseeded: the configured model stands in, so an unchanged main loop is a no-op write
+            if pm != prev:
+                self._served_model = pm        # what the API last SERVED a parent reply on — the picker's mark reads this, never the init's configured name
+                try:
+                    self.backend._update_reg(self.sid, servedModel=pm)
+                except Exception as e:
+                    self.backend._log("served model (%s): registry write failed: %s" % (self.name, e))
+            elif not getattr(self, "_served_model", ""):
+                self._served_model = pm        # remembered in memory only: nothing changed on disk
+        if served and self._retry_armed():
+            self._note_model_served(pm)
         if pm == self.model:
             if raw and raw != getattr(self, "_model_id", ""):   # getattr: __new__-built test doubles skip __init__
                 self._model_id = raw
@@ -6890,6 +7556,14 @@ class SdkSession:
             # arrives here as an unrequested transition too, and a capacity fallback never moves a
             # session UP-tier. An up-tier, lateral, or unknown-name change is treated as the user's
             # doing and just updates the badge, exactly as before the card existed.
+            arm = self._retry_armed()
+            if arm and arm.get("to") == pm and arm.get("attempts", 0) > arm.get("logged", 0):
+                # the retry's own re-fallback (the user 2026-09-17), said once per attempt with the real wait; the card
+                # is the store's call — mint_fallback_card's existence-keyed dedupe mints nothing while the swap's card
+                # stands and a fresh one once the user cleared it (the deciding event is the dismissal, never this arm)
+                arm["logged"] = arm["attempts"]
+                self.backend._log("retry upgrade (%s): %s fell back to %s again after attempt %d; next attempt in %d min"
+                                  % (self.name, self.model, pm, arm["attempts"], max(0, int((arm.get("next", 0) - time.time()) // 60))))
             fb = getattr(type(self.backend), "on_model_fallback", None)
             if fb:
                 try:
@@ -6908,8 +7582,23 @@ class SdkSession:
                         cards.append((self.model, pm, gid))
                 except Exception as e:
                     self.backend._log("model-fallback card (%s): %s" % (self.name, e), problem=True)
-        self.model = pm
+            self._arm_upgrade_retry(self.model, pm)   # Retry upgrades after downgrades: remember the way back (off → nothing)
+            # A NEW episode resets the cause (the CLI's refusal frame names it seconds later); an observation of the fallback
+            # ALREADY standing — the API served this tier last time too: a host attach replaying the fallen reply the old
+            # kernel never acked, a reconnect's init reporting the pick and the next reply falling back the same way — keeps
+            # the cause on record (review 2026-09-17: the attach's seed set "safeguards" and the replayed learn erased it).
+            same_episode = bool(prev_served) and _model_rank(prev_served) is not None and _model_rank(prev_served) == _model_rank(pm)
+            if not getattr(self, "_refusal_this_turn", False) and not same_episode:
+                self._fallback_cause = ""             # a new episode: its cause is unknown until the CLI's refusal frame names it (seconds later)
+                self._fallback_category = ""
+            downgraded = not getattr(self, "_refusal_this_turn", False) and not same_episode
+        else:
+            downgraded = False
+        old, self.model = self.model, pm
         fields = {"liveModel": pm, "modelPending": bool(self._model_pending)}
+        if downgraded:
+            fields["fallbackCause"] = ""
+            fields["fallbackCategory"] = ""
         if raw:
             self._model_id = raw
             fields["liveModelId"] = raw
@@ -6917,6 +7606,7 @@ class SdkSession:
             self.backend._update_reg(self.sid, **fields)
         except Exception as e:
             self.backend._log("model learn (%s): registry write failed: %s" % (self.name, e))
+        self._after_model_change(old, pm)   # Always fast: a model that can run fast mode may want the flag (a reconnect)
         self.backend._poke()
 
     def _on_refusal_fallback(self, d: dict):
@@ -6946,6 +7636,14 @@ class SdkSession:
         # A 'local' refusal (a subagent's or a side question's reply) never swapped the session's model,
         # so none of this turn's cards is its own.
         caps = [] if scope == "local" else [c[2] for c in (getattr(self, "_swap_cards", None) or []) if c[2]]
+        if scope != "local":
+            self._fallback_cause = "safeguards"   # the picker's requested-model tooltip names the classifiers (model_fallback_row)
+            self._fallback_category = cat
+            self._refusal_this_turn = True
+            try:
+                self.backend._update_reg(self.sid, fallbackCause="safeguards", fallbackCategory=cat)
+            except Exception as e:
+                self.backend._log("fallback cause (%s): registry write failed: %s" % (self.name, e))
         hook = getattr(type(self.backend), "on_model_refusal_fallback", None)
         if not hook:
             memo = "model_refusal_fallback:no-hook"
@@ -7528,7 +8226,101 @@ class SdkSession:
             if _lg:
                 _lg("api-health: give-up ingest failed: %s" % e)
 
+    @staticmethod
+    def _turn_frame(msg, AssistantMessage, ResultMessage, SystemMessage) -> bool:
+        """Is `msg` a frame that proves the CLI read its prompt queue and is running a turn: the init
+        SystemMessage (one per turn), an assistant message, the CLI's own user record, a result. Every
+        other system subtype streams independently of the queue: the background-task machinery's
+        task_started / task_progress / task_updated / task_notification / background_tasks_changed,
+        hook_started / hook_response, status, commands_changed, compact_boundary; and a rate-limit or
+        tool-progress event is not a system frame at all; none proves anything about the queue, and one
+        arriving in the gap between a feed and the CLI's dequeue must not stand in for the dequeue.
+        Nor is a SUBAGENT's frame (an assistant or user message tagged parent_tool_use_id: a Task's own
+        turns, streamed on the parent's connection, msg_to_atom's sidechain rule): a backgrounded Task
+        keeps streaming after the main turn's result, and its frames say nothing about the main
+        conversation's prompt queue. Counted, they read an idle session as running a turn nothing would
+        settle until some later result, and one arriving between a feed from idle and the fed turn's
+        init would release the hold with the text still in the CLI's queue."""
+        if getattr(msg, "parent_tool_use_id", None):
+            return False
+        if isinstance(msg, (AssistantMessage, ResultMessage)):
+            return True
+        if isinstance(msg, SystemMessage):
+            return getattr(msg, "subtype", None) == "init"
+        return type(msg).__name__.lstrip("_") == "UserMessage"
+
+    def _untaken_taken(self, msg, AssistantMessage, ResultMessage, SystemMessage) -> bool:
+        """Has the CLI TAKEN the last fed text (self._untaken), so the next queued text may be fed
+        without the two fusing into one message? `msg` is the frame just streamed. Three exact events,
+        each proving the text left the CLI's queue:
+          * fed from IDLE (`fresh`): any turn frame after the feed. The only prompt the CLI held was
+            this one, so the turn now streaming is its turn, the rename ping's rule (_ping_feeding).
+            `fresh` means inflight was 0 at the feed, and inflight counts the CLI's own turns too
+            (_on_message raises it on a turn frame at 0), so a text fed while the CLI runs a turn romp
+            did not feed is NOT fresh: it takes the mid-turn rules below.
+          * fed MID-turn, and the turn it went into has since ENDED (`settled`, set at that turn's
+            ResultMessage): any turn frame after that. The CLI drains its queue when a turn ends, so the
+            next turn's first frame, its init or its first assistant message, says the drain happened
+            and the text went with it; a feed between the result and this frame is the fuse.
+          * fed MID-turn, the turn still running: the text's record LANDED, the queued_command
+            attachment a mid-turn splice leaves at a tool boundary (the same record _text_landed reads
+            for the re-delivery guard), scanned from the feed-time mark forward. This is the accelerator:
+            the next text can follow it into the same turn instead of waiting for the turn to end.
+        Only turn frames count (_turn_frame: the init, assistant messages, the CLI's own user records,
+        results); a task, hook, rate-limit or progress frame proves nothing about the queue. The scan is
+        bounded: it resumes at the last complete line it read and skips a file that has not grown.
+        A scan that RAISES (None: the transcript or the registry unreadable) is a fault, not a miss:
+        it is logged once per hold, to the problem ring, and the hold escapes on the next turn frame,
+        at once when this frame is the result, since after a result nothing later is guaranteed to
+        stream if the text was consumed mid-turn, and a hold with no releasing event would park every
+        later text for good."""
+        u = self._untaken
+        if u is None or not self._turn_frame(msg, AssistantMessage, ResultMessage, SystemMessage):
+            return False
+        if u.get("fresh") or u.get("settled") or u.get("fault"):
+            return True
+        seen = self.backend._text_landed(self.sid, u["text"], u.get("t"), u.get("off"), u.get("fsid"),
+                                         cursor=u)
+        if seen is None:
+            u["fault"] = True
+            self.backend._log("feed hold (%s): the landing scan for the last fed text failed (%s); the next "
+                              "queued text goes in at the next turn frame instead of waiting for the "
+                              "record" % (self.name, u.get("scan_error") or "transcript unreadable"),
+                              problem=True, key=("feed-hold-scan", self.sid))
+            return isinstance(msg, ResultMessage)
+        return seen is True
+
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
+        if getattr(self, "inflight", None) == 0 and getattr(self, "_lock", None) is not None \
+                and not getattr(self, "_move_settle_expected", False) \
+                and self._turn_frame(msg, AssistantMessage, ResultMessage, SystemMessage):
+            # A turn frame while nothing romp fed is in flight: the CLI opened a turn on its own (it
+            # drained a text fed mid-turn once the last turn ended, or a subagent's or task's
+            # notification woke it), and inflight counted none of it: a text fed into such a turn read
+            # `fresh`, its hold cleared on the turn's very next frame with the text still in the CLI's
+            # queue, and the text behind it was fed to fuse with it. Count the turn NOW, before the hold
+            # below is read: the feeder's next pop then computes fresh False, busy() reads the turn, a
+            # reconnect defers to its result, and the settle zeroes it as it does every turn. When a
+            # settled hold is what this frame releases, its text is what the CLI drained: it rejoins the
+            # fed-turn twin so a teardown mid-turn still reconciles it. The turn's clock starts at this
+            # frame, as a fresh feed's starts at its pop (inputs()): snapshot() reads `since` for a turn in
+            # flight, and left alone it would show the previous fed turn's start for this one; the
+            # interrupt flag and its escalation level are cleared the same way, so a stale stop reading
+            # cannot make the new turn read 'waiting' while it streams.
+            # NOT while an accepted live move's settle is expected: the CLI answers a set_cwd with an
+            # init and a turn-less result, no query sent (_consume_move_settle), and counting that init
+            # would leave an idle session busy (a reconnect deferred, a drive op parked) until its next
+            # real turn; should a count slip through anyway, the move's result zeroes it.
+            with self._lock:
+                if self.inflight == 0:
+                    self.inflight = 1
+                    self.since = int(time.time())
+                    self._interrupted = False
+                    self._intr_level = 0
+                    self._first_out_t = None
+                    u = getattr(self, "_untaken", None)
+                    if u is not None and u.get("settled") and getattr(self, "_inflight_texts", None) is not None:
+                        self._inflight_texts.append(u.get("item", u["text"]))
         if getattr(self, "_ping_feeding", False):   # getattr: __new__-built test doubles skip __init__
             # the ping's turn is streaming — the CLI demonstrably started it, so a message fed from
             # here on lands MID-TURN as its own record (the CLI's designed forward behavior); the
@@ -7542,6 +8334,14 @@ class SdkSession:
             # zero-cost result (a /clear's own), a turn-less result the move settle consumes, or a handler failure
             # left its tag at the head and every later result read the PREVIOUS record's tag for the transport's life
             self._result_tag = self._spend_result_tag()
+        if getattr(self, "_untaken", None) is not None \
+                and self._untaken_taken(msg, AssistantMessage, ResultMessage, SystemMessage):
+            # the CLI took the last fed text (an exact event: _untaken_taken): the next queued text can go
+            # in as its own message now. Checked BEFORE the result settle below marks the turn ended, so a
+            # result frame is read against the state the text was fed into.
+            self._untaken = None
+            if self._input_wake is not None:
+                self._input_wake.set()
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             self._fire_boot_settled()   # the CLI is up and streaming — its transcript catch-up burst
             #                             is over, so the boot-stagger slot (if any) frees NOW
@@ -7633,6 +8433,31 @@ class SdkSession:
                                    # is _amain's on-connect _do_refresh_context() (get_context_usage); this is
                                    # the refinement once a real turn lands.
             asyncio.ensure_future(self._do_refresh_context())   # re-pull the real context % + model from the SDK
+        elif isinstance(msg, SystemMessage) and msg.subtype == "status":
+            # The CLI's own compaction bracket (the user 2026-09-19: a session at its context ceiling sat "unresponsive"
+            # while it compacted on its own; no chip, no teal, no overlay card, because _compacting was set only when romp
+            # delivered a /compact). The CLI 2.1.257 stream emits {"subtype": "status", "status": "compacting"} when a
+            # compaction starts, automatic or manual, and a null status when it ends: with compact_result or
+            # compact_error after a compaction that ran, and BARE after one that did not (a PreCompact hook blocked it,
+            # or the reactive compaction of a too-long prompt ended), with no boundary following either. It also emits
+            # "requesting" at each request start, and a null status carrying permissionMode on a permission-mode change,
+            # which is not a compaction's edge (round two of 1904's review: a clear keyed on the result fields left the
+            # bracket open after a hook-blocked compaction, and an open bracket parks the drain and refuses the rewind for
+            # the rest of the turn). So: a null WITHOUT permissionMode clears, whatever else it carries; a null WITH
+            # permissionMode and no compaction field never touches the bracket (the bundle's mode emitters carry the
+            # mode alone and its compaction emitters never carry the mode; a frame carrying both, which no bundle emits
+            # today, reads as a compaction's end). Every surface reads the one bracket through compacting(sid), so the
+            # poke flips them all at once, as the init branch does for the model.
+            d = msg.data if isinstance(getattr(msg, "data", None), dict) else {}
+            status = d.get("status")
+            if status == "compacting":
+                if not self._compacting:
+                    self._compacting = True
+                    self.backend._poke()
+            elif status is None and ("permissionMode" not in d or "compact_result" in d or "compact_error" in d):
+                if self._compacting:
+                    self._compacting = False   # the compaction's end on the stream; the boundary and the result clear it too
+                    self.backend._poke()
         elif isinstance(msg, SystemMessage) and msg.subtype == "compact_boundary":
             self._compacting = False   # a real compaction LANDED → done; the CLI's continuation is normal work
             # Compaction just landed: the active context dropped to the summary. Re-pull the % NOW, on the
@@ -7652,17 +8477,27 @@ class SdkSession:
             # next, not just that a storm exists (the user 2026-07-10).
             #
             # The field names were GUESSED when this was written (number / max_retries / retry_delay_ms /
-            # error_status / retryAt) and every one of them was wrong, so `retry_info` came back all-None on
-            # every real storm and the whole detail UI below it rendered blank — the user saw a bare "API
-            # retrying" with no attempt count, no countdown and no reason, for months (the user 2026-07-29).
-            # The names are now VERIFIED against two authoritative sources rather than guessed:
-            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry) — snake_case, per the CLI's own
-            #     embedded schema: retry_in_ms / is_network_down / is_ssl_error / rate_limit_type;
-            #   * the TRANSCRIPT twin the same frame is written from (system / subtype api_error) — camelCase:
+            # error_status / retryAt) and the detail never showed: the user saw a bare "API retrying" with no
+            # attempt count, no countdown and no reason, for months (the user 2026-07-29). The names are now
+            # VERIFIED against two authoritative sources rather than guessed:
+            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry), snake_case, per the CLI's own
+            #     embedded schema: attempt / max_retries / retry_delay_ms / error_status (an int; null for a
+            #     connection error that got no HTTP response) / error (a CATEGORY string from the CLI's own
+            #     classifier: overloaded, rate_limit, authentication_failed, server_error, unknown, and a
+            #     few more) / no_response (optional: waited_ms, retry_wait_ms) / uuid / session_id;
+            #   * the TRANSCRIPT twin the wire frame is built from (system / subtype api_error), camelCase:
             #     retryAttempt / maxRetries / retryInMs / error{status,formatted,requestId,isNetworkDown,
-            #     rateLimits}.
+            #     rateLimits}. The schema entry that names retry_in_ms / is_network_down / is_ssl_error /
+            #     rate_limit_type describes THIS frame in its snake_case internal rendering; the transcript
+            #     records it camelCase.
             # We accept BOTH spellings (plus the old guesses) because the two surfaces genuinely differ and
             # either may reach us; `error` arrives as a dict on the transcript side and a string on the wire.
+            # The wire bullet above listed the transcript twin's names before, so the reads below never
+            # looked for `attempt` or the string `error`: every live storm showed the local per-frame tally as
+            # the attempt and a blank reason, and the shape diagnostic further down stayed quiet because
+            # max_retries and error_status were read. Each _pick below now leads with the wire's name; the
+            # transcript's error dict is still consulted first for the human string, its formatted text being
+            # the best of them.
             d = msg.data if isinstance(msg.data, dict) else {}
             _now = time.time()
 
@@ -7683,12 +8518,12 @@ class SdkSession:
             # The human string: the transcript's error.formatted ("529 Overloaded") is the best of these;
             # error.message carries the raw JSON envelope, so it is the last resort.
             _err = (_e.get("formatted") or _e.get("message") if _e else None) \
-                or _pick("display_message", "message", want=(str,))
+                or _pick("error", "display_message", "message", want=(str,))
             _status = _pick("status_code", "error_status", "status") \
                 or (_e.get("status") if isinstance(_e.get("status"), (int, str)) else None)
             _net = d.get("is_network_down", d.get("isNetworkDown", _e.get("isNetworkDown")))
             self.retry_info = {
-                "attempt": _pick("retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
+                "attempt": _pick("attempt", "retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
                 "max": _pick("max_retries", "maxRetries", want=(int,)),
                 "status": _status,
                 "error": _err[:300] if isinstance(_err, str) else None,
@@ -7808,7 +8643,7 @@ class SdkSession:
             # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id always contains
             # "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
             if m and "claude" in m.lower():
-                self._learn_model(pretty_model(m), raw=str(m))
+                self._learn_model(pretty_model(m), raw=str(m), served=True)
         elif isinstance(msg, ResultMessage) and self._consume_move_settle(msg):
             pass   # the accepted move's turn-less result — nothing ended, so nothing settles (see the def)
         elif isinstance(msg, ResultMessage):
@@ -8010,6 +8845,15 @@ class SdkSession:
                 # the CLI, its next streamed atom re-asserts 'working' via _forward — the stream is the truth.
                 self.inflight = 0
                 self._inflight_texts.clear()           # the CLI processed everything fed — same settle semantics
+                self._refusal_this_turn = False        # the turn's refusal frame, if any, has been read into the cause
+                if getattr(self, "_untaken", None) is not None:
+                    # a text fed MID-turn is still in the CLI's queue at this result: the CLI drains it
+                    # into the NEXT turn, whose first frame is the take (_untaken_taken). Not cleared
+                    # here: a feed right after this result would land in the same drain (the fuse).
+                    # An INTERRUPTED turn's result is no exception: the CLI keeps its queue across the
+                    # interrupt control request and drains it the same way (verified on the installed
+                    # CLI, 2026-09-08; _release_hold_at_exit names the one event that does lose it).
+                    self._untaken["settled"] = True
                 self._swap_cards = []                  # T279: a capacity card learned this turn is claimable only by
                 #                                        this turn's refusal notice — the settle is the deciding event
                 # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
@@ -8034,10 +8878,17 @@ class SdkSession:
                     self.backend._deliver_rename_ping(self)
                 except Exception as e:
                     failed.append(("the rename ping's delivery", e))
-                if self._reconnect_when_idle and not self.ended:   # an effort change waited for this turn to end
+                # an effort change waited for this turn to end. NOT while a hold is settled: the CLI still
+                # holds a text fed mid-turn and drains it into a turn right after this result; tearing it
+                # down now ended the CLI with the text in a turn romp never saw (the teardown is an EOF plus
+                # a grace, not a kill: _do_request_reconnect). The arm stays set; the drained turn's first
+                # frame counts that turn (_on_message) and its result fires this.
+                if self._reconnect_when_idle and not self.ended and getattr(self, "_untaken", None) is None:
                     self._reconnect_when_idle = False
                     self._reconnect = True     # inputs() holds the queue from here: the wake above cannot feed
                     self._wake_set()           #   the head to THIS client — the new one takes it (see inputs)
+                elif getattr(self, "_switch_wanted", ""):   # a Model switch's ask: carried only if the session is quiet now
+                    self._try_switch_reconnect()   #   (no queued turn, no live subagent or background task)
                 for what, err in failed:
                     # The report is guarded too: _log runs the kernel's log callback
                     # bare, and a callback raising here (a closed stderr under a service restart) would
@@ -8076,12 +8927,33 @@ class SdkSession:
         real turn, even an interrupted one, reports its API round trips. Spent on the match, so the
         NEXT zero-turn result (there is none in normal traffic) settles as before. Without this guard
         the settle path ran on a turn that never was: a false _turn_completed, a redundant 'waiting'
-        write, the rename ping fired as its own turn, and a parked effort reconnect consumed early."""
+        write, the rename ping fired as its own turn, and a parked effort reconnect consumed early.
+        A REAL turn's result while the arm stands proves the arm stale and drops it (the body says why);
+        every drop goes through _disarm_move_settle, since a standing arm holds the queue (inputs())."""
         if not getattr(self, "_move_settle_expected", False):   # getattr: __new__-built test doubles
             return False
         if getattr(msg, "num_turns", None) != 0:
+            # A REAL turn's result while the arm stands means the move's turn-less result never came (the
+            # CLI accepted the set_cwd and emitted no result, or its reply was lost and the arm kept on
+            # purpose, move()): had it come, it would have preceded this one, since move() refuses while
+            # busy and an accepted set_cwd answers within milliseconds. The arm is stale, and a standing
+            # arm switches off the CLI-owned-turn count (_on_message) and holds the queue (inputs()), so
+            # left alone it would uncount every drain for the session's life and re-open the fuse the
+            # count closes. Drop it here (the loop top drops it too); the drop wakes the feeder.
+            self._disarm_move_settle()
+            self.backend._log("sdk %s: a real turn's result arrived while a move's turn-less result was still "
+                              "expected; the stale arm is dropped" % self.sid[:8])
             return False
-        self._move_settle_expected = False
+        self._disarm_move_settle()   # spent, and the queue it held resumes
+        # The move's init counts no CLI-owned turn (_on_message skips the count while the arm stands);
+        # should a count have fired anyway, this turn-less result is the last frame the move emits, so
+        # the count must not outlive it: nothing was fed (an empty fed-turn twin), and an idle session
+        # stays idle: busy() False, a requested reconnect fires at once.
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                if self.inflight and not getattr(self, "_inflight_texts", None):
+                    self.inflight = 0
         self.backend._log("sdk %s: the move's turn-less result arrived — not a turn end" % self.sid[:8])
         return True
 
@@ -8837,6 +9709,7 @@ class SdkSession:
             with self._sub_lock:
                 self._subagents.pop(aid, None)
             self.backend._poke()
+            self._try_switch_reconnect()   # the last subagent's end may be what a switch's ask waited for
         return {}
 
     def _live_subagents(self) -> list:
@@ -8996,6 +9869,7 @@ class SdkSession:
                 self._subagents.pop(a, None)
         if drop:
             self.backend._poke()
+            self._try_switch_reconnect()
 
     # ---- background-task tracking (the CLI's task lifecycle stream) ----
 
@@ -9063,6 +9937,7 @@ class SdkSession:
                 self.backend._log("background tasks (%s): registry mirror write failed: %s" % (self.name, e))
         if changed or sub_changed:
             self.backend._poke()
+            self._try_switch_reconnect()   # a task's end may be what a switch's ask waited for
 
     def request_stop_task(self, tool_use_id: str) -> bool:
         """Stop ONE background task by the id the chat box shows (its tool-use id). Resolved to the
@@ -9148,7 +10023,7 @@ class SdkSession:
 
     # ---- snapshot for live_sessions() ----
 
-    def snapshot(self) -> dict:
+    def snapshot(self, retry_on=None) -> dict:
         # Parked in can_use_tool/_ask_user waiting on the USER (a permission Allow/Deny or an
         # AskUserQuestion picker)? The turn stays inflight through that wait, so reporting "working" made
         # the feed/timeline miss it — the kernel floors a card to BLOCKED off the live "permission"/"picker"
@@ -9215,6 +10090,10 @@ class SdkSession:
                 #   would wake it in seconds (the user 2026-08-13). Dormant rows carry no spawning
                 #   key at all, so they read ready.
                 "fast": self.fast,   # fast-mode state from init ("on"/"off"/"cooldown"; "" = unknown → no badge)
+                "modelFallback": model_fallback_row(self.chosen_model, getattr(self, "_served_model", "") or self.model, getattr(self, "_fallback_cause", ""),
+                                                    getattr(self, "_upgrade_retry", None),
+                                                    retry_upgrade_on(self.backend.state_dir) if retry_on is None else bool(retry_on),
+                                                    pending=bool(self._model_pending), category=getattr(self, "_fallback_category", "")),   # the picker's requested-model mark (served model, never the init's)
                 "fastReason": self.fast_reason,   # init's disabled_reason — non-empty hides the chat toggle
                 "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element
                 "retryInfo": self.retry_info,     # the latest attempt's detail (attempt/max, error status+message, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
@@ -9259,7 +10138,7 @@ def _path_bearing(text: str) -> bool:
     return bool(_IMG_PATH_RE.search(text or ""))
 
 
-def _records_from_mark(state_dir, sid: str, off, fsid, literals):
+def _records_from_mark(state_dir, sid: str, off, fsid, literals, cursor=None):
     """The sid's transcript records from an echo's send-time mark to EOF, parsed, for the boot scans
     (SdkBackend._text_landed, _input_landed_after): the file is the registry's current transcript (lastSid), the
     start is the mark when it was measured on that file and fits it (else the file's start), lines are
@@ -9267,25 +10146,43 @@ def _records_from_mark(state_dir, sid: str, off, fsid, literals):
     escaping can split — and a line that does not parse (a fragment the mark cut) is skipped. Raises
     when the transcript cannot be read; each caller turns that into its None. Module functions over the
     backend's state dir, not methods: the boot marker is bound onto bare stubs in tests, and a helper a stub
-    lacks would read as an unreadable transcript."""
+    lacks would read as an unreadable transcript.
+    `cursor`, a dict the caller keeps across calls, makes a REPEATED scan resumable (the feed hold's take
+    check, SdkSession._untaken_taken, runs once per streamed frame): the scan starts at the cursor's
+    `scan_off` when it was recorded on this file (`scan_fsid`) and fits it, else at the mark; a line still
+    being written (no trailing newline) is not consumed, so a record the CLI was mid-write on is read whole
+    next time; once the records are exhausted the cursor records where the scan stopped, after the last
+    complete line; a file that has not grown is not reopened. A caller that returns early (a match) leaves
+    the cursor where it was, so the next call re-reads from there."""
     reg = read_reg(state_dir, sid) or {}
     cur = str(reg.get("lastSid") or sid)
     path = transcript_path(reg.get("cwd") or "", cur)
+    size = os.path.getsize(path)
     start = 0
-    if (isinstance(off, int) and not isinstance(off, bool) and fsid is not None
-            and str(fsid) == cur and 0 <= off <= os.path.getsize(path)):
+    so = cursor.get("scan_off") if isinstance(cursor, dict) else None
+    if isinstance(so, int) and not isinstance(so, bool) and cursor.get("scan_fsid") == cur and 0 <= so <= size:
+        start = so
+    elif (isinstance(off, int) and not isinstance(off, bool) and fsid is not None
+            and str(fsid) == cur and 0 <= off <= size):
         start = off
-    with open(path, "rb") as f:
-        f.seek(start)
-        for raw in f:
-            if not any(lit in raw for lit in literals):
-                continue
-            try:
-                rec = json.loads(raw.decode(errors="replace"))
-            except ValueError:
-                continue
-            if isinstance(rec, dict):
-                yield rec
+    pos = start
+    if start < size:
+        with open(path, "rb") as f:
+            f.seek(start)
+            for raw in f:
+                if cursor is not None and not raw.endswith(b"\n"):
+                    break                          # a line still being written: read it whole next time
+                pos += len(raw)
+                if not any(lit in raw for lit in literals):
+                    continue
+                try:
+                    rec = json.loads(raw.decode(errors="replace"))
+                except ValueError:
+                    continue
+                if isinstance(rec, dict):
+                    yield rec
+    if isinstance(cursor, dict):
+        cursor["scan_off"], cursor["scan_fsid"] = pos, cur
 
 def _input_landed_after(state_dir, sid: str, t, off=None, fsid=None):
     """Did a GENUINE HUMAN input land in the sid's transcript STRICTLY AFTER the send stamped `t`? The
@@ -9789,6 +10686,16 @@ class SdkBackend:
         for reg in regs:
             if reg.get("alive") and not self._lease_survives(reg["sid"]):
                 self._heal_stale_awaiting(reg["sid"])
+        # The dropped-sends notice cards the reseed below has to post have no door yet: the kernel wires on_notice on
+        # this CLASS after the constructor returns (type(_sdk_backend).on_notice = staticmethod(post_notice)), so a post
+        # from inside __init__ found no door, the held sends past the age line were flagged dropped and stale with no
+        # card, and the flags took them out of every later boot's selection: on the boot road the card was never posted.
+        # The reseed PARKS each card here (the flag writes, the queue re-add and the mirror write stay synchronous, as
+        # before) and the kernel posts them through post_boot_notices() once the door is wired. The door is not a
+        # constructor argument on purpose: its session check re-enters the kernel's construction lock (Sessions.live()
+        # through _sdk()), which the boot thread holds through this constructor, so a synchronous post from here would
+        # deadlock the boot.
+        self._boot_notices: list | None = []
         self._reseed_echoes(regs)   # unlanded input echoes survive the restart (reg['echoes'] mirror)
         # Boot reconcile (reconcile=True: the KERNEL passes it at boot; tests and ad-hoc constructions
         # opt in explicitly): recover what the previous kernel's death left behind — reap orphaned
@@ -10095,6 +11002,7 @@ class SdkBackend:
             return None
         if state == "attach":
             sess._host_is_attach = True
+            lease = await self._host_reexec_on_skew(sess, lease) or lease
             reg = read_reg(self.state_dir, sess.sid) or {}
             ack = reg.get("hostAck") if isinstance(reg.get("hostAck"), dict) else {}
             holder = lease.get("holder") or {}
@@ -10151,7 +11059,99 @@ class SdkBackend:
                                 on_hello=lambda hello, s=sess: self._on_host_hello(s, hello),
                                 on_stderr=sess._on_cli_stderr,
                                 on_exit=lambda ex, s=sess: self._host_ended(s, ex),
-                                on_fault=lambda f, s=sess: self._log("host (%s): fault %s: %s" % (s.name, f.get("kind"), f.get("text")), problem=True))
+                                on_reexec=lambda f, s=sess: self._on_host_reexec_now(s),
+                                on_fault=lambda f, s=sess: self._on_host_fault(s, f))
+
+    def _on_host_fault(self, sess, f: dict) -> None:
+        """A host's `fault` frame: a problem line, and for a handover that failed after the host had accepted it (`reexec-failed`:
+        the host serves on, on its old code) the `host.reexec-failed` row the refusal road files, so a failed upgrade is on
+        the ledger as a refused one is (round two of the review: a failure after the ok answer filed no row)."""
+        if f.get("kind") == "reexec-failed":
+            was = getattr(sess, "_host_reexec_from", None)
+            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s and failed before the exec "
+                        "(%s); it serves on as it was" % (sess.name, was or "unknown", self.code_version, f.get("text") or "no reason"),
+                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+            sess._host_reexec_from = None
+            return
+        self._log("host (%s): fault %s: %s" % (sess.name, f.get("kind"), f.get("text")), problem=True)
+
+    async def _host_reexec_on_skew(self, sess, lease):
+        """A live host on another code version than this kernel's: ask it to re-exec into this kernel's code before the
+        attach (docs/reference.md, the per-session hosts: a host upgrades itself in place). The spec's version is rewritten
+        first, so the re-executed host reads the version it now runs. The host answers `now` (its CLI idle: this waits,
+        bounded, for the lease to carry the new version and returns the fresh lease, the same holder pid and start since
+        an exec keeps both), `at-turn-end` (the attach proceeds against the old host; its `reexec-now` frame at the
+        turn's end makes the reconnect a planned one), or a refusal (a `host.reexec-refused` row; the attach proceeds
+        as before). Nothing here raises out of the connect: a fault is a log line and the plain attach."""
+        try:
+            ht = _ht()
+            was = str((lease or {}).get("version") or "")
+            if not self.code_version or was == self.code_version:
+                return None
+            spec_path = ht.host_dir(self.state_dir, sess.sid) / "spawn.json"
+            try:
+                spec = json.loads(spec_path.read_text())
+                spec["version"] = self.code_version
+                ht.write_spawn_spec(self.state_dir, sess.sid, spec)
+            except Exception as e:
+                self._log("host (%s): the spawn spec could not be rewritten for the re-exec (%s); attaching as is" % (sess.name, type(e).__name__))
+                return None
+            launcher = str(Path(__file__).resolve().parent.parent / "bin" / "romp-session-host")
+            ans = await ht.request_reexec(ht.host_sock(self.state_dir, sess.sid), sys.executable, launcher, self.code_version)
+            if not ans.get("ok"):
+                problem_row(self.state_dir, "the session host for %s runs code version %s and refused to re-exec into %s (%s); attached as is"
+                            % (sess.name, was or "unknown", self.code_version, ans.get("reason") or "no reason"), "host.reexec-refused",
+                            sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+                return None
+            sess._host_reexec_from = was
+            if ans.get("when") == "at-turn-end":
+                self._log("host (%s): re-exec into %s deferred to the turn's end; attaching to the running host meanwhile" % (sess.name, self.code_version))
+                return None
+            holder = (lease or {}).get("holder") or {}
+            deadline = time.time() + ht.SOCKET_WAIT_S
+            fresh = None
+            while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
+                fresh = read_lease(self.state_dir, sess.sid)
+                fh = (fresh or {}).get("holder") or {}
+                # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
+                # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
+                # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
+                if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
+                        and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
+                    self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
+                              % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
+                    return fresh
+                await asyncio.sleep(0.05)
+            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
+                        "served within %.0f s; attached as is" % (sess.name, was or "unknown", self.code_version, ht.SOCKET_WAIT_S),
+                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+            sess._host_reexec_from = None
+            return None
+        except Exception as e:
+            self._log("host (%s): the re-exec request failed (%s); attaching as is" % (sess.name, type(e).__name__))
+            return None
+
+    @staticmethod
+    async def _host_socket_accepts(sock) -> bool:
+        """Whether a listener accepts on the host's socket path now: one connect, closed at once (the host's client loop reads
+        end-of-file from a connection that never attached and forgets it). False on a refusal, a missing path or a slow accept."""
+        try:
+            _r, w = await asyncio.wait_for(asyncio.open_unix_connection(str(sock)), 1.0)
+        except (OSError, asyncio.TimeoutError):
+            return False
+        try:
+            w.close()
+        except Exception:
+            pass
+        return True
+
+    def _on_host_reexec_now(self, sess) -> None:
+        """The host says it is about to exec into this kernel's code and close the socket: the stream's end that follows is
+        the planned handover, so the session reconnects (the same lease, the new version) instead of reading a lost host.
+        `_reconnect` is the whole of the guard: the connect loop's next pass finds the lease valid under the same holder and
+        attaches (round two of the review dropped a flag that was written here and read nowhere)."""
+        sess._reconnect = True
+        self._log("host (%s): re-exec at the turn's end; reconnecting to the re-executed host" % sess.name)
 
     def _spawn_host(self, sess, spec_path):
         """Start bin/romp-session-host detached: in a transient scope of its own on Linux when scopes are on
@@ -10307,8 +11307,19 @@ class SdkBackend:
             open_turns = int(hello.get("inflight") or 0)
         except (TypeError, ValueError):
             open_turns = 0
-        if open_turns > sess.inflight:
-            sess.inflight = open_turns
+        # The host is the authority for the CLI's open turn: its count becomes ours EXACTLY, up or down. Taking only a
+        # higher count carried this kernel's own stale count across the attach, and a stale count on either side read
+        # as Working forever: every send parked behind a turn that had ended days before (the user's laptop,
+        # 2026-09-18). The count is never carried across an attach; a zero clears the fed-text twin too, since the
+        # CLI answered everything it was fed.
+        sess.inflight = open_turns
+        if open_turns == 0:
+            texts = getattr(sess, "_inflight_texts", None)
+            if texts is not None:
+                try:
+                    texts.clear()
+                except Exception:
+                    pass
         if getattr(sess, "_host_is_attach", False):
             # an attach's hello has nothing to wait for (no init record follows a replay); a SPAWN's hello is
             # the host's, not the CLI's, and the init record releases the boot-stagger slot as for any spawn
@@ -10316,6 +11327,10 @@ class SdkBackend:
                 sess._fire_boot_settled()
             except Exception:
                 pass
+        if getattr(sess, "_host_reexec_from", None) is not None and str(h.get("version") or "") == self.code_version:
+            append_session_event(self.state_dir, "host.reexeced", sid=sess.sid, name=sess.name, fromVersion=sess._host_reexec_from,
+                                 toVersion=self.code_version, hostPid=h.get("pid"), cliPid=c.get("pid"))
+            sess._host_reexec_from = None
         append_session_event(self.state_dir, "host.attached", sid=sess.sid, name=sess.name, boot=boot,
                              hostPid=h.get("pid"), cliPid=c.get("pid"), fsid=c.get("fsid"),
                              replayFrom=int(sess._host.ack_offset) + 1 if sess._host else None, journalNext=j.get("next"),
@@ -12330,7 +13345,7 @@ class SdkBackend:
                       problem=True)
         login = side == "login"
         fs = flag_settings_path(self.state_dir, sess.sid,
-                                ultracode=(sess.effort or "") == "ultracode", fast=sess.fast_opt,
+                                ultracode=(sess.effort or "") == "ultracode", fast=sess.fast_effective(),
                                 env=env_vars, no_helper=login, log=self._log)
         if fs:
             kw["settings"] = fs
@@ -12516,6 +13531,9 @@ class SdkBackend:
         # the ask — same model, normal speed, never a silent substitute.
         if fast == "on" or (not fast and parent.get("fast")):
             reg["fast"] = True
+        if fast == "off" or (not fast and parent.get("fastOff")):
+            reg["fastOff"] = True   # an explicit Slow — the dialog's, or the parent's own — that the machine's Always fast
+            #                         switch respects for the thread (fast_effective, review 2026-09-17)
         # Per-fork model/effort OVERRIDES (the user 2026-08-17: a comment thread on a different model
         # or effort, without touching the parent). Applied HERE, in the reg the first connect reads —
         # never via set_model, whose write_sdk_default side effect would make a thread's pick the seed
@@ -12890,6 +13908,8 @@ class SdkBackend:
         True when the queue is genuinely romp-held — the interrupt hold, the rewind hold, the rename
         ping's feed-hold (while the ping's turn is in flight the drain releases nothing) — or when no
         turn is in flight (idle/connecting: entries sit in _pending until the client drains them).
+        The hold behind a fed text the CLI has not yet taken (_untaken) is romp-held too: the pencil and
+        the cancel can still win there.
         The kernel reads this to decide whether the queued bubble gets its ✕ at all; the loud
         unqueue-miss toast covers the races this gate can't (a click on a just-stale push)."""
         with self._lock:
@@ -12901,6 +13921,7 @@ class SdkBackend:
                 return True
             return bool(s._interrupted
                         or getattr(s, "_ping_feeding", False)   # getattr: test doubles skip __init__
+                        or getattr(s, "_untaken", None) is not None   # held behind a fed text the CLI has not taken
                         or (s._rewind_to and not getattr(s, "_rewind_armed", False)))
 
     def send(self, sid: str, text: str, qid: str | None = None, user: bool = False, paths: list | None = None) -> bool:
@@ -13087,11 +14108,14 @@ class SdkBackend:
                 _texts = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
                 try:
                     self._mark_dropped_echoes(reg["sid"], [{"md": t, "qid": (m or {}).get("qid")}
-                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))])
+                                                           for t, m in zip(_texts, queue_meta_from_reg(reg))],
+                                              park=getattr(self, "_boot_notices", None))   # the boot road: the card waits for
+                    #                        the door (post_boot_notices). getattr like the forget_fed guard above: a stand-in
+                    #                        that never ran __init__ has no slot and keeps the synchronous post
                 except Exception as e:                   # bookkeeping over the live tail, as at the spawn half: said, never a
                     self._log("dropped-echo marking (%s) failed: %s: %s" % (reg["sid"][:8], type(e).__name__, e))   # boot fault
 
-    def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True) -> None:
+    def _mark_dropped_echoes(self, sid: str, queued_texts, refeed: bool = True, park: list | None = None) -> None:
         """A fresh CLI is spawning for this sid, or the kernel just booted: whatever process held any
         earlier send is gone. An input echo whose text is neither in the surviving queue (about to be
         delivered to the new CLI) nor landed in the transcript has no holder left — its send is provably
@@ -13120,7 +14144,12 @@ class SdkBackend:
         re-feed would land the message a second time in a conversation that genuinely kept the first,
         exactly the duplicate that branch refuses by design. The loss still surfaces in full (the dropped
         flag); only the queue re-add is withheld. Boot and dead-spawn callers keep the default: no client
-        survived there to be writing anything."""
+        survived there to be writing anything.
+
+        `park` (the boot reseed, from inside __init__): a list the notice card's POST is appended to as a
+        zero-argument callable instead of being posted here, because the kernel wires the door on this class
+        only after the constructor returns; post_boot_notices posts them then. Everything else (the flags,
+        the queue re-add, the mirror write, the wake) runs here as for every other caller."""
         # The surviving queue, by identity where it has one (T252c, third review): `queued_texts` is the queue's
         # copies as {"md", "qid"} (a caller with texts alone gives id-less copies). An echo whose uuid a queued
         # copy wears is queued; an echo whose text is queued only under OTHER ids is not — by text alone, the
@@ -13286,18 +14315,26 @@ class SdkBackend:
                     reg = read_reg(self.state_dir, sid)
                 name = str((reg or {}).get("name") or "")
             title, body, acts = dropped_sends_card(name, stale, now, REDELIVER_MAX_AGE_S)
-            post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
-            if callable(post):
-                row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
-                                actions=acts, dismiss_on_action=True, t=int(now))
+            count = len(stale)
+
+            def post_card():
+                """The POST and the problem row that says its outcome: run here, or parked for the kernel (`park`)."""
+                post = getattr(self, "post_notice", None)     # a bare stand-in in tests may carry no door; the backend always does
+                if callable(post):
+                    row, err = post(sid, DROPPED_SENDS_KEY, title, body, producer=DROPPED_SENDS_KEY, needs_you=True,
+                                    actions=acts, dismiss_on_action=True, t=int(now))
+                else:
+                    row, err = None, "no notice door on this backend"
+                self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
+                          "oldest was from %s; kept in the chat as never-delivered and %s"
+                          % (sid[:8], count, _gap_text(int(REDELIVER_MAX_AGE_S)),
+                             time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
+                             ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
+                             ("the card offering them back could not be posted: %s" % err)), problem=True)
+            if park is not None:
+                park.append(post_card)                    # the boot reseed, inside __init__: no door yet (post_boot_notices)
             else:
-                row, err = None, "no notice door on this backend"
-            self._log("%s: %d send(s) older than the re-delivery age line (%s) at the restart were not re-fed; the "
-                      "oldest was from %s; kept in the chat as never-delivered and %s"
-                      % (sid[:8], len(stale), _gap_text(int(REDELIVER_MAX_AGE_S)),
-                         time.strftime("%Y-%m-%d %H:%M", time.localtime(oldest)),
-                         ("offered back on a card (key=%s rev=%s)" % (row.get("key"), row.get("rev"))) if row else
-                         ("the card offering them back could not be posted: %s" % err)), problem=True)
+                post_card()
         self._persist_echoes(sid)
         self._wake_push()
 
@@ -13333,7 +14370,7 @@ class SdkBackend:
             self._wake_push()
         return len(hit)
 
-    def _text_landed(self, sid: str, text: str, t: int | None = None, off=None, fsid=None):
+    def _text_landed(self, sid: str, text: str, t: int | None = None, off=None, fsid=None, cursor=None):
         """Did `text` land in the sid's transcript? The re-delivery guard: the echo prune is lazy (a landed
         echo may still be un-pruned at boot), so a queue re-add without this scan would duplicate a
         delivered message. Three answers, because the caller acts on each differently:
@@ -13366,13 +14403,17 @@ class SdkBackend:
         pre-filtered on the two record types' literals only, never on the text: JSON escapes newlines
         and quotes, so a raw-line prefix test skipped every multi-line send (a quote chip's reply, for
         one) as never landed. A mark taken while the CLI was mid-write leaves a line fragment first; it
-        fails to parse and is skipped like any other non-record line."""
+        fails to parse and is skipped like any other non-record line. `cursor`, a dict the caller keeps
+        across calls, makes a repeated scan resumable (_records_from_mark: the scan starts where the last
+        call stopped and skips a file that has not grown); a scan that raises records the fault's text in
+        it as `scan_error`, for the caller's one log line, and still answers None."""
         try:
             # the plain key and, for a slash send, its words (echo_keys): the send's own record is the
             # CLI's wrapper, which _landed_texts reads as "/name args" the way the kernel's prune does
             want = set(echo_keys(text))
             floor = int(t or 0)
-            for rec in _records_from_mark(self.state_dir, sid, off, fsid, (b'"user"', b'"queued_command"')):
+            for rec in _records_from_mark(self.state_dir, sid, off, fsid, (b'"user"', b'"queued_command"'),
+                                          cursor=cursor if isinstance(cursor, dict) else None):
                 if not (want & _landed_texts(rec)):
                     continue
                 ts = _record_epoch(rec.get("timestamp"))
@@ -13380,7 +14421,9 @@ class SdkBackend:
                     continue                           # an earlier record wearing the same words
                 return True
             return False
-        except Exception:
+        except Exception as e:
+            if isinstance(cursor, dict):       # the caller's one log line names the fault (_untaken_taken)
+                cursor["scan_error"] = "%s: %s" % (type(e).__name__, _mask_ids(e))
             return None
 
     def dismiss_echo(self, sid: str, uuid: str | None = None, t: int | None = None) -> str | None:
@@ -13637,9 +14680,10 @@ class SdkBackend:
 
     def forwards_sends(self) -> bool:
         """True (see SessionBackend.forwards_sends): the SDK holds queued turns in _pending and its inputs()
-        generator forwards them at the next tool boundary, folds several into one turn, and holds them across
-        an interrupt. So the kernel hands composer sends straight to send() even mid-turn instead of parking
-        them; the reconciliation renders the still-waiting message as a queued bubble until it forwards."""
+        generator forwards them at the next tool boundary, hands several to the CLI one message each, in order
+        (the next waits until the CLI has taken the last: _untaken), and holds them across an interrupt. So the
+        kernel hands composer sends straight to send() even mid-turn instead of parking them; the reconciliation
+        renders the still-waiting message as a queued bubble until it forwards."""
         return True
 
     def model_switches_live(self) -> bool:
@@ -13663,19 +14707,42 @@ class SdkBackend:
 
     def busy(self, sid: str) -> "bool | None":
         """Authoritative in-flight signal (see SessionBackend.busy): a turn is running (inflight>0) OR one is
-        queued and about to run (_pending). Either means a drive op pressed now must PARK to hold press-order,
-        with no wait for the transcript to catch up. None when we don't run this sid (→ cached-parse fallback)."""
+        queued and about to run (_pending) OR the CLI still holds a fed text (_untaken: fed mid-turn, its turn
+        ended, and the CLI drains it into a turn right after the result). Any of the three means a drive op
+        pressed now must PARK to hold press-order, with no wait for the transcript to catch up. The hold is
+        read here as the reconnect gate reads it (_do_request_reconnect): in the settled gap the counters
+        said idle, so a parked /compact drained and a typed slash command bypassed the park, and the feeder
+        held both behind the text and fed them into the drained turn mid-turn, where the CLI answers a
+        command as text. None when we don't run this sid (→ cached-parse fallback)."""
         s = self.sessions.get(sid)
         if not s:
             return None
         with s._lock:
-            return s.inflight > 0 or bool(s._pending)
+            # called as a plain function on the session, not as its method: busy() is duck-typed (the
+            # delete-while-busy tests hand it a double carrying inflight, _pending and _lock only, no
+            # SdkSession methods), and the helper reads nothing but those attributes
+            return SdkSession._busy_under_lock(s)
+
+    def count_says_open(self, sid: str) -> "bool | None":
+        """Whether the open-turn COUNT ALONE says a turn is open: inflight > 0 with nothing queued to start. The drain's
+        held-working belt reads this, never busy(): busy() also answers True for a queued turn about to run, and the
+        feeder holds _pending with inflight zero in states where the hold is correct (a parked deploy restart or a quiesce
+        with the lease refreshed, an armed reconnect after an effort, model or auth switch, a pending rewind before it arms,
+        the gap between send() enqueuing and the feeder popping); in each the transcript rests with its last turn closed
+        because no turn is running, and a belt on busy() would call a proper hold a stale count (1876's review, 2026-09-19).
+        None when we don't run this sid."""
+        s = self.sessions.get(sid)
+        if not s:
+            return None
+        with s._lock:
+            return s.inflight > 0 and not s._pending
 
     def compacting(self, sid: str) -> "bool | None":
-        """Authoritative 'is a /compact in progress' (see SessionBackend.compacting): set when /compact is
-        delivered, cleared event-based by the compact_boundary or the /compact turn's ResultMessage — so a
-        no-op compaction (nothing to compact, no boundary) can't strand the kernel's optimistic latch for
-        180s. None when we don't run this sid (→ the kernel's optimistic/tmux path)."""
+        """Authoritative 'is a compaction in progress' (see SessionBackend.compacting): set when /compact is
+        delivered and when the CLI's stream says a compaction started (the `status` frame: an automatic compaction at
+        the context ceiling as much as a manual one, 2026-09-19), cleared event-based by the stream's compaction
+        result, the compact_boundary or the turn's ResultMessage, so a no-op compaction (nothing to compact, no
+        boundary) can't strand the kernel's optimistic latch for 180s. None when we don't run this sid."""
         s = self.sessions.get(sid)
         if not s:
             return None
@@ -13903,10 +14970,12 @@ class SdkBackend:
         if s and s.thread.is_alive():
             try:
                 snap = s.snapshot()
-                return {"mode": str(snap.get("mode") or ""), "fast": str(snap.get("fast") or "")}
+                return {"mode": str(snap.get("mode") or ""), "fast": str(snap.get("fast") or ""),
+                        "modelFallback": snap.get("modelFallback")}   # the popover's picker wears the requested-model mark too (2026-09-17)
             except Exception:
                 return {}
-        return {}
+        reg = read_reg(self.state_dir, sid)
+        return {"modelFallback": self.fallback_row_for_reg(reg)} if reg else {}
 
     def rename(self, sid: str, new_name: str) -> bool:
         reg = read_reg(self.state_dir, sid)
@@ -14024,19 +15093,30 @@ class SdkBackend:
         claim = self._claim_cwd_pending(sid, target)
         if claim:
             return claim
-        s._move_settle_expected = True   # armed BEFORE the request — see _consume_move_settle
+        # The busy reading and the arm are ONE step under the session lock: the feeder pops under that
+        # lock and holds the head while the arm stands (inputs()), so a text enqueued between the idle
+        # reading above and the arm cannot reach the CLI ahead of the request and run its turn inside the
+        # relocation window. After the claim, so a second asker refused there lowers no arm of ours; a busy
+        # reading here (the race) returns the claim.
+        with s._lock:
+            busy = s._busy_under_lock()
+            if not busy:
+                s._move_settle_expected = True   # armed BEFORE the request: see _consume_move_settle
+        if busy:
+            self._update_reg_dropping(sid, ("cwdPending",))
+            return "busy"
         r, err = self._set_cwd_request(s, target)
         if not err and isinstance(r, dict) and r.get("status") == "needs_trust":
             r, err = self._set_cwd_request(s, target, trust=str(r.get("directory") or target))
         ok = not err and isinstance(r, dict) and r.get("status") == "ok"
         if not ok:
+            # The exits that leave the session where it was stand the move down: the arm lowered, THEN the
+            # claim dropped (_stand_down_move has the order and why).
             if err == _NO_CONTROL_SENDER:
-                s._move_settle_expected = False                 # nothing was sent
-                self._update_reg_dropping(sid, ("cwdPending",))
+                self._stand_down_move(s, sid)                   # nothing was sent
                 return err
             if isinstance(r, dict) and r.get("status") == "rejected":
-                s._move_settle_expected = False                 # the CLI answered: it did nothing
-                self._update_reg_dropping(sid, ("cwdPending",))
+                self._stand_down_move(s, sid)                   # the CLI answered: it did nothing
                 if r.get("reason") == "busy":
                     return "busy"
                 return str(r.get("message") or r.get("reason") or "the CLI rejected the move")
@@ -14046,26 +15126,57 @@ class SdkBackend:
             # under the new one (a blind feed, and the next --resume writes to the wrong place). The
             # transcript's location decides, exactly as the boot heal decides a kernel death mid-move.
             why = err or ("unexpected reply to set_cwd: %r" % (r,))
-            self._heal_cwd_pending(read_reg(self.state_dir, sid) or {"sid": sid, "cwdPending": target, "cwd": old})
-            after = read_reg(self.state_dir, sid) or {}
-            if after.get("cwd") == target and not after.get("cwdPending"):
-                # it moved (and the CLI's turn-less result is still expected — the arm stands)
-                self._log("sdk %s: set_cwd's reply was lost (%s) but the transcript is under %s — the move stands"
-                          % (sid[:8], why, target))
+            # The heal releases the claim itself when it finds the move never happened, so it is handed
+            # _stand_down_move as its release: the arm this move raised is lowered before the claim goes,
+            # as at every other standing-down exit. Its answer is the heal's own outcome, not a re-read of
+            # the reg: once the claim is released the reg may already carry a second mover's claim, which a
+            # re-read would take for this move's flag still standing.
+            outcome = self._heal_cwd_pending(read_reg(self.state_dir, sid) or {"sid": sid, "cwdPending": target, "cwd": old},
+                                             release=lambda: self._stand_down_move(s, sid))
+            if outcome == "moved":
+                # It moved, and the CLI's turn-less result is still expected: the arm stands, and with it
+                # the feeder's hold on the queue (inputs()). A hold that outlives move()'s return is
+                # announced on the problem ring: a CLI that relocated and then hung leaves every queued
+                # send waiting with nothing else saying why. The hold ends on the exact events that lower
+                # the arm (the CLI's result, or its exit and the loop-top clear at the reconnect); no
+                # timer, since nothing short of those proves the result will never come.
+                self._log("sdk %s (%s): set_cwd's reply was lost (%s) but the transcript is under %s: the move "
+                          "stands, and queued sends wait for the CLI's result of it; they go on when it arrives "
+                          "or at the session's next reconnect" % (sid[:8], s.name, why, target), problem=True)
                 return ""
-            s._move_settle_expected = False
-            if after.get("cwdPending"):
+            if outcome == "kept":
+                # the claim stays, and refuses a second mover at the claim, so the arm standing is this move's
+                s._disarm_move_settle()
                 return ("the move's outcome is uncertain: %s — the transcript was not found under exactly one of "
                         "%s and %s, so nothing was changed; the next kernel start re-checks (see the kernel log)"
                         % (why, old or "its folder", target))
+            if outcome != "released":     # nothing was pending: not a state move() reaches after its own claim
+                s._disarm_move_settle()
             return "the move failed: %s — the session stays in %s" % (why, old or "its folder")
         new = r.get("cwd") if isinstance(r.get("cwd"), str) and r.get("cwd") else target
         if r.get("changed") is False or new == old:
-            s._move_settle_expected = False                     # no relocation → no turn-less result is coming
-            self._update_reg_dropping(sid, ("cwdPending",))     # already there — nothing to record
+            # already there: nothing to record, and with no relocation no turn-less result is coming
+            self._stand_down_move(s, sid)
             return ""
         self._finish_move(s, sid, old, new)
         return ""
+
+    def _stand_down_move(self, s, sid: str) -> None:
+        """A move() exit that leaves the session where it was: lower the arm (_disarm_move_settle), THEN
+        drop the claim (cwdPending), in that order. The claim is what keeps a second move() of this sid out
+        (_claim_cwd_pending refuses while it stands), and the moment it is released a second mover claims
+        and raises the same arm for its own request; so the arm is settled before the claim that guards it
+        goes. With the drop first, the second mover could claim and arm in the gap and this exit would then
+        lower ITS arm, leaving its relocation with the queue unheld. The disarm never raises, and the
+        finally keeps the guarantee regardless: whatever the disarm does, the claim is dropped (a kept claim
+        would refuse every later move until a kernel boot healed it). The uncertain-outcome exit reaches
+        this through _heal_cwd_pending's release hook, when the heal finds the move never happened; when
+        the heal keeps the claim, no second mover can arm, and when it finishes the move the arm stands for
+        the CLI's turn-less result."""
+        try:
+            s._disarm_move_settle()
+        finally:
+            self._update_reg_dropping(sid, ("cwdPending",))
 
     def _claim_cwd_pending(self, sid: str, target: str) -> str:
         """Set the two-phase flag ONLY when no move is pending. Two concurrent move() calls for one sid (a
@@ -14139,27 +15250,36 @@ class SdkBackend:
             reg.update(fields)
             write_reg(self.state_dir, sid, reg)
 
-    def _heal_cwd_pending(self, reg: dict) -> None:
+    def _heal_cwd_pending(self, reg: dict, release=None) -> str:
         """Settle a reg the previous kernel left mid-move (cwdPending set: the request went out, the reg
         never learned the answer). The transcript's location is the fact that decides it — exactly ONE
         of the two project slugs should hold `<lastSid>.jsonl`: under the pending cwd the CLI said `ok`
         and only romp's half is missing (finish it); still under the old cwd the move never happened
         (drop the flag). Neither or both is a state this code must not guess at: say so loudly and
-        leave the flag for a person."""
+        leave the flag for a person.
+
+        `release` is how the flag is dropped when the move never happened: the boot path's plain drop by
+        default; move() passes _stand_down_move so the arm it raised is lowered before the claim goes.
+        Returns the outcome, for move() to answer from: "moved" (romp's half finished; the arm stands),
+        "released" (the flag dropped through `release`), "kept" (the flag left for a person), "" (nothing
+        was pending)."""
         sid = str(reg.get("sid") or "")
         pend = str(reg.get("cwdPending") or "")
         cur = str(reg.get("cwd") or "")
         fsid = str(reg.get("lastSid") or sid)
         if not sid or not pend:
-            return
+            return ""
+        if release is None:
+            def release():
+                self._update_reg_dropping(sid, ("cwdPending",))
         if pend == cur:
             # a move to the folder the session was already in, cut mid-flight (a reg from before move()
             # short-circuited that case): nothing moved and nothing can be learned from the location
             # test below — both slugs are ONE slug, so it would read "under BOTH" and file a problem
             # on every boot for as long as the flag lived
             self._log("boot reconcile: %s had a move to its own folder pending — nothing to settle; cleared" % sid[:8])
-            self._update_reg_dropping(sid, ("cwdPending",))
-            return
+            release()
+            return "released"
         def _at(slug):
             """True, False, or None when the slug's transcript cannot be stat'ed for a reason other than ENOENT (an unsearchable
             folder): os.path.exists answered False there on every interpreter, and an unsearchable pending slug with the transcript
@@ -14176,20 +15296,23 @@ class SdkBackend:
         if at_new is None or at_old is None:
             self._log("boot reconcile: %s has a move to %s pending and a folder that cannot be read (new %r, old %r): left pending"
                       % (sid[:8], pend, at_new, at_old))
-            return
+            return "kept"
         if at_new and not at_old:
             self._log("boot reconcile: %s was mid-move to %s — the transcript is there; finishing romp's half"
                       % (sid[:8], pend))
             self._finish_move(self.sessions.get(sid), sid, cur, pend)
+            return "moved"
         elif at_old and not at_new:
             self._log("boot reconcile: %s had a move to %s pending that never happened — cleared" % (sid[:8], pend))
-            self._update_reg_dropping(sid, ("cwdPending",))
+            release()
+            return "released"
         else:
             self._log("boot reconcile: %s has cwdPending=%s but its transcript %s is %s — leaving the flag; "
                       "check %s and %s by hand"
                       % (sid[:8], pend, fsid, "under BOTH slugs" if at_new else "under NEITHER slug",
                          transcript_path(cur, fsid) if cur else "(no cwd)", transcript_path(pend, fsid)),
                       problem=True)
+            return "kept"
 
     def set_model(self, sid: str, value: str) -> bool:
         """Change the session's model. Persisted in the registry (so a reconnect keeps it) and applied
@@ -14230,10 +15353,15 @@ class SdkBackend:
                 already = _model_reflects_alias(s.model, value)
                 s._model_pending = "" if already else value
                 pending = bool(s._model_pending)
+                s._upgrade_retry = None        # a pick of the user's own supersedes the retry after a downgrade (2026-09-17)
+                s._fallback_cause = ""        # …and the standing fallback's cause; the served model is learned afresh on the pick
+                s._fallback_category = ""
+                s._served_model = ""
             # remember as the seed for the NEXT new session (the user 2026-06-27) — pending the CLI's verdict
             tok = self._seed_write_pending(sid, value)
             prev = {"picked": value, "tok": tok}   # what the layers hold until the CLI rules — the revert's CAS keys
             self._update_reg(sid, model=value, modelPending=pending)   # locked RMW — see set_effort
+            self._update_reg(sid, fallbackCause="", fallbackCategory="", servedModel="")   # the requested-model mark starts over with the pick (2026-09-17)
             s.set_model_live(None if value in ("", "default") else value, prev=prev)
         else:
             write_sdk_default(self.state_dir, model=value)   # the seed for the NEXT new session (the user 2026-06-27)
@@ -14241,6 +15369,7 @@ class SdkBackend:
             # alias's best-effort label immediately — never leave the badge on a stale liveModel or trapped
             # on dots. The value applies for real on the next connect (chosen_model → _options).
             self._update_reg(sid, model=value, liveModel=_alias_label(value), modelPending=False)
+            self._update_reg(sid, fallbackCause="", fallbackCategory="", servedModel="")   # a dormant pick starts the mark over too
         # the acknowledging chip — live OR dormant (see _ack_cmd_chip)
         self._ack_cmd_chip(sid, "/model", "/model " + value, s.resume_sid if s else reg.get("lastSid"))
         return True
@@ -14386,6 +15515,71 @@ class SdkBackend:
         append_cmd_gesture(self.state_dir, sid, disp, t=t)
         self._wake_push()
 
+    def retry_model_upgrades(self, now=None) -> int:
+        """Retry upgrades after downgrades (the user 2026-09-17), the kernel's tick: for every live session whose model
+        fell to a lower tier without a pick (SdkSession._arm_upgrade_retry, at the fallback card's branch) and whose next
+        attempt is due, ask for the pick again — a reconnect, which re-asserts `--model <pick>` (or the account default
+        when there is no pick) on a fresh CLI, the moment the session is quiet (want_switch_reconnect: no turn in flight or
+        queued, no live subagent or background task): nothing is cut. Every RETRY_UPGRADE_S until a parent turn is served on the pick's tier again
+        (_note_model_served clears the arm and mints the "back on" card), the user picks a model (set_model clears it),
+        the session ends, or the switch is turned off — read here at every tick, so off leaves an armed session inert.
+        Returns how many sessions were asked this tick. The fallback's cause is outside romp's view (the trigger lives in
+        the task's context and ages out of the window), so the cadence is the designed read; the boundary is the event."""
+        for s in list(self.sessions.values()):
+            # the standing asks first, whatever the switch says — the Always fast flag's asks wait here too. The events
+            # that end live work carry an ask the moment they happen; the tick is the backstop behind them (an ask
+            # dropped by the loop-side re-check, a session that went quiet through a road with no hook)
+            if getattr(s, "_switch_wanted", "") and not getattr(s, "ended", False):
+                s.want_switch_reconnect(s._switch_wanted)
+        if not retry_upgrade_on(self.state_dir):
+            for s in list(self.sessions.values()):
+                s._retry_armed()               # off ends every standing retry, said once each (review 2026-09-17)
+            return 0
+        now = now if now is not None else time.time()
+        fired = 0
+        for sid, s in list(self.sessions.items()):
+            arm = getattr(s, "_upgrade_retry", None)
+            if not arm or arm.get("next", 0) > now or getattr(s, "ended", False):
+                continue
+            th = getattr(s, "thread", None)
+            if th is not None and not th.is_alive():
+                continue
+            if getattr(s, "_switch_wanted", ""):
+                continue                       # an ask stands (the session has not been quiet since): no attempt on top of it
+            arm["attempts"] = arm.get("attempts", 0) + 1
+            arm["next"] = now + RETRY_UPGRADE_S   # provisional; the carried reconnect re-stamps it (_try_switch_reconnect)
+            self._log("retry upgrade (%s): attempt %d — asking for %s again (the reconnect carries the pick%s)"
+                      % (s.name, arm["attempts"], arm.get("from") or "the picked model",
+                         "" if s.quiet() else "; once the session is quiet"))
+            s.want_switch_reconnect("retry upgrade")
+            fired += 1
+        return fired
+
+    def apply_model_switches(self) -> int:
+        """A Model switch just flipped (the kernel's arm, or a peer's propagated pick): act on the sessions that already
+        run (review 2026-09-17: a switch read only at connect left an idle Opus session slow, and a session that had
+        already fallen back unarmed — the very card the user was looking at). Always fast: every live session whose flag
+        should now be there, or no longer be there, reconnects once it is quiet (want_switch_reconnect: now if nothing
+        runs, else at the event that ends the last of it; a session's own ask is untouched either way). Retry upgrades: every live session whose model sits below its pick
+        arms now, from the pick's label; off clears through _retry_armed. Returns how many sessions were asked."""
+        asked = 0
+        for sid, s in list(self.sessions.items()):
+            th = getattr(s, "thread", None)
+            if getattr(s, "ended", False) or (th is not None and not th.is_alive()):
+                continue
+            try:
+                want = s.fast_effective()
+                if want != bool(getattr(s, "_fast_unlocked", False)) and not (getattr(s, "_switch_wanted", "") or getattr(s, "_reconnect_when_idle", False) or getattr(s, "_reconnect", False)):
+                    self._log("always fast (%s): the switch %s — reconnecting %s the opt-in%s"
+                              % (s.name, "wants the flag" if want else "went off", "with" if want else "without",
+                                 "" if s.quiet() else " once the session is quiet"))
+                    s.want_switch_reconnect("always fast")
+                    asked += 1
+                s._arm_if_below_pick()
+            except Exception as e:
+                self._log("model switches (%s): %s" % (s.name, e), problem=True)
+        return asked
+
     def set_fast(self, sid: str, value: str) -> bool:
         """Toggle fast mode ('on'|'off'). The CLI's /fast descriptor is marked supportsNonInteractive,
         so the SDK input stream DOES interpret the literal '/fast on|off' text (as it does /model —
@@ -14411,11 +15605,15 @@ class SdkBackend:
             return False
         # liveFast mirrors the optimistic flip where the badge reads it while dormant / across a
         # restart; _adopt_fast_state re-asserts at the next connect. Locked RMW — see set_effort.
-        self._update_reg(sid, fast=(value == "on"), liveFast=value)
+        self._update_reg(sid, fast=(value == "on"), fastOff=(value == "off"), fastRuleRefused="", liveFast=value)   # fastOff: an
+        #   explicit Slow, which the machine's Always fast switch respects for this session; fastRuleRefused: the switch's
+        #   refusal memory, which the user's own gesture lifts (fast_effective, 2026-09-17)
         s = self.sessions.get(sid)
         if not s or not s.thread.is_alive():
             return True                        # dormant: the persisted ask applies at the next connect
         s.fast_opt = (value == "on")
+        s.fast_off = (value == "off")
+        s.fast_rule_refused = ""
         if s._fast_unlocked:                   # opted in at connect → the CLI interprets the literal send
             if not self.send(sid, "/fast " + value):
                 return False
@@ -15062,6 +16260,7 @@ class SdkBackend:
         """{sid: state-dict} for every alive SDK session — merged by the kernel
         into its session enumeration so SDK sessions appear in the UI."""
         out = {}
+        retry_on = retry_upgrade_on(self.state_dir)   # once per listing: every row's mark reads the same answer
         for reg in list_regs(self.state_dir):
             if not reg.get("alive"):
                 continue
@@ -15071,7 +16270,7 @@ class SdkBackend:
             if not sid:
                 continue
             try:
-                out[sid] = self._live_row(reg, sid)
+                out[sid] = self._live_row(reg, sid, retry_on)
             except Exception:
                 # One session's bad row must not hide the OTHERS — this loop used to run unguarded
                 # under the kernel merge's single try, so one snapshot() exception silently dropped
@@ -15088,12 +16287,22 @@ class SdkBackend:
                             "retryInfo": None, "ctx": None, "subagents": [], "bgTasks": []}
         return out
 
-    def _live_row(self, reg, sid):
+    def fallback_row_for_reg(self, reg, retry_on=None):
+        """A dormant session's requested-model mark from its registry alone (model_fallback_row over the pick, the model
+        last SERVED, the persisted cause; no arm, the switch read here unless the caller read it once for a listing)."""
+        if not isinstance(reg, dict):
+            return None
+        return model_fallback_row(reg.get("model") or "", reg.get("servedModel") or reg.get("liveModel") or "",
+                                  reg.get("fallbackCause") or "", None,
+                                  retry_upgrade_on(self.state_dir) if retry_on is None else bool(retry_on),
+                                  pending=bool(reg.get("modelPending")), category=reg.get("fallbackCategory") or "")
+
+    def _live_row(self, reg, sid, retry_on=None):
         """One session's live_sessions row (running snapshot, else the dormant reg row) — factored
         so live_sessions can guard it PER SESSION (one bad row must not hide the other sessions)."""
         s = self.sessions.get(sid)
         if s and s.thread.is_alive():
-            return s.snapshot()
+            return s.snapshot(retry_on=retry_on)
         ls = last_state(self.state_dir, sid)
         st = ls.get("state") or "waiting"
         # A NOT-running (dormant, resumable) SDK session can't actually be mid-turn: after a kernel
@@ -15113,6 +16322,7 @@ class SdkBackend:
                     # not running (e.g. post-restart): prefer the last LIVE model we persisted
                     # (liveModel), else the chosen alias — so the badge isn't blank while dormant.
                     "model": model_label(reg.get("liveModel") or "", reg.get("model") or ""),
+                    "modelFallback": self.fallback_row_for_reg(reg, retry_on),   # a dormant session keeps its mark
                     "modelPending": bool(reg.get("modelPending")),
                     "effortPending": bool(reg.get("effortPending")),
                     "effort": reg.get("effort", ""),
@@ -15164,6 +16374,30 @@ class SdkBackend:
             return door(sid, key, title, body, **kw)
         except Exception as e:                       # a producer's post never takes the backend down with it
             return None, "the notice could not be posted (%s)" % e
+
+    def post_boot_notices(self):
+        """The kernel's call once it has wired the notice door (on_notice) on this class: post the notice cards the boot
+        echo reseed PARKED (_reseed_echoes runs inside __init__, before the door exists; _mark_dropped_echoes' `park`),
+        each with the problem row that says its outcome. On a thread of its own, because the kernel calls this while it
+        still holds its construction lock and the door's session check can re-enter that lock (post_notice's
+        Sessions.live() through _sdk()): the thread waits the lock out where a synchronous post would deadlock the boot
+        (the shape of _push_session's sdk-push-session thread around a kernel callback). A post that raises is one
+        problem row, never the thread's death. The parked list is taken whole and the slot cleared, so a second call
+        posts nothing; a backend with nothing parked starts no thread. Returns the thread, or None (the kernel ignores
+        it; a test joins it)."""
+        parked, self._boot_notices = list(getattr(self, "_boot_notices", None) or []), None
+        if not parked:
+            return None
+
+        def run():
+            for post in parked:
+                try:
+                    post()
+                except Exception as e:
+                    self._log("dropped-sends card: the boot post failed: %s: %s" % (type(e).__name__, e), problem=True)
+        th = threading.Thread(target=run, name="sdk-boot-notices", daemon=True)
+        th.start()
+        return th
 
     def _emit_ask(self, sess: SdkSession, ask: dict):
         # STORE the ask (not just a bool): the kernel's _ask_poll replays it to chat clients each tick, so a
@@ -15244,16 +16478,20 @@ class SdkBackend:
             self._touch_live(sess.sid)
         if vanished:
             self._note_live_tail_race("_evict_live_overflow")
-        # A user atom the CLI streams WHILE IDLE, wearing an injected provenance stamp, is a turn the CLI
-        # opened by itself — a background task's notification, a scheduled prompt, a peer's channel
-        # message — never the composer's words: a fed text is not replayed on the stream
+        # A user atom the CLI streams while NOTHING ROMP FED is in flight, wearing an injected provenance
+        # stamp, is a turn the CLI opened by itself (a background task's notification, a scheduled prompt,
+        # a peer's channel message), never the composer's words: a fed text is not replayed on the stream
         # (replay-user-messages stays off, see _options), so its opener was noted at the feeder's pop.
         # Only the CLI's own stamp says so (atom["origin"], msg_to_atom); a stamp-less user atom (a tool
-        # result) or a "human" stamp says nothing. Judged BEFORE the working re-assert below, and only
-        # while nothing is in flight: the same stamp arriving mid-turn is a splice into the running turn,
-        # which keeps its opener (see SdkSession._note_turn_opener).
+        # result) or a "human" stamp says nothing. Judged BEFORE the working re-assert below, and against
+        # the fed-turn twin (_inflight_texts), not the turn count: _on_message counts the CLI's own turn
+        # from its first frame, ahead of this call, so `inflight` is already 1 when the stamped atom is
+        # judged and a count-based test never fired (the phone then buzzed for every notification turn).
+        # The twin holds what romp fed into the turn in flight: the same stamp arriving with a fed text in
+        # the twin is a splice into that turn, which keeps its opener (see SdkSession._note_turn_opener),
+        # and a drained mid-turn text rejoins the twin at the count, so its turn stays the human's.
         okind = (atom.get("origin") or {}).get("kind") if atom.get("type") == "user" else None
-        if okind and okind != "human" and not getattr(sess, "inflight", 0) and not sess._cli_working:
+        if okind and okind != "human" and not getattr(sess, "_inflight_texts", None) and not sess._cli_working:
             sess._note_turn_opener("injected", True)
         # The stream is the AUTHORITATIVE busy signal: a genuine WORK atom (streamed assistant/tool
         # output — not an input echo, not a /model-style command line) means the CLI is producing RIGHT

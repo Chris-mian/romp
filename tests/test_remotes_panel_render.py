@@ -112,6 +112,7 @@ function alert(m){ ALERTS.push(String(m)); }
 const setTimeout_ = setTimeout;
 // listeners are RECORDED so a test can deliver a pane's postMessage (the hostsPending row copy)
 const window = { _l:{}, addEventListener(k,f){ (this._l[k]=this._l[k]||[]).push(f); }, location:{reload(){}} };
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 const console_err = [];
 const console = { error(...a){ console_err.push(a.map(String).join(' ')); }, log(){}, warn(){} };
 

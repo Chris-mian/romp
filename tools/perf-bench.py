@@ -38,11 +38,14 @@ directory lands in a shadow directory under the tool's private temp dir instead 
 below): the repo-root marker the kernel writes when it is imported, the session order the push
 appends new sids to, the order audit log. The end-of-run census fingerprints the copy before the
 kernel is imported and after the last row, on the error path too, and prints what changed; a run
-that reports anything but 0 changed, 0 new, 0 removed found a writer the shadow does not take. One
-such writer is known: a state file the kernel cannot parse is quarantined by an os.replace to a
+that reports anything but 0 changed, 0 new, 0 removed found a writer the shadow does not take. Two
+such writers are known. A state file the kernel cannot parse is quarantined by an os.replace to a
 .corrupt-<stamp> sibling in the same directory, which goes through none of the shadowed doors, so
-on a copy holding such a file the census lists that file removed and its sibling new; anything
-else is a writer this tool does not know about. The census records mtimes, sizes, directories and
+on a copy holding such a file the census lists that file removed and its sibling new. The boot pass
+over the checkpoints directory (em.checkpoint_sweep) runs at kernel import through the kernel's own
+provider, before any guard installs, and removes a document whose recorded file is gone or that
+does not parse, so on a copy holding such a document the census lists it removed. Anything else is
+a writer this tool does not know about. The census records mtimes, sizes, directories and
 link targets, not modes: the kernel import sets the state root it is pointed at to 0700, a change
 only on a copy whose root was not already 0700 (a live directory is, and rsync -a keeps it).
 
@@ -85,7 +88,7 @@ calls, reported as ms min/median/max:
   build_session_warm:S   the same call again with everything cached (an unchanged tab's push)
   warm_all_parses        one _parse() per live session from an empty parse cache (single call)
   build_feed             build_feed with every live session's parse cached (the steady state)
-  build_feed_noparse     build_feed with the parse cache empty (the cards-first boot shape)
+  build_feed_noparse     build_feed with the parse cache and the feed's card memo empty (the cards-first boot shape)
   build_timeline_bars    build_timeline(with_bars=True)
   build_timeline_skel    build_timeline(with_bars=False) — the lanes skeleton the push sends first
   load_goals:S           jd.load_goals for each of the K largest goal stores
@@ -158,16 +161,21 @@ error, never a silent skip):
     glibc consult the name service — AF_UNIX connects to nscd and systemd-userdb, local, not network.
   * The state shadow: every kernel _atomic_write (the ONE write door for the small JSON state files
     among them), every Path.write_text the kernel import performs against the state directory (the
-    repo-root marker) and the order audit log's append are redirected to <private dir>/shadow/<same
+    repo-root marker), the order audit log's append and the event model's checkpoint documents (its
+    directory provider is pointed at the shadow) are redirected to <private dir>/shadow/<same
     relative path>, and the kernel's ONE strict reader of the small JSON state files
     (_read_state_json) reads a shadowed file from the shadow, so a read-modify-write such as the
     session order's append of new sids lands once, as it does live, instead of re-firing on every
-    build against a file that never changed. A write aimed anywhere else is recorded and refused
+    build against a file that never changed. The provider redirect installs after the import, so the
+    boot pass over the checkpoints directory (em.checkpoint_sweep, run at kernel import) still reads
+    the copy's directory and removes a document whose recorded file is gone or that does not parse;
+    the census lists those removed. A write aimed anywhere else is recorded and refused
     (refused_writes in the output). The copy's files, directories and symlink targets are
     fingerprinted before the kernel is imported and again at the end, on EVERY exit path (a guard's
     error, an exception out of the candidate kernel at import or inside a builder, Ctrl-C), and the
-    output lists what changed (nothing; the quarantine move of an unparseable state file, the one
-    known writer the shadow does not take; or a writer this tool does not know about) beside the
+    output lists what changed (nothing; the quarantine move of an unparseable state file or the
+    boot pass's removal of a checkpoint document, the two known writers the shadow does not take; or
+    a writer this tool does not know about) beside the
     relative paths that were shadowed; the JSON, when asked for, is written on those paths too, with
     the error beside the census.
   * A guard that trips inside a call the kernel CATCHES is still an error: _push wraps its whole build in
@@ -386,10 +394,12 @@ class StateShadow:
     of the small JSON state files (installed on _read_state_json by install_guards) see the shadow, so a
     read-modify-write (the session order's append of new sids) lands once, as it does live, instead of
     re-firing on every build against a file that never changed (each re-fire would add an audit record
-    with a captured stack to the very rows this tool times). `written` lists every relative path that
-    was diverted, in order, duplicates kept; the report dedups it. A write aimed anywhere else is
-    appended to `refused` (the recorder's refused_writes list) before it is refused, so a caller that
-    swallows the error cannot hide it (check_guards_held)."""
+    with a captured stack to the very rows this tool times). `written` lists every relative path
+    redirected to the shadow, in order, duplicates kept, landed or not: a file when a write to it is
+    diverted, the checkpoints directory when install_guards points the event model's provider at it,
+    whether or not a document follows; the report dedups it. A write aimed anywhere else is appended
+    to `refused` (the recorder's refused_writes list) before it is refused, so a caller that swallows
+    the error cannot hide it (check_guards_held)."""
 
     def __init__(self, state, root, refused=None):
         self.state = Path(state).resolve()
@@ -551,6 +561,29 @@ def install_guards(km, sbmod, shadow, rec, no_git=False):
     names[-1] = "km._read_state_json (shadow overlay)"
     stub("_order_audit_path", lambda: shadow.target(Path(km.jd.STATE) / "order-audit.jsonl"))
     names[-1] = "km._order_audit_path (shadowed)"
+    # The event model's checkpoints: one JSON document per JSONL file it reads resumably (fold_records with a ckpt name),
+    # plus the assembly's documents in the same directory, written at run time with Path.write_text and os.replace into
+    # the directory its provider names at call time; kernel/judge.py installs `lambda: STATE / "checkpoints"` at import, a
+    # directory INSIDE the copy. Neither door above takes that write: the write_text diversion in load_kernel covers the
+    # import only, and the document is not an _atomic_write. So a run wrote one document per transcript into the copy
+    # (the census reported them as new) and warmed the next run's cold rows, since a fresh process that finds a document
+    # restores from it and reads only the tail past it. The provider is replaced with one naming the shadow's checkpoints
+    # directory, computed once (the bench never rebinds the state root; a call-time shadow.target would pay a resolve
+    # and a mkdir inside timed rows and record an entry per document) and recorded as a redirected path when the guard
+    # installs, so the report names the directory whether or not a document lands in the run. The setter also resets
+    # the event model's pending restores and document memos, which are empty here, before the first build. An event
+    # model with the directory provider but no setter is a renamed door and an error, as the notification stubs are;
+    # one with neither predates the checkpoints and has nothing to divert. One reader of the copy's directory stays: the
+    # boot pass over it (em.checkpoint_sweep) runs at kernel import through the kernel's own provider, before this guard
+    # installs, and removes a document whose recorded file is gone or that does not parse; the census lists those removed.
+    em = getattr(km, "em", None)
+    if callable(getattr(em, "set_checkpoint_dir", None)):
+        ckpt_dir = shadow.target(Path(km.jd.STATE) / "checkpoints")
+        em.set_checkpoint_dir(lambda: ckpt_dir)
+        names.append("em.set_checkpoint_dir (shadowed)")
+    elif hasattr(em, "_CKPT_DIR_FN"):
+        raise BenchError("this kernel's event model has a checkpoint directory provider (_CKPT_DIR_FN) but no "
+                         "set_checkpoint_dir; the harness's guard list needs adjusting for this revision")
     for fn in ("getpwnam", "getpwuid"):            # os.path.expanduser's name-service lookups, counted
         real = getattr(pwd, fn)
 
@@ -1029,7 +1062,7 @@ def _bench(args, state, repo, out, shadow, rec, maps):
     bench = out["benchmarks"] = {}
     profiles = out["profiles"] = {}
     iters = max(1, args.iters)
-    out["cold_caches"] = {"kernel": [n for n in COLD_KERNEL_CACHES + ("_chat_fold",) if callable(getattr(getattr(km, n, None), "clear", None))],
+    out["cold_caches"] = {"kernel": [n for n in COLD_KERNEL_CACHES + ("_chat_fold", "_feed_memo") if callable(getattr(getattr(km, n, None), "clear", None))],
                           "event_model": [n for n, _lock in COLD_EM_CACHES if isinstance(getattr(em, n, None), dict)]}
 
     def now():
@@ -1067,6 +1100,17 @@ def _bench(args, state, repo, out, shadow, rec, maps):
                     km._chat_fold.clear()
             else:
                 km._chat_fold.clear()
+        clear_feed_memo()
+
+    def clear_feed_memo():
+        """The feed's per-session card memo, which a freshly started kernel also lacks (2026-09-18). An entry the memo
+        holds under a WARM parse re-reads its parse in place when the store misses (the kernel's warm-to-stale
+        re-read), so a feed built over an emptied parse store but a warm memo parses inside the build and never
+        takes the cold branch that asks for the background warm: the cold rows and build_feed_noparse would measure
+        that re-read, not the cards-first boot they name. Dropped through the kernel's own forget (every sid gone),
+        so its counters stay right; a revision without the memo has nothing to drop."""
+        if hasattr(km, "_feed_memo_forget"):
+            km._feed_memo_forget(set())
 
     def clear_em_caches():
         """The event model's parse-layer caches, under their locks; a name this revision lacks is skipped
@@ -1236,8 +1280,11 @@ def _bench(args, state, repo, out, shadow, rec, maps):
         if args.profile:
             profiles["build_feed"] = profile_entry(lambda: km.build_feed(now(), live_map), None, repo)
             profiles["build_timeline_bars"] = profile_entry(lambda: km.build_timeline(now(), live_map, with_bars=True), None, repo)
-        # the feed with nothing parsed (cards-first boot)
-        bench["build_feed_noparse"], _ = timed(lambda: km.build_feed(now(), live_map), iters, before=km._parse_cache.clear)
+        # the feed with nothing parsed and nothing memoized (cards-first boot)
+        def noparse_before():
+            km._parse_cache.clear()
+            clear_feed_memo()
+        bench["build_feed_noparse"], _ = timed(lambda: km.build_feed(now(), live_map), iters, before=noparse_before)
         for s in sessions:
             km._parse(s["path"], s["sid"], now())
 
@@ -1361,15 +1408,15 @@ def row_note(name, st):
 
 def render_writes(out):
     """The write census, one block: what changed in the copy (nothing, when every writer is known) and
-    the relative paths whose writes the shadow took. Printed whether or not the run got as far as a
-    benchmark row, so an error run says what it did to the copy too."""
+    the relative paths the shadow redirects, whether or not a write landed on each. Printed whether or
+    not the run got as far as a benchmark row, so an error run says what it did to the copy too."""
     w = out.get("writes")
     if w is None:
         return ["writes into the state copy: not measured (the run stopped before the census could start)"]
     L = ["writes into the state copy: %d changed, %d new, %d removed" % (w.get("changed", 0), w.get("new", 0), w.get("removed", 0))]
     for s in w.get("sample", []):
         L.append("  " + s)
-    L.append("writes shadowed (landed in the private dir, not the copy): %s" % (", ".join(w.get("shadowed") or []) or "none"))
+    L.append("writes redirected to the private dir, not the copy (paths, landed or not): %s" % (", ".join(w.get("shadowed") or []) or "none"))
     return L
 
 

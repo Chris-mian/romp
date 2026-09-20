@@ -76,7 +76,7 @@ CENSUS = {
     "_chat_fold_get": ("memo", "the sealed prefix: every gate it checks is an input classified here, and its output is the events an unfolded build produces"),
     "_chat_fold_put": ("out", "the fold entry's write"),
     "_chat_memo_bump": ("out", "a memo counter's increment"),
-    "_chat_postal_key": ("sig", "postal", "the log's identity, folded when the payload carries postal traffic"),
+    "_chat_postal_rev": ("sig", "postal", "this session's revision of the postal index: the records addressed to or from it, their outcomes, and the no-recipient bucket, folded when the payload carries postal traffic (2026-09-18)"),
     "_chat_postal_relevant": ("pure", "over a raw event"),
     "_chat_seam_open_at": ("pure", "over the events"),
     "_chat_stat_key": ("sig", "taskout", "the fold's per-output identity; the same stat the taskout dep re-takes"),
@@ -97,6 +97,7 @@ CENSUS = {
     "_effort_color": ("pure", "over the effort string and the colormap name"),
     "_effort_tone": ("pure", "over the effort string"),
     "_feed_needs_input_of": ("sig", "needs", "the last feed build's needs-you set, as the boolean for this session (None and False share a value)"),
+    "_chat_notices": ("sig", "notices", "the approval box's rows by id: this session's needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
     "_fold_tasks": ("memo", "pure over the parse's turns (transcript, live); the per-turn memo is keyed on each turn's atoms and fingerprint"),
     "_genuine_queued": ("pure", "over a queued text"),
     "_git_branch": ("sig", "cwd"),
@@ -384,6 +385,42 @@ class Census(unittest.TestCase):
         for retired in ("_active_chat_sig", "_clock_predicates", "_external_sig", "_ACTIVE_SIG_FILES"):
             self.assertFalse(hasattr(km, retired), "%s: the watched tab's separate key is retired" % retired)
 
+    def test_the_row_projection_drops_only_fields_no_chat_reader_reads(self):
+        """The `row` component is the liveness row without _CHAT_ROW_UNKEYED and, per task row, without
+        _CHAT_TASK_ROW_UNKEYED (_chat_row_sig, 2026-09-18). A dropped field must stay unread by the build, or the
+        memo rule breaks silently: a stale payload served while the key holds. Two pins. The named chat readers'
+        own source (the reads the census classifies) names neither field, by word so a single-quoted read is seen
+        too. And, as the transitive backstop a reader added in a helper they call would slip past, the whole kernel
+        source: every mention of lastTool lies in the projection block itself (the constants, their comment and
+        _chat_row_sig, which name the field in order to drop it) or in _chat_build_sig (the key, whose row comment
+        says so; a read there would be a key input, not a payload read), and every mention of ctxTokens in those
+        two, in the compaction-suggestion tick (its one reader, a tick, not a build) or in Sessions.live (the merge
+        that writes it). _interrupting reads snapT and interrupting by design and is folded under clock; it is
+        deliberately not among the readers."""
+        self.assertEqual(km._CHAT_ROW_UNKEYED, {"snapT", "interrupting", "ctxTokens"})
+        self.assertEqual(km._CHAT_TASK_ROW_UNKEYED, {"lastTool"})
+        readers = (km.build_session, km._light_status, km._session_chip, km._bg_live_norm, km._bg_tasks,
+                   km._agent_alive, km._awaiting_live_rows, km._session_background_items, km._model_pending_now,
+                   km._compacting, km._session_backend, km._session_retrying)
+        src = "\n".join(inspect.getsource(f) for f in readers)
+        for k in ("ctxTokens", "lastTool"):
+            self.assertIsNone(re.search(r"\b%s\b" % k, src),
+                              "%s is dropped from the row component, so no chat reader may read it" % k)
+        lines = Path(inspect.getsourcefile(km._chat_build_sig)).read_text(encoding="utf-8").splitlines()
+        deps_src, deps_at = inspect.getsourcelines(km._chat_sig_deps)
+        _sig_src, sig_at = inspect.getsourcelines(km._chat_build_sig)
+        block = "\n".join(lines[deps_at - 1 + len(deps_src):sig_at - 1])
+        self.assertIn("def _chat_row_sig", block, "the projection sits between _chat_sig_deps and _chat_build_sig")
+        whole = "\n".join(lines)
+        key_src = block + "\n" + "".join(_sig_src)
+        count = lambda k, text: len(re.findall(r"\b%s\b" % k, text))
+        self.assertEqual(count("lastTool", whole), count("lastTool", key_src),
+                         "lastTool is mentioned outside the projection and the key: a reader the row component holds against")
+        self.assertEqual(count("ctxTokens", whole),
+                         count("ctxTokens", key_src) + count("ctxTokens", inspect.getsource(km._compact_suggest_tick))
+                         + count("ctxTokens", inspect.getsource(km.Sessions.live)),
+                         "ctxTokens is mentioned beyond the projection, the key, the compaction tick and the merge writing it")
+
 
 # ── the differential tests ────────────────────────────────────────────────────────────────────────
 # One hermetic world (a session discovery finds, with a fixed liveness row, and no backend owns); each test moves one
@@ -392,6 +429,8 @@ class Census(unittest.TestCase):
 # record, the way _chat_sig_deps evaluates one; the pusher tests drive the REAL build_session through _push.
 SID = "77777777-8888-9999-aaaa-ccccccccccc1"      # this module's private synthetic sids: goal stores are minted under SID
 PEER = "77777777-8888-9999-aaaa-ccccccccccc2"
+OTHER_A = "77777777-8888-9999-aaaa-ccccccccccc3"   # two sessions this tab is party to no message with
+OTHER_B = "77777777-8888-9999-aaaa-ccccccccccc4"
 NOW = 1781100000
 T0 = NOW - 3600
 
@@ -691,6 +730,36 @@ class Differential(_World):
         self.assertEqual(self.moved(a, self.sig(tm=dict(self.row, context=42))), ("row",))
         self.assertEqual(self.moved(a, km._chat_build_sig(self.sess, None, NOW, live_map={})), ("row",),
                          "no row for the sid, and an empty map: a different key, never a false hit")
+
+    def test_a_tasks_progress_and_the_raw_token_count_hold_the_row_and_a_start_or_end_moves_it(self):
+        """The row component is the projection _chat_row_sig (2026-09-18): a background task's progress chatter
+        (lastTool, which every task_progress that names a tool rewrites) and the raw token count (ctxTokens, which
+        every usage report moves while the payload renders the percent) hold the key; a task starting, ending or
+        learning its description or type, the percent, ctxOver, a subagent and the state each move it, as before."""
+        km._live_map = self.saved[5]                 # the kernel's own reader, so the bg component reads the handed map
+        aid = "a0123456789abcdef"
+        task = {"toolUseId": "tu_1", "taskId": aid, "desc": "Running Map the parser", "since": NOW - 30,
+                "type": "local_agent", "lastTool": ""}
+        row = dict(self.row, bgTasks=[task], subagents=[], ctxTokens=120_000)
+        key = lambda r: km._chat_build_sig(self.sess, r, NOW, live_map={SID: r})
+        a = key(row)
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[dict(task, lastTool="Read")]))), (),
+                         "a task_progress that rewrote lastTool: nothing the build reads changed")
+        self.assertEqual(self.moved(a, key(dict(row, ctxTokens=120_512))), (),
+                         "a usage report that moved the raw count and not the percent")
+        task2 = dict(task, toolUseId="tu_2", taskId="a0123456789abcde0", desc="Running Check the docs")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[task, task2]))), ("bg", "row"), "a second task started")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[]))), ("bg", "row"), "the task ended")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[dict(task, desc="Running Map the lexer")]))), ("bg", "row"),
+                         "the task's description landed")
+        self.assertEqual(self.moved(a, key(dict(row, bgTasks=[dict(task, type="local_bash")]))), ("bg", "row"),
+                         "the task's type landed")
+        self.assertEqual(self.moved(a, key(dict(row, context=42))), ("row",), "the percent stepped")
+        self.assertEqual(self.moved(a, key(dict(row, ctxOver=True))), ("row",), "the overflow flag flipped")
+        self.assertEqual(self.moved(a, key(dict(row, subagents=[{"type": "Explore", "since": NOW - 10, "agentId": aid}]))),
+                         ("row",), "a subagent started")
+        self.assertEqual(self.moved(a, key(dict(row, state="working"))), ("row",))
+        self.assertEqual(key(dict(row, snapT=NOW + 3)), a, "snapT moves every cycle and is not rendered")
 
     def test_each_clock_boolean_misses_under_clock_exactly_at_its_crossing(self):
         tm = dict(self.row, state="ready", since=NOW - 3599)
@@ -1021,6 +1090,80 @@ class Differential(_World):
         finally:
             km._msg_summaries = saved
 
+    def test_mail_between_two_other_sessions_leaves_the_postal_dependency_unmoved(self):
+        """The postal component folds THIS session's revision of the postal log (2026-09-18): the records
+        addressed to or from it, their outcomes, and the records with no recipient. A message between two
+        other sessions, or an outcome on one, moves the log's identity and nothing this tab renders, so the
+        component holds; a record touching this session, an outcome on one of its own messages, or a record
+        with no recipient (which hydrates in every chat) moves it."""
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {}
+        self.addCleanup(km._postal_index_memo.__setitem__, 0, None)
+        km._postal_index_memo[0] = None
+        try:
+            jd.MESSAGES.parent.mkdir(parents=True, exist_ok=True)
+
+            def row(r):
+                with open(jd.MESSAGES, "a") as f:
+                    f.write(json.dumps(r) + "\n")
+            row({"ev": "sent", "id": "m7", "from_id": PEER, "to_id": SID, "body": "hello", "t": T0})
+            card = {"kind": "postal-service", "direction": "in", "mid": "m7", "peer": "api"}
+            rec = {"task_outs": [], "pl_pending": [], "pl_at": (), "pl_check": None, "postal_any": True, "postal_cards": [card]}
+            a = self.sig(deps=rec)
+            row({"ev": "sent", "id": "m8", "from_id": OTHER_A, "to_id": OTHER_B, "body": "unrelated", "t": T0 + 1})
+            b = self.sig(deps=rec)
+            self.assertEqual(self.moved(a, b), (), "mail between two other sessions: nothing this tab renders moved")
+            row({"ev": "exec", "id": "m8", "t": T0 + 2})
+            c = self.sig(deps=rec)
+            self.assertEqual(self.moved(b, c), (), "an outcome on a third party's message: still nothing")
+            row({"ev": "sent", "id": "m9", "from_id": PEER, "to_id": SID, "body": "more", "t": T0 + 3})
+            d = self.sig(deps=rec)
+            self.assertEqual(self.moved(c, d), ("postal",), "a record addressed to this session")
+            # an outgoing card joined to its own row: an outcome landing on that row is the receipt the card renders
+            row({"ev": "sent", "id": "m10", "from_id": SID, "to_id": PEER, "body": "ship it", "t": T0 + 4})
+            out = {"kind": "postal-service", "direction": "out", "peer": "api", "mid": "m10", "body": "ship it"}
+            rec2 = {"task_outs": [], "pl_pending": [], "pl_at": (), "pl_check": None, "postal_any": True, "postal_cards": [out]}
+            e = self.sig(deps=rec2)
+            row({"ev": "exec", "id": "m10", "t": T0 + 5})
+            f = self.sig(deps=rec2)
+            self.assertEqual(self.moved(e, f), ("postal",), "the receipt on this session's own message moved")
+            row({"ev": "sent", "id": "m11", "from_id": "", "to_id": "", "body": "pre-schema", "t": T0 + 6})
+            g = self.sig(deps=rec2)
+            self.assertEqual(self.moved(f, g), ("postal",), "a record with no recipient hydrates in every chat")
+        finally:
+            km._msg_summaries = saved
+
+    def test_opposite_outcomes_on_two_of_this_sessions_messages_move_the_postal_dependency(self):
+        """The revision folds the outcome VALUES, not a count (2026-09-18, a review find on the design): an
+        unexec on one of this session's messages beside an exec on another leaves a count where it was while
+        both cards' receipts changed. By value the two rows cannot net to no change."""
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {}
+        self.addCleanup(km._postal_index_memo.__setitem__, 0, None)
+        km._postal_index_memo[0] = None
+        try:
+            jd.MESSAGES.parent.mkdir(parents=True, exist_ok=True)
+
+            def rows(*rs):
+                with open(jd.MESSAGES, "a") as f:
+                    for r in rs:
+                        f.write(json.dumps(r) + "\n")
+            rows({"ev": "sent", "id": "m10", "from_id": SID, "to_id": PEER, "body": "ship it", "t": T0},
+                 {"ev": "sent", "id": "m12", "from_id": SID, "to_id": PEER, "body": "and the docs", "t": T0 + 1})
+            cards = [{"kind": "postal-service", "direction": "out", "peer": "api", "mid": "m10", "body": "ship it"},
+                     {"kind": "postal-service", "direction": "out", "peer": "api", "mid": "m12", "body": "and the docs"}]
+            rec = {"task_outs": [], "pl_pending": [], "pl_at": (), "pl_check": None, "postal_any": True, "postal_cards": cards}
+            a = self.sig(deps=rec)
+            rows({"ev": "exec", "id": "m10", "t": T0 + 2})
+            b = self.sig(deps=rec)
+            self.assertEqual(self.moved(a, b), ("postal",), "the first message was read")
+            rows({"ev": "unexec", "id": "m10", "t": T0 + 3}, {"ev": "exec", "id": "m12", "t": T0 + 4})
+            c = self.sig(deps=rec)
+            self.assertEqual(self.moved(b, c), ("postal",),
+                             "one receipt went back to pending and another landed: two cards changed")
+        finally:
+            km._msg_summaries = saved
+
 
 class KeyCost(_World):
     def test_the_precheck_vouches_and_a_quiet_cycle_re_resolves_nothing(self):
@@ -1303,6 +1446,32 @@ class Pusher(unittest.TestCase):
                 self.assertIsNone(getattr(km._live_scope, k, None), "%s: the stale scope is gone after the push" % k)
         finally:
             for k in ("names", "msgsum", "chat_shared", "chat_push_owned"):
+                setattr(km._live_scope, k, None)
+
+    def test_a_raise_reading_the_shared_components_leaks_none_of_the_slots_the_open_set(self):
+        """_chat_push_scopes_open records what it owns BEFORE it reads the shared components (2026-09-18): a
+        _chat_sig_shared that raised used to leave the names, msgsum and subagent_trees slots it had just opened
+        set on the handler thread with no ownership record, so the push's except branch and the next push's
+        opening close cleared nothing, and every later push and viewer frame on that connection's thread was
+        served the stale samples for the connection's life (the open skips a slot already set, so the leak was
+        adopted, never replaced)."""
+        slots = ("names", "msgsum", "subagent_trees", "chat_shared", "chat_push_owned")
+        for k in slots:
+            setattr(km._live_scope, k, None)
+        saved = km._chat_sig_shared
+
+        def unreadable():
+            raise RuntimeError("flags unreadable")
+        km._chat_sig_shared = unreadable
+        try:
+            km._push([self.chat])                             # the raise lands in the push's except branch, which closes
+        finally:
+            km._chat_sig_shared = saved
+        try:
+            for k in slots:
+                self.assertIsNone(getattr(km._live_scope, k, None), "%s: nothing the open set survives its raise" % k)
+        finally:
+            for k in slots:
                 setattr(km._live_scope, k, None)
 
 
@@ -1620,6 +1789,37 @@ class RecordedDependencies(unittest.TestCase):
                                 "t": self.t}) + "\n")
         km._push([self.chat])
         self.assertIn("postal", self.rebuilds(c), "the log landed: the tab rebuilds under postal")
+
+    def test_mail_between_two_other_sessions_does_not_rebuild_a_tab_that_carries_a_card(self):
+        """A tab carrying a postal card depends on THIS session's revision of the log, not the log's identity
+        (2026-09-18): a message between two other sessions used to rebuild every mail-bearing tab (1862 of
+        5907 background chat rebuilds on one live kernel carried the postal label). A row addressed to this
+        session still rebuilds it."""
+        self.addCleanup(km._postal_index_memo.__setitem__, 0, None)
+        km._postal_index_memo[0] = None
+        jd.MESSAGES.parent.mkdir(parents=True, exist_ok=True)
+
+        def row(r):
+            with open(jd.MESSAGES, "a") as f:
+                f.write(json.dumps(r) + "\n")
+        row({"ev": "sent", "id": "m9", "from_id": PEER, "to_id": SID_R, "body": "the api tests are green now", "t": self.t})
+        self.append(self.turn(1))
+        u, a = self.uid(), self.uid()
+        self.append([_uline(self.tick(), "<!-- romp-msg-id: m9 -->\nthe api tests are green now", u, self.last),
+                     _aline(self.tick(), "Noted.", a, u)])
+        self.last = a
+        km._push([self.chat])
+        km._push([self.chat])                            # served: the record stands
+        m, rec, touts = self.record()
+        self.assertEqual(len([ev for ev in m["events"] if ev.get("kind") == "postal-service"]), 1, "the marker hydrated: one card")
+        c = self._chat()
+        row({"ev": "sent", "id": "m10", "from_id": OTHER_A, "to_id": OTHER_B, "body": "unrelated", "t": self.t})
+        km._push([self.chat])
+        self.assertEqual(self.rebuilds(c), {}, "mail between two other sessions moved nothing this tab renders")
+        c2 = self._chat()
+        row({"ev": "sent", "id": "m11", "from_id": PEER, "to_id": SID_R, "body": "and the docs", "t": self.t})
+        km._push([self.chat])
+        self.assertIn("postal", self.rebuilds(c2), "a record addressed to this session rebuilds it")
 
     def test_a_targeted_push_leaves_no_dependency_record_on_its_thread(self):
         """_push_session_now builds one session outside the pusher's cache and must not leave the build's

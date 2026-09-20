@@ -29,7 +29,7 @@ test("menu construction picks the choice list by the session's backend", () => {
   assert.match(RENDER, /const rows = metaChoices\(kind, s\.status\)\.filter\(/);
   assert.match(RENDER, /for \(const c of rows\) \{/);
   assert.match(TIMELINE, /s\.backend === 'codex'/);
-  assert.match(TIMELINE, /\? \(kind === 'model' \? CODEX_MODEL_CHOICES : CODEX_EFFORT_CHOICES\)/);
+  assert.match(TIMELINE, /\? \(kind === 'model' \? CODEX_MODEL_CHOICES : codexEffortChoices\(s\.model\)\)/);
 });
 
 test("a live Codex lane with no effort picked yet draws the effort picker, reading the bare kind (both surfaces agree)", () => {
@@ -267,13 +267,27 @@ class FakeEl {
   querySelector(sel: string): FakeEl | null { return this.querySelectorAll(sel)[0] ?? null; }
 }
 
+// render.ts's settingRefused arm, lifted whole (the two anchors setting-refused.test.ts pins by): the frame the
+// kernel answers a refused pick with, executed below over stubs for the tab flags, the shell's bell, the toast and
+// the statusline's repaint.
+const REFUSED_ARM = (() => {
+  const a = RENDER.indexOf('else if (m.type === "settingRefused" && typeof m.text === "string" && m.text) {');
+  const stop = RENDER.indexOf('else if (m.type === "warn"', a);
+  assert.ok(a > 0 && stop > a, "anchors not found; render.ts's settingRefused arm moved; re-anchor");
+  return RENDER.slice(a, stop);
+})();
+
 // The menu's world: the loader, `el`, `metaDots`, `metaButton`, `metaAnchor`, `closeMetaMenu` and
 // `toggleMetaMenu` lifted from render.ts, over the stand-in and stubs for what they read of the rest of
 // the module (the session map, the thread helpers, the pick memory, the vscode bridge, the tints).
 // `thread`: an open comment thread's popover, as openCommentThread and threadMetaStatus report it; absent,
 // no popover is open and a thread status read throws, as in render.ts. `liveSession` is passed for a
 // status lookup that may read the active session through it rather than the map directly.
-function liftMenu(opts: { thread?: { th: unknown; status: any } } = {}) {
+// `vscodeApi`: a bridge stub that takes the ops a pick posts; absent, the page has no bridge and a pick posts
+// nothing, as in render.ts (pickValue arms the local loader only when it posted). The settingRefused arm is
+// lifted beside the menu, over recorders for what it reaches of the rest of the page: the tab flags' pending map
+// and its drop, the shell's bell (`filed`), the toast (`toasts`) and the statusline's repaint (`repaints`).
+function liftMenu(opts: { thread?: { th: unknown; status: any }; vscodeApi?: { postMessage: (op: any) => void } } = {}) {
   BODY = new FakeEl("body");
   detachedRectReads.length = 0;
   rectReads.length = 0;
@@ -290,30 +304,37 @@ function liftMenu(opts: { thread?: { th: unknown; status: any } } = {}) {
     "let activeId = null;",
     // metaChoices, as render.ts routes a session: a Codex session's own lists, else the SDK lists (both
     // lifted with the loader below); the mode and fast lists are not lifted
-    "const metaChoices = (kind, st) => st.backend === 'codex' ? (kind === 'model' ? CODEX_MODEL_CHOICES : kind === 'effort' ? CODEX_EFFORT_CHOICES : []) : (kind === 'model' ? MODEL_CHOICES : kind === 'effort' ? EFFORT_CHOICES : []);",
+    slice("function metaChoices(kind: MetaKind, st: Status): MetaChoice[] {"),
     slice("function el(tag: string, cls?: string): HTMLElement {"),
     slice("function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {"),   // the real ✓ rule (by value): a row order the tests move must never lose it
     sliceMod("export function metaDots(): HTMLElement {"),   // the dots live in status-controls.ts (T415 part two)
     slice("const MODEL_CHOICES: {", "function loadModelChoices(): void {"),
+    "const META_CHOICES = {model: MODEL_CHOICES, effort: EFFORT_CHOICES}; const CODEX_MODE_CHOICES = [];",
     sliceMod("export function metaButton(kind: MetaKind, text: string, forSid: string | null | undefined, hooks: MetaHooks): HTMLElement {").replace("function metaButton(", "function buildMetaButton("),
     // the chat's wrapper (render.ts META_HOOKS / metaButton, pinned by settings-previews.test.ts): the picker as the press hook
     "const META_HOOKS = { onPress: (kind, btn, forSid) => toggleMetaMenu(kind, btn, forSid), pending: () => false };",
     "function metaButton(kind, text, forSid) { return buildMetaButton(kind, text, forSid, META_HOOKS); }",
+    "function settingRefused(m) { if (false) {} " + REFUSED_ARM + " }",   // the real arm, as a function of the frame (the dead `if` lets its `else if` parse)
     slice("let metaMenuEl: HTMLElement | null = null;", "function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null) {"),
-    "return { metaButton, toggleMetaMenu, closeMetaMenu, loadModelChoices, CODEX_MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES,",
+    "return { metaButton, toggleMetaMenu, closeMetaMenu, loadModelChoices, CODEX_MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES, settingRefused, metaPending,",
     "  get menu() { return metaMenuEl; }, set active(id) { activeId = id; }, get error() { return CODEX_MODELS_ERROR; } };",
   ].join("\n"));
   const stub = fetchStub();
   const sessions = new Map<string, any>();
+  const filed: Array<[string, string, string]> = [];
+  const toasts: string[] = [];
+  let repaints = 0;
   const fn = new Function("document", "window", "kernelUrl", "fetch", "adoptCommentDefaults", "sessions",
     "openCommentThread", "threadMetaStatus", "metaCurrent", "metaPending", "vscodeApi",
-    "modeIconSvg", "riskyMode", "nonClassicChoiceTone", "setTip", "liveSession", js);
+    "modeIconSvg", "riskyMode", "nonClassicChoiceTone", "setTip", "pruneTip", "liveSession",
+    "pendingFlags", "dropPendingFlag", "notifyShell", "warnToast", "updateStatusline", js);
   const api = fn(doc, win, (p: string) => p, stub.fetch, () => {}, sessions,
     () => (opts.thread ? { th: opts.thread.th } : null),
     () => { if (!opts.thread) throw new Error("no thread here"); return opts.thread.status; },
-    () => "", new Map(), null, () => "", () => false, () => undefined, () => {},
-    (id: string) => sessions.get(id));
-  return { api, sessions, body: BODY, win, pending: stub.pending, failing: stub.failing, rectReads };
+    () => "", new Map(), opts.vscodeApi ?? null, () => "", () => false, () => undefined, () => {}, () => {},   // setTip, pruneTip (closeMetaMenu/closeSub drop a row's tip with the menu, 2026-09-17)
+    (id: string) => sessions.get(id),
+    new Map(), () => {}, (kind: string, text: string, sid: string) => { filed.push([kind, text, sid]); }, (t: string) => { toasts.push(t); }, () => { repaints++; });
+  return { api, sessions, body: BODY, win, pending: stub.pending, failing: stub.failing, rectReads, filed, toasts, repaints: () => repaints };
 }
 const SID = "11111111-2222-4333-8444-555555555555";
 const CODEX_READY = { state: "ready", sinceEpoch: null, backend: "codex", model: "gpt-5-test", effort: "medium" };
@@ -642,6 +663,38 @@ test("executed: a menu closed before the read lands stays closed, and a failure 
 // current effort.
 const LADDER = ["low", "medium", "high", "xhigh", "max", "ultracode"];   // the wire order: the kernel's EFFORT_CHOICES
 const effortRows = (values: string[]) => values.map((v, i) => ({ value: v, label: v, color: [i, i, i] }));
+test("executed: chat and timeline select only the current model's advertised efforts", async () => {
+  const models = [
+    { value: "gpt-5-test", model: "gpt-test-web", label: "Web", isDefault: true,
+      efforts: effortRows(["low", "ultra", "future-level"]) },
+    { value: "gpt-test-api", label: "API", efforts: effortRows(["minimal", "high"]) },
+    { value: "gpt-test-none", label: "Tests", efforts: [] },
+  ];
+  const payload = { rev: 3, models: [], efforts: [], codex: { models, efforts: effortRows(["wrong-model"]), error: null } };
+  const { api, sessions, body, pending } = liftMenu();
+  sessions.set(SID, { status: { ...CODEX_READY } }); api.active = SID;
+  api.loadModelChoices(); pending[0](payload); await tick(); await tick();
+  const sl = statusline(api, 700, 760); body.appendChild(sl.sl);
+  api.toggleMetaMenu("effort", sl.effortBtn, null);
+  assert.deepEqual(rows(api.menu), ["future-level", "ultra", "low"]);
+  api.closeMetaMenu(); sessions.get(SID).status.model = "gpt-test-api";
+  api.toggleMetaMenu("effort", sl.effortBtn, null);
+  assert.deepEqual(rows(api.menu), ["high", "minimal"], "a model change changes the effort choices");
+
+  const view = requireCjs(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  const savedFetch = (globalThis as any).fetch;
+  (globalThis as any).fetch = async () => ({ json: async () => payload });
+  try {
+    await view.loadModelChoices();
+    for (const model of ["gpt-5-test", "gpt-test-web", ""]) {
+      assert.deepEqual(view.codexEffortChoices(model).map((c: any) => c.value), ["future-level", "ultra", "low"]);
+    }
+    assert.deepEqual(view.codexEffortChoices("gpt-test-api").map((c: any) => c.value), ["high", "minimal"]);
+    assert.deepEqual(view.codexEffortChoices("gpt-test-none"), []);
+    assert.deepEqual(view.codexEffortChoices("gpt-unknown"), []);
+  } finally { (globalThis as any).fetch = savedFetch; }
+});
+
 test("executed: the effort menu lists efforts highest first, colours riding their rows and the ✓ on the current one", async () => {
   // an SDK session on high
   {
@@ -694,4 +747,130 @@ test("executed: the timeline's loader fills its effort arrays highest first, and
   }
   // the menu takes the array's order: no sort and no second reversal between the loader and the rows
   assert.match(TIMELINE, /: \(kind === 'model' \? MODEL_CHOICES : EFFORT_CHOICES\);\n\s+for \(const c of choices\) \{/);
+});
+
+// A Codex lane's picker with no list opened BLANK: codexEffortChoices answers [] for a model whose catalog
+// entry lists no levels, for one the catalog does not know, and for an empty catalog (the app-server client
+// down at the last /models read), and the row loop drew nothing, with no word why. The lane menu now carries
+// the chat's reason row: the head names the missing list, the sub-line the kernel's `codex.error` (read from
+// the payload into CODEX_MODELS_ERROR, as render.ts reads it), else that this model advertises no levels.
+// EXECUTED over the real module: _openMetaMenu driven on a prototype instance, with a small stand-in for
+// what it touches of the DOM (Obsidian's createDiv/createSpan, a rect, a style bag, a dataset).
+test("executed: a Codex lane menu with no choices carries one non-interactive row naming the reason", async () => {
+  const view = requireCjs(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  const makeNode = (tag: string): any => {
+    const n: any = {
+      tag, children: [] as any[], attrs: {} as Record<string, string>, style: {} as Record<string, string>,
+      dataset: {} as Record<string, string>, listeners: {} as Record<string, number>, text: "", parent: null as any,
+      setAttribute(k: string, v: string) { n.attrs[k] = v; },
+      addEventListener(t: string) { n.listeners[t] = (n.listeners[t] || 0) + 1; },
+      appendChild(c: any) { c.parent = n; n.children.push(c); return c; },
+      remove() { if (n.parent) n.parent.children.splice(n.parent.children.indexOf(n), 1); n.parent = null; },
+      getBoundingClientRect() { return { left: 40, top: 100, right: 120, bottom: 116, width: 80, height: 16 }; },
+      createEl(t: string, o?: any) { const e = makeNode(t); if (o && o.text) e.text = o.text; n.appendChild(e); return e; },
+      createDiv(o?: any) { return n.createEl("div", o); }, createSpan(o?: any) { return n.createEl("span", o); },
+    };
+    return n;
+  };
+  const textOf = (n: any): string => n.text + n.children.map(textOf).join("");
+  const g = globalThis as any;
+  const saved = { fetch: g.fetch, document: g.document, window: g.window };
+  const pending: Array<(d: any) => void> = [];
+  g.fetch = () => new Promise<any>((res) => pending.push((d: any) => res({ ok: true, status: 200, json: async () => d })));
+  g.window = { innerWidth: 1000, innerHeight: 800 };
+  // a lane menu opened on a live Codex lane whose model is `model`; the panel is the prototype's methods over
+  // the few fields _openMetaMenu reads
+  const open = (kind: string, model: string): any => {
+    g.document = { body: makeNode("body") };
+    const panel: any = Object.create(view.TimelinePanel.prototype);
+    Object.assign(panel, { _metaMenu: null, _metaPending: {}, _tipWin: null, _sendCommand: () => {}, draw: () => {} });
+    panel._openMetaMenu(kind, { id: SID, name: "web", backend: "codex", model, effort: "", state: "ready", live: true }, makeNode("span"));
+    return panel._metaMenu;
+  };
+  assert.match(TIMELINE, /let CODEX_MODELS_ERROR = '';/);
+  assert.match(TIMELINE, /if \(d\.codex\) CODEX_MODELS_ERROR = typeof d\.codex\.error === 'string' \? d\.codex\.error : '';/);
+  try {
+    // the catalog unavailable: the kernel's reason, verbatim, under the head that names the list
+    let p = view.loadModelChoices();
+    pending[0]({ rev: 3, models: [], efforts: [], codex: { models: [], efforts: [], error: REASON } });
+    await p;
+    assert.equal(view.codexModelsError(), REASON, "the payload's codex.error is read");
+    let menu = open("effort", "gpt-5-test");
+    assert.equal(menu.children.length, 1, "one row");
+    const row = menu.children[0];
+    assert.deepEqual(row.children.map(textOf), ["No effort list from Codex", REASON]);
+    assert.equal(row.attrs.tabindex, undefined, "takes no focus");
+    assert.deepEqual(row.listeners, {}, "answers no click, hover or key");
+    assert.match(row.attrs.style, /cursor:default/);
+    assert.match(row.children[1].attrs.style, /font-size:0\.82em;opacity:0\.6;/, "the menu's sub-line style");
+    menu = open("model", "gpt-5-test");
+    assert.deepEqual(menu.children[0].children.map(textOf), ["No model list from Codex", REASON]);
+    // the catalog read, but this model advertises no levels (or is not in it): no kernel reason to show
+    p = view.loadModelChoices();
+    pending[1]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-test-none", label: "Tests", isDefault: true, efforts: [] }], efforts: [], error: null } });
+    await p;
+    assert.equal(view.codexModelsError(), "", "a null error clears the held reason");
+    menu = open("effort", "gpt-test-none");
+    assert.deepEqual(menu.children[0].children.map(textOf), ["No effort list from Codex", "no effort levels from Codex for this model"]);
+    menu = open("effort", "gpt-unknown");
+    assert.deepEqual(menu.children[0].children.map(textOf), ["No effort list from Codex", "no effort levels from Codex for this model"]);
+    // a model with levels draws its rows, every one a choice, and no reason row among them
+    p = view.loadModelChoices();
+    pending[2]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-5-test", label: "GPT-5 Test", isDefault: true, efforts: effortRows(["low", "high"]) }], efforts: [], error: null } });
+    await p;
+    menu = open("effort", "gpt-5-test");
+    assert.deepEqual(menu.children.map(textOf), ["high", "low"]);
+    assert.ok(menu.children.every((r: any) => r.attrs.tabindex === "0"), "every row is a choice");
+  } finally {
+    g.fetch = saved.fetch; g.document = saved.document; g.window = saved.window;
+  }
+});
+
+// A refused pick's dots end on the kernel's answer: a Codex session's setEffort op for a level the model's catalog
+// does not list (and a setFast op the backend will not take) is answered with the timeline's settingRefused shape
+// (gesture command, the sid, the kind as flag, the reason as text), and render.ts's arm for that frame deletes the
+// pick's metaPending entry and repaints the active line, so the badge's dots end when the kernel answers, not on
+// pickValue's 20 s timer; the reason toasts and is filed under the bell's refused kind, as every refusal is.
+// EXECUTED: the pick through the real menu (a bridge stub takes the op), then the real arm fed the frame; another
+// session's refusal and a flag refusal leave the mark alone.
+test("executed: a refused effort pick's dots end on the settingRefused frame, not on the timer", async () => {
+  const OTHER = "11111111-2222-4333-8444-666666666666";
+  const posted: any[] = [];
+  const { api, sessions, body, pending, filed, toasts, repaints } = liftMenu({ vscodeApi: { postMessage: (op: any) => posted.push(op) } });
+  sessions.set(SID, { status: { ...CODEX_READY } }); api.active = SID;
+  api.loadModelChoices();
+  pending[0]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-5-test", label: "GPT-5 Test", isDefault: true, efforts: effortRows(["low", "medium", "high"]) }], efforts: [], error: null } });
+  await tick(); await tick();
+  const sl = statusline(api, 700, 760); body.appendChild(sl.sl);
+  api.toggleMetaMenu("effort", sl.effortBtn, null);
+  const high = (api.menu as FakeEl).querySelectorAll(".meta-item").find((r) => r.textContent === "high")!;
+  high.listeners.click[0]({ stopPropagation() {} });
+  assert.deepEqual(posted, [{ type: "setEffort", id: SID, value: "high" }], "the pick posts the op");
+  assert.ok(api.metaPending.has(`${SID}:effort`), "and arms the local loader");
+  assert.ok(sl.effortBtn.classes().includes("meta-pending"), "the badge wears it");
+  assert.equal(api.menu, null, "the menu closed on the pick");
+  const WHY = "Couldn't set effort 'high': this model's Codex catalog does not offer it.";
+  // another session's refusal leaves this pick's mark, and so does a flag refusal for this session
+  api.settingRefused({ type: "settingRefused", gesture: "command", sid: OTHER, flag: "effort", text: WHY });
+  api.settingRefused({ type: "settingRefused", gesture: "flag", sid: SID, flag: "notify", value: false, text: "couldn't save that setting" });
+  assert.ok(api.metaPending.has(`${SID}:effort`), "a refusal that is not this pick's leaves its loader");
+  assert.equal(repaints(), 0, "and repaints nothing here");
+  // the refusal of THIS pick
+  api.settingRefused({ type: "settingRefused", gesture: "command", sid: SID, flag: "effort", text: WHY });
+  assert.equal(api.metaPending.has(`${SID}:effort`), false, "the mark is gone on the frame");
+  assert.equal(repaints(), 1, "and the active line repaints on it: the kernel's state did not change, so no push follows");
+  assert.deepEqual(toasts, [WHY, "couldn't save that setting", WHY], "every refusal toasts its reason");
+  assert.deepEqual(filed[2], ["refused", WHY, SID], "and is filed under the bell's refused kind, naming the session");
+  // the fast twin rides the same arm: the frame's flag names the kind
+  api.metaPending.set(`${SID}:fast`, { was: "", until: Date.now() + 20_000 });
+  api.settingRefused({ type: "settingRefused", gesture: "command", sid: SID, flag: "fast", text: "Couldn't toggle fast mode." });
+  assert.equal(api.metaPending.has(`${SID}:fast`), false);
+  assert.equal(repaints(), 2);
+  // a frame with no flag (the shape the timeline's HTTP road builds for a refused /compact; the kernel sends none to
+  // this page) deletes no pick's mark, repaints nothing and still toasts
+  api.metaPending.set(`${SID}:effort`, { was: "medium", until: Date.now() + 20_000 });
+  api.settingRefused({ type: "settingRefused", gesture: "command", sid: SID, flag: "", text: "Couldn't compact." });
+  assert.ok(api.metaPending.has(`${SID}:effort`), "no kind named: no mark touched");
+  assert.equal(repaints(), 2, "no kind named: no repaint either, the frame only toasts");
+  assert.equal(toasts.length, 5);
 });

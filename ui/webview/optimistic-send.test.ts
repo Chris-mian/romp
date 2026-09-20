@@ -115,7 +115,7 @@ test("an optimistic echo is a kernel-invisible QUEUED event at the tail — neve
 });
 
 test("nothing known-queued → a bare group wearing the honest 'sending…' header", () => {
-  assert.match(RENDER, /s\.events\.push\(\{ kind: "queued", bare: true, texts: inject\.map\(mk\), uuid: OPT_PREFIX \+ inject\[0\]\.ts,/,
+  assert.match(RENDER, /s\.events\.push\(\{ kind: "queued", bare: true, texts, uuid: OPT_PREFIX \+ inject\[0\]\.ts,/,
     "ONE bare group at the tail, the sends in send order (T252d: where the model reads them)");
   // "N queued messages" stays unclaimable pre-confirmation — but NO label was the user's 2026-08-30
   // bug (a mid-compaction send sat unlabeled and uncuttable): the bare group now states exactly what
@@ -123,7 +123,7 @@ test("nothing known-queued → a bare group wearing the honest 'sending…' head
   assert.match(RENDER, /label\.dataset\.bare = "1";/);
   // the wording is the pure helper's (send-pending.ts bareGroupLabel, per-bubble since 2026-09-06), and
   // the render feeds it the bubbles' own states
-  assert.match(RENDER, /fillBareLabel\(label, nLost, texts\.length - nLost\);/);
+  assert.match(RENDER, /fillBareLabel\(label, nLost, texts\.length - nLost - nHanded, nHanded\);/);
   assert.deepEqual(bareGroupLabel(0, 1).parts.map((p) => p.text), ["sending…"]);
   assert.deepEqual(bareGroupLabel(0, 2).parts.map((p) => p.text), ["sending 2…"]);
   assert.match(RENDER, /if \(label\.dataset\.bare === "1"\) \{/, "reflow keeps the bare vocabulary");

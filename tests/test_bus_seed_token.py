@@ -116,7 +116,7 @@ class _Harness(unittest.TestCase):
     """Two fakes on loopback (bus, peer /version), the kernel's remote polls stubbed, one supervisor pass on
     demand. Every module seam is restored on the way out."""
     STUBS = ("_port_open", "_poll_remote_sessions", "_poll_remote_version", "_poll_remote_usage",
-             "_poll_remote_views", "_maybe_auto_push", "_adopt_peer_settings", "_pending_tag_rows",
+             "_poll_remote_views", "_maybe_auto_push", "_propose_peer_settings", "_pending_tag_rows",
              "_pr_watch_tick", "_watch_tick", "_conserve_tick", "_primary_addr", "_tunnel_wake", "BUS_PORT")
 
     def setUp(self):
@@ -137,7 +137,7 @@ class _Harness(unittest.TestCase):
         km._poll_remote_usage = lambda r: None
         km._poll_remote_views = lambda r: None
         km._maybe_auto_push = lambda r: None
-        km._adopt_peer_settings = lambda host, rver: None
+        km._propose_peer_settings = lambda host, rver: None
         km._pending_tag_rows = lambda: []
         km._pr_watch_tick = km._watch_tick = km._conserve_tick = lambda now: None
         km._primary_addr = lambda: "10.0.0.1"

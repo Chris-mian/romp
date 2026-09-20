@@ -677,6 +677,13 @@ body.theme-light .tab-widgets-gear:hover { color: var(--fg); background: rgba(0,
 .tab-ph-swirl { width: 12px; height: 12px; border-radius: 2px; flex: none;
   animation: tab-ph-swirl-spin 7s linear infinite; }   /* .tab is flex with its own gap, so no margin needed */
 @keyframes tab-ph-swirl-spin { to { transform: rotate(-360deg); } }
+/* the swirl rides the status dot's SLOT while a tab loads (plans/tab-placeholder-width.md, the user 2026-09-19): the slot
+   keeps the dot's 7 px box, the swirl paints over it centred at its 12 px, absolutely positioned, so the loading tab is as
+   wide as the loaded one; the slot's own grey ring hides under the swirl. One glyph in both themes. */
+.tab-dot.loading { position: relative; background: transparent; box-shadow: none; overflow: visible; }
+.tab-dot.loading .tab-ph-swirl { position: absolute; left: 50%; top: 50%; margin: -6px 0 0 -6px; }
+/* the loading tab's end spacer: the close glyph's metrics (.tab-close: 1.1em, 0 2px), invisible, never a control */
+.tab-ph-end { visibility: hidden; font-size: 1.1em; line-height: 1; padding: 0 2px; }
 /* the host-down foot's swirl, after "Reconnecting": present only while a dial to the host is in flight as of
    the last /tunnels poll (render.ts syncHostOfflineFoot), so the spin follows the state; the same motif as the
    placeholder tab's. A flex item of the head right after the gist (the postal delivery icon's convention), so an
@@ -1056,6 +1063,28 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 #bg-tasks { flex: 0 0 auto; min-height: 0; max-height: min(50vh, 340px); overflow: hidden;
   box-sizing: border-box; margin: 8px 10px 6px; border: 1px solid var(--box-border); border-radius: 8px;
   background: var(--box-bg); display: flex; flex-direction: column; }
+/* The APPROVAL BOX (#notices, 2026-09-19): the active session's decisions only the user can make (a held peer message's
+   Approve and Deny), ABOVE the background box in the same chrome, its left edge in the ask ring's yellow; one row per
+   notice: the title, the message text (clamped, the whole text on hover), the buttons; a Deny opens the note inline. */
+#notices { flex: 0 0 auto; min-height: 0; max-height: min(40vh, 280px); overflow: auto; box-sizing: border-box; margin: 8px 10px 0;
+  border: 1px solid var(--box-border); border-left: 3px solid var(--st-working-bg); border-radius: 8px; background: var(--box-bg);
+  display: flex; flex-direction: column; }
+.ntc-row { padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+.ntc-row + .ntc-row { border-top: 1px solid var(--box-border); }
+.ntc-title { font-weight: 600; font-size: 0.92em; }
+.ntc-body { font-size: 0.86em; opacity: 0.85; white-space: pre-wrap; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+.ntc-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ntc-btn { font: inherit; font-size: 0.86em; cursor: pointer; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--box-border); background: transparent; color: var(--fg); }
+.ntc-btn:disabled { opacity: 0.55; cursor: default; }
+.ntc-btn.ntc-ok { color: var(--accent); border-color: rgba(156, 210, 255, 0.6); }
+.ntc-btn.ntc-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+.ntc-btn.ntc-deny { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
+.ntc-btn.ntc-deny:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
+.ntc-btn.ntc-back { border-color: transparent; opacity: 0.7; }
+.ntc-note { font: inherit; font-size: 0.86em; min-height: 44px; resize: vertical; border: 1px solid var(--box-border); border-radius: 6px; background: transparent; color: var(--fg); padding: 4px 6px; }
+.ntc-err { font-size: 0.82em; color: #e5484d; }
+.ntc-attach .fask-nimg { display: block; max-width: 100%; max-height: 160px; border-radius: 6px; }   /* the pinned picture, the feed card's face */
+.ntc-attach .fask-nfile { font-size: 0.86em; opacity: 0.85; }
 /* level 1: the header BAR at the top of the box ("Awaiting 3 · 2 agents · 1 command" idle, "In the background ·
    2 agents · 1 command" working — 2026-09-06). No own border/radius — the box provides them; a bottom border
    appears when expanded, separating it from the list below. */
@@ -1719,6 +1748,15 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   width: 13px; height: 13px; font-size: 9px; font-weight: 900;
   display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
+/* the REQUESTED model while an automatic fallback answers instead (the user 2026-09-17): the same ✓ geometry in the
+   working-state yellow (a status, not the accent), so the picker shows both the model that answers (blue ✓) and the one
+   romp keeps asking for; the row's title says why and whether it is retrying */
+.meta-item.requested::after {
+  content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  background: var(--st-working-bg, #e0b020); color: var(--st-working-fg, #332600); border-radius: 50%;
+  width: 13px; height: 13px; font-size: 9px; font-weight: 900;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
 /* context "battery": a bar that FILLS with the context-used %, recolors as it
    fills (green → amber → red), with the % written inside it. Clickable: /compact. */
 .ctx-bar {
@@ -2217,6 +2255,11 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .turn.echo .echo-bubble { border-width: 1px; border-style: dashed; border-color: color-mix(in srgb, var(--you) 65%, transparent); opacity: 0.85; }   /* the width
    named too (T403): `border-style` alone inherits whatever width the bubble's own rules left, `medium` after a `border: none` */
 .turn.echo .user-bubble.cmd-row.echo-bubble { opacity: 1; }   /* the queued bubble's fade is in its colours (T337), not an opacity */
+/* a pending send the session has TAKEN (send-pending.ts `handed`, 2026-09-19): the same bubble with its dashes closed into a quiet
+   solid edge, and its label part in the accent — the message is no longer romp's to recall; it waits inside the session for the
+   running step to finish. Dashes stay the mark of "still ours" (queued, sending…). */
+.queued-bubble.handed { border-style: solid; border-color: color-mix(in srgb, var(--you) 40%, transparent); }
+.queued-count .handed { color: var(--accent); }
 /* the CHIP inside a provisional bubble (a queued /compact, the echo of one) wears the bubble's own tokens (T403 round two): the
    default chip's white text on a 24% black pill composited to 2.3:1 over the light provisional wash, the landed row's blue-on-ground
    chip to 4.3:1 there; --prov-ink on a 16% --you tint reads above 4.5:1 on both themes' washes, the dashed edge in the bubble's token */
@@ -2722,6 +2765,12 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    the plain box shows, never a transparent card (T337c). */
 .turn-postal-service.postal-service-in .notice:not(.notice-slim) {
   background: oklch(from var(--notice-rail, var(--box-bg)) var(--postal-wash-l, 0.263) var(--postal-wash-c, 0.03) h); }
+/* an OUTGOING mail box wears the NEUTRAL box border, never the recipient's identity colour (the user 2026-09-19: the
+   2px identity border-left read as an extra bracket-shaped stroke at the box's left, beside the session's own gutter
+   rail). The identity lives in the head chips (T390) and the gutter rail; the sent box carries only its own border and
+   content. Incoming cards keep the peer-colour rail + tint by design; the provisional queued-bubble keeps its dashed edge. */
+.turn-postal-service.postal-service-out .notice:not(.notice-slim):not(.queued-bubble) {
+  border-left-color: var(--box-border); border-left-width: 1px; }
 /* the postal meta never shrinks, and it GROWS to the head's right edge: it holds the kind word and, after it, the
    delivery icon (margin-left auto inside it), so the icon sits at the edge as before and, when a phone-width head
    wraps, the kind word and the icon move to the next line as ONE unit (T313) */
@@ -2891,13 +2940,13 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
 .diff-hunk { margin-top: 2px; }
 
 /* ---------- markdown ---------- */
-.md { overflow-wrap: anywhere; } /* wrap long unbreakable strings (tokens/base64/urls) */
+.md { overflow-wrap: anywhere; line-height: round(1.6em, 1px); } /* wrap long unbreakable strings (tokens/base64/urls); a WHOLE css px line-height (so whole device px at 1x and 2x), not the inherited unitless 1.6 which is 20.8px at 13px and straddles device rows at 2x, doubling alternate lines; scoped to the message body (not body/tabs) and round() rederives per --fs so it still scales */
 /* the assistant's replies read in the PROSE face (— the user's own bubbles stay in the UI face:
    the claude.ai reading split). Dark: --font-prose = --sans, so nothing changes there. */
 .assistant { font-family: var(--font-prose); }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
-.md p { margin: 0.5em 0; }
+.md p { margin: round(0.5em, 1px) 0; }   /* a WHOLE css px (0.5em is 6.5px at 13px, which lands alternate paragraphs on a half px and straddles a device row at 1x); round() keeps it scaling with --fs */
 .md h1, .md h2, .md h3, .md h4 { font-weight: 600; color: var(--vscode-foreground, #fff); margin: 1em 0 0.4em; line-height: 1.3; }
 .md h1 { font-size: 1.3em; } .md h2 { font-size: 1.15em; } .md h3 { font-size: 1.05em; }
 .md ul, .md ol { margin: 0.4em 0; padding-left: 1.4em; }
@@ -4534,6 +4583,7 @@ body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }               
 body.dense-chrome .tab-group-sep:not(.tab-group-break) { padding: 6px 6px; }            /* 8px 6px */
 /* the panel: the rows shrink; the header keeps its 12px, it is the panel's title */
 body.dense-chrome #bg-tasks { margin: 4px 10px 4px; }                                   /* 8px 10px 6px */
+body.dense-chrome #notices { margin: 4px 10px 0; }                                      /* 8px 10px 0 */
 body.dense-chrome .bg-fold-head { padding: 5px 11px; }                                  /* 7px 11px */
 /* the cap: about four rows while no row's details are open, the inner scroll .bg-list already has taking the rest.
    Four 24px rows (3px + the 18px arrow + 3px; a row without the arrow is about 20px) plus the list's 4px of padding.

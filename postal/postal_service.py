@@ -78,6 +78,11 @@ MAILHELD = STATE / "mail-held"         # <sid>: one message id per line, claimed
 WARNED = STATE / "warned-undelivered"  # marker per msg-id we've already warned a sender is STILL UNDELIVERED (one-time)
 LOG = STATE / "server.log"
 PIDFILE = STATE / "server.pid"
+PORTFILE = STATE / "postal-port"        # {"port", "pid"}: the port this bus BOUND, written after the bind and removed on a clean
+#                                          exit under the pid it names (the kernel's serve-port pattern), so the kernel's loopback
+#                                          dials read the bus's own answer ahead of the environment (2026-09-18: a kernel and a bus
+#                                          that read ROMP_POSTAL_PORT from different environments dialed different ports, and a
+#                                          held message's approve reached a bus that never held it, refused as "no held message")
 NAMES_DIR = Path(os.environ.get("ROMP_STATE_DIR")
                  or Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "romp") / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
@@ -1288,7 +1293,8 @@ def _agent_rows(sessions):
         row = {"name": s.get("name") or sid[:8], "id": sid, "remote": False,
                "working": s.get("working", ""), "dir": s.get("dir", ""),
                "lastSid": s.get("lastSid", ""),   # the session's CURRENT transcript fsid (self-identity join)
-               "state": s.get("state", "")}   # state: working/idle/waiting/... → working-note freshness
+               "state": s.get("state", ""),   # state: working/idle/waiting/... → working-note freshness
+               "backend": s.get("backend", "")}   # sdk | codex: _push words the banner's reply hint by it (2026-09-19)
         if s.get("thread"):
             row["thread"] = True
             row["parent"] = s.get("parent") or ""
@@ -2367,7 +2373,10 @@ def _hhmm(iso):
         return iso[11:16]
     return datetime.now().astimezone().strftime("%H:%M")
 
-def format_push(msgs):
+def format_push(msgs, reply_tool=False):
+    """The banner a wake delivers. `reply_tool` names the send_message TOOL in the reply hint instead of the shell
+    command (2026-09-19): a Codex session mails through kernel-serviced tool calls, and `romp mail send` inside its
+    sandbox is refused by design (the hint used to send Codex threads chasing an out-of-sandbox escalation)."""
     bar = PUSH_SENTINEL
     out = []
     for m in msgs:
@@ -2379,18 +2388,22 @@ def format_push(msgs):
         if m.get("kind"):
             out.append("<!-- romp-msg-kind: %s -->" % m["kind"])   # sender-declared kind, read by the courier
         out.append(bar)
-    out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
-               % msgs[0].get("from", ""))
+    if reply_tool:
+        out.append("(to reply, only if substantive: the send_message tool, kind delegate|coordinate|question, to %s)"
+                   % msgs[0].get("from", ""))
+    else:
+        out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
+                   % msgs[0].get("from", ""))
     return "\n".join(out)
 
-def _deliver_body_bytes(sid, msgs):
+def _deliver_body_bytes(sid, msgs, reply_tool=False):
     """The exact wire size of the /deliver POST carrying `msgs`: the banner in its JSON envelope,
     serialized as _kernel_post serializes it (ensure_ascii on, so non-ASCII text and every newline
     inflate past the banner's own length)."""
-    return len(json.dumps({"id": sid, "text": format_push(msgs)}).encode("utf-8"))
+    return len(json.dumps({"id": sid, "text": format_push(msgs, reply_tool)}).encode("utf-8"))
 
 
-def _push_chunks(sid, msgs):
+def _push_chunks(sid, msgs, reply_tool=False):
     """Split a recipient's pending mail into /deliver bodies that fit under _PUSH_MAX_BYTES, oldest
     first -> (chunks, oversize). Each chunk is a non-empty run of consecutive messages whose whole body
     fits; `oversize` are the messages whose body ALONE does not, which no chunk can carry. The banner
@@ -2398,13 +2411,13 @@ def _push_chunks(sid, msgs):
     refused, and the refusal re-posted on every retry pass."""
     chunks, cur, oversize = [], [], []
     for m in msgs:
-        if cur and _deliver_body_bytes(sid, cur + [m]) <= _PUSH_MAX_BYTES:
+        if cur and _deliver_body_bytes(sid, cur + [m], reply_tool) <= _PUSH_MAX_BYTES:
             cur.append(m)
             continue
         if cur:
             chunks.append(cur)
             cur = []
-        if _deliver_body_bytes(sid, [m]) <= _PUSH_MAX_BYTES:
+        if _deliver_body_bytes(sid, [m], reply_tool) <= _PUSH_MAX_BYTES:
             cur = [m]
         else:
             oversize.append(m)
@@ -2417,7 +2430,7 @@ _OVERSIZE_NAMED = set()   # mids of oversize mail already named in the log: a me
 #                           is re-claimed by every retry pass, and one line per message is the record
 
 
-def _bounce_oversize(sid, m):
+def _bounce_oversize(sid, m, reply_tool=False):
     """One message whose /deliver body alone exceeds _PUSH_MAX_BYTES: it can never ride the live wake
     (the kernel refuses the body before reading it), so it is not posted, and never was going to land
     however often the retry pass re-posted it. A LOCAL sender hears it, the way a peer's refusal reaches
@@ -2428,8 +2441,11 @@ def _bounce_oversize(sid, m):
     `ext:<label>` id names no mailbox: _safe_id has no ':', so deliver() to it raises ValueError, which
     before 2026-09-10 escaped into _push's catch-all and stranded in cur/ every message the drain had
     claimed) stays in new/ for the turn-end drain and check_inbox, which have no size cap, and is named
-    in the log once."""
-    n = _deliver_body_bytes(sid, [m])
+    in the log once. `reply_tool` is the banner _push judged the message with (a Codex recipient's names
+    the send_message tool, 2 wire bytes longer than the shell hint once json.dumps has escaped the hint's
+    quotes), so the note reports the size as delivered to THIS recipient: measured with the shell banner,
+    a bounce to a Codex recipient named a size under the very limit it had crossed (the review, 2026-09-19)."""
+    n = _deliver_body_bytes(sid, [m], reply_tool)
     mid, frm_id = m.get("id", ""), m.get("from_id", "")
     if frm_id and not m.get("from_host") and frm_id != sid and _safe_id(frm_id):
         to = _name_for_id(sid) or sid
@@ -2508,12 +2524,13 @@ def _push(sid, agent):
         msgs = res.get("messages", [])
         if not msgs:
             return False                                      # nothing, or loop-guard paused
-        chunks, oversize = _push_chunks(sid, msgs)
+        reply_tool = agent.get("backend") == "codex"      # a Codex recipient replies through its send_message tool
+        chunks, oversize = _push_chunks(sid, msgs, reply_tool)
         for m in oversize:
-            _bounce_oversize(sid, m)
+            _bounce_oversize(sid, m, reply_tool)
         landed, held, cause = 0, [], ""
         for i, chunk in enumerate(chunks):
-            resp = _kernel_post("/deliver", {"id": sid, "text": format_push(chunk)}, timeout=12)
+            resp = _kernel_post("/deliver", {"id": sid, "text": format_push(chunk, reply_tool)}, timeout=12)
             if resp and resp.get("injected"):
                 landed += len(chunk)
                 continue
@@ -3023,12 +3040,41 @@ class Handler(BaseHTTPRequestHandler):
             mid = str(data.get("mid") or "")       # blocked card via the kernel; approve delivers, deny drops
             action = str(data.get("action") or "").strip().lower()
             text = data.get("text")                # optional human-edited body for approve
-            ok, err = quarantine_decide(mid, action, text, feedback=data.get("feedback"))
+            ok, err = quarantine_decide(mid, action, text, feedback=data.get("feedback"), sid=data.get("sid"))   # sid: the recipient the kernel names (2026-09-18)
             return self._send({"ok": ok} if ok else {"ok": False, "error": err}, 200 if ok else 400)
         if u.path == "/restore":                   # the kernel handing back fed-and-lost mail by id (restore_stranded)
             payload, status = restore_stranded(data)
             return self._send(payload, status)
         self._send({"error": "not found"}, 404)
+
+def _token_mark():
+    """A short mark of THIS bus's serve token (a sha256 prefix, never the token), so a kernel trusts the record only when its own
+    token makes the same mark: a record left by another bus, another state root's world, or a reused pid can never redirect a
+    kernel's dial to a bus that is not its own (2026-09-18)."""
+    try:
+        return hashlib.sha256(str(SERVE_TOKEN or "").encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _write_port_record(port):
+    """Publish the port this bus bound as {"port", "pid", "tok"} (PORTFILE), atomically; best-effort and said when it fails, since
+    a kernel that cannot read the record falls back to the environment and a mismatch there is the fault this removes."""
+    try:
+        _atomic_json_put(PORTFILE, {"port": int(port), "pid": os.getpid(), "tok": _token_mark()})
+    except Exception as e:
+        _log("the port record could not be written (%s); the kernel falls back to ROMP_POSTAL_PORT" % e)
+
+
+def _remove_port_record():
+    """On a clean exit, remove the record when it still names THIS process (a newer bus's record is left standing)."""
+    try:
+        rec = json.loads(PORTFILE.read_text())
+        if int(rec.get("pid") or 0) == os.getpid():
+            PORTFILE.unlink()
+    except Exception:
+        pass
+
 
 def _log(msg):
     try:
@@ -3566,6 +3612,7 @@ def serve():
         PIDFILE.write_text(str(os.getpid()))
     except Exception:
         pass
+    _write_port_record(httpd.server_address[1])
     _log("bus up on %s (pid %d)" % (BASE, os.getpid()))
     boot_fp = _source_fingerprint()                              # so the monitor can reload if the code changes under us
     threading.Thread(target=_monitor, args=(httpd, boot_fp), daemon=True).start()
@@ -3578,6 +3625,7 @@ def serve():
                 PIDFILE.unlink()
         except Exception:
             pass
+        _remove_port_record()
     return 0
 
 # ───────────────────────── client (talks to the bus) ─────────────────────────
@@ -4513,7 +4561,7 @@ def quarantine_del(mid):
     except OSError:
         return False
 
-def quarantine_decide(mid, action, text=None, feedback=None):
+def quarantine_decide(mid, action, text=None, feedback=None, sid=None):
     """Approve (deliver, optionally with human-edited text) or deny (drop) a held message. Returns
     (ok, error). Approve replays the deliver() the gate would have run for a trusted peer, so the
     message lands as normal postal mail (from-attribution intact). The mid was already peer_seen'd at
@@ -4525,6 +4573,13 @@ def quarantine_decide(mid, action, text=None, feedback=None):
     origin host's own trust gate like any inbound mail."""
     rec = quarantine_get(mid)
     if rec is None:
+        if sid:
+            agents, answered = local_agents_checked(threads=True)
+            if answered and not any(str(a.get("id") or "") == str(sid) for a in agents):
+                # the decision names a recipient this bus does not serve: the kernel that asked dialed a bus that is not
+                # its own (a port the two read differently, or a stale legacy forward), so the fault names itself
+                return False, ("this bus holds nothing for session %s, which is not one of this machine's: is the kernel "
+                               "dialing its own bus? (its port record is STATE/postal/postal-port)" % str(sid)[:8])
         return False, "no held message '%s'" % mid
     if action == "deny":
         note = " ".join(str(feedback or "").split())
@@ -5675,7 +5730,8 @@ def cli_send(argv):
             sys.stderr.write("[romp mail] %s\n[romp mail] cannot send: no session identity resolved (the reason "
                              "above). This shell belongs to a Codex session, so the mail is refused, --from included: "
                              "a label would sign a session's mail as a script's and hide the bug. Surface this to the "
-                             "user as a session-identity bug.\n" % why)
+                             "user as a session-identity bug. A Codex session mails through its send_message tool, "
+                             "not this command (inside its sandbox this command is refused by design).\n" % why)
             return 1
     if frm_label:
         me, mid = frm_label, "ext:" + frm_label

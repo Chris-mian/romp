@@ -164,8 +164,8 @@ class Plumbing(unittest.TestCase):
         # the pages that pass it: this one and the settings page (the gear alone, no pushed view either;
         # tests/test_settings_page.py); the pane pages call the shim exactly as they did
         shims = re.findall(r'_shim\("(\w+)", v(?:, ([^)]*))?\)', SRC)
-        self.assertEqual([app for app, kw in shims if "no_stale=True" in (kw or "")], ["files", "settings"])
-        self.assertEqual(sorted(app for app, kw in shims), ["chat", "feed", "files", "fleet", "settings", "timeline"])
+        self.assertEqual([app for app, kw in shims if "no_stale=True" in (kw or "")], ["files", "artifacts", "settings"])   # the Artifacts pane receives no pushed view either (2026-09-19)
+        self.assertEqual(sorted(app for app, kw in shims), ["artifacts", "chat", "feed", "files", "fleet", "settings", "timeline"])
 
     def test_the_editor_chunk_derives_from_the_pages_own_bundle_tag(self):
         # file-view.ts loads its CodeMirror chunk from a URL rewritten off the page's running bundle
@@ -201,8 +201,8 @@ class Shell(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_pane_is_in_the_one_ordering_last(self):
-        self.assertEqual(km._PANE_ORDER[-1], ("files", "Files"))
+    def test_the_pane_is_in_the_one_ordering_second_to_last_before_artifacts(self):
+        self.assertEqual(km._PANE_ORDER[-2], ("files", "Files"))   # the Artifacts pane sits after it since 2026-09-19 (plans/artifacts-pane.md)
         _has(self, "<div class=rail-btn data-pane=files>Files</div>", self.html)
         _has(self, "<button data-pane=files>Files</button>", self.html)
 
@@ -218,7 +218,7 @@ class Shell(unittest.TestCase):
         _has(self, "body:not(.po-files) #gv-c,body:not(.po-chat):not(.po-fleet):not(.po-feed) #gv-c{display:none}", self.html)
 
     def test_off_by_default_and_toggled_by_the_controller(self):
-        _has(self, "<body class='po-chat po-feed po-timeline'>", self.html)   # not po-files
+        _has(self, "<body class='po-chat po-feed po-timeline' data-panes=\"", self.html)   # not po-files
         _has(self, "po={chat:true,fleet:false,feed:true,timeline:true,files:false}", self.html)
         _has(self, "po={chat:false,fleet:false,feed:false,timeline:false,files:false}", self.html)   # the ?panes= reset
         _has(self, "document.body.classList.toggle('po-files',!!po.files)", self.html)
@@ -228,8 +228,8 @@ class Shell(unittest.TestCase):
         _has(self, "'f-files':'files-pane'", km._LANDING_FOCUS_JS)
         _has(self, "var COLS=['f-chat','f-fleet','f-feed','f-files']", km._LANDING_FOCUS_JS)
         # the settings iframe (the gear's document, not a pane) rides the two keyboard lists with the panes
-        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].forEach", km._LANDING_ESC_JS)
-        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].forEach", km._LANDING_MOBILE_JS)
+        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].concat((function(){try{return JSON.parse(document.body.getAttribute('data-panes')||'[]').map(function(p){return 'f-'+p.id;});}catch(e){return [];}})()).forEach", km._LANDING_ESC_JS)   # the hand five and the generic panes' frames (plans/panes-as-data.md)
+        _has(self, "['f-chat','f-fleet','f-feed','f-files','f-timeline','f-settings'].concat((function(){try{return JSON.parse(document.body.getAttribute('data-panes')||'[]').map(function(p){return 'f-'+p.id;});}catch(e){return [];}})()).forEach", km._LANDING_MOBILE_JS)
         # the Log's connection-lost label reads the one map, so the pane's row in _PANE_ORDER is the pin
         _has(self, "var PN=" + json.dumps(dict(km._PANE_ORDER)) + ";", km._LANDING_ERRS_JS)
         self.assertEqual(dict(km._PANE_ORDER).get("files"), "Files")
@@ -380,6 +380,7 @@ const frame = (id) => ({ contentWindow: { postMessage: (m) => POSTED[id].push(JS
   addEventListener: (ev, f) => { if (ev === 'load' && id === 'f-files') FILES_LOADS.push(f); },
   removeEventListener: (ev, f) => { if (id === 'f-files') FILES_LOADS = FILES_LOADS.filter((g) => g !== f); } });
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.addEventListener = (ev, f) => { if (ev === 'message') LISTENERS.push(f); };
 global.__rompPaneToggle = (k, on) => TOGGLES.push([k, on]);
 global.__rompMobileTab = (t) => TABS.push(t);

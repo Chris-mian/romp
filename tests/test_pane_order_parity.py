@@ -40,10 +40,12 @@ class PaneOrderParity(unittest.TestCase):
 
     def test_mobile_tabs_wear_the_desktop_rail_order(self):
         rail, mtabs = self._built()
-        self.assertEqual(_pane_seq(mtabs), _pane_seq(rail),
+        experimental = {p["id"] for p in km._CODE_PANES if p["experimental"]}
+        exp = [k for k in _pane_seq(rail) if k not in experimental]
+        self.assertEqual(_pane_seq(mtabs), exp,
                          "one ordering, not two: #mtabs must list the panes exactly as the "
-                         "desktop rail strip does (change one, both move)")
-        self.assertEqual(len(_pane_seq(rail)), 5, "all five panes present on both surfaces")
+                         "desktop rail strip does (change one, both move), less the experimental records, which have no phone tab")
+        self.assertEqual(len(_pane_seq(rail)), 6, "all six panes present on the rail (the Artifacts pane since 2026-09-19; experimental, so the phone has no tab for it)")
 
     def test_both_surfaces_render_from_the_one_constant(self):
         # the mechanism, not just the outcome: a future hand-edit of either HTML block back to a
@@ -52,10 +54,10 @@ class PaneOrderParity(unittest.TestCase):
         order = [k for k, _ in km._PANE_ORDER]
         rail, mtabs = self._built()
         self.assertEqual(_pane_seq(rail), order)
-        self.assertEqual(_pane_seq(mtabs), order)
+        self.assertEqual(_pane_seq(mtabs), [k for k in order if k not in {p["id"] for p in km._CODE_PANES if p["experimental"]}])
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn("+ _rail_buttons_html() +", src)
-        self.assertIn("+ _mtab_buttons_html() +", src)
+        self.assertIn("+ _rail_buttons_html(panes) +", src)   # the landing lists the registry once and hands the list on (plans/panes-as-data.md)
+        self.assertIn("+ _mtab_buttons_html(panes) +", src)
 
     def test_the_initial_mobile_pane_keys_on_chat_not_position(self):
         _, mtabs = self._built()

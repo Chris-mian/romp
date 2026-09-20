@@ -79,7 +79,9 @@ test("render.ts asks for older history only on an upward move, marks each window
   // a second full ask while one is in flight is dropped before it can overwrite the pending reason (kept for the reconnect's diagnostics:
   // every full frame merges into the held runs since T386 stage 2, so no reason decides a merge or a replace any more)
   const full = RENDER.slice(RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {")));
-  assert.ok(full.indexOf("if (!id || awaitingFull.has(id)) return;") < full.indexOf("pendingFullWhy.set(id, why);"), "a second full ask while one is in flight is dropped before it can overwrite the pending reason");
+  for (const line of ["if (!id) return;", "if (awaitingFull.has(id)) {", "pendingFullWhy.set(id, why);"]) assert.ok(full.includes(line), line + " is in requestFullSession (an absent line would make the order below vacuous)");
+  assert.ok(full.indexOf("if (!id) return;") < full.indexOf("if (awaitingFull.has(id)) {") && full.indexOf("if (awaitingFull.has(id)) {") < full.indexOf("pendingFullWhy.set(id, why);"),
+    "a second full ask while one is in flight is refused (the empty-id guard, then the latched branch, 2026-09-19) before it can overwrite the pending reason");
 });
 
 test("a window ask carries the navigation's time and kind to its reply; the three direct landings (a notch, a reply chip, a comment tick) arm neither (T366)", () => {
@@ -89,10 +91,18 @@ test("a window ask carries the navigation's time and kind to its reply; the thre
   assert.match(RENDER, /cmtjump: \(elx\) => \{[\s\S]*?flashedAnchor = null;\s*\n\s*scrollToAnchor\(uuid\);/, "the comment tick lands directly");
 });
 
+test("the set-aside notice is independent of the reveal-progress guard and carries its own tooltip (2026-09-19 round two)", () => {
+  const i = RENDER.indexOf("function showSetAsideNotice");
+  const fn = RENDER.slice(i, RENDER.indexOf("\n}\n", i));
+  assert.ok(i > 0 && !fn.includes("showLandingNotice("), "showSetAsideNotice does not delegate to showLandingNotice, whose revealProgress guard would silence a set-aside");
+  assert.ok(fn.includes("these earlier messages are no longer part of this session"), "…and carries its own tooltip, not the landing notice's");
+});
+
 test("render.ts tracks the pending needFull reason and lands orphan notes by record uuid", () => {
   const upsert = RENDER.slice(RENDER.indexOf("function upsert(msg: any) {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function upsert(msg: any) {")));
   assert.ok(upsert.includes("pendingFullWhy.delete(msg.id)"), "the reason is consumed by the frame that answers it");
-  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "needFull", id, why \}\);\n  pendingFullWhy\.set\(id, why\);/, "requestFullSession records the reason with the ask");
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(ask\);\n  pendingFullWhy\.set\(id, why\);/, "requestFullSession posts the ask and records the reason");
+  assert.match(RENDER, /const held = heldTailFirstKey\(id\);\n  if \(held\) ask\.heldTailFirst = held;/, "…and the ask carries the held tail key when the page holds a tail run (2026-09-19)");
   assert.match(RENDER, /window\.addEventListener\("romp:wsup", \(\) => pendingFullWhy\.clear\(\)\);/, "…and a new socket forgets the reasons with the asks");
   assert.ok(RENDER.includes('turn.dataset.orphanOf = String((ev as { orphanOf?: string }).orphanOf)'), "an orphan note's turn carries its record uuid");
   assert.equal((RENDER.match(/\.turn\[data-orphan-of="\$\{cssEscape\(uuid\)\}"\]/g) || []).length, 2, "…and both anchor lookups read it");

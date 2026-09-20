@@ -47,7 +47,10 @@ await page.addInitScript(() => {
   window.__feedNotices = []; window.__nad = []; window.__toasts = [];
   document.addEventListener("DOMContentLoaded", () => new MutationObserver(() => { for (const t of document.querySelectorAll(".feed-toast")) { const x = t.textContent || ""; if (x && !window.__toasts.includes(x)) window.__toasts.push(x); } })
     .observe(document.documentElement, { childList: true, subtree: true, characterData: true }));
-  const record = (m) => { if (!m) return; if (m.type === "feed" && Array.isArray(m.asks)) window.__feedNotices.push(m.asks.filter((a) => a && a.notice).map((a) => a.itemId));
+  window.__feedAll = [];
+  const record = (m) => { if (!m) return; if (m.type === "feed" && Array.isArray(m.asks)) { window.__feedNotices.push(m.asks.filter((a) => a && a.notice).map((a) => a.itemId));
+      window.__feedAll.push({ n: m.asks.length, notes: m.asks.filter((a) => a && String(a.itemId || "").startsWith("notice:notes:")).map((a) => a.itemId + "|" + a.column), keys: Object.keys(m).filter((k) => k !== "asks").slice(0, 12) }); }
+    else if (m.type === "feed") window.__feedAll.push({ shape: Object.keys(m).slice(0, 12) });
     if (m.type === "noticeActionDone") window.__nad.push(m); };
   let fed = null;
   Object.defineProperty(window, "__rompFed", { configurable: true, get() { return fed; },
@@ -60,11 +63,15 @@ const cardFacts = (id) => page.evaluate((s) => { const c = document.querySelecto
   const q = (x) => c.querySelector(x); const cs = getComputedStyle(c);
   return { col: c.parentElement && c.parentElement.id, vis: c.offsetHeight > 0 && cs.display !== "none", prod: (q(".fask-nprod") || {}).textContent || "",
     bodyText: (q(".fask-nbody") || {}).textContent || "", bodyStrong: !!q(".fask-nbody strong"), bodyImgs: c.querySelectorAll(".fask-nbody img").length,
+    spinShown: !!q(".fask-awaiting") && getComputedStyle(q(".fask-awaiting")).display !== "none", spinText: (q(".fask-awaiting") || {}).textContent || "",
+    distillShown: !!q(".fask-distill") && getComputedStyle(q(".fask-distill")).display !== "none", faceText: c.textContent || "",
     img: (q(".fask-nimg") || {}).getAttribute ? q(".fask-nimg").getAttribute("src") : null, imgLoaded: q(".fask-nimg") ? (q(".fask-nimg").naturalWidth > 0) : null,
     actions: Array.from(c.querAll ? [] : c.querySelectorAll(".fask-nactions button")).map((b) => ({ label: b.textContent, disabled: b.disabled })),
     title: (q(".fcard-title") || {}).textContent || "" }; }, sel(id));
 await page.goto(cfg.feed);
 await page.waitForFunction(() => (window.__feedNotices || []).length >= 1, null, { timeout: 60000 });   // the first feed frame landed
+const perf = async () => { const r = await page.request.get(cfg.perf, { headers: { "X-Romp-Token": cfg.token } }); const j = await r.json(); return j.judge; };
+const judgeBefore = await perf();
 // (1) a posted notice appears: an informational one under Completed, with the producer, the rendered body, the pinned picture
 const r1 = await post({ id: cfg.sid, key: "figure", title: "A new version of the accuracy figure is ready", producer: "figure",
   body: "Regenerated after the sweep on **tests** finished.\n\n<img src=\"https://evil.example/x.png\">", attachment: cfg.png });
@@ -76,8 +83,13 @@ const first = { post: r1, card: await cardFacts(id1) };
 // the stored action through the one delivery door: the lab session is dormant with no backend to own it, so the kernel
 // REFUSES with its reason, the button re-arms and the reason rides the toast, and the card stays (dismissOnAction needs a
 // success; the success road is tests/test_notice_cards.py Actions, with the delivery door stubbed)
+// the user 2026-09-19: an EMPTY card posted from the command line (a title, no body) has nothing to distill: no "Distilling…"
+const r0 = await post({ id: cfg.sid, key: "bare", title: "An empty card", producer: "cli" });
+const id0 = "notice:" + cfg.sid + ":bare:" + (r0.notice || {}).rev;
+await page.waitForSelector(sel(id0), { state: "attached", timeout: 60000 }).catch(() => {});
+const bare = { post: r0, card: await cardFacts(id0) };
 const r2 = await post({ id: cfg.sid, key: "dropped-sends", title: "1 message you typed before the restart was not re-sent", producer: "dropped-sends", needsYou: true,
-  dismissOnAction: true, actions: [{ label: "Send again", route: "/send", body: { text: "please regenerate the figure" } }] });   // no target in a body: the card's own session receives it
+  dismissOnAction: true, actions: [{ label: "Send again", kind: "send", body: { text: "please regenerate the figure" } }] });   // the action by its KIND (2026-09-19); no target in a body: the card's own session receives it
 const id2 = "notice:" + cfg.sid + ":dropped-sends:" + (r2.notice || {}).rev;
 await page.waitForSelector(sel(id2), { timeout: 60000 }).catch(() => {});
 const second = { card: await cardFacts(id2) };
@@ -128,7 +140,42 @@ await page.waitForFunction(([id, n]) => { const fr = window.__feedNotices || [];
 const expiry = { shown: soonShown, goneAfterBuild: await page.evaluate((id) => { const fr = window.__feedNotices || []; return fr.length > 0 && !fr[fr.length - 1].includes(id); }, id4) };
 // (6) a refused post over the route: a disallowed action route
 const refused = await post({ id: cfg.sid, key: "bad", title: "x", actions: [{ label: "x", route: "/watch", body: {} }] });
-process.stdout.write("RESULT:" + JSON.stringify({ first, second, latched, done2, stillThere, toasts, rearmed, afterClear, undone, revision, expiry, refused, errors, diag }) + "\n");
+// (7) an OWNER-LESS card (the user 2026-09-18): posted with neither id nor name, it heads its column under a Notes header that
+// is plain text (no anchor, no title, no dead class, no click, no revive offer), with no session chip on the card; the reserved
+// word as a NAME is refused like any name no session answers to (round two of PR 1831)
+await page.mouse.move(2, 2);   // the pointer left resting on a card by the roads above holds every payload (the hover-freeze gate): release it
+await page.waitForTimeout(300);
+const r7 = await post({ key: "everyone", title: "Remember the standup moved", body: "to 10:30", producer: "cli" });
+const id7 = "notice:notes:everyone:" + (r7.notice || {}).rev;
+await page.waitForSelector(sel(id7), { state: "attached", timeout: 60000 }).catch(() => {});
+const ownerless = await page.evaluate((s) => {
+  const c = document.querySelector(s);
+  if (!c) return { missing: true, inFrames: (window.__feedNotices || []).filter((f) => f.some((k) => k.startsWith("notice:notes:"))).length, frames: (window.__feedNotices || []).length,
+                   completed: Array.from(document.querySelectorAll("#col-completed-list [data-key]")).map((n) => n.dataset.key).slice(0, 12),
+                   heads: Array.from(document.querySelectorAll(".feed-sess-head")).map((h) => (h.parentNode && h.parentNode.id) + ":" + h.getAttribute("data-fsid")) };
+  const col = c.parentNode; const cards = Array.from(col.children).filter((n) => n.dataset && n.dataset.key && n.dataset.key.startsWith("a:")).map((n) => n.dataset.key);
+  const head = Array.from(col.querySelectorAll(".feed-sess-head")).find((h) => h.getAttribute("data-fsid") === "notes");
+  const nm = head ? head._name : null;
+  // a click on the header's name must open nothing: no dialog, no new Revive button (a dead session's card carries its own
+  // Revive, so the count is compared before and after), and never the closed-session offer's words
+  const revives = () => Array.from(document.querySelectorAll("button, .fbtn")).filter((b) => /revive/i.test(b.textContent || "")).length;
+  const dialogsBefore = document.querySelectorAll("dialog[open], .fmodal, .modal").length; const revBefore = revives();
+  if (nm) nm.click();
+  const dialogsAfter = document.querySelectorAll("dialog[open], .fmodal, .modal").length;
+  const revive = revives() !== revBefore || /is closed, revive it/i.test(document.body.textContent || "");
+  return { col: col.id, cards, chipDisplay: getComputedStyle(c._name || c.querySelector(".fname") || c).display, headFound: !!head, headText: head ? head.textContent : null,
+           nmTag: nm ? nm.tagName : null, nmClass: nm ? nm.className : null, nmTitle: nm ? nm.getAttribute("title") : null, nmDead: nm ? nm.classList.contains("dead") : null,
+           nmClick: nm ? (nm.onclick === null) : null, dialogsBefore, dialogsAfter, reviveOffered: revive, grouped: (JSON.parse(localStorage.getItem("romp:settings") || "{}").grouped !== false) };
+}, sel(id7));
+const byName = await post({ name: "notes", key: "k", title: "t" });
+const judgeAfter = await perf();
+// a card posted onto a board of the user's (card boards phase three, the producer's half): the kernel creates the board on
+// first use, the frame carries its definition, and the pane names the board beside the producer until phase four's view
+const r8 = await post({ id: cfg.sid, key: "figboard", title: "A figure on its own board", producer: "cli", board: "figures", category: "new" });
+const id8 = "notice:" + cfg.sid + ":figboard:" + (r8.notice || {}).rev;
+await page.waitForFunction(() => (window.__feedNotices || []).some((f) => f.some((k) => k.includes(":figboard:"))), null, { timeout: 30000 }).catch(() => {});   // the frame carries the card, the feed shows it not (phase four)
+const onBoard = { post: r8, card: await cardFacts(id8) };
+process.stdout.write("RESULT:" + JSON.stringify({ first, second, latched, done2, stillThere, toasts, rearmed, afterClear, undone, revision, expiry, refused, errors, diag, r7, ownerless, byName, onBoard, bare, judgeBefore, judgeAfter }) + "\n");
 await browser.close();
 """
 
@@ -208,7 +255,7 @@ class NoticeCardsServed(unittest.TestCase):
             cfg = os.path.join(self.lab, "notices.json")
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
-                json.dump({"feed": base + "/feed?token=" + self.token, "notice": base + "/notice", "token": self.token, "sid": SID, "png": self.png}, f)
+                json.dump({"feed": base + "/feed?token=" + self.token, "notice": base + "/notice", "perf": base + "/perf", "token": self.token, "sid": SID, "png": self.png}, f)
             driver = os.path.join(self.lab, "notices.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=400,
@@ -255,6 +302,50 @@ class NoticeCardsServed(unittest.TestCase):
         self.assertFalse(r["afterClear"], "Clear took the card off the board")
         self.assertIsNotNone(r["undone"], "an Undo affordance was offered"); self.assertTrue(r["undone"], "…and it restored the card")
         self.assertEqual(r["revision"], {"rev": 2, "oldBack": False, "newShown": True}, "a revision under the same key shows under a new id though rev 1 was dismissed")
+
+    def test_an_owner_less_card_heads_its_column_under_a_plain_notes_header_with_no_chip_and_the_reserved_name_is_refused(self):
+        r = self._result()
+        self.assertTrue(r["r7"].get("ok"), r["r7"]); self.assertEqual(r["r7"]["notice"]["sid"], "notes", "no id, no name: the reserved home")
+        o = r["ownerless"]
+        self.assertIsNotNone(o, "the owner-less card is on the board")
+        self.assertEqual(o["col"], "col-completed-list")
+        self.assertEqual(o["cards"][0], "a:notice:notes:everyone:%s" % r["r7"]["notice"]["rev"], "first in its column, above the session's cards: %r" % o["cards"])
+        self.assertEqual(o["chipDisplay"], "none", "no session chip on the card")
+        self.assertTrue(o["grouped"], "grouped mode is the default: the run has a header")
+        self.assertTrue(o["headFound"], "the Notes run's header")
+        self.assertIn("Notes", o["headText"] or "")
+        self.assertEqual((o["nmTag"], o["nmClass"], o["nmTitle"], o["nmDead"], o["nmClick"]), ("SPAN", "fname-plain", None, False, True),
+                         "plain text: a span, no title, no dead class, no click handler: %r" % o)
+        self.assertEqual((o["dialogsBefore"], o["dialogsAfter"], o["reviveOffered"]), (0, 0, False), "a click on it opens nothing and offers no revive")
+        self.assertEqual((r["byName"].get("ok"), r["byName"].get("error")), (False, 'no session answers to "notes"'), "the reserved word as a name is refused")
+
+    def test_a_card_posted_onto_a_board_of_yours_is_created_on_first_use_and_named_beside_the_producer(self):
+        # plans/notice-cards.md, "The card command names its board": the post carries board and category; the kernel answers with
+        # the resolved pair and the created word; the pane reads the board's title off the frame's boards beside the producer
+        r = self._result()
+        ob = r["onBoard"]
+        self.assertTrue(ob["post"].get("ok"), ob["post"])
+        self.assertEqual((ob["post"]["notice"]["board"], ob["post"]["notice"]["category"], ob["post"]["notice"].get("created")), ("figures", "new", "board"))
+        self.assertIsNone(ob["card"], "a card on a board of yours is not on the feed: the board's own view shows it (phase four; tests/test_board_view_served.py drives that view)")
+
+    def test_a_command_line_card_wears_no_distilling_placeholder_and_the_judges_never_run_for_it(self):
+        # the user 2026-09-19: an empty card they created has nothing to distill, and creating it from the command line must
+        # trigger no judge calls. The face: no swirl, no "Distilling", no distiller line, on the card with a body and on the
+        # empty one; the judges: the kernel's judge counters read the same before the first post and after the last, and the
+        # judge-usage ledger never appears under the lab's state root
+        r = self._result()
+        for name, c in (("with a body", r["first"]["card"]), ("empty", r["bare"]["card"])):
+            self.assertIsNotNone(c, "the %s card is on the board" % name)
+            self.assertFalse(c["spinShown"], "%s: no swirl: %r" % (name, c["spinText"]))
+            self.assertNotIn("Distilling", c["faceText"], "%s: no Distilling text on the face" % name)
+            self.assertFalse(c["distillShown"], "%s: no distiller line" % name)
+        self.assertEqual(r["bare"]["card"]["bodyText"], "", "an empty body shows nothing")
+        # the kernel's judge counters (/perf's judge field): the WORK counters are unchanged; the loop's own pass count and its timing
+        # sums (passes, passesLost, ms_sum, ms_last, cpu_ms_sum) tick with the clock whether or not any card exists, so they are not the evidence
+        work = lambda d: {k: val for k, val in (d or {}).items() if not any(x in k for x in ("passes", "ms_", "cpu_"))}
+        self.assertEqual(work(r["judgeBefore"]), work(r["judgeAfter"]), "no judge work counter moved across every post of the lab: %r -> %r" % (r["judgeBefore"], r["judgeAfter"]))
+        self.assertEqual((r["judgeAfter"] or {}).get("tierStarts"), 0, "no judge tier ever started on the lab kernel")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "judge-usage.jsonl")), "no judge usage row was written")
 
     def test_an_expired_notice_leaves_at_the_next_build_and_a_disallowed_action_is_refused_at_the_door(self):
         r = self._result()

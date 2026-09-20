@@ -41,6 +41,8 @@ jd = km.jd                                       # the kernel's own judge module
 SID_A = "66666666-7777-8888-9999-aaaaaaaaaaa1"
 SID_B = "66666666-7777-8888-9999-aaaaaaaaaaa2"
 PEER = "66666666-7777-8888-9999-aaaaaaaaaaa3"
+OTHER_A = "66666666-7777-8888-9999-aaaaaaaaaaa4"   # two sessions the built tab is party to no message with
+OTHER_B = "66666666-7777-8888-9999-aaaaaaaaaaa5"
 MID = "1788400000.100_1.TESTHOST"
 
 
@@ -811,10 +813,11 @@ def _dump(m):
 
 
 class PostalGate(unittest.TestCase):
-    """The fold gate keys a tab's sealed postal cards on the values they embed (the log's identity and, per
-    card, its caption and its peer's name and colour), not on the judge generation: a judge pass that
-    moved none of them re-hydrates nothing, a caption change re-hydrates exactly the sealed cards, and the
-    commit hydrates only the raw events new since the seal."""
+    """The fold gate keys a tab's sealed postal cards on the values they embed (this session's postal revision
+    and, per card, its caption and its peer's name and colour), not on the judge generation or the log's
+    identity: a judge pass that moved none of them re-hydrates nothing, mail between two other sessions
+    re-hydrates nothing, a caption change re-hydrates exactly the sealed cards, and the commit hydrates only
+    the raw events new since the seal."""
 
     def setUp(self):
         self.w = World(SID_A)
@@ -973,6 +976,110 @@ class PostalGate(unittest.TestCase):
         self.assertEqual(len(commit_calls), 1, "the commit's hydration carried the new raw event alone")
         km._chat_fold.clear()
         self.assertEqual(_dump(w.build()), _dump(m), "equal to a cold build")
+
+    def test_mail_between_two_other_sessions_verifies_the_sealed_card_without_re_hydrating(self):
+        """The gate keys the sealed cards on this session's postal revision (2026-09-18), not the log's
+        identity: a row between two other sessions moves the log and nothing the card embeds, so the recorded
+        values verify it (a hit); a row addressed to this session re-hydrates once."""
+        w = self.w
+        self.caps[MID] = "api: tests green"
+        w.append(w.turn(0))
+        self._incoming()
+        w.build()
+        w.build()                                                  # the card is sealed and verified
+        raw = km._chat_fold_get(SID_A)["postal_raw"]
+        s0 = self._stats()
+        calls = self._spy()
+        w.postal_log([{"ev": "sent", "id": "1788400000.300_3.TESTHOST", "from_id": OTHER_A, "to_id": OTHER_B,
+                       "body": "unrelated", "kind": "coordinate", "t": w.t}])
+        m = w.build()
+        self.assertEqual((km._chat_postal_stats["gate"] - s0["gate"], km._chat_postal_stats["hit"] - s0["hit"]), (0, 1),
+                         "mail between two other sessions: the recorded values verify the sealed card")
+        self.assertEqual([any(e is raw[0] for e in c) for c in calls], [False],
+                         "the tail pass only: the sealed card was not re-hydrated")
+        self.assertEqual(self._card(m)["summary"], "api: tests green")
+        w.postal_log([{"ev": "sent", "id": "1788400000.400_4.TESTHOST", "from_id": PEER, "to_id": SID_A,
+                       "body": "and the docs", "kind": "coordinate", "t": w.t}])
+        w.build()
+        self.assertEqual((km._chat_postal_stats["gate"] - s0["gate"], km._chat_postal_stats["hit"] - s0["hit"]), (1, 1),
+                         "a record addressed to this session re-hydrates the sealed card once")
+
+
+class PostalSidRevs(unittest.TestCase):
+    """_postal_sid_revs: per session, (n, last_mid, outcomes) over the records addressed to or from it, the
+    outcomes folded by VALUE per record; the records with no recipient under ""; _postal_sid_revs_of serving
+    the memoized index's table by identity; and _chat_postal_rev reading a session's pair (2026-09-18)."""
+
+    @staticmethod
+    def _rec(mid, frm, to, t, **outs):
+        r = {"id": mid, "from": "api", "fromId": frm, "toId": to, "body": "b", "kind": "coordinate", "t": t, "park": False}
+        r.update(outs)
+        return r
+
+    def test_each_key_folds_its_records_and_their_outcome_values(self):
+        idx = {"m1": self._rec("m1", PEER, SID_A, 1),
+               "m2": self._rec("m2", SID_A, PEER, 2),
+               "m3": self._rec("m3", OTHER_A, OTHER_B, 3, read=30),
+               "m4": self._rec("m4", "", "", 4),
+               "m5": self._rec("m5", "", SID_B, 5),             # the bus's own return note: no sender, one recipient
+               "m6": self._rec("m6", SID_B, SID_B, 6)}          # self-addressed: counted once
+        revs = km._postal_sid_revs(idx)
+        self.assertEqual(revs[SID_A], (2, "m2", ()))
+        self.assertEqual(revs[PEER], (2, "m2", ()))
+        self.assertEqual(revs[OTHER_A], (1, "m3", (("m3", 30, None, None, None, None),)))
+        self.assertEqual(revs[OTHER_B], revs[OTHER_A])
+        self.assertEqual(revs[""], (1, "m4", ()), "the bucket holds the records with no recipient alone")
+        self.assertEqual(revs[SID_B], (2, "m6", ()), "a note with no sender keys its recipient; a self-addressed row counts once")
+        self.assertEqual(set(revs), {SID_A, PEER, OTHER_A, OTHER_B, "", SID_B})
+        idx["m2"]["read"] = 20                                    # an outcome landing on this session's own message
+        r2 = km._postal_sid_revs(idx)
+        self.assertEqual(r2[SID_A], (2, "m2", (("m2", 20, None, None, None, None),)))
+        self.assertEqual(r2[PEER], r2[SID_A])
+        self.assertEqual(r2[OTHER_A], revs[OTHER_A], "a third party's entry is untouched")
+        del idx["m2"]["read"]                                     # read then un-read with no build between: the receipt
+        self.assertEqual(km._postal_sid_revs(idx), revs)         # is back where it was, and so is the revision
+        idx["m2"]["read"] = 25                                    # read again at another time: the card renders the time
+        self.assertNotEqual(km._postal_sid_revs(idx)[SID_A], r2[SID_A])
+        idx["m1"].update(bounced=11, bouncedWhy="no such mailbox")
+        r3 = km._postal_sid_revs(idx)
+        self.assertEqual(r3[SID_A][2], (("m1", None, None, 11, None, "no such mailbox"), ("m2", 25, None, None, None, None)),
+                         "every outcome and the bounce's why are values, in the log's order")
+        idx["m1"]["bouncedWhy"] = "mailbox closed"
+        self.assertNotEqual(km._postal_sid_revs(idx)[SID_A], r3[SID_A], "the why is rendered, so it is folded")
+
+    def test_opposite_outcomes_on_two_messages_do_not_net_to_no_change(self):
+        idx = {"m10": self._rec("m10", SID_A, PEER, 1, read=10), "m12": self._rec("m12", SID_A, PEER, 2)}
+        a = km._postal_sid_revs(idx)[SID_A]
+        del idx["m10"]["read"]
+        idx["m12"]["read"] = 12                                   # an unexec on one, an exec on the other
+        b = km._postal_sid_revs(idx)[SID_A]
+        self.assertEqual((a[0], b[0]), (2, 2))
+        self.assertNotEqual(a, b, "a count of outcomes would read 1 both times; the values differ")
+
+    def test_the_memoized_index_carries_one_table_per_version_and_a_callers_dict_gets_its_own(self):
+        w = World(SID_A)
+        try:
+            w.postal_log([{"ev": "sent", "id": MID, "from": "api", "from_id": PEER, "to_id": SID_A, "body": "b",
+                           "kind": "coordinate", "t": w.t}])
+            idx = km._postal_index()
+            revs = km._postal_sid_revs_of(idx)
+            self.assertIs(revs, km._postal_index_memo[0][3], "the memo entry carries the table")
+            self.assertIs(km._postal_sid_revs_of(km._postal_index()), revs, "one table per index version, not per call")
+            self.assertEqual(revs, km._postal_sid_revs(idx))
+            self.assertEqual(km._chat_postal_rev(SID_A, idx), ((1, MID, ()), None))
+            self.assertEqual(km._chat_postal_rev(OTHER_A, idx), (None, None), "a session party to no message: no revision")
+            own = dict(idx)
+            self.assertIsNot(km._postal_sid_revs_of(own), revs, "a caller's own dict never borrows the memo's table")
+            self.assertEqual(km._postal_sid_revs_of(own), revs)
+            w.postal_log([{"ev": "exec", "id": MID, "t": w.t + 1}])
+            idx2 = km._postal_index()
+            self.assertIsNot(idx2, idx, "the log grew: a new index version")
+            revs2 = km._postal_sid_revs_of(idx2)
+            self.assertIs(revs2, km._postal_index_memo[0][3])
+            self.assertEqual(km._chat_postal_rev(SID_A, idx2), ((1, MID, ((MID, w.t + 1, None, None, None, None),)), None))
+            self.assertEqual(km._chat_postal_rev(OTHER_A, idx2), (None, None))
+        finally:
+            w.close()
 
 
 class LedgerMemo(unittest.TestCase):

@@ -28,7 +28,7 @@ test("the fourth row reads 'Show focused session', a ✓ row after Group by sess
 test("the switch is the feed's own view state under `focused`: OFF unless a blob saved it on", () => {
   assert.match(FEED, /let showFocused = false;/);
   assert.match(FEED, /showFocused = st\.focused;/, "hydrated with the rest of the view state");
-  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused,\s*\n\s*focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded \};/,
+  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused,\s*\n\s*focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded, board: activeBoardId \};/,
     "currentViewState carries it (and the section's own block layout and fold, T410), so persistViewState writes it");
 });
 
@@ -54,10 +54,10 @@ test("a tab switch that lands while a card is held under the pointer paints on t
 });
 
 // ── the section: its own elements, above the board, the board untouched ─────────────────────────────
-test("#feed-focus sits directly before #feed-cols: head, empty line, the three columns, the rule", () => {
+test("#feed-focus sits directly before #feed-cols: head, empty line, the three columns, then the rule as its sibling", () => {
   assert.match(FEED, /sec\.id = "feed-focus";/);
-  assert.match(FEED, /if \(board && sec\.nextSibling !== board\) \{ list\.insertBefore\(sec, board\); applyColStack\(\); \}/,
-    "ensure-once, kept right above #feed-cols across renders; a fresh section takes the board's column order");
+  assert.match(FEED, /if \(board && \(sec\.nextSibling !== rule \|\| rule\.nextSibling !== board\)\) \{ list\.insertBefore\(sec, board\); list\.insertBefore\(rule, board\); applyColStack\(\); \}/,
+    "ensure-once, the section then its rule kept right above #feed-cols across renders (the rule under the box, the user 2026-09-19); a fresh section takes the board's column order");
   for (const mint of ['el("div", "feed-focus-head")', 'el("button", "feed-focus-fold")', 'el("a", "fname")', 'el("span", "feed-focus-caret")',
                       'el("span", "feed-col-count feed-focus-count")', 'el("div", "feed-focus-empty")',
                       'el("div", "feed-cols feed-focus-cols")', 'el("hr", "feed-focus-divider")']) {
@@ -84,11 +84,11 @@ test("#feed-focus sits directly before #feed-cols: head, empty line, the three c
     "the caret folds the section's block under its own state, persisted");
   // in render(): the pick is taken before grouping (a folded thread below must not empty the section), the
   // section is painted before the board's reconcile, and the board's own reconcile is what it always was
-  const pickAt = FEED.indexOf("const focusBuckets = showFocused ? focusedEntries(buckets, focusedSid, entrySid) : null;");
-  const groupAt = FEED.indexOf("if (feedPrefs().grouped) {", pickAt);
+  const pickAt = FEED.indexOf("const focusBuckets = showFocused && board === FEED_BOARD ? focusedEntries(buckets, focusedSid, entrySid) : null;");
+  const groupAt = FEED.indexOf("if (feedPrefs().grouped && board.groupBy === \"session\") {", pickAt);
   const callAt = FEED.indexOf("if (focusBuckets) renderFocusSection(list, focusBuckets, gate); else removeFocusSection();");
   const flipAt = FEED.indexOf("const flipFirst = needFlip ? captureCardRects(cols) : new Map<string, FlipState>();");
-  const boardAt = FEED.indexOf("reconcileCol(cols.asks, buckets.asks, desired, gate);");
+  const boardAt = FEED.indexOf("for (const k of activeCols()) reconcileCol(cols.lists[k], buckets[k], desired, gate);");
   assert.ok(pickAt > 0 && groupAt > pickAt && callAt > groupAt && flipAt > callAt && boardAt > flipAt,
     "pick → grouping → section → the board's FLIP capture → the board's reconcile");
   // the section sits ABOVE the board, so it must have settled before the board's First rects are read: a capture
@@ -105,7 +105,12 @@ test("the section's cards are SECOND elements: its own caches under 'f:' keys, t
   assert.doesNotMatch(sec, /\baskEls\b|\bgroupEls\b/, "never the board's caches — no card below moves because of the section");
   // the same update gate as the board (feed-card-gate.ts)
   assert.match(sec, /const ik = cardInputsKey\(e\.ask, gate\);\s*\n\s*if \(cardNeedsUpdate\(card as any, e\.ask, ik\)\) \{ updateAskCard\(card, e\.ask\); \(card as any\)\._ik = ik; \}/);
-  assert.match(sec, /function removeFocusSection\(\): void \{\s*\n\s*document\.getElementById\("feed-focus"\)\?\.remove\(\);\s*\n\s*fsAskEls\.clear\(\); fsGroupEls\.clear\(\);/);
+  assert.match(sec, /function removeFocusSection\(\): void \{\s*\n\s*const sec = document\.getElementById\("feed-focus"\) as any;\s*\n\s*if \(sec\) \{ \(sec\._rule as HTMLElement \| undefined\)\?\.remove\(\); sec\.remove\(\); \}[^\n]*\n\s*fsAskEls\.clear\(\); fsGroupEls\.clear\(\);/,
+    "the section leaves with its rule, which is its sibling since the divider moved under the box (the user 2026-09-19)");
+  // the rule is built with the section and placed after it, before the board, every render
+  assert.match(sec, /sec\.append\(head, empty, cols\);\s*\n\s*\(sec as any\)\._rule = rule;/, "the rule is not a child of the section");
+  assert.match(sec, /if \(board && \(sec\.nextSibling !== rule \|\| rule\.nextSibling !== board\)\) \{ list\.insertBefore\(sec, board\); list\.insertBefore\(rule, board\); applyColStack\(\); \}/,
+    "section, rule, board: re-placed together when either is out of order");
   // both copies of a card light together, hold the same latches, and tick the same ages
   assert.match(FEED, /for \(const \[id, card\] of fsAskEls\) card\.classList\.toggle\("focused", id === eff\);/);
   assert.equal((FEED.match(/for \(const card of \[\.\.\.askEls\.values\(\), \.\.\.fsAskEls\.values\(\)\]\)/g) || []).length, 2, "rearmLatches and livePass walk both");
@@ -200,7 +205,13 @@ test("the three follow-ups after the review: Tab keeps the copy, Clear from a co
 
 // ── feed.css: the section's rules, through the variables ─────────────────────────────────────────────
 test("feed.css: #feed-focus, the head, the caption, the rule and the empty line exist, var() only", () => {
-  assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; \}/);
+  assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; background: var\(--accent-tint\); border-radius: 8px; padding: 6px 8px; \}/,
+    "the whole region on the very faint accent tint, a small radius, even padding around the cards (the user 2026-09-18; the divider outside since 2026-09-19)");
+  assert.match(CSS, /\.feed-focus-cols \.feed-col-head \{ position: static; background: transparent; \}/,
+    "a column head inside the box paints no ground, so the tint runs across the row (the user 2026-09-19)");
+  assert.match(CSS, /--accent-tint: rgba\(156, 210, 255, 0\.04\);/, "the tint token beside the wash, a third of its alpha, in the dark block");
+  assert.match(CSS, /--accent-tint: rgba\(194, 65, 12, 0\.04\);/, "…and re-inked in the light block");
+  assert.doesNotMatch(CSS, /#feed-focus \{[^}]*rgba\(/, "the region's ground is the token, never a literal colour");
   assert.match(CSS, /\.feed-focus-head \{ display: flex; flex-wrap: nowrap;[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
     "the label (T410): ONE line (nowrap, so the name's clamp can act: review round two), the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
   assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: calc\(1em \/ 0\.72\); font-weight: 600;/, "the name as a session name below: the headers' size, bold (its identity colour is set inline)");
@@ -256,7 +267,7 @@ test("the gutter's floor is 0.35 of a share, the pair's sum preserved", () => {
 test("the chip's arrow keys move the block one slot within the section, from the order on screen", () => {
   const fn = FEED.slice(FEED.indexOf("function wireBlockKeys("), FEED.indexOf("// Drag a section by its CATEGORY CHIP"));
   assert.match(fn, /const delta = e\.key === "ArrowLeft" \|\| e\.key === "ArrowUp" \? -1 : e\.key === "ArrowRight" \|\| e\.key === "ArrowDown" \? 1 : 0;/);
-  assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = cur\.length === 3;\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows — as the drag seeds itself");
+  assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = orderComplete\(cur\);\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows, as the drag seeds itself");
   assert.match(fn, /e\.stopPropagation\(\);/, "the chip's key is the chip's alone: the card cursor's arrow keys must not also fire");
   // the no-trace rule per PROVENANCE (review round two): a key sequence out of a following state can be walked back to
   // nothing stored; an order pinned by drag is never cleared by a key press that lands on the fallback

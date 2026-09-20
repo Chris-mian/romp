@@ -153,6 +153,19 @@ test("the optional panes default to shown, a hide round-trips, and only an expli
   delete store["romp:settings"];
 });
 
+// A pane defined at the kernel (plans/panes-as-data.md, `romp pane`) has a row in the gear's Panes section under its own id:
+// the set keeps any boolean member beside the shipped three, so that row's choice survives a save, and a member that is
+// not a boolean is not a choice (the shell reads a missing member as the pane's own default: on, or off when experimental).
+test("a registry pane's choice rides the pane set beside the shipped three (plans/panes-as-data.md)", () => {
+  assert.deepEqual(paneSet({ timeline: true, fleet: false, feed: true, notes: false, lab: true }),
+    { timeline: true, fleet: false, feed: true, notes: false, lab: true });
+  assert.deepEqual(paneSet({ notes: "yes", docs: 0, lab: null }), { timeline: true, fleet: true, feed: true }, "a member that is not a boolean is not a choice");
+  delete store["romp:settings"];
+  saveSettings({ panes: { timeline: true, fleet: true, feed: true, notes: false } });
+  assert.deepEqual(loadSettings().panes, { timeline: true, fleet: true, feed: true, notes: false }, "the hidden registry pane survives a reload");
+  delete store["romp:settings"];
+});
+
 // The Files CONTROL's own setting (T317, the user 2026-09-10): whether the dashboard bar's Files toggle and the
 // phone's Files tab show at all. OFF by default (T317b, the user the same day: the control is asked for, not
 // shipped); only the literal true shows them, so a corrupt entry may cost the preference, never surprise the user
@@ -180,5 +193,18 @@ test("the Files control is hidden by default; showing it round-trips, and only t
   assert.equal("filesControl" in loadSettings(), false, "the old key is dropped from the loaded object");
   saveSettings({ compact: false });
   assert.deepEqual(Object.keys(JSON.parse(store["romp:settings"])).filter((k) => /filesControl/i.test(k)), ["showFilesControl"], "the next save leaves the old key behind and writes the fresh one");
+  delete store["romp:settings"];
+});
+
+// The Artifacts control's key was retired by panes-as-data phase three (the pane is an experimental record; the gear's generic
+// Panes row is its control): a browser that stored it sees it dropped at load and gone on the next save, like the repo's other
+// retired keys (fileLinkPane, filesControl), never rewritten forever.
+test("a stored showArtifactsControl is dropped at load and gone after a save", () => {
+  delete store["romp:settings"];
+  store["romp:settings"] = JSON.stringify({ compact: true, showArtifactsControl: true });
+  const s = loadSettings() as unknown as Record<string, unknown>;
+  assert.equal("showArtifactsControl" in s, false, "dropped at load");
+  saveSettings({ compact: false });
+  assert.equal("showArtifactsControl" in JSON.parse(store["romp:settings"]), false, "gone on the next save");
   delete store["romp:settings"];
 });

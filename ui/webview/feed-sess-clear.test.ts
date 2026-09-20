@@ -33,7 +33,7 @@ test("the header's Clear IS the card's Clear: one builder, one class set, a layo
 });
 
 test("grouped mode only: headers (and so the control) are emitted under the grouped guard", () => {
-  const guard = FEED.indexOf("if (feedPrefs().grouped) {\n    const rank = new Map(sessionOrder.map(");
+  const guard = FEED.indexOf("if (feedPrefs().grouped && board.groupBy === \"session\") {   // grouping is the BOARD's to offer (phase four: the notes board groups nothing)\n    const rank = new Map(sessionOrder.map(");
   assert.ok(guard > 0, "the grouped-mode header build lives under the grouped guard");
   assert.match(FEED.slice(guard, guard + 2500), /head = \{ kind: "sess", t: e\.t, sid: s, col: k, name: src\.name/);
   assert.match(FEED, /function dressHeaderIfLast\(card: HTMLElement, sid: string\): void \{\s*\n\s*if \(!feedPrefs\(\)\.grouped\) return;/);
@@ -49,7 +49,7 @@ test("the click is delegated on the stable columns root, never bound to the re-r
 });
 
 test("what it clears: the session's CLEARABLE cards in the current view — never a placeholder or a quarantine hold", () => {
-  assert.match(FEED, /function clearable\(it: AskItem\): boolean \{\s*\n\s*return !it\.provisional && it\.blocked\?\.state !== "quarantine";/);
+  assert.match(FEED, /function clearable\(it: AskItem\): boolean \{\s*\n\s*return !it\.provisional;/);   // a held message is a notice card since 2026-09-19: Clear dismisses it as any card, the held file stays
   assert.match(FEED, /function sessionCards\(sid: string\): AskItem\[\] \{\s*\n\s*return viewFiltered\(asks\)\.filter\(\(a\) => a\.sid === sid && clearable\(a\)\);/,
     "the current view's cards for the session — every column; folded cards are in the view too");
 });
@@ -73,7 +73,7 @@ test("one click, one Undo batch on the client AND on the kernel, through the gro
 });
 
 test("the kernel takes the batch as one cleared.jsonl stamp and drops every member's citations", () => {
-  const op = KERNEL.slice(KERNEL.indexOf('msg.get("type") == "askClearMany"'), KERNEL.indexOf('msg.get("type") == "quarantineDecision"'));
+  const op = KERNEL.slice(KERNEL.indexOf('msg.get("type") == "askClearMany"'), KERNEL.indexOf('msg.get("type") == "noticeAction"'));   // the next op in the chain (the quarantine op left 2026-09-19)
   assert.match(op, /_ids = \[str\(i\) for i in msg\["itemIds"\] if i\]/);
   assert.match(op, /_gesture_store_refusal\(client, "clear", _clear_all\(_ids\)\)/, "one _clear_all call = one batch stamp");
   assert.match(op, /_subtree_item_ids\(_i\)/, "the citation drop covers every member's subtree");

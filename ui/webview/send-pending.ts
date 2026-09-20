@@ -346,6 +346,11 @@ export type Reconciled = {
   inject: PendingSend[];                      // …and drawn by us, at the tail: not covered by the kernel's echo atom (a
                                               //   queued copy does not cover — ours stays drawn and the copy is hidden, T252)
   unqueue: PendingSend[];                     // …whose kernel cover is a QUEUED copy: the caller hides that copy
+  handed: PendingSend[];                      // …whose kernel cover is its ECHO with no queued copy left (2026-09-19): the backend
+                                              //   passed it on — the SDK fed it to the CLI, which holds it behind the running turn
+                                              //   until its next step — and no recall exists there, so the caller draws ours without
+                                              //   the ✎ and says where it is (the dashed "sending…" bubble used to keep its ✎ through
+                                              //   the whole wait, and the ✎ answered "too late")
   landed: { p: PendingSend; idx: number }[];  // retired by a landing; idx = the landed event's index
   lost: PendingSend[];                        // retired by the kernel's never-delivered verdict
 };
@@ -405,7 +410,7 @@ export function reconcilePending(events: TailEvent[], list: PendingSend[]): Reco
   const lateOwn = new Map<string, number>();
   for (const p of list) if (!p.at && p.late) lateOwn.set(p.text, (lateOwn.get(p.text) || 0) + 1);
   for (const p of list) if (!p.at) p.at = stampBase(events, p, p.late ? lateOwn.get(p.text) || 1 : 0);
-  const r: Reconciled = { keep: [], inject: [], unqueue: [], landed: [], lost: [], echoHide: [] };
+  const r: Reconciled = { keep: [], inject: [], unqueue: [], handed: [], landed: [], lost: [], echoHide: [] };
   const claimed = new Map<string, number>();           // "index\0text" → copies of that text in that landing taken by earlier entries THIS push
   const owned = new Set<string>();                     // the identities the pending sends were pressed with: an echo, a queued copy or a landing wearing one is that send's, never a text match
   for (const p of list) if (p.qid) owned.add(p.qid);
@@ -512,6 +517,7 @@ export function reconcilePending(events: TailEvent[], list: PendingSend[]): Reco
     // landing takes its place; the kernel's copies only prove receipt (`received`).
     r.inject.push(p);
     if (covered && byQueued) r.unqueue.push(p);
+    if (covered && byEcho && !byQueued) r.handed.push(p);   // the echo alone: the copy left romp's queue for the CLI (handed, above)
     if (covered && byEcho && echoIdx >= 0 && !r.echoHide.includes(echoIdx)) r.echoHide.push(echoIdx);
   }
   // Every landing claimed this push is spoken for: one copy per claim becomes background for every
@@ -553,6 +559,13 @@ export function dropPending(list: PendingSend[], text: string, ts?: number, qid?
   return i >= 0 ? list.splice(i, 1)[0] : undefined;
 }
 
+/** The words a refused send puts back in the composer (2026-09-19): the dropped entry's text when the box is empty (the
+ *  press cleared it and nothing was typed since), else null: a draft in progress is never overwritten, and a refusal whose
+ *  entry a push already retired restores nothing. */
+export function refusedRestoreText(dropped: PendingSend | undefined, box: string): string | null {
+  return dropped && box.trim() === "" ? dropped.text : null;
+}
+
 
 /** Which copy of `text` in a kernel queued group the caller hides for a send drawn at its own slot: the NEWEST
  *  copy not already hidden (the group lists the queue in order; ours is the latest press with that text), or -1
@@ -578,16 +591,20 @@ export function queuedCopyToHide(texts: { md?: string; cancelable?: boolean; hid
  *  after the press and nothing has confirmed them) read "not confirmed", the rest "sending…". A group
  *  used to read "N not confirmed" when ANY bubble was lost, and kept that label for the survivors after
  *  a ✕ (2026-09-06 review). */
-export type BareLabelPart = { text: string; lost: boolean };
-export function bareGroupLabel(nLost: number, nSending: number): { parts: BareLabelPart[]; title: string } {
+export type BareLabelPart = { text: string; lost: boolean; handed?: boolean };
+export function bareGroupLabel(nLost: number, nSending: number, nHanded: number = 0): { parts: BareLabelPart[]; title: string } {
   const parts: BareLabelPart[] = [];
   if (nLost > 0) parts.push({ text: nLost === 1 ? "not confirmed" : `${nLost} not confirmed`, lost: true });
   if (nSending > 0) parts.push({ text: nSending === 1 ? "sending…" : `sending ${nSending}…`, lost: false });
+  // taken by the session (Reconciled.handed, 2026-09-19): no longer romp's to recall — it waits inside the session for the
+  // running step to finish, and "sending…" would claim a transit that is over
+  if (nHanded > 0) parts.push({ text: nHanded === 1 ? "with the session" : `${nHanded} with the session`, lost: false, handed: true });
   const lostTitle = "The connection dropped after " + (nLost === 1 ? "this was" : "these were")
     + " sent, and romp has not confirmed the session has " + (nLost === 1 ? "it" : "them") + ". ✕ moves "
     + (nLost === 1 ? "it" : "one") + " back to the composer to send again.";
   const sendingTitle = "on its way to the session — cancellable until the session takes it";
-  const title = nLost > 0 && nSending > 0 ? lostTitle + " The rest: " + sendingTitle + "."
-    : nLost > 0 ? lostTitle : sendingTitle;
+  const handedTitle = "taken by the session — waiting for its current step to finish; it can't be recalled now, and joins the conversation when the session reads it";
+  const rest = [nSending > 0 ? sendingTitle : "", nHanded > 0 ? handedTitle : ""].filter(Boolean);
+  const title = nLost > 0 ? (rest.length ? lostTitle + " The rest: " + rest.join("; ") + "." : lostTitle) : rest.join(". ");
   return { parts, title };
 }

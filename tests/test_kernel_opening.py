@@ -128,6 +128,8 @@ class PushSessionNow(_Base):
     def tearDown(self):
         with km._clients_lock:
             km._clients[:] = self.saved_clients
+        km._prev_chat_events.pop(SID, None)    # the push seeds the shared baseline when none exists (2026-09-19): not left for the next test
+        km._prev_chat_ledger.pop(SID, None)
         super().tearDown()
 
     def test_sends_the_tab_strip_and_that_sessions_payload(self):
@@ -144,23 +146,43 @@ class PushSessionNow(_Base):
                         "strip first — a session frame for an unknown tab would have nowhere to land")
 
     def test_idempotent_with_the_periodic_pusher(self):
-        # the next full cycle re-sends both slots; per-client dedup absorbs the overlap, so a second
-        # identical targeted push sends NOTHING new
+        # the next full cycle re-sends both slots; per-client dedup absorbs the overlap, so a repeated targeted push
+        # on an unchanged build sends NOTHING new, bar the one frame the pusher's steady state sends after a full
+        # (2026-09-19): the first push seeds the shared baseline for a sid that had none, so the second diffs against
+        # it and hands the caught-up client one empty-suffix tail (the status-only frame every cycle sends after a
+        # full, a few hundred bytes) where the unseeded kernel re-sent the whole session and relied on the dedup to
+        # swallow it; the third is byte-identical to the second and dedups
         km._push_session_now(SID)
         n = len(self.sent)
         km._push_session_now(SID)
-        self.assertEqual(len(self.sent), n, "unchanged payloads dedup — no re-send storm")
+        self.assertEqual(len(self.sent), n + 1, "one empty-suffix tail: nothing changed against the seeded baseline")
+        self.assertEqual((self.sent[-1]["type"], self.sent[-1]["id"], self.sent[-1]["events"]), ("chatTail", SID, []))
+        km._push_session_now(SID)
+        self.assertEqual(len(self.sent), n + 1, "unchanged payloads dedup — no re-send storm")
 
     def test_an_unknown_sid_sends_nothing(self):
         km._push_session_now("99999999-8888-7777-6666-555555555555")
         self.assertEqual(self.sent, [], "an unknown sid is not an error, just a no-op")
 
-    def test_the_shared_delta_baseline_is_left_alone(self):
-        # only a push that reaches EVERY client may advance _prev_chat_events (the 2026-07-28
-        # stranded-delta lesson) — the targeted push must not touch it
+    def test_the_shared_delta_baseline_is_never_advanced_and_seeded_when_absent(self):
+        # only a push that reaches EVERY client may ADVANCE _prev_chat_events (the 2026-07-28 stranded-delta
+        # lesson): a baseline the pusher left is left exactly where it is, whatever this push built. A sid with NO
+        # baseline is the other case (2026-09-19): every client this push reaches takes the list whole, so from that
+        # instant the list is a lower bound on what every base holder has, and the push establishes it as the
+        # baseline (the seed the connect push runs too), so the next sender diffs against it instead of re-sending
+        # the whole session at change 0 to clients that hold it. Seeding when absent is not advancing.
         km._prev_chat_events.pop(SID, None)
+        km._prev_chat_ledger.pop(SID, None)
         km._push_session_now(SID)
-        self.assertNotIn(SID, km._prev_chat_events)
+        sess = next(m for m in self.sent if m["type"] == "session")
+        self.assertTrue(sess["events"], "the transcript has content: the frame went whole")
+        self.assertEqual(km._prev_chat_events.get(SID), sess["events"], "with none, the list sent whole becomes the baseline")
+        by_hand = [{"kind": "user", "uuid": "zz", "md": "planted"}]
+        km._prev_chat_events[SID] = by_hand              # a baseline the pusher left, unlike this push's build
+        km._prev_chat_ledger[SID] = None
+        km._push_session_now(SID)
+        self.assertIs(km._prev_chat_events[SID], by_hand, "a present baseline is left exactly where it was")
+        self.assertEqual(km._prev_chat_events[SID], [{"kind": "user", "uuid": "zz", "md": "planted"}])
 
 
 if __name__ == "__main__":

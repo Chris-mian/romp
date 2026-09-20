@@ -16,7 +16,7 @@ test("COMPACTNESS (the user 2026-07-07; action corner 2026-08-08): time trails t
   // the TIME now trails the title on row1 (both cards); row3 holds the Background/Summary/Sub-goals toggles
   assert.match(FEED, /row1\.append\(title, time\)/, "the time trails the title on row1");
   assert.match(FEED, /row3\.append\(bgBtn, takeBtn, stallBtn, subBtn, taskBtn, actions\)/, "ask card: row3 is Background/Summary/Stalled/Sub-goals/Waiting-on-task (+ rare Retry/Revive)");
-  assert.match(FEED, /actions\.append\(revive,/, "…so the action row is Retry/Revive (+ resume-gate) only (Clear + toggles moved up)");
+  assert.match(FEED, /actions\.append\(revive\);/, "…so the action row is Retry/Revive (+ resume-gate) only (Clear + toggles moved up)");
   // the action corner (the user 2026-08-08): Continue+Clear ride the END of row1 in every mode; the
   // name row keeps only identity + chips
   assert.match(FEED, /btns\.append\(cont, clr\);/, "ask card: Continue left of Clear in the action corner");
@@ -92,7 +92,7 @@ test("session-STATE badges (⏸ approval / ⚠ API error) ride the name row; the
   assert.match(FEED, /idwrap\.append\(name\);/,
     "idwrap holds ONLY the name now (2026-08-24): grouped mode hides it wholesale, so every state badge moved to row2 direct children where both modes render them");
   assert.doesNotMatch(FEED, /waitBadge/, "the redundant awaiting chip element is gone entirely");
-  assert.match(FEED, /actions\.append\(revive,/, "action row = Retry/Revive (+ resume-gate) only (Clear moved to the name row 2026-07-07)");
+  assert.match(FEED, /actions\.append\(revive\);/, "action row = Retry/Revive (+ resume-gate) only (Clear moved to the name row 2026-07-07)");
   assert.match(FEED, /a\._blocked = blkBadge;/);
 });
 

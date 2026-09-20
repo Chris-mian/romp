@@ -75,6 +75,7 @@ const BTNS = {};
 KEYS.forEach((k) => { BTNS[k] = { hidden: false, title: '', getAttribute: (a) => (a === 'data-pane' ? k : null), classList: { toggle() {} }, addEventListener() {} }; });
 let TAB = 'chat', MOBILE = false;
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.localStorage = { getItem: (k) => (k in STORE ? STORE[k] : null), setItem: (k, v) => { STORE[k] = v; } };
 global.location = { search: '' };
 global.URLSearchParams = class { get() { return null; } };
@@ -152,7 +153,7 @@ class HiddenControlBookmark(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        keys = [k for k, _ in km._PANE_ORDER]
+        keys = [k for k, _ in km._PANE_ORDER if k in km._HAND_PANES]
         stored = json.dumps({"chat": True, "fleet": False, "feed": True, "timeline": True, "files": False})
         # the store is seeded through the harness's __SEED__ slot (the OptionalPanes convention): the declaration
         # line it once rewrote grew the optional-pane collections and no longer matched, leaving the slot unfilled
@@ -174,7 +175,7 @@ class HiddenControlBookmark(unittest.TestCase):
 class HiddenControl(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        keys = [k for k, _ in km._PANE_ORDER]
+        keys = [k for k, _ in km._PANE_ORDER if k in km._HAND_PANES]
         # seeded through __SEED__ (see HiddenControlBookmark); the harness already collects the storage listeners
         # (STORAGE) and the phone's tab switches (TABS), which the driver reads under its own names
         harness = (_COLLAPSE_HARNESS.replace("__KEYS__", json.dumps(keys))
@@ -194,7 +195,7 @@ class HiddenControl(unittest.TestCase):
         r = self.out["refused"]
         self.assertFalse(r["poFiles"], "a relay's bring-forward or the palette's command is refused")
         self.assertEqual(r["counts"], self.out["boot"]["counts"], "…silently: no message claiming a change")
-        self.assertEqual(self.out["boot"]["counts"], {k: 1 for k in [k for k, _ in km._PANE_ORDER]}, "the boot apply told each pane once")
+        self.assertEqual(self.out["boot"]["counts"], {k: 1 for k in [k for k, _ in km._PANE_ORDER if k in km._HAND_PANES]}, "the boot apply told each pane once")
 
     def test_a_phone_left_on_the_files_tab_is_switched_to_the_chat(self):
         self.assertEqual(self.out["phone"]["switched"], ["chat"])
@@ -211,7 +212,7 @@ class HiddenControl(unittest.TestCase):
 class Broadcast(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.keys = [k for k, _ in km._PANE_ORDER]
+        cls.keys = [k for k, _ in km._PANE_ORDER if k in km._HAND_PANES]
         # the control turned ON by its gear setting (off by default since T317b): the toggles the driver makes are the
         # user's clicks on a control they asked for; seeded through the harness's __SEED__ slot
         cls.out = _run(_COLLAPSE_HARNESS.replace("__KEYS__", json.dumps(cls.keys)).replace("__SEED__", "STORE['romp:settings'] = JSON.stringify({ showFilesControl: true });") + km._LANDING_COLLAPSE_JS + _COLLAPSE_DRIVER)
@@ -253,8 +254,8 @@ class Broadcast(unittest.TestCase):
         # derived from _PANE_ORDER, never a second hand-written list: a pane added there is broadcast
         js = km._LANDING_COLLAPSE_JS
         self.assertIn("var KEYS=" + json.dumps(self.keys) + ";", js)
-        self.assertIn('var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER]) + """;', open(os.path.join(BIN, "romp-kernel")).read())
-        self.assertEqual(len(self.keys), 5)
+        self.assertIn('var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER if k in _HAND_PANES]) + """;', open(os.path.join(BIN, "romp-kernel")).read())
+        self.assertEqual(len(self.keys), 5)   # the hand-written five (the Artifacts pane is a generic pane since phase three)
         # every key ships an iframe by the id the broadcast addresses, or a pane is silently never told
         html = km._landing()
         for k in self.keys:
@@ -314,7 +315,7 @@ console.log(JSON.stringify(out));
 class OptionalPanes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.keys = [k for k, _ in km._PANE_ORDER]
+        cls.keys = [k for k, _ in km._PANE_ORDER if k in km._HAND_PANES]
         # this browser hid the Feed pane in the gear, and a phone was left on the Feed tab
         # the Files control is ON in this browser (off by default since T317b), so the driver's Files toggle is a control the
         # user asked for; every gear save below carries the key too, as the gear's whole-object save does
@@ -418,6 +419,7 @@ _MOBILE_HARNESS = r"""
 const TOGGLES = [], TELLS = [], MQL = [], MSGS = [], STORE = {};
 let MATCHES = true, TAB = null;
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0;
 global.scrollTo = () => {};
 global.matchMedia = (q) => ({ get matches() { return MATCHES; }, query: q, addEventListener: (ev, f) => { if (ev === 'change') MQL.push(f); } });   // matches reads live, as a MediaQueryList's does
@@ -608,6 +610,7 @@ const frame = (id) => ({ contentWindow: { postMessage: (m) => POSTED[id].push(JS
   addEventListener: (ev, f) => { if (ev === 'load' && id === 'f-files') FILES_LOADS.push(f); if (ev === 'load' && id === 'f-settings') SETTINGS_LOADS.push(f); },
   removeEventListener: (ev, f) => { if (id === 'f-files') FILES_LOADS = FILES_LOADS.filter((g) => g !== f); } });
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.addEventListener = (ev, f) => { if (ev === 'message') LISTENERS.push(f); };
 global.__rompPaneToggle = (k, on) => TOGGLES.push([k, on]);
 global.__rompMobileTab = (t) => TABS.push(t);
@@ -870,6 +873,7 @@ _HELPER_DRIVER = r"""
 'use strict';
 const STORE = {};
 global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 global.localStorage = { getItem: (k) => (k in STORE ? STORE[k] : null) };
 __HELPER__
 const ask = () => ['timeline', 'fleet', 'feed', 'chat'].map((k) => window.__rompPaneEnabled(k));

@@ -128,7 +128,33 @@ git and web work keep working.
 
 The current profile grants write access to the entire workspace, including
 `.git`, `.agents`, and `.codex`. Metadata protection needs narrower filesystem
-rules; it is not provided by this profile. Two host notes:
+rules; it is not provided by this profile.
+
+**Mail.** A Codex session messages its peers through the same six postal tools
+a Claude session has (`send_message`, `check_inbox`, `list_agents`,
+`set_working`, `check_sent`, `recall_message`). They reach the session as
+Codex tool calls that romp itself performs on the session's behalf: the
+kernel posts to the postal bus as that session, so no credential is ever
+exposed to the commands the session runs, the sender is always the session
+itself, and the bus's rules (live-only addressing, the per-session mailbox
+toggle) apply exactly as they do to Claude sessions. Sandboxed and Auto mail
+the same way; no reviewer is involved. The shell command `romp mail` is
+refused inside the sandbox (its identity lookup and the serve token both live
+outside the mounts) or, in a workspace without a romp checkout, not there at
+all; either way a Codex session mails through the tools. Note what the
+sandbox does and does not confine: it bounds the files and commands of *this*
+session, not its ability to ask peers for work, so a sandboxed session can
+delegate to unsandboxed sessions and to peer hosts, bounded per recipient by
+that recipient's mailbox toggle. `list_agents` shows a sandboxed session every
+peer's name, git branch and working-note, as it shows any session. To run
+Codex sessions without the tools, write `off` into `codex-postal-tools` in
+ROMP's state directory and restart the kernel (absent means on); the tools and
+their instructions are given to a thread when it starts, and stay with it, so
+a change reaches threads started after it. An existing thread keeps its
+persisted tools and instructions until it is ended; with the setting off,
+each call it makes is answered that mail is not available in this session.
+
+Two host notes:
 
 - On Linux, install the distribution's **bubblewrap** package. Codex 0.153.3
   prefers a compatible system `bwrap` from PATH over its bundled helper.
@@ -154,7 +180,37 @@ rules; it is not provided by this profile. Two host notes:
 Working today: lanes and status, task cards and judging, full chat (prompts,
 replies, thinking, commands, file diffs, web searches), steering a running
 turn, interrupts, model and reasoning-effort switches, resume after restarts,
-and postal delivery into Codex sessions.
+and postal mail both ways: delivery into Codex sessions, and the six postal
+tools from inside them (the Sandboxing section above). A Codex session's
+sends show in its chat and timeline under the same name a Claude session's do.
+and postal delivery into Codex sessions. A resume whose reply the pinned SDK
+cannot read, because the thread's history holds an item kind newer than the
+SDK's models, still runs: the app-server has resumed the thread by the time the
+SDK objects, so ROMP logs the mismatch once and lets the next turn's own request
+decide.
+
+Slash commands: `/model` and `/effort` work (they apply at the session's next
+turn). The slash commands romp knows a Codex session cannot take, `/clear`,
+`/compact`, `/new`, `/fast`, `/autocompact`, `/help` and `/mcp` (a bare `/mcp`
+typed into the composer opens the MCP panel instead of reaching romp), are
+refused with a notice and never sent to the model as text, whether typed
+into the composer, sent from the timeline's lane menu, sent with `romp send`,
+or already queued behind an open turn. Any other message that begins with a
+slash (a path such as `/tmp`, a word such as `/s`, a skill's name, a Claude
+Code built-in such as `/init`) reaches the model as text: romp refuses only
+the commands it knows and does not judge a message by its first character.
+The composer's `/` list shows only what a Codex session takes. One path still
+reaches the model as text until the native clear lands: a follow-up typed from
+a card whose whole body is one of these commands, sent while the session is
+idle (a busy session queues it, and it is refused when its turn comes).
+Clearing and compacting a Codex conversation natively are coming
+(`plans/codex-backend.md`).
+
+The chat and timeline effort menus use the selected model's supported levels
+from the Codex app-server's model catalog. Romp also validates effort changes
+against that catalog; it does not maintain a separate list of Codex levels.
+New levels appear when the installed app-server advertises them. A missing
+catalog or unknown model provides no effort choices.
 
 Not yet (tracked in `plans/codex-backend.md`): approval prompts as needs-you
 cards, Codex plan items on the card checklist, subagent lanes, rate-limit
@@ -168,4 +224,3 @@ terminal, the two setup steps above (`romp-codex-setup`, `codex login`) — and
 `romp engine codex` if the machine should run Codex-only. `romp` opens the
 dashboard; a machine that never runs these steps is unaffected and defaults to
 Claude Code.
-

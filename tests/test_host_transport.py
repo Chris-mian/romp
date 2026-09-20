@@ -185,11 +185,16 @@ class LeaseClassification(unittest.TestCase):
 
 # ── the transport against a fake host ──────────────────────────────────────────────────────────
 class FakeHost:
-    """An asyncio Unix server speaking the host's frames from a scripted journal."""
+    """An asyncio Unix server speaking the host's frames from a scripted journal. `echo_turns`: the CLI behind it runs
+    a one-step turn per fed user text (its own user record back, then the turn's result), the frames the backend's
+    one-fed-text-at-a-time hold (SdkSession._untaken) releases on; a host that echoes nothing holds every text after
+    the first for good."""
 
-    def __init__(self, path, records, busy=False, exit_after=None, answer_init=None):
+    def __init__(self, path, records, busy=False, exit_after=None, answer_init=None, echo_turns=False):
         self.path, self.records, self.busy, self.exit_after = path, records, busy, exit_after
         self.answer_init = answer_init      # None: every control request answered; else answer_init(attach_no) -> bool
+        self.echo_turns = echo_turns
+        self.next_offset = len(records)     # the journal position of the next record this host writes (echo_turns)
         self.attaches = 0
         self.got = []
         self.server = None
@@ -227,6 +232,14 @@ class FakeHost:
                         if obj.get("type") == "control_request" and answering:
                             writer.write(sh.encode_frame({"t": "out", "offset": len(self.records), "data": {
                                 "type": "control_response", "response": {"subtype": "success", "request_id": obj["request_id"], "response": {}}}}))
+                            await writer.drain()
+                        elif obj.get("type") == "user" and self.echo_turns:
+                            # the CLI took the text and ran its turn: its user record back, then the result (the SDK
+                            # parser's required fields, nothing spent), each at its own journal offset
+                            for rec in (obj, {"type": "result", "subtype": "success", "duration_ms": 1, "duration_api_ms": 1,
+                                              "is_error": False, "num_turns": 1, "session_id": SID}):
+                                writer.write(sh.encode_frame({"t": "out", "offset": self.next_offset, "data": rec}))
+                                self.next_offset += 1
                             await writer.drain()
                     elif f["t"] == "ping":
                         writer.write(sh.encode_frame({"t": "pong"})); await writer.drain()
@@ -445,9 +458,157 @@ class BackendHostRules(unittest.TestCase):
         s = types.SimpleNamespace(sid=SID, name="web", inflight=0, _host=t, _host_is_attach=True, _fire_boot_settled=lambda: fired.append(1))
         be._on_host_hello(s, {"host": {"pid": 1, "start": "a"}, "cli": {"pid": 2, "start": "b"}, "journal": {"next": 6}, "parked": [], "inflight": 1})
         self.assertEqual((s.inflight, fired), (1, [1]), "mid-turn adopted; the boot slot released for an attach")
-        s2 = types.SimpleNamespace(sid=SID, name="web", inflight=1, _host=t, _host_is_attach=False, _fire_boot_settled=lambda: fired.append(2))
+        s2 = types.SimpleNamespace(sid=SID, name="web", inflight=1, _inflight_texts=["a fed text"], _host=t, _host_is_attach=False,
+                                   _fire_boot_settled=lambda: fired.append(2))
         be._on_host_hello(s2, {"host": {"pid": 1, "start": "a"}, "cli": {}, "journal": {"next": 0}, "parked": [], "inflight": 0})
-        self.assertEqual((s2.inflight, fired), (1, [1]), "a lower count never lowers ours; a spawn's hello leaves the slot to the init record")
+        self.assertEqual((s2.inflight, s2._inflight_texts, fired), (0, [], [1]),
+                         "the host's count is adopted EXACTLY, down as well as up: a stale count on our side never survives an attach "
+                         "(the base kept the higher of the two and read Working for two days); a spawn's hello leaves the slot to the init record")
+
+    def test_a_reexec_request_reads_the_hosts_answer_and_an_older_host_as_a_refusal(self):
+        """The kernel's half of the re-exec (2026-09-18): one connection, one frame, one answer. A host that knows the frame
+        answers it; a host older than the frame answers `fault not-attached`, which reads as a refusal; a socket nobody
+        serves reads as a refusal too. Never a raise out of the connect."""
+        fn = getattr(ht, "request_reexec", None)
+        self.assertIsNotNone(fn, "the kernel can ask a host to re-exec (the base cannot)")
+        answers = {"new": {"t": "reexec", "ok": True, "when": "now"}, "old": {"t": "fault", "kind": "not-attached", "text": "attach first"}}
+        d = tempfile.mkdtemp()
+        loop = asyncio.new_event_loop()
+        async def serve(path, answer):
+            async def on_client(reader, writer):
+                fr = sh.FrameReader()
+                chunk = await reader.read(65536)
+                for f in fr.feed(chunk):
+                    if f.get("t") == "reexec":
+                        writer.write(sh.encode_frame(answer)); await writer.drain()
+                writer.close()
+            return await asyncio.start_unix_server(on_client, path=path)
+        async def run():
+            out = {}
+            for name, ans in answers.items():
+                path = os.path.join(d, name + ".sock")
+                srv = await serve(path, ans)
+                out[name] = await fn(path, sys.executable, "/bin/true", "def67890", timeout=5)
+                srv.close()
+            out["none"] = await fn(os.path.join(d, "absent.sock"), sys.executable, "/bin/true", "def67890", timeout=2)
+            return out
+        try:
+            out = loop.run_until_complete(run())
+        finally:
+            loop.close()
+        self.assertEqual((out["new"]["ok"], out["new"]["when"]), (True, "now"))
+        self.assertEqual(out["old"]["ok"], False); self.assertIn("does not know", out["old"]["reason"])
+        self.assertEqual(out["none"]["ok"], False); self.assertIn("connect", out["none"]["reason"])
+
+    def test_a_hosts_reexec_now_frame_makes_the_reconnect_planned_and_the_hello_files_the_row(self):
+        d, be = self._be()
+        s = types.SimpleNamespace(sid=SID, name="web", inflight=0, _reconnect=False, _host=None, _host_is_attach=True,
+                                  _host_reexec_from="abc12345", _fire_boot_settled=lambda: None)
+        now = getattr(be, "_on_host_reexec_now", None)
+        self.assertIsNotNone(now, "the kernel knows the host's reexec-now frame (the base does not)")
+        now(s)
+        self.assertTrue(s._reconnect, "the stream's end that follows is the planned handover: the connect loop's next pass attaches")
+        self.assertFalse(hasattr(s, "_host_reexec_expected"), "no flag written that nothing reads (round two of the review)")
+        t = types.SimpleNamespace(hello={}, ack_offset=5)
+        s._host = t
+        be.code_version = "def67890"
+        be._on_host_hello(s, {"host": {"pid": 1, "start": "a", "version": "def67890"}, "cli": {"pid": 2, "start": "b"}, "journal": {"next": 6}, "parked": [], "inflight": 0})
+        rows = [json.loads(l) for l in (Path(d) / "session-events.jsonl").read_text().splitlines() if l.strip()]
+        kinds = [r["kind"] for r in rows]
+        self.assertIn("host.reexeced", kinds, "the re-exec is a row of its own: %r" % kinds)
+        row = [r for r in rows if r["kind"] == "host.reexeced"][0]
+        self.assertEqual((row.get("fromVersion"), row.get("toVersion")), ("abc12345", "def67890"))
+        self.assertIsNone(s._host_reexec_from, "filed once")
+
+    def test_a_handover_that_fails_after_the_ok_answer_files_a_row(self):
+        """Round two of the re-exec review: a host that accepted and then failed before its exec sent a `fault` the kernel only
+        logged, so a failed upgrade was on no ledger while a refused one was. The fault now files `host.reexec-failed`."""
+        d, be = self._be(short=True)
+        be.code_version = "def67890"
+        s = types.SimpleNamespace(sid=SID, name="web", _host_reexec_from="abc12345", _host_end_grace=None, _on_cli_stderr=lambda line: None)
+        t = be._new_host_transport(s, ht.host_sock(d, SID), -1)
+        t.on_fault({"t": "fault", "kind": "reexec-failed", "text": "RuntimeError"})
+        def rows():
+            p = Path(d) / "session-events.jsonl"
+            return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+        self.assertEqual([(r["kind"], r.get("fromVersion"), r.get("toVersion")) for r in rows()],
+                         [("host.reexec-failed", "abc12345", "def67890")], "the failure is a row, as the refusal is")
+        self.assertIsNone(s._host_reexec_from, "and the pending re-exec is forgotten")
+        t.on_fault({"t": "fault", "kind": "reader-behind", "text": "the journal lags"})
+        self.assertEqual(len(rows()), 1, "any other fault stays a log line")
+        self.assertTrue(any("reader-behind" in m for m in be._test_logs))
+
+    def test_the_reexec_wait_needs_a_listener_not_a_socket_path(self):
+        """Round two of the re-exec review: the kernel's wait for the re-executed host passed on the lease's version, the holder
+        pid and the socket PATH existing; under Python 3.12 the old process's path outlives its listener and refuses every
+        connect, so the kernel attached into nobody and read a launch failure on a host fine a moment later. The wait now needs
+        a listener that accepts: a refusing path holds it to its bound (then a `host.reexec-failed` row and the plain attach);
+        a listener that comes up while it waits satisfies it."""
+        import socket
+        d, be = self._be(short=True)
+        be.code_version = "def67890"
+        hdir = ht.host_dir(d, SID); hdir.mkdir(parents=True, exist_ok=True)
+        (hdir / "spawn.json").write_text(json.dumps({"sid": SID, "version": "abc12345"}))
+        sock = str(ht.host_sock(d, SID))
+        old = {"sid": SID, "fsid": SID, "name": "web", "pid": 11, "start": "c", "holder": {"pid": 10, "start": "h", "kind": "host"},
+               "version": "abc12345", "t": time.time()}
+        def rows():
+            p = Path(d) / "session-events.jsonl"
+            return [r["kind"] for r in (json.loads(l) for l in p.read_text().splitlines() if l.strip())] if p.exists() else []
+        async def host(serve_again):
+            """Answers `now`, then leaves a bound-but-closed path (ECONNREFUSED, the path present) and writes the new lease;
+            with `serve_again`, a listener comes back on the path a little later."""
+            async def on_client(reader, writer):
+                fr = sh.FrameReader(); chunk = await reader.read(65536)
+                for f in fr.feed(chunk):
+                    if f.get("t") == "reexec":
+                        writer.write(sh.encode_frame({"t": "reexec", "ok": True, "when": "now"})); await writer.drain()
+                writer.close(); await writer.wait_closed()
+                srv.close(); await srv.wait_closed()
+                try:
+                    os.unlink(sock)
+                except OSError:
+                    pass
+                stale = socket.socket(socket.AF_UNIX); stale.bind(sock); stale.close()
+                sb.write_lease(d, dict(old, version="def67890", t=time.time()))
+                if serve_again:
+                    await asyncio.sleep(0.3)
+                    os.unlink(sock)
+                    async def bye(r, w):
+                        accepted.set()                       # the kernel's probe connect, seen from the listener's side
+                        w.close(); await w.wait_closed()
+                    again = await asyncio.start_unix_server(bye, path=sock)
+                    servers.append(again)
+            servers = []
+            srv = await asyncio.start_unix_server(on_client, path=sock)
+            servers.append(srv)
+            return servers
+        accepted = asyncio.Event()
+        async def run(serve_again):
+            servers = await host(serve_again)
+            s = types.SimpleNamespace(sid=SID, name="web", _host_reexec_from=None)
+            with mock.patch.object(ht, "SOCKET_WAIT_S", 1.5):
+                got = await be._host_reexec_on_skew(s, old)
+            if serve_again:
+                await asyncio.wait_for(accepted.wait(), 5)   # the probe's accept and its handler run before the listener closes
+            for x in servers:
+                x.close(); await x.wait_closed()
+            return got, s
+        loop = asyncio.new_event_loop()
+        try:
+            got, s = loop.run_until_complete(run(False))
+            self.assertIsNone(got, "a path that refuses every connect never satisfies the wait (the base returned the fresh lease at once)")
+            self.assertEqual(rows(), ["host.reexec-failed"], "the wait that ran out is a row")
+            self.assertTrue(any("no re-executed host served" in m for m in be._test_logs))
+            self.assertIsNone(s._host_reexec_from)
+            for p in (Path(d) / "session-events.jsonl",):
+                p.unlink()
+            got, s = loop.run_until_complete(run(True))
+            self.assertEqual((got or {}).get("version"), "def67890", "a listener that comes up while it waits: the fresh lease")
+            self.assertEqual(rows(), [])
+            self.assertEqual(s._host_reexec_from, "abc12345", "the hello after the attach files host.reexeced from this")
+        finally:
+            loop.close()
 
     def test_the_hello_decides_the_fresh_cli_by_identity_and_tolerates_older_shapes(self):
         """The fresh-CLI decision at the hello (the connect loop's pins drive it through the loop; this one drives the handler):
@@ -1082,6 +1243,22 @@ class EndToEnd(unittest.TestCase):
             time.sleep(0.1)
         self.fail("timed out waiting for %s\nlog tail: %s" % (what, "\n".join(self.logs[-15:])))
 
+    def test_the_host_forwards_the_clis_compaction_status_and_the_backend_brackets_it(self):
+        """An automatic compaction under a host (2026-09-19): the CLI's `system`/`status` records ride the host's journal and
+        socket like any record, the SDK's parser turns them into SystemMessage, and the backend's bracket opens and closes on
+        them, so compacting(sid) reads True while the CLI compacts on its own and False after. Executed on the hosts-on
+        harness: a real host, the fake CLI compacting mid-turn for a few seconds, the real connect loop."""
+        be = self._backend()
+        self.assertTrue(be.send(self.sid, "compact on your own autocompact=4 sleep=0"))
+        self._wait(lambda: be.compacting(self.sid) is True, timeout=25, what="the bracket to open on the stream's compacting status")
+        journal = list(sh.read_journal_dir(ht.host_dir(self.d, self.sid)))
+        self.assertIn(("system", "status", "compacting"), [(r.get("type"), r.get("subtype"), r.get("status")) for _, r in journal],
+                      "the host journaled the status record it forwarded")
+        self._wait(lambda: be.compacting(self.sid) is False, timeout=25, what="the bracket to close on the compaction's result")
+        self._wait(lambda: any(r.get("type") == "result" for _, r in sh.read_journal_dir(ht.host_dir(self.d, self.sid))), what="the turn's result")
+        rows = [(r.get("subtype"), r.get("status"), "compact_result" in r) for _, r in sh.read_journal_dir(ht.host_dir(self.d, self.sid)) if r.get("type") == "system"]
+        self.assertIn(("status", None, True), rows, "the closing status record, with its result, went through the host too")
+
     def test_a_turn_survives_a_drain_and_finishes_under_the_next_backend(self):
         be = self._backend()
         self.assertTrue(be.send(self.sid, "start long sleep=6"))
@@ -1212,7 +1389,10 @@ class AttachStandDown(unittest.TestCase):
         return [json.loads(l).get("state") for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
 
     def test_four_unanswered_attaches_stand_the_session_down_once_until_a_send(self):
-        self._serve(answer_init=lambda n: False)
+        # echo_turns: the backend feeds one text at a time and waits for the CLI to take it (SdkSession._untaken), so
+        # the three texts asserted below reach this host only if it answers each with a turn; a host that echoes
+        # nothing would hold the second and third for good
+        self._serve(answer_init=lambda n: False, echo_turns=True)
         self.assertTrue(self.be.send(self.sid, "hello"))
         self._wait(lambda: "host.attach-failed" in self._kinds(), timeout=40, what="the stand-down row")
         self._wait(lambda: not (self.be.sessions.get(self.sid) and self.be.sessions[self.sid].thread.is_alive()), what="the thread's exit")

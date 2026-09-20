@@ -24,7 +24,7 @@ test("setCompactSuggest is a KERNEL_SETTING: one click writes every attached ker
     "the set carries it — the broadcast is what makes the one answer reach every machine");
   // the gear still stamps the gesture: the kernel orders applies by gt, so a queued flush from a frozen
   // tab can never undo a newer choice made elsewhere
-  assert.ok(GEAR.includes("post({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') })"),
+  assert.ok(GEAR.includes("post(scoped({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') }))"),   // scoped(): the machine selector's pick rides along (phase two)
     "the post is gesture-stamped, unchanged");
   assert.ok(!GEAR.includes("Suggest /compact are kernel-side but PER-INSTALL"),
     "the gear's routing comment no longer calls it per-install");

@@ -211,9 +211,9 @@ class PaneGutterDragExecutes(unittest.TestCase):
         assert r.returncode == 0, "the gutter script threw: " + r.stderr[:800]
         cls.out = json.loads(r.stdout.strip().splitlines()[-1])
 
-    def test_boot_writes_the_four_default_grows_and_shows_no_ghost(self):
+    def test_boot_writes_the_five_default_grows_and_shows_no_ghost(self):
         b = self.out["boot"]
-        self.assertEqual(b["writes"], 4)
+        self.assertEqual(b["writes"], 4)   # the four default grows of the hand-written columns (the Artifacts pane is a generic pane since phase three, rendered from its record)
         self.assertEqual(b["grows"], {"--g-chat": 60, "--g-fleet": 34, "--g-feed": 40, "--g-files": 40})
         self.assertEqual(b["ghost"]["display"], "none")
         self.assertFalse(b["drag"] or b["dragv"])
