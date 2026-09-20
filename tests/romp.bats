@@ -2673,7 +2673,7 @@ PY
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"no pane scratch"* ]]
     MOCK_CURL_PANES='{"panes": [], "rev": "0"}' run "$ROMP_SCRIPT" pane list
-    [[ "$output" == *"no panes defined"* ]]
+    [[ "$output" == *"the kernel lists no panes"* ]]
     # remove posts the id; a refusal names the reason and exits 1
     : > "$MOCK_LOG"
     MOCK_CURL_PANE_DEFINED='{"ok": true, "rev": "0"}' run "$ROMP_SCRIPT" pane remove notes
