@@ -8,15 +8,16 @@ had grown back into reference prose: an 11,000-word guide, and an install page t
 screen on which interpreter the kernel picks before it gave the install command. The rule the
 user set afterwards: a person's attention is the scarce thing, an agent doing the install can
 find the detail elsewhere, so these three pages carry one short paragraph per feature and the
-detail lives in docs/reference.md behind a link.
+detail lives in docs/reference.md under a heading matching the feature's name.
 
 This test is the mechanical half of that rule. It pins:
 - a word budget per page, so a page cannot grow back into a reference;
 - a paragraph budget, since a page can be short and still unreadable in slabs (code blocks,
   tables, admonitions and raw HTML are not prose and are not counted);
 - the install command inside the first screen of the install page, before anything optional;
-- one pointer from the guide to the reference, in its opening line, so a feature's paragraph
-  stops ending with a link that sends the reader off the page they are reading;
+- one pointer from the guide to the reference, in its opening line, and no paragraph on any
+  governed page ending on a link, so a paragraph states what a feature does instead of sending
+  the reader off the page they are reading;
 - process documents out of the site's top-level navigation (docs/pr-tiers.md is contributor
   process, reachable by path and by URL, not a section of the site).
 
@@ -31,21 +32,39 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / "docs"
 
-# Caps, with the headroom the restored pages left (2026-09-20: index 428, install 340,
-# guide 4001). The pages they replaced were 428 / 755 / 11,244.
+# Caps, with the headroom the restored pages left (2026-09-20). Measured by _words below, which
+# drops fenced code and HTML comments, the restored pages were index 394, install 259, guide 3932,
+# and the pages they replaced were 394 / 690 / 11,195. (`wc -w` on the same files reads higher,
+# 444 / 340 / 3997 and 428 / 755 / 11,244, since it counts the code blocks and the comments too.)
 WORD_CAP = {"index.md": 600, "install.md": 400, "guide.md": 5500}
 PARAGRAPH_CAP = 70          # words in one paragraph or one list item
 INSTALL_CMD_LINE_CAP = 40   # the install command's first line in docs/install.md
 
 PAGES = tuple(WORD_CAP)
+# README.md mirrors the home page, so the no-trailing-link rule covers it too.
+GOVERNED = ("docs/index.md", "docs/install.md", "docs/guide.md", "README.md")
+# A paragraph that ends on a link sends the reader off the page instead of saying the thing:
+# the link belongs inside a clause that carries the reason for it, with the sentence going on
+# past it. Target-blind on purpose, so a link to a section of the SAME page counts too.
+_ENDS_ON_LINK = re.compile(r"\[[^\]]+\]\([^)]+\)\.?$")
+# A line that is ONLY a link is a navigation line, not a paragraph closing on one: the heading
+# above it carries the reason a reader wants it (README's License section is the whole class).
+_LINK_ONLY = re.compile(r"^\[[^\]]+\]\([^)]+\)\.?$")
 _LIST_ITEM = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+)")
-_NOT_PROSE = ("#", "|", "<", "!!!", "![", "```", ":::")
+_NOT_PROSE = ("#", "|", "!!!", "![", "```", ":::")
+# A line opening with "<" is dropped only when it is BLOCK html: a video, an image, a container,
+# or a tag alone on its line. A wrapped prose line that happens to begin with an inline tag
+# ('<span class="romp-chip">Awaiting</span> chip. The chip clears...') is prose, and dropping it
+# used to split its paragraph in two and undercount both halves.
+_BLOCK_HTML = re.compile(r"^</?(?:video|img|picture|source|div|figure|figcaption|iframe|table|p)\b", re.I)
+_LONE_TAG = re.compile(r"^</?[a-z][^>]*>\s*$", re.I)
 
 
 def _prose_lines(text):
-    """Every line that carries prose: fenced code, HTML comments and indented code dropped."""
+    """(file line number, line) for every line that carries prose: fenced code and HTML comments
+    dropped. The line number is the one in the FILE, so a failure names a line you can open."""
     out, in_fence, in_comment = [], False, False
-    for line in text.split("\n"):
+    for n, line in enumerate(text.split("\n"), 1):
         if in_comment:
             if "-->" in line:
                 in_comment = False
@@ -59,39 +78,49 @@ def _prose_lines(text):
             continue
         if in_fence:
             continue
-        out.append(line)
+        out.append((n, line))
     return out
 
 
 def _words(text):
-    return len(" ".join(_prose_lines(text)).split())
+    return len(" ".join(line for _n, line in _prose_lines(text)).split())
 
 
-def _units(text):
-    """(line number, word count, opening words) for each paragraph and each list item."""
+def _block_html(stripped):
+    return bool(_BLOCK_HTML.match(stripped) or _LONE_TAG.match(stripped))
+
+
+def _paragraphs(text):
+    """(file line, joined text) for each paragraph and each list item, in file order."""
     units, buf, start = [], [], 0
 
     def flush():
         if buf:
             joined = " ".join(buf).strip()
             if joined:
-                units.append((start, len(joined.split()), joined[:60]))
+                units.append((start, joined))
         buf.clear()
 
-    for n, line in enumerate(_prose_lines(text), 1):
+    for n, line in _prose_lines(text):
         stripped = line.strip()
         if not stripped:
             flush()
             continue
-        if _LIST_ITEM.match(line) or stripped.startswith(_NOT_PROSE):
+        skip = stripped.startswith(_NOT_PROSE) or (stripped.startswith("<") and _block_html(stripped))
+        if _LIST_ITEM.match(line) or skip:
             flush()
-            if stripped.startswith(_NOT_PROSE) and not _LIST_ITEM.match(line):
-                continue            # a heading, a table row, a figure, raw HTML: not prose
+            if skip and not _LIST_ITEM.match(line):
+                continue            # a heading, a table row, a figure, block HTML: not prose
         if not buf:
             start = n
         buf.append(stripped)
     flush()
     return units
+
+
+def _units(text):
+    """(file line, word count, opening words) for each paragraph and each list item."""
+    return [(line, len(joined.split()), joined[:60]) for line, joined in _paragraphs(text)]
 
 
 class FrontPagesStayShort(unittest.TestCase):
@@ -102,7 +131,7 @@ class FrontPagesStayShort(unittest.TestCase):
                 self.assertLessEqual(
                     got, WORD_CAP[page],
                     "docs/%s is %d words, over its %d-word budget: move the detail into "
-                    "docs/reference.md and leave a paragraph with a link"
+                    "docs/reference.md and leave a paragraph stating what the feature does"
                     % (page, got, WORD_CAP[page]))
 
     def test_no_paragraph_is_a_slab(self):
@@ -142,8 +171,28 @@ class FrontPagesStayShort(unittest.TestCase):
         self.assertNotIn(
             "pr-tiers.md", nav[1],
             "docs/pr-tiers.md is contributor process, not a section of the site: keep it out "
-            "of nav (it is listed under not_in_nav, so --strict stays quiet)")
-        self.assertIn("not_in_nav", nav[0], "pr-tiers.md needs a not_in_nav entry to keep the strict build quiet")
+            "of nav (not_in_nav declares it intentionally unlisted)")
+        block = re.search(r"^not_in_nav: \|\n((?:[ \t]+\S.*\n)+)", nav[0], re.M)
+        self.assertIsNotNone(block, "mkdocs.yml has no not_in_nav block for the unlisted pages")
+        listed = [line.strip() for line in block.group(1).splitlines() if line.strip()]
+        self.assertIn(
+            "pr-tiers.md", listed,
+            "pr-tiers.md needs its own not_in_nav line, which declares the page intentionally "
+            "unlisted rather than forgotten (the block lists %s)" % listed)
+
+    def test_no_paragraph_ends_on_a_link(self):
+        for page in GOVERNED:
+            text = (REPO / page).read_text(encoding="utf-8")
+            for line, joined in _paragraphs(text):
+                if _LINK_ONLY.match(joined):
+                    continue
+                with self.subTest(page=page, line=line):
+                    self.assertIsNone(
+                        _ENDS_ON_LINK.search(joined),
+                        "%s line %d ends on a link (%r...): a paragraph states what the thing "
+                        "does and carries the link inside a clause that says why a reader wants "
+                        "it, rather than closing on somewhere else to go"
+                        % (page, line, joined[:60]))
 
     def test_the_rule_is_written_down(self):
         md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")

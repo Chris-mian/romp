@@ -264,9 +264,11 @@ elsewhere, so these pages buy a first reader's understanding and spend nothing e
   paragraph in the guide stating what it does, and its detail goes into
   `docs/reference.md` under a heading that matches the feature's name. The guide points
   at the reference once, in its opening line; a paragraph never ends by sending the
-  reader somewhere else, and no page tells a reader that the details are elsewhere or
-  that an agent can find them. Moving text OFF these pages is always welcome; adding to
-  them is what needs a reason.
+  reader somewhere else, a link to a section of the same page included, except a
+  navigation line whose link carries its reason in the same clause (README's Docs
+  section) or stands alone under a heading that names it (its License line); and no
+  page tells a reader that the details are elsewhere or that an agent can find them.
+  Moving text OFF these pages is always welcome; adding to them is what needs a reason.
 - **State what a thing does; do not sell it.** No benefit claims the reader can judge
   for themselves, no "more than a text box", no "opens where you are reading": name the
   behaviour ("the message box also supports attachments, session names and recall"). And
@@ -280,7 +282,8 @@ elsewhere, so these pages buy a first reader's understanding and spend nothing e
   plans are contributor process, reachable by path and by URL (`not_in_nav` in
   `mkdocs.yml`); the site's top-level sections are for people using romp.
 - `tests/test_docs_front_pages.py` pins the word budget per page, the paragraph cap, the
-  install command's position and the nav rule. A session adding to these pages keeps it
+  install command's position, the nav rule, the guide's single pointer to the reference
+  and no paragraph ending on a link. A session adding to these pages keeps it
   green; when a page genuinely needs more room, raise the cap in the same change that
   spends it, so the budget stays a decision someone made.
 
