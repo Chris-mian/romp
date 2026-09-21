@@ -225,10 +225,11 @@ PY
 
 start_wait_kernel() {   # $1 = POST response body; $2 = the poll script; $3 = the baseline read's notice; $4 = baseline reads to fail
     # The CLI reads /sessions once BEFORE its POST (the baseline, 2026-09-21) and polls it after. $2 scripts the polls
-    # after the POST: comma-separated samples, each "q" (quiet) or "c" (compacting), with "A", "B" or "T" appended for
-    # the row's launch error (three distinct notices: A the systemError end and B the notLoaded end, both marked a
-    # compaction's end by noRetry as the kernel marks them; T a turn's rejection, which carries no mark), the last
-    # sample repeating;
+    # after the POST: comma-separated samples, each "q" (quiet) or "c" (compacting), with "A", "B", "R" or "T" appended
+    # for the row's launch error (four notices: A the systemError end and B the notLoaded end, both marked a
+    # compaction's end by noRetry as the kernel marks them; R the systemError end once more, A's words at a later
+    # stamp, as a second compaction failing the same way leaves them (2026-09-21); T a turn's rejection, which carries
+    # no mark), the last sample repeating;
     # the default "q,c,c,q" is the armed-only-after-quiet walk. $3 puts notice A on the baseline read ("A" = a notice
     # from before this wait). $4 makes that many baseline reads answer 500 first (a kernel blip the CLI must retry).
     python3 - "$1" "$TEST_DIR" "${2:-q,c,c,q}" "${3:-}" "${4:-0}" <<'PY' &
@@ -241,6 +242,7 @@ NOTICES = {"A": {"text": "Codex could not compact this conversation (it reported
                  "at": 1781100009.5, "limit": False, "noRetry": True},
            "T": {"text": "codex turn/start rejected: the synthetic rejection a turn leaves as it ends",
                  "at": 1781100006.5, "limit": False}}
+NOTICES["R"] = dict(NOTICES["A"], at=1781100014.5)   # the same words as A at a new stamp: told from A by the stamp alone
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); self.rfile.read(n)
@@ -337,6 +339,19 @@ NOTICE_T="codex turn/start rejected"
     [[ "$output" != *"did not compact"* ]]
 }
 
+@test "romp compact --wait exits 1 on a loud end wearing the standing notice's words at a new stamp: the identity is the stamp too" {
+    # the notice's identity is its stamp and its text together: a compaction that fails the way the standing notice's
+    # did leaves the same words at a later stamp, and that is this wait's loud end. A wait judging the words alone read
+    # it as the notice that stood at the baseline and printed done over an uncompacted thread (the post-merge review of
+    # the exit clause, 2026-09-21); no case drove the two halves apart before this one.
+    start_wait_kernel '{"ok": true, "queued": false}' 'q,c,c,qR' A
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"compacting busy1 now"* ]]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_A"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
 @test "romp compact --wait on a QUEUED compaction takes its baseline from the arming sample: the prior compaction's loud end is not ours" {
     # the prior compaction (compacting on the first poll) ends loudly; ours runs after it and completes: judged against
     # the read before the request, that notice was new and a clean compaction exited 1 (2026-09-21)
@@ -403,6 +418,20 @@ NOTICE_T="codex turn/start rejected"
     [[ "$output" == *"compacting busy1 now"* ]]
     [[ "$output" == *"can't judge this compaction from here"* ]]
     [[ "$output" == *"still requested"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction is not refused when the baseline never came: its baseline is the arming sample" {
+    # the refusal is scoped to a compaction that runs at once, the one judged against the read before the request. A
+    # queued one takes its baseline from the first sample that reads not compacting and has no use for that read, so
+    # the same three failed reads leave it waiting and judging; a refusal of both paths passed every case before this
+    # one (the post-merge review of the exit clause, 2026-09-21).
+    start_wait_kernel '{"ok": true, "queued": true}' 'q,c,c,q' '' 3
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"queued for busy1"* ]]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"can't judge this compaction from here"* ]]
     [[ "$output" != *"did not compact"* ]]
 }
 
