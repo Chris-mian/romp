@@ -168,7 +168,7 @@ def _event_model():
 
 
 def _worked_assistant_atom(turn):
-    """The event model's own line (kernel/judge.py _seg_command_worked): a turn put the MODEL to work iff it has an assistant
+    """The judge's own line (kernel/judge.py `_seg_command_worked`): a turn put the MODEL to work iff it has an assistant
     atom that is not the `command`-flagged local-command stdout echo."""
     return any(a.get("type") == "assistant" and not a.get("command") for a in (turn.get("atoms") or []))
 
@@ -340,7 +340,8 @@ def store_before(store, cut_t, start_t=None, eid=None):
     """The goal store as the judges held it when the ending's turn OPENED, keyed for the arm. Every id prefix (the session
     id) becomes the ending id, so the arm's segment and turn ids match the seed's (`_placed_key` and the closer's one-shot
     read them; without the re-key the planner re-planned the whole history on every build). The cut is the turn's start
-    (`start_t`; the cut itself when the transcript shows no start): nodes born before it, each node's verdict
+    (`start_t`; the caller passes the previous ended turn's cut for an opener-less ending, or the cut itself when there is no
+    previous): nodes born before it, each node's verdict
     log cut to events before it (`ev_t`, then `at`), trails to segments before it, `closedTurns`, `closedSig` and
     placements to turns and segments before it; the ending turn's own prompt-run placement (`#p`, and a delegation's `#d`)
     and the node it points to are kept, so the planner runs the turn's work-run once, as the live pass would; the flag
@@ -524,11 +525,14 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
             if len(endings) < min_turns:
                 skipped["few-turns"] += 1
                 continue
+            prev_cut = None
             for k, (i, start_t, last_text) in enumerate(endings):
                 cut_t = _ts(records[i]) or 0
                 cls = classify_ending(last_text)
-                eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)
-                candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key))
+                eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)   # keys on the real start: a None start is never in a window
+                seed_start = start_t if start_t is not None else prev_cut   # an opener-less ending's seed cuts at the previous ended turn's end
+                candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start))
+                prev_cut = cut_t
         if not found:
             skipped["no-transcript"] += 1
     # spread across sessions: round-robin over sessions within each class, the tier-one-eligible endings first
@@ -555,7 +559,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     (dest / "state" / "romp" / "session-hosts").write_text("off")
     manifest = {"built": now, "classes": list(CLASSES), "endings": [], "skipped": skipped}
     for c in CLASSES:
-        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key in picked[c]:
+        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start in picked[c]:
             eid = str(uuid.uuid5(uuid.NAMESPACE_URL, "romp-judge-experiment:%s:%s:%d" % (sid, fsid, k)))
             pdir = dest / "claude" / "projects" / munge(cwd)
             pdir.mkdir(parents=True, exist_ok=True)
@@ -568,10 +572,10 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                 store = store_with_archive(state_root, store_key)   # the lane's own store (its stem for a title lane, the sid otherwise)
             except (OSError, ValueError):
                 continue                              # already counted above for this lane
-            before = store_before(store, cut_t, start_t, eid) if store.get("nodes") else None
+            before = store_before(store, cut_t, seed_start, eid) if store.get("nodes") else None
             if before is not None:                        # a session with no store yet starts the arm fresh (load_goals mints the shape)
                 (dest / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(before))
-            lo = start_t if start_t is not None else cut_t
+            lo = seed_start if seed_start is not None else cut_t   # the journal cut matches the seed's cut (the previous turn's end for an opener-less ending)
             ov = state_root / "overrides" / (store_key + ".jsonl")   # the lane's own journal
             if ov.is_file():
                 kept = []
@@ -580,7 +584,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                         row = json.loads(l)
                     except ValueError:
                         continue
-                    if start_t is not None and float(row.get("t") or 0) < start_t:
+                    if lo is not None and float(row.get("t") or 0) < lo:
                         kept.append(json.dumps(deep_rekey(row, store_key, eid)))
                 (dest / "state" / "romp" / "overrides" / (eid + ".jsonl")).write_text("".join(x + "\n" for x in kept))
             manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12],
@@ -759,11 +763,12 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 break
     finally:
         restore_prompts(jd, saved)
-    cost, n, mean_ms = ledger_cost(usage)
-    results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
-    flush()
-    arm_root.mkdir(parents=True, exist_ok=True)
-    (arm_root / "results.json").write_text(json.dumps(results, indent=1))
+        try:
+            cost, n, mean_ms = ledger_cost(usage)
+            results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
+        except Exception:
+            pass                                     # a ledger read that raises must not lose the summary written just below
+        flush()                                      # results.json is written in the finally, whatever raised in the loop or after it
     return results
 
 
@@ -995,8 +1000,10 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
     rng = random.Random(seed)
     rows, spent, faults = [], 0.0, []
     for e in manifest["endings"]:
-        key = key_of.get(e.get("lane")) or key_of.get(e["session"])   # the lane's own store when the ending is a fork lane
-        t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=faults) if key else None
+        key = key_of.get(e.get("lane") or e["session"])   # the lane's own store; never the anchor's when a lane hash is present but unresolved
+        row_faults = []
+        t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults) if key else None
+        faults.extend(row_faults)
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
         a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
@@ -1006,7 +1013,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         b, c2 = ask_class(claude_bin, model, text, order, ledger)
         spent += c1 + c2
         rows.append({"id": e["id"], "class": e["class"], "tierOne": t1, "labelA": a, "labelB": b, "label": a if a == b else None,
-                     "spanS": int(time.time() - float(e["cutT"] or 0))})
+                     "spanS": int(time.time() - float(e["cutT"] or 0)),
+                     "tierOneError": row_faults[0][1] if row_faults else None})   # a faulted read, told apart from a genuine tierOne null
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
     both = [r for r in rows if r["tierOne"] and r["label"]]
     agree = sum(1 for r in both if (r["label"] == "finished") == (r["tierOne"] == "finished"))

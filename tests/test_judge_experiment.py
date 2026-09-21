@@ -294,7 +294,7 @@ class Harness(unittest.TestCase):
                        {"ev_t": cut_t + 4000, "at": cut_t + 4001, "src": "closer", "kind": "block", "why": "synthetic later"}]}
         new = {"id": sid + ":g2", "text": "The turn's own goal", "parentId": None, "t": start_t, "mt": cut_t + 10, "nodeComplete": True,
                "blocked": False, "cleared": False, "doneWhy": "synthetic", "trail": [segp],
-               "log": [{"ev_t": cut_t, "at": cut_t + 8, "src": "closer", "kind": "done", "why": "synthetic"}]}
+               "log": [{"ev_t": start_t, "at": cut_t + 8, "src": "closer", "kind": "done", "why": "synthetic"}]}   # ev_t is the turn it closed (its start), at the arrival (the cut)
         sub_later = {"id": sid + ":g3", "text": "A sub of the later turn", "parentId": sid + ":g2", "t": cut_t + 3000, "trail": [segl], "log": []}
         store = {"rompUuid": sid, "seq": 3, "nodes": {old["id"]: old, new["id"]: new, sub_later["id"]: sub_later},
                  "status": {old["id"]: "completed", new["id"]: "completed"}, "placementsV": 14, "rev": 4, "lastNode": sub_later["id"],
@@ -396,12 +396,13 @@ class Harness(unittest.TestCase):
             "e1": {"class": "finished", "builds": [{"g1": {"column": "needs_input", "scored": False}, "g2": {"column": "completed", "scored": True}},
                                                    {"g1": {"column": "needs_input", "scored": False}, "g2": {"column": "completed", "scored": True}}]},
             "e2": {"class": "offer", "builds": [{"g1": {"column": "completed", "scored": False}, "g2": {"column": "needs_input", "scored": True}},
-                                                {"g1": {"column": "completed", "scored": False}, "g2": {"column": "working", "scored": True}}]},
+                                                {"g1": {"column": "cleared", "scored": False}, "g2": {"column": "working", "scored": True}}]},
             "e3": {"class": "finished", "builds": [{"g1": {"column": "needs_input", "scored": True}}, {"g1": {"column": "needs_input", "scored": True}}]}}}
         mm = self.je.measure(manifest, results)
         self.assertEqual((mm["leaks"], mm["falseInterrupts"], mm["flaps"]), (0, 1, 1),
                          "the inherited blocked and completed cards count nothing; the finished ending's own blocked card is the one false interrupt; "
-                         "the offer's own card that read needs_input then working is the one flap: %r" % mm)
+                         "the offer's own card that read needs_input then working is the one flap. e2's UNSCORED g1 also differs across builds "
+                         "(completed then cleared) and must not count: flaps run over the scored cards only: %r" % mm)
         old = {"arm": "old", "endings": {"e2": {"class": "offer", "builds": [{"g1": "completed"}, {"g1": "completed"}]}}}
         self.assertEqual(self.je.measure(manifest, old)["leaks"], 1, "an older results file counts every card")
 
@@ -643,7 +644,7 @@ class Harness(unittest.TestCase):
         (self.state / "names" / sid3).write_text("api\t%s\t#abcdef\n" % self.cwd)
         # every offer of the third session completed by the judges in its own turn
         ends = self.je.turn_ends(recs)
-        log = [{"ev_t": self.je._ts(recs[i]), "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]
+        log = [{"ev_t": self.je.turn_start(recs, i), "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]   # ev_t at the turn's start, at the arrival (the cut)
         store = {"rompUuid": sid3, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
                  "nodes": {sid3 + ":g1": {"id": sid3 + ":g1", "text": "The goal", "parentId": None, "t": T0 + 49000, "trail": [], "log": log}}}
         (self.state / "goals" / (sid3 + ".json")).write_text(json.dumps(store))
@@ -870,6 +871,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(self.je.in_turn_window(1000.5, 900.0, 1000.0), "a done after the cut belongs to the next turn")
         self.assertTrue(self.je.in_turn_window(950.0, 900.0, 1000.0))
         self.assertFalse(self.je.in_turn_window(899.0, 900.0, 1000.0), "before the turn start is not the ending's")
+        self.assertFalse(self.je.in_turn_window(950.0, None, 1000.0), "an ending with no turn opener (None start) has no window: never eligible")
 
     def test_tier_one_matches_the_journals_full_node_key(self):
         """A cross-session tail collision: a followup on ANOTHER session's g1 and a clear on this one. The tail compare (the base)
@@ -946,15 +948,23 @@ class Harness(unittest.TestCase):
 
     def test_a_faulted_store_is_recorded_not_swallowed(self):
         sid = SIDS[0]
-        m = self._corpus()[1]
+        dest, m = self._corpus()                          # built clean (no store); the corruption comes after, so the endings are in the manifest
         (self.state / "goals" / (sid + ".json")).write_text("{ not json")
         faults = []
         out = self.je.tier_one_label(self.state, sid, float(self._ending(m, sid, 0)["cutT"]), float(self._ending(m, sid, 0)["startT"]), faults=faults)
         self.assertIsNone(out)
         self.assertEqual([f[0] for f in faults], [hashlib.sha256(sid.encode()).hexdigest()[:12]], "the fault is recorded by session hash, never the sid or path")
         self.assertNotIn(sid, json.dumps(faults))
-        summary = self.je.label(self._corpus(name="faulted")[0], os.path.join(self.td, "runs-fault"), self.state, claude_bin=self.fake, model="fake")
+        summary = self.je.label(dest, os.path.join(self.td, "runs-fault"), self.state, claude_bin=self.fake, model="fake")
         self.assertIn("tierOneErrors", summary, "the summary counts faulted sessions")
+        # per-row: a faulted read carries its error string, told apart from a genuine null tier one (a session with no store)
+        rows = json.loads(Path(self.td, "runs-fault", "labels.json").read_text())
+        h0 = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]; h1 = hashlib.sha256(SIDS[1].encode()).hexdigest()[:12]
+        faulted = [r for r in rows if r.get("tierOneError")]
+        self.assertTrue(faulted and all(f["tierOne"] is None for f in faulted), "the faulted rows carry an error and a null tier one: %r" % faulted)
+        clean = [r for r in rows if r["id"] in {e["id"] for e in m["endings"] if e["session"] == h1}]
+        self.assertTrue(clean and all(r["tierOne"] is None and r["tierOneError"] is None for r in clean),
+                        "a session with no store reads a null tier one with NO error: the two nulls are distinguished: %r" % clean)
 
     def test_a_clear_before_the_turn_reads_cleared_and_one_inside_the_turn_is_open(self):
         """M1: the seed is the store as at the turn's open. A top the user cleared BEFORE the turn start keeps its clear log and
@@ -1002,6 +1012,70 @@ class Harness(unittest.TestCase):
         (self.state / "goals-archive" / (sid + ".json")).write_text("{ not json either")
         with self.assertRaises(ValueError):
             self.je.store_with_archive(self.state, sid)
+        # a well-formed JSON top that is not an object (a list, a bare string) is quarantined too, never read as an empty store
+        (self.state / "goals-archive" / (sid + ".json")).unlink()
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(["not", "a", "store"]))
+        with self.assertRaises(ValueError, msg="a non-object store top raises, never reads as a store with no nodes"):
+            self.je.store_with_archive(self.state, sid)
+
+    def test_known_fsids_skips_absent_lineage_but_raises_on_a_corrupt_registry(self):
+        """known_fsids reads the sid's lineage as files: an absent episodes/states file (ENOENT/ENOTDIR) contributes nothing,
+        but a corrupt registry is a fault it raises (the builder counts registry-unreadable), never read as no lineage."""
+        sid = SIDS[0]
+        # no sdk/episodes/states files for this sid: known_fsids returns the sid alone, never raising on their absence
+        self.assertEqual(self.je.known_fsids(self.state, sid), {sid}, "absent lineage files are skipped, not a fault")
+        # a resume-fork leaf in states/ joins; an absent episodes file beside it still just skips
+        (self.state / "states" / (sid + ".jsonl")).write_text(json.dumps({"resumeFork": {"from": sid, "to": sid + "-r"}}) + "\n")
+        self.assertEqual(self.je.known_fsids(self.state, sid), {sid, sid + "-r"}, "the resume fork's ends join")
+        # a corrupt registry RAISES; the builder counts it under registry-unreadable and names no sid
+        (self.state / "sdk" / (sid + ".json")).write_text("{ not json")
+        with self.assertRaises(ValueError, msg="a corrupt registry raises, never read as no lineage"):
+            self.je.known_fsids(self.state, sid)
+        import io, contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            m = self._corpus(name="badreg")[1]
+        self.assertGreaterEqual(m["skipped"]["registry-unreadable"], 1, "the session with the corrupt registry is counted")
+        self.assertNotIn(sid, json.dumps(m["skipped"]) + err.getvalue())
+
+    def test_an_opener_less_ending_seeds_from_the_previous_ended_turns_cut(self):
+        """M2: an ending whose turn has no opener (start None) stays ineligible (its manifest startT is null), but its seed and
+        journal still cut SOMEWHERE: the previous ended turn's cut, never the ending's own cut. The base cut at the ending's own
+        cut, so a node born in the ending's own turn (and a journal row inside it) seeded the ending: the arm inherited what its
+        own turn produced. Here a node born and a journal row filed AFTER the previous cut are absent from the opener-less
+        ending's seed and journal, present in every earlier ending's."""
+        sid = SIDS[0]
+        recs, t, parent = [], T0, None
+        for j in range(3):
+            recs.append(uline(sid, t, "ask %d" % j, "u%d" % j, parent)); recs.append(aline(sid, t + 30, "Answer %d." % j, "a%d" % j, "u%d" % j))
+            parent = "a%d" % j; t += 600
+        (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        seg = "%s:%d:aaaaaaaa" % (sid, T0 + 900)                     # born between turn 1's cut (T0+630) and turn 2's cut (T0+1230)
+        node = {"id": sid + ":gX", "text": "born after the previous cut", "parentId": None, "t": T0 + 900, "trail": [seg], "log": []}
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(
+            {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":gX"}, "status": {}, "nodes": {node["id"]: node}}))
+        (self.state / "overrides" / (sid + ".jsonl")).write_text(
+            json.dumps({"node": sid + ":gX", "op": "followup", "t": T0 + 100}) + "\n"        # before every turn's start: always kept
+            + json.dumps({"node": sid + ":gX", "op": "followup", "t": T0 + 900}) + "\n")     # after turn 1's cut: in turn 2 only
+        real = self.je.session_endings
+        def patched(path, fsid):
+            records, endings = real(path, fsid)
+            if sid in str(path) and len(endings) >= 3:
+                i, _s, tx = endings[-1]
+                endings[-1] = (i, None, tx)                         # turn 2 loses its opener
+            return records, endings
+        self.je.session_endings = patched
+        try:
+            dest, m = self._corpus(name="openerless")
+        finally:
+            self.je.session_endings = real
+        e2 = self._ending(m, sid, 2)
+        self.assertIsNone(e2["startT"], "the opener-less ending keeps a null start: it is never eligible")
+        self.assertIs(e2["tierOneEligible"], False)
+        seed2 = json.loads(Path(dest, "state", "romp", "goals", e2["id"] + ".json").read_text())
+        self.assertNotIn(e2["id"] + ":gX", seed2["nodes"], "the node born after the previous cut is NOT in the opener-less ending's seed")
+        j2 = [json.loads(l) for l in Path(dest, "state", "romp", "overrides", e2["id"] + ".jsonl").read_text().splitlines()]
+        self.assertEqual([r["t"] for r in j2], [T0 + 100], "its journal keeps only the row before the previous cut, not the one inside its own turn")
 
     def test_the_dropped_blockcheckt_lets_the_unblocker_examine_the_node(self):
         """M-low: the drop-list pin was key absence; drive it by the unblocker's own due gate. A blocked top's seed, rolled up
@@ -1088,8 +1162,109 @@ class Harness(unittest.TestCase):
         self.assertEqual(rows[e0["id"]]["tierOne"], "not finished",
                          "tier one reads the LANE's own store and journal (a done in the lane's first turn, a followup after): the anchor's store would give None")
 
+    def test_label_never_falls_from_an_unresolved_lane_to_the_anchor(self):
+        """M1: when an ending carries a lane hash, the label pass reads the LANE's store, never the anchor's. A lane the pass
+        cannot resolve (no names entry, no goals file) yields a null tier one, not the anchor's. The base fell through
+        `key_of.get(lane) or key_of.get(session)` to the anchor and read the wrong session's cards."""
+        sid = SIDS[0]
+        e = self._ending(self._corpus()[1], sid, 0)
+        # the anchor's own store reads FINISHED (a user clear after the cut); a lane hash that resolves to nothing must not borrow it
+        self._live_store_with_done(sid, float(e["startT"]), float(e["cutT"]), [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e["cutT"]) + 60}])
+        self.assertEqual(self.je.tier_one_label(self.state, sid, float(e["cutT"]), float(e["startT"])), "finished", "the anchor's store reads finished")
+        dest = os.path.join(self.td, "m1"); (Path(dest) / "claude" / "projects").mkdir(parents=True)
+        lane_hash = hashlib.sha256(b"an-unregistered-lane-with-no-store-or-name").hexdigest()[:12]
+        Path(dest, "manifest.json").write_text(json.dumps({"built": T0, "classes": list(self.je.CLASSES), "skipped": {}, "endings": [
+            {"id": e["id"], "session": hashlib.sha256(sid.encode()).hexdigest()[:12], "lane": lane_hash,
+             "class": "offer", "cutT": e["cutT"], "startT": e["startT"], "tierOneEligible": True}]}))
+        self.je.label(dest, os.path.join(self.td, "runs-m1"), self.state, claude_bin=self.fake, model="fake")
+        row = json.loads(Path(self.td, "runs-m1", "labels.json").read_text())[0]
+        self.assertIsNone(row["tierOne"], "an unresolved lane never falls through to the anchor's store: tier one is null, not the anchor's finished")
+
+    def test_a_registered_same_titled_transcript_is_not_a_lane(self):
+        """The `registered` half of the lane exclusion: a fork lane is an UNREGISTERED same-titled transcript. A second
+        REGISTERED session whose transcript's custom title matches the first session's name ("web") must not be claimed as the
+        first's lane; it keeps its own two endings under its own hash. Dropping the registered half folds its endings into the
+        first session (processed first) and leaves it reporting no transcript of its own."""
+        b = "11111111-2222-3333-4444-eeeeeeeeee03"    # registered, its transcript titled "web" (the first session's name), sorts AFTER it
+        recs = [{"type": "custom-title", "customTitle": "web", "sessionId": b, "timestamp": iso(T0 + 40000)},
+                uline(b, T0 + 40000, "b ask 0", "b0"), aline(b, T0 + 40030, "B answer 0.", "ba0", "b0"),
+                uline(b, T0 + 40600, "b ask 1", "b1", "ba0"), aline(b, T0 + 40630, "B answer 1.", "ba1", "b1")]
+        (self.pdir / (b + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        (self.state / "names" / b).write_text("apiweb\t%s\t#abcdef\n" % self.cwd)
+        m = self._corpus()[1]
+        hb = hashlib.sha256(b.encode()).hexdigest()[:12]
+        self.assertEqual(sum(1 for e in m["endings"] if e["session"] == hb), 2,
+                         "the registered same-titled session keeps its own two endings under its own hash, never folded into the first as a lane: %r"
+                         % [(e["session"], e.get("lane")) for e in m["endings"]])
+
+    def test_the_per_session_queue_is_sorted_by_cut_time_before_the_pop(self):
+        """The per-session sort by cut time: a session's candidates arrive in fsid (stem) order, not time order, once a fork
+        lane joins. With the anchor's turns NEWER than the lane's and per_class=2, the two OLDEST eligible offers (both the
+        lane's) win the slots; dropping the sort pops in stem order and takes the anchor's newer two. Its own state root."""
+        root = Path(self.td, "sortstate", "romp")
+        for sub in ("names", "goals", "goals-archive", "overrides", "sdk", "states", "episodes"):
+            (root / sub).mkdir(parents=True)
+        (root / "session-hosts").write_text("off")
+        claude = Path(self.td, "sortclaude")
+        cwd = os.path.join(self.td, "sortproj"); os.makedirs(cwd)
+        pdir = claude / "projects" / self.je.munge(cwd); pdir.mkdir(parents=True)
+        solo = "11111111-2222-3333-4444-aaaaaaaaaa01"; lane = "11111111-2222-3333-4444-ffffffffff90"   # lane's stem sorts AFTER, so it is appended after
+        def offers(sid, base):
+            recs, t, parent = [], base, None
+            for j in range(2):
+                u, a = "%s-u%d" % (sid[-2:], j), "%s-a%d" % (sid[-2:], j)
+                recs.append(uline(sid, t, "ask %d" % j, u, parent)); recs.append(aline(sid, t + 30, "Done %d. I can also tidy the names." % j, a, u))
+                parent = a; t += 600
+            return recs
+        (pdir / (solo + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in offers(solo, T0 + 10000)))       # the anchor's offers: newer
+        lane_recs = [{"type": "custom-title", "customTitle": "solo", "sessionId": lane, "timestamp": iso(T0 - 5000)}] + offers(lane, T0 - 5000)   # the lane's: older
+        (pdir / (lane + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in lane_recs))
+        (root / "names" / solo).write_text("solo\t%s\t#abcdef\n" % cwd)
+        def store_for(sid, base):
+            log = [{"ev_t": base + j * 600 + 5, "at": base + j * 600 + 6, "src": "closer", "kind": "done", "why": "x"} for j in range(2)]   # a done in each turn's window: every offer eligible
+            return {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+                    "nodes": {sid + ":g1": {"id": sid + ":g1", "text": "g", "parentId": None, "t": base, "trail": [], "log": log}}}
+        (root / "goals" / (solo + ".json")).write_text(json.dumps(store_for(solo, T0 + 10000)))
+        (root / "goals" / (lane + ".json")).write_text(json.dumps(store_for(lane, T0 - 5000)))
+        m = self.je.build_corpus(root, claude, os.path.join(self.td, "sortcorpus"), per_class=2, now=T0 + 10**6)
+        offers_picked = [e for e in m["endings"] if e["class"] == "offer"]
+        h_lane = hashlib.sha256(lane.encode()).hexdigest()[:12]
+        self.assertEqual(len(offers_picked), 2, "the offer cap is two: %r" % offers_picked)
+        self.assertTrue(all(e["tierOneEligible"] for e in offers_picked), "the picked offers are eligible (in the oldest-first branch): %r" % offers_picked)
+        self.assertTrue(all(e["lane"] == h_lane for e in offers_picked),
+                        "sorted by cut time, the two OLDEST eligible offers (the lane's) win; the dropped sort would take the anchor's newer two: %r"
+                        % [(e["turn"], e["lane"], e["cutT"]) for e in offers_picked])
+
+    def test_the_arm_writes_its_summary_even_when_the_closing_ledger_read_raises(self):
+        """Item 3: the closing cost tally and the final results.json write live in the finally, so a raise from the ledger read
+        after the loop has run every ending does not abort the arm with an unhandled error and no closing write. The base ran
+        the tally and the final write after the loop, outside any finally, so a raise there propagated out of the arm."""
+        dest, m = self._corpus()
+        run_root = os.path.join(self.td, "runs-ledger")
+        n_endings = len(m["endings"])
+        real = self.je.ledger_cost
+        calls = [0]
+        def boom(usage):
+            calls[0] += 1
+            if calls[0] > n_endings:                 # the per-ending budget checks pass; only the CLOSING tally raises
+                raise RuntimeError("ledger read failed")
+            return real(usage)
+        self.je.ledger_cost = boom
+        raised = None
+        try:
+            self.je.run_arm_inprocess(dest, "ledgerboom", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)
+        except Exception as ex:
+            raised = ex
+        finally:
+            self.je.ledger_cost = real
+        self.assertIsNone(raised, "the closing ledger read raised, but the finally swallowed it after writing the summary: %r" % raised)
+        res = json.loads(Path(run_root, "ledgerboom", "results.json").read_text())
+        self.assertEqual(len(res["endings"]), n_endings, "the finally wrote the summary with every ending that ran: %r" % list(res.get("endings", {})))
+
     def test_a_bare_command_or_interrupt_turn_is_no_ending(self):
         sid = SIDS[0]
+        # the interrupt tail is a real USER record reading "[Request interrupted by user]" (is_interrupt_record rejects an
+        # assistant one): the worked turn u2 -> a2 (no end_turn, so the turn stays open through the tail) ends at the interrupt
         recs = [uline(sid, T0, "real ask", "u1"), aline(sid, T0 + 30, "Real answer.", "a1", "u1"),
                 {"type": "user", "timestamp": iso(T0 + 100), "uuid": "c1", "parentUuid": "a1", "sessionId": sid, "isMeta": True,
                  "message": {"role": "user", "content": "<command-name>/usage</command-name>"}},
@@ -1097,10 +1272,12 @@ class Harness(unittest.TestCase):
                  "message": {"role": "user", "content": "<local-command-stdout>usage</local-command-stdout>"}},
                 uline(sid, T0 + 600, "another ask", "u2", "s1"),
                 {"type": "assistant", "timestamp": iso(T0 + 630), "uuid": "a2", "parentUuid": "u2", "sessionId": sid,
-                 "message": {"role": "assistant", "content": [{"type": "text", "text": "[Request interrupted by user]"}], "stop_reason": None}}]
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it, calling a tool."}], "stop_reason": "tool_use"}},
+                {"type": "user", "timestamp": iso(T0 + 640), "uuid": "i1", "parentUuid": "a2", "sessionId": sid,
+                 "message": {"role": "user", "content": "[Request interrupted by user]"}}]
         pth = os.path.join(self.td, "cmds.jsonl"); open(pth, "w").write("".join(json.dumps(r) + "\n" for r in recs))
         _r, endings = self.je.session_endings(pth, sid)
-        self.assertEqual([r[0] for r in endings], [1], "only the real worked turn (ending at a1) is an ending; the bare /usage and the interrupted turn are not: %r" % endings)
+        self.assertEqual([r[0] for r in endings], [1], "only the real worked turn (ending at a1) is an ending; the bare /usage and the interrupt-tailed turn are not: %r" % endings)
 
     def test_a_turn_ending_on_tool_use_still_ends(self):
         sid = SIDS[0]
