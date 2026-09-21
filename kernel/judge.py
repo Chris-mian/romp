@@ -3094,10 +3094,9 @@ def _parse_store(fsid, cut, key, session, leaf, human, mode="full"):
     if _leaf_retired(fsid, leaf):
         return
     slot = (fsid, cut, str(leaf))
-    released = False                                     # #1735: a parsed session tree left the store (a cut moved, or the LRU capped)
     with _PARSE_CACHE_LOCK:
         for k in [k for k in _PARSE_CACHE if k[0] == fsid and k[1] != cut]:
-            del _PARSE_CACHE[k]; released = True
+            del _PARSE_CACHE[k]
         trees = _PARSE_CACHE.get(slot)
         if trees is None:
             trees = _PARSE_CACHE[slot] = {}
@@ -3105,9 +3104,9 @@ def _parse_store(fsid, cut, key, session, leaf, human, mode="full"):
         trees[bool(human)] = (key, session, str(leaf), bool(human), str(fsid), str(mode or "full"))
         _lru_touch(_PARSE_CACHE, slot)
         while len(_PARSE_CACHE) > _PARSE_CACHE_MAX:
-            del _PARSE_CACHE[next(iter(_PARSE_CACHE))]; released = True   # the least recently used goes, never everything at once
-    if released:
-        em._note_release()                               # #1735: a released parsed session tree may be a frozen cycle; a reclaim runs next idle
+            del _PARSE_CACHE[next(iter(_PARSE_CACHE))]   # the least recently used goes, never everything at once
+        # #1735: no gc-freeze note here. A parsed session tree measured acyclic (Session/Turn/Atom of json dicts),
+        # so it dies by reference counting when the store drops it; an unfreeze reclaim would collect nothing.
 
 
 def _parse_entry(fsid, session=None, turns=None):

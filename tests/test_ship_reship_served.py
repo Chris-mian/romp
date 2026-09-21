@@ -554,6 +554,7 @@ class LabKernelEnv(unittest.TestCase):
              "ROMP_SERVICE_ENV": os.path.join(LAB, "no-such-service.env"),
              "ROMP_CLAUDE_BIN": "/bin/false", "ROMP_CLI_SCOPE": "0",
              "ROMP_GC_FREEZE": "off",   # #1735: the run's freeze floor reaches every lab kernel (no silent collector change)
+             "ROMP_GC_FREEZE_LOAD_TREES": "8",   # #1735: the threshold knob reaches a lab kernel too (both names in KERNEL_ENV_NAMES)
              "TMPDIR": os.path.join(LAB, "tmp"),
              "GIT_CONFIG_GLOBAL": os.path.join(LAB, "gitconfig"), "GIT_CONFIG_NOSYSTEM": "1"}
     # an XDG_ name of the runner's: a lab kernel takes the XDG_* names (kernel/credentials.py resolves the service.env

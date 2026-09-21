@@ -82,3 +82,16 @@ A boot's freeze covers everything loaded before the first serve: the freeze-afte
 Visibility: the gc hook keeps counting and timing every collection that does run (the young generations, and any full collection during a re-freeze), and the `/perf` gc block already reports the frozen count from `gc.get_freeze_count()`, so the freeze state is visible beside the collections it removes.
 
 Rollout: default on, with an environment switch to turn the freeze off for a measurement, documented in the reference's state and environment section (not a front page).
+
+## The trigger, corrected (2026-09-21, the executed review)
+
+The design above keyed the RELEASE reclaim on the events that release frozen objects, and named an eviction from the record cache among them. That was wrong, and the built code carried it: a record-cache pop releases decoded json that is ACYCLIC and dies by reference counting whether frozen or not, so an unfreeze reclaim on a pop collects nothing (executed: pops and cache clears under a freeze all died by refcount, the unfreeze walk reclaimed zero; the parsed session trees measured acyclic too). Keying the reclaim on pops was worse than idle: a kernel re-reading appended transcripts each build pops the record cache each build, so the reclaim's full 2.8 second pause would land at every idle boundary, the very pause the freeze set out to remove, now on a schedule.
+
+The reclaim is therefore keyed only on the release of a CYCLIC owner, plus a bounded backstop:
+
+- A cyclic owner NOTES its release. The one measured cyclic owner is the backend session: a session and its backend hold each other, so a session end (`sdk_backend.py`, the three `self.sessions.pop`) notes a release. The record cache, the parsed session trees and the materialized atoms are acyclic (freed by refcount), so they note nothing; the `released` counter on the record cache stays a `/perf` statistic, not a trigger.
+- A BOUNDED BACKSTOP reclaim runs after a stated number of load fold-ins since the last reclaim (`backstopFoldins`, default 1000), so a cycle released on a path no note reaches lives at most that many fold-ins, never the process lifetime.
+
+The LOAD fold-in is unchanged: keyed on the record cache's insert counter, a cheap `collect` then `freeze` that walks only the unfrozen. Measured over a warm hour (plans method above, the live insert rate of about 780 an hour): ZERO reclaims when nothing cyclic is released, at ten times that rate still zero, and one reclaim per genuine session end. That is near-zero beside the roughly seventy organic full collections an hour the freeze removes.
+
+A reconcile's own collection pause lands after the pusher cycle has closed its ring row, so the pusher and jobs rings never carry it; the acceptance evidence reads it from `/perf`'s `gc.freeze.lastReconcileMs`. Reading `gc.frozen` (`gc.get_freeze_count()`) is a linear walk of the frozen generation, about 7 ms per million frozen, paid by the `/perf` read.

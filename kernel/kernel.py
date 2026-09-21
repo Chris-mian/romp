@@ -1236,8 +1236,7 @@ _PERF_STATS = _PerfStats()
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
-_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(), load_trees=_GC_FREEZE_LOAD_TREES)
-em.set_release_note(gcf.note_release)   # #1735: the atom LRU and the judge's parse store note releases the record cache's counter cannot see
+_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(), load_trees=_GC_FREEZE_LOAD_TREES)   # the release note is wired when the SDK backend loads (below)
 if _gc_freeze_bad_knob is not None:     # a bad ROMP_GC_FREEZE_LOAD_TREES fell back to the default: said once, counted, never fatal
     _GC_FREEZE_ERRORS[0] += 1
     try:
@@ -18819,6 +18818,8 @@ def _sdk_locked():
             # silently eating every message (the user 2026-07-28).
             _sdk_import_notice()
             sbmod = load_source("romp_sdk_backend", HERE / "sdk_backend.py")
+            if hasattr(sbmod, "set_release_note"):     # #1735: a backend session end (a cyclic owner) notes a release; wired
+                sbmod.set_release_note(gcf.note_release)   #  when the backend loads (a test stub of the module carries no note plumbing)
             # The backend claims the login tokens out of os.environ once (startup_auth_env), and the judges
             # read that same stash through this wire for their login-billed children. No key rides here:
             # romp holds none (credentials.py, 2026-09-08), and every child resolves Claude Code's own

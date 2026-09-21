@@ -3,9 +3,10 @@
 
 The judges parse the living sessions at boot (no browser needed; the boot-parses lab pins that), so the record
 cache fills and, at the pusher's idle boundary, the freeze fires: /perf's gc.freeze shows `active` with `freezes`
-at least one. Then a transcript is appended and re-read, replacing its cache entry (a release the old counters
-missed), and a release reconcile runs: `reclaims` climbs and `lastReconcileKind` reads `release`. The gen-2
-arithmetic holds: the organic full collections are `gen."2".collections` less the reconciles the controller ran.
+at least one. Then a transcript is appended and re-read repeatedly (each re-read REPLACES its acyclic cache entry,
+a record-cache pop) and `reclaims` stays put: under the corrected trigger a pop is not a cyclic release and drives
+no unfreeze pause. The gen-2 arithmetic holds: the organic full collections are `gen."2".collections` less the
+reconciles the controller ran. The reclaim-on-a-cyclic-release path (a session end) is covered by the unit tests.
 The freeze is set ON in the kernel's own env here; the suite floors it OFF everywhere else. Synthetic only:
 invented text, placeholder uuids, TESTHOST.
 """
@@ -127,21 +128,26 @@ class ServedGcFreeze(unittest.TestCase):
             time.sleep(0.5)
         return self._perf()
 
-    def test_the_freeze_fires_live_and_a_release_reclaims(self):
+    def test_the_freeze_fires_live_and_steady_re_reads_never_reclaim(self):
         # the judges' boot parse loads the sessions; at an idle cycle the freeze fires
         pf = self._wait(lambda pf: (pf.get("gc", {}).get("freeze", {}).get("freezes") or 0) >= 1)
         fr = pf["gc"]["freeze"]
         self.assertTrue(fr["enabled"] and fr["active"], "the freeze is on and holds a freeze: %r" % fr)
         self.assertGreaterEqual(fr["freezes"], 1, "the freeze fired on the judges' boot parse: %r" % fr)
-        self.assertIn(fr["lastReconcileKind"], ("initial", "load", "release"), fr)
+        self.assertIn(fr["lastReconcileKind"], ("initial", "load"), "no reclaim yet, only loads: %r" % fr)
         self.assertGreater(pf["gc"]["frozen"], 0, "objects left the collector's walk (gc.get_freeze_count): %r" % pf["gc"]["frozen"])
-        # append a turn to a transcript: a re-read replaces its cache entry (a release), and a reclaim runs
-        with open(self.paths[WEB], "a") as f:
-            f.write("".join(json.dumps(r) + "\n" for r in _turns(int(time.time()), 3)))
-        pf = self._wait(lambda pf: (pf.get("gc", {}).get("freeze", {}).get("reclaims") or 0) >= 1)
-        fr = pf["gc"]["freeze"]
-        self.assertGreaterEqual(fr["reclaims"], 1, "a release (the re-read replacement) drove an unfreeze reclaim: %r" % fr)
-        self.assertEqual(fr["lastReconcileKind"], "release", "the last reconcile was a release reclaim: %r" % fr)
+        reclaims_before = fr["reclaims"]
+        # steady re-reads: append to a transcript repeatedly (each re-read replaces its acyclic cache entry). Under the
+        # corrected trigger this is a record-cache pop, NOT a cyclic release, so it must drive NO reclaim (the 2026-09-21
+        # design finding: a pop-keyed reclaim would pay the full pause on a schedule).
+        for k in range(6):
+            with open(self.paths[WEB], "a") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in _turns(int(time.time()) + k * 1000, 2)))
+            time.sleep(2)
+        pf = self._perf(); fr = pf["gc"]["freeze"]
+        self.assertEqual(fr["reclaims"], reclaims_before,
+                         "steady re-reads drove NO reclaim: a record-cache pop is acyclic and never triggers the unfreeze pause: %r" % fr)
+        self.assertNotEqual(fr["lastReconcileKind"], "release", "and the last reconcile was not a release: %r" % fr)
         # the gen-2 arithmetic: the reconciles the controller ran are a subset of the full collections the hook saw
         gen2 = pf["gc"]["gen"]["2"]["collections"]
         self.assertGreaterEqual(gen2 - fr["freezes"] - fr["reclaims"], 0,

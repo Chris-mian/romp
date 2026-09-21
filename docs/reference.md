@@ -2017,7 +2017,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   are `gc.get_threshold()` and `gc.get_count()`, repeated from `heap.gc` so
   the block reads on its own (how near the next collection is); `frozen`
   counts the objects moved out of the collector's reach by `gc.freeze`, which
-  it never scans; `errors` counts callback failures (counted, never raised
+  it never scans (reading the count is a linear walk of the frozen generation,
+  about 7 ms per million frozen, paid by the `/perf` read); `errors` counts callback failures (counted, never raised
   into the collector; the first in the process is said once on stderr, a
   line prefixed `perf: gc hook:`, the rest counted only); `hooked` says
   whether the kernel's `gc.callbacks` hook is installed, so zeros with
@@ -2025,30 +2026,35 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   freeze controller (issue #1735): the kernel keeps the loaded decoded heap
   out of the collector's walk with `gc.freeze`, so a warm full collection
   walks only what was allocated since and no longer pauses the pusher for
-  seconds. It reconciles at the pusher's idle boundary, keyed on the record
-  cache's load and release counters (never a timer): a material load since
-  the last freeze is folded in cheaply (`collect` then `freeze`, walking only
-  the unfrozen), and a release is reclaimed with an `unfreeze`, a full
-  collection and a re-freeze so a released reference cycle is collected. The
+  seconds. It reconciles at the pusher's idle boundary, never on a timer: a
+  LOAD fold-in (`collect` then `freeze`, walking only the unfrozen) when the
+  record cache's insert counter grows by a material number of trees, and a
+  RELEASE reclaim (`unfreeze`, a full collection, `freeze`) when a CYCLIC owner
+  is released or the backstop fires. The reclaim is keyed only on a cyclic
+  owner's release: a backend session and its backend hold each other, so a
+  session end notes a release; a record-cache pop does NOT, because its decoded
+  json is acyclic and dies by reference counting whether frozen or not (an
+  unfreeze reclaim there would collect nothing), so `recordCache.released` is a
+  statistic, not a trigger. A BACKSTOP reclaim runs after `backstopFoldins`
+  load fold-ins since the last reclaim, so a cycle released on a path no note
+  reaches lives at most that many fold-ins, never the process lifetime. The
   sub-block carries `enabled`, `active` (whether a freeze is held now; named
   apart from the integer `frozen` above, which is `gc.get_freeze_count()`),
-  `loadTrees` (the insert count that counts as a material load), `freezes` and
+  `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
   `reclaims` (each ran one collection, so the organic full collections are
   `gen."2".collections` less their sum), `lastReconcileMs` and
-  `lastReconcileKind` (`initial`, `load` or `release`), `totalReconcileMs` and
-  `errors` (a reconcile that raised is counted here and said once on stderr,
-  never ending the pusher). The release trigger reads the record cache's
-  `released` counter, which moves on EVERY pop (an eviction, a re-read
-  replacing an appended transcript's entry, an OSError pop of a deleted one, a
-  quiescent drop), plus a shared note the atom LRU and the judges' parse store
-  raise when they release a tree; so the commonest warm release, a re-read
-  replacement, is seen. The freeze is on by default; `ROMP_GC_FREEZE=off` (or
-  `0`/`false`) turns it off for a measurement, and `ROMP_GC_FREEZE_LOAD_TREES`
-  sets the load threshold (a value that is not a positive integer falls back to
-  the default, said once and counted under `errors`, and it is floored at 1 so
-  it cannot make the reconcile fire every idle cycle). A request that arrives
-  during a reconcile waits that one collection; the idle boundary is the best
-  moment for it, not a guarantee none arrives. To read a slow cycle: find
+  `lastReconcileKind` (`initial`, `load`, `release` or `backstop`),
+  `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
+  said once on stderr, never ending the pusher). The reconcile's own collection
+  pause lands after the cycle closed its ring row, so the pusher and jobs rings
+  never show it; `lastReconcileMs` is where a reconcile's pause is read. The
+  freeze is on by default; `ROMP_GC_FREEZE=off` (or `0`/`false`) turns it off
+  for a measurement, and `ROMP_GC_FREEZE_LOAD_TREES` sets the load threshold (a
+  value that is not a positive integer falls back to the default, said once and
+  counted under `errors`, and it is floored at 1 so it cannot make the reconcile
+  fire every idle cycle). A request that arrives during a reconcile waits that
+  one collection; the idle boundary is the best moment for it, not a guarantee
+  none arrives. To read a slow cycle: find
   its row in `pusher.stageRing` (or `jobs.stageRing`) and read the row's `gc`
   (`null` when the cycle closed without an opening mark): `n0`, `n1` and
   `n2`, the collections per generation that ran anywhere in the process
