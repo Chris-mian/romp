@@ -70236,8 +70236,10 @@ class Handler(BaseHTTPRequestHandler):
             # `held`: the words went out but the card could not be dismissed (a state write refused after the delivery): the pane
             # keeps the card and leaves its button spent (the second executed review of PR 1935, 2026-09-21: the raise out of the dismissal answered ok false for a delivery that
             # had happened, and the redial's click was then refused as already run with nothing on screen saying the words landed)
-            client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or "",
-                                       "held": bool(_nok and _nerr)}))
+            _nframe = {"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}
+            if _nok and _nerr:
+                _nframe["held"] = True                     # only when it applies: an older pane, and the pins on the plain answers, read the frame as before
+            client["send"](json.dumps(_nframe))
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the

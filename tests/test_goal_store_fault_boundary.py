@@ -1010,7 +1010,7 @@ class ActsUnderAFailedWrite(_World):
             self.assertIn("Read-only file system", m["error"], "the errno text stays")
             self.assertIn("goals/" + A + ".json", m["error"], "and the file, relative to the state root")
             self.assertNotIn(str(jd.STATE), m["error"], "a frame a federated pane may show names no state root")
-        self.assertFalse(done[0]["held"], "a refusal is not a held delivery")
+        self.assertNotIn("held", done[0], "a refusal is not a held delivery: the key rides only an answer whose delivery landed and whose dismissal refused")
         # a delivery whose dismissal refused: ok, with the card held (the pane keeps it and leaves the button spent)
         with mock.patch.object(km, "_notice_action", lambda *a, **k: (True, "the card could not be dismissed (x)")):
             sent = self._dispatch({"type": "noticeAction", "itemId": "notice:%s:k:1" % A, "kind": "send", "body": {}})
