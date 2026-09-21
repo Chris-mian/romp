@@ -2078,7 +2078,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   unaffected, since a client whose redial is unresolved holds no base for any
   session), and the re-entry of a tab that left the strip (the pusher forgets
   every client's base for it along with its baseline, since the page tore the
-  tab down when the strip stopped listing it); `baseGone` for a fork or a
+  tab down when the strip stopped listing it; one exception, stated not fixed:
+  the page keeps a strip-omitted tab the frame's `live` field lists, so for a
+  live session that the strip omits, the pusher forgets bases the page still
+  holds, and the re-listing is a row-less `noBase` full per client, since the
+  dedup slot is popped with the base); `baseGone` for a fork or a
   rewind; `lastGone:<family>` for a held last edge the next list no longer
   carried; `changeAt0` for a change at the list's first event against a held
   base: a genuine first-event change (a floor advance that moved the list's
@@ -2089,8 +2093,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   session), in two faces: the cycle's repair after two whole-frame senders
   raced on a baseline-less sid (two senders that both read it absent before
   their builds leave none and mark the session, no single-client push re-seeds
-  it in between, and the next cycle's full repairs every client and clears the
-  mark), and the detector's accepted false positive, a sender whose build the
+  it in between, and the next cycle whose loop reads the baseline absent sends
+  every base holder the full and takes the mark off with its write; a cycle
+  that sent tails leaves it for the next one), and the detector's accepted
+  false positive, a sender whose build the
   cycle's write landed inside with its own list the newer one: it sends every
   base holder the full, pops the cycle's baseline and marks the session with
   no client stale, and the next cycle sends every base holder the full once
@@ -2496,7 +2502,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   same tab counts again on every later push until the page asks for it, 2026-09-14),
   `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
-  an input moved while they ran; the next cycle builds them again) and
+  an input moved while they ran; the next cycle builds them again),
+  `baselineRaced` (the chat wire's shared delta baseline was popped by the
+  seed's detector and the session marked: two whole-frame senders raced on a
+  session with no baseline, or the detector's accepted false positive named
+  under `changeAt0` above; the mark's only other trace is the next cycle's
+  `changeAt0` rows, filed only for a base holder alive then whose repair did
+  not dedup), `baselineRepaired` (a cycle whose loop read the baseline absent
+  sent every base holder the full and its write took a standing mark off;
+  raced minus repaired is the marks still standing plus the tabs that left the
+  strip, whose eviction clears the mark with no repair) and
   `bg_miss`, a map from each labelled component of that signature
   (`transcript`, `states`, `store`, `hold`, `archive`, `episodes`, `reg`,
   `gone`, `tasks`, `cut`, `live`, `row`, `clock`, `backend`, `ops`, `limit`,

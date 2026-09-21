@@ -332,7 +332,8 @@ class Collector(unittest.TestCase):
         # chat also carries the watched/background split and the per-component attribution (2026-09-09); the
         # plain writer counts the build and attributes nothing
         self.assertEqual(snap["builds"]["chat"], {"cached": 1, "built": 1, "ms": 40.0, "active_built": 0, "bg_built": 0,
-                                                  "moved": 0, "coldSkipped": 0, "bg_miss": {k: 0 for k in km._PerfStats.CHAT_MISS},
+                                                  "moved": 0, "coldSkipped": 0, "baselineRaced": 0, "baselineRepaired": 0,
+                                                  "bg_miss": {k: 0 for k in km._PerfStats.CHAT_MISS},
                                                   "bySession": []})                   # the per-session timer (2026-09-14): no sid handed in, no row
         self.assertEqual(snap["builds"]["feed"]["built"], 1)
         self.assertEqual(snap["builds"]["timeline"], {"cached": 0, "built": 0, "ms": 0.0})
