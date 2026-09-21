@@ -873,7 +873,7 @@ class Wiring(unittest.TestCase):
         self.assertIn("dm.onclick=function(){dismissedTag=curTag;", self.src)
 
     def test_the_landing_ships_the_banner_and_the_shell_relay(self):
-        self.assertIn("_stale_block(v) + _update_block() + _rdrift_block()", self.src)
+        self.assertIn("_stale_block(v, pv) + _update_block() + _rdrift_block()", self.src)
         self.assertIn("window.__rompUpdateOffer=offer", self.src)
         self.assertIn("m.type==='updateAvail'&&window.__rompUpdateOffer", self.src)
 

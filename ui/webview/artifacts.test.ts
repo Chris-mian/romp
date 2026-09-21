@@ -1,5 +1,5 @@
 // The Artifacts pane's pure parts (plans/artifacts-pane.md): the grid's rule, the cycle's order, the rule words, the row
-// click's route, the age words; and source pins on the pieces outside the kernel (the setting, the gear's row, the
+// click's route, the age words; and source pins on the pieces outside the kernel (the retired setting dropped, the gear's generic row, the
 // bundle entries). The kernel's walk, listing, op, route and shell hooks are pinned in tests/test_artifacts_list.py; the
 // behaviour rides tests/test_artifacts_pane_served.py.
 import { test } from "node:test";
@@ -36,7 +36,7 @@ test("a row click walks the chat's ladder: an open Files pane takes it, else the
   assert.equal(rowRoute(false, { files: true }, { files: true }), "here", "standalone /artifacts has no shell");
 });
 
-test("the pieces outside the kernel: the fresh setting read like the Files control's, the gear's Panes row, the bundle entries", () => {
+test("the pieces outside the kernel: the retired setting dropped at load, the gear's generic Panes row as the control, the bundle entries", () => {
   const SETTINGS = fs.readFileSync(path.join(UI, "settings.ts"), "utf8");
   const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
   const BUILD = fs.readFileSync(path.resolve(process.cwd(), "esbuild.js"), "utf8");
@@ -45,7 +45,8 @@ test("the pieces outside the kernel: the fresh setting read like the Files contr
   // (gear.js renderRegistryRows, off by default for an experimental pane) is its control; the bespoke showArtifactsControl key is gone
   assert.match(KERNEL, /\{"id": "artifacts", "title": "Artifacts", "source": "\/artifacts", "on": False, "experimental": True\}/, "the record: off by default, asked for in the gear");
   assert.doesNotMatch(SETTINGS, /showArtifactsControl: boolean|showArtifactsControl: false|s\.showArtifactsControl =/, "no bespoke setting key: no field, no default, no normalization (only the retired key's drop at load, pinned below)");
-  assert.doesNotMatch(GEAR, /rs-artctl|showArtifactsControl/, "no bespoke gear row");
+  assert.doesNotMatch(GEAR, /rs-artctl/, "no bespoke gear row");
+  assert.match(GEAR, /delete o\.showArtifactsControl;/, "the gear's load() drops the retired key (save() writes the whole object, so a kept key was re-persisted forever)");
   assert.match(GEAR, /var BUILTIN_HINTS = \{ artifacts: 'A session\\'s written, shown and dropped files as a list and a grid of large thumbnails\.' \};/, "the shipped record's row says what the pane shows (its first landing's words)");
   assert.match(GEAR, /\(p\.builtin \? \(\(BUILTIN_HINTS\[p\.id\] \|\| ''\) && BUILTIN_HINTS\[p\.id\] \+ ' '\) : 'A pane defined at the kernel \(romp pane\)\. '\)/, "a data pane's row says it is defined at the kernel");
   assert.match(GEAR, /'Off' \+ \(p\.experimental \? ' \(the default for an experimental pane\)' : ''\)/, "the experimental default is said only where it applies");

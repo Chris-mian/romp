@@ -72,7 +72,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
             "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");
   assert.match(G, /<b>Allow file editing<\/b>/, "the permission row's name (T404)");
   assert.match(G, /<label class="rs-row rs-panes-row"><input type=checkbox id=rs-filesctl>' \+[^\n]*\n\s*'<span><b>Files<\/b>'/, "the Files row reads Files, like Sessions, Outline and Feed above it (T407), and is a Panes row like them, so the off-dashboard hide takes it (T404's tidy)");
-  assert.match(GEAR, /delete o\.filesControl; delete o\.fileLinkPane;/, "load() drops both dead keys, so neither survives a gear save (T404's tidy)");
+  assert.match(GEAR, /delete o\.filesControl; delete o\.fileLinkPane; delete o\.showArtifactsControl;/, "load() drops the three dead keys, so none survives a gear save (T404's tidy; the Artifacts control's key since the registry fix: save() writes the whole object, so a kept key was re-persisted forever)");
   assert.match(ps.chat, /The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display\./, "the Thinking row says why it is Chat's (T404's tidy)");
   // the popover stays inside the card (the T408 read): a row whose popover would run past the card's bottom opens it above
   const CSS2 = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.css"), "utf8");
@@ -295,4 +295,21 @@ test("the Token usage panel's every close returns to the settings card (the T409
   // stands, so the answer takes the layer down first, one level; every open and close of the settings resets the layer the same way
   assert.match(GEAR, /window\.__rompSettingsClose = function \(\) \{ if \(raBack && !raBack\.hidden\) \{ raHide\(\); return true; \}/, "a press with the keyboard in the shell document reaches the panel");
   assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(raBack && !raBack\.hidden\) raHide\(\);/, "an open while the panel is up lands on the card, never under the layer");
+});
+
+// The hand rows' handler rewrites the stored pane set through panesOf (the 1919 read, still standing at 1922: three keys alone, so a
+// flip of Sessions, the Outline or the Feed dropped every registry key: the Artifacts control hid and its column closed while its row
+// read checked, and a data pane's stored false came back on). Executed: the function as gear.js defines it.
+test("panesOf keeps every stored boolean member beside the three hand keys, and nothing that is not a boolean", () => {
+  const m = GEAR.match(/function panesOf\(s\) \{[^\n]*\n[^\n]*\}/);
+  assert.ok(m, "panesOf as written");
+  const panesOf = new Function(m![0] + "; return panesOf;")() as (s: unknown) => Record<string, boolean>;
+  assert.deepEqual(panesOf({ panes: { timeline: true, fleet: true, feed: true, lab: true, notes: false, junk: "x", n: 1 } }),
+    { timeline: true, fleet: true, feed: true, lab: true, notes: false }, "the registry keys survive; a stray stored value does not ride along");
+  assert.deepEqual(panesOf({ panes: { fleet: false } }), { timeline: true, fleet: false, feed: true }, "a missing hand key reads as shown");
+  assert.deepEqual(panesOf({}), { timeline: true, fleet: true, feed: true }); assert.deepEqual(panesOf(null), { timeline: true, fleet: true, feed: true });
+  // the handler's write: one hand key flipped keeps the rest of the set
+  const s = { panes: panesOf({ panes: { timeline: true, fleet: true, feed: true, artifacts: true, notes: false } }) };
+  s.panes.fleet = false;
+  assert.deepEqual(s.panes, { timeline: true, fleet: false, feed: true, artifacts: true, notes: false }, "an Outline uncheck leaves the Artifacts control and the hidden data pane as they were");
 });

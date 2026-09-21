@@ -39,7 +39,7 @@ test("styles.css: the pane rings while a file drag is over it, pointer-transpare
 });
 
 test("kernel: every non-chat pane's shim and the shell document refuse a file drag — not-allowed cursor, drop swallowed, no navigation", () => {
-  const shim = KERNEL.slice(KERNEL.indexOf("def _shim(app, v=0, no_stale=False):"), KERNEL.indexOf("def _shim(app, v=0, no_stale=False):") + 40000);
+  const shim = KERNEL.slice(KERNEL.indexOf("def _shim(app, v=0, no_stale=False, pv=None):"), KERNEL.indexOf("def _shim(app, v=0, no_stale=False, pv=None):") + 40000);
   assert.match(shim, /if\(APP!=="chat"\)\{var fileDrag=function\(e\)\{var t=e\.dataTransfer&&e\.dataTransfer\.types;if\(!t\)return false;for\(var i=0;i<t\.length;i\+\+\)if\(t\[i\]==="Files"\)return true;return false;\};\n/);
   assert.match(shim, /document\.addEventListener\("dragover",function\(e\)\{if\(fileDrag\(e\)\)\{e\.preventDefault\(\);try\{e\.dataTransfer\.dropEffect="none";\}catch\(x\)\{\}\}\}\);\n/);
   assert.match(shim, /document\.addEventListener\("drop",function\(e\)\{if\(fileDrag\(e\)\)e\.preventDefault\(\);\}\);\}/, "the chat's document is left to its bundle, which takes the drop");

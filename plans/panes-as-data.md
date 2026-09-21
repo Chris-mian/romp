@@ -53,7 +53,7 @@ reader on the directory's stat (`_boards()`), and code winning an id collision t
 
 ## 1. The model: a pane is a record
 
-**Decision: a pane is a definition in ONE schema; the five shipped panes are code constants in that schema
+**Decision: a pane is a definition in ONE schema; the shipped panes (six since the Artifacts pane, 2026-09-19) are code constants in that schema
 and every other pane is a JSON document in the same schema under the state root.** The renderer of the
 shell (the rail, the tabs, the markup, the CSS, the broadcast, the gear) is a function of the list.
 
@@ -183,8 +183,9 @@ in `ui/webview/chat-split.test.ts`) and a pin in this design's tests asserts out
 
 ## 4. The docking kit reads the list
 
-The kit's own fixed lists become functions of the same attribute. `pane-dock.ts`: `ROW_ORDER` is the
-column panes of the list in rail order; `growKey(id)` is the pane's id for a data pane (the code five keep
+The kit's own fixed lists become functions of the same attribute. `pane-dock.ts`: the row is read off the DOM
+in document order (`reconcileShown` opens new panes in that order; the fixed `ROW_ORDER` list is gone since the
+registry fix PR, 2026-09-21); `growKey(id)` is the pane's id for a data pane (the code five keep
 their store keys); `defaultDock` docks a data pane at the right end; `reconcileShown`'s shown set is read
 from the list's element ids. `panedock-main.ts`: `paneTitle` is the record's title; the frames it wires and
 marks are every `.pane` in `.col`, already generic. The grab detector (`pane-grab.ts`): a protocol pane
@@ -284,7 +285,13 @@ takes the census over the built landing, the bundles' sources and the built bund
 4. **Bands and the phone**: a `band` member (a second fixed-px kid; the flex `.col`'s bottom slot
    generalised) and experimental panes on the phone. Tier: `feature`; if the `romp-panes` store's SHAPE ever
    changed for this (today a flat `{key: bool}`), that is a persisted-contract change and a `major-feature`
-   discussion; the plan avoids it by keeping keys flat.
+   discussion; the plan avoids it by keeping keys flat. Recorded for it (the 1922 read, 2026-09-21): with the
+   Files control on, the phone's tab bar is 403 px wide at a 390 px viewport, clipping the settings action,
+   unreachable at 375 px or with a data pane's tab beside it; the options are a scrolling tab strip beside a
+   fixed action cluster, or a content budget for the bar (shrink-with-ellipsis mangles the labels). Until then,
+   on a phone a generic pane loads by its TAB alone (the registry fix PR, 2026-09-21): the tab bar's tap, or the
+   pane controller's apply for the current tab; never by the desktop flag, and a pane with no tab (an
+   experimental record) falls to the chat.
 
 ## 8. Tests named
 

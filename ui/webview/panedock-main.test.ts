@@ -5,6 +5,9 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { isPaneDockingOn, PANE_DOCKING_CLASS, paneTitle } from "./panedock-main";
 import * as PDM from "./panedock-main";
+import * as fs from "node:fs";
+import * as path from "node:path";
+const ENGINE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "panedock-main.ts"), "utf8");
 // read by name off the module so a build at a base without the export still builds and the test reds on its behaviour
 const titleMapOf = (PDM as unknown as Record<string, (b: ReadonlyArray<{ key: string; text: string }>, rows: unknown) => Record<string, string>>).titleMapOf;
 import * as PD from "./panedock-main";
@@ -59,4 +62,16 @@ test("paneTitle names a data pane and the Artifacts pane as the rail does; the s
   assert.equal(paneTitle("later-pane", titles), "later-pane", "a pane no record names is its id");
   assert.deepEqual(["chat-pane", "fleet-pane", "feed-pane", "files-pane", "tl-pane"].map((id) => paneTitle(id)), ["Chat", "Outline", "Feed", "Files", "Sessions"], "no map: the shipped words");
   assert.equal(titleMapOf([], "not an array") && Object.keys(titleMapOf([], null)).length, 0, "no rows: no titles, never a throw");
+});
+
+// A CHAT COLUMN's frame is classified by the exact id shape the split script mints, never by the `f-chat-` prefix (the 1920 read: a
+// registry pane `chat-notes` renders as `f-chat-notes` and was sorted into the chat: no grab detector, the chat's strip style).
+test("isChatFrame: f-chat and f-chat-<n> are chat columns; a registry pane whose id begins chat- is not", () => {
+  const isChatFrame = (PDM as unknown as Record<string, (id: string) => boolean>).isChatFrame;
+  assert.equal(typeof isChatFrame, "function", "the engine exports its one chat-frame read");
+  assert.equal(isChatFrame("f-chat"), true); assert.equal(isChatFrame("f-chat-2"), true); assert.equal(isChatFrame("f-chat-14"), true);
+  assert.equal(isChatFrame("f-chat-notes"), false, "a registry pane's frame"); assert.equal(isChatFrame("f-chat-"), false); assert.equal(isChatFrame("f-chatter"), false);
+  assert.equal(isChatFrame("f-files"), false); assert.equal(isChatFrame("f-notes"), false);
+  assert.equal((ENGINE.match(/isChatFrame\(f\.id\)/g) || []).length, 2, "both sites read it: the strip style's injection and the grab detector's exclusion");
+  assert.doesNotMatch(ENGINE, /f\.id\.indexOf\("f-chat-"\) === 0/, "no prefix test remains");
 });

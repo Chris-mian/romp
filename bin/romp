@@ -1212,7 +1212,7 @@ fi
 # source, on, experimental, protocol); the kernel validates it (POST /pane, the one validator behind every door) and stores it
 # under the state root; the dashboards offer a reload on their next keepalive and render it on their next load. `define`
 # replaces a pane's definition whole (a missing id inside the JSON takes the command's); a shipped pane's id (chat, timeline,
-# fleet, feed, files, settings) and a definition outside the schema are refused with the reason. `romp watch`'s mechanics: the token through _romp_token_cfg, one `romp pane: ...` line, a `refused`
+# fleet, feed, files, artifacts, settings), an id the shell's derived names take (tl, a to d, ghost, col, a `chat-` prefix) and a definition outside the schema are refused with the reason. `romp watch`'s mechanics: the token through _romp_token_cfg, one `romp pane: ...` line, a `refused`
 # line naming the error and exit 1, usage errors exit 2.
 if [[ "${1:-}" == "pane" ]]; then
     shift
