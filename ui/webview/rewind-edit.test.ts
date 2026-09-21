@@ -32,7 +32,9 @@ test("sending in edit mode posts rewindSend and never a plain sendMessage", () =
   // fall through into a plain send (the routing itself now lives in routeUserMessage, defined earlier
   // in the file, so a source-index race against it would be meaningless)
   const editBranch = RENDER.indexOf('type: "rewindSend"');
-  const stagedFlush = RENDER.indexOf("flushStaged(sid);");
+  // the flush DELIVER runs, i.e. the first one after the edit branch: the viewer's Submit calls
+  // flushStaged too, from a function defined earlier in the file, and the global first match is it
+  const stagedFlush = RENDER.indexOf("flushStaged(sid);", editBranch);
   assert.ok(editBranch > 0 && stagedFlush > 0 && editBranch < stagedFlush,
     "edit branch precedes deliver's first send action");
 });

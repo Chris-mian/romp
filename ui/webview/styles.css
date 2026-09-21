@@ -2376,8 +2376,10 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 /* right-side warning toasts (render.ts warnToast): kernel `warn` messages and federation
    delivery failures — a failed action never dies silently (the user 2026-07-10: creating a
    session on an unreachable remote gave no feedback at all). Click to dismiss. */
+/* Above the file viewer's 1200 overlay: a warn raised by something DONE INSIDE the viewer (a refused
+   comment thread, a federation drop mid-save) is unreadable if the overlay paints over its toast. */
 #warn-toasts {
-  position: fixed; top: 44px; right: 14px; z-index: 70;
+  position: fixed; top: 44px; right: 14px; z-index: 1260;
   display: flex; flex-direction: column; gap: 8px; max-width: 340px;
 }
 .warn-toast {
@@ -3118,9 +3120,13 @@ body.filebrowse-open { overflow: hidden; }
 .scroll-marks .scroll-mark.machine { background: #8a8f98; opacity: 0.55; }
 
 /* Viewer-owned selection menu + comment box. The viewer mounts in the chat pane AND the feed pane, so
-   these ride both sheets; the skin is the shared menu vocabulary (#252526 card, hairline, 6px, shadow). */
+   these ride both sheets; the skin is the shared menu vocabulary (#252526 card, hairline, 6px, shadow).
+   Both mount on document.body, SIBLINGS of the #romp-fileview overlay (z-index 1200) they open over, so
+   they must outrank it: at .ctx-menu's 100-family value they painted UNDERNEATH the viewer and a
+   right-click inside a doc appeared to do nothing at all — the handler had already preventDefault'd the
+   browser's own menu, so nothing replaced it (the user 2026-09-21). Under #romp-lightbox at 1300. */
 .fileview-ctx {
-  position: fixed; z-index: 120; min-width: 110px; padding: 4px;
+  position: fixed; z-index: 1250; min-width: 110px; padding: 4px;
   background: var(--vscode-menu-background, #252526);
   color: var(--vscode-menu-foreground, var(--fg, #ddd));
   border: 1px solid var(--box-border, rgba(255,255,255,0.12)); border-radius: 6px;
@@ -3129,7 +3135,7 @@ body.filebrowse-open { overflow: hidden; }
 .fileview-ctx-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
 .fileview-ctx-item:hover { background: var(--vscode-menu-selectionBackground, rgba(255,255,255,0.08)); }
 .fileview-cmt {
-  position: fixed; z-index: 121; width: 340px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  position: fixed; z-index: 1251; width: 340px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
   background: var(--vscode-menu-background, #252526);
   color: var(--vscode-menu-foreground, var(--fg, #ddd));
   border: 1px solid var(--box-border, rgba(255,255,255,0.12)); border-radius: 6px;
@@ -3145,3 +3151,12 @@ body.filebrowse-open { overflow: hidden; }
   border: 1px solid var(--box-border, rgba(255,255,255,0.12)); border-radius: 4px;
 }
 .fileview-cmt-acts { display: flex; gap: 6px; justify-content: flex-end; }
+.fileview-cmt-err { font-size: 0.82em; color: var(--warn, #f0a84a); white-space: pre-wrap; }
+.fileview-cmt-count { flex: 0 0 auto; font-size: 0.78em; color: var(--dim); white-space: nowrap; }
+.fileview-send { border-color: var(--accent, #9cd2ff); color: var(--fg, #ddd); }
+/* The noted passage, marked for the life of this open — a format toggle re-renders the body and the
+   mark goes with it, which the bar's count outlives. No store: a note lives in the session's composer. */
+.fileview-cmt-mark {
+  background: rgba(156, 210, 255, 0.16); border-bottom: 1px solid var(--accent, #9cd2ff);
+  border-radius: 2px;
+}

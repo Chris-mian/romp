@@ -10197,6 +10197,57 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text }); registerOptimistic(sid, text, imgPaths); }
 }
 
+/** How many messages a Submit would send for `sid`: the staged run, plus one carrying any loose chips. */
+function composerPendingCount(sid: string | null): number {
+  if (!sid) return 0;
+  const cites = composerCitations.get(sid);
+  const hasLooseQuote = !!cites && cites.some((c) => c.quote);
+  return stagedMsgs.list(sid).length + (hasLooseQuote ? 1 : 0);
+}
+
+/** Tell the file viewer what its Submit button would send. The viewer renders in this document but
+ *  imports nothing from it, so the count rides the window channel editorSelection already uses. */
+function notifyComposerPending(sid: string | null): void {
+  if (!sid) return;
+  try { window.postMessage({ romp: "composerPending", sid, n: composerPendingCount(sid) }, "*"); }
+  catch { /* messaging our own window cannot really fail */ }
+}
+
+/** Hold a note the file viewer wrote about a passage: the quote and the words about it, as ONE staged
+ *  message, so Submit sends the batch in the order they were written. Nothing leaves the client here —
+ *  that is the point. A note is durable the instant this runs (it rides the drafts into localStorage),
+ *  so the viewer's dialog closes on the spot, an unreachable host costs nothing, and a tmux session
+ *  can take notes at all. Answers with the new pending count so the viewer can paint both. */
+function stageViewerNote(sid: string, text: string, exact: string, src?: string): void {
+  stagedMsgs.push(sid, { text, cites: [mkQuoteCitation(exact, null, src)] });
+  persistDrafts();
+  if (sid === activeId) renderStagedStrip(sid);
+  notifyComposerPending(sid);   // renderStagedStrip announces too, but only on the pane that HAS a strip
+  try { window.postMessage({ romp: "noteStaged", sid, n: composerPendingCount(sid) }, "*"); }
+  catch { /* messaging our own window cannot really fail */ }
+}
+
+/** Send everything the composer holds for `sid`, staged run first and the loose chips last — the send
+ *  path's own order. Returns how many messages went; 0 means the session was unreachable and nothing
+ *  moved, which the toast says. */
+function submitComposerPending(sid: string): number {
+  if (hostIsDown(sid) || isProvisionalId(sid)) {
+    warnToast("Can't send yet — the session isn't reachable. Your notes stay where they are.");
+    return 0;
+  }
+  let sent = flushStaged(sid);
+  const cites = composerCitations.get(sid);
+  if (cites && cites.some((c) => c.quote)) {
+    routeUserMessage(sid, "", cites);
+    composerCitations.delete(sid);
+    if (sid === activeId) renderComposerChips(sid);
+    persistDrafts();
+    sent += 1;
+  }
+  notifyComposerPending(sid);
+  return sent;
+}
+
 /** Release the tab's staged stack (deliver's guards — host down, provisional — run before this in the
  *  send path; Send now re-checks reachability itself). Returns how many went. */
 function flushStaged(sid: string): number {
@@ -10209,6 +10260,7 @@ function flushStaged(sid: string): number {
 function renderStagedStrip(id: string | null): void {
   const strip = document.getElementById("composer-staged");
   if (!strip) return;
+  notifyComposerPending(id);
   strip.replaceChildren();
   const list = id ? stagedMsgs.list(id) : [];
   if (!id || !list.length) { strip.style.display = "none"; return; }
@@ -10319,6 +10371,7 @@ function cancelComposerEdit(sid: string): void {
 function renderComposerChips(id: string | null): void {
   const strip = document.getElementById("composer-chips");
   if (!strip) return;
+  notifyComposerPending(id);   // the state is already settled by the time a render is asked for
   closeCitePreview();   // the chip is being rebuilt (or removed) → drop any open audit popover for the old chip
   strip.replaceChildren();
   // an EDIT pill outranks a citation chip (beginComposerEdit clears citations; this is the belt-and-braces)
@@ -11492,6 +11545,17 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
+  // The file viewer's Submit: reading a doc and sending the notes it produced should not require
+  // scrolling back to the composer, so the viewer asks THIS document to run its own send path.
+  else if (m.romp === "submitComposer" && typeof m.sid === "string" && m.sid) submitComposerPending(m.sid);
+  else if (m.romp === "composerPendingAsk" && typeof m.sid === "string" && m.sid) notifyComposerPending(m.sid);
+  // A note written in the viewer's comment box: a file passage has no place in the conversation to
+  // branch from, so it stages here instead of minting a thread.
+  else if (m.romp === "stageNote" && typeof m.sid === "string" && m.sid
+           && typeof m.text === "string" && m.text.trim()
+           && typeof m.exact === "string" && m.exact.trim()) {
+    stageViewerNote(m.sid, m.text, m.exact, typeof m.src === "string" ? m.src : undefined);
+  }
   // comment threads (the user 2026-08-13): the per-session thread frame — store, prune dead
   // client-side state, re-anchor the highlights, adopt a parked create ack, refresh the popover
   else if (m.type === "comments" && m.id) {
