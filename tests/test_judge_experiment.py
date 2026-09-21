@@ -43,12 +43,16 @@ log = os.environ.get("JE_TEST_LOG")
 if log:
     with open(log, "a") as fh:
         fh.write(json.dumps({"candidate": cand, "head": sysp[:40]}) + "\n")
-m = re.search(r"<(turn|segment)[^>]*>\n(.*?)\n</(turn|segment)", user, re.S)
+m = re.search(r"<(turn|segment|message)[^>]*>\n(.*?)\n</(turn|segment|message)", user, re.S)
 text = m.group(2) if m else user
 flag = bool(re.search(r"i can also|which option|not done", text, re.I))
 menu = re.search(r"<open-goals[^>]*>\n(.*?)\n</open-goals", user, re.S)
 menu_has = bool(menu and re.search(r"^\s*\d+\. ", menu.group(1), re.M))
-if "turn-end auditor" in sysp:
+if "You classify the final assistant message" in sysp:
+    cls = ("offer" if re.search(r"i can also", text, re.I) else "question" if re.search(r"which option", text, re.I)
+           else "undone" if re.search(r"not done", text, re.I) else "finished")
+    reply = {"class": cls, "why": "synthetic"}
+elif "turn-end auditor" in sysp:
     reply = ({"done": [], "block": [{"goal": 1, "why": "the go-ahead is owed"}]} if (cand and flag)
              else {"done": [{"goal": 1, "why": "delivered"}], "block": []})
 elif "planner" in sysp[:120]:
@@ -220,6 +224,93 @@ class Harness(unittest.TestCase):
         out = subprocess.run([sys.executable, SCRIPT, "report", "--corpus", dest, "--run-root", run_root], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr[-500:])
         self.assertIn('"leaks": 3', out.stdout)
+
+    def _live_store_with_done(self, sid, cut_t, later_ops):
+        """A live store whose one top the closer marked done at the cut, and the user's later gestures on it in the journal."""
+        node = {"id": "g1", "text": "The synthetic goal", "parentId": None, "t": cut_t - 500, "mt": cut_t + 5000, "nodeComplete": True,
+                "blocked": False, "cleared": False, "doneWhy": "synthetic", "trail": ["%s:%d:aaaaaaaa" % (sid, cut_t - 400), "%s:%d:bbbbbbbb" % (sid, cut_t + 3000)],
+                "log": [{"ev_t": cut_t - 400, "at": cut_t - 399, "src": "planner", "kind": "mint"},
+                        {"ev_t": cut_t + 2, "at": cut_t + 9, "src": "closer", "kind": "done", "why": "synthetic"},
+                        {"ev_t": cut_t + 4000, "at": cut_t + 4001, "src": "closer", "kind": "block", "why": "synthetic later"}]}
+        store = {"rompUuid": sid, "seq": 3, "nodes": {"g1": node}, "status": {"g1": "completed"}, "placementsV": 3, "rev": 4,
+                 "placements": {"%s:%d:aaaaaaaa" % (sid, cut_t - 400): "g1", "%s:%d:bbbbbbbb" % (sid, cut_t + 3000): "g1"},
+                 "closedTurns": ["%s:%d:cccccccc" % (sid, cut_t - 1), "%s:%d:dddddddd" % (sid, cut_t + 3500)],
+                 "closedSig": {"%s:%d:cccccccc" % (sid, cut_t - 1): "x", "%s:%d:dddddddd" % (sid, cut_t + 3500): "y"}}
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
+        (self.state / "overrides" / (sid + ".jsonl")).write_text("".join(json.dumps(o) + "\n" for o in later_ops))
+        return store
+
+    def test_the_store_copy_carries_nothing_from_after_the_cut(self):
+        """Round two of the harness (2026-09-21, the pilot's stop): the verdict logs carry ev_t and at, never t, so a filter on t
+        kept every event and each copy carried the live judges' verdicts from after the cut; the closer's closedTurns and
+        closedSig and the planner's placements carried the future too. The ids carry their epoch, so the cut reads it."""
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = [x for x in m["endings"] if x["session"] == hashlib.sha256(sid.encode()).hexdigest()[:12] and x["turn"] == 0][0]
+        cut = float(e["cutT"])
+        store = self._live_store_with_done(sid, cut, [])
+        before = self.je.store_before(store, cut)
+        nd = before["nodes"]["g1"]
+        self.assertEqual([ev["kind"] for ev in nd["log"]], ["mint"], "the done filed two seconds after the cut and the later block are gone: %r" % nd["log"])
+        self.assertNotIn("nodeComplete", nd); self.assertNotIn("doneWhy", nd)
+        self.assertEqual(nd["trail"], ["%s:%d:aaaaaaaa" % (sid, cut - 400)], "the trail keeps the segments the copy holds")
+        self.assertEqual(before["closedTurns"], ["%s:%d:cccccccc" % (sid, cut - 1)])
+        self.assertEqual(list(before["closedSig"]), ["%s:%d:cccccccc" % (sid, cut - 1)])
+        self.assertEqual(list(before["placements"]), ["%s:%d:aaaaaaaa" % (sid, cut - 400)])
+        self.assertEqual(before["status"], {}, "the status is the arm's rollup to make")
+        self.assertLessEqual(nd["mt"], cut)
+        self.assertEqual(self.je.event_time({"ev_t": 5, "at": 9}), 5); self.assertEqual(self.je.event_time({"at": 9}), 9)
+        self.assertEqual(self.je.id_epoch("%s:1700000000:abcdef12#p" % sid), 1700000000.0); self.assertIsNone(self.je.id_epoch("g1"))
+
+    def test_the_selection_prefers_endings_the_judges_completed_so_tier_one_has_data(self):
+        """The pilot's second finding: newest-first selection drew endings without a top-level closer or planner done in the
+        turn's window, so the user's later card actions could label none of them. Within every class, eligible endings
+        come first, and the manifest says which they are."""
+        sid = SIDS[0]                                   # its two endings: an offer (turn 0) and a question (turn 1)
+        recs = self.je._records(next(iter((self.claude / "projects").glob("*/%s.jsonl" % sid))))
+        ends = self.je.turn_ends(recs)
+        cut0 = self.je._ts(recs[ends[0]])
+        self._live_store_with_done(sid, cut0, [])       # a top-level done in the first ending's window; none near the second
+        # a second offer ending, newer, in the other session: without the preference the newest offer wins the one slot
+        sid2 = SIDS[1]
+        p2 = next(iter((self.claude / "projects").glob("*/%s.jsonl" % sid2)))
+        recs2 = self.je._records(p2); t = self.je._ts(recs2[-1]) + 600
+        recs2 += [uline(sid2, t, "one more ask", "u9", recs2[-1]["uuid"]), aline(sid2, t + 30, "Done. I can also tidy the names.", "a9", "u9")]
+        p2.write_text("".join(json.dumps(r) + "\n" for r in recs2))
+        dest = os.path.join(self.td, "corpus-pref")
+        m = self.je.build_corpus(self.state, self.claude, dest, per_class=1, now=T0 + 10**6)
+        offers = [e for e in m["endings"] if e["class"] == "offer"]
+        self.assertEqual(len(offers), 1)
+        self.assertEqual((offers[0]["session"], offers[0]["turn"], offers[0].get("tierOneEligible")),
+                         (hashlib.sha256(sid.encode()).hexdigest()[:12], 0, True),
+                         "the eligible offer is picked over the newer one the judges never ruled on: %r" % offers)
+        self.assertTrue(all("tierOneEligible" in e for e in m["endings"]))
+
+    def test_the_label_pass_reads_tier_one_from_the_journals_and_gates_on_the_agreement(self):
+        fn = getattr(self.je, "label", None)
+        self.assertIsNotNone(fn, "the labeller is a subcommand of the harness (the base had none)")
+        dest, m = self._corpus()
+        by = {(e["session"], e["turn"]): e for e in m["endings"]}
+        h0, h1 = (hashlib.sha256(s.encode()).hexdigest()[:12] for s in SIDS)
+        cut_a = float(by[(h0, 0)]["cutT"])              # the offer: the closer filed done, the user came back with a followup
+        self._live_store_with_done(SIDS[0], cut_a, [{"node": SIDS[0] + ":g1", "op": "followup", "t": cut_a + 7200}])
+        cut_b = float(by[(h1, 1)]["cutT"])              # the finished thread: done, then the user cleared it and nothing more
+        self._live_store_with_done(SIDS[1], cut_b, [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": cut_b + 600}])
+        run_root = os.path.join(self.td, "runs")
+        summary = fn(dest, run_root, self.state, claude_bin=self.fake, model="fake")
+        rows = {r["id"]: r for r in json.loads(Path(run_root, "labels.json").read_text())}
+        self.assertEqual(rows[by[(h0, 0)]["id"]]["tierOne"], "not finished", "a followup after the judges' done: not finished")
+        self.assertEqual(rows[by[(h1, 1)]["id"]]["tierOne"], "finished", "a clear with nothing after: finished")
+        self.assertEqual((summary["endings"], summary["tierOneLabelled"], summary["both"], summary["agree"]), (4, 2, 2, 2), summary)
+        self.assertEqual((summary["agreementPct"], summary["gatePassed"]), (100.0, True))
+        self.assertEqual(summary["labellerStable"], 4, "the fake answers the same class in both orders")
+        self.assertEqual(summary["heuristicMatchesLabel"], 4)
+        ledger = [json.loads(l) for l in Path(run_root, "labeller-ledger.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual((len(ledger), round(sum(r["cost"] for r in ledger), 2)), (8, 0.08), "two calls per ending, each on the ledger")
+        self.assertEqual(round(summary["spentUsd"], 2), 0.08)
+        with self.assertRaises(SystemExit):
+            inside = os.path.join(self.td, "repo2", "runs"); os.makedirs(os.path.join(self.td, "repo2", ".git"))
+            fn(dest, inside, self.state, claude_bin=self.fake, model="fake")
 
 
 if __name__ == "__main__":
