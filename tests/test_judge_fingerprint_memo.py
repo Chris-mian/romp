@@ -139,8 +139,14 @@ class FingerprintMemoTest(unittest.TestCase):
                         pm = os.stat(jd._proj_dir(cdir)).st_mtime
                     except OSError:
                         pm = 0
-                out.append((f.name, mt, pm, jd._sdk_last_sid(f.name) or "",
-                            jd._sdk_transcript_path(f.name) or ""))   # signed like lastSid (2026-08-20)
+                rec = jd._sdk_transcript_path(f.name) or ""   # signed like lastSid (2026-08-20)...
+                rm = 0
+                if rec:
+                    try:
+                        rm = os.stat(os.path.dirname(rec)).st_mtime   # ...and its dir's mtime like pm (review fix)
+                    except OSError:
+                        rm = 0
+                out.append((f.name, mt, pm, jd._sdk_last_sid(f.name) or "", rec, rm))
             return tuple(out)
 
         (jd.NAMES / OTHER).write_text("%s\t%s" % ("TESTHOST-two", self.cdir))

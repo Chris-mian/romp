@@ -9071,8 +9071,20 @@ def _discover_fingerprint():
             except OSError:
                 pm = 0
         # the recorded transcriptPath is SIGNED like lastSid: both live in the registry, which the
-        # names-entry mtime can't see — a relocation must bust the discover cache the moment it lands
-        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or "", _sdk_transcript_path(f.name) or ""))
+        # names-entry mtime can't see — a relocation must bust the discover cache the moment it lands.
+        # Its DIRECTORY's mtime is signed too, the way pm signs the launch dir's: a /clear in a relocated
+        # session flips lastSid before the CLI writes the new file, so discover falls back to the recorded
+        # (pre-clear) file and caches it, and the new file's arrival bumps only the recorded dir's mtime —
+        # unsigned, every surface stayed on the pre-clear transcript until the next Stop hook re-recorded
+        # the path (review find). pm stays in the tuple: a stale record falls back to the launch-dir walk.
+        rec = _sdk_transcript_path(f.name) or ""
+        rm = 0
+        if rec:
+            try:
+                rm = os.stat(os.path.dirname(rec)).st_mtime
+            except OSError:
+                rm = 0
+        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or "", rec, rm))
     if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
         live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded
         for name in [k for k in _namefp_memo if k not in live]:  # by the sessions that currently EXIST
@@ -9207,6 +9219,9 @@ def _discover_impl(now, window=None, forks=True):
             last = _sdk_last_sid(sid)
             cand = os.path.join(os.path.dirname(rec), last + ".jsonl") if last else rec
             path_str = cand if os.path.isfile(cand) else rec
+            _note_leaf(sid, path_str)   # the leaf flips here as in the walk branches below: the previous leaf's
+            #                             trees go (one tree per session, 2026-09-11) — a recorded session that
+            #                             skipped the note left every /clear's pre-clear tree resident until the LRU
             try:
                 mt = os.stat(path_str).st_mtime
             except OSError:
