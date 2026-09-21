@@ -333,10 +333,10 @@ test("the RINGS ride beside the state class as one class at a time — a working
   api.renderTabs();
   assert.equal(H.bar.wipes, 2, "the verdict alone is a repaint: the signature reads needsYou");
   const b = H.bar.tabs().find((t) => t.dataset.id === "b")!;
-  assert.ok(b.has("tab-working") && b.has("ring-waiting-on-you"), "gold dot AND yellow ring: the ring does not replace the state");
+  assert.ok(b.has("tab-working") && b.has("ring-waiting-on-you"), "gold dot AND magenta ring: the ring does not replace the state");
   api.renderTabs();
   assert.equal(H.bar.wipes, 2, "unchanged: no rebuild");
-  // the yellow ring switched off in the settings: one repaint (settings.tabWidgets is in the signature), the class gone, the state kept
+  // the magenta ring switched off in the settings: one repaint (settings.tabWidgets is in the signature), the class gone, the state kept
   api.set({ settings: { ...settings, tabWidgets: { on: { "ring-waiting-on-you": false }, order: [], opts: {} } } });
   api.renderTabs();
   assert.equal(H.bar.wipes, 3, "the switch alone is a repaint");

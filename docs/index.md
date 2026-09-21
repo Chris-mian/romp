@@ -2,6 +2,8 @@
 title: Romp
 ---
 
+<!-- Front page: keep it short and human. Rules in CLAUDE.md, "The documentation front pages". -->
+
 # ![Romp](assets/brand/romp-wordmark.png){ .romp-wordmark }
 
 Agents like Claude Code can work autonomously for long stretches, allowing
