@@ -67,3 +67,5 @@ across [machines](guide.md#linking-kernels-on-other-machines), and you can view
 everything from a laptop or [a phone](guide.md#from-your-phone).
 
 ![Sessions on two machines, gathered into one dashboard and the same view on a phone](assets/guide/every-machine.png){ width="100%" }
+
+A throwaway line for the pull request's own proof: [a page that does not exist](this-page-does-not-exist.md).
