@@ -222,12 +222,19 @@ export function ctxBar(onClick?: (bar: HTMLElement) => void): HTMLElement {
   }
   return bar;
 }
+/** End the battery's click pulse (the ctx-clicked class compactActiveSession adds as the press's immediate cue). Two
+ *  events end it: the compacting state taking over (setCtxBar below), and the kernel refusing the compaction (the chat's
+ *  warn branch, 2026-09-21: before that a refused click pulsed until the next status change or a tab switch). A page with
+ *  no bar yet passes null. */
+export function endCtxBarClick(bar: HTMLElement | null): void {
+  if (bar) bar.classList.remove("ctx-clicked");
+}
 export function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[] | null, ctxOver = false, sweep?: (scan: HTMLElement, fresh: boolean) => void): void {
   // Compacting: hide the fill/% (the number is about to be wrong anyway) and run
   // the scanning bar instead, mirroring the timeline's battery. No ctx% needed.
   bar.classList.toggle("ctx-compacting", compacting);
   if (compacting) {
-    bar.classList.remove("ctx-clicked");   // the click's pulse cue did its job
+    endCtxBarClick(bar);                    // the click's pulse cue did its job
     bar.style.display = "";
     bar.title = "compacting context…";
     const scan = bar.querySelector(".ctx-scan") as HTMLElement | null;
@@ -263,9 +270,6 @@ export function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacti
   if (bar.dataset.compacts) bar.title = ctxOver   // the click-to-compact tooltip belongs to a bar that compacts (the chat's); an inert one keeps none (round three)
     ? "context exceeds this model's window — the next turn compacts or trims; click to /compact now"
     : `context ${pct}% used — click to /compact`;
-  else if (bar.dataset.inertWhy) bar.title = ctxOver   // a bar that cannot compact says why (a Codex session's, marked by the chat where it fills the bar; 2026-09-19)
-    ? `context exceeds this model's window — ${bar.dataset.inertWhy}`
-    : `context ${pct}% used — ${bar.dataset.inertWhy}`;
   else bar.removeAttribute("title");
 }
 

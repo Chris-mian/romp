@@ -19329,6 +19329,7 @@ def _commands_for_cwd(cwd):
 _CODEX_COMMANDS = (
     {"name": "clear", "description": "Start a fresh conversation for this session (its name, mail, tags and settings stay)"},
     {"name": "new", "description": "Same as /clear (Codex's own word for it)"},
+    {"name": "compact", "description": "Compact this conversation in place (Codex's own compaction; it takes no instructions)"},
     {"name": "model", "description": "Switch this session's model (applies at its next turn)", "argumentHint": "<gpt-…>"},
     {"name": "effort", "description": "Set this session's reasoning effort (applies at its next turn)", "argumentHint": "<level>"},
     {"name": "mcp", "description": "Show this session's MCP servers"},
@@ -19337,8 +19338,8 @@ _CODEX_COMMANDS = (
 
 def _commands_for_sid(sid):
     """(commands, warming) for the composer's "/" palette on `sid`: a Codex session gets the fixed list of commands
-    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised /clear and /compact the route
-    now refuses, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
+    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised Claude's skills and commands a
+    Codex session cannot take, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
     durable records, so a dead Codex lane's composer is answered the same way."""
     if sid and _session_backend(sid, None) == "codex":
         return [dict(c) for c in _CODEX_COMMANDS], False
@@ -19438,6 +19439,17 @@ def _note_retry_sent(sid, manual=False):
 
 def _clear_retry_backoff(sid):
     _auto_retry_state.pop(sid, None)   # recovered: the next outage starts at the bottom rung again
+
+
+def _backend_compacting(be, sid):
+    """The backend's own 'a compaction is in progress' verdict (SessionBackend.compacting), True by IDENTITY only
+    (2026-09-21): the interrupt arms read it ahead of busy(), because a compaction reads busy (it is a turn in flight
+    on the server) and interrupt() refuses it (no turn id to stop), so Esc, Stop, POST /interrupt and `romp interrupt`
+    answered "still working" under a chip reading Compacting. Identity, not truth: a double without the verb (a
+    SimpleNamespace, the tmux-era fakes) has no such attribute, and a bare Mock's call answers a truthy Mock; neither
+    is a compaction. Backend-neutral: the SDK backend publishes the same bracket for its /compact."""
+    fn = getattr(be, "compacting", None)
+    return callable(fn) and fn(sid) is True
 
 
 def _fire_api_retry(sid, be, manual=False):
@@ -19842,6 +19854,12 @@ def _drive(msg, client):
         # is an unknown sid): a backend with no verdict keeps the optimistic chip.
         if be.interrupt(sid) is not False:                # Esc/stop AND settle idle (in the backend)
             _interrupt_clicked[str(sid)] = time.time()    # chip → "interrupting" NOW (event-cleared on settle)
+        elif _backend_compacting(be, sid):
+            # A refusal UNDER A COMPACTION is neither idle nor a dropped stop (review find, 2026-09-21): the backend's
+            # compaction is a turn in flight the server itself refuses to steer or stop, so busy() reads True and the
+            # arm below said "still working" under a chip reading Compacting. Worded for the state, backend-neutral.
+            client["send"](json.dumps({"type": "warn", "text": "the stop was not delivered: the session is compacting its "
+                                                                "conversation, and a compaction runs to its end"}))
         elif be.busy(sid):
             # A refusal WITH work in flight is a stop that did NOT land, not a stop with nothing to stop
             # (review find, 2026-09-11): the Codex backend also answers False while a turn's start is still
@@ -25501,6 +25519,8 @@ def _deliver_text(sid, text, plain=False):
             return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused_clear"):
             return False, str(meta["refused_clear"]), False    # the backend's own words for a clear it could not run (2026-09-19)
+        if meta.get("refused_compact"):
+            return False, str(meta["refused_compact"]), False  # a compaction it could not run, or typed instructions Codex takes none of (2026-09-19)
         if meta.get("refused"):
             if be is _UNOWNED:
                 return False, "no running backend owns %s — the command was not delivered" % sid, False
@@ -36736,23 +36756,44 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     return False
 
 
-def _compact_or_park(be, sid, state=None):
-    """The ONE compaction entry — the chat's compact button (WS "compact") and POST /compact both land
-    here, so there is never a second compaction path. Not quiet (open turn / compacting / queue ahead /
-    account hold) → park as a ("compact",) op, which fires ALONE at turn end; quiet → /compact NOW with
-    the instant 'compacting' cue. Returns True when parked (queued), False when fired now — the route
-    tells its caller which ("compacting now" vs "queued").
+def _native_compact(be):
+    """Whether `be` compacts its own conversation (SessionBackend.compact) rather than taking the literal "/compact"
+    as text (2026-09-19): a backend that DEFINES the verb — CodexBackend since this change; SdkBackend and every
+    send-only stand-in define none, so every SDK path stays byte-identical — and not the unowned route, which
+    inherits the ABC's default and keeps its own stderr refusal."""
+    return be is not None and be is not _UNOWNED and callable(getattr(be, "compact", None))
 
-    A Codex session is refused before any park or stamp (2026-09-19): it has no /compact text to execute,
-    and the old path sent the word to the model and stamped a compacting cue for a compaction that never
-    started. `state` receives {"refused": words} for POST /compact; the chat hears it as a broadcast warn
-    (no socket reaches here) and the bell keeps it. Returns None, the existing 'neither parked nor fired'
-    value. The native compaction replaces this arm."""
-    if be is not None and be is _codex():
-        _refuse_codex_slash(be, sid, "/compact", state=state)
-        return None
+
+def _compact_or_park(be, sid, state=None, client=None, qid=None):
+    """The ONE compaction entry — the chat's compact button (WS "compact"), the timeline's battery, POST /compact and
+    a typed /compact on a backend that compacts natively (_codex_compact_command) all land here, so there is never a
+    second compaction path. Not quiet (open turn / compacting / queue ahead / account hold) → park as a ("compact",)
+    op, which fires ALONE at turn end; quiet → compact NOW. Returns True when parked (queued), False when fired now —
+    the route tells its caller which ("compacting now" vs "queued") — and None when the backend refused: neither
+    parked nor fired, and no cue.
+
+    Two kinds of fire (2026-09-19). A backend that compacts natively (_native_compact: Codex, whose app-server has
+    no slash parser — the old path sent the word to the model and stamped a cue for a compaction that never started)
+    takes its own verb, SessionBackend.compact: "" — the backend's compacting() bracket is up and is the authority
+    the kernel reads first (_compacting), so NO optimistic stamp (the stamp would only arm the 180 s
+    _compacting_optimistic read per build for a signal the backend already publishes); "busy" — a turn or a
+    compaction already in flight: parked as the same ("compact",) op the drain retries at the turn's end, never
+    shown; any other answer — the reason, said (_say_compact_refusal, on `client` with `qid` when the typed route
+    carried them, else a broadcast to the chat panes), filed as state["refused"] so POST /compact answers ok:false
+    with it. Every other backend keeps the literal "/compact" send as the user's gesture and the instant cue."""
     if _gate_or_park(sid, ("compact",)):
         return True
+    if _native_compact(be):
+        why = be.compact(sid)
+        if why == "busy":
+            _park_op(sid, ("compact",))
+            return True
+        if why:
+            if state is not None:
+                state["refused"] = why
+            _say_compact_refusal(sid, why, client=client, qid=qid)
+            return None
+        return False
     if _user_send(be, sid, "/compact") is False:        # the click is the user's (T315); a refusal shows no cue
         return None
     _mark_compacting(sid)
@@ -36791,7 +36832,7 @@ def _compact_request(who):
     meta = {}
     queued = _compact_or_park(Sessions.backend_for(sid), sid, state=meta)
     if meta.get("refused"):
-        return {"ok": False, "error": meta["refused"]}   # a Codex session: the route's own words (2026-09-19)
+        return {"ok": False, "error": meta["refused"]}   # the backend's own refusal words (2026-09-19)
     return {"ok": True, "queued": queued}
 
 
@@ -37013,7 +37054,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     """The one route every typed or sent slash command takes (the composer's sendMessage arm, the lane menu's
     sendCommand arm, POST /send and `romp send` through _deliver_text), in front of the setter body it used to
     BE (_route_setter_command: its arms and docstring are unchanged). A Codex session takes only what romp
-    itself performs: /model X and /effort X through the setter arms, and a native /clear or /new through the
+    itself performs: /model X and /effort X through the setter arms, and a native /clear, /new or /compact through the
     handler table (_CODEX_SLASH_HANDLERS, consulted first). The slash commands the kernel KNOWS a
     Codex session cannot take (_CODEX_REFUSED_HEADS: /clear, /compact, /new and the rest of that set) and a
     setter head in the wrong shape (a bare /model) are refused here, ABOVE the setter body's one-token guard
@@ -37024,11 +37065,11 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     road every other backend takes (the setter body answers False for it; the caller sends it idle, parks it
     as a ("command",) op busy, and the drain hands it to the model). _codex_refuses is the one predicate this
     arm and the drain read, so the live road and the parked road refuse the same texts by construction.
-    _CODEX_SLASH_HANDLERS is the seam a native /clear or /compact plugs into: a head registered there takes the
-    text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
+    _CODEX_SLASH_HANDLERS is the seam the native /clear, /new and /compact plugged into: a head registered there takes
+    the text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
     with the head is refused in words). A registered head stays in the known set, so that shape and a parked copy
     of it still meet the refusal by the one predicate, while a whole-message copy parked by a road that skips the
-    route runs as the clear at the drain (_parked_clear_op). `qid` is the press-minted copy id (the sendMessage
+    route runs as the clear at the drain (_parked_clear_op), and a parked compact runs natively (the drain's compact arm). `qid` is the press-minted copy id (the sendMessage
     arm's _wire_qid), carried on the refusal frame so the chat retires the bubble it drew. The
     Claude Code and unowned routes are unchanged and take the setter body directly: a dead Codex session routes
     to _UNOWNED (CodexBackend.owns is False once dead) and keeps the unowned refusal, so the identity test is
@@ -37128,9 +37169,73 @@ def _codex_clear_command(be, sid, text, client=None, state=None, qid=None):
     return True
 
 
+_CODEX_COMPACT_NO_WORDS = "Codex compacts without instructions — send a bare /compact; nothing was sent."
+
+
+def _say_compact_refusal(sid, why, client=None, qid=None):
+    """A compaction the backend could not run, said the way _codex_clear_command says a clear's refusal (2026-09-19):
+    one warn frame naming the session — and the press, when a copy id rode, so the chat retires the bubble it drew and
+    puts the words back in an empty composer — on the delivering socket, or a broadcast to the chat panes when no socket
+    carried the op (a battery click, POST /compact, the pusher's drain), with the timeline panes told on their own
+    settingRefused frame (review find, 2026-09-21; that page drops a warn, and its battery's click stamp ends on the
+    frame); a row on the bell's ring under the refused kind; one stderr line. No cue is stamped for a compaction that
+    never started."""
+    frame = {"type": "warn", "text": why, "sid": str(sid)}
+    if qid:
+        frame["qid"] = qid
+    if client:
+        client["send"](json.dumps(frame))
+    else:
+        _send_to_app("chat", dict(frame, id=str(sid)))
+        # the timeline lane that took the battery click hears it too (review find, 2026-09-21): that page's boot drops
+        # a warn, and its click stamp cleared only on a settingRefused frame or its 6 s expiry, so the lane read
+        # compacting for six seconds with no words. The frame the page renders (gesture command, no flag: the shape
+        # the HTTP road builds for a refused compact), sent to every timeline pane the way the model frame is
+        # (_send_to_app), never as the refusal's `client`, which would replace the chat broadcast. `filed`: the ring
+        # row below is the bell's record, so the page posts no second one.
+        _send_to_app("timeline", {"type": "settingRefused", "gesture": "command", "sid": str(sid), "flag": "",
+                                  "text": why, "filed": True})
+    _sync_notice("%s: %s" % (_name_of(sid) or str(sid)[:8], why), ok=False, kind="refused")
+    sys.stderr.write("compact for %s refused: %s\n" % (sid, why))
+
+
+def _codex_compact_command(be, sid, text, client=None, state=None, qid=None):
+    """The Codex arm for a typed or sent /compact (2026-09-19; registered in _CODEX_SLASH_HANDLERS beside the clear heads,
+    so the guard's refusal stops for it): the compaction entry every other door takes (_compact_or_park — ONE _ops_gate
+    evaluation through _gate_or_park, the /effort arm's cost; parked as the same visible "/compact" chip the battery
+    parks when not quiet, "busy" parked the same way and never shown, the backend's compacting bracket as the cue when it
+    ran, so no echo and no stamp). Words after the head ("/compact focus on the tests") are refused loudly: Codex takes
+    no compaction instructions, and compacting anyway would drop the words silently. The head is read with split(None,
+    1), so a newline or a tab after it counts as words too (a partition on one space would let "/compact\nfoo" through as
+    a bare compact). A refusal is filed as state["refused_compact"] (its own key, as the clear's: _deliver_text rewords
+    "refused" for the unowned route) so POST /send and `romp send` answer ok:false with it, and said with the session
+    and the press named. Named residual: on SUCCESS the composer's optimistic bubble stands until its cross — a native
+    compaction mints no echo and writes no record (the same as a typed /model or /effort on Codex today); the cue the
+    user gets is the chip flipping to compacting and the chat's compacting element. Returns True: the command was
+    taken."""
+    words = (text or "").strip().split(None, 1)
+    if len(words) > 1:
+        why = _CODEX_COMPACT_NO_WORDS
+        if state is not None:
+            state["refused_compact"] = why
+            state["queued"] = False
+        _say_compact_refusal(sid, why, client=client, qid=qid)
+        return True
+    if not _native_compact(be):                          # a Codex identity without the verb: the guard's refusal, never the word as text
+        return _refuse_codex_slash(be, sid, text, client=client, state=state, qid=qid)
+    st = {}
+    parked = _compact_or_park(be, sid, state=st, client=client, qid=qid)
+    if state is not None:
+        if parked is None:
+            state["refused_compact"] = st.get("refused") or "Couldn't compact this conversation"
+        state["queued"] = bool(parked)
+    return True
+
+
 # head -> handler(be, sid, text, client, state, qid) -> bool. A head registered here takes the text instead of the
-# guard's refusal: /clear and /new are the native clear (2026-09-19); a native /compact registers next.
-_CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command}
+# guard's refusal: /clear and /new are the native clear, /compact the native compaction (2026-09-19).
+_CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command,
+                         "/compact": _codex_compact_command}
 _CODEX_CLEAR_HEADS = ("/clear", "/new")   # the heads _parked_clear_op reads a ("command", …) op by
 _CODEX_VALUE_EXAMPLE = {"/model": "/model gpt-5", "/effort": "/effort high"}
 
@@ -37278,6 +37383,12 @@ def _apply_pending_ops(now=None):
     tearing the mirror through one shared temp (_save_pending_ops). Only this one thread ever walks the
     queue (the pusher); the handlers and the move thread are the other writers.
 
+    A NATIVE COMPACTION (2026-09-19): a backend that compacts natively (_native_compact: Codex) takes its verb for a
+    parked ("compact",) op and for a ("command", "/compact") op a Codex session parked before the native head existed
+    (the disk mirror survives an upgrade), never the word as text; the bracket it latches is the cue, so no stamp;
+    "busy" leaves the head as the clear arm does; words after a typed head are refused with the reason and popped; and
+    the pass ends as on any turn-opening op.
+
     THE HEAD STAYS VISIBLE WHILE THE BACKEND HAS IT (2026-09-05, second review): every gate a handler
     decides on keys on queue presence (_ops_gate, _send_or_park's first gate, _park_behind_queue) and
     otherwise on busy() — which flips only once the backend has REGISTERED the op (SdkBackend.send runs
@@ -37396,6 +37507,12 @@ def _apply_pending_ops(now=None):
                     # missed the command op, so that op's queued chip drew beside the live "Clearing conversation…" element
                     is_clear = _parked_clear_op(op, be)
                     clear_why = ""
+                    # a parked native compaction (2026-09-19): the ("compact",) op every door parks, or a ("command", "/compact …")
+                    # op a Codex session parked before this head registered (the same disk mirror) — the backend's verb
+                    # (_native_compact), never the word as text; words after the head are refused, never dropped into it
+                    cmd_words = str(op[1]).strip().split(None, 1) if op[0] == "command" else []
+                    is_compact = bool(_native_compact(be) and (op[0] == "compact" or (cmd_words and cmd_words[0] == "/compact")))
+                    compact_why = ""
                     if op[0] == "send":
                         changed = True
                         _deliver_send_batch(be, sid, run)
@@ -37417,8 +37534,9 @@ def _apply_pending_ops(now=None):
                         # the cwd arm's rule, so the chip's ✕ still cancels it) and the pass ends with NO clock hold — the
                         # backend's turn-end poke follows its lock's release (CodexBackend._run_turn), so the cycle that
                         # poke brings finds the lock free, and a cycle that delivers nothing re-wakes nothing, so the
-                        # backstop retries by itself; the move's hold spaces COUNTED retries against a CLI window that
-                        # emits no event, which a clear has not got
+                        # backstop retries by itself; a clear parked behind a compaction bracket gets the bracket's
+                        # end poke, clean or loud (2026-09-21); the move's hold spaces COUNTED retries against a CLI
+                        # window that emits no event, which a clear has not got
                         # the words the op was parked with ride to the verb and its chip (_parked_md: a ("clear", text) op's
                         # text, a pre-upgrade ("command", "/new") op's, the default for a one-slot op from an older mirror),
                         # else a parked /new landed as a "/clear" chip the composer's bubble never matched (2026-09-19)
@@ -37427,6 +37545,27 @@ def _apply_pending_ops(now=None):
                             with _pending_ops_lock:
                                 _inflight_ops.pop(sid, None)
                             break
+                    elif is_compact:
+                        # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
+                        # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
+                        # recorded in flight and no clock, the clear arm's rule: the backend's turn-end poke or the
+                        # compaction bracket's end poke (every end pokes, the clean one through its boundary write and the
+                        # loud ones directly since the review of 2026-09-21; before it a failed compaction only pushed and
+                        # kicked, leaving the head to the pusher's half-second backstop) brings the cycle that retries.
+                        # Words after a typed head are refused with the reason (Codex takes no compaction instructions)
+                        # and popped; a reason rides the parked copy's id.
+                        if len(cmd_words) > 1:
+                            compact_why = _CODEX_COMPACT_NO_WORDS
+                        else:
+                            compact_why = be.compact(sid)
+                            if compact_why == "busy":
+                                with _pending_ops_lock:
+                                    _inflight_ops.pop(sid, None)
+                                break
+                        if compact_why:
+                            _say_compact_refusal(sid, compact_why, qid=_op_qid(op))
+                            refused = True
+                            said = True
                     elif op[0] == "command":
                         # a typed slash command fires ALONE as its own fresh top-level prompt — folded into a
                         # send batch (or forwarded mid-turn) it reaches the model as text instead of executing
@@ -37444,12 +37583,8 @@ def _apply_pending_ops(now=None):
                         else:
                             refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
                     elif op[0] == "compact":
-                        if be is not None and be is _codex():
-                            _refuse_codex_slash(be, sid, "/compact")   # a parked battery click on a Codex lane: the same refusal (2026-09-19)
-                            refused = True
-                            said = True
-                        else:
-                            refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
+                        refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315); a
+                        #                                                      backend with the verb took the native arm above (2026-09-19)
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
@@ -37508,8 +37643,9 @@ def _apply_pending_ops(now=None):
                         # the backend HAS a turn-opening op: its cue, the hold and the end of this pass follow
                         # regardless of `took` (which is always True here — a ✕ on an in-flight op is refused and
                         # these kinds are never replaced in place)
-                        if op[0] == "compact" or op[1].strip().split()[0] == "/compact":
-                            _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op
+                        if not is_compact and (op[0] == "compact" or op[1].strip().split()[0] == "/compact"):
+                            _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op; a native
+                                                          # compaction's cue is its backend's bracket, which compacting() publishes (2026-09-19)
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
                     if op[0] in ("effort", "fast") and refused:
@@ -40183,6 +40319,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
+    _launch_no_retry = False   # the launch-error card below is one nothing retries (a failed compaction); status apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -40211,6 +40348,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             events.append({"kind": "apiError",
                            "text": _lerr["text"] if _lerr.get("dep") or _codex_lane else
                            "This session's claude process could not start — %s" % _lerr["text"]})
+            # a notice nothing retries (SessionBackend.launch_error's noRetry: the Codex compaction bracket's end
+            # notices, 2026-09-21): the card wears the API-error dress, whose Retry press sent the literal word into
+            # the thread as a turn and compacted nothing, so the status says to draw it with no Retry and no countdown
+            _launch_no_retry = bool(_lerr.get("noRetry"))
     # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
     # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)
     arch = jd.load_archive(sid) or {}
@@ -40388,6 +40529,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # tab), and never auto-retried: a refusal is deterministic on the same input, so a
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
+                  # the blocking notice is one nothing retries (a compaction that failed on the backend's side, the
+                  # launch error's noRetry): renderApiError draws no Retry, no Stop-all and no retrying-soon meta for
+                  # it, the apiRefusal precedent read off the live status (review find, 2026-09-21)
+                  "apiNoRetry": _launch_no_retry,
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
                   # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
@@ -61825,7 +61970,7 @@ sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an 
 sync:"romp moved commits between your machines by itself: a push to a remote, a pull from one, or an ask that a peer fast-forward itself. Successes are logged as well as failures, so this is the record of what romp did to your machines; the network panel shows a sync while it is still running",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo on the feed restores them",
-refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /compact): nothing was sent, and the entry names it. Or a /clear a Codex session could not run (the fresh conversation could not be started): the entry carries the reason",
+refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /fast): nothing was sent, and the entry names it. Or a /clear or /compact a Codex session could not run (the fresh conversation or the compaction could not be started): the entry carries the reason",
 undelivered:"something you sent never reached a session: the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
@@ -68566,6 +68711,12 @@ class Handler(BaseHTTPRequestHandler):
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
                         _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                    elif _backend_compacting(be, sid):
+                        # …a refusal under a compaction is the WS arm's compacting toast (review find, 2026-09-21):
+                        # said in the state's words, never answered ok, so `romp interrupt` prints it and exits non-zero
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "the stop was not delivered: %s is compacting its conversation, and a compaction runs to its end"
+                            % who}), "application/json")
                     elif be.busy(sid):
                         # …and a refusal WITH work in flight is a stop that did not land (the WS arm's toast):
                         # said, never answered ok, so `romp interrupt` prints this and exits non-zero — the

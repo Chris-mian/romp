@@ -680,9 +680,11 @@ class RefusedInterruptPaintsNothing(unittest.TestCase):
         (km._kernel_knows, km.Sessions.backend_for, km._suppress_session_retry, km._mark_views_dirty) = self._saved
         km._interrupt_clicked.clear()
 
-    def _backend(self, verdict, busy=None):
+    def _backend(self, verdict, busy=None, compacting=None):
         asked = []
         be = types.SimpleNamespace(interrupt=lambda sid: (asked.append(sid), verdict)[1], busy=lambda sid: busy)
+        if compacting is not None:                        # a double without the verb stands for a backend that has none
+            be.compacting = lambda sid: compacting
         km.Sessions.backend_for = staticmethod(lambda sid: be)
         return asked
 
@@ -712,6 +714,18 @@ class RefusedInterruptPaintsNothing(unittest.TestCase):
         self.assertEqual([w["type"] for w in self.warned], ["warn"],
                          "…and the person who clicked hears that their stop was dropped, once")
         self.assertEqual(self.warned[0]["text"], "the stop was not delivered: the session is still working")
+        self.assertEqual(self.suppressed, [SID], "the press still stops romp's auto-retry into the thread")
+
+    def test_a_refused_stop_under_a_compaction_is_worded_for_the_state(self):
+        # Esc and the Stop button during a compaction (review find, 2026-09-21): busy() reads True under the
+        # backend's compaction bracket and interrupt() is the no-turn False, so the press answered "still working"
+        # under a chip reading Compacting. The backend's compacting() verdict, by identity, is read ahead of busy.
+        asked = self._backend(False, busy=True, compacting=True)
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client))
+        self.assertEqual(asked, [SID])
+        self.assertNotIn(SID, km._interrupt_clicked, "no stop landed")
+        self.assertEqual([w["text"] for w in self.warned],
+                         ["the stop was not delivered: the session is compacting its conversation, and a compaction runs to its end"])
         self.assertEqual(self.suppressed, [SID], "the press still stops romp's auto-retry into the thread")
 
     def test_a_backend_with_no_verdict_keeps_the_optimistic_stamp(self):

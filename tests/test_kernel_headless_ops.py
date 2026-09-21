@@ -147,6 +147,26 @@ class HeadlessRoutes(unittest.TestCase):
         self.assertEqual(resp.get("error"), "the stop was not delivered: web is still working")
         sid = fake.interrupt.call_args[0][0]
         self.assertNotIn(str(sid), km._interrupt_clicked, "no stop landed, so nothing reads Interrupting…")
+        # (a bare Mock's compacting() answers a truthy Mock, not True: the compaction arm below keys on identity, so
+        # this fake still reads as working, 2026-09-21)
+
+    def test_interrupt_route_says_when_the_session_is_compacting(self):
+        # Esc, Stop, POST /interrupt and `romp interrupt` during a compaction answered "still working" under a chip
+        # reading Compacting (review find, 2026-09-21): busy() is True under the bracket and interrupt() is the no-turn
+        # False, so both doors fell to the busy branch. The backend's own compacting() verdict, read by identity ahead
+        # of busy, is worded for the state and names no backend.
+        fake = mock.Mock()
+        fake.interrupt.return_value = False
+        fake.compacting.return_value = True
+        fake.busy.return_value = True
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)):
+            code, resp = self._post("/interrupt", {"name": "web"})
+        self.assertEqual(code, 200)
+        self.assertIs(resp.get("ok"), False, "a stop a compaction cannot take is never answered ok")
+        self.assertEqual(resp.get("error"),
+                         "the stop was not delivered: web is compacting its conversation, and a compaction runs to its end")
+        sid = fake.interrupt.call_args[0][0]
+        self.assertNotIn(str(sid), km._interrupt_clicked, "nothing reads Interrupting…")
 
     def test_end_route_kills_and_announces_close(self):
         fake = mock.Mock()

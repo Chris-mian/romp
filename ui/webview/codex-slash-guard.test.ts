@@ -1,9 +1,9 @@
 // A Codex session never receives a slash command as prose (2026-09-19): the kernel refuses it before any backend sees it
 // and answers with a warn that names the session (sid) and, for a composer press, the copy (qid). The chat's half: the
 // optimistic bubble the press drew ends on that warn (no echo will ever land for it), the words go back into an EMPTY
-// composer, and a warn naming a session is never read as a create's verdict, whatever is in flight. The battery that cannot
-// compact says why in its tooltip (chat and timeline) and its click does nothing. Pure functions executed; the chat renderer
-// has no jsdom harness, so its wiring is pinned at the source. Synthetic values only.
+// composer, and a warn naming a session is never read as a create's verdict, whatever is in flight. The battery compacts on a
+// Codex session too since the native compaction (the kernel runs Codex's own): no mark, no declined click, on either surface.
+// Pure functions executed; the chat renderer has no jsdom harness, so its wiring is pinned at the source. Synthetic values only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -42,30 +42,53 @@ test("the warn branch keys on the session first: a sid-bearing warn toasts (and 
   assert.ok(sidAt > 0 && provAt > sidAt, "the session branch is tested before the create arm");
   assert.equal(arm.split("failProvisional(").length - 1, 1, "one create arm, after the session branch");
   assert.match(RENDER, /import \{[^}]*\brefusedRestoreText\b[^}]*\} from "\.\/send-pending";/);
+  // the chat battery's click pulse ends on the refusal (2026-09-21): the click added ctx-clicked and only a compacting
+  // status removed it, so a refused compaction pulsed until the next status change or a tab switch
+  assert.match(arm, /if \(m\.sid === activeId\) endCtxBarClick\(document\.getElementById\("ctx-bar"\)\);/,
+    "the sid-bearing warn ends the active session's battery pulse (the remover is executed in status-controls.test.ts)");
+  assert.match(RENDER, /import \{[^}]*\bendCtxBarClick\b[^}]*\} from "\.\/status-controls";/);
 });
 
-test("the chat battery for a Codex session: marked inert with the reason where the chat fills it (so the reused bar follows a tab switch), the builder line unchanged, the click declined", () => {
-  assert.match(RENDER, /const CODEX_NO_COMPACT = "this session runs in Codex, which has no \/compact";/);
-  assert.match(RENDER, /^function ctxBar\(\): HTMLElement \{ const bar = buildCtxBar\(compactActiveSession\); bar\.id = "ctx-bar"; return bar; \}/m,
-    "the builder keeps its id and its click: the mark is applied where the status fills the bar, not at construction");
-  assert.match(RENDER, /function markCtxBarFor\(bar: HTMLElement, st: Status\): void \{\s*\n\s*if \(st\.backend === "codex"\) \{ delete bar\.dataset\.compacts; bar\.dataset\.inertWhy = CODEX_NO_COMPACT; \}\s*\n\s*else if \(bar\.dataset\.inertWhy\) \{ delete bar\.dataset\.inertWhy; bar\.dataset\.compacts = "1"; \}/,
-    "a Codex status marks the bar inert with the reason; any other status lifts the mark (the one live bar is reused across tabs)");
-  assert.match(RENDER, /function setCtxBar\(bar: HTMLElement, ctxStr: string \| undefined, compacting = false, ctxColor\?: number\[\], ctxOver = false, st\?: Status\): void \{\s*\n\s*if \(st\) markCtxBarFor\(bar, st\);/);
-  const fills = RENDER.match(/setCtxBar\(bar, s\.status\.ctx, s\.status\.state === "compacting", pickTone\(s\.status\.ctxColor, s\.status\.ctxTone\), s\.status\.ctxOver, s\.status\);/g) || [];
-  assert.equal(fills.length, 3, "the statusline build, the tab tooltip and the light in-place refresh all hand the status in");
+test("a compaction refused after a battery click reaches the timeline lane that took it (2026-09-21): the kernel's settingRefused frame ends the lane's click stamp and, marked filed, posts no second bell row", () => {
+  // the kernel's half: beside the chat broadcast, the timeline app hears the same refusal on the frame that page renders
+  // (its boot drops a warn), marked filed because the kernel's own ring row (_sync_notice) is the bell's record
+  const say = KERNEL.slice(KERNEL.indexOf("def _say_compact_refusal("), KERNEL.indexOf("\ndef _codex_compact_command("));
+  assert.match(say, /_send_to_app\("chat", dict\(frame, id=str\(sid\)\)\)\n(?:\s*#[^\n]*\n)*\s+_send_to_app\("timeline", \{"type": "settingRefused", "gesture": "command", "sid": str\(sid\), "flag": "",\n\s+"text": why, "filed": True\}\)/,
+    "beside the chat broadcast, in the same no-socket branch");
+  // the page's half, executed: the same method the boot hands the frame to (setting-refused.test.ts drives it the same way)
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { TimelinePanel } = require(path.join(ROOT, "ui", "romp-timeline-view.js"));
+  const posted: any[] = [];
+  (globalThis as any).window = { parent: { postMessage: (m: any) => posted.push(m) } };
+  try {
+    const v: any = Object.create(TimelinePanel.prototype);
+    v._compactClicked = { s1: 1, s2: 2 }; v._metaPending = {}; v._pendingFlags = {}; v._dismissed = new Set(); v._dismissedRows = new Map();
+    v.data = { sessions: [{ id: "s1" }, { id: "s2" }] }; v._laneMenu = null; v.draws = 0; v.draw = function () { this.draws++; };
+    v.settingRefused({ type: "settingRefused", gesture: "command", sid: "s1", flag: "", text: "this session has ended", filed: true });
+    assert.deepEqual(v._compactClicked, { s2: 2 }, "the lane's optimistic compacting cue ends on this event, not at its 6 s expiry");
+    assert.deepEqual(posted, [], "the kernel filed the bell row itself: the page posts none, so the shell shows one row per refusal");
+    assert.equal(v.draws, 1);
+    v.settingRefused({ type: "settingRefused", gesture: "command", sid: "s2", flag: "", text: "x" });
+    assert.deepEqual(v._compactClicked, {});
+    assert.deepEqual(posted, [{ romp: "notify", kind: "refused", text: "x", sid: "s2" }], "the HTTP road's own frame keeps its row: nothing else files one for it");
+  } finally { delete (globalThis as any).window; }
+});
+
+test("the battery compacts on a Codex session too (native compaction, 2026-09-19): no Codex mark on the chat's bar, the click posts, the timeline's press stamps and posts", () => {
+  assert.doesNotMatch(RENDER, /CODEX_NO_COMPACT|markCtxBarFor|inertWhy/, "the inert mark left with the refusal it explained");
+  assert.match(RENDER, /^function ctxBar\(\): HTMLElement \{ const bar = buildCtxBar\(compactActiveSession\); bar\.id = "ctx-bar"; return bar; \}/m);
   const c = RENDER.indexOf("function compactActiveSession(bar: HTMLElement): void {");
   assert.ok(c > 0);
   const body = RENDER.slice(c, RENDER.indexOf("\n}\n", c));
-  assert.match(body, /if \(s\.status\.backend === "codex"\) return;/, "no post, no click cue for a click that cannot compact");
-  assert.ok(body.indexOf('if (s.status.backend === "codex") return;') < body.indexOf('vscodeApi.postMessage({ type: "compactSession"'), "declined before the post");
+  assert.doesNotMatch(body, /backend === "codex"/, "no backend test between the state gate and the post");
+  assert.match(body, /vscodeApi\.postMessage\(\{ type: "compactSession", id: activeId \}\);/);
+  assert.match(TL, /hit\.style\.cursor = 'pointer';/);
+  assert.doesNotMatch(TL, /runs in Codex, which has no \/compact/);
+  const press = TL.slice(TL.indexOf("hit.addEventListener('pointerdown'"), TL.indexOf("svg.appendChild(hit);"));
+  assert.doesNotMatch(press, /codex/, "the press stamps and posts for every live lane");
+  assert.match(press, /this\._compactSession\(s\.name\); this\.draw\(\);/);
 });
 
-test("the timeline battery on a Codex lane: an inert cursor, the reason in the tooltip, no stamp and no post on press", () => {
-  assert.match(TL, /hit\.style\.cursor = s\.backend === 'codex' \? 'default' : 'pointer';/);
-  assert.match(TL, /s\.backend === 'codex' \? 'this session runs in Codex, which has no \/compact' : 'click to \/compact this session'/);
-  assert.match(TL, /if \(e\.button !== 0\) return;\s*\n\s*if \(s\.backend === 'codex'\) return;/, "declined right after the button test, before the stamp and the post");
-});
-
-test("the kernel-served shell's bell explains the refused kind's new tenants: a slash command a session has no such command for, and a clear a Codex session could not run", () => {
-  assert.match(KERNEL, /refused:"[^"]*Or a slash command sent to a session that has no such command \(a Codex session has no \/compact\): nothing was sent, and the entry names it\. Or a \/clear a Codex session could not run/);
+test("the kernel-served shell's bell explains the refused kind's new tenants: a slash command a session has no such command for, and a clear or compact a Codex session could not run", () => {
+  assert.match(KERNEL, /refused:"[^"]*Or a slash command sent to a session that has no such command \(a Codex session has no \/fast\): nothing was sent, and the entry names it\. Or a \/clear or \/compact a Codex session could not run/);
 });
