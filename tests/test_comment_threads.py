@@ -506,6 +506,28 @@ class CommentOps(CommentBase):
         self.assertEqual(row["status"], "open")
         self.assertEqual(row["anchorUuid"], "a1")
 
+    def test_the_row_acks_before_the_fork_so_no_dialog_waits_on_a_spawn(self):
+        """on_row fires on the durable row, ahead of fork/connect/send: the client's ack is not gated
+        on minting a session. A comment that is saved must read as saved."""
+        acked = []
+        self.be.calls.clear()
+        err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?",
+                                      on_row=lambda t: acked.append((t, [c[0] for c in self.be.calls])))
+        self.assertIsNone(err)
+        self.assertEqual([t for t, _ in acked], [tid], "acked once, with the tid the caller adopts")
+        self.assertEqual(acked[0][1], [], "no backend call had run when the ack went out")
+        self.assertEqual([c[0] for c in self.be.calls], ["fork", "connect", "send"], "the spawn still happens")
+        self.assertEqual(km._comment_thread(PARENT, tid)["status"], "open", "the row the ack promised is on disk")
+
+    def test_a_refused_create_acks_nothing(self):
+        """Every refusal a user can provoke sits ABOVE the row write, so on_row stays unfired."""
+        acked = []
+        err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?", name="no spaces!",
+                                      on_row=acked.append)
+        self.assertTrue(err)
+        self.assertIsNone(tid)
+        self.assertEqual(acked, [])
+
     def test_threads_autoname_by_count_and_accept_an_edited_name(self):
         _, tid1 = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
         _, tid2 = km._comment_create(PARENT, "a1", "the cap", "And this?")

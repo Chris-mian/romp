@@ -6696,11 +6696,18 @@ def _comment_markers(sid):
 ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"
 
 
-def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", src="", now=None):
+def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", src="",
+                    now=None, on_row=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
     opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
     (None, the new thread's id) so the client can adopt exactly the thread it created.
+
+    `on_row(tid)` fires the moment the thread row is DURABLE, before the fork. Forking mints a session
+    — process spawn, connect, opening send — which is seconds the caller would otherwise spend holding
+    a dialog open over a comment that is already saved. Every refusal a user can provoke (no SDK
+    backend, no transcript, anchor lag, a bad name) happens above this point, so an ack here is honest;
+    a fork that then dies rolls the row back and reports itself the same way it always did.
 
     `name` (the user 2026-08-15, who wanted to name the thread right in the dialog): the thread's
     editable name, defaulting to <parent>-comment-<N> where N counts the threads this session has
@@ -6747,6 +6754,8 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
             row["color"] = col                     # the comment's identity color (the dialog's name tint)
         data.setdefault("threads", []).append(row)
         _save_comments(parent_sid, data)
+    if on_row is not None:
+        on_row(tsid)
     try:
         be.fork(nm, parent_sid, cut, bg=col, fg=(pal.fg_for(col) if col else ""), sid=tsid, thread_of=parent_sid,
                 model=str(model or ""), effort=str(effort or ""))
@@ -7934,19 +7943,10 @@ def _drive(msg, client):
         # Anchor a comment thread on a highlighted passage (the user 2026-08-13). LOUD on refusal; on
         # success a commentCreated ack names the new thread (the popover adopts exactly it — never a
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
-        err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
-                                   name=str(msg.get("name") or ""),
-                                   model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
-                                   color=str(msg.get("color") or ""), src=str(msg.get("src") or ""))
-        if err:
-            # a TRANSIENT refusal (parse lag) is the client's cue to hold + retry — no toast for
-            # plumbing the retry makes moot; every real refusal stays loud (fail loudly)
-            if err != ANCHOR_LAG_ERR:
-                client["send"](json.dumps({"type": "warn", "text": err}))
-            client["send"](json.dumps({"type": "commentCreateFailed", "id": sid,
-                                       "uuid": str(msg["uuid"]), "transient": err == ANCHOR_LAG_ERR,
-                                       "text": err}))
-        else:
+        # Both ride the on_row callback, which fires on the DURABLE row rather than after the fork:
+        # minting the thread's session is seconds, and the client spent every one of them holding a
+        # dialog over a comment that was already saved.
+        def _acked(tid):
             # the FRAME rides ahead of the ack: the ack's handler adopts the new thread from the
             # client's thread map, so the thread must be in it first (reversed, the popover looked
             # up a thread it had never heard of and closed itself)
@@ -7955,6 +7955,23 @@ def _drive(msg, client):
                 client["send"](json.dumps(fr))
             client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": tid,
                                        "uuid": str(msg["uuid"])}))
+
+        err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
+                                   name=str(msg.get("name") or ""),
+                                   model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
+                                   color=str(msg.get("color") or ""), src=str(msg.get("src") or ""),
+                                   on_row=_acked)
+        if err:
+            # a TRANSIENT refusal (parse lag) is the client's cue to hold + retry — no toast for
+            # plumbing the retry makes moot; every real refusal stays loud (fail loudly)
+            if err != ANCHOR_LAG_ERR:
+                client["send"](json.dumps({"type": "warn", "text": err}))
+            # A fork that died AFTER the ack rolled its row back, so the failure has to reach a client
+            # that already closed its dialog: the rollback's own push retires the thread, and this names
+            # the reason in the error center rather than leaving the retirement unexplained.
+            client["send"](json.dumps({"type": "commentCreateFailed", "id": sid,
+                                       "uuid": str(msg["uuid"]), "transient": err == ANCHOR_LAG_ERR,
+                                       "text": err}))
     elif t == "commentReply" and msg.get("tid") and msg.get("text"):
         err = _comment_reply(sid, str(msg["tid"]), str(msg["text"]))
         if err:
