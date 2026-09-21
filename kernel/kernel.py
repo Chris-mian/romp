@@ -41371,9 +41371,12 @@ def _ledger_batches(limit=LEDGER_BATCHES_ON_WIRE):
         if iid in _rejournal_owed:
             continue                                  # an owed id counts once, as owed: its re-journal-first row supersedes any log row it holds (a card re-cleared while owed), and one Undo restores it whole
         by.setdefault(ct, []).append(iid)
-    out = [sorted(by[t]) for t in sorted(by, reverse=True)[:limit]]   # the newest `limit` batches: the tail is the round trip (plans/needs-you.md)
+    out = [sorted(by[t]) for t in sorted(by, reverse=True)]
     owed = sorted(_rejournal_owed)
-    return ([owed] if owed else []) + out, owed
+    # the newest `limit` batches ride the frame with the count before the bound, so the feed reads a truncated stack as truncated and not as
+    # "nothing older is cleared" (the ninth executed review of PR 1967: it released the older suppressions and dropped their Undo entries); the
+    # tail is the round trip (plans/needs-you.md)
+    return ([owed] if owed else []) + out[:limit], owed, len(out)
 
 
 def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
@@ -41412,7 +41415,7 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                 frame["owedIds"] = [str(i) for i in owed]   # the owed ids that did NOT come back this press (the sixth and seventh executed reviews)
             if _lb[0] is None:
                 _lb[0] = _ledger_batches()
-            frame["batches"], frame["owedBatch"] = _lb[0]    # the kernel's stack, which the feed takes as its own (round eight)
+            frame["batches"], frame["owedBatch"], frame["batchesTotal"] = _lb[0]   # the kernel's stack, which the feed takes as its own (round eight), and the count before the bound (round ten)
             try:
                 client["send"](json.dumps(frame))
             except Exception:

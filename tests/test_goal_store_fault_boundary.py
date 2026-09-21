@@ -1320,6 +1320,27 @@ class ActsUnderAFailedWrite(_World):
         self.assertFalse(self._flag(A, A + ":g1"), "A is back"); self.assertTrue(self._flag(B, B + ":g1"), "B is not")
         self.assertEqual(ro["batches"], [[B + ":g1"], [A + ":g2"]])
 
+    def test_the_stack_on_the_wire_carries_the_newest_twenty_batches_and_the_count_before_the_bound(self):
+        """The eighth executed review's low and the ninth's medium: every account carried every cleared id (a live log: 2245 stamps, about 129 KB
+        a frame), and a bound alone left the feed reading absence as "not cleared". The frame carries the newest twenty log batches and the
+        count before the bound, so the feed knows what was left out; the unbounded read still holds every batch."""
+        st = _store(A, "the faulting session's goal")
+        for n in range(2, 23):
+            g = A + ":g%d" % n
+            st["nodes"][g] = dict(st["nodes"][A + ":g1"], id=g, text="goal %d" % n); st["status"][g] = "working"
+        st["seq"] = 22; st["lastNode"] = A + ":g22"
+        self._write(A, st)
+        for n in range(1, 22):                              # twenty-one single clears: twenty-one stamps
+            self._dispatch({"type": "askClear", "itemId": A + ":g%d" % n})
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            sent = self._dispatch({"type": "undoClear"})    # a refused undo: one account, the stack on it
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "%r" % errs)
+        self.assertEqual((len(errs[0]["batches"]), errs[0]["batchesTotal"]), (20, 21), "twenty on the wire, twenty-one held: %r" % errs[0].get("batchesTotal"))
+        self.assertEqual((errs[0]["batches"][0], errs[0]["batches"][-1]), ([A + ":g21"], [A + ":g2"]), "the newest first; the oldest, g1, left out")
+        self.assertEqual(km._ledger_batches(limit=None)[0][-1], [A + ":g1"], "the unbounded read holds all twenty-one")
+        self.assertEqual(km._ledger_batches()[2], 21, "and says how many there are")
+
     def test_a_stale_note_across_a_restart_does_not_name_a_card_this_press_restores(self):
         """The fourth review's second low: the note's rewrite refused (its stale row stays), a restart, the card re-cleared, Undo: the
         re-journal-first step named the newest batch as not restored, and that batch IS the owed card, which this press restores, so the
@@ -1546,7 +1567,7 @@ class UndoStackSequences(_World):
     ACTIONS = ("clearA", "clearB", "clearAll", "undo")
     STORE = ("lands", "refuses")
     LOG = ("lands", "refuses", "refuses2")
-    FRAME_KEYS = ("type", "op", "ok", "sid", "itemId", "itemIds", "owedIds", "batches", "owedBatch", "title")
+    FRAME_KEYS = ("type", "op", "ok", "sid", "itemId", "itemIds", "owedIds", "batches", "owedBatch", "batchesTotal", "title")
 
     def setUp(self):                                      # the acts class's world (its sessions, live map and app sink), without its tests
         super().setUp()
@@ -1576,7 +1597,7 @@ class UndoStackSequences(_World):
         return [i for i in (A + ":g1", B + ":g1") if i not in cur and not self._flag(i.rsplit(":", 1)[0], i)]
 
     def _state_key(self):
-        batches, owed = km._ledger_batches()
+        batches, owed, _total = km._ledger_batches()
         p = jd.STATE / km.OWED_FILE
         note = [json.loads(l)["id"] for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
         return json.dumps({"batches": batches, "owed": owed, "flags": [i for i in (A + ":g1", B + ":g1") if self._flag(i.rsplit(":", 1)[0], i)],

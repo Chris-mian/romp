@@ -20,15 +20,14 @@ test("client: the err handler releases the ids a refused clear names and repaint
   assert.match(h, /const refusedIds = Array\.isArray\(m\.itemIds\) \? m\.itemIds\.map\(String\) : \(op === "askClear" && itemId \? \[itemId\] : \[\]\);/);
   assert.match(h, /if \(\(op === "askClear" \|\| op === "askClearMany" \|\| op === "nodeOverride" \|\| op === "clearAll"\) && refusedIds\.length\) \{/, "the four clear requests");
   // the card returns in either window (the third review): the collapse class off, the cached item re-pushed, as Undo does
-  assert.match(h, /for \(const c of cardTwins\(it\.itemId\)\) c\.classList\.remove\("dismissing"\);/);
-  assert.match(h, /if \(!asks\.some\(\(a\) => a\.itemId === it\.itemId\)\) asks\.push\(it\);/);
+  assert.match(h, /for \(const id of refusedIds\) for \(const c of cardTwins\(id\)\) c\.classList\.remove\("dismissing"\);/, "the collapse class off by id (round ten: stack or no stack)");
+  assert.match(h, /for \(const id of refusedIds\) \{ const it = clearedItems\.get\(id\); if \(it && !asks\.some\(\(a\) => a\.itemId === id\)\) asks\.push\(it\); \}/, "and the cards back from the page's record of what it cleared");
   // a refused undo reverts the optimistic restore (the verifier's medium A): the batch leaves asks and pendingRestored, is suppressed again and goes back on the stack
   assert.match(h, /\} else if \(op === "undoClear" && refusedIds\.length\) \{/);
   assert.match(h, /for \(const id of refusedIds\) \{ pendingRestored\.delete\(id\); pendingCleared\.add\(id\); \}/);
   assert.match(h, /if \(back\.length\) clearedStack\.push\(back\);/);
   assert.match(h, /if \(Array\.isArray\(m\.owedIds\) && m\.owedIds\.length\) clearedStack\.push\(\[\]\);/, "an entry standing for the owed ids above the last clear's (the sixth executed review): the next pop matches the kernel's");
   assert.match(h, /for \(const id of refusedIds\) pendingCleared\.delete\(id\);/, "the click's suppression lets go");
-  assert.match(h, /for \(const it of clearedStack\.splice\(i, 1\)\[0\]\) \{/, "and the optimistic Undo entry for a clear that never happened goes, its items back on the board");
   assert.ok(h.indexOf("render();") > h.indexOf("pendingCleared.delete(id)"), "then the board repaints from the payload that still lists the card");
   assert.ok(h.indexOf("refusedIds") < h.indexOf('if (op === "apiRetry" && sid)'), "ahead of the latch re-arms the frame already drove");
   assert.match(h, /\} else if \(!op && sid\) rearmLatches\(\{ kind: "session", sid \}\);/, "an old kernel's reply naming a session and no request re-arms the session's latches; a store gesture's account (op rides) re-arms nothing (the fourth review of PR 1967, the manager's ruling: a latch is released only by the reply to the request that made it)");
@@ -51,17 +50,20 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(KERNEL, /"owed": \[\] if landed else list\(not_back\), "stamps": int\(stamps\)/, "the ids that did NOT come back, and how many batches they sit in (the seventh executed review)");
   assert.match(KERNEL, /Once their stores can be read they take more than one Undo, since they were left at different points, and the last clear comes back after them\./, "no press count when they hold more than one stamp");
   // round eight: the kernel's stack rides every account and the page takes it as its own; a batch this page makes goes under the owed entries
-  assert.match(KERNEL, /frame\["batches"\], frame\["owedBatch"\] = _lb\[0\]/, "every account carries the kernel's stack");
-  assert.match(FEED, /if \(storeOp && Array\.isArray\(m\.batches\) && !fromHost\) \{/, "the LOCAL kernel's frame with the stack reconciles; an old kernel's and a remote host's take the branches below (the eighth executed review)");
-  assert.match(FEED, /const isLocal = \(id: string\) => \{ const it = known\.get\(id\); return !it \|\| hostOf\(it\.sid\) === ""; \};/, "the reconcile touches local entries and suppressions alone");
-  assert.match(FEED, /if \(hidden\.has\(id\) \|\| !isLocal\(id\)\) continue;/);
+  assert.match(KERNEL, /frame\["batches"\], frame\["owedBatch"\], frame\["batchesTotal"\] = _lb\[0\]/, "every account carries the kernel's stack and the count before the bound");
+  assert.match(FEED, /if \(storeOp && Array\.isArray\(m\.batches\) && !fromHost && !federatedPane\(\)\) \{/, "the local kernel's frame reconciles on a single-kernel pane; an old kernel's frame, and every frame on a federated pane, take the branches below (the round-nine verifier's ruling)");
+  assert.match(FEED, /function federatedPane\(\): boolean \{/);
+  assert.match(FEED, /if \(federatedPane\(\)\) clearedStack\.length = 0;\s*\/\/[^\n]*\n\s+const batch = clearedStack\.pop\(\);/, "and pops none: the round trip");
+  assert.match(FEED, /clearedStack\.push\(\.\.\.older\);/, "the older local entries stay below the rebuilt ones under a truncated frame");
   assert.match(KERNEL, /^LEDGER_BATCHES_ON_WIRE = 20/m, "the stack on the wire is bounded (plans\/needs-you.md)");
   assert.match(KERNEL, /def _ledger_batches\(limit=LEDGER_BATCHES_ON_WIRE\):/);
-  assert.match(KERNEL, /for t in sorted\(by, reverse=True\)\[:limit\]\]/);
-  assert.match(FEED, /reconcileClearedStack\(m\.batches\.map/);
-  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "a batch this page makes goes under the owed entries, and an id they hold counts once");
+  assert.match(KERNEL, /return \(\[owed\] if owed else \[\]\) \+ out\[:limit\], owed, len\(out\)/, "the newest batches within the bound, the owed ids, the count");
+  assert.match(FEED, /const truncated = typeof m\.batchesTotal === "number" && m\.batchesTotal > bats\.length - \(owedB\.length \? 1 : 0\);/, "a frame that left older batches out says so (round ten)");
+  assert.match(FEED, /reconcileClearedStack\(bats, owedB, truncated, refusedIds\);/);
+  assert.match(FEED, /if \(truncated && !named\.has\(id\) && !cleared\.has\(id\)\) continue;/, "a suppression the truncated frame neither names nor carries stays");
+  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  for \(const it of entry\) clearedItems\.set\(it\.itemId, it\);\n  if \(federatedPane\(\)\) return;[^\n]*\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "every cleared card is recorded; a federated pane caches no entry; a batch this page makes goes under the owed entries, and an id they hold counts once");
   assert.match(FEED, /const rest = entry\.filter\(\(it\) => !owedIds\.has\(it\.itemId\)\);\n  if \(rest\.length\) clearedStack\.splice\(i, 0, rest\);/);
-  assert.match(FEED, /function reconcileClearedStack\(batches: string\[\]\[\], owedBatch: string\[\]\): void \{/);
+  assert.match(FEED, /function reconcileClearedStack\(batches: string\[\]\[\], owedBatch: string\[\], truncated = false, namedIds: string\[\] = \[\]\): void \{/);
   assert.equal((FEED.match(/pushClearedEntry\(/g) || []).length, 5, "the four writers (a card's Clear, a group's, a session's Clear all, the board's Clear all) and the definition");
   assert.match(KERNEL, /frame\["owedIds"\] = \[str\(i\) for i in owed\]/);
   assert.doesNotMatch(KERNEL, /The owed cards came back, but romp could not clear the note/, "the owed-write account, filed before the flag step, claims nothing about the restore");

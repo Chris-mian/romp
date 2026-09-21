@@ -1202,6 +1202,9 @@ export class FederationManager {
 
   private inboundNow(host: string, msg: any): void {
     const m = prefixInbound(host, msg);
+    // a REMOTE kernel refused an undo: the retry the dialog invites must reach that kernel again, so it becomes the next undo's target
+    // (the send reset the target to the local kernel, T286, and a second Undo after a LANDED one still goes there alone; round ten of PR 1967)
+    if (host !== LOCAL && m && m.type === "err" && m.op === "undoClear") this.lastClearHosts = [host];
     if (m && m.type === "session" && typeof m.id === "string") {
       (this.perHostSids[host] ||= new Set()).add(m.id);
     }
@@ -1502,7 +1505,7 @@ export class FederationManager {
     // kernel that took a clear can undo it, and it undoes its own newest batch.)
     if (m && m.type === "undoClear") {
       const hosts = this.lastClearHosts.length ? this.lastClearHosts : [LOCAL];
-      this.lastClearHosts = [LOCAL];
+      this.lastClearHosts = [LOCAL];   // a second Undo has no clear to follow to a remote kernel (T286); a REFUSED remote undo puts its host back (inbound, round ten of PR 1967)
       for (const h of hosts) this.sendTo(h, m);
       return;
     }

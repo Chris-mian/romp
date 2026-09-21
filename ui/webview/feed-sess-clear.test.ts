@@ -89,6 +89,9 @@ test("the router sends the batch to the session's kernel with bare ids, and Undo
   assert.deepEqual(r[0].msg.itemIds, ["11111111-2222-3333-4444-555555555555:g1", "11111111-2222-3333-4444-555555555555:g2"]);
   assert.match(FED, /if \(m && \(m\.type === "askClear" \|\| m\.type === "askClearMany" \|\| m\.type === "clearAll"\)\) \{\s*\n\s*this\.lastClearHosts = routes\.length \? routes\.map\(\(r\) => r\.host\) : \[LOCAL\];/,
     "undoClear follows the LAST clear, batched or single, to the kernel that took it (T286: the board-wide Clear all to every kernel it reached)");
+  const ub = FED.slice(FED.indexOf('if (m && m.type === "undoClear") {'), FED.indexOf("for (const h of hosts) this.sendTo(h, m);"));
+  assert.match(ub, /this\.lastClearHosts = \[LOCAL\];/, "a second Undo after a landed one goes to the local kernel alone (T286)");
+  assert.match(FED, /if \(host !== LOCAL && m && m\.type === "err" && m\.op === "undoClear"\) this\.lastClearHosts = \[host\];/, "a refused remote undo puts its kernel back as the next undo's target, so the retry reaches it (round ten of PR 1967)");
 });
 
 test("the header Clear's own class carries layout only; size, outline and the accent hover come from .fdismiss", () => {

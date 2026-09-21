@@ -53,6 +53,19 @@ test("a Clear all on a merged board reaches both kernels and Undo restores both 
   });
 });
 
+test("a remote kernel's refusal of an undo puts that kernel back as the next undo's target, so the retry reaches it; a landed undo still hands a second Undo to the local kernel alone (round ten of PR 1967)", () => {
+  withManager((fm, localSent, remoteSent) => {
+    fm.outbound({ type: "clearAll" });
+    fm.outbound({ type: "undoClear" });                                  // reaches every kernel the Clear all reached; the target resets to local
+    (fm as any).inboundNow("box2", { type: "err", op: "undoClear", sid: SID, title: "That undo did not land", text: "the clears log refused", itemIds: [], batches: [], owedBatch: [], batchesTotal: 0 });
+    fm.outbound({ type: "undoClear" });                                  // the retry the dialog invites
+    assert.deepEqual(remoteSent.slice(4).map(([h, m]) => [h, m.type]), [["box2", "undoClear"]], "to the kernel that refused, alone (before: the local kernel, which had refused nothing)");
+    assert.deepEqual(localSent.map((m) => m.type), ["clearAll", "undoClear"], "the local kernel is not asked twice");
+    fm.outbound({ type: "undoClear" });                                  // after the retry, the target is local again
+    assert.equal(remoteSent.length, 5); assert.deepEqual(localSent.map((m) => m.type), ["clearAll", "undoClear", "undoClear"]);
+  });
+});
+
 test("the session header's Clear all still goes to that session's kernel alone, and Undo follows it there alone", () => {
   withManager((fm, localSent, remoteSent) => {
     fm.outbound({ type: "askClearMany", sid: "box2:" + SID, itemIds: ["box2:" + SID + ":g1", "box2:" + SID + ":g2"] });

@@ -1555,32 +1555,67 @@ test("a notice card on a data-defined board is not on the feed: its own board's 
   await dispatch(frame([g1, g2, g3]));
 });
 
-test("a merged pane: a remote kernel's account takes the per-id road and leaves the local kernel's entries and suppressions alone, and the local kernel's frame rebuilds only its own (the eighth executed review of PR 1967)", async () => {
-  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
-  const hooks = (await import("./feed")) as any;
-  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
-  const reset = hooks._resetClearGestureStateForTests as () => void;
-  const sent0 = posted.length;
-  const g2it = card("g2")._it;
-  reset();
+const remoteWorld = async (hooks: any) => {
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });   // read after a dispatch when this test runs alone
   const R = "22222222-3333-4444-5555-666666666666";
   const remote = cardOf(R + ":g1", "TESTHOST:" + R, "TESTHOST:api", "#cc6633", "a remote host's card", "needs_input", { live: true, tree: [] });
   await dispatch(frame([g1, g2it, g3, remote], { working: ["web"] })); mock.timers.tick(700);
-  card("g3")._clr.onclick(ev);                                              // a local clear: suppressed, its entry on the stack
-  body.byId("feed-clearall")!.onclick!(ev);                                  // Clear all fans out to every host: one entry for what was still open
-  assert.deepEqual(stackIds(), [["g1", "g2", R + ":g1"], ["g3"]]);
-  // the remote kernel refused its Clear all: its account, host-stamped by federation, names its card and carries ITS stack (empty)
-  await dispatch({ type: "err", host: "TESTHOST", op: "clearAll", sid: "TESTHOST:" + R, itemId: R + ":g1", itemIds: [R + ":g1"], batches: [], owedBatch: [], title: "That clear did not land", text: "Nothing was cleared." });
+  return { g2it, R, remote };
+};
+
+test("a federated pane: Undo is the round trip (the round-nine verifier's ruling on PR 1967): mixed clears cache no entry, Undo posts the request and restores nothing optimistically under the working cue, a remote kernel's refusal re-shows its card by id, and the payload restores what the kernels restored", async () => {
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const sent0 = posted.length;
+  const { g2it, R, remote } = await remoteWorld(hooks);
+  card("g3")._clr.onclick(ev);                                              // a local clear
+  card(R + ":g1")._clr.onclick(ev);                                         // a remote card's clear
+  body.byId("feed-clearall")!.onclick!(ev);                                  // Clear all fans out to every host
   mock.timers.tick(700);
-  assert.ok(card(R + ":g1"), "the remote card is back where it was");
-  assert.ok(!card("g3"), "the local clear stands: the remote's frame did not re-show it");
-  assert.deepEqual(stackIds(), [["g3"]], "the local entry stands; the Clear all's entry went with the refusal (the per-id road), the merged stack not rebuilt from one host's frame");
-  // the local kernel's account (no host): its Clear all landed for g1 and g2 with one store refusing; its stack rebuilds the local entries alone
-  await dispatch({ type: "err", op: "clearAll", sid: WEB, itemId: "", itemIds: [], batches: [["g1", "g2"], ["g3"]], owedBatch: [], title: "That clear did not fully land for web", text: "The cards are off the board; the session's own record of them could not be written." });
+  assert.deepEqual(stackIds(), [], "a federated pane caches no entry: stamps across kernels do not order (before: three entries, and Undo popped one kernel's batch while federation routed the request by the last clear's hosts)");
+  assert.ok(!card("g3") && !card(R + ":g1"), "the cleared cards are off");
+  const undo = body.byId("feed-undoclear")!;
+  undo.onclick!(ev);
+  assert.equal(posted.slice(sent0).filter((m) => m.type === "undoClear").length, 1, "the request goes out");
+  assert.ok(!card("g3") && !card(R + ":g1"), "nothing restored optimistically"); assert.ok(undo.classList.contains("undo-busy"), "the working cue: the payload restores");
+  // the remote kernel refused the remote card's clear: its account, host-stamped by federation, re-shows that card by its id and nothing else
+  await dispatch({ type: "err", host: "TESTHOST", op: "askClear", sid: "TESTHOST:" + R, itemId: R + ":g1", itemIds: [R + ":g1"], batches: [], owedBatch: [], batchesTotal: 0, title: "That clear did not land", text: "Nothing was cleared." });
   mock.timers.tick(700);
-  assert.deepEqual(stackIds(), [["g1", "g2"], ["g3"]], "the local kernel's stack, as its frame carries it");
-  assert.ok(!card("g1") && !card("g2"), "the local kernel's cleared cards are off the board"); assert.ok(card(R + ":g1"), "the remote card, another kernel's, stays");
-  reset(); posted.splice(sent0);
+  assert.ok(card(R + ":g1"), "the remote card is back, stack or no stack"); assert.ok(!card("g3"), "the local clear stands");
+  // the local kernel's account carries its stack; on a federated pane it rebuilds nothing
+  await dispatch({ type: "err", op: "clearAll", sid: WEB, itemId: "", itemIds: [], batches: [["g1", "g2"], ["g3"]], owedBatch: [], batchesTotal: 2, title: "That clear did not fully land for web", text: "The cards are off the board; the session's own record of them could not be written." });
+  mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [], "no stack on a federated pane, whatever a frame carries");
+  await dispatch(frame([g1, g2it, remote], { working: ["web"] })); mock.timers.tick(700);   // the payload: the kernels' word (the local kernel's undo restored g1 and g2; g3 stays cleared)
+  assert.ok(card("g1") && card("g2") && card(R + ":g1") && !card("g3"), "the board is the payload's"); assert.ok(!undo.classList.contains("undo-busy"), "the cue clears with the payload");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+  mock.timers.reset();
+});
+
+test("a truncated frame is read as truncated: the older clears it left out keep their suppressions and their Undo entries below the rebuilt ones (the ninth executed review of PR 1967)", async () => {
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const sent0 = posted.length;
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });
+  const many = Array.from({ length: 22 }, (_, k) => cardOf("c" + (k + 1), WEB, "web", "#3366cc", "card " + (k + 1), "needs_input", { live: true, tree: [] }));
+  await dispatch(frame(many, { working: ["web"] })); mock.timers.tick(700);
+  for (const c of many) card(c.itemId)._clr.onclick(ev);                     // twenty-two single clears: twenty-two entries
+  mock.timers.tick(700);
+  assert.equal(stackIds().length, 22);
+  // the kernel's account for the last clear (its store refused; the ledger took it) carries the newest twenty batches and the count of twenty-two
+  const window = many.slice(2).reverse().map((c) => [c.itemId]);         // c22 down to c3
+  await dispatch({ type: "err", op: "askClear", sid: WEB, itemId: "", itemIds: [], batches: window, owedBatch: [], batchesTotal: 22, title: "That clear did not fully land for web", text: "The card is off the board; the session's own record of it could not be written." });
+  mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [...window, ["c2"], ["c1"]], "the window rebuilt on top, the two older entries kept below (before: dropped, twenty left)");
+  assert.ok(!card("c1") && !card("c2"), "the older clears stay off the board (before: back for a payload, then gone again)");
+  await dispatch(frame([], { working: ["web"] })); mock.timers.tick(700);      // the payload: every card cleared
+  assert.equal(stackIds().length, 22);
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
   mock.timers.reset();
 });
@@ -1593,7 +1628,7 @@ test("the feed's Undo stack equals the kernel's batches after every press, by en
   const reset = hooks._resetClearGestureStateForTests as () => void;
   const T = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "..", "tests", "fixtures", "undo-stack-transitions.json"), "utf8"));
   const sent0 = posted.length;
-  const g2it = card("g2")._it;                                              // the board as the tests around this one hold it, restored at the end
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });   // the board as the tests around this one hold it, restored at the end (a fresh item when this test runs alone)
   const cards: Record<string, any> = {
     [T.cards.A]: cardOf(T.cards.A, T.sids.A, "web", "#3366cc", "wire the notes-api health route", "needs_input", { live: true, tree: [] }),
     [T.cards.B]: cardOf(T.cards.B, T.sids.B, "api", "#cc6633", "decide the migration order for the notes table", "needs_input", { live: true, tree: [] }),

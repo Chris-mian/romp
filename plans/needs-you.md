@@ -212,7 +212,13 @@ clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone), a
 optimistic Undo restores what the kernel restores; the two are proven equal by enumeration over every press sequence of a
 two-card world under every fault (tests/fixtures/undo-stack-transitions.json). The stack on the wire is bounded to the newest
 20 log batches (`LEDGER_BATCHES_ON_WIRE`): an Undo past them is the round trip, with nothing cached to restore optimistically.
-On a merged pane a remote kernel's account is taken by its ids, and the local kernel's frame rebuilds the local entries alone.
+The optimistic Undo and that stack hold on a single-kernel pane, where the proof holds. On a federated pane (more than one
+kernel attached) Undo is the round trip: no entry is cached and none is popped, the button shows the working cue, federation
+routes the request to the kernels of the most recent clear (kept until the next clear, so a refused remote undo's retry
+reaches the kernel that refused it), and the payload restores what those kernels restored; a remote kernel's account re-shows
+the cards of a refused clear by their ids and touches no stack. The reason: stamps across kernels do not order, so a merged
+stack cannot say which kernel's batch the next Undo reaches, and an optimistic pop would restore one kernel's card while
+another restored its own.
 
 ### Completed is safe to clear unread
 
