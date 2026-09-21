@@ -1363,12 +1363,18 @@ class TimelinePanel {
       // .chip-pulse (the user 2026-07-01). A PERSISTENT overlay div the compositor breathes independently of
       // draw() — replaces the per-<text> SMIL <animate>, which stuttered/truncated because the SVG wipe
       // recreated it at the (irregular) redraw cadence. draw() only repositions it (see _positionWorkLabel).
+      // Since 2026-09-21 the breathe is an OPACITY crossfade, as the chat chip's is: the div's own text is
+      // the black tone and a ::after layer repeats the label (content: attr(data-label)) in teal, fading in
+      // and out. A `color` animation re-styles and repaints the glyphs every frame for as long as a session
+      // works; opacity animates on the compositor with nothing repainted (the user 2026-09-19).
       if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-work-css')) {
         const wst = document.createElement('style'); wst.id = 'tl-work-css';
         wst.textContent = '.romp-tl-work-label{position:absolute;pointer-events:none;white-space:nowrap;'
-          + 'font-weight:700;letter-spacing:0.03em;transform:translate(-50%,-50%);will-change:color;'
+          + 'font-weight:700;letter-spacing:0.03em;transform:translate(-50%,-50%);color:#1a1a1a}'
+          + '.romp-tl-work-label::after{content:attr(data-label) / "";position:absolute;inset:0;color:#0d9488;opacity:0;'
           + 'animation:romp-tl-workpulse 1.5s cubic-bezier(0.37,0,0.63,1) infinite}'
-          + '@keyframes romp-tl-workpulse{0%,100%{color:#1a1a1a}50%{color:#0d9488}}';
+          + '@keyframes romp-tl-workpulse{0%,100%{opacity:0}50%{opacity:1}}'
+          + '@media (prefers-reduced-motion: reduce){.romp-tl-work-label::after{animation:none}}';
         document.head.appendChild(wst);
       }
       // "Model switching…" dots (the user 2026-07-03): while a /model pick resolves, the lane shows three
@@ -3201,7 +3207,7 @@ class TimelinePanel {
       this._compactLayer.appendChild(lab);
       this._workLabels.set(sid, lab);
     }
-    if (lab.textContent !== text) lab.textContent = text;
+    if (lab.textContent !== text) { lab.textContent = text; lab.dataset.label = text; }   // ::after repeats it in teal
     const m = this._ovScaleNow();
     lab.style.left = (m.ox + cx * m.sx) + 'px';
     lab.style.top = (m.oy + cy * m.sy) + 'px';
