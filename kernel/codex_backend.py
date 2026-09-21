@@ -1212,7 +1212,7 @@ class CodexBackend:
                     if self._client is client:
                         self._record_client_failure_locked(e, client)
                 for _, s in self._session_items():
-                    ended = False
+                    ended = None
                     with s.lock:
                         if s.compacting and not s.dead:
                             # the app-server is gone, and the compaction's outcome with it (2026-09-19): the bracket
@@ -1223,17 +1223,20 @@ class CodexBackend:
                             # the release, a turn accepted in the window cleared the field and saved None, and this
                             # stale snapshot then committed the red card over it (review find, 2026-09-21).
                             self._end_compact_locked(s)
-                            s.launch_error = {"text": "The Codex app-server ended while this conversation was "
-                                                      "compacting — %s" % (str(e) or e.__class__.__name__),
-                                              "at": time.time(), "limit": False, "noRetry": True}
+                            text = ("The Codex app-server ended while this conversation was compacting — %s"
+                                    % (str(e) or e.__class__.__name__))
+                            s.launch_error = {"text": text, "at": time.time(), "limit": False, "noRetry": True}
                             try:
                                 self._save_registry(s, fields=("launchError",))
                             except Exception:
                                 self.log("compaction end registry save: %s" % traceback.format_exc())
-                            ended = True
+                            ended = (s.name, text)     # built under the lock, logged after the release (below)
                         queued = bool(s.queue) and not s.dead
                     if ended:
                         self.poke()                    # the end is the event a parked message waits on (review find, 2026-09-21)
+                        # the line the systemError end writes (_compact_status), naming the session: this end logged only
+                        # "global pump stopped" and "client unavailable" (review find, 2026-09-21)
+                        self.log("compaction of %s ended: %s" % ended)
                         self.push_session(s.sid)
                     if queued:
                         self._ensure_worker(s)
