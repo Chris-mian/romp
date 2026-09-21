@@ -10,13 +10,13 @@ argv is right.
 import os
 import subprocess
 import tempfile
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 ROOT = Path(os.path.dirname(os.path.realpath(__file__))).parent
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
-gp = SourceFileLoader("romp_gitpr", str(ROOT / "kernel" / "gitpr.py")).load_module()
+gp = load_source("romp_gitpr", str(ROOT / "kernel" / "gitpr.py"))
 
 
 def _run(cwd, *args):

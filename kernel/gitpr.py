@@ -55,14 +55,22 @@ def _git(cwd, *args, timeout=8):
     return p.returncode == 0, (p.stdout or "").strip()
 
 
+_REPO_OF = {}     # cwd → 'owner/repo' or '': repo_of's answer, held for the process
+
+
 def repo_of(cwd):
     """'owner/repo' when this session's checkout has a GitHub origin, else ''. A non-GitHub forge, a
-    remote-less repo and a non-repo are all '' — there is no PR surface for any of them."""
+    remote-less repo and a non-repo are all '' — there is no PR surface for any of them.
+
+    Memoized per cwd: every chat build asks, and a fork per build for a value that changes when someone
+    re-points origin is the wrong trade. A re-pointed remote is picked up on the next kernel start."""
+    hit = _REPO_OF.get(cwd)
+    if hit is not None:
+        return hit
     ok, url = _git(cwd, "remote", "get-url", "origin")
-    if not ok or not url:
-        return ""
-    m = _REMOTE_RE.match(url)
-    return m.group(1) if m else ""
+    m = _REMOTE_RE.match(url) if (ok and url) else None
+    _REPO_OF[cwd] = repo = (m.group(1) if m else "")
+    return repo
 
 
 def is_repo(cwd):

@@ -101,7 +101,8 @@ class PostalOff(unittest.TestCase):
         self.assertEqual(pm.POSTAL_ALL_KEY, "*")
         kernel_src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
         self.assertIn('POSTAL_ALL_KEY = "*"', kernel_src)
-        self.assertIn("master = _session_flags().get(POSTAL_ALL_KEY)", kernel_src)
+        self.assertIn('return _session_flag(POSTAL_ALL_KEY, "postalServiceOff")', kernel_src,
+                      "the kernel's own reader falls back to the same master default")
 
     def test_read_box_holds_mail_while_isolated(self):
         box = pm.MAILROOT / SID / "new"

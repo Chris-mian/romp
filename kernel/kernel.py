@@ -38616,6 +38616,7 @@ def _sendvis_diag(sid):
     try:
         out["liveAtoms"] = [{"uuid": a.get("uuid"), "t": a.get("t"),
                              "echo": (a.get("_echo_text") or "")[:120] or None,
+                             "dropped": bool(a.get("dropped")),   # a settled loss and a send still going out read identically without it
                              "command": a.get("command") or None}
                             for a in (be.live_atoms(sid) if be else [])]
     except Exception as e:

@@ -7367,6 +7367,7 @@ def _seg_pr_refs(seg):
     hit = _SEG_PR_CACHE.get(ckey)
     if hit is not None:
         return hit
+    em.hydrate(seg.get("atoms") or [])   # bodies before the assembly cut: read on demand (T323 stage 4a), once per memo miss
     texts, cmds = [], []
     for a in (seg.get("atoms") or []):
         t, c = _atom_parts(a)
@@ -9147,7 +9148,7 @@ def _in_window(pdir, fsid, now=None):
         return False
     now = time.time() if now is None else now
     try:
-        return os.stat(pdir / (fsid + ".jsonl")).st_mtime >= now - WINDOW
+        return os.stat(os.path.join(pdir, fsid + ".jsonl")).st_mtime >= now - WINDOW
     except OSError:
         return False
 

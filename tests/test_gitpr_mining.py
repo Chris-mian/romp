@@ -12,14 +12,14 @@ Two rules under test, both learned the hard way on live data:
 """
 import os
 import tempfile
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 ROOT = Path(os.path.dirname(os.path.realpath(__file__))).parent
 # Hermetic state BEFORE the load — judge resolves its state root at import time.
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
-jd = SourceFileLoader("romp_judge_prmine", str(ROOT / "kernel" / "judge.py")).load_module()
+jd = load_source("romp_judge_prmine", str(ROOT / "kernel" / "judge.py"))
 
 REPO = "notes-api-org/notes-api"
 URL = "https://github.com/notes-api-org/notes-api/pull/%d"
