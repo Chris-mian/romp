@@ -35,6 +35,7 @@ import json
 import os
 import re
 import tempfile
+import textwrap
 import time
 import types
 import unittest
@@ -334,6 +335,49 @@ def _census_of(fn_src, module_names):
     return calls, dotted, reads - calls, backends
 
 
+def _key_reads(src, key):
+    """The line numbers at which `src` holds a string constant equal to `key` (2026-09-21). The counted shapes, on any
+    receiver, are the whole claim: a read that names the field as a constant EQUAL to it, the first argument of a
+    `.get` or a `.pop`, a subscript's slice, the left operand of an `in` test, an entry of the tuple a loop reads
+    through (the shape _row_fields in test_feed_memo_inputs documents it cannot derive), and an f-string's real
+    subscript. Not counted (2026-09-21, a stated blind spot the way _row_fields states its own; the kernel holds none
+    of these today): a read that renders the field through a format placeholder, a percent-format key, a `.format`
+    or `.format_map` field, and one that names it as a keyword argument, `dict(lastTool=...)`, since neither is a
+    constant equal to the key. Prose never is: a comment is not in the tree, and a docstring or a sentence literal
+    that mentions the field is a constant that does not equal it. So the count is zero on prose and one per counted
+    read, where the word-regex mention count this replaces could not tell a comment from a reader (#1817 and #1819
+    were green alone and red together over kernel prose; #1825 reworded two kernel docstrings to satisfy the count).
+    A write or a listing that names the key counts too, which is the pin's intent: it hunts the kernel naming the
+    field as a key outside the regions that may. Never strip string literals first: the key of a real read is itself
+    a string literal, and a census that stripped them would go blind to the reader it hunts. `src` is a file's text,
+    a function's source (dedented so a method's parses; dedent removes no line, so it changes no number), or a tree
+    already parsed. The numbers are the parse's own: a whole file's parse yields the file's line numbers, the ones
+    _reads_outside's ranges apply to, and a snippet's parse numbers it from 1 at its def or first decorator."""
+    tree = src if isinstance(src, ast.AST) else ast.parse(textwrap.dedent(src))
+    return {n.lineno for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value == key}
+
+
+def _reads_outside(src, key, permitted):
+    """The lines _key_reads finds in `src` for `key` that lie in none of the `permitted` ranges: (first, stop) pairs,
+    1-based and half-open, the way inspect.getsourcelines counts a function's lines."""
+    return {n for n in _key_reads(src, key) if not any(first <= n < stop for first, stop in permitted)}
+
+
+def _unkeyed_field_permits():
+    """The kernel's text and, per dropped row field, the line ranges where naming it is legitimate: for both fields
+    the projection block between _chat_sig_deps and _chat_build_sig (the constants, their comment and _chat_row_sig,
+    which name the field in order to drop it) and _chat_build_sig itself (the key, whose row comment says so; a read
+    there would be a key input, not a payload read); for ctxTokens also the compaction-suggestion tick (its one
+    reader, a tick, not a build) and Sessions.live (the merge that writes it). Ranges as _reads_outside takes them."""
+    def span(f):
+        src, at = inspect.getsourcelines(f)
+        return at, at + len(src)
+    text = Path(inspect.getsourcefile(km._chat_build_sig)).read_text(encoding="utf-8")
+    key = (span(km._chat_sig_deps)[1], span(km._chat_build_sig)[1])
+    return text, {"lastTool": (key,), "ctxTokens": (key, span(km._compact_suggest_tick), span(km.Sessions.live))}
+
+
 class Census(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -389,38 +433,77 @@ class Census(unittest.TestCase):
     def test_the_row_projection_drops_only_fields_no_chat_reader_reads(self):
         """The `row` component is the liveness row without _CHAT_ROW_UNKEYED and, per task row, without
         _CHAT_TASK_ROW_UNKEYED (_chat_row_sig, 2026-09-18). A dropped field must stay unread by the build, or the
-        memo rule breaks silently: a stale payload served while the key holds. Two pins. The named chat readers'
-        own source (the reads the census classifies) names neither field, by word so a single-quoted read is seen
-        too. And, as the transitive backstop a reader added in a helper they call would slip past, the whole kernel
-        source: every mention of lastTool lies in the projection block itself (the constants, their comment and
-        _chat_row_sig, which name the field in order to drop it) or in _chat_build_sig (the key, whose row comment
-        says so; a read there would be a key input, not a payload read), and every mention of ctxTokens in those
-        two, in the compaction-suggestion tick (its one reader, a tick, not a build) or in Sessions.live (the merge
-        that writes it). _interrupting reads snapT and interrupting by design and is folded under clock; it is
-        deliberately not among the readers."""
+        memo rule breaks silently: a stale payload served while the key holds. Two pins, both by READ, not by
+        mention (_key_reads, 2026-09-21): a read is a string constant equal to the field, the key of a get call, a
+        subscript or a membership test on any receiver, or an entry of the tuple a loop reads through; prose naming
+        the field, a comment or a docstring, is not one and does not count (#1817 and #1819 were green alone and red
+        together over kernel prose, and #1825 reworded two kernel docstrings to satisfy the old word count). The
+        named chat readers' own source (the reads the census classifies) reads neither field. And, as the transitive
+        backstop a reader added in a helper they call would slip past, the whole kernel source: every read of lastTool
+        lies in the projection block itself (the constants, their comment and _chat_row_sig, which name the field in
+        order to drop it) or in _chat_build_sig (the key, whose row comment says so; a read there would be a key
+        input, not a payload read), and every read of ctxTokens in those two, in the compaction-suggestion tick (its
+        one reader, a tick, not a build) or in Sessions.live (the merge that writes it). _interrupting reads snapT and
+        interrupting by design and is folded under clock; it is deliberately not among the readers."""
         self.assertEqual(km._CHAT_ROW_UNKEYED, {"snapT", "interrupting", "ctxTokens"})
         self.assertEqual(km._CHAT_TASK_ROW_UNKEYED, {"lastTool"})
         readers = (km.build_session, km._light_status, km._session_chip, km._bg_live_norm, km._bg_tasks,
                    km._agent_alive, km._awaiting_live_rows, km._session_background_items, km._model_pending_now,
                    km._compacting, km._session_backend, km._session_retrying)
-        src = "\n".join(inspect.getsource(f) for f in readers)
-        for k in ("ctxTokens", "lastTool"):
-            self.assertIsNone(re.search(r"\b%s\b" % k, src),
-                              "%s is dropped from the row component, so no chat reader may read it" % k)
-        lines = Path(inspect.getsourcefile(km._chat_build_sig)).read_text(encoding="utf-8").splitlines()
+        for f in readers:
+            own = ast.parse(textwrap.dedent(inspect.getsource(f)))
+            for k in ("ctxTokens", "lastTool"):
+                self.assertFalse(_key_reads(own, k),
+                                 "%s is dropped from the row component, so no chat reader may name it as a key; %s does"
+                                 % (k, f.__name__))
+        text, permits = _unkeyed_field_permits()
+        lines = text.splitlines()
         deps_src, deps_at = inspect.getsourcelines(km._chat_sig_deps)
         _sig_src, sig_at = inspect.getsourcelines(km._chat_build_sig)
         block = "\n".join(lines[deps_at - 1 + len(deps_src):sig_at - 1])
         self.assertIn("def _chat_row_sig", block, "the projection sits between _chat_sig_deps and _chat_build_sig")
-        whole = "\n".join(lines)
-        key_src = block + "\n" + "".join(_sig_src)
-        count = lambda k, text: len(re.findall(r"\b%s\b" % k, text))
-        self.assertEqual(count("lastTool", whole), count("lastTool", key_src),
-                         "lastTool is mentioned outside the projection and the key: a reader the row component holds against")
-        self.assertEqual(count("ctxTokens", whole),
-                         count("ctxTokens", key_src) + count("ctxTokens", inspect.getsource(km._compact_suggest_tick))
-                         + count("ctxTokens", inspect.getsource(km.Sessions.live)),
-                         "ctxTokens is mentioned beyond the projection, the key, the compaction tick and the merge writing it")
+        tree = ast.parse(text)
+        self.assertEqual(sorted(_reads_outside(tree, "lastTool", permits["lastTool"])), [],
+                         "lastTool is named as a key outside the projection and the key: a reader there would serve a stale payload under an unchanged key")
+        self.assertEqual(sorted(_reads_outside(tree, "ctxTokens", permits["ctxTokens"])), [],
+                         "ctxTokens is named as a key beyond the projection, the key, the compaction tick and the merge writing it")
+
+    def test_the_read_census_counts_reads_not_mentions(self):
+        """The census behind the previous test tells a read from prose (2026-09-21). A synthetic body first: the helper
+        returns the lines of the reads, through a get, a subscript, an `in` test and a tuple a loop reads through, on
+        any receiver, plus an f-string's real subscript, and none of the comment, the docstring, the sentence literal or
+        the percent-format key that name the fields (2026-09-21, the post-merge review of #1939: the counted and uncounted
+        shapes the census helper's docstring claims are asserted here, so an interpreter that moves f-string nodes or a
+        helper change that starts counting placeholders fails this line rather than the docstring). Then the
+        pin on the real kernel text with a comment naming both fields and a single-quoted get appended past every
+        permitted range: the comment is no hit (under the word-regex mention count it was one per field, which is how
+        two PRs went green alone and red together) and the get is exactly one, so the census is not blind to the
+        reader it hunts (a census that stripped string literals would be). One parse of the kernel, not two."""
+        src = textwrap.dedent('''
+            def body(t, tm, row):
+                """Reads lastTool off a task row and ctxTokens off the liveness row."""
+                # a comment naming lastTool, which is not a read
+                a = t.get("lastTool")
+                b = (tm or {})["ctxTokens"]
+                c = "lastTool" in row
+                for k in ("ctxTokens",):
+                    d = tm.get(k)
+                note = "the raw ctxTokens count, which the payload renders as a percent"
+                e = f"{tm['ctxTokens']}"
+                f = "%(ctxTokens)s" % tm
+                return a, b, c, d, note, e, f
+        ''')
+        line = lambda frag: next(i for i, l in enumerate(src.splitlines(), 1) if frag in l)
+        self.assertEqual(_key_reads(src, "lastTool"), {line('t.get("lastTool")'), line('"lastTool" in row')})
+        self.assertEqual(_key_reads(src, "ctxTokens"),
+                         {line('["ctxTokens"]'), line('for k in ("ctxTokens",)'), line("f\"{tm['ctxTokens']}\"")})
+        text, permits = _unkeyed_field_permits()
+        tail = text + "\n# a note naming lastTool\n# and ctxTokens\ndef _probe(t):\n    return t.get('lastTool')\n"
+        tree = ast.parse(tail)
+        self.assertEqual(_reads_outside(tree, "ctxTokens", permits["ctxTokens"]), set(),
+                         "a comment naming ctxTokens past every permitted range is not a read")
+        self.assertEqual(_reads_outside(tree, "lastTool", permits["lastTool"]), {tree.body[-1].body[0].lineno},
+                         "the comment naming lastTool is not a read; the single-quoted get on the last line is the one hit")
 
 
 # ── the differential tests ────────────────────────────────────────────────────────────────────────

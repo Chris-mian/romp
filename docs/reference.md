@@ -2095,18 +2095,32 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   unaffected, since a client whose redial is unresolved holds no base for any
   session), and the re-entry of a tab that left the strip (the pusher forgets
   every client's base for it along with its baseline, since the page tore the
-  tab down when the strip stopped listing it); `baseGone` for a fork or a
+  tab down when the strip stopped listing it; one exception, stated not fixed:
+  the page keeps a strip-omitted tab the frame's `live` field lists, so for a
+  live session that the strip omits, the pusher forgets bases the page still
+  holds, and the re-listing is a row-less `noBase` full per client, since the
+  dedup slot is popped with the base); `baseGone` for a fork or a
   rewind; `lastGone:<family>` for a held last edge the next list no longer
   carried; `changeAt0` for a change at the list's first event against a held
   base: a genuine first-event change (a floor advance that moved the list's
-  first event reads here too), or the cycle's repair after two whole-frame
-  senders raced on a baseline-less sid (a sid's first whole frame seeds the
-  shared baseline, whichever sender sent it, so its later senders diff against
-  it instead of re-sending the whole session; two senders that both read it
-  absent leave none and mark the session, no single-client push re-seeds it in
-  between, and the next cycle's full repairs every client and clears the mark;
-  in the
-  `chatFull` row below the racing shape has `changeFrom` 0 with both edges
+  first event reads here too), or a change of 0 against a held base, which
+  only a sender that read the shared baseline absent produces (a sid's first
+  whole frame to reach a client seeds the baseline, whichever sender sent it,
+  so its later senders diff against it instead of re-sending the whole
+  session), in two faces: the cycle's repair after two whole-frame senders
+  raced on a baseline-less sid (two senders that both read it absent before
+  their builds leave none and mark the session, no single-client push re-seeds
+  it in between, and the next cycle whose loop reads the baseline absent sends
+  every base holder the full and takes the mark off with its write; a cycle
+  that sent tails leaves it for the next one), and the detector's accepted
+  false positive, a sender whose build the
+  cycle's write landed inside with its own list the newer one: it sends every
+  base holder the full, pops the cycle's baseline and marks the session with
+  no client stale, and the next cycle sends every base holder the full once
+  more (the boot's attach handshake beside the cycle's cold build of the same
+  tab, two frames and two rows per client where a tail went before; a stamp
+  of the build's start beside the baseline, its own item, removes it); in the
+  `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
   `inverted` for a base whose last edge sits before its first; `empty` for a
@@ -2505,7 +2519,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   same tab counts again on every later push until the page asks for it, 2026-09-14),
   `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
-  an input moved while they ran; the next cycle builds them again) and
+  an input moved while they ran; the next cycle builds them again),
+  `baselineRaced` (the chat wire's shared delta baseline was popped by the
+  seed's detector and the session marked: two whole-frame senders raced on a
+  session with no baseline, or the detector's accepted false positive named
+  under `changeAt0` above; the mark's only other trace is the next cycle's
+  `changeAt0` rows, filed only for a base holder alive then whose repair did
+  not dedup), `baselineRepaired` (a cycle whose loop read the baseline absent
+  sent every base holder the full and its write took a standing mark off;
+  raced minus repaired is the marks still standing plus the tabs that left the
+  strip, whose eviction clears the mark with no repair) and
   `bg_miss`, a map from each labelled component of that signature
   (`transcript`, `states`, `store`, `hold`, `archive`, `episodes`, `reg`,
   `gone`, `tasks`, `cut`, `live`, `row`, `clock`, `backend`, `ops`, `limit`,
@@ -2548,7 +2571,20 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `miss_by`'s `auth`, the machine's key on hand), `retry`, `agents`, `tasks`,
   plus `presence` for a row that appeared, left or changed shape): the key
   folds only the row fields a card reads, so a context refresh or a
-  background agent's tool call moves no key. `reg` is the SDK registry
+  background agent's tool call moves no key. `failed` counts the card builds
+  that raised (a memoized entry's decode, the key, the derivation, its
+  dependency key, the serialization or the memo put), cumulative, and
+  `failing` the sessions whose last build did, a standing fault rather than
+  history. `coldLive` counts, per session per build, each living session not
+  hidden from the feed, with a transcript, whose cache-only parse read
+  missed; a session nothing has parsed at its current version (no client's
+  tab, no judge, no background warm, none of the card build's own parse
+  paths) rides it every build, and the warm gate leaves an unmoved, idle
+  session cold by design, so a standing count is those sessions, not a fault.
+  `coldFlip` counts the subset the memo held warm and re-read in place with
+  one kernel parse (also under `parses.kernel`) instead of deriving cold;
+  `coldFlip` climbing every build for one session with no appends means its
+  parse never stores, which should not occur. `reg` is the SDK registry
   record's state plus the two fields a card reads, `bgLedger` and
   `spawnedAt`, and the death marker's identity; the record's other fields
   move `reg` no further, and a transcript-less live row's `cwd`, `lastSid`
@@ -4935,9 +4971,9 @@ empty background (the feed between cards, the Sessions band outside its lanes,
 the Outline below its rows, the Files pane's empty state). The pointer is an
 open hand over a surface you can grab and a closed hand while you hold one. A
 press lifts only after a few pixels of travel, so a click, a text selection and
-a scroll are never a drag, and Escape cancels. A blue outline shows where the
-pane will land: the left, right, top or bottom half of the pane under the
-pointer. Dropping splits that pane, and every internal edge becomes a divider
+a scroll are never a drag, and Escape cancels. An outline in the accent color
+shows where the pane will land: the left, right, top or bottom half of the pane
+under the pointer. Dropping splits that pane, and every internal edge becomes a divider
 you can drag.
 
 A session tab is a payload too. Drag one into a pane's half and it becomes a
@@ -5059,6 +5095,15 @@ tab. Focus moves to a different session only when
 you pick a tab, or when you close the active tab yourself (then the pane returns
 to the tab you used before it).
 
+## A postal card's head and its delivery mark
+
+The head names both ends, the other session and this one, each in its session's
+color, and carries the delivery mark at its right edge: sent, delivered, read,
+parked while the recipient is unreachable, bounced, or recalled. A send that
+failed has no mark at all, and the tool call's result says what happened. An
+incoming message that waited while the session was offline wears the parked
+mark. Hovering a mark gives the state and when it was reached.
+
 ## A comment thread's mail
 
 A comment thread's mail is off, both directions, until you break it out: peers
@@ -5094,6 +5139,11 @@ Not the same tools: romp peers are discovered only through the postal service's 
 
 ## The VS Code port forwarder and the browser dashboard
 
+The dashboard's panes are long-lived sockets, and how a forwarder treats them
+decides whether a closed pane is really closed. OpenSSH forwards each
+browser socket one-to-one and propagates closes, so a pane that goes away is
+gone on both ends.
+
 !!! warning "The VS Code port forwarder is not a good path for the browser dashboard"
 
     VS Code's Remote and Tunnels port forwarder multiplexes every forwarded
@@ -5110,11 +5160,15 @@ Not the same tools: romp peers are discovered only through the postal service's 
     previous socket at once, and the timeline and feed cross the wire as
     deltas instead of whole payloads. That keeps a forwarded dashboard usable,
     but the forwarder still carries every byte over a channel it shares with
-    your editor, so prefer one of the two paths above. The VS Code romp view
-    is a different case: its sockets run on the kernel's own machine and close
-    when a panel closes, so it never leaks connections, but under Remote or
-    Tunnels the extension still relays each whole view payload to the local
-    window as it changes. It does not yet take the deltas the browser panes do.
+    your editor, so prefer a path that gives each pane its own socket: plain ssh
+    port forwarding, which the guide sets up under
+    [From another machine](guide.md#from-another-machine), or
+    [Tailscale](#reaching-romp-from-a-phone-the-full-tailscale-setup). The VS
+    Code romp view is a different case: its sockets run on the kernel's own
+    machine and close when a panel closes, so it never leaks connections, but
+    under Remote or Tunnels the extension still relays each whole view payload
+    to the local window as it changes. It does not yet take the deltas the
+    browser panes do.
     A pane that falls 16 MB behind is dropped and reconnects on its own; the
     drop is logged in the kernel log and shows in the Log (the settings panel's "Open log" button carries the unread count on the desktop; the phone's bottom bar reddens its bell), so a
     link that cannot keep up reads as what it is rather than as a flaky network.
@@ -5271,6 +5325,26 @@ be read, or a symlink at that path, refuses to start instead of minting a
 replacement nobody else holds. Under the service that refusal repeats in
 `manager.log` every 10 seconds until you repair the file; the kernel then comes
 back on its own.
+
+A few routes answer without the token: the liveness probes `/healthz`,
+`/version` and `/busy` on the kernel and `/ping` on the bus, and the install
+files `/manifest.webmanifest` and the three home-screen icons under `/media/`
+(`romp-touch-180.png`, `romp-app-192.png`, `romp-app-512.png`, a fixed list of
+names rather than a path prefix). They are fixed files that read no session
+state, and a browser fetches the manifest and its icons with credentials
+omitted, so a gate there would refuse them at the moment an install consults
+them. `/busy`'s count is exempt as a probe; its drain hold is a write and takes
+the token like any other.
+
+Two routes answer outside that shape. `POST /push/ack`, which the push worker
+uses to report that a notification was shown or tapped, is served ahead of the
+token check and authenticated by the per-push id instead: the id is 128 random
+bits the kernel minted for one notification and handed only to the device that
+notification went to, it stamps two timestamps on that one ledger row and buys
+nothing else, an unknown id is a 404, and the body is capped at 2 KB before a
+byte of it is read. A token-less `GET /` is not refused either: the gate runs
+and fails, and the answer is the page that asks for the token rather than a
+403, so a bare open of the dashboard has somewhere to paste it.
 
 ## Switches
 

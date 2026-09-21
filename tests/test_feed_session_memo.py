@@ -170,10 +170,7 @@ class _Board(unittest.TestCase):
             pdir = proj / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
             pdir.mkdir(parents=True)
             tp = pdir / (sid + ".jsonl")
-            tp.write_text("\n".join(json.dumps(r) for r in [
-                uline(T0, "start on: " + GOAL_OF[sid], "u1"),
-                aline(T0 + 40, "On it.", "a1", "u1"),
-            ]) + "\n")
+            tp.write_text(self._transcript_body(sid))
             (names / sid).write_text("%s\t%s\t%s\n" % (NAME_OF[sid], cdir, COLOR_OF[sid]))
             self.tpath[sid], self.cdir[sid] = tp, cdir
         self.saved = (jd.STATE, jd.PROJECTS, km.NAMES, km._GLOBAL_CLAUDE_MD)
@@ -208,6 +205,14 @@ class _Board(unittest.TestCase):
         self.td.cleanup()
 
     # ── the world's writers ──
+    @staticmethod
+    def _transcript_body(sid):
+        """The fixture's two-exchange transcript: the opening request and the reply that ends the turn."""
+        return "\n".join(json.dumps(r) for r in [
+            uline(T0, "start on: " + GOAL_OF[sid], "u1"),
+            aline(T0 + 40, "On it.", "a1", "u1"),
+        ]) + "\n"
+
     @staticmethod
     def _row():
         return {"state": "idle", "since": NOW - 100, "model": "", "effort": "", "context": None,
@@ -1430,7 +1435,19 @@ class AWarmEntryIsNeverDerivedCold(_Board):
     in place for a session whose memoized key was warm, and only for one: a cold kernel's first paint still parses
     nothing. The fixture's appended exchange ENDS the turn (an assistant reply with stop_reason end_turn), so
     who_working stays False and the discriminator is sessState quiet (warm) against unknown (cold) on the working
-    card, independent of idle synthesis (which reads states rows this board never writes)."""
+    card, independent of idle synthesis (which reads states rows this board never writes).
+
+    The re-read runs only for a transcript the kernel can stat (2026-09-21). A warm entry whose leaf is gone from disk
+    has no key in the shared store (jd.parse_cached returns None because its stat raises), and jd.parsed_session
+    parses the missing leaf under a None key and stores nothing, so an ungated re-read parsed nothing into nowhere
+    on EVERY build: parses.kernel and coldFlip moved each cycle, and the empty parse painted the card quiet where the
+    cache-only read reports unknown for a transcript it cannot read. Gated, the entry takes the cold road once, hits
+    from then on with nothing parsed, and reads unknown until the transcript is back and something parses it. The
+    same bit closes the COLD road too: with the re-read withheld the entry's parse is None, and the body asked the
+    background warmer (_warm_fleet_bg) for it whenever _warm_wanted held, so under a feed-only client the warmer
+    parsed the missing leaf every build (a None key, nothing stored), dropped the feed cache and woke the pusher,
+    a build-warm-drop-wake loop at build speed for as long as the transcript was gone. The module's board has no
+    client, so that test appends a fake feed client and stubs the live map the warmer reads."""
 
     def test_an_append_after_the_chats_parse_derives_the_session_warm_once_and_the_chats_next_parse_hits(self):
         self._build()                                              # cold: three derivations, no parse
@@ -1489,6 +1506,103 @@ class AWarmEntryIsNeverDerivedCold(_Board):
             km._feed_memo_forget(set())                        # ...and the memo emptied too: the shape of a fresh kernel
             d, _ = self._delta(self._build)
             self.assertEqual((len(calls), d["derived"]), (2, 3), "nothing is warm: web derives cold and asks again")
+
+    def test_a_warm_entry_whose_transcript_is_gone_derives_cold_once_and_re_reads_nothing(self):
+        self._build()                                              # cold: three derivations, no parse
+        km._parse(str(self.tpath[WEB]), WEB, NOW)                 # the chat's parse of web's tab warms the store
+        d, f = self._delta(self._build)                            # the boot flip: web re-derives warm once
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
+        self.tpath[WEB].unlink()                                   # the leaf is gone from disk while the session lives
+        p0 = km._PERF_STATS.parses["kernel"]
+        c0 = km._feed_memo_report()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)     # the one cold derivation
+        self.assertTrue({"transcript", "parse"} <= set(d["miss_by"]), d)
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 0,
+                         "a transcript that cannot be stat'ed has no store slot: nothing to re-read into")
+        c1 = km._feed_memo_report()
+        self.assertEqual(c1["coldFlip"] - c0["coldFlip"], 0, "no re-read ran, so no flip is counted")
+        self.assertEqual(c1["coldLive"] - c0["coldLive"], 3, "web joins api and tests as a standing cold read")
+        self.assertEqual(c1["failed"], c0["failed"], "a missing leaf is a cold read, not a derivation fault")
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown",
+                         "the cache-only read's road: an unreadable transcript is not painted quiet")
+        self.assertIs(km._feed_memo_get(WEB)[0][km._FEED_MEMO_LABELS.index("parse")][0], False,
+                      "the stored key's parse bit is cold")
+        p1, c1 = km._PERF_STATS.parses["kernel"], km._feed_memo_report()
+        d, f = self._delta(self._build)                            # and the next build hits, parsing nothing
+        self.assertEqual((d["derived"], d["hit"]), (0, 3), d)
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p1, 0, "no parse per build while the leaf is gone")
+        c2 = km._feed_memo_report()
+        self.assertEqual((c2["coldLive"] - c1["coldLive"], c2["coldFlip"] - c1["coldFlip"]), (3, 0))
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown")
+        # the recovery: the transcript is back at its path, unparsed, then parsed. The store's slot from the parse
+        # before the removal is never retired while the leaf is gone and keys on (mtime, size), so the rewrite must
+        # differ in SIZE (the body plus an exchange that still ends the turn): a byte-identical rewrite under a coarse
+        # mtime could hit that stale slot and derive warm here, and the cache-only miss is asserted, as the append
+        # test asserts it, rather than assumed
+        self.tpath[WEB].write_text(self._transcript_body(WEB)
+                                   + json.dumps(uline(NOW - 10, "and the pagination", "u2", "a1")) + "\n"
+                                   + json.dumps(aline(NOW - 5, "Done.", "a2", "u2")) + "\n")
+        self.assertIsNone(km._parse_cached(str(self.tpath[WEB])), "the rewritten leaf has no slot in the store")
+        p2, c2 = km._PERF_STATS.parses["kernel"], km._feed_memo_report()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+        self.assertEqual(d["miss_by"], {"transcript": 1}, "the file moved; nothing parsed it yet")
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p2, 0, "a cold entry still reads cache-only")
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown")
+        km._parse(str(self.tpath[WEB]), WEB, NOW)                 # the chat's parse warms the store again
+        p3, c3 = km._PERF_STATS.parses["kernel"], km._feed_memo_report()
+        d, f = self._delta(self._build)
+        self.assertEqual((d["derived"], d["hit"]), (1, 2), d)     # the existing cold-to-warm flip, not a re-read
+        self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
+        self.assertIs(km._feed_memo_get(WEB)[0][km._FEED_MEMO_LABELS.index("parse")][0], True)
+        self.assertEqual(km._PERF_STATS.parses["kernel"] - p3, 0)
+        c4 = km._feed_memo_report()
+        self.assertEqual(c4["coldFlip"] - c3["coldFlip"], 0, "a hit on the chat's parse flips nothing in place")
+
+    def test_a_warm_entry_whose_transcript_is_gone_asks_the_warmer_for_nothing(self):
+        """The cold road under a FEED-ONLY client (the warmer's reason to exist): a fake feed client on the client
+        list and the live map stubbed to the board's rows, so the real _warm_fleet_bg runs its thread when asked. The
+        recorder joins that thread (the warm flag falls when it ends), so every assertion reads a finished warm."""
+        real, calls = km._warm_fleet_bg, []
+
+        def recording_warm(now):
+            calls.append(now)
+            real(now)
+            deadline = time.monotonic() + 10
+            while km._warming[0] and time.monotonic() < deadline:
+                time.sleep(0.01)
+        with km._clients_lock:
+            km._clients.append({"app": "feed", "wid": "w1", "send": lambda *a, **k: None, "alive": True})
+        saved_feed = list(km._built_feed)
+
+        def restore():
+            with km._clients_lock:
+                km._clients[:] = [c for c in km._clients if c.get("wid") != "w1"]
+            km._built_feed[:] = saved_feed
+            km._pusher_wake.clear()
+        self.addCleanup(restore)
+        with mock.patch.object(km, "_live_map", lambda: self.live), \
+                mock.patch.object(km, "_warm_fleet_bg", recording_warm):
+            self._build()                                          # cold: three derivations
+            for sid in SIDS:
+                km._parse(str(self.tpath[sid]), sid, NOW)          # every session parsed: the steady state, nothing cold
+            d, f = self._delta(self._build)
+            self.assertEqual(d["derived"], 3, d)                   # every entry memoized warm
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
+            self.tpath[WEB].unlink()                               # the leaf is gone from disk while the session lives
+            n0, p0 = len(calls), km._PERF_STATS.parses["kernel"]
+            for i in range(3):
+                sentinel = {"probe": i}
+                km._built_feed[1] = sentinel                       # the pusher's cached feed: a warm that parsed drops it
+                km._pusher_wake.clear()
+                d, f = self._delta(self._build)
+                self.assertEqual((d["derived"], d["hit"]), ((1, 2) if i == 0 else (0, 3)), (i, d))
+                self.assertEqual(len(calls) - n0, 0, "build %d: a leaf that cannot be stat'ed asks for no warm" % i)
+                self.assertIs(km._built_feed[1], sentinel, "build %d: the feed cache stands" % i)
+                self.assertFalse(km._pusher_wake.is_set(), "build %d: the pusher is not woken" % i)
+                self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 0, "build %d: nothing parsed the gone leaf" % i)
+                self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown")
 
     def test_a_cold_kernels_first_paint_still_parses_nothing(self):
         p0 = km._PERF_STATS.parses["kernel"]
