@@ -187,6 +187,14 @@ EL['rail-errs'].fire('click');
 out.feedOn.rowText = EL['rerr-list'].children[0].children[1].textContent;
 EL['rerr-list'].children[0].fire('click');
 out.feedOn.sent = SENT.slice(); out.feedOn.toggles = TOGGLES.slice(); out.feedOn.posted = POSTED.filter((m) => m.romp === 'revealCard');
+// 15) the 'not sent' chip explains its kind through DESC, on the entry's chip and on the kind's filter toggle: the
+// sentence names no one cause (an End hand-back, an unowned session's refusal and a wrong kernel all file this kind,
+// and the dialog that came with the entry said which) and points at the file that keeps the text (2026-09-21)
+post({ romp: 'notify', kind: 'undelivered', text: 'That message was not delivered: words typed behind a cue', sid: 'TESTSID' });
+EL['rail-errs'].fire('click');   // step 14's jump closed the popover; a closed Log does not re-render its rows
+const sentRow = EL['rerr-list'].children[0];
+out.undelivered = { chip: sentRow.children[0].textContent, chipTitle: sentRow.children[0].title,
+  toggleTitle: EL['rerr-fgrid'].children[13].title };
 console.log(JSON.stringify(out));
 """
 
@@ -337,6 +345,22 @@ class ErrorCenterExecutes(unittest.TestCase):
         # the user 2026-07-28: digits 1-9, then "something else to mean many" — a two-glyph "10"
         # cannot fit the bell body, so '+' stands for many
         self.assertEqual(self.out["afterMany"]["num"], "+")
+
+    def test_the_not_sent_chips_description_names_no_one_cause(self):
+        # The entry's chip and the kind's filter toggle explain the kind through DESC (the user 2026-07-28), and 'not
+        # sent' stated the wrong-kernel cause alone (a kernel with no session by that id), where the same kind files an
+        # End hand-back of a message parked behind a compaction and an unowned session's refusal too, so those entries
+        # wore a false cause (the post-merge review of 2026-09-21). The rendered titles are pinned, not the source: the
+        # sentence is cause-agnostic now, something sent never reached a session, the dialog said why, and the
+        # undelivered file keeps the text.
+        a = self.out["undelivered"]
+        self.assertEqual(a["chip"], "not sent")
+        for title in (a["chipTitle"], a["toggleTitle"]):
+            self.assertIn("never reached a session", title)
+            self.assertIn("the dialog that reported it said why", title)
+            self.assertIn("undelivered.jsonl", title)
+            self.assertNotIn("no session by that id", title, "one cause of three, stated as the cause")
+            self.assertNotIn("addressed the wrong one", title)
 
 
 class ErrorCenterWiring(unittest.TestCase):

@@ -36470,17 +36470,30 @@ def _drop_parked_on_end(sid, client=None):
     route's refusal, so the chat heard nothing; Revive drains only the backend's own queue, which never had the
     message. A message typed behind a compaction the server acked and never ran (or any op parked behind a turn, a
     queue ahead or an account hold) vanished with the End, while the doc said End then Revive delivered it. Now the
-    ending session's parked sends take the existing not-delivered path (_refuse_drive: a modal in the asking pane
-    with the text in its copy slot, undelivered.jsonl verbatim, one stderr line), aimed at `client` when the End came
-    over a socket, else at every chat pane (romp end, the self-close sweep).
+    ending session's parked sends take the existing not-delivered path (_refuse_drive: a modal with the text in its
+    copy slot, undelivered.jsonl verbatim, one stderr line), aimed at `client` when the End came over the socket of
+    a pane that renders the frame, else at ONE chat pane (the WHERE paragraph below; the broadcast to every chat pane
+    is only the picker's fallback with no chat client connected, which is what the two socketless route tests drive;
+    the post-merge review of 2026-09-21 read the earlier "aimed at the socket, else every chat pane" here as stale
+    in both halves against the picker).
 
     Only the USER's words are handed back: a parked send or command wearing the user flag (_op_user) or a
-    press-minted copy id (_op_qid). A machine's send parks through the same road (a watch notice, the spend-ceiling
-    body, a tagged `romp send`), and a modal offering to copy words the user never typed, filed in undelivered.jsonl
-    as theirs, is a false interrupt (review find, 2026-09-21); those are dropped with the log line below, which names
-    the kind and never the body, as are the ops that carry no typed text (a compact or clear, a settings pick, a
-    move): a dead session's queue is never retried (the drain's own contract), and keeping it for a later Revive
-    would strand queued bubbles on a session never revived. Runs BEFORE the kill: the live row's gates hold the drain
+    press-minted copy id (_op_qid); the predicate reads the flag and the id, never the text's shape, so a typed
+    slash command parked as a flagged command (a /clear typed behind a turn on a Claude Code session) raises the
+    dialog by design. A machine's send parks through the same road (a watch notice, the spend-ceiling body, a tagged
+    `romp send`), and a modal offering to copy words the user never typed, filed in undelivered.jsonl as theirs, is
+    a false interrupt (review find, 2026-09-21); those are dropped with the log line below, which names the kind and
+    never the body, as is every op of another kind (a compact, a clear, a settings pick, a move), text or no text:
+    the same /clear or /compact keystrokes on a Codex session, typed in the composer, the sendCommand door or POST
+    /send (the roads through _route_meta_command), park through the native arms (_CODEX_SLASH_HANDLERS) as a
+    ("clear", text) or ("compact",) op, with no flag and no id, so there the keystrokes are dropped with the log
+    line, not handed back; a slash command arriving through a card's follow-up arm (askFollowUp calls _send_or_park
+    directly) parks as a flagged command, or as a flagged send when a quote composes above it, and is handed back
+    like any typed command (stated 2026-09-21, the post-merge review, which read "the ops that carry no typed text"
+    as inexact for a Codex clear op, whose second slot is the words as typed, and its review of this wording, which
+    read the Codex sentence as overstating without the roads named). A dead session's queue is never retried (the
+    drain's own contract), and keeping it for a later Revive would strand queued bubbles on a session never
+    revived. Runs BEFORE the kill: the live row's gates hold the drain
     off, so nothing pops the queue between this cancel and the kill. An op the drain is handing over right now
     (_inflight_ops: still the head) is left to it, popped by identity there. Returns how many texts were handed
     back.
@@ -62116,7 +62129,10 @@ sync:"romp moved commits between your machines by itself: a push to a remote, a 
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo on the feed restores them",
 refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /fast): nothing was sent, and the entry names it. Or a /clear or /compact a Codex session could not run (the fresh conversation or the compaction could not be started): the entry carries the reason",
-undelivered:"something you sent never reached a session: the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
+// 'not sent' names no one cause (2026-09-21, the post-merge review): the same kind files an End hand-back and an
+// unowned session's refusal beside the wrong-kernel case, and a sentence stating that case alone wore a false cause
+// on the other two; the dialog that came with the entry carries the cause, so the chip points at it
+undelivered:"something you sent never reached a session, and nothing was delivered; the dialog that reported it said why. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
 if(filtBar)KINDS.forEach(function(k){var b=document.createElement('span');
@@ -68886,7 +68902,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
-                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue, told to the chat panes (2026-09-21)
+                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one chat pane (2026-09-21)
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)

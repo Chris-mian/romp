@@ -242,9 +242,10 @@ message (the queue it waits in is kept on disk; the cue is not), or End then
 Revive, which keeps the thread and its history but not the queue: a message you
 typed that is still waiting behind the cue is handed back when the session
 ends, as a not-delivered notice with the text to copy, and is never sent;
-anything else queued behind the cue (a compaction, a setting pick, a message a
-script or romp itself sent) is dropped with the session and noted in the kernel
-log.
+anything else queued behind the cue (a compaction, a setting pick, a message
+romp itself queued, a message a script sent tagged with `romp send --tag`) is
+dropped with the session and noted in the kernel log; an untagged `romp send`
+counts as typed and is handed back like a message of yours.
 
 The chat and timeline effort menus use the selected model's supported levels
 from the Codex app-server's model catalog. Romp also validates effort changes
