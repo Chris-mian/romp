@@ -55,6 +55,7 @@ cm = load_source("romp_colormap", HERE / "colormap.py")  # age → recency tint
 pal = load_source("romp_palette", HERE / "palette.py")  # session-identity palettes (selectable)
 sb = load_source("romp_session_backend", HERE / "session_backend.py")  # the SessionBackend ABC
 lg = load_source("romp_logins", HERE / "logins.py")  # stored Claude logins (T346): the registry beside the machine's own login
+gp = load_source("romp_gitpr", HERE / "gitpr.py")  # git/gh reads behind the per-goal PR chip
 CHAT_VIEW = ROOT / "vscode-extension"               # the tuned UI, current in this worktree via `git merge main`
 # ROMP_DIST_DIR: test seam (romp-lab serves a COPY of the built bundles, so its rebuild simulations —
 # mtime bumps that must raise the reload banner — never touch the dist the LIVE kernel serves).
@@ -3627,6 +3628,102 @@ def _session_cwd(sid, path=None, meta=None):
     if meta is None and path:
         meta = _session_meta(path)
     return (meta or {}).get("cwd") or ""
+
+
+def _node_pr_nums(nd, repo):
+    """The PR numbers this goal opened IN THIS SESSION'S REPO (from the judge's stored prRefs). The judge
+    records every ref it saw, because it has the atoms but not the checkout; the filter belongs here, where
+    the remote is known. A ref for another repo is a PR mentioned in passing, not this goal's artifact —
+    and with no GitHub remote nothing qualifies at all (the user 2026-08-17)."""
+    if not repo:
+        return []
+    out = []
+    for ref in (nd.get("prRefs") or []):
+        try:
+            # An EMPTY owner means the judge read the number out of a `gh pr …` command, which acts on the
+            # checkout it ran in — this session's repo. Any other owner is a PR somewhere else.
+            if (ref[0] == repo or ref[0] == "") and int(ref[1]) not in out:
+                out.append(int(ref[1]))
+        except Exception:
+            continue        # a malformed stored ref is skipped, never allowed to break a build pass
+    return out
+
+
+def _pr_work_dir(sid, tpath):
+    """The directory whose git state describes what a session is actually doing.
+
+    NOT the registered cwd. This repo's own convention puts real work on a per-session WORKTREE beside the
+    registered clone — and that clone is typically detached at a release tag, so reading the registered dir
+    reports no branch at all and every PR chip would go dark on exactly the setup the pane exists for. The
+    newest write-tool file_path names the real tree (the same edit-as-evidence the session's workTree row
+    already uses, `_tree_of` + `lastEditPath`); the registered dir is the fallback when nothing has been
+    edited yet (the user 2026-08-18, found by probing the live sessions: all 17 read as detached)."""
+    top, _br = _tree_of(os.path.dirname((_session_meta(tpath) or {}).get("lastEditPath") or "") or "")
+    return top or _cwd_of(sid)
+
+
+_pr_push_seen = {}   # sid → the push-command count last seen in its transcript
+
+
+def _pr_note_push(sid, repo, count):
+    """Invalidate this repo's PR cache when a session's transcript gained a push / gh-pr call since the
+    last pass. A push moves REMOTE state only — HEAD and branch are unchanged — so without this event the
+    cache keeps serving the checks as they stood BEFORE the push. True when it fired."""
+    prev = _pr_push_seen.get(sid)
+    _pr_push_seen[sid] = count
+    if not repo or prev is None or count <= prev:
+        return False        # first sight is not an event: the count is history, not something that moved
+    gp.note_push_turn(repo)
+    return True
+
+
+def _session_pr_slice(repo, branch, ahead, prs, err, node_nums):
+    """The session-level PR payload the Outline pane reads: its branch, that branch's PR, and only the PRs
+    this session actually references (a repo can hold a hundred; the pane needs this session's).
+
+    `live` is stamped HERE, off the AHEAD COUNT — an event (a commit, a completed push), never the
+    open-turn bit, which toggles at every turn boundary and would flap the chip between builds with no new
+    information.
+
+    A non-empty `err` means we could not look: `prs` goes None so the pane renders the reason rather than
+    an authoritative-looking blank that would read as "no PR"."""
+    if not repo:
+        return {"branch": "", "prNum": None, "prs": None, "prError": None}
+    if err:
+        return {"branch": branch, "prNum": None, "prs": None, "prError": err}
+    cur = next((n for n, pr in sorted(prs.items()) if branch and pr.get("branch") == branch), None)
+    out = {}
+    for n in set(node_nums) | ({cur} if cur else set()):
+        pr = prs.get(n)
+        if pr:
+            out[str(n)] = {**pr, "live": bool(branch and pr.get("branch") == branch and ahead > 0)}
+    return {"branch": branch, "prNum": cur, "prs": out or None, "prError": None}
+
+
+def _session_pr_payload(sid, ledger, work_tree=None):
+    """The session's PR slice, assembled from its own checkout: one local git probe trio (~3ms) plus a
+    per-REPO gh read that is cached and invalidated by event, never by age (see gitpr).
+
+    `work_tree` is the session payload's own detected worktree (None when it matches the registered dir),
+    reused here rather than re-derived so the chips describe the SAME tree the session's worktree row
+    names. Without it a session working in a per-session worktree beside a detached clone would report no
+    branch at all — the live case on this machine (the user 2026-08-18)."""
+    wt = (work_tree or {}).get("dir") or ""
+    cwd = os.path.expanduser(wt) if wt else _cwd_of(sid)
+    repo = gp.repo_of(cwd)
+    if not repo:
+        return {"branch": "", "prNum": None, "prs": None, "prError": None}
+    gp.note_local_state(cwd, repo)              # a new HEAD sha or a branch change → re-read this repo
+    gp.poll_due(repo, time.monotonic())         # checks still running → paced re-read; stops when terminal
+    nums = set()
+    for n in ((ledger or {}).get("tree") or []):
+        nums.update(n.get("prNums") or [])
+    # Non-blocking by contract: serves the cache and refreshes behind. Anything gh-shaped — the list, the
+    # per-PR checks, a mined PR older than the list window — happens on that background pass, because this
+    # function runs inside the per-push build and a 5s network call here stalls every pane.
+    prs, err = gp.repo_prs(repo, nums)
+    return _session_pr_slice(repo=repo, branch=gp.branch_of(cwd), ahead=gp.ahead_of(cwd),
+                             prs=prs, err=err, node_nums=nums)
 
 
 def _identity_of(sid):
@@ -8143,6 +8240,10 @@ def _set_session_flag(sid, flag, value):
 # whose card left the feed are pruned on write (the card is gone; a fresh card is a fresh id), so
 # the file tracks the live feed instead of growing forever.
 NOTIFY_ALL_KEY = "*"
+# The same reserved-key trick in session-flags.json: "*" is not a session id (sids are uuids), so it
+# carries MASTER defaults that per-session entries override. Postal isolation reads it — see
+# _mail_off_why_k. Only ever accessed by an explicit .get, never by iterating the file as sessions.
+POSTAL_ALL_KEY = "*"
 # "*turns" is the SECOND reserved key (2026-09-05): the kernel-wide "also when a turn finishes" switch
 # behind the bell popover. It lives in this file rather than a sibling on purpose — it is read on the
 # same fire path as the master (both gate one push), so one cached read answers both; it rides the
@@ -17294,22 +17395,26 @@ def _comment_cut_target(path, sid, anchor_uuid):
 
 
 _COMMENT_FRAME_HEAD = "About this part of the conversation:"
+_COMMENT_FRAME_HEAD_FILE = "About this part of %s:"   # a passage highlighted in a FILE, not the chat
+_COMMENT_FRAME_FILE_PREFIX = _COMMENT_FRAME_HEAD_FILE.split("%s")[0]   # what _comment_strip_frame matches on
 
 
-def _comment_first_message(exact, comment):
+def _comment_first_message(exact, comment, src=""):
     """The thread's opening message — romp-authored FRAMING around the user's own words, read by an
     agent that has the conversation up to the highlight and no idea it is being tracked, so it
     speaks as the person it works for quoting the conversation back (test_injected_voice scans it;
-    it must never name romp machinery)."""
+    it must never name romp machinery). `src` names the FILE a passage came from, when the highlight
+    was in a viewer rather than the chat."""
     q = "\n".join("> " + ln for ln in str(exact or "").splitlines()).strip() or "> …"
-    return "%s\n\n%s\n\n%s" % (_COMMENT_FRAME_HEAD, q, str(comment or "").strip())
+    head = _COMMENT_FRAME_HEAD_FILE % str(src).strip() if str(src or "").strip() else _COMMENT_FRAME_HEAD
+    return "%s\n\n%s\n\n%s" % (head, q, str(comment or "").strip())
 
 
 def _comment_strip_frame(text):
     """The opening message, shown as the user's COMMENT alone — the framing + quote it was wrapped
     in for the thread's agent already sit in the popover header, so rendering them again would say
     everything twice."""
-    if not text.startswith(_COMMENT_FRAME_HEAD):
+    if not (text.startswith(_COMMENT_FRAME_HEAD) or text.startswith(_COMMENT_FRAME_FILE_PREFIX)):
         return text
     lines = text.splitlines()
     i = 1
@@ -18126,11 +18231,17 @@ def _comment_launch_prefs(model="", effort="", fast=""):
 
 
 def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", fast="", color="",
-                    now=None, raw_opener=False, meta=None):
+                    src="", now=None, raw_opener=False, meta=None, on_row=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
     opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
     (None, the new thread's id) so the client can adopt exactly the thread it created.
+
+    `on_row(tid)` fires the moment the thread row is DURABLE, before the fork. Forking mints a session
+    — process spawn, connect, opening send — which is seconds the caller would otherwise spend holding
+    a dialog open over a comment that is already saved. Every refusal a user can provoke (no SDK
+    backend, no transcript, anchor lag, a bad name) happens above this point, so an ack here is honest;
+    a fork that then dies rolls the row back and reports itself the same way it always did.
 
     `name` (the user 2026-08-15, who wanted to name the thread right in the dialog): the thread's
     editable name, defaulting to <parent>-comment-<N> where N counts the threads this session has
@@ -18184,7 +18295,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     tsid = str(uuid.uuid4())
     row = {"tid": tsid, "sid": tsid, "anchorUuid": str(anchor_uuid or ""), "cutUuid": cut,
            "anchorT": cut_t,   # the commented message's own time — the timeline square's x
-           "exact": str(exact)[:2000], "status": "open",
+           "exact": str(exact)[:2000], "src": str(src or "")[:512], "status": "open",
            "createdT": int(now), "lastSeenT": int(now)}
     if isinstance(meta, dict) and (meta.get("thread") or meta.get("note")):
         row["meta"] = {k: str(meta.get(k) or "")[:500] for k in ("thread", "note") if meta.get(k)}
@@ -18219,12 +18330,14 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
                 row["color"] = col                 # the comment's identity color (the dialog's name tint)
             data.setdefault("threads", []).append(row)
             _save_comments(parent_sid, data)
+        if on_row is not None:
+            on_row(tsid)
         model, effort, fast = _comment_launch_prefs(model, effort, fast)
         try:
             be.fork(nm, parent_sid, cut, bg=col, fg=(pal.fg_for(col) if col else ""), sid=tsid, thread_of=parent_sid,
                     model=model, effort=effort, fast=fast)
             be.connect(tsid)
-            _user_send(be, tsid, text if raw_opener else _comment_first_message(exact, text))
+            _user_send(be, tsid, text if raw_opener else _comment_first_message(exact, text, src))
         except Exception as e:
             with _comments_lock:                       # loud + lossless: no half-born thread row
                 data = _load_comments(parent_sid)
@@ -20160,36 +20273,46 @@ def _drive(msg, client):
             or _fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]), client=client)
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
-    elif t == "commentCreate" and msg.get("uuid") and msg.get("exact") and msg.get("text"):
+    elif t == "commentCreate" and (msg.get("uuid") or msg.get("src")) and msg.get("exact") and msg.get("text"):
         # Anchor a comment thread on a highlighted passage (the user 2026-08-13). LOUD on refusal; on
         # success a commentCreated ack names the new thread (the popover adopts exactly it — never a
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
+        # Both ride the on_row callback, which fires on the DURABLE row rather than after the fork:
+        # minting the thread's session is seconds, and the client spent every one of them holding a
+        # dialog over a comment that was already saved.
+        cmt_uuid = str(msg.get("uuid") or "")     # a FILE passage has no anchor record, only a src label
+        def _acked(tid):
+            # the FRAME rides ahead of the ack: the ack's handler adopts the new thread from the
+            # client's thread map, so the thread must be in it first (reversed, the popover looked
+            # up a thread it had never heard of and closed itself)
+            fr = _comments_frame(sid)
+            if fr:
+                client["send"](json.dumps(fr))
+            client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": tid, "uuid": cmt_uuid}))
         # A REPEAT of a create this kernel already completed (a client re-post after a lost ack or a
         # parked copy that landed) is the same comment: answer with the same thread, never a twin (T289).
         # The repeat is known by the createId the popover minted at the send gesture, so a second comment
         # in the same words on the same passage, a new id, is a new thread (review, 2026-09-09).
-        key = _create_key(sid, msg["uuid"], msg["exact"], msg["text"], msg.get("createId") or "")
+        key = _create_key(sid, cmt_uuid, msg["exact"], msg["text"], msg.get("createId") or "")
         state, again = _reserve_create(key)
         if state == "repeat":
             sys.stderr.write("comment create repeated (%s): the same comment again, answered with thread %s\n"
                              % (sid[:8], str(again)[:8]))   # a collapse is visible, never silent
-            fr = _comments_frame(sid)
-            if fr:
-                client["send"](json.dumps(fr))
-            client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": again, "uuid": str(msg["uuid"])}))
+            _acked(again)
             return True
         if state == "busy":
             # the other door holds this create (parked, or mid-create on the pusher): the typed transient
             # nack keeps the popover's mark alive, and the pusher's success acks every chat client
-            client["send"](json.dumps({"type": "commentCreateFailed", "id": sid, "uuid": str(msg["uuid"]),
+            client["send"](json.dumps({"type": "commentCreateFailed", "id": sid, "uuid": cmt_uuid,
                                        "transient": True, "text": ANCHOR_LAG_ERR}))
             return True
         try:
-            err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
+            err, tid = _comment_create(sid, cmt_uuid, str(msg["exact"]), str(msg["text"]),
                                        name=str(msg.get("name") or ""),
                                        model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
                                        fast=str(msg.get("fast") or ""),
-                                       color=str(msg.get("color") or ""))
+                                       color=str(msg.get("color") or ""), src=str(msg.get("src") or ""),
+                                       on_row=_acked)
             if not err:
                 _note_create(key, tid)
         finally:
@@ -20203,30 +20326,25 @@ def _drive(msg, client):
             if err == ANCHOR_LAG_ERR:
                 with _create_lock:
                     if not any(_parked_key(pk) == key for pk in _parked_creates):
-                        _parked_creates.append({"sid": sid, "uuid": str(msg["uuid"]), "exact": str(msg["exact"]),
+                        _parked_creates.append({"sid": sid, "uuid": cmt_uuid, "exact": str(msg["exact"]),
                                                 "text": str(msg["text"]), "name": str(msg.get("name") or ""),
                                                 "model": str(msg.get("model") or ""),
                                                 "effort": str(msg.get("effort") or ""),
                                                 "fast": str(msg.get("fast") or ""),
                                                 "color": str(msg.get("color") or ""),
+                                                "src": str(msg.get("src") or ""),
                                                 "createId": str(msg.get("createId") or ""), "tries": 0})
             else:
                 client["send"](json.dumps({"type": "warn", "text": err}))
                 # the kernel log carries the refusal too (T289): a name refused at this door showed only
                 # as a toast on the viewer, and the refusing kernel's log held no trace of what the user saw
                 sys.stderr.write("comment create refused (%s, name %r): %s\n" % (sid[:8], str(msg.get("name") or "")[:80], err))
+            # A fork that died AFTER the ack rolled its row back, so the failure has to reach a client
+            # that already closed its dialog: the rollback's own push retires the thread, and this names
+            # the reason in the error center rather than leaving the retirement unexplained.
             client["send"](json.dumps({"type": "commentCreateFailed", "id": sid,
-                                       "uuid": str(msg["uuid"]), "transient": err == ANCHOR_LAG_ERR,
+                                       "uuid": cmt_uuid, "transient": err == ANCHOR_LAG_ERR,
                                        "text": err}))
-        else:
-            # the FRAME rides ahead of the ack: the ack's handler adopts the new thread from the
-            # client's thread map, so the thread must be in it first (reversed, the popover looked
-            # up a thread it had never heard of and closed itself)
-            fr = _comments_frame(sid)
-            if fr:
-                client["send"](json.dumps(fr))
-            client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": tid,
-                                       "uuid": str(msg["uuid"])}))
     elif t == "commentReply" and msg.get("tid") and msg.get("text"):
         err = _comment_reply(sid, str(msg["tid"]), str(msg["text"]))
         if err:
@@ -29114,16 +29232,28 @@ def _reg_unreadable(sid):
     return _thread_reg_read(str(sid))[0] == "unreadable"
 
 
+def _postal_isolation_flag(sid):
+    """Postal isolation for `sid`, most-specific-wins: its own key decides either way, else the MASTER default
+    under POSTAL_ALL_KEY. Isolation is the sane default for many setups, so the master carries it and a session
+    opts back IN with an explicit False. The bus's _mail_off_why resolves it identically over the same file."""
+    for flag in ("postalServiceOff", "postalOff"):
+        own = _session_flag_raw(sid, flag)
+        if own is not None:
+            return own
+    return _session_flag(POSTAL_ALL_KEY, "postalServiceOff")
+
+
 def _mail_off_why_k(sid):
     """Why the session can neither send nor receive mail, the kernel's twin of the bus's _mail_off_why over the same
     two files: "unreadable" (its record cannot be read: the bus holds everything), "thread" (a comment thread not yet
-    broken out, _thread_mail_off), "isolation" (the mailbox flag the timeline lane's icon writes, legacy key included),
-    or "" (mail on). Rides the rows as mailOffWhy so the tab hover and the Sessions pane can say which."""
+    broken out, _thread_mail_off), "isolation" (the mailbox flag the timeline lane's icon writes, legacy key included,
+    or the master default), or "" (mail on). Rides the rows as mailOffWhy so the tab hover and the Sessions pane can
+    say which."""
     if _reg_unreadable(sid):
         return "unreadable"
     if _thread_mail_off(sid):
         return "thread"
-    iso = _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")   # reads the flags (noting a fault)
+    iso = _postal_isolation_flag(sid)                      # reads the flags (noting a fault)
     if _flags_unknown_cold():
         return "flags"                     # the flags cannot be read and none are known: closed under the door's own word
     return "isolation" if iso else ""
@@ -38301,7 +38431,11 @@ def _session_meta(path):
 
 
 def _session_meta_fresh():
-    return {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "", "lastEditPath": ""}
+    # pushCount = how many Bash calls in this transcript pushed or acted on a PR. A push moves REMOTE state
+    # while HEAD and branch stay put, so nothing else in a build pass would notice that a PR's checks just
+    # restarted; a RISE in this count is that event.
+    return {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "", "lastEditPath": "",
+            "pushCount": 0}
 
 
 def _session_meta_step(meta, o):
@@ -38318,12 +38452,16 @@ def _session_meta_step(meta, o):
             meta["permissionMode"] = o["permissionMode"]
         if o.get("type") == "assistant":
             for blk in (o.get("message") or {}).get("content") or []:
-                if (isinstance(blk, dict) and blk.get("type") == "tool_use"
-                        and blk.get("name") in _EDIT_TOOLS):
+                if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                    continue
+                if blk.get("name") in _EDIT_TOOLS:
                     fp = (blk.get("input") or {}).get("file_path") or \
                          (blk.get("input") or {}).get("notebook_path")
                     if isinstance(fp, str) and fp.startswith("/"):
                         meta["lastEditPath"] = fp
+                elif blk.get("name") == "Bash" and \
+                        gp.is_push_command((blk.get("input") or {}).get("command") or ""):
+                    meta["pushCount"] += 1
     except Exception:
         pass
     return meta
@@ -38478,6 +38616,7 @@ def _sendvis_diag(sid):
     try:
         out["liveAtoms"] = [{"uuid": a.get("uuid"), "t": a.get("t"),
                              "echo": (a.get("_echo_text") or "")[:120] or None,
+                             "dropped": bool(a.get("dropped")),   # a settled loss and a send still going out read identically without it
                              "command": a.get("command") or None}
                             for a in (be.live_atoms(sid) if be else [])]
     except Exception as e:
@@ -39105,8 +39244,11 @@ def _stamp_interrupt_causes(events):
 # same rows from the store alone: every node with its child ids and the done / derived / cleared / blocked / current / onpath flags,
 # the two deep-link anchors from the parsed transcript's segments when `anchors` (the build), None when not (the store holds the
 # position; a cold tab has no landing). Pure over the store, the segment maps and the cleared set; the callers memoize.
-def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
-    """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals."""
+def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True, pr_repo=""):
+    """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals.
+
+    `pr_repo` filters each row's prNums to the session's own GitHub repo; "" leaves the rows' PR chips empty,
+    which is what a caller with no checkout to probe (the Outline's provisional row) wants."""
     gnodes = gstore.get("nodes", {}) if gstore is not None else {}
     gstatus = gstore.get("status", {}) if gstore is not None else {}
     gcleared = _cleared_ids()
@@ -39218,6 +39360,9 @@ def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
                      # the distiller's takeaway (done) / the block-distiller's decision brief (blocked),
                      # null until produced — the ledger row's ⊕ expander reveals it inline (the user 2026-06-21)
                      "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
+                     # the PRs this goal's work opened, filtered to THIS session's repo (judge prRefs) —
+                     # the join key into the session's `prs` map, which carries the live state (2026-08-17)
+                     "prNums": _node_pr_nums(nd, pr_repo) or None,
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
             _twalk(c, depth + 1, ancestor_done=explicit or derived, ancestor_cleared=clr)
@@ -40516,6 +40661,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # rebuilt for an input the walk never reads (a states row, the task store, the judge generation) used to
     # walk its whole goal tree again; counters ride /perf under memos.chatLedger.
     _ck = _stat_key(jd.STATE / "cleared.jsonl")
+    # this session's own GitHub repo — the filter for its goals' PR refs, read from the tree it EDITS in
+    # rather than its registered dir (_pr_work_dir). In the memo key: a session that moves trees changes
+    # which refs its rows may show.
+    _pr_repo = gp.repo_of(_pr_work_dir(sid, sess["path"]))
     _lkey, _lhit = None, None
     if session is not parsed:
         _chat_memo_bump(_ledger_memo_stats, "bypass_live")
@@ -40524,7 +40673,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     elif not (gstore and gstore.get("nodes")):
         _chat_memo_bump(_ledger_memo_stats, "bypass_empty")
     else:
-        _lkey = (_seams_sig, _ck, _node_anchor_rev.get(sid, 0))
+        _lkey = (_seams_sig, _ck, _node_anchor_rev.get(sid, 0), _pr_repo)
         _lent = _ledger_memo.get(sid)
         if _lent is not None and _lent[0] == _lkey and _lent[1] is parsed and _lent[2] is gstore:
             _lhit = _lent
@@ -40532,7 +40681,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         _chat_memo_bump(_ledger_memo_stats, "hit")
         tree, _live_roots = _lhit[3], _lhit[4]       # the memo's own lists: the ledger slices them, nothing writes a row
     else:
-        tree, _live_roots = _goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True)   # the shared walk (plans/outline-pane-provisional-row.md): the Outline's provisional row takes the same over the store alone
+        tree, _live_roots = _goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True, pr_repo=_pr_repo)   # the shared walk (plans/outline-pane-provisional-row.md): the Outline's provisional row takes the same over the store alone
         if _lkey is not None:
             _chat_memo_bump(_ledger_memo_stats, "miss")
             _ledger_memo[sid] = (_lkey, parsed, gstore, tree, _live_roots)
@@ -40745,6 +40894,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # effect + this session's model / cwd / branch / permission-mode / version (NOT the harness prompt —
     # see _claudemd_docs). Only when there's a real transcript to describe AND something to show.
     meta = _session_meta(sess["path"])
+    _pr_note_push(sid, _pr_repo, meta.get("pushCount") or 0)   # a push since last pass → re-read this repo's PRs
     # The registry's dir FIRST (known before the first turn; a move rewrites it at once), the transcript's
     # stamp only as a fallback — _session_cwd says why, and the feed's session rows take the same derivation.
     scwd = _session_cwd(sid, meta=meta)
@@ -43988,6 +44138,7 @@ def _feed_session_entry(s, ctx):
             "summaryStale": bool((nodes[nid].get("followupAt") or 0) > (nodes[nid].get("distilledMt") or 0)
                                  and (nodes[nid].get("summary") or "").strip()) or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
             "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
+            "artifacts": _subtree_artifacts(nodes, children, nid) or None,   # files the work PRODUCED (the distiller's ARTIFACTS line, hoisted from the whole subtree); the fold existence-filters them per build — "N artifacts" under the summary, previews in the modal
             "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
             # the supporting SPAN (T218): the distiller's verbatim quote, located in the cited atom at
             # write time — shipped ONLY while the resolved anchor IS the cited atom (the fallback tiers
@@ -44143,6 +44294,11 @@ def _feed_fold_card(card, now, cmap):
         card["t"] = now                              # a placeholder with no turn to date it: the build's clock, as before
         age_t = now
     card["trgb"] = list(cm.age_rgb(now - age_t, cmap))
+    if card.get("artifacts"):
+        # the filesystem decides what is real, so the check belongs per BUILD, not inside the memoized
+        # entry: a since-deleted artifact must leave the card on the next build, not when the session's
+        # own inputs happen to move
+        card["artifacts"] = _feed_artifacts(card["artifacts"], card.get("sid"))
     for r in card.get("tree") or []:
         rt = r.pop("_ageT", None)
         r["trgb"] = list(cm.age_rgb(now - (rt if rt is not None else now), cmap))
@@ -53230,7 +53386,7 @@ _PREVIEW_IMG_RE = re.compile(
 _IMG_MAX_BYTES = 8_000_000
 _img_cache = {}                                  # "path:mtime:size" → dataURL | None
 
-# ---- /file preview serving (the user 2026-07-08): chat path-thumbnails load
+# ---- /file preview serving (the user 2026-07-08): chat path-thumbnails + feed artifact strips load
 #      the actual bytes over HTTP (behind _authorize, like everything else) instead of a data-URL round
 #      trip — the browser lazy-loads, caches, and renders a PDF natively in the lightbox iframe. The
 #      allowlist is RENDERABLE media only; anything else 404s and the client shows a plain link. SVG is
@@ -53990,6 +54146,49 @@ def _resolve_open_path(p, sid=None):
         if base:
             p = os.path.join(base, p)
     return p
+
+
+def _subtree_artifacts(nodes, children, root):
+    """Every ARTIFACTS path recorded at/under `root`, the card's own node first.
+
+    A goal's produced files land on the node the DISTILLER ran against. A merged umbrella is
+    distilled as a WHOLE, so its own node carries no ARTIFACTS line while the child goals folded
+    into it still hold theirs — and reading only the card's own node stranded exactly those: the
+    card rendered no artifacts line while verified paths sat one level down, invisible (the user
+    2026-08-19, whose written docs never surfaced on the umbrella that summarized them). Pre-order
+    keeps the card's own paths first; a path recorded at two levels lists once. The filesystem
+    still decides what is real — see `_feed_artifacts`.
+    """
+    stack, seen, acc = [root], set(), []
+    while stack:
+        nid = stack.pop()
+        if nid in seen:          # a malformed parent cycle must not spin the feed build
+            continue
+        seen.add(nid)
+        for p in ((nodes.get(nid) or {}).get("artifacts") or []):
+            if p not in acc:
+                acc.append(p)
+        stack.extend(children.get(nid, []))
+    return acc
+
+
+def _feed_artifacts(paths, sid):
+    """The distiller's ARTIFACTS paths → the files a feed card may actually show. Resolved like a
+    click-to-open (~ expanded, relative → the session's cwd) and existence-checked HERE, at feed build —
+    the authoritative filter that keeps a hallucinated or since-deleted path off the card (the distiller
+    only transcribes what it read in <work>; the filesystem decides what's real). None when nothing
+    survives, so the client renders no artifacts line at all."""
+    out = []
+    for p in paths or []:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        try:
+            ap = _resolve_open_path(p.strip(), sid)
+            if os.path.isabs(ap) and os.path.isfile(ap) and ap not in out:
+                out.append(ap)
+        except Exception:
+            continue
+    return out or None
 
 
 def _httpdate(t):
@@ -55572,6 +55771,9 @@ def _push(targets, connect=False, live_map=None):
             if (chat_sessions or want_fleet) and not feed.get("off"):   # off (T404 round two, low 4): the outline shows its notice; no ledgers, no archived tops
                 feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
                                     "status": m.get("status"),
+                                    # this session's branch, that branch's PR and the live state of every
+                                    # PR its goals opened — the Outline pane's chips (the user 2026-08-17)
+                                    **_session_pr_payload(m["id"], m.get("ledger"), m.get("workTree")),
                                     **_mail_off_fields(m["id"]),   # the Sessions pane shows a mail-off session and why (T356), from one derivation
                                     # attach the archived-completed TOP tasks so the Fleet's "Show completed"
                                     # can surface a finished+archived session (the user 2026-06-27); cached, so
@@ -67397,7 +67599,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(status, payload if isinstance(payload, str) else json.dumps(payload), ctype, cache="no-cache")
 
     def _file_preview(self, q, head=False):
-        """GET/HEAD /file — the preview bytes behind a chat path-thumbnail (the
+        """GET/HEAD /file — the preview bytes behind a chat path-thumbnail / feed artifact strip (the
         user 2026-07-08). Same path resolution as click-to-open (~ expanded, relative → the session's
         cwd — _resolve_open_path); RENDERABLE media only (_PREVIEW_MIME), anything else 404s and the
         client keeps its plain link. Oversize 413s rather than silently truncating. HEAD is the
@@ -68085,7 +68287,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/glossary/"):                    # T351 stage 2: one term's section as JSON, for the lab's own consumers
                 status, payload = _glossary_lookup((q.get("sid") or [None])[0], unquote(p[len("/glossary/"):]))
                 return self._send(status, json.dumps(payload), "application/json", cache="no-cache")
-            if p == "/file":                                  # preview bytes for a chat path-thumbnail
+            if p == "/file":                                  # preview bytes for a chat path-thumbnail / feed artifact
                 return self._file_preview(q)
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),

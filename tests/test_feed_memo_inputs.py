@@ -165,6 +165,7 @@ HELPERS = {
     "_agent_open_set": ("sig", ("store",)),
     "_all_outstanding_delegated": ("sig", ("store",)),
     "_goal_awaiting_stamp_full": ("sig", ("store",)),
+    "_subtree_artifacts": ("sig", ("store",)),   # the distiller's ARTIFACTS paths off the goal subtree; the fold existence-filters them per build
     "_node_log_rows": ("sig", ("store",)),
     "_open_leaves": ("sig", ("store",)),
     "_parked_rows": ("sig", ("store",)),

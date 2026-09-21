@@ -7171,6 +7171,21 @@ def _warn_history_unreadable(nd, judge, t):
                "cards, that's a bug worth reporting." % line)
 
 
+def _split_artifacts(text):
+    """(body, paths) — split a distill reply's optional trailing `ARTIFACTS: p1, p2` line (the user
+    2026-07-08: a completed goal that PRODUCED files — a plot, a PDF report — lists them so the feed
+    card can show/preview them). Anchored to the END of the body (after _split_source peeled the
+    citation), so prose that merely mentions the word is never mistaken for the line. Paths are the
+    model's transcription of <work> — the kernel existence-checks them against the filesystem at feed
+    build, so a hallucinated path never reaches a card. Absent line → (text, [])."""
+    text = (text or "").strip()
+    m = re.search(r"(?:^|\n)\s*ARTIFACTS:\s*(\S[^\n]*)$", text)
+    if not m:
+        return text, []
+    paths = [p.strip() for p in m.group(1).split(",") if p.strip()]
+    return text[:m.start()].strip(), paths[:5]
+
+
 _SEC_DECOR = re.compile(r"(?m)^[ \t]{0,3}(?:\*{1,3}|_{1,3}|#{1,6}[ \t]*)?(BACKGROUND|TAKEAWAY)"
                         r"[ \t]*:?[ \t]*(?:\*{1,3}|_{1,3})?[ \t]*:?[ \t]*")
 
@@ -7215,32 +7230,7 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None, b
     both earlier and later work, splice FOLLOWUP_DIVIDER between them so the distiller can scope its takeaway
     to the most recent stretch (the follow-up) rather than re-summarizing history the user already saw."""
     nodes = store["nodes"]
-    ids = [nid]
-    if subtree:
-        children = {}
-        for _nid, nd in nodes.items():
-            children.setdefault(nd.get("parentId"), []).append(_nid)
-        stack, ids = [nid], []
-        while stack:
-            x = stack.pop(); ids.append(x); stack.extend(children.get(x, []))
-    seg_ids, seen = [], set()
-    for n in ids:
-        for sid in nodes.get(n, {}).get("trail", []):
-            if sid not in seen:
-                seen.add(sid); seg_ids.append(sid)
-    # PLACEMENT FALLBACK (the user 2026-07-10, the summaryless g596 card): a trail key can orphan for
-    # good — the prompt-run stamps it from the OPTIMISTIC queued echo, and a queued follow-up lands with
-    # different text (the wrapper), so the key's text-hash never matches any parsed segment again (a
-    # restart holding the queue makes the divergence certain). Placements are re-derived against the
-    # LANDED parse every pass, so any placement into this gather's nodes is a second, drift-proof route
-    # to the same history. Always added (dedup below folds the overlap), so an already-orphaned store
-    # heals at read time with no data surgery.
-    idset = set(ids)
-    for k, v in (store.get("placements") or {}).items():
-        if isinstance(v, str) and v in idset and isinstance(k, str):
-            kb = k[:-2] if k.endswith("#p") or k.endswith("#d") else k
-            if kb not in seen:
-                seen.add(kb); seg_ids.append(kb)
+    seg_ids = _goal_seg_ids(store, nid, subtree=subtree)   # trail keys + the placement fallback
     segs = sorted(_segs_for(seg_by_id, seg_ids), key=lambda sg: sg.get("t", 0))   # drift-safe trail resolution
     dedup, uniq = set(), []
     for sg in segs:                                    # a trail key and a placement key can resolve to the SAME
@@ -7259,6 +7249,169 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None, b
     if len(work) > char_cap:                            # keep the most recent tail (matches the distiller's bound)
         work = "…\n\n" + work[-char_cap:]
     return work
+
+
+def _goal_seg_ids(store, nid, subtree=True):
+    """The recorded segment keys for goal `nid` (plus its subtree unless `subtree` is False) — trail
+    entries first, then the PLACEMENT FALLBACK (the user 2026-07-10, the summaryless g596 card): a trail
+    key can orphan for good — the prompt-run stamps it from the OPTIMISTIC queued echo, and a queued
+    follow-up lands with different text (the wrapper), so the key's text-hash never matches any parsed
+    segment again (a restart holding the queue makes the divergence certain). Placements are re-derived
+    against the LANDED parse every pass, so any placement into this gather's nodes is a second,
+    drift-proof route to the same history. Always added (callers dedup), so an already-orphaned store
+    heals at read time with no data surgery.
+
+    Factored out of _goal_work_text so a second reader (goal_pr_urls) walks the SAME history the
+    distiller sees, rather than a lookalike gather that could drift from it."""
+    nodes = store.get("nodes") or {}
+    ids = [nid]
+    if subtree:
+        children = {}
+        for _nid, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(_nid)
+        stack, ids = [nid], []
+        while stack:
+            x = stack.pop()
+            ids.append(x)
+            stack.extend(children.get(x, []))
+    seg_ids, seen = [], set()
+    for n in ids:
+        for sid in (nodes.get(n) or {}).get("trail") or []:
+            if sid not in seen:
+                seen.add(sid)
+                seg_ids.append(sid)
+    idset = set(ids)
+    for k, v in (store.get("placements") or {}).items():
+        if isinstance(v, str) and v in idset and isinstance(k, str):
+            kb = k[:-2] if k.endswith("#p") or k.endswith("#d") else k
+            if kb not in seen:
+                seen.add(kb)
+                seg_ids.append(kb)
+    return seg_ids
+
+
+# PR URLs a goal's work produced (the user 2026-08-17: the Outline pane shows each goal's PR and its live
+# state). FULL urls ONLY — a bare "#8123" is ambiguous by construction (the very goal that motivated the
+# feature carried an internal audit id in exactly that shape), and a silently-wrong PR link is worse than
+# no link, the same call _verified_links makes for shortened path tokens. The trailing (?:/|$|\s) lets a
+# /pull/12/files deep link count as PR 12 while rejecting /pull/12x.
+# The trailing guard is a LOOKAHEAD, not a consumed character: a url ending a sentence ("…/pull/9.") has a
+# period after the number, and consuming one excluded char also rejected that period — so a PR named in
+# ordinary prose was silently missed. (?!\w) still rejects /pull/12x while accepting "/files", "." and ")".
+PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(\d+)(?!\w)")
+
+
+# A goal's PR is one it ACTED ON, not one it happened to mention (the user 2026-08-18). Mining every url in
+# a goal's segments attributed PRs to every goal that merely sat in a conversation where a number came up —
+# on live data, a goal that had only rotated a stale API token carried someone else's PR, and a goal that
+# only read a design note carried two. So a segment contributes refs only when it also holds the RECEIPT of
+# having acted: a command that opens or changes a PR, or pushes the branch behind one.
+# Anchored to COMMAND POSITION — the start of the string or just after a shell separator — so the words
+# appearing inside an argument never count. `grep -rn 'git push' docs/` is a search, not a push, and an
+# unanchored match read it as one. Read-only subcommands (view / list / checks / diff / status) are
+# deliberately absent: looking at a PR is not acting on it.
+_CMD_HEAD = r"(?:^|[\n;&|(]|&&|\|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
+_PR_RECEIPT_CMD_RE = re.compile(_CMD_HEAD + r"(?:gh\s+pr\s+(?:create|edit|merge|ready|close|reopen|comment"
+                                            r"|review)\b|git\s+push\b)")
+# Inside such a command a BARE number is unambiguous — `gh pr merge 503` names a PR the way loose prose
+# never can. Recorded with an EMPTY owner (the command targets the session's own checkout); skipped when the
+# command carries --repo, which points somewhere else entirely. Intervening tokens are allowed because flags
+# take values (`gh pr edit --add-label ready 503`), bounded so the scan cannot wander off down a long
+# command line, and the number must be a whole token so a version like "v2" never reads as one.
+_GH_PR_NUM_RE = re.compile(r"\bgh\s+pr\s+(?:edit|merge|ready|close|reopen|comment|review)\s+"
+                           r"(?:\S+\s+){0,6}?(\d{1,7})(?!\S)")
+
+
+def _atom_parts(atom):
+    """(texts, commands) for one atom.
+
+    `texts` is every string a PR url could sit in — assistant prose AND tool_result output. Tool output
+    matters because `gh pr create` prints the new PR's url into exactly that stream, the agent's own
+    receipt, and _unit_text deliberately drops it (it is the captioner's compact signal, never the
+    payload). `commands` are the Bash inputs, which is where having acted is PROVED."""
+    texts, cmds = [], []
+    for b in ((atom.get("message") or {}).get("content") or []):
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type")
+        if t == "text" and isinstance(b.get("text"), str):
+            texts.append(b["text"])
+        elif t == "tool_use":
+            inp = b.get("input") or {}
+            if isinstance(inp, dict) and isinstance(inp.get("command"), str):
+                cmds.append(inp["command"])
+        elif t == "tool_result":
+            c = b.get("content")
+            if isinstance(c, str):
+                texts.append(c)
+            elif isinstance(c, list):
+                texts.extend(x.get("text", "") for x in c if isinstance(x, dict))
+    return texts, cmds
+
+
+_SEG_PR_CACHE = {}   # (segment id, atom count) → tuple of (owner/repo, number)
+
+
+def _seg_pr_refs(seg):
+    """The PR refs ONE segment can claim, scanned once per (id, size).
+
+    Gated on the receipt described above: a segment with no PR-acting command contributes NOTHING, however
+    many numbers its prose names. Given a receipt, every PR the segment names counts — the url in the
+    creation output, one quoted in the surrounding prose, or a bare number inside the command itself.
+
+    Without the memo the judge pass would re-scan a session's whole history every pass, once per node that
+    owns each segment. The ATOM COUNT is part of the key, exactly as `closedSig` fingerprints a turn: an
+    open segment grows while its turn runs, and an id alone would pin the refs to the first scan, so a url
+    printed later in that same segment would never be seen."""
+    ckey = (seg.get("id") or "", len(seg.get("atoms") or []))
+    hit = _SEG_PR_CACHE.get(ckey)
+    if hit is not None:
+        return hit
+    em.hydrate(seg.get("atoms") or [])   # bodies before the assembly cut: read on demand (T323 stage 4a), once per memo miss
+    texts, cmds = [], []
+    for a in (seg.get("atoms") or []):
+        t, c = _atom_parts(a)
+        texts.extend(t)
+        cmds.extend(c)
+    out, got = [], set()
+    if any(_PR_RECEIPT_CMD_RE.search(c) for c in cmds):
+        for text in texts + cmds:
+            for m in PR_URL_RE.finditer(text):
+                ref = (m.group(1), int(m.group(2)))
+                if ref not in got:
+                    got.add(ref)
+                    out.append(ref)
+        for c in cmds:
+            if "--repo" in c:
+                continue                    # names another repo; the empty-owner inference would be wrong
+            for m in _GH_PR_NUM_RE.finditer(c):
+                ref = ("", int(m.group(1)))
+                if ref not in got:
+                    got.add(ref)
+                    out.append(ref)
+    if len(_SEG_PR_CACHE) > 50000:          # runaway backstop; one entry per parsed segment size
+        _SEG_PR_CACHE.clear()
+    _SEG_PR_CACHE[ckey] = hit = tuple(out)
+    return hit
+
+
+def goal_pr_refs(store, seg_by_id, nid):
+    """[[owner/repo, number]] mined from goal `nid`'s own segments and its subtree's, oldest-first and
+    deduped. Deliberately UNFILTERED by repo: this side has the atoms but not the session's checkout, so
+    it records everything it saw and the kernel — which has the cwd, and therefore the remote — keeps only
+    the refs belonging to the session's own repo. Lists, not tuples: this is written to the goal store as
+    JSON."""
+    out, got = [], set()
+    # OWN trail only, not the subtree. A parent's PRs are rolled up by the pane, which walks the tree it is
+    # already drawing; mining the subtree here as well meant every ancestor accumulated every descendant's
+    # PRs, so a top goal listed five unrelated numbers (seen on live data 2026-08-18). One mechanism.
+    for sg in sorted(_segs_for(seg_by_id, _goal_seg_ids(store, nid, subtree=False)),
+                     key=lambda s: s.get("t", 0)):
+        for key in _seg_pr_refs(sg):
+            if key not in got:
+                got.add(key)
+                out.append([key[0], key[1]])
+    return out
 
 
 def _goal_has_recorded_work(store, nid, subtree=True):
@@ -8984,6 +9137,22 @@ _namefp_memo = {}    # names/ entry -> (its mtime, resolved project dir or None)
 #                      the number of live names/ entries, never by uptime.
 
 
+def _in_window(pdir, fsid, now=None):
+    """True iff this session's current transcript was touched inside WINDOW.
+
+    discover() drops rows whose transcript predates its cutoff, so a session WAKING after a dormant
+    spell changes the output with no directory entry added — the one input a plain append can move.
+    The BOOLEAN is signed rather than the mtime: appends to a live session leave it True, so the cache
+    still survives them, while a dormant session crossing the line invalidates on its next call."""
+    if pdir is None:
+        return False
+    now = time.time() if now is None else now
+    try:
+        return os.stat(os.path.join(pdir, fsid + ".jsonl")).st_mtime >= now - WINDOW
+    except OSError:
+        return False
+
+
 def _codex_rows(cutoff, seen):
     """Discovery rows for Codex sessions — (fsid=STABLE SID, materialized path, anchor sid, name),
     read from the Codex backend's registry (plans/codex-backend.md). The names/ loop above skips
@@ -9025,9 +9194,10 @@ def _codex_rows(cutoff, seen):
 
 def _discover_fingerprint():
     """A cheap structural signature of the transcript namespace that changes EXACTLY when discover()'s
-    output would: a session ADDED/RENAMED (a names/ entry's set or mtime changes) or a FORK appearing (a
-    .jsonl added to a project dir bumps that dir's mtime). A plain transcript APPEND adds no directory entry,
-    so it leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on an append, so
+    output would: a session ADDED/RENAMED (a names/ entry's set or mtime changes), a FORK appearing (a
+    .jsonl added to a project dir bumps that dir's mtime), or a session crossing discover()'s WINDOW in
+    either direction (_in_window above). A plain transcript APPEND to a session already inside the window
+    leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on such an append, so
     we must not re-walk ~80 project dirs + read every fork's head 2-4× per push for nothing. Same (mtime)
     change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover.
     The signature also carries each session's diverged SDK lastSid (mtime-memoized, see _sdk_last_sid): an
@@ -9084,7 +9254,8 @@ def _discover_fingerprint():
                 rm = os.stat(os.path.dirname(rec)).st_mtime
             except OSError:
                 rm = 0
-        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or "", rec, rm))
+        last = _sdk_last_sid(f.name) or ""
+        fp.append((f.name, mt, pm, last, rec, rm, _in_window(pdir, last or f.name)))
     if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
         live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded
         for name in [k for k in _namefp_memo if k not in live]:  # by the sessions that currently EXIST
@@ -15185,6 +15356,32 @@ def _closed_turns(store):
     return set(store.get("closedTurns") or store.get("sweptTurns", []))
 
 
+def _record_pr_refs(store, seg_by_id):
+    """Stamp every goal's PR refs onto the store, so the read side can serve them without rebuilding a
+    parse (the user 2026-08-17). This side is where the atoms live; build_session is a pure assembler and
+    has no seg_by_id, so — exactly like `summary` and the brief parts — the fact is produced here and
+    merely read there.
+
+    Runs every judge pass, not only at distill: a draft PR opened mid-goal has to show on the goal that is
+    still OPEN, which is the whole point of the pane's live mark. Per-segment memoization (_seg_pr_refs)
+    keeps that to one scan per segment for the life of the process.
+
+    Only writes on a CHANGE, so an unchanged session's store stays byte-identical and the save is a no-op
+    for every consumer watching it.
+
+    `seg_by_id` None means the walk judged no turn this pass, so it never built the segment index: there is
+    nothing whose refs could have moved, and building the index here would undo the walk's own laziness."""
+    if seg_by_id is None:
+        return False
+    changed = False
+    for nid, nd in (store.get("nodes") or {}).items():
+        refs = goal_pr_refs(store, seg_by_id, nid)
+        if refs != (nd.get("prRefs") or []):
+            nd["prRefs"] = refs or None
+            changed = True
+    return changed
+
+
 def _invalidate_closure(store, session, seg_t):
     """A work-run DONE landed AFTER the closer already classified the turn holding this segment: that
     closure is stale — the closer judged the turn before the verdict existed, so its rollup (bottom-up
@@ -15375,6 +15572,7 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
         swept.add(tid); sig[tid] = fp; did += 1        # remember the size we judged at → detect later growth
     store["closedTurns"] = sorted(swept)
     store["closedSig"] = sig
+    _record_pr_refs(store, seg_by_id)                 # goal → PR refs, for the Outline pane's chip (no index, no scan)
     settled = _session_settled(fsid, path, session, store, now)
     rollup_status(store, settled)
     save_goals(fsid, store)
@@ -16069,7 +16267,7 @@ DISTILL_SYS = (
     "follow-up, often a specific piece of the goal rather than the whole thing, not a recap of the entire "
     "history. Fold the earlier thread into BACKGROUND as orientation. When there is no such line, "
     "summarize the whole <work> as usual.\n\n"
-    "Reply with two labeled sections, plus, when required below, the final SOURCE line, "
+    "Reply with two labeled sections, plus, when required below, the final ARTIFACTS and SOURCE lines, "
     "and nothing else: no JSON, no preamble, no markdown. Both sections use plain declarative sentences "
     "addressed to the user as **you**: never call them 'the user', never call the session 'the "
     "assistant'. One message per paragraph, and no paragraph longer than three sentences. No "
@@ -16119,6 +16317,16 @@ DISTILL_SYS = (
     "outcomes the user would weigh independently, write one short paragraph per item, in the order given, "
     "each leading with that item's own outcome and separated from the next by a blank line. Never pad a "
     "single story into per-item paragraphs. A still-open paragraph, when there is one, comes after them.\n\n"
+    "When the work PRODUCED a standalone output file the user would open to see the result, such as a "
+    "written document (a spec, a summary, a report, a runbook, a set of notes, a plan), a plot image, a "
+    "PDF, an exported data file, or a generated screenshot, add one line after the takeaway that is "
+    "exactly ARTIFACTS: followed by their paths, comma-separated, transcribed character-for-character "
+    "from <work>, the most important first, at most five. A file the work CREATED or REWROTE as the "
+    "deliverable itself counts whatever its extension: a written document meant to be read is an output "
+    "file, never source code. Still excluded: source code, tests and configs touched along the way, a "
+    "path merely read or mentioned, and any path you cannot see verbatim in <work>. A goal that produced "
+    "no such file omits the line entirely. This line is parsed off and shown as file previews, so the "
+    "file-path ban above does not apply to it.\n\n"
     "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete **only** "
     "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before it "
     "on the line and nothing after it. Never omit it while labels are present, and never invent a label "
@@ -17473,11 +17681,22 @@ def _distill_session(fsid, path, now):
         raw = out
         out, _cites = _split_sources(out)
         src, _quote = _cites["whole"]
+        out, arts = _split_artifacts(out)           # optional produced-files line (before the section split — it trails the takeaway)
         bg, out = _split_sections(out)
         nodes[top]["summary"] = out                 # full text — NEVER truncate a takeaway mid-word (the user 2026-07-06)
         _store_para_cites(nodes[top], marks, out, _cites["paras"])   # per-paragraph landings (T220)
         nodes[top]["summaryParts"] = ([{"id": d["id"], "since": _done_since(d)} for d in _dsubs]
                                       if len(_dsubs) > 1 else None)   # same order as <completed-items>; the feed's count-match gate decides whether the model actually split
+        # Files the work PRODUCED (paths as written in <work>) — the kernel existence-filters at feed
+        # build (the user 2026-07-08). A LATER distill of the same node that emits no ARTIFACTS line
+        # KEEPS what an earlier one recorded (the user 2026-08-19): a re-distill reads a fresher, often
+        # longer <work> where the file's own creation has scrolled out of the window, and the paths are
+        # transcribe-only, so overwriting with None erased artifacts a completed goal really had. The
+        # filesystem still retires them — a moved or deleted path drops at feed build.
+        if arts:
+            nodes[top]["artifacts"] = arts
+        elif not nodes[top].get("artifacts"):
+            nodes[top]["artifacts"] = None
         nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         # the takeaway's cited source, else the WRITE-TIME deterministic stamp: the newest labeled atom
         # this very call read (the user 2026-07-21) — every summary ships a stored anchor

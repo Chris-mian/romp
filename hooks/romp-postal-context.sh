@@ -58,6 +58,28 @@ if [[ "$cli_id" != "$ROMP_SID" ]]; then
     elif [[ -z "$last_sid" ]]; then [[ "$start_kind" == "startup" ]] || exit 0   # a first start, ahead of the kernel's write
     else [[ "$last_sid" == "$cli_id" ]] || exit 0; fi
 fi
+# An ISOLATED session is told nothing about peers. Its sends are refused and its mail is held either
+# way, so advertising the tools only teaches it to reach sideways, hit the refusal, and narrate that
+# at the user — or, worse, to point the user at another session to go read. Resolved exactly as
+# kernel._postal_isolated resolves it: this session's own override, else the "*" master.
+if python3 - "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/session-flags.json" "$ROMP_SID" <<'PY'
+import json, sys
+flags_path, sid = sys.argv[1], sys.argv[2]
+try:
+    flags = json.loads(open(flags_path).read())
+except Exception:
+    sys.exit(1)                       # unreadable → not isolated, same fail-OPEN posture as the readers
+own = flags.get(sid) if sid else None
+if isinstance(own, dict):
+    for key in ("postalServiceOff", "postalOff"):
+        if key in own:
+            sys.exit(0 if own[key] else 1)
+master = flags.get("*")
+sys.exit(0 if isinstance(master, dict) and master.get("postalServiceOff") else 1)
+PY
+then
+    exit 0
+fi
 read -r -d '' CTX <<'TXT'
 You're in a romp session with sibling sessions you can message: use the postal MCP tools (send_message, list_agents, set_working, check_inbox, check_sent, recall_message) or `romp mail`. Each tool's description carries its norms. Two to know up front:
 - Message a peer only for something substantive (it wakes them and costs a turn); set `kind` to delegate, coordinate, or question, and put the whole point in the first sentence.
