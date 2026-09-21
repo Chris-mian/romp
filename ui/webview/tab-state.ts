@@ -51,8 +51,8 @@ export const RING_TEST: Record<RingId, (s: TabStateLike | null | undefined) => b
   // the kernel's per-session read of the feed's needs_input column in build_session, the same verdict the
   // section-at-a-glance row's chip and the feed's Needs you column speak, so the three can never disagree) and the tab is
   // not dead. The session may be idle, awaiting background work or still WORKING while the card waits, and the ring
-  // shows in every one of those, composed with the working dot rather than replacing it: a session with something
-  // waiting on you should grab attention without a click, even while it goes on working. Only TRUE is a verdict: null
+  // shows in every one of those, composed with the working dot rather than replacing it: a session with a card that
+  // needs you should grab attention without a click, even while it goes on working. Only TRUE is a verdict: null
   // (no feed build yet) and false are the same nothing, as is an older kernel's absent field. The test itself no
   // longer stands down under the red states; the composition's first-on-ring rule does, so with the red ring switched
   // off a stopped session with a card wears the magenta, which is true of that tab.

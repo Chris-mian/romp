@@ -141,17 +141,20 @@ has its own root; every state token is mirrored there today); the mobile page's 
 Both clear the ring and pair floors `theme-parity.test.ts` holds (3:1), and the dark hue sits apart from the working
 gold, the retrying amber and both reds under a red-green deficiency (the test's pairwise pins extend to it). The 5xx
 marks of the API-health cell's tip and detail on the landing page (`--st-5xx-bg`, the histogram's `.ah-seg-serverErrors`
-band; `--st-5xx-ink`, the `.ah-c-r5xx` digits in the tip's line; the landing's inline sheet declares both, mirrors of
-styles.css) are chosen by the validator's two floors (OKLab x100 at least 15 to full-colour readers, at least 8 under the
-Machado protan and deutan simulations) against every colour each mark shares a surface with. Dark: the fill `#cb94d1`
-(a lilac) 6.90:1 on the tip's ground, from the Needs you magenta 17.0 / 12.0, the accent band 15.9 / 10.0, the 429 band
-20.2 / 17.6, the other band 29.9 / 25.7; the ink `#8b7ec8` (a violet) 4.70:1, from the accent ink on its line 22.3 / 21.0,
-the 429 ink 20.3 / 14.0, the words gray 15.7 / 15.6, and from the magenta 17.7 in full colour and 5.6 under a deficiency,
-the ONE pair conceded on purpose (no violet ink clears the accent and the magenta at once under red-green CVD; the two
-never share a line). Light: one deep violet `#4c1b7e` for fill and ink, 9.97:1 on the cream page, from the magenta
-19.1 / 11.6, the accent 31.6 / 25.6, the 429 red 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7.
-The first purple of phase two (`#7e22ce`, 2.39:1 on the tip's ground; then `#c4b5fd`, 8.5 from the accent ink it shared a
-line with) was replaced by these under the reviews; theme-parity.test.ts pins every figure.
+band; `--st-5xx-ink`, the `.ah-c-r5xx` digits in the tip's line and the detail's rows; the landing's inline sheet declares
+both in rules of their own, mirrors of styles.css) are chosen by the validator's two floors (OKLab x100 at least 15 to
+full-colour readers, at least 8 under the Machado protan and deutan simulations) against every colour each mark shares a
+surface with, and by the contrasts each needs on every ground it sits on. Dark: the fill `#cb94d1` (a lilac) 6.90:1 on the
+tip's ground and 6.19:1 over the graph's wash, from the Needs you magenta 17.0 / 12.0, the accent band 15.9 / 10.0, the
+429 band 20.2 / 17.6, the other band 29.9 / 25.7; the ink `#8a8aff` (a periwinkle) 5.68:1 on the ground and 4.76:1 on the
+detail's row hover wash, from the accent ink on its line 19.2 / 18.9, the 429 ink 25.4 / 21.0, the words gray 17.0 / 16.4,
+the other-count ink 38.0 / 36.8, and from the magenta 17.4 in full colour and 2.7 under a deficiency, the ONE pair conceded
+on purpose (no violet or blue ink clears the accent ink, the other-count ink and the magenta at once under red-green CVD
+while reading 4.5:1 on the hover wash; the two never share a line). Light: one deep violet `#4c1b7e` for fill and ink,
+9.97:1 on the cream page and 11.90:1 on white, from the magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 red 27.1 /
+21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7. The purples of phase two's earlier rounds (`#7e22ce`,
+2.39:1 on the tip's ground; `#c4b5fd`, 8.5 from the accent ink it shared a line with; `#8b7ec8`, 3.93:1 on the hover
+wash) were replaced by these under the reviews; theme-parity.test.ts pins the floors and the conceded pair.
 
 Where the token paints, and only there:
 

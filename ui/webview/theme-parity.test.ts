@@ -66,6 +66,7 @@ const PAIRS: Array<[string, string, number]> = [
   ["--accent", "--bg", 3],
   ["--st-5xx-bg", "--bg", 3],      // the API-health cell's 5xx bar on the tip's ground (PR 1935 round three: the first purple sat at 2.39:1)
   ["--st-5xx-ink", "--bg", 4.5],   // the 5xx digits in the tip
+  ["--st-5xx-fg", "--st-5xx-bg", 3],   // text on the 5xx fill (the pair every state token carries)
   ["--cmt-hl-outline", "--bg", 3],   // the comment notch (the rail tick's fill): a LINE, so it must read against the page (T310)
   ["--st-awaiting-bg", "--bg", 3],   // the unread passage's dashed box and ring, and the tick's halo (2026-09-12): a line in the needs-you red
   ["--accent-fg", "--accent", 3],
@@ -140,7 +141,7 @@ for (const sheet of ["styles.css", "feed.css"]) {
       }
       // a skip must be loud (PR #763 item 6): pin how many pairs actually ran per sheet/theme —
       // grow these numbers when PAIRS grows, never let them silently shrink
-      const expected = sheet === "styles.css" ? PAIRS.length : 23;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there)
+      const expected = sheet === "styles.css" ? PAIRS.length : 24;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there)
       // T337: the postal kind words also sit on the PROVISIONAL card (a sent card not yet landed wears the pending
       // bubble's dress: an 8.5% wash of --you over the page, styles.css .queued-bubble, no element opacity since the
       // fade moved into the dress's colours), the darkest ground they meet; each reads at 4.5:1 there too
@@ -256,7 +257,8 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
     const inkLit = KERNEL.match(dark ? /\.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/ : /body\.theme-light \.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/);
     const ink = inkTok ? inkTok[1] : inkLit![1];
     // the cell's other colours, the landing's literals (T340): the 429 fill and ink, the other band, the tip's words
-    const red429 = dark ? "#e5484d" : "#B02A1C", ink429 = dark ? "#ef6b6f" : "#B02A1C", other = dark ? "#d9f99d" : "#4f46e5", words = dark ? "#a9b1ba" : "#5D574E";
+    // the 429 BAND is var(--st-blocked-bg,#e5484d) in both themes (the landing paints no light override for it); the 429 INK is re-inked for the light
+    const red429 = "#e5484d", ink429 = dark ? "#ef6b6f" : "#B02A1C", other = dark ? "#d9f99d" : "#4f46e5", words = dark ? "#a9b1ba" : "#5D574E";
     const name = dark ? "dark" : "light";
     const check = (what: string, a: string, bb: string, floorFull: number, floorCvd: number) => {
       const full = deltaE(hex(a), hex(bb)), cvd = cvdWorst(hex(a), hex(bb));
@@ -270,16 +272,24 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
     check("the 5xx ink against the accent ink on the same line", ink, accent, 15, 8);
     check("the 5xx ink against the 429 ink on the same line", ink, ink429, 15, 8);
     check("the 5xx ink against the tip's words", ink, words, 15, 8);
+    check("the 5xx ink against the other-count ink on the same line", ink, other, 15, 8);
     // the ink against the Needs you token: 15 to full-colour readers in both themes; under a deficiency the light clears 8 and the
-    // DARK pair is conceded on purpose at 5.6 (no violet ink clears the accent and the magenta at once there; the two never share a
-    // line), recorded in plans/needs-you.md and styles.css: the floor here is 5, so a drift lower still reddens
-    check("the 5xx ink against the Needs you token", ink, needs, 15, dark ? 5 : 8);
+    // DARK pair is conceded on purpose at 2.7 (no violet or blue ink clears the accent ink, the other-count ink and the magenta at
+    // once under red-green CVD while reading 4.5:1 on the detail's hover wash; the two never share a line), recorded in
+    // plans/needs-you.md and styles.css: the floor here is 2, so a drift lower still reddens
+    check("the 5xx ink against the Needs you token", ink, needs, 15, dark ? 2 : 8);
     // the contrasts the marks need where they sit: the fill 3:1 on the tip's ground, the ink 4.5:1
     const page = rgbOf(props(b).get("--bg")!, [30, 30, 30])!;   // the dark --bg is a var() with a fallback: the sheet's own parser resolves it
     assert.ok(contrast(hex(fill), page) >= 3, `${name}: the 5xx fill on the page = ${contrast(hex(fill), page).toFixed(2)} < 3`);
     assert.ok(contrast(hex(ink), page) >= 4.5, `${name}: the 5xx ink on the page = ${contrast(hex(ink), page).toFixed(2)} < 4.5`);
+    // ...and on the detail's row hover wash (the landing's .ah-row:hover: 6% white over the dark page, 5% black over the light), where
+    // a waiting row's 5xx code sits in the same ink (the fourth review: the violet before this read 3.93:1 there)
+    const hover = rgbOf(dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)", page)!;
+    assert.ok(contrast(hex(ink), hover) >= 4.5, `${name}: the 5xx ink on the row hover wash = ${contrast(hex(ink), hover).toFixed(2)} < 4.5`);
+    const KERNEL_HOVER = dark ? ".ah-row:hover{background:rgba(255,255,255,0.06)}" : "body.theme-light .ah-row:hover{background:rgba(0,0,0,0.05)}";
+    assert.ok(KERNEL.includes(KERNEL_HOVER), `${name}: the landing's row hover wash is the one measured`);
     pairs.push([name, fill, ink, 15, 8]);
   }
   assert.equal(pairs.length, 2);
-  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#8b7ec8)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"), "the landing's inks ride the token");
+  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"), "the landing's inks ride the token");
 });

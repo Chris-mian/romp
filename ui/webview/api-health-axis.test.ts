@@ -278,5 +278,5 @@ test("T340: the other band's hue per theme, and the inks and fills that follow i
     assert.ok(KERNEL.includes(rule), rule);
   }
   for (const gone of [".ah-sw{", ".ah-lsw{", ".ah-sw-r429{", ".ah-sw-r5xx{", ".ah-sw-none{", "body.theme-light .ah-sw-"]) assert.ok(!KERNEL.includes(gone), gone + " is gone");
-  assert.ok(KERNEL.includes(".ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8b7ec8)}") && KERNEL.includes("body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"));   // the 5xx ink through its token since 2026-09-21 (plans/needs-you.md)
+  assert.ok(KERNEL.includes(".ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}") && KERNEL.includes("body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"));   // the 5xx ink through its token since 2026-09-21 (plans/needs-you.md)
 });
