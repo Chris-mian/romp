@@ -2084,12 +2084,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   base: a genuine first-event change (a floor advance that moved the list's
   first event reads here too), or a change of 0 against a held base, which
   only a sender that read the shared baseline absent produces (a sid's first
-  whole frame seeds the baseline, whichever sender sent it, so its later
-  senders diff against it instead of re-sending the whole session), in two
-  faces: the cycle's repair after two whole-frame senders raced on a
-  baseline-less sid (two senders that both read it absent before their builds
-  leave none and mark the session, no single-client push re-seeds it in
-  between, and the next cycle's full repairs every client and clears the
+  whole frame to reach a client seeds the baseline, whichever sender sent it,
+  so its later senders diff against it instead of re-sending the whole
+  session), in two faces: the cycle's repair after two whole-frame senders
+  raced on a baseline-less sid (two senders that both read it absent before
+  their builds leave none and mark the session, no single-client push re-seeds
+  it in between, and the next cycle's full repairs every client and clears the
   mark), and the detector's accepted false positive, a sender whose build the
   cycle's write landed inside with its own list the newer one: it sends every
   base holder the full, pops the cycle's baseline and marks the session with

@@ -33922,6 +33922,29 @@ def _chat_diff(prev, cur):
     return i
 
 
+def _chat_handed_whole(sid, clients):
+    """Whether some client in `clients` holds a base for `sid` once a sender's per-client loop has run: the delivery
+    signal the seed below is gated on (2026-09-21). A loop hands a build to a client whole through _send_chat_locked
+    alone, and that road's write of the client's echat entry is the base it records; a skeleton holder takes the status
+    road instead (_send_chat_or_status), a withheld client (skeletonOnReady, an armed reconnect) and a socket before its
+    ready (handshake False) take none, so a loop whose every client did one of those handed the build to nobody. Both
+    seed call sites ran the seed all the same, and a baseline seeded from such a loop described no client's base: a list
+    no client holds is no lower bound on any base holder, and with another whole-frame sender's list already in the map
+    the seed's detector read a race, popped that sender's list and marked a sid nobody raced on, whose repair was the
+    next cycle's changeAt0 full with a chatFull row to every base holder, the frame the seed exists to remove; as the
+    newer writer it left a concurrent whole-frame sender's client on the older card with no row (that sender read the
+    map present, diffed its older list against the newer one and declined its own seed). Exact today because a skeleton
+    sid never reaches _send_chat_locked (the set's one writer excludes a sid the client holds whole), a withheld or
+    pre-ready socket is a fresh client or one whose ready reset cleared its bases, and the strip-exit eviction pops the
+    base of a tab that left. Read under each client's slot lock, one client at a time, every lock released before the
+    caller takes _chat_baseline_lock (the seed holds nothing else inside it; the eviction's order is the same)."""
+    for c in clients:
+        with _client_lock(c):
+            if sid in (c.get("echat") or {}):
+                return True
+    return False
+
+
 def _seed_chat_baseline(sid, m, seen):
     """Establish the shared delta baseline (_prev_chat_events, _prev_chat_ledger) at a sid's first whole frame; never
     advance it (2026-09-19). `seen` is the baseline the sender read BEFORE its build and diffed against before its sends
@@ -33943,8 +33966,12 @@ def _seed_chat_baseline(sid, m, seen):
     the whole session (counted changeAt0, filed as a chatFull row with both edges held: the frame a page treats as a
     reconnect repair) until a cycle had built the sid and written it, the cycle's own first build included: 42 such fulls
     in the three minutes after a restart with 22 sessions and a dashboard, none after. The deciding event is the send
-    itself: a build was handed to clients whole while no baseline existed, so from that instant the list they were handed
-    is a lower bound on every base holder's state. The cases, one step under _chat_baseline_lock. `seen` present:
+    itself: a build was handed to at least one client whole while no baseline existed, so from that instant the list it
+    was handed is a lower bound on every base holder's state. A loop that handed it to nobody (status frames to skeleton
+    holders, withheld clients, a socket before its ready) does not reach this function (2026-09-21, the call sites'
+    _chat_handed_whole guard): a list no client holds is no lower bound on any base holder, and with a racing sender's
+    list in the map it read below as a race that never happened, the pop and the mark included (tests 29 to 32 of the
+    skeleton-reconnect module). The cases, one step under _chat_baseline_lock. `seen` present:
     nothing; a present baseline is never replaced here, since only a push that reaches every client may ADVANCE it (the
     2026-07-28 stranded-delta lesson: a connect push that moved it left every other client behind the next diff's
     change_from), and seeding when absent is not advancing. `seen` absent or empty and the map still so: the list becomes
@@ -51393,7 +51420,7 @@ def _chat_full_reason(pc, pf, pl, change_from, total):
     (the last edge before the first), `changeAt0` (a change at the list's first event against a held base: a genuine
     first-event change, a floor advance that moved the list's first event reading here too, or a change of 0 against a
     held base, which since 2026-09-19 only a sender that read the shared baseline absent produces (a sid's first whole
-    frame seeds it, whichever sender sent it, so its later senders diff against it: _seed_chat_baseline and the
+    frame to reach a client seeds it, whichever sender sent it, so its later senders diff against it: _seed_chat_baseline and the
     _push_session_now docstring), in two faces: the cycle's repair after two whole-frame senders raced on a baseline-less
     sid, whose seed popped the baseline and marked the sid so that every base holder is served the full until the next
     cycle's write, and, since 2026-09-21 with the baseline read before the build, the detector's accepted false positive,
@@ -54898,7 +54925,10 @@ def _push(targets, connect=False, live_map=None):
                     # a restart with 22 sessions, none after. The seed reads the map back against `_seen`, so a racing
                     # whole-frame sender's list is popped, not kept, and the sid marked: no seed, this road's least of all (a
                     # needFull, an idle-prefetch release), re-seeds it before the next cycle's full has repaired every client.
-                    _seed_chat_baseline(m["id"], m, _seen)
+                    # A build handed to no client, every target a skeleton holder (a status frame each) or withheld, seeds
+                    # nothing (2026-09-21, _chat_handed_whole): a list no client holds is no lower bound on any base holder.
+                    if not _seen and _chat_handed_whole(m["id"], chat_clients):
+                        _seed_chat_baseline(m["id"], m, _seen)
                 # cache AFTER the sends, so a serialization a full send just paid for is kept — the next
                 # connect-push for this unchanged tab reuses it instead of dumping again
                 if sig is not None:
@@ -55339,9 +55369,10 @@ def _push_session_now(sid):
     released; one whose only cycle build was transcript-less, an empty baseline reading as none) got the full from
     every targeted push, and once more from the cycle's own first build, until that cycle wrote it: 42 whole frames
     to caught-up pages in the three minutes after a restart with 22 sessions and a dashboard, none after
-    (2026-09-19). The first whole frame now SEEDS the baseline when none exists, here and in the connect push
-    (_seed_chat_baseline, after the sends, against the baseline read before them): never advanced here, established
-    when absent. A present baseline is left where it is, since only a push that reaches every client may advance it
+    (2026-09-19). The first whole frame handed to at least one client now SEEDS the baseline when none exists, here and
+    in the connect push (_seed_chat_baseline, after the sends, against the baseline read before them; a push whose every
+    page took the tab as a status frame handed its build to nobody and seeds nothing, 2026-09-21): never advanced here,
+    established when absent. A present baseline is left where it is, since only a push that reaches every client may advance it
     (the 2026-07-28 stranded-delta lesson); an absent one the detector has not marked has no base holder the seed's
     list would not cover, since every whole-frame sender seeds and the pusher's eviction forgets every client's base
     for a tab that left the strip along with its baseline and its mark (a re-entering tab is a noBase full for
@@ -55477,7 +55508,8 @@ def _push_session_now(sid):
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
         for c in targets:                            # the strip went above, before the gate; here the session frame
             ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
-        _seed_chat_baseline(sid, m, _seen)           # established when absent, never advanced, declined while the detector's mark
+        if not _seen and _chat_handed_whole(sid, targets):   # a build every page took as a status frame seeds nothing (2026-09-21)
+            _seed_chat_baseline(sid, m, _seen)       # established when absent, never advanced, declined while the detector's mark
         #                                              stands (the docstring); after the sends
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
