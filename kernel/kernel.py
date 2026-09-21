@@ -69027,6 +69027,7 @@ class Handler(BaseHTTPRequestHandler):
                     # its answer verbatim — a refusal, a plain ok, or an ok with `deferred` — never rewritten
                     return self._send(200, json.dumps(res), "application/json")
                 be = Sessions.backend_for(sid)
+                ans = {"ok": True}
                 if u.path == "/interrupt":
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
@@ -69054,13 +69055,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
-                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
+                    # The hand-back's count rides the answer (review find, 2026-09-21): this route answered ok whatever
+                    # the hand-back did, so a shell caller of `romp end` or POST /end, often a peer session with no chat
+                    # pane open, read a plain ok while a message the user had typed went to a not-delivered frame that
+                    # with no pane connected reaches nobody. `undelivered` is present only when nonzero, the
+                    # `deferred` and `queued` idiom, so an end with nothing parked keeps its plain ok.
+                    undelivered = _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
+                    if undelivered:
+                        ans["undelivered"] = undelivered
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
-                return self._send(200, json.dumps({"ok": True}), "application/json")
+                return self._send(200, json.dumps(ans), "application/json")
             if u.path.startswith("/remote/"):
                 # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
                 # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth

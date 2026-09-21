@@ -245,8 +245,15 @@ out is a kernel restart, which delivers the waiting message (the queue it waits
 in is kept on disk; the cue is kept there too, and the restart ends it with the
 unknown-outcome notice above), or End then Revive, which keeps the thread and
 its history but not the queue: a message you typed that is still waiting
-behind the cue is handed back when the session ends, as a not-delivered notice
-with the text to copy, and is never sent; anything else queued behind the cue
+behind the cue is never sent; when the session ends it comes back as a
+not-delivered notice with the text to copy, shown in one pane that is open at
+that moment (a chat pane first, the feed when no chat pane is connected), and
+its text is kept in `undelivered.jsonl` under the state directory of the kernel
+that ran the session whether or not a pane shows the notice (the kernel log
+records it when that file could not be written). `romp end` (and POST `/end`)
+says in its answer how many such messages it handed back (`undelivered`, absent
+when none); `romp end self`, which defers the end to the turn's settle, answers
+before the close runs and carries no count. Anything else queued behind the cue
 (a compaction, a setting pick, a message romp itself queued, a message a script
 sent tagged with `romp send --tag`) is dropped with the session and noted in the
 kernel log; an untagged `romp send` counts as typed and is handed back like a

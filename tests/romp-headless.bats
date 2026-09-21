@@ -72,6 +72,27 @@ PY
     grep -q "^/end$" <(head -1 "$TEST_DIR/req")
 }
 
+@test "romp end names how many waiting messages did not go through, and the file that keeps them" {
+    # the kernel's answer counts the messages the user typed that were still waiting when the session ended and
+    # came back as not delivered (`undelivered`, present only when nonzero, 2026-09-21): a caller with no chat pane
+    # open, often a peer session, read a plain ok while the message went nowhere. The line names the count and
+    # the file, never the text (the decoy key stands for any text a kernel's answer might carry), which would land
+    # in that session's transcript, and no path: a remote session's kernel answers verbatim and its file is on that
+    # machine, so a local path would name a file holding no such row. Exit 0, since the session did end.
+    start_fake_kernel '{"ok": true, "undelivered": 1, "text": "decoy typed words"}'
+    run "$ROMP_SCRIPT" end web
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"romp end: ok (web); 1 message still waiting for it did not go through"* ]]
+    [[ "$output" == *"kept in undelivered.jsonl under the state directory of the kernel that ran the session"* ]]
+    [[ "$output" != *"decoy typed words"* ]]
+    [[ "$output" != *" /"* && "$output" != *"(/"* ]]   # no absolute path anywhere in the line
+    kill "$SERVER_PID"; rm -f "$TEST_DIR/port"
+    start_fake_kernel '{"ok": true, "undelivered": 2}'
+    run "$ROMP_SCRIPT" end web
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"romp end: ok (web); 2 messages still waiting for it did not go through"* ]]
+}
+
 @test "romp end self resolves through ROMP_SID and defers to idle by default" {
     # a session closing ITSELF after its work (the user 2026-08-15): self = the spawn-frozen sid,
     # and the kernel kills at the turn's settle so the goodbye lands first
