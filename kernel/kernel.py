@@ -28220,14 +28220,16 @@ def _sessions_listing_key(live_map, names):
     (name, dir and the two identity colours: a move rewrites the names entry), the working-notes store (the note per sid,
     keyed by the store's entries' stats), the registry's rows revision (lastSid rides the SDK registry; a write that changes
     it moves the revision, a write of a field no row reads does not; the revision counts THIS process's writes, so a lastSid
-    the outgoing kernel wrote during a handover reaches the rows when another input moves) and each row's compacting bit (the live row against the cached parse). A field whose input is not
+    the outgoing kernel wrote during a handover reaches the rows when another input moves), each row's compacting bit (the live row against the cached parse) and each
+    row's launch error (its text and stamp, _launch_error_key: the notice a compaction that ended loudly leaves while the
+    compacting bit falls, 2026-09-21; read once per sid per cycle, the row takes the same read). A field whose input is not
     here cannot be added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
         paths = {}
     rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"),
-                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))))
+                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))), _launch_error_key(sid))
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
@@ -28240,6 +28242,31 @@ def _sessions_listing_key(live_map, names):
     except Exception:
         names_key = (repr(nm),)
     return (rows, hash(names_key), notes, _reg_rev())
+
+
+def _launch_error_scoped(sid):
+    """_launch_error through the cycle's memo (2026-09-21): inside a pusher cycle the first read per sid is kept on
+    _live_scope.launch_errors (opened and closed with the cycle's other memos, the _sessions idiom) and served to every
+    reader after it, so the listing's key and its rows, which both read it, cost one backend read per session per cycle
+    (the SDK backend's read is a registry file per session); outside a cycle every read is fresh, as _sessions behaves."""
+    sid = str(sid)
+    memo = getattr(_live_scope, "launch_errors", None)
+    if memo is None:
+        return _launch_error(sid)
+    if sid not in memo:
+        memo[sid] = _launch_error(sid)
+    return memo[sid]
+
+
+def _launch_error_key(sid):
+    """The hashable identity of a row's launch error for the listing's key (2026-09-21): its text and stamp, None when
+    the session runs fine. The record itself rides the row (_session_listing_row, through the same cycle memo); the key
+    needs only what tells one notice from another, and _launch_error's own guard makes a backend hiccup read as none
+    here as it does there."""
+    le = _launch_error_scoped(sid)
+    if not isinstance(le, dict):
+        return None
+    return (str(le.get("text") or ""), str(le.get("at") or ""))
 
 
 def _sessions_listing_miss(prev, cur):
@@ -28368,12 +28395,18 @@ def _session_listing_row(sid, meta, notes, path):
                 # parse), exposed so `romp compact --wait` and scripted recycling can watch a
                 # compaction start and clear through the kernel's own read, never a scrape.
                 "compacting": bool(_compacting_now(sid, tm=meta, path=path)),
+                # launchError: the backend's record of why the session cannot run ({text, at, limit, an optional
+                # noRetry}, SessionBackend.launch_error; None when it runs fine), beside compacting so `romp compact
+                # --wait` can tell a compaction that ended loudly (the bit falls as on a clean end, the notice stands)
+                # from one that finished (the second review of the native compaction, 2026-09-21). Through the cycle's
+                # memo: the listing's key read it already (_launch_error_scoped)
+                "launchError": _launch_error_scoped(sid),
                 "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
     except Exception:
         sys.stderr.write("session row for %s failed (kept minimal): %s\n"
                          % (sid, traceback.format_exc()))
         return {"id": sid, "name": sid[:8], "state": meta.get("state", ""), "dir": "",
-                "bg": "", "fg": "", "lastSid": sid, "compacting": False,
+                "bg": "", "fg": "", "lastSid": sid, "compacting": False, "launchError": None,
                 "working": "", "backend": meta.get("backend", "")}
 
 
@@ -60001,6 +60034,8 @@ def _pusher_cycle():
         #                                         forks); the wide walk under ("wide", window)): ~35 sweeps
         #                                         per cycle became one
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
+        _live_scope.launch_errors = {}          # …and the cycle's launch-error memo (_launch_error_scoped): the listing's
+        #                                       key and its rows read one record per session (2026-09-21)
         _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
         #                                       root per cycle for every tree that exists, validated or walked by the
         #                                       first reader and served to every reader after it: the chat builds'
@@ -60026,6 +60061,7 @@ def _pusher_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
@@ -60258,6 +60294,7 @@ def _jobs_cycle():
         _live_scope.paths = {}
         _live_scope.sessions = {}
         _live_scope.auth = {}
+        _live_scope.launch_errors = {}          # the pass's launch-error memo (_launch_error_scoped, 2026-09-21)
         _live_scope.subagent_trees = {}         # the pass's subagents-tree samples (2026-09-18): the reminder walk's
         #                                       _session_awaiting readers and _mark_nudge_failed read the same roots per pass
         _live_scope.msgsum = [_MSGSUM_UNSET]
@@ -60271,6 +60308,7 @@ def _jobs_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
@@ -61957,22 +61995,35 @@ _LANDING_JS = """
 (function(){var col=document.querySelector('.col'),row=document.querySelector('.row'),
 tf=document.getElementById('f-timeline');
 // ── timeline BOTTOM BAND (the user 2026-06-25): the rail's Timeline toggle (body.po-timeline) shows/hides a
-// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh); the gh gutter
-// resizes it. Both band + gutter are hidden by CSS unless po-timeline.
+// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh) until the user drags
+// it; the gh gutter resizes it. Both band + gutter are hidden by CSS unless po-timeline.
 function tlContentH(){try{return tf?tf.contentDocument.body.scrollHeight:0;}catch(e){return 0;}}
 function cap(){return Math.round(window.innerHeight*0.7);}
-function autosize(){if(!document.body.classList.contains('po-timeline'))return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
+// a height the USER dragged to is persisted (romp-tl-h), applied at boot, and autosize stands down for it: an
+// explicit gesture outranks the content fit (the user 2026-09-01, who wanted the dragged band height remembered;
+// before this the band forgot it on every reload). Standing down still CLAMPS it to the window: autosize is the
+// 'resize' handler, and a band dragged to the 0.85 share of a tall window would otherwise keep that height when
+// the window shrinks, collapsing the pane row to 0px until the next drag (review find 2026-09-21). The clamp is
+// applied, never stored, so growing the window back restores the dragged height.
+var TLK='romp-tl-h',tlUser=null;try{tlUser=parseInt(localStorage.getItem(TLK)||'',10)||null;}catch(e){}
+function tlClamp(px){return Math.max(48,Math.min(Math.round(window.innerHeight*0.85),px));}   // the band's floor and viewport-share ceiling, spelled once for the boot, the drag and the re-clamp
+function applyUser(){col.style.setProperty('--tl',tlClamp(tlUser)+'px');}
+if(tlUser)applyUser();
+function autosize(){if(!document.body.classList.contains('po-timeline'))return;if(tlUser){applyUser();return;}var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 var ghh=document.getElementById('gh');
 if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
-var tl0=col.style.getPropertyValue('--tl'),want=null,raf=0;   // live already; since section 12 one write per animation frame, and Escape restores the grab-time height
+var tl0=col.style.getPropertyValue('--tl'),user0=tlUser,want=null,raf=0;   // live already; since section 12 one write per animation frame, and Escape restores the grab-time height (and the remembered one)
 function apply(){raf=0;if(want===null)return;col.style.setProperty('--tl',want+'px');}
-function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var ch=tlContentH();var mx=ch?ch+2:cap();
-want=Math.max(48,Math.min(mx,px));if(!raf)raf=frameOnce(apply);}
+// max = the viewport share, NEVER the iframe document's scrollHeight: the timeline document fills whatever
+// height the band has, so 'content height' always equals the CURRENT height, and clamping the drag to it made
+// every drag shrink-only, a downward ratchet (2026-09-01)
+function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;
+want=tlClamp(px);tlUser=want;if(!raf)raf=frameOnce(apply);}
 var keysOff=null;
 function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;
 window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
-function up(){end();apply();}   // end() first: the armed frame is cancelled on this path too, then the last recorded position lands itself
-function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
+function up(){end();apply();try{if(tlUser)localStorage.setItem(TLK,String(tlUser));}catch(e){}}   // end() first: the armed frame is cancelled on this path too, then the last recorded position lands itself and is remembered
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;tlUser=user0;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});
 // ── pane gutters (chat|outline|feed|files, fixed order) sized by flex-grow. gv-a is always chat|outline; gv-b's
 // left neighbour is the outline when shown else chat (so it's the chat|feed gutter when the outline is off);
@@ -62002,7 +62053,12 @@ function shown(id){var p=document.getElementById(id);return p&&getComputedStyle(
 // bottom BAND now (fixed-height var, not a row grow), so it's excluded.
 window.__rompGrowFair=function(k){if(k==='timeline')return;var v=PANES.filter(shown).map(function(id){return grow[key(id)];})
 .filter(function(g){return typeof g==='number'&&isFinite(g);});   // a pane with no grow yet (a split column being made) must not average in as NaN (review find 2026-09-08: the first split opened 0px wide)
-var avg=v.length?v.reduce(function(a,b){return a+b;},0)/v.length:50;setGrow(k,avg);
+// a REOPENED pane KEEPS its remembered width (the user 2026-09-01, who wanted a dragged width to survive a rail
+// toggle): fairness fires only when the remembered grow would re-enter under a 12% share of what is shown, the
+// sliver this function was made for, not on every reopen. The rail's toggle runs this while the pane is still hidden.
+var sum=v.reduce(function(a,b){return a+b;},0),g=grow[k]||0;
+if(g>0&&sum>0&&g/(g+sum)>=0.12)return;
+var avg=v.length?sum/v.length:50;setGrow(k,avg);
 try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}};
 // a split column keeps the width it was dragged to across reloads: fair only when the store holds nothing for it
 window.__rompGrowFairIfNew=function(k){if(typeof grow[k]==='number'&&isFinite(grow[k])){setGrow(k,grow[k]);return;}window.__rompGrowFair(k);};

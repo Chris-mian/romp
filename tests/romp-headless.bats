@@ -36,6 +36,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+    def do_GET(self):   # `romp compact --wait` reads /sessions once BEFORE its POST (the baseline notice, 2026-09-21): no rows here
+        self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"[]")
     def log_message(self, *a):
         pass
 class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address: HTTPServer.server_bind runs socket.getfqdn(host), about 36 s on GitHub's macOS images
@@ -46,7 +48,8 @@ class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address:
 s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/port", "w") as f:
     f.write(str(s.server_address[1]))
-s.handle_request()
+for _ in range(4):   # the one POST, and the /sessions read a --wait makes before it; teardown ends the server either way
+    s.handle_request()
 PY
     SERVER_PID=$!
     until [ -s "$TEST_DIR/port" ]; do sleep 0.05; done
@@ -220,20 +223,41 @@ PY
 # --timeout was octal to (( )) and the timeout never fired; a remote response refuses --wait
 # honestly (the local /sessions never lists remote rows).
 
-start_wait_kernel() {   # $1 = POST response body; GETs serve quiet,compacting,compacting,quiet…
-    python3 - "$1" "$TEST_DIR" <<'PY' &
+start_wait_kernel() {   # $1 = POST response body; $2 = the poll script; $3 = the baseline read's notice; $4 = baseline reads to fail
+    # The CLI reads /sessions once BEFORE its POST (the baseline, 2026-09-21) and polls it after. $2 scripts the polls
+    # after the POST: comma-separated samples, each "q" (quiet) or "c" (compacting), with "A", "B" or "T" appended for
+    # the row's launch error (three distinct notices: A the systemError end and B the notLoaded end, both marked a
+    # compaction's end by noRetry as the kernel marks them; T a turn's rejection, which carries no mark), the last
+    # sample repeating;
+    # the default "q,c,c,q" is the armed-only-after-quiet walk. $3 puts notice A on the baseline read ("A" = a notice
+    # from before this wait). $4 makes that many baseline reads answer 500 first (a kernel blip the CLI must retry).
+    python3 - "$1" "$TEST_DIR" "${2:-q,c,c,q}" "${3:-}" "${4:-0}" <<'PY' &
 import http.server, json, sys
-body, tdir = sys.argv[1].encode(), sys.argv[2]
-hits = {"n": 0}
+body, tdir, script, base, basefail = sys.argv[1].encode(), sys.argv[2], sys.argv[3].split(","), sys.argv[4], int(sys.argv[5])
+state = {"posted": False, "polls": 0, "failed": 0}
+NOTICES = {"A": {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
+                 "at": 1781100004.5, "limit": False, "noRetry": True},
+           "B": {"text": "This conversation stopped being available while it was compacting (Codex reported notLoaded); nothing was compacted as far as romp can tell",
+                 "at": 1781100009.5, "limit": False, "noRetry": True},
+           "T": {"text": "codex turn/start rejected: the synthetic rejection a turn leaves as it ends",
+                 "at": 1781100006.5, "limit": False}}
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); self.rfile.read(n)
+        state["posted"] = True
         self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
         self.wfile.write(body)
     def do_GET(self):
-        hits["n"] += 1
+        if not state["posted"] and state["failed"] < basefail:
+            state["failed"] += 1
+            self.send_response(500); self.send_header("Content-Length", "0"); self.end_headers(); return
+        if state["posted"]:
+            state["polls"] += 1
+            sample = script[min(state["polls"], len(script)) - 1]
+        else:
+            sample = "q" + base
         rows = [{"id": "11111111-2222-3333-4444-555555555555", "name": "busy1",
-                 "compacting": hits["n"] in (2, 3)}]
+                 "compacting": sample[0] == "c", "launchError": NOTICES.get(sample[1:2])}]
         b = json.dumps(rows).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
@@ -247,7 +271,7 @@ class _Bound(http.server.HTTPServer):   # no reverse lookup of the bind address:
 s = _Bound(("127.0.0.1", 0), H)
 with open(tdir + "/port", "w") as f:
     f.write(str(s.server_address[1]))
-for _ in range(12):
+for _ in range(16):
     s.handle_request()
 PY
     SERVER_PID=$!
@@ -255,12 +279,131 @@ PY
     export ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")"
 }
 
+NOTICE_A="Codex could not compact this conversation"
+NOTICE_B="This conversation stopped being available while it was compacting"
+NOTICE_T="codex turn/start rejected"
+
 @test "romp compact --wait on a QUEUED compaction survives set -e, arms after quiet, and completes" {
     start_wait_kernel '{"ok": true, "queued": true}'
     run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
     [ "$status" -eq 0 ]
     [[ "$output" == *"queued for busy1"* ]]
     [[ "$output" == *"done — busy1 compacted"* ]]
+}
+
+# A compaction that ends loudly (Codex reported systemError) drops the row's compacting bit exactly as a clean end does,
+# so the poll alone read "done" over an uncompacted thread and exited 0 (the second review of the native compaction,
+# 2026-09-21). The row carries the backend's launch error; the wait exits 1 with the notice's words when that notice
+# is NEW against the wait's baseline, whether or not a compacting sample was caught. The baseline is per path: a
+# compaction that runs at once is judged against the row as read BEFORE the request (a loud end can land before the
+# first poll); a queued one is judged against the first sample that reads not compacting, the earliest ours could have
+# fired, so the prior compaction's loud end is not attributed to ours. A notice standing at the baseline is not this
+# wait's. A baseline read that fails is retried, and a wait whose baseline never came is refused, not judged blind.
+# Only a notice the kernel marks a compaction's end (noRetry) is judged: a queued wait arms mid-turn (the compacting
+# bit is off for the whole turn it waits behind), so the turn's own end notice is new against the baseline while the
+# compaction proceeds, and read as a loud end it failed a wait over a thread that was compacted (review, 2026-09-21).
+@test "romp compact --wait exits 1 with the notice's words when the compaction it saw ended loudly" {
+    start_wait_kernel '{"ok": true, "queued": false}' 'q,c,c,qA'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"compacting busy1 now"* ]]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_A"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait exits 1 on a loud end it never saw compacting, instead of waiting out the timeout" {
+    start_wait_kernel '{"ok": true, "queued": false}' 'q,qA'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_A"* ]]
+    [[ "$output" != *"didn't see the compaction start"* ]]
+}
+
+@test "romp compact --wait exits 1 on a loud end that landed before its first poll, judged against the read before the POST" {
+    # the baseline is the notice that stood BEFORE the request: taken from the first poll after it, a compaction that
+    # ran and failed in between was read as a standing notice and the wait ran to its timeout (2026-09-21)
+    start_wait_kernel '{"ok": true, "queued": false}' 'qA'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 8
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_A"* ]]
+    [[ "$output" != *"didn't see the compaction start"* ]]
+}
+
+@test "romp compact --wait reads a notice that stood before it armed as not this wait's and still reports done" {
+    start_wait_kernel '{"ok": true, "queued": false}' 'qA,cA,cA,qA' A
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction takes its baseline from the arming sample: the prior compaction's loud end is not ours" {
+    # the prior compaction (compacting on the first poll) ends loudly; ours runs after it and completes: judged against
+    # the read before the request, that notice was new and a clean compaction exited 1 (2026-09-21)
+    start_wait_kernel '{"ok": true, "queued": true}' 'c,qA,c,qA'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"queued for busy1"* ]]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction still exits 1 with the words of a notice new since the arming sample" {
+    start_wait_kernel '{"ok": true, "queued": true}' 'qA,c,qB'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_B"* ]]
+    [[ "$output" != *"$NOTICE_A"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction is not failed by the turn's own end notice landing after the arming sample" {
+    # armed on the mid-turn sample with an empty baseline, the turn ends with a rejection (no mark), then ours runs
+    # and completes with that notice standing: read as a loud end, the wait exited 1 with the turn's words
+    start_wait_kernel '{"ok": true, "queued": true}' 'q,qT,cT,qT'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"queued for busy1"* ]]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+    [[ "$output" != *"$NOTICE_T"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction still exits 1 with the compaction's own loud end after the turn's notice" {
+    start_wait_kernel '{"ok": true, "queued": true}' 'q,qT,cT,qB'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_B"* ]]
+    [[ "$output" != *"$NOTICE_T"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction reports a loud end between the request and the arming sample by the timeout, never attributed" {
+    # ours fired and failed before the first sample read quiet: the notice is baselined with the arming sample (it cannot
+    # be told from a prior compaction's or a failed turn's), so the wait sees no compaction start and says so
+    start_wait_kernel '{"ok": true, "queued": true}' 'qA'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 6
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"didn't see the compaction start"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait retries a baseline read that failed, so a standing notice is not read as this compaction's failure" {
+    # the read before the request answers 500 once while the row carries a standing notice: taken as an empty baseline,
+    # the standing notice read as new and a clean compaction exited 1 with the old words (2026-09-21)
+    start_wait_kernel '{"ok": true, "queued": false}' 'qA,cA,cA,qA' A 1
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait refuses the wait loudly when the baseline never came, instead of judging blind" {
+    start_wait_kernel '{"ok": true, "queued": false}' 'qA,cA,cA,qA' A 3
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"compacting busy1 now"* ]]
+    [[ "$output" == *"can't judge this compaction from here"* ]]
+    [[ "$output" == *"still requested"* ]]
+    [[ "$output" != *"did not compact"* ]]
 }
 
 @test "romp compact --wait refuses a leading-zero timeout (octal to the poll arithmetic)" {

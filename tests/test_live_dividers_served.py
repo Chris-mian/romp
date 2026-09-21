@@ -7,8 +7,11 @@ four divider drags the dashboard has and reads, for each:
   - the release persists the drag's store ONCE (a Storage.setItem count on the key), never per frame;
   - Escape restores the pre-drag sizes live and writes nothing;
   - the iframes keep their content across the drag (a probe set in each frame survives: no reload);
-  - a far drag stops at the pair's real minimum (120 px) with the edge at the pointer up to it (the kit's clamp holds against
-    the geometry at the PRESS, never against the tree the drag rewrote the frame before);
+  - a far drag stops at the kit's minimum, the smaller of 120 px and a quarter of the pair's available px (the shipped clamp:
+    MIN_PX and minFrac in panedock-main.ts), with the edge at the pointer up to it (the clamp holds against the geometry at
+    the PRESS, never against the tree the drag rewrote the frame before); every far sample records the pair's px and the
+    band's height, the minimum's inputs, and the lab prints them beside the cost line (a constant 120 assumed a pair of at
+    least 480 px: on 2026-09-21 a CI run read 114 under a band 153 px taller than at this lab's boot, a 456 px pair);
   - the chat's reader survives the reflow: one at the true bottom stays within 2 px of it at three samples through a narrowing
     drag (the transcript wraps longer and the view grows under them); one scrolled up keeps the line they read where it was
     ON SCREEN within a pixel (the browser's scroll anchoring holds their turn while the transcript above it re-wraps; the
@@ -342,7 +345,7 @@ async function dragKit(dir, samples, { escape = false } = {}) {
     if (dir === "row") await pb.mouse.move(x0 + dd, y0, { steps: 4 }); else await pb.mouse.move(x0, y0 + dd, { steps: 4 });
     await frame(pb);
     const rs = await rectsOf(); const L = rs[p.L], R = rs[p.R];
-    rec.points.push({ d: dd, pointer: dir === "row" ? x0 + dd : y0 + dd, L: L, R: R, edge: dir === "row" ? L.x + L.w : L.y + L.h, sum: dir === "row" ? L.w + R.w : L.h + R.h, cursor: await cursorOver(p.L) });
+    rec.points.push({ d: dd, pointer: dir === "row" ? x0 + dd : y0 + dd, L: L, R: R, edge: dir === "row" ? L.x + L.w : L.y + L.h, sum: dir === "row" ? L.w + R.w : L.h + R.h, band: ((await rect(pb, "#tl-pane")) || {}).h, cursor: await cursorOver(p.L) });   // the pair's px along the axis and the band's height: the minimum's inputs
   }
   if (escape) { await pb.keyboard.press("Escape"); await frame(pb); await pb.mouse.up(); await frame(pb); }
   else { await pb.mouse.up(); await frame(pb); }
@@ -410,7 +413,8 @@ async function bandGrowMidDrag({ escape = false, dir = "row", far = false } = {}
   await mv(-100); await frame(pb); await frame(pb);   // another frame of the drag
   const later = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 100, writes: await kitWrites(w0) };
   let farPoint = null;
-  if (far) { await mv(900, 6); await frame(pb); await frame(pb); const rs = await rectsOf(); farPoint = { rects: rs, edge: edgeOf(rs), pointer: (dir === "row" ? x0 : y0) + 900 }; }
+  if (far) { await mv(900, 6); await frame(pb); await frame(pb); const rs = await rectsOf(); const a = dir === "row" ? "w" : "h";
+    farPoint = { rects: rs, edge: edgeOf(rs), pointer: (dir === "row" ? x0 : y0) + 900, pair: rs[p.L][a] + rs[p.R][a], band: ((await rect(pb, "#tl-pane")) || {}).h }; }   // the pair's px along the drag's axis and the band's height at the sample: the minimum's inputs, so a miss names its source
   if (escape) { await pb.keyboard.press("Escape"); await frame(pb); }
   await pb.mouse.up(); await frame(pb); await frame(pb);
   const after = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), stored: await storedLayout(), writes: await kitWrites(w0), farPoint };
@@ -522,6 +526,28 @@ def _px(tl):
     return float(str(tl).replace("px", "") or 0)
 
 
+def _kit_min(pair_px):
+    """The kit's minimum for a pane of a `pair_px` pair: the smaller of 120 px and a quarter of the pair (MIN_PX and minFrac in
+    panedock-main.ts, the shipped clamp). A constant 120 assumed a pair of at least 480 px; the pair under the band follows the
+    timeline's content height (2026-09-21, the lab's first CI miss: a 456 px pair read 114, the band 153 px taller than here)."""
+    return min(120.0, pair_px / 4.0)
+
+
+def _far_samples(r):
+    """The minimum's inputs at every far sample (the pair's px along the drag's axis, the band's height), the minimum they give
+    and the pushed pane's px: printed beside the cost line, so a miss in CI names its source."""
+    out = {}
+    b = r.get("kitBandGrowStacked") or {}
+    fp = (b.get("after") or {}).get("farPoint")
+    if fp and fp.get("pair") is not None:
+        rr = (fp.get("rects") or {}).get((b.get("pair") or {}).get("R") or "", {})
+        out["stacked"] = {"pair": fp["pair"], "band": fp.get("band"), "min": _kit_min(fp["pair"]), "bottom": rr.get("h")}
+    for key, axis in (("kitColFar", "h"), ("kitRowFar", "w")):
+        pts = (r.get(key) or {}).get("points") or []
+        out[key] = [{"pair": pt["sum"], "band": pt.get("band"), "min": _kit_min(pt["sum"]), "pushed": (pt["R"] if i == 0 else pt["L"])[axis]} for i, pt in enumerate(pts)]
+    return out
+
+
 def _overlaps(rects):
     out, items = [], sorted(rects.items())
     for i, (a, ra) in enumerate(items):
@@ -608,11 +634,13 @@ class ServedLiveDividers(unittest.TestCase):
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
         self.assertNotIn("died", r, "driver aborted early: %r" % {k: r[k] for k in ("died", "errors") if k in r})
+        far = _far_samples(r)
         print("LIVE-DIVIDERS COST:", json.dumps(r.get("cost")), file=sys.stderr)
+        print("LIVE-DIVIDERS FAR SAMPLES:", json.dumps(far), file=sys.stderr)   # the minimum's inputs, beside the cost
         summary = os.environ.get("GITHUB_STEP_SUMMARY")   # CI's job summary shows a passing test's numbers; pytest's capture hides the print
         if summary:
             with open(summary, "a") as f:
-                f.write("LIVE-DIVIDERS COST: %s\n\n" % json.dumps(r.get("cost")))
+                f.write("LIVE-DIVIDERS COST: %s\n\nLIVE-DIVIDERS FAR SAMPLES: %s\n\n" % (json.dumps(r.get("cost")), json.dumps(far)))
         return r
 
     def _within(self, a, b, tol, msg):
@@ -863,8 +891,8 @@ class ServedLiveDividers(unittest.TestCase):
         fp = b["after"]["farPoint"]
         self.assertIsNotNone(fp)
         R = b["pair"]["R"]
-        self._within(fp["rects"][R]["h"], 120.0, 1.5, "the far drag stops with the bottom pane at the real minimum, 120 px (the stale press values left it at 96): %r" % fp["rects"][R])
-        self._within(b["after"]["rects"][R]["h"], 120.0, 1.5, "the release keeps it")
+        self._within(fp["rects"][R]["h"], _kit_min(fp["pair"]), 1.5, "the far drag stops with the bottom pane at the kit's minimum, the smaller of 120 px and a quarter of the pair (%r px under a %r px band; the stale press values left it at 96, and a constant 120 read 114 under a 400 px band): %r" % (fp["pair"], fp["band"], fp["rects"][R]))
+        self._within(b["after"]["rects"][R]["h"], _kit_min(fp["pair"]), 1.5, "the release keeps it: %r" % b["after"]["rects"][R])
         tree = b["after"]["stored"]["parsed"]["tree"]
         L = b["pair"]["L"]
         pair_split = _split_holding(tree, L, R)
@@ -872,7 +900,7 @@ class ServedLiveDividers(unittest.TestCase):
         i = _leaves(pair_split["kids"][0]) == [L] and 0 or [k for k, kid in enumerate(pair_split["kids"]) if L in _leaves(kid)][0]
         rl, rr = pair_split["ratios"][i], pair_split["ratios"][i + 1]
         avail = b["after"]["rects"][L]["h"] + b["after"]["rects"][R]["h"]
-        self._within(rr * avail, 120.0, 1.5, "the store's ratios match the screen: the bottom pane's share is 120 px of the pair: %r" % pair_split["ratios"])
+        self._within(rr * avail, _kit_min(fp["pair"]), 1.5, "the store's ratios match the screen: the bottom pane's share of the pair is the kit's minimum (%r px of %r): %r" % (_kit_min(fp["pair"]), avail, pair_split["ratios"]))
         self.assertEqual(b["after"]["writes"], 1, "one store write, at the release")
 
     def test_the_kits_band_edge_resizes_live_persists_once_at_release_and_nothing_on_escape(self):
@@ -897,25 +925,26 @@ class ServedLiveDividers(unittest.TestCase):
         self.assertEqual(be["after"]["writes"], 0, "and writes nothing: %r" % be["after"]["writes"])
 
     def test_a_far_drag_on_the_kits_dividers_stops_at_the_panes_minimum_with_the_edge_at_the_clamp(self):
-        # the kit's clamp against the press geometry: the pushed pane at 120 px both ways on each divider, the edge stopped there
+        # the kit's clamp against the press geometry: the pushed pane at the kit's minimum both ways on each divider (120 px, or a
+        # quarter of the pair when the pair is under 480 px: the rule, not a constant), the edge stopped there
         r = self._result()
         # (4b) the far drags: the kit's clamp holds against the geometry at the PRESS (the 1927 read: against the tree the drag
         # rewrote every frame, the window shrank each frame and the edge stopped at half its range); the pane the pointer pushes
-        # sits at the real minimum, 120 px, and the edge stops there
+        # sits at the kit's minimum for the pair's px the sample records (with the band's height), and the edge stops there
         kf = r["kitRowFar"]
         self.assertNotIn("error", kf, kf)
         far_r, far_l = kf["points"]
-        self._within(far_r["R"]["w"], 120.0, 1.5, "far right on the column divider: the right pane at the minimum, 120 px: %r" % far_r)
+        self._within(far_r["R"]["w"], _kit_min(far_r["sum"]), 1.5, "far right on the column divider: the right pane at the kit's minimum for a %r px pair: %r" % (far_r["sum"], far_r))
         self._within(far_r["sum"], kf["points"][0]["sum"], 1.5, "the pair trades width at the clamp too")
         self.assertLess(far_r["edge"], far_r["pointer"] - 100, "the edge stopped at the clamp, short of the pointer")
-        self._within(far_l["L"]["w"], 120.0, 1.5, "far left: the left pane at the minimum, 120 px: %r" % far_l)
+        self._within(far_l["L"]["w"], _kit_min(far_l["sum"]), 1.5, "far left: the left pane at the kit's minimum for a %r px pair: %r" % (far_l["sum"], far_l))
         self.assertTrue(kf["after"]["layoutRestored"], "Escape restores the layout after the far drags")
         kcf = r["kitColFar"]
         self.assertNotIn("error", kcf, kcf)
         far_d, far_u = kcf["points"]
-        self._within(far_d["R"]["h"], 120.0, 1.5, "far down on the row divider: the bottom pane at the minimum, 120 px: %r" % far_d)
+        self._within(far_d["R"]["h"], _kit_min(far_d["sum"]), 1.5, "far down on the row divider: the bottom pane at the kit's minimum for a %r px pair under a %r px band: %r" % (far_d["sum"], far_d.get("band"), far_d))
         self.assertLess(far_d["edge"], far_d["pointer"] - 100, "the edge stopped at the clamp")
-        self._within(far_u["L"]["h"], 120.0, 1.5, "far up: the top pane at the minimum: %r" % far_u)
+        self._within(far_u["L"]["h"], _kit_min(far_u["sum"]), 1.5, "far up: the top pane at the kit's minimum for a %r px pair under a %r px band: %r" % (far_u["sum"], far_u.get("band"), far_u))
         self.assertTrue(kcf["after"]["layoutRestored"])
 
 if __name__ == "__main__":
