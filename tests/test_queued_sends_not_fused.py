@@ -1319,8 +1319,17 @@ class OneFedTextAtATime(unittest.TestCase):
         """Drive the REAL move() on a kernel-side thread against the running session. Its control channel
         is the gated fake on the client: the set_cwd request goes out at once and the CLI's answer waits
         for the gate. Returns the target folder, the thread and the dict move()'s answer lands in."""
+        # `new` is reached through a SYMLINK, so os.path.realpath(new) != new on any OS, not only macOS whose
+        # TMPDIR is /var -> /private/var. move() canonicalises its target to the realpath (canon_dir, sdk_backend.py:
+        # the stored cwd is the CLI's own resolved truth, and every transcript path derives from it), so the
+        # assertions below compare against os.path.realpath(new). Without the symlink the two paths coincide on
+        # Linux and the resolution went untested until a macOS runner reproduced it (main red on macos-latest,
+        # 2026-09-21; green here because realpath was a no-op on this tmp).
+        real = os.path.join(self.state, "moved-real")
+        os.makedirs(real, exist_ok=True)
         new = os.path.join(self.state, "moved")
-        os.makedirs(new, exist_ok=True)
+        if not os.path.islink(new):
+            os.symlink(real, new)
         c._query = _ControlChannel(answer(new) if callable(answer) else answer, on_request=on_request)
         out = {}                              # a gate a failed assertion leaves shut is opened by tearDown (every
         self.addCleanup(c._query.gate.set)    # registered gate), and by this backstop after it: a no-op then
@@ -1341,8 +1350,8 @@ class OneFedTextAtATime(unittest.TestCase):
         new, t, out = self._start_move(c, lambda path: {"status": "ok", "cwd": path, "changed": True,
                                                          "transcript_relocated": True})
         self.assertTrue(s._move_settle_expected, "armed before the request")
-        self.assertEqual(c._query.requests, [{"subtype": "set_cwd", "path": new}],
-                         "the request went out through the control channel while the arm stood")
+        self.assertEqual(c._query.requests, [{"subtype": "set_cwd", "path": os.path.realpath(new)}],
+                         "the request went out through the control channel while the arm stood (the resolved cwd)")
         c.phase = "relocating"
         s.enqueue("sent during the move")
         self._settle()
@@ -1353,7 +1362,7 @@ class OneFedTextAtATime(unittest.TestCase):
         c._query.gate.set()                              # the CLI relocated and replies ok
         t.join(10)
         self.assertEqual(out.get("r"), "")
-        self.assertEqual(s.cwd, new, "romp's half of the move followed the ok")
+        self.assertEqual(s.cwd, new, "romp's half followed the ok: the ok path stores the CLI's REPORTED cwd (the reply's own path, sdk_backend.py _finish_move), not the resolved target, so this stays `new` while the heal path below stores the realpath")
         self._settle()
         self.assertEqual(len(c.writes), 1, "the ok is not the event: the CLI still owes its turn-less result")
         c.phase = "after-move-init"
@@ -1512,7 +1521,7 @@ class OneFedTextAtATime(unittest.TestCase):
             t.join(10)
         self.assertFalse(t.is_alive(), "move() returned on the control request's timeout")
         self.assertEqual(out.get("r"), "", "the move stands: the transcript is under the target")
-        self.assertEqual(s.cwd, new)
+        self.assertEqual(s.cwd, os.path.realpath(new))
         self.assertTrue(s._move_settle_expected, "the CLI's result is still owed: the arm stands")
         self.assertEqual(c.writes, [("first turn", "turn-1")], "the text is held")
         self.assertEqual(self.be.pending_queued(SID), ["sent during a hung move"], "the chip shows it queued")
