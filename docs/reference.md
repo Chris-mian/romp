@@ -2531,7 +2531,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `miss_by`'s `auth`, the machine's key on hand), `retry`, `agents`, `tasks`,
   plus `presence` for a row that appeared, left or changed shape): the key
   folds only the row fields a card reads, so a context refresh or a
-  background agent's tool call moves no key. `reg` is the SDK registry
+  background agent's tool call moves no key. `failed` counts the card builds
+  that raised (a memoized entry's decode, the key, the derivation, its
+  dependency key, the serialization or the memo put), cumulative, and
+  `failing` the sessions whose last build did, a standing fault rather than
+  history. `coldLive` counts, per session per build, each living session not
+  hidden from the feed, with a transcript, whose cache-only parse read
+  missed; a session no client and no judge has parsed rides it every build,
+  so a standing count is those cold-by-design sessions, not a fault.
+  `coldFlip` counts the subset the memo held warm and re-read in place with
+  one kernel parse (also under `parses.kernel`) instead of deriving cold;
+  `coldFlip` climbing every build for one session with no appends means its
+  parse never stores, which should not occur. `reg` is the SDK registry
   record's state plus the two fields a card reads, `bgLedger` and
   `spawnedAt`, and the death marker's identity; the record's other fields
   move `reg` no further, and a transcript-less live row's `cwd`, `lastSid`
