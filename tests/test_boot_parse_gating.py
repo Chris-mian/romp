@@ -31,6 +31,7 @@ SID_OLD = "11111111-2222-4333-8444-000000000001"
 SID_NEW = "22222222-2222-4333-8444-000000000002"
 SID_WORK = "33333333-2222-4333-8444-000000000003"
 SID_T3 = "44444444-2222-4333-8444-0000000000b3"        # the interrupt key test's own sids (T401 (3))
+SID_GONE = "66666666-2222-4333-8444-000000000006"      # the warm loop's leaf gate: a working row, no transcript on disk
 SID_T3_OTHER = "55555555-2222-4333-8444-0000000000b4"
 
 
@@ -95,6 +96,37 @@ class FeedWarmParsesOnlyWhatMoved(unittest.TestCase):
         self.assertIn("if _warm_wanted(s, tm):", src, "build_feed asks for a warm only for a session the gate would parse")
         self.assertFalse(km._warm_wanted(rows[0], None), "an unmoved idle session is cold by design")
         self.assertTrue(km._warm_wanted(rows[0], {"state": "working"}))
+
+    def test_a_warm_that_skipped_a_leaf_it_cannot_stat_drops_nothing_and_wakes_nobody(self):
+        """The loop's leaf gate sits AHEAD of the parsed-anything flag (the post-merge review of the leaf_ok gate,
+        2026-09-21). A working live row whose transcript is not on disk is warm-wanted on the state leg (a missing
+        file's stat is zeros, so the moved-since-boot leg cannot hold for it), and the warm must skip it without a
+        parse and then, having parsed nothing, leave the feed cache and the pusher alone. Two mutants this pins: the
+        gate absent (the missing path is parsed, the cache drops, the pusher wakes) and the gate moved below the flag
+        (no parse, but the cache still drops and the pusher still wakes)."""
+        d = tempfile.mkdtemp()
+        gone = {"sid": SID_GONE, "path": str(Path(d) / (SID_GONE + ".jsonl")), "name": SID_GONE[:8], "mtime": 0}
+        self.assertFalse(os.path.exists(gone["path"]), "the transcript was never written")
+        self.assertTrue(km._warm_wanted(gone, {"state": "working"}), "a working row is warm-wanted on the state leg")
+        parsed, pokes = [], []
+        before = _threads()
+        km._warming[0] = False
+        saved, saved_feed = list(km._clients), list(km._built_feed)
+        with km._clients_lock:
+            km._clients[:] = [{"app": "feed", "send": lambda s: None, "sent": {}, "alive": True}]
+        self.addCleanup(lambda: km._clients.__setitem__(slice(None), saved))
+        self.addCleanup(lambda: km._built_feed.__setitem__(slice(None), saved_feed))
+        km._built_feed[1] = "a built payload"
+        with mock.patch.object(km, "_alive_sessions", side_effect=lambda now, live_map: [gone]), \
+             mock.patch.object(km, "_live_map", side_effect=lambda: {SID_GONE: {"state": "working"}}), \
+             mock.patch.object(km, "_has_parsing_client", side_effect=lambda: False), \
+             mock.patch.object(km, "_parse", side_effect=lambda path, sid, now: parsed.append(path)), \
+             mock.patch.object(km, "_push_soon", side_effect=lambda: pokes.append(1)):
+            km._warm_fleet_bg(int(time.time()))
+            _join_new(before)
+        self.assertEqual(parsed, [], "a leaf the warm thread cannot stat is never handed to _parse")
+        self.assertEqual(km._built_feed[1], "a built payload", "a warm that skipped everything leaves the cache alone")
+        self.assertEqual(pokes, [], "and wakes nobody")
 
     def test_moved_or_working_only(self):
         d = tempfile.mkdtemp()
