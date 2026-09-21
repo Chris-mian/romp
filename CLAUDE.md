@@ -247,6 +247,47 @@ unrebound GOALDIR was what the walk read (no goal due, no fire, a deferral never
 cleared, a KeyError). Precedent: `tests/test_nudge_injected_turn_arm.py`,
 `test_nudge_fresh_guard.py`, `test_nudge_memo_deadlock.py`, `test_nudge_bundle.py`.
 
+## The documentation front pages are written for a person (user rule, 2026-09-20)
+`docs/index.md`, `docs/install.md` and `docs/guide.md` (and `README.md`, which mirrors
+the home page) are read by someone who knows nothing about romp yet. The scarce thing
+is that person's attention, and an agent installing romp for them can find any detail
+elsewhere, so these pages buy a first reader's understanding and spend nothing else.
+- **Short paragraphs.** About 70 words is the cap, and shorter is better: one idea per
+  paragraph, its point in the first sentence.
+- **No implementation detail, no repo-internal vocabulary.** Judges by name, state
+  files, environment variables, pick orders, failure modes and design history belong in
+  `docs/reference.md`.
+- **The install command inside the first screen** of the install page, above everything
+  optional. A visitor came for that line; the interpreter rules and the service's
+  environment are reference material.
+- **One short paragraph per feature, no trailing link.** A new capability gets a
+  paragraph in the guide stating what it does, and its detail goes into
+  `docs/reference.md` under a heading that matches the feature's name. The guide points
+  at the reference once, in its opening line; a paragraph never ends by sending the
+  reader somewhere else, and no page tells a reader that the details are elsewhere or
+  that an agent can find them. Moving text OFF these pages is always welcome; adding to
+  them is what needs a reason.
+- **State what a thing does; do not sell it.** No benefit claims the reader can judge
+  for themselves, no "more than a text box", no "opens where you are reading": name the
+  behaviour ("the message box also supports attachments, session names and recall"). And
+  write each page as it stands, never as a response to how it used to read.
+- **A link carries the reason a reader would want it**, in the same clause, and then
+  goes: "On a machine with several Pythons, [which one runs the kernel](...) matters".
+- **Call each part of the interface what the interface calls it.** The pane labelled
+  Sessions holds the timeline; write "the Sessions pane", not "the timeline", for the
+  pane.
+- **Process documents stay out of the site's navigation.** `docs/pr-tiers.md` and the
+  plans are contributor process, reachable by path and by URL (`not_in_nav` in
+  `mkdocs.yml`); the site's top-level sections are for people using romp.
+- `tests/test_docs_front_pages.py` pins the word budget per page, the paragraph cap, the
+  install command's position and the nav rule. A session adding to these pages keeps it
+  green; when a page genuinely needs more room, raise the cap in the same change that
+  spends it, so the budget stays a decision someone made.
+
+The July 2026 pages are the shape to hold: by September the guide had grown to 11,000
+words and the install page opened with a screen on which interpreter runs the kernel,
+which is how the rule came to be written down.
+
 ## Authoritative sources — fail loudly, don't degrade silently (user rule, 2026-07-03)
 Read state from its AUTHORITATIVE source — a designed API, or the live store that
 owns the data — never a lossy reconstruction (scraping a transcript, a heuristic

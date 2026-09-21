@@ -444,6 +444,24 @@ class Collector(unittest.TestCase):
         self.assertEqual(snap["pusher"]["chatFullWhy"], {"noBase": 16000})
         self.assertEqual(snap["http"]["GET /p"]["count"], 16000)
 
+    def test_every_feed_memo_report_key_is_in_the_references_memo_passage(self):
+        """docs/reference.md's builds.feed.memo passage names every key _feed_memo_report returns (2026-09-21, from the
+        post-merge review of #1820, which found `coldLive`, `coldFlip`, `failed` and `failing` absent, so a standing
+        cold-by-design `coldLive` count read as a fault; the chatFullWhy gloss test above is the precedent), so a renamed or
+        added counter reaches the doc or fails here. The slice runs from the `memo` phrase to the `sends` bullet, not the
+        whole `builds` bullet, so a `failed` mentioned elsewhere cannot satisfy it; the keys are the runtime report's unioned
+        with every counter literal the kernel's source passes to _feed_memo_count, so a counter minted at a site this process
+        never exercises still has to reach the doc, which is what makes that claim hold by mechanism; the floor keeps a
+        shrunken report from passing vacuously."""
+        doc = Path(HERE).parent.joinpath("docs", "reference.md").read_text()
+        i = doc.index("`memo`, the per-session card memo inside `build_feed`")
+        para = doc[i:doc.index("\n- `sends`:", i)]
+        keys = set(km._feed_memo_report()) | set(re.findall(r'_feed_memo_count\("(\w+)"', inspect.getsource(km)))
+        self.assertGreaterEqual(len(keys), 13, sorted(keys))
+        self.assertEqual(sorted(k for k in keys if "`%s`" % k not in para), [],
+                         "memo counters the reference's passage never backticks (the review found coldFlip, coldLive, "
+                         "failed and failing missing)")
+
 
 class ProcessStatsFallback(unittest.TestCase):
     """_process_stats reads VmRSS from /proc/self/status; a platform without /proc (macOS) gets

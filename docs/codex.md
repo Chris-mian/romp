@@ -190,21 +190,34 @@ SDK objects, so ROMP logs the mismatch once and lets the next turn's own request
 decide.
 
 Slash commands: `/model` and `/effort` work (they apply at the session's next
-turn). The slash commands romp knows a Codex session cannot take, `/clear`,
-`/compact`, `/new`, `/fast`, `/autocompact`, `/help` and `/mcp` (a bare `/mcp`
-typed into the composer opens the MCP panel instead of reaching romp), are
-refused with a notice and never sent to the model as text, whether typed
-into the composer, sent from the timeline's lane menu, sent with `romp send`,
-or already queued behind an open turn. Any other message that begins with a
-slash (a path such as `/tmp`, a word such as `/s`, a skill's name, a Claude
+turn). `/clear` (and `/new`, Codex's own word for it) starts a fresh conversation
+for the session: a new Codex thread under the same session, so its name, mail,
+tags, color, mode, model and effort stay. Messages keep their order around it:
+a message typed after the `/clear` lands on the fresh conversation; a message
+queued before it runs first, on the conversation it was typed into, and the
+`/clear` waits behind it; only a queue stuck behind a failed start of the old
+conversation rides into the fresh one. The
+cleared conversation stays reachable from the "Conversation cleared" card in the
+chat and leaves the timeline, feed and judges, as it does after a Claude `/clear`;
+that card, the bell notice and the settling of the old conversation's open cards
+land on the FIRST prompt into the fresh conversation, not at the `/clear` itself
+(the boundary is the new conversation's first record), so open cards stay open
+until then. Typed mid-turn it queues and runs at the turn's end. The command must
+be the whole message: a `/clear` with more lines under it is refused with a
+notice, since the rest would reach no one. The slash commands romp knows a Codex
+session cannot take, `/compact`, `/fast`, `/autocompact`, `/help` and `/mcp` (a
+bare `/mcp` typed into the composer opens the MCP panel instead of reaching
+romp), are refused with a notice and never sent to the model as text, whether
+typed into the composer, sent from the timeline's lane menu, sent with `romp
+send`, or already queued behind an open turn. Any other message that begins with
+a slash (a path such as `/tmp`, a word such as `/s`, a skill's name, a Claude
 Code built-in such as `/init`) reaches the model as text: romp refuses only
 the commands it knows and does not judge a message by its first character.
 The composer's `/` list shows only what a Codex session takes. One path still
-reaches the model as text until the native clear lands: a follow-up typed from
-a card whose whole body is one of these commands, sent while the session is
-idle (a busy session queues it, and it is refused when its turn comes).
-Clearing and compacting a Codex conversation natively are coming
-(`plans/codex-backend.md`).
+reaches the model as text: a follow-up typed from a card whose whole body is a
+slash command, sent while the session is idle (a busy session queues it, and
+when its turn comes a queued clear runs and a refused command is refused).
+Compacting a Codex conversation natively is coming (`plans/codex-backend.md`).
 
 The chat and timeline effort menus use the selected model's supported levels
 from the Codex app-server's model catalog. Romp also validates effort changes

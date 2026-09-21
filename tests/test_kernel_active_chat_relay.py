@@ -267,7 +267,10 @@ class ActiveChatRelay(unittest.TestCase):
         js = km._LANDING_FOCUS_JS   # the shell's cross-pane script, where the paneFocus relay lives too
         self.assertIn("if(!window.__rompPaneSourceOk||!window.__rompPaneSourceOk(e))return;var m=e&&e.data;if(!m||m.romp!=='activeTab')return;", js,
                       "the shell's one source check, fail-closed (plans/panes-as-data.md section 5): same origin, a frame of this document, in the protocol")
-        self.assertIn("ff.contentWindow.postMessage({romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture},'*')", js)
+        self.assertIn("var ac={romp:'activeChat',id:(typeof m.id==='string'?m.id:null),nonce:(typeof m.nonce==='number'?m.nonce:null),gesture:!!m.gesture};", js)
+        self.assertIn("if(window.__rompTellPanes){window.__rompTellPanes(ac);}", js, "every protocol pane (the Artifacts pane follows the active tab, plans/artifacts-pane.md 9.5), the feed among them")
+        self.assertIn("else{var ff=document.getElementById('f-feed');try{ff&&ff.contentWindow&&ff.contentWindow.postMessage(ac,'*');}catch(x){}}", js, "the feed alone where the collapse script has not published the poster")
+        self.assertIn("window.__rompTellPanes=tellAll;", km._LANDING_COLLAPSE_JS)
 
     def test_12_the_chats_announcement_number_rides_the_relayed_frame_so_every_announcement_goes(self):
         """T416 round two: the feed clears its pending record only on the echo of its own switch. The chat numbers each

@@ -742,6 +742,11 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 
 /* tab title in the session's romp identity color (bold), like the dashboard */
 .tab.colored .tab-label { color: var(--chip-bg); font-weight: 600; }
+/* a session's label outside the strip (host-prefix.ts sessionLabelNodes, plans/artifacts-pane.md 9.3): the same ink, lifted to
+   the T390 lightness floor (--peer-ink-l: the postal head's rule) so a dark identity colour reads on both themes; the plain
+   var() line stands where oklch(from ...) is not parsed (Chromium before 119 drops the second declaration) */
+.session-name { font-weight: 600; }
+.session-name.colored { color: var(--chip-bg); color: oklch(from var(--chip-bg) var(--peer-ink-l, l) c h); }
 /* inactive (at rest) sessions fade their color, like the romp timeline */
 /* at-rest fade is a computed perceptual color (fadedColor in render.ts) applied
    per-tab, so bright hues fade as much as dim ones; active tabs keep full color. */

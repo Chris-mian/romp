@@ -699,12 +699,19 @@ class Docs(unittest.TestCase):
         self.assertIn("`/version`'s `started` is the whole-second boot time", doc)
         self.assertIn("the payload serves that stamp as `bootAt`, and the kernel log says when it was moved", doc)
 
-    def test_the_guide_tells_the_user_what_the_hover_shows(self):
-        guide = Path(DOCS, "guide.md").read_text()
-        self.assertIn("the history under it", guide)
-        self.assertIn("the last 15 minutes", guide)
-        self.assertIn("A kernel restart shows as its own line there", guide)
-        self.assertIn("every connected kernel", guide)
+    def test_the_docs_tell_the_user_what_the_dot_and_its_hover_show(self):
+        # The guide keeps the dot and how to read it; the hover's contents moved to the reference
+        # with the rest of the interface detail (CLAUDE.md "The documentation front pages"), so the
+        # pin follows the text: the one-line mention here, every fact it defers to there.
+        guide = re.sub(r"\s+", " ", Path(DOCS, "guide.md").read_text())
+        self.assertIn("The bottom bar carries a small dot for how the API is treating your sessions", guide)
+        self.assertIn("red while errors are being met on any connected machine, gray when nothing is calling it", guide)
+        doc = re.sub(r"\s+", " ", Path(DOCS, "reference.md").read_text())
+        self.assertIn("Under the lines, the **History** draws one stacked histogram per machine", doc)
+        self.assertIn("the label gray when no kernel has API traffic in the windows", doc)
+        self.assertIn("(`60`, `300`, `900` seconds, ending at `asOf`)", doc, "the windows the reading counts, 15 minutes the longest")
+        self.assertIn("a `kernel restarted` divider is inserted", doc, "a restart reads as its own line")
+        self.assertIn("The signal covers every connected kernel, not only the one serving the page.", doc)
 
     def test_the_reference_names_the_three_failed_reads(self):
         self.assertIn("A read that fails (a non-2xx, no answer, or an answer without the signal's shape) shows one line "

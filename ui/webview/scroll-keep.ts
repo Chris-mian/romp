@@ -88,6 +88,16 @@ export function followBoxBelow(stick: boolean, dh: number): boolean {
   return stick && dh !== 0;
 }
 
+/** Where the reader stood BEFORE a box below grew, from the geometry after it (2026-09-20, the held-mail chat lab red in a
+ *  whole-suite run with its payload: sh 8819, scrollTop 8174, clientHeight 447, the approval box just shown). The browser keeps
+ *  scrollTop across the growth, so the pre-growth distance from the bottom is today's distance less what #content gave up:
+ *  the box's FOOTPRINT change, its border box plus its vertical margins (`dfoot`), never the observer's content-rect delta,
+ *  which misses the borders and the margin a box brings when it first shows (10.7 px there, and the 2 px band read the
+ *  reader as scrolled up). Pure, so node executes it with the captured numbers. */
+export function atBottomBeforeGrowth(scrollHeight: number, scrollTop: number, clientHeight: number, dfoot: number): boolean {
+  return atBottomDist(scrollHeight - scrollTop - (clientHeight + dfoot));
+}
+
 /** Follow-the-tail after an append, for a reader whose view is in follow mode (T262, the user 2026-09-08: "jumped
  *  up slightly on my scroll" in busy sessions). A tab within the old 80 px band used to be pinned to the bottom on
  *  EVERY frame the pane received — including a status-only tail that changed no content — so a reader wheeling

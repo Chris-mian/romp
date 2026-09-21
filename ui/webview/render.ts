@@ -43,7 +43,7 @@ import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
 import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
-import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
+import { isClearCmd, isNewCmd, openTopTitles, clearConfirmDetail, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
@@ -94,7 +94,7 @@ import { focusAfterDismiss, emptyStateParts } from "./pane-focus";   // where fo
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";   // the @-mention card's rules, pure; the DOM is setupComposer's mention block and markMentions
 import type { MentionCandidate, MentionQuery } from "./composer-mention";
 import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } from "./comment-name";
-import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, followReflow, reshowStick } from "./scroll-keep";
+import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, followReflow, reshowStick, atBottomBeforeGrowth } from "./scroll-keep";
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
 import { localStrip, stripHost, readCloseAckMs } from "./tab-order";
@@ -6654,6 +6654,7 @@ function renderTabs() {
   auditTabOrder(ids);
   noteColumnEmptiness(ids);   // a later column none of whose members the kernel lists any more tells the shell (the chat split)
   noteOrphanState();          // …and state held for a session another column shows is offered to the shell (the chat split)
+  postChatTabs(ids.filter((id) => heldHere(id) && !isSubId(id) && !isProvisionalId(id)));   // …and this column's OWN open tabs to the shell, which unions the columns for the panes that list them (plans/artifacts-pane.md 9.2)
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name tabs; the
   // real sessions keep running, just hidden from this view. No tag → visibleIds === ids (unchanged).
   const only = onlyTag();
@@ -12708,6 +12709,27 @@ function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): numbe
 // the cached DOM is just revealed.
 // Tell the extension which tab is active, so it can publish it to the romp
 // timeline (which outlines the open lane). activeId may be null (no session).
+// The OPEN TABS of this column, for the shell's union (plans/artifacts-pane.md 9.2; the chat owner's word, 2026-09-20): the
+// strip's MEMBERSHIP in strip order (stripLists: the kernel's order plus a just-arrived tab, less a closing one) narrowed to
+// the tabs THIS column holds (the chat split's partition, heldHere), never the display-narrowed subset, so the demo filter and
+// a folded section do not scope another pane while the other column's sessions do not ride this one's set (the follow lab
+// caught the whole membership going out: the partition is a display rule here, so it is applied by name). A subagent viewer
+// and a provisional tab are not sessions and are not posted. {id, name, color} per tab, the id host-prefixed for a remote tab;
+// posted only when the set, its order, a name or a colour changed (a signature compare, the way activeTab is deduped), and
+// never from a page without a shell.
+let chatTabsSig = "";
+function postChatTabs(ids: string[]): void {
+  if (!(window.parent && window.parent !== window)) return;
+  const tabs = ids.map((id) => {
+    const s = sessions.get(id); const m = tabMeta.get(id);
+    const color = (s && s.color) || (m && m.color) || null;
+    return { id, name: (s && s.name) || (m && m.name) || id, color: color ? { bg: color.bg, fg: color.fg } : null };
+  });
+  const sig = JSON.stringify(tabs);
+  if (sig === chatTabsSig) return;
+  chatTabsSig = sig;
+  try { window.parent.postMessage({ romp: "chatTabs", tabs }, "*"); } catch (e) { /* no shell */ }
+}
 let activeTabNonce = 0;   // one per announcement (T416 round two): the kernel echoes it on the relayed activeChat frame, so the feed's pending record clears on the echo of its own switch and never on a stranger's
 function notifyActive() {
   const nonce = ++activeTabNonce;
@@ -14036,24 +14058,38 @@ if (typeof ResizeObserver === "function") {
 // view's RECORDED follow mode (`stick` — still the pre-growth truth, nothing scrolled) decides (followBoxBelow),
 // and a follow-mode reader is written to the new bottom; a scrolled-up reader is untouched (their top line never
 // moved). Event-based (the observer), no timer.
+/** A box below's footprint in the column: its border box plus its vertical margins, 0 while it is not rendered. Read at the
+ *  observer's pass, where layout is fresh; the difference between two passes is exactly what #content's height gave up. */
+function boxFootprint(box: HTMLElement): number {
+  const r = box.getBoundingClientRect();
+  if (!(r.height > 0)) return 0;
+  const cs = getComputedStyle(box);
+  return r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+}
 if (typeof ResizeObserver === "function") {
   for (const boxId of ["notices", "bg-tasks", "footer"]) {   // the approval box is a box below too (the review of PR 1890, low a)
     const box = document.getElementById(boxId);
     if (!box) continue;
     let lastH = -1;                                           // -1 = not yet measured (observe fires once on attach)
+    let lastFoot = -1;                                        // the box's FOOTPRINT at the last pass: its border box plus its vertical margins, what #content's height gives up to it (0 while hidden)
     const bro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect?.height ?? 0;
+      const foot = boxFootprint(box);
       const content = document.getElementById("content");
       const v = activeId ? views.get(activeId) : null;
       const dh = h - lastH;
+      const dfoot = lastFoot >= 0 ? foot - lastFoot : 0;
       // Where the reader stood BEFORE the growth, from the geometry (2026-09-19, the load flake behind main's red at bee556e8). The
       // recorded mode is the pre-growth truth only while nothing scrolled between the growth and this pass, and something can: a
       // scroll event from any other cause in that window (the append path's tail rebuild anchoring the reader, a compensation
       // write's echo) reads the GROWN geometry, sees the reader a box's height above the new bottom, and records scrolled-up; this
       // pass then had nothing to re-pin, and the reader stayed above the bottom, text covered, for good. The browser keeps scrollTop
       // across a growth (no clamp, no event of its own), so the pre-growth position is this geometry with the growth added back to
-      // #content's height; either truth re-pins. A shrink is the browser's clamp: the recorded mode alone, as before.
-      const wasAtBottom = !!(content && lastH >= 0 && dh > 0 && atBottomDist(content.scrollHeight - content.scrollTop - (content.clientHeight + dh)));
+      // #content's height; either truth re-pins. A shrink is the browser's clamp: the recorded mode alone, as before. The growth
+      // added back is the box's FOOTPRINT change (border box plus margins, boxFootprint), not the content rect's: a box that first
+      // shows brings its borders and its top margin too, and the content-rect delta read the reader 10.7 px above the bottom (the
+      // held-mail chat lab's payload in a whole-suite run, 2026-09-20: sh 8819, scrollTop 8174, clientHeight 447, box 189.27).
+      const wasAtBottom = !!(content && lastH >= 0 && dh > 0 && atBottomBeforeGrowth(content.scrollHeight, content.scrollTop, content.clientHeight, dfoot));
       let repinned = false;
       if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick || wasAtBottom, dh)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
         writeScroll(content, content.scrollHeight, "box-below", true);
@@ -14061,7 +14097,7 @@ if (typeof ResizeObserver === "function") {
         v.stick = true;                                       // the record agrees: a follow-mode reader, whichever truth said so
         repinned = true;
       }
-      lastH = h;
+      lastH = h; lastFoot = foot;
       // the pass is the EVENT a reader of the bottom holds at (the same flake: under load a lab read scrollTop after the box grew
       // and before this pass, and saw the reader a box's height above the bottom the write restores). One DOM event per pass, named
       // by the box, carrying the height this pass acted on: a reader is settled when the box's current height is the one the last
@@ -19897,9 +19933,13 @@ function setupComposer() {
       openMcpPanel(sid);
       return;
     }
+    // /new is the same operation on a Codex session (the kernel runs it as a clear there, 2026-09-19): the same
+    // confirm, read from the session's status so a Claude session never sees one for a command its CLI refuses
     const dropDetail = isClearCmd(text) ? clearConfirmDetail(openTopTitles(ledgers.get(sid)?.tree)) : null;
-    if (dropDetail) {
-      showConfirm("Clear this conversation?", dropDetail,
+    const newDetail = (liveSession(sid)?.status?.backend === "codex" && isNewCmd(text)) ? clearConfirmDetail(openTopTitles(ledgers.get(sid)?.tree)) : null;
+    const detail = dropDetail || newDetail;
+    if (detail) {
+      showConfirm("Clear this conversation?", detail,
         [{ label: "Cancel", value: "cancel" }, { label: "Clear anyway", value: "clear", danger: true }],
         (v) => { if (v === "clear") deliver(); });
       return;

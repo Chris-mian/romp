@@ -4061,14 +4061,18 @@ class _Unhydrated:
         return "<unhydrated body of %s>" % self.uuid
 
 
+_UNBOUND_LAZY_SOURCE = object()    # compatibility for descriptors constructed without a verified document (2026-09-17)
+
+
 class _LazyBody(dict):
     """The message of a lazy atom: a dict-shaped sentinel that refuses every read. `_content` sees a dict and asks
     it for content; the ask raises LazyBodyRead with the atom's uuid, so the bypassing site is on the traceback."""
-    __slots__ = ("uuid",)
+    __slots__ = ("uuid", "source_path")
 
-    def __init__(self, uuid):
+    def __init__(self, uuid, source_path=_UNBOUND_LAZY_SOURCE):
         super().__init__()
         self.uuid = uuid
+        self.source_path = source_path                  # private, not a wire field: this snapshot's verified source (2026-09-17)
         super().__setitem__("lazy body", _Unhydrated(uuid))   # the C json encoder walks a dict subclass's storage
         #                                                        directly, never through get/items: the value inside makes
         #                                                        json.dumps raise (TypeError, not JSON serializable) instead
@@ -5134,6 +5138,9 @@ class LazyIndex:
         self.rowb = [r.encode("utf-8") for r in doc["atoms"]]   # v6: the document's rows are JSON strings already (T401 (4))
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
+        files = doc.get("files")
+        self.source_files = None if files is None else _source_files(files)   # the held view's own document, not the last
+        #                                                                         restore's (_restore_prefix_atoms, 2026-09-17)
         self._user_facts = {}                             # the interrupt-marks tally's light facts by row (user_facts), bounded by _USER_FACTS_CAP
         with _MAT_LOCK:                                   # the add under the lock the userFacts gauge sums under: an add beside the sum raised
             _LIVE_INDEXES.add(self)                       #  "set changed size during iteration" and /perf answered 500 (1597 low 1)
@@ -5162,7 +5169,7 @@ class LazyIndex:
             if "m" in row:
                 a.update(message=row["m"])                # a WRITE of the synthesized atom's message (no body read: the audit's regex)
             return a
-        a = _restore_prefix_atoms([row], self.rompuuid, self.records, self.fsids)[0]
+        a = _restore_prefix_atoms([row], self.rompuuid, self.records, self.fsids, self.source_files)[0]
         a.pop("_seq", None)                               # the read-order tiebreak: the section fixed the order (parse_session pops it too)
         return a
 
@@ -5586,7 +5593,7 @@ def _asm_doc_memo_put(key, mkey, doc):
             if _ASM_DOC_MEMO_BYTES[0] <= _ASM_DOC_MEMO_CAP or len(_ASM_DOC_MEMO) <= 1:
                 break
             _asm_doc_memo_drop(k_)
-_LAZY_FILES = {}                   # rompuuid -> {fsid: path}: where hydrate finds a lazy atom's record
+_LAZY_FILES = {}                   # rompuuid -> {fsid: path}: fallback for legacy unbound descriptors; restored bodies own their source (2026-09-17)
 _HYDRATED = {}                     # uuid -> the body fields read; dict order = LRU
 _HYDRATED_BYTES = [0]
 _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_bytes() // 32), 1024 * 1024)
@@ -6702,10 +6709,17 @@ def atom_model(atom):
     return msg.get("model") if isinstance(msg, dict) else None
 
 
-def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids):
+def _source_files(files):
+    """A document's files map as hydration reads it, fsid -> the path of the ingested file: one form for the index, the
+    atoms-only restore and the per-session map (2026-09-20)."""
+    return {fsid: f["path"] for fsid, f in files.items()}
+
+
+def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids, source_files=None):
     """The pre-cut atoms as the tree holds them: the identity fields from the record row (uuid, type, t, fsid, session,
     parentUuid), the recorded scalars over them, a _LazyBody where a message was, the lazy scalars under `lazy`, and
-    the read-order tiebreak the segmentation sorts by."""
+    the read-order tiebreak the segmentation sorts by. The body's private source path belongs to this verified document
+    (2026-09-17): another leaf restored under the same session may replace _LAZY_FILES while this view is still held."""
     tname = {"u": "user", "a": "assistant", "s": "system"}
     out = []
     for row in pre_atoms:
@@ -6723,7 +6737,8 @@ def _restore_prefix_atoms(pre_atoms, rompuuid, rows, fsids):
         lz = row.get("lz")
         if lz is not None:
             a["lazy"] = dict(lz, i=row["i"], at=tuple(row["at"]) if row.get("at") else None)
-            a["message"] = _LazyBody(a.get("uuid"))
+            source = _UNBOUND_LAZY_SOURCE if source_files is None else source_files.get(a.get("fsid"))
+            a["message"] = _LazyBody(a.get("uuid"), source)
         elif "m" in row:                                  # an inline body: an emitted atom with no record behind it (round 3)
             a["message"] = row["m"]
             if "tur" in row:
@@ -7018,7 +7033,8 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
             _restore_ms("index", _t0)
         else:
             _t0 = time.perf_counter()
-            prefix = _restore_prefix_atoms([json.loads(r_) for r_ in doc["atoms"]], rompuuid, doc["records"], fsids)   # v6 string rows
+            prefix = _restore_prefix_atoms([json.loads(r_) for r_ in doc["atoms"]], rompuuid, doc["records"], fsids,
+                                           _source_files(doc["files"]))   # v6 string rows
             ok_ = _pre_tree_identity(prefix, rompuuid) == doc.get("identity")
             _restore_ms("verify", _t0)                         # the atoms-only form: its rows built and its identity proven, one part
             if not ok_:
@@ -7043,7 +7059,7 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
         #        to a whole parse when the tail past the cut reaches the share (tailShare), so the settle rewrites the cut
     except Exception as e:                                     # noqa: BLE001 — a document the code cannot use is a fallback
         _asm_ckpt_note(leaf_path, "restore", repr(e)[:120]); return None
-    _LAZY_FILES[str(rompuuid)] = {fsid: f["path"] for fsid, f in doc["files"].items()}
+    _LAZY_FILES[str(rompuuid)] = _source_files(doc["files"])
     with _ASM_LOCK:
         gone = [_ASM_CACHE.pop(key, None)]
         while len(_ASM_CACHE) >= _ASM_CACHE_MAX:
@@ -7066,9 +7082,15 @@ def _hydrate_one(a, rec):
     if k == "a":
         a["message"] = _norm_message(rec.get("message"))
     elif k == "u":
-        a["message"] = _norm_message(rec.get("message"))
         if lz.get("tur") and isinstance(rec.get("toolUseResult"), dict):
-            a["toolUseResult"] = rec["toolUseResult"]
+            a["toolUseResult"] = rec["toolUseResult"]       # before the message, as kind k sets its skill text first (2026-09-20):
+        a["message"] = _norm_message(rec.get("message"))    #  a peer meeting the plain-dict body in hydrate's first loop counts the
+        #                                                      atom filled once its memo entry is gone, so the body a consumer is
+        #                                                      handed must be whole the instant the message lands. Written the other
+        #                                                      way round, a diff row or an answer built in that window read no tool
+        #                                                      result for one build. The marker pop below is the one write still in
+        #                                                      flight then, and a present marker costs a reader a hydrate call, never
+        #                                                      a body
     elif k == "c":
         a["message"] = {"role": "user", "content": [{"type": "text", "text": lz.get("disp", "")}]}
     elif k == "o":
@@ -7144,8 +7166,33 @@ def hydrate(atoms, rompuuid=None, by=None):
                 _hydrate_one(a, hit[0])
             filled += 1
             continue
-        sid = a.get("session_id") or rompuuid
-        path = (_LAZY_FILES.get(str(sid)) or {}).get(a.get("fsid"))
+        msg = a.get("message")
+        if not hasattr(msg, "source_path"):                 # another thread finished this atom between the memo miss above and
+            with _ASM_CKPT_LOCK:                            #  here (2026-09-20): its body is a plain dict with no source, and the
+                hit = _HYDRATED.get(u) if u else None       #  per-session map below could name a newer document and refuse an atom
+            if hit is not None:                             #  whose body is in place, the whole call with it. Its bookkeeping (the
+                _hydrate_one(a, hit[0])                     #  popped marker) may still be in flight: finish it from the memo as the
+            filled += 1                                     #  hit branch does, or count it filled when the entry is gone already.
+            continue                                        #  Entry gone with the marker present: the peer's pop is in flight, its
+        #                                                      put having left the memo at once (a cap the record does not fit
+        #                                                      under); the body stands whole, since _hydrate_one writes the message
+        #                                                      last, and readers key on the body type, not the marker (2026-09-20).
+        #                                                      The test is the source slot, not the class: the module loader
+        #                                                      re-executes this file into the same module object at every import,
+        #                                                      rebinding _LazyBody, and a sentinel built before that fails isinstance
+        #                                                      against the new class, so it was counted filled, read nothing and
+        #                                                      left its marker for the caller's next body read to raise on. A bound
+        #                                                      body built before the re-execution is read now; an unbound one still
+        #                                                      fails loudly below, its stale source sentinel being no path (the
+        #                                                      product re-executes only at import, before any body exists). A None
+        #                                                      message has no slot either and counts filled as before (2026-09-20)
+        # Resolve from the held body's document, not the last document restored for this session (2026-09-17).
+        # A shallow atom copy keeps its sentinel and source. A missing bound source stays a loud failure; it must
+        # never borrow a path from a different snapshot. Legacy unbound descriptors retain the old lookup.
+        path = msg.source_path
+        if path is _UNBOUND_LAZY_SOURCE:
+            sid = a.get("session_id") or rompuuid
+            path = (_LAZY_FILES.get(str(sid)) or {}).get(a.get("fsid"))
         if path is None:
             raise LazyBodyRead("atom %s: no file known for fsid %s" % (u, a.get("fsid")))
         by_file.setdefault(path, []).append(a)

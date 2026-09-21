@@ -1,9 +1,11 @@
 # Reference
 
-This page lists every command and knob. It is here for driving Romp from the
-terminal, for scripting against it, and for debugging: you do not need any of it
-for ordinary use, where the user interface covers everything. Everything here
-runs on the machine that hosts the kernel.
+This page lists every command and knob, and the full detail behind each feature
+the [guide](guide.md) introduces. You do not need any of it for ordinary use,
+where the user interface covers everything: it is here for driving Romp from the
+terminal, for scripting against it, for debugging, and for the moment you want
+to know exactly how something behaves. Every command runs on the machine that
+hosts the kernel.
 
 ## The `romp` command
 
@@ -807,6 +809,14 @@ not change what the kernel runs at its next restart. On a machine that runs
 romp as a service, pin it anyway: `ROMP_PYTHON=/usr/bin/python3.12` in
 `service.env` makes the choice explicit and holds if the venv is deleted or
 rebuilt. Pin the versioned path, not `python3`, which an upgrade repoints.
+
+One hazard comes with `uv`: `uv python install <version>` puts a `python3.X`
+shim in `~/.local/bin`, which the newest-first fallback searches, so on a
+machine with no SDK venv (or one whose recorded interpreter is gone) the next
+restart runs the newest Python it finds. Install extra interpreters with `uv
+python install --no-bin <version>` and reach them through `uv python find
+<version>` or a venv, never as a bare `python3.X` on `PATH`.
+
 Whatever the pick, 3.10 is the floor for an interpreter that reports a version:
 `bin/romp-serve` runs the picked interpreter once for its version (its first
 execution), reads the sentinel line the probe prints (`romp-pyver X.Y`, carriage
@@ -2521,7 +2531,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `miss_by`'s `auth`, the machine's key on hand), `retry`, `agents`, `tasks`,
   plus `presence` for a row that appeared, left or changed shape): the key
   folds only the row fields a card reads, so a context refresh or a
-  background agent's tool call moves no key. `reg` is the SDK registry
+  background agent's tool call moves no key. `failed` counts the card builds
+  that raised (a memoized entry's decode, the key, the derivation, its
+  dependency key, the serialization or the memo put), cumulative, and
+  `failing` the sessions whose last build did, a standing fault rather than
+  history. `coldLive` counts, per session per build, each living session not
+  hidden from the feed, with a transcript, whose cache-only parse read
+  missed; a session no client and no judge has parsed rides it every build,
+  so a standing count is those cold-by-design sessions, not a fault.
+  `coldFlip` counts the subset the memo held warm and re-read in place with
+  one kernel parse (also under `parses.kernel`) instead of deriving cold;
+  `coldFlip` climbing every build for one session with no appends means its
+  parse never stores, which should not occur. `reg` is the SDK registry
   record's state plus the two fields a card reads, `bgLedger` and
   `spawnedAt`, and the death marker's identity; the record's other fields
   move `reg` no further, and a transcript-less live row's `cwd`, `lastSid`
@@ -4498,6 +4519,752 @@ Bounds and counters, all on `/perf` under `judge`:
   is the workers' share alone; `child` is the last done line (its wall, tier starts, CPU, failures, record cache and
   checkpoint blocks); `tierStarts` is counted at the request, so a long pass reads it during the pass.
 
+## The interface, feature by feature
+
+The sections below hold the detail behind the interface the [guide](guide.md)
+walks through: the chat pane's own behaviour, the panes beside it, mail, remote
+access and notifications. The guide gives each of these a paragraph; this is the
+rest of it.
+
+## The chat pane in detail
+
+The [guide](guide.md#the-chat) names these in a line each. Here is each one in full.
+
+### Dropping a file onto the chat
+
+Drop an image or any file anywhere on the chat pane and it attaches to
+the message box of the session you are looking at; a dashed ring shows the pane is the target
+while you drag, and in a split each column takes its own drops. Dropped anywhere else on the
+dashboard, a file is refused (the cursor says so) rather than opened in place of the page.
+
+### Quoting a passage into the composer
+
+Select any passage in the file viewer and it lands in the
+composer as a quote chip, labeled with the file and the line the passage lives on. Type
+what should change and press **⌘⏎** to set the note aside; keep reading, select the next
+passage, and repeat: each staged note remembers its quote and its place. The list above
+the composer shows about four staged notes and scrolls for the rest; its caret collapses
+it to the count. **⏎** sends everything you staged along with whatever is in the box as
+one message, so the session applies the lot in one pass, and you never copy a line out of
+the document by hand. The line in each label is checked against the file at the moment
+you select, so numbers that moved under you are caught rather than quietly carried. When
+several sessions work in the same repository, or in worktrees of it, the viewer's title
+bar says which one you opened the file from: a chip with the session's name, in the same
+color as its tab. The title bar's **GitHub ↗** button opens the file on GitHub. While the
+check runs, the button waits dimmed with pulsing dots beside it.
+When there is nothing to open, the button stays in place, dimmed, and a caption beside it
+says why (the file is not in a git repository, or not committed: untracked, staged but in no
+commit, or on a branch with no commits yet; or the repository has no origin remote, its origin
+is not on GitHub, or the path is relative and no session's directory resolves it); the
+button's tooltip repeats the reason. A file on a branch that is not on origin keeps its link,
+drawn with a dashed border, and the caption says the branch is not on origin yet. That check
+trusts your clone's own refs: a branch deleted on GitHub reads as present until `git fetch
+--prune`, and one pushed from another clone reads as absent until a fetch. A branch that has
+never been pushed is asked of origin once and the answer kept until a push or fetch from this
+clone writes its tracking ref; where nothing local could refresh the answer (a
+`--single-branch` clone, or a branch on origin this clone has not fetched) origin is asked on
+each open.
+A pull request number in a message, a card, or a note (`#123`, `PR #123`, or
+`owner/repo#123`) links to that pull request on GitHub, in the repository the session's
+directory has as its `origin` remote; when that remote is not on GitHub, the number stays
+plain text.
+
+### Naming another session with `@`
+
+Type `@` and the first letters of a session's name in the
+message box, and the sessions whose names match are listed above it, twelve at most; when
+more match, the last row says how many, and more letters narrow the list. Arrow to one and
+press **⏎** or **Tab**, or click it, and `@name` goes into the message as plain text, the
+name the session's mail tools take. Which form goes in depends on the session you are
+writing to. When you write to a session on this machine, a session on another machine goes
+in as `@host:name`, the way this machine knows it. When you write to a session on another
+machine, every name goes in bare, because the dashboard cannot see what that machine calls
+its peers; if the bare name is ambiguous there, the session's mail tools refuse the send and
+list the candidates as `host:name`, and the session picks one. **Escape** closes the list
+without inserting, and it stays closed for that `@` until you delete it: more letters, or a
+caret move away and back, do not reopen it. In the sent message, a name that matches a live
+session is shown as a chip: the name without its `@`, in that session's color on a dark
+backing, the way the Awaiting chip names the session it waits on. Hover it for how that
+session is doing; the message itself still carries the `@name` you typed, and so does a
+copy of it.
+
+### A message that has not gone yet
+
+Send to a busy session and your message waits as a
+dashed bubble under an hourglass until the session takes it: while it compacts, while a
+turn runs, or in the beat before the kernel confirms the send. Until then it is still
+yours: the **✎** in its corner takes it out of the queue and puts it back into the message
+box (the words, the quote chips it was written against and its attachments), so you can
+change it and send it again, or clear the box to drop it. Once the session has taken the
+message it is no longer yours to recall: the bubble's dashes close, its header reads **with
+the session**, and the ✎ goes. It stays that way until the message lands in the
+conversation: inside a running turn that is the session's next step, so a message sent
+mid-turn can sit there while the current step finishes. Several messages sent during one
+turn reach the session one at a time, in the order you sent them: the next waits, shown as
+queued, until the session has taken the one before it, so two messages are never joined
+into one. A queued slash command, and a
+notice romp itself queued, carry a **✕** instead: there is nothing to reword, so they just
+cancel. If the session took the message before you pressed, the bubble says so and the
+box is left as it was, so nothing is sent twice. One case to know about: a chat page
+from before an update, still open on the new kernel. The page never reloads itself. A
+line near the top of the window says a newer romp build is ready, with **Reload** and
+**Not now**: Reload keeps your place, your drafts, your tab and the notification center,
+and Not now keeps the line away for that build (a later build asks again). Until you
+reload, the old page keeps working against the new kernel: reading, sending and switching
+tabs are unaffected, and the one thing that can go differently is an action the new kernel
+no longer knows in the old page's form, which falls back to the older path (a pencil on a
+queued message reverts and the message stays queued). When that happens the line says the
+page is behind the kernel, so you know the reload is what puts it right. A restart of the
+kernel onto the same build changes nothing on screen: the panes reconnect, and no line
+appears.
+
+### Opening a markdown document
+
+A markdown link in the chat opens in the file viewer,
+rendered, with **Raw** one click away. The link can be a path on the session's machine, or a
+link to a file served from the dashboard's own address (a published report, an evidence doc).
+Figures
+and links inside the document resolve relative to the document, so a `![fig](fig.png)`
+beside it shows, and a link to a sibling document opens in the same viewer. Links to files
+on other sites open in a new tab, as before, and a ctrl- or ⌘-click still opens the file in
+a tab. The document is set for reading: a sans face at a slightly larger size, headings in
+proportion, a centred column about 80 characters wide, and task lists, keyboard keys and
+aligned table columns as GitHub shows them. Every code block is numbered by line and carries a
+**Copy** button that copies the block as the file holds it, tabs included; fences labelled
+`rust`, `go`, `c`, `java`, `sql` or `toml` are highlighted, in addition to the languages the
+chat already knows. Printing the page while a rendered file is open prints the file alone,
+black on white, across as many pages as it needs.
+
+### A file's own HTML
+
+The Rendered view keeps the HTML a markdown file carries, under rules
+modelled on those GitHub applies to a README, so nothing in a file can move, hide or cover the
+viewer's own controls. A `<style>` block is dropped whole. A form, its controls and a
+`<dialog>` are dropped but their text stays as prose. A task-list checkbox stays but cannot be
+ticked. An inline `style` keeps only its `color` and `background-color`, and only when the
+value is a color name, a hex code, or `rgb()`, `rgba()`, `hsl()` or `hsla()`; a span colored
+with any other function, such as `var()`, loses its color. A `background=` attribute is
+dropped, since it would load a remote image the moment the file opens. An inline `svg`, a
+`canvas` or a `video` shrinks to the column, as a picture does, and a table wider than the
+column scrolls sideways on its own. An element's `id` or `name` is prefixed `user-content-`,
+as on GitHub; the viewer's own heading ids are not, so a link to a heading in the file still
+lands on it. An image map (`<map>`, `usemap`) is dropped. The same rules apply to the HTML in
+a chat message, where a link to an element's own `id` or `<a name>` lands on it under the
+prefix.
+
+### Text size and width
+
+The **A−** and **A+** buttons in the viewer's title bar make the
+text of any text file smaller or larger in fixed steps from 70% to 200%: a markdown file's
+Rendered and Raw views, the code view of every other text file, and a document opened from
+a link on the dashboard's own address. They appear wherever the viewer opens (over the chat
+or the feed), and not for a picture or a PDF, which have no text to size. Ctrl (or Cmd) and
+the mouse wheel over the text do the same. Once the size is off 100%, the percentage appears
+between the buttons; click it to go back. The choice is kept in this browser and applies to
+every file you open here. Prose keeps a readable line length that grows with the text size,
+and code blocks keep that width and wrap long lines. A table is as wide as its columns need,
+up to the width of the viewer, and scrolls sideways on its own beyond that; a table inside a
+quote or a list item stays within the prose width. Pictures shrink to fit, so the page is
+never wider than the viewer.
+
+### Opening a PDF
+
+A PDF the session mentions, or one you click in the file browser, opens
+inside the dashboard like an image: the chat's PDF card opens it full-view, a path or a
+file-browser row opens it in the file viewer. Cmd-click it instead (Ctrl on Windows and
+Linux), or middle-click, and it opens in a new browser tab in the browser's own viewer, the
+way a paper opens from OpenReview: full size, and it stays open beside the dashboard while
+you keep working. If the browser blocks that new tab, the PDF opens inside the dashboard
+instead; a PDF too large to show offers a download in its place.
+
+### Links inside a file
+
+Wherever the viewer shows a file's text, the links in that text work. A
+web address opens in a new browser tab. A file path opens that file in the viewer, in place of
+the one you were reading: a relative path such as `docs/guide.md` is taken from the folder of
+the file you are reading, an absolute or `~/` path as written, on the machine of the session the
+file belongs to, and a line written after the path (`src/app.py:12`, or `src/app.py#L12`)
+scrolls the code view to that line. A Markdown file opens in its Raw view for that one open, since
+the Rendered view has no lines; your Raw/Rendered choice is unchanged. A line past the end of the
+file lands on the last line, with a notice saying so. In a Markdown file, a `[link](target)`
+follows the same two rules: a web target opens a tab, a file target opens the file (a host with a
+port, `127.0.0.1:3000` or `api.example.com:8443`, is neither, and says so). A link to a section
+of another file (`report.md#results`) opens that file at the section. A link to a section of the
+same document scrolls to it when the document has a heading or an anchor by that name
+(`<a name="install">` included), and otherwise says so when you hover it; it scrolls under every
+click, since a section of the shown file has no tab of its own. One click does one thing: a plain
+click acts in the dashboard, and a Cmd-click (Ctrl on Windows and Linux) or a middle-click opens
+the link in a browser tab of its own. Inside a file the test for a path is stricter than the one
+a chat message's prose gets, and a fenced code block in a chat message follows the file's test
+too, linking a path only once the kernel has verified it is a file: a path links only when it has a slash and a file extension, starts on its
+own, at the start of a line or after a space, a quote, a bracket, a comma, a semicolon, an
+equals sign, a pipe or Markdown's `*` (so `$HOME/docs/a.md`, `@scope/pkg/index.js` and
+`C:/Users/x.txt` stay text), is not part of a web address, does not start with a site name
+(`www.example.org/docs/index.html`), and is not the package an `import` statement or a
+`require()` call names, whether the statement fits one line or its `from` starts the next (a
+relative import such as `./app.css` still links, and so does a path after the English word
+"from" in prose, unless that line holds nothing but `from` and the
+quoted path). After a `*` the path must be the whole emphasised text, closed by a `*` of its
+own: `*docs/a.md*` and `**./scripts/setup.sh**` link; a glob's `**/docs/a.md`, an operand's
+`w*h/img.size` and the first path in `**docs/a.md and docs/b.md**` stay text. Web addresses and
+paths found in the text wear a dotted underline that turns solid under the pointer; a Markdown
+link that names a file keeps the ordinary link look. Selecting text across a link works as
+before, and a click that lands while text is selected inside a link opens nothing.
+
+### The rings on a tab
+
+A tab wears a dashed red ring while its session is stopped on a
+permission or picker prompt. When the feed shows one of the session's cards under Blocked (it
+asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
+a stalled task needs a look), the tab wears a dashed yellow ring instead, whether the session
+is idle, waiting on background work or still working, so the sessions that need you stand out
+in the strip without a click through each of them; a working session keeps its gold dot inside
+the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
+does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
+yellow one; the amber ring of a session retrying an API error on its own gives way to it. The
+three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Needs you**, **Waiting on
+you**, **Retrying**), each with its own switch, listed in that order because a tab wears one
+ring at a time and the first that applies wins: red over yellow over amber. A ring switched off
+leaves the tab with its dot; the small dot on a folded group's header and the phone's picker
+follow the same switches. With
+notifications on, the card entering Blocked is also what notifies you (see [Notifications on
+your phone](guide.md#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
+stays as long as the card does, including across a kernel restart, which announces nothing. On
+a phone, the session picker marks the same sessions with a yellow bar at the row's left edge,
+and the button that names the current session wears the dashed yellow border.
+
+### Tags and groups in the tab strip
+
+A tag is a named, colored set of sessions; a session can be in
+several. Right-click a tab and open **Tags** to add or remove them. Tags filter every
+surface (the tag button in the strip narrows the tabs to the tags you pick), and they group
+the tabs: as soon as any session carries a tag, the strip shows one section per tag, in your
+tag order, each with a header in the tag's color, and the untagged sessions on a row of their
+own at the end. A session with several tags appears under each of them; every copy is the same
+session (click either to open it, and closing either ends it). Each header shows the tag's color and name, then a chevron and a
+member count. Click a header, or press Enter on it, to fold its section down to the header
+alone; the count then says how many tabs are folded away, and a small dot after it shows when
+one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow
+when one has something waiting on you, otherwise gold when one is working, otherwise amber
+when one hit an API error and is retrying on its own (hover it for their names). To keep one tab visible while its section is folded, right-click
+the tab and pick **Show when folded** under **Tags**;
+the header's count then leaves that tab out; when every tab in a section is set to
+show, the folded header shows the full count and its tooltip says nothing is hidden. Pick it
+again to fold the tab with the rest. A tab set to show when folded keeps that setting when its
+group is renamed. The section of the tab you are reading folds like any other; its header marks
+that it holds the tab (the tag's name is underlined), and folded, the header stands in for the tab:
+focus lands on it, and the left and right arrows step from there. The `archived` section starts
+folded. Drag a header to reorder the groups, which
+reorders the tags on every surface (the timeline's tag table shows the same order). To move
+a tab into another group, right-click it and pick **Move to <tag>** under **Tags**: one click
+adds that tag and drops the tag of the group you right-clicked it in, leaving its other tags alone. The row's
+**+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
+button's menu, turns the sections off for this browser. On a phone the session picker, which stands in
+for the strip, lists the sessions the same way: each under its tag's heading, in the same order, and
+nothing folded (its tag menu has the same switch). The Sessions pane has the same
+sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
+lanes out one section per tag in the same order, each session under every tag it carries and
+the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row
+of its own; a section folded in either place is folded in both, and while grouped the lanes
+follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. The gear at the strip's right end, the same gear as the one at the bottom right of every romp page, opens a small menu: **Lock the tabs in place** freezes every tab move (a drag, a Move to, the Sessions pane's lanes) until you turn it off, and **Tab widgets…** opens the settings on the Chat tab's widget rows. The strip's tag button, at the other end of the controls from the gear, shows no chips of its own: the tags show in the strip's sections when the tabs are grouped, and the button wears the accent while a filter is on. Every group starts on its own row; turning off
+the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
+strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
+tags stays short. Folded groups that follow one another in the tag order share one row, since each is
+only its header; an open group always starts a row of its own, and so do the untagged sessions, so a
+folded group between two open ones keeps its row too. The **Status line** section, next to Tab widgets in the same Chat tab, does the same for the line above the composer: the folder and the git branch are on by default, the session's name and the host of a remote session are there to switch on, and in both sections the rows reorder by dragging a row's grip or with the arrow keys on it, each section previewing the result below its rows; in Tab widgets a line marking the session name's place divides the list, and a row dragged above or below it renders on that side of the name; the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name.
+
+### A tag section at a glance
+
+Clicking a tag section's header also shows the section in the transcript's place: one
+row per session, with its color, a dot for its state (yellow working, red stopped on a prompt or an
+API error only you can clear, amber retrying an API error on its own, teal compacting, green waiting
+on background work, none while it is idle), a state chip when the state is worth a word, what it is
+doing now in a few words, and how long ago it last did anything. The chip is the one the bar under
+the transcript wears for the session you are reading, with the same words and colours: **Blocked**
+when the feed shows one of the session's cards under Blocked or the session is stopped on a prompt
+(**API error** when it is stopped on one only you can clear), and **Awaiting** with what is awaited
+(**Awaiting 3 agents**, **Awaiting watch**, the peer's name) when it is waiting on background work.
+A session that asked a question and went quiet shows the chip with no dot: the dot follows the
+session's own state, the chip follows the feed. What it is doing now comes from its current task, else from the headline of
+its work so far, else from the last task it had; a session that has published a note of what it is
+working on shows the note as a quieter second line. Hover a row for its last message, shown without
+its formatting; click one to open that session, which also opens its section if the section is
+folded (with several tags, the first folded group of them). The rows update as the sessions work and
+change only when something about a session changes; the **Blocked** chip follows the feed, one
+refresh behind it at most. The transcript comes back when you pick a session, press Escape, or click
+that header again while its section is open and holds the tab you are reading.
+
+### Coming back after a dropped connection
+
+When the dashboard's link to the kernel
+drops and comes back (a laptop lid closed and opened, a network change, a phone that
+slept), the page does not fetch every session again. The kernel sends the session you
+were reading in full and lists the others as skeleton tabs: the strip is complete at
+once, each tab with its name, color and status, and a transcript arrives only when it
+is wanted. Click a skeleton tab and the romp loader stands in until its transcript
+lands; the tabs you do not click fill in one at a time while the page is idle, never
+while the browser tab is hidden. Until then a skeleton tab's hover tooltip says it is
+not loaded yet.
+
+![After a reconnect, the tab you were reading is back in full while the other tabs wait as skeletons](assets/guide/reconnect-skeleton-tabs.png){ width="32%" }
+![Clicking a skeleton tab puts up the loader until its transcript arrives](assets/guide/reconnect-skeleton-click.png){ width="32%" }
+![The clicked tab, loaded](assets/guide/reconnect-skeleton-loaded.png){ width="32%" }
+
+### On a small screen
+
+To keep more of the transcript in view, turn on the gear's
+**Compact tabs and agents** setting. It tightens the rows in the background-work panel above the
+composer (the one headed **Awaiting** or **In the background**) and shows about four of its rows,
+scrolling for the rest; the cap lifts while a row's details are open. Where the tab strip is showing,
+it also shrinks the tabs and group headers; on a phone the session picker stands in for the strip, so
+there the setting tightens the panel alone. Like the other chat settings, it is per browser.
+
+### Columns, and a hot key per tab
+
+The chat can be split into columns, so two or three sessions
+sit side by side instead of behind each other's tabs. Every column is one full chat with its
+own tab strip and its own composer, and each session lives in exactly one column: the first
+column holds every session not shown elsewhere. Drag a tab to the right edge of the chat and a
+new column opens there on that session; drag a tab onto another column and the session moves
+to it. Without the mouse, **⌘** / **Ctrl** with the backslash key, or **Move this session to a
+new column** in the command palette, moves the session you are on to a new column at the right;
+**Move this session to the next column** and **Move this session to the previous column** in
+the palette walk it across the columns you have. Your unsent draft travels with the session.
+Drag the gutter between two columns to resize them. The **×** in a column's top-right corner
+closes it and returns its sessions to the first column, as does **Close this column** in the
+palette (the column you are in, or the last one when you are in the first); a column whose last
+tab leaves, whether moved away or ended, closes on its own (a column with a session still being
+created in it waits for that session to open). Clicking a card in the feed or a
+notification, or picking a session from the **+** picker, the switcher, an at-mention or a link
+in a transcript when it is shown in another column, lands you in the column that holds it, so
+no session is ever shown twice. The arrangement, each column's sessions and widths, is
+remembered per browser across reloads. Four columns at most; the phone shows one pane at a time
+and never splits.
+
+A tab can have a **hot key**: right-click it, pick **Hot key…**, press a combination, and the
+combination shows on the tab after its name; pressing it switches to that session, in the column that holds it. Once one is set the row reads
+**Update hot key…**: press a new combination to change it, or Backspace or its **Remove**
+button to take it away. **Focus the next chat column** and
+**Focus the previous chat column** in **Keyboard shortcuts** take a hot key too, and cycle the
+focus between the columns; **Toggle notifications for this session** flips the bell of the
+session you are looking at (the tab menu's **Notify me**) and flashes "Notifications enabled
+for web" or "disabled"; once it has a key, the menu's row shows it.
+
+## The feed's layout controls
+
+The **View** button in the feed's footer holds the layout choices: the sort
+direction, a single-column layout, grouping each column's cards by session, and
+**Show focused session**. That last switch puts the session you are reading in
+the chat at the top of the feed, above a divider (a two-pixel rule, a step
+up from the hairlines), under a label reading
+**Current session:** followed by the session's name. Clicking the name opens the
+session; clicking the label or its caret folds the whole section to that one
+line, which then shows the session's card count, and clicking again unfolds it.
+Under the label the session's cards sit in the same three blocks as the board
+below, which stays as it is. The blocks have their own controls: the six-dot
+grip on each block drags it to another slot within the section (the arrow keys
+move a focused grip's block the same way), the gutter between two blocks resizes
+them against each other (width only; the section's height follows its cards),
+and each block's caret folds it to its head, a choice that holds for whichever
+session is focused next. The section's blocks follow the board's arrangement
+until the first drag in the section; from then on the two are arranged
+independently.
+
+## The Files pane
+
+The Files pane holds the file viewer in a column of its own, beside the chat
+and the feed, so an open file covers neither. While the pane is open, a file
+link clicked in the chat opens in it. When it is closed, a link opens over the
+pane you clicked; there is no setting to decide otherwise, the open pane is the
+rule. The Files row (Settings, General, Panes) shows or hides the pane's
+toggle; it is off by default. On a phone, closing the file takes you back to the
+tab you came from. The folder
+shown under the chat (the session's working directory), the **Directory** row
+of the **System context** card and **Browse files** on a tab's right-click menu
+open a listing of that folder by the same rule: in this pane while it is open,
+otherwise over the chat. Pick a file in the
+listing and it opens where the listing is. Selecting a passage in the viewer
+puts the quote in the chat's composer, as it does from the viewer over the
+chat. When no file is open, the pane lists the files most recently opened in
+it; click one to open it again. The gear's **Files** row (Settings, General,
+Panes) adds a Files toggle to the bottom bar (on a phone, a Files tab like the
+others), and that toggle turns the pane on.
+
+## The Artifacts pane (experimental)
+
+A column listing the files a session's thread put in: a grid of large
+thumbnails for its images, then a row per file with its name, its folder, one
+word for how it got there (`written`, `edited`, `notebook`, `shown`,
+`dropped`) and how long ago. Clicking a thumbnail opens the chat's lightbox,
+whose arrows cycle that session's images; clicking a row opens the file in the
+Files pane when that pane is on screen, otherwise in this pane's own viewer.
+The bar's picker names the session, and its padlock decides whether the pane
+follows the chat's active tab or stays on the session you picked.
+
+The pane is experimental and off by default: its row is the last one in
+Settings, General, Panes, and anything but a stored `true` reads as off. Turn
+it on and its column and its rail button appear, along with the palette's
+**Show or hide the Artifacts pane**. It has no tab on a phone, and the Panes
+rows are shown on the dashboard only, not in the editor extension's gear.
+
+What it lists is read from the session's transcript alone, with no judge and no
+model call: the paths of `Write`, `Edit`, `MultiEdit` and `NotebookEdit` calls;
+paths the chat linked or rendered from what the agent wrote; and files you
+dropped into the session. Commands the agent ran are deliberately not read. One
+entry per path, newest first, five hundred at most. A file that has since gone
+is listed struck through rather than hidden, a kind the preview cannot show is
+listed plain, and a path under the Claude configuration directory is refused.
+The pane only reads: it writes nothing and puts nothing into a session.
+
+## Pane docking
+
+Off by default, per browser, at Settings, General, Panes, **Pane docking**.
+With it on, the panes stop being a fixed row and become a layout you arrange
+yourself.
+
+You move a pane by its empty space, never by a title bar: the frame around it,
+the gap in its top row, Option (Alt) held anywhere over it, or the pane's own
+empty background (the feed between cards, the Sessions band outside its lanes,
+the Outline below its rows, the Files pane's empty state). The pointer is an
+open hand over a surface you can grab and a closed hand while you hold one. A
+press lifts only after a few pixels of travel, so a click, a text selection and
+a scroll are never a drag, and Escape cancels. A blue outline shows where the
+pane will land: the left, right, top or bottom half of the pane under the
+pointer. Dropping splits that pane, and every internal edge becomes a divider
+you can drag.
+
+A session tab is a payload too. Drag one into a pane's half and it becomes a
+chat pane there; drop it on another chat pane's tab strip and it joins that
+column. A whole pane dropped on a strip is refused, since a pane is not a tab,
+and the refusal says so.
+
+Every pane on screen takes part: the chat and each column of it, the Outline,
+the Feed, the Files pane, the Sessions band and any other pane the kernel
+carries, the Artifacts pane included. A pane switched off at the rail parks
+with its content still mounted, so nothing reloads and no connection drops.
+The arrangement is kept in this browser under a key of its own, written only
+while docking is on; switching it off restores the shipped layout exactly, and
+that switch is the only way back to it. Desktop only: the engine does not start
+on the phone layout.
+
+## Settings across machines
+
+Settings sit in two stores. What a page looks like is kept in the browser you
+are looking at: the theme, the transcript's density, which panes exist here,
+the tab widgets, the backend a new session starts on. None of it travels.
+
+What the kernel acts on is kept by the kernel, and most of those rows say
+**Follows to every connected machine's kernel.** under them: one click there
+is sent to every kernel you are connected to. Four rows go further and
+converge, so two machines that were set differently while apart end up
+agreeing: **Auto Nudge** and **Suggest /compact** (Automation, Nudges),
+**Allow file editing** (General, Permissions) and **Task tracking**.
+
+Converging never overwrites your machine quietly. A peer holding a newer pick
+raises a proposal: a second line under that row reading, for example,
+`web proposes off; this machine is on`, with **Apply** and **Keep mine**, and
+an owner-less needs-you card on the feed's Notes run carrying **Apply**,
+**Keep mine** and **Keep mine and pin this machine**. Acting either way
+settles it, and the same proposal is not raised again.
+
+The machine picker sits above the settings tabs and appears once a remote
+kernel is up. It reads **All kernels** by default, with a count of the rows
+the kernels disagree on beside it (`1 differs`, `2 differ`), and its rows are
+this machine (named by its kernel, or **this machine** when it has no name)
+and each connected one. Pick one or more machines and the four converging rows
+apply there alone, which pins the value there; the pin glyph at a row's right
+edge lights, and clicking it returns that row to the shared value.
+
+A few kernel settings stay on the machine that holds them, because they
+describe it: **Conserve memory**, **Thinking summaries**, **Whole chat
+frames**, and the **Default directory** for new sessions, a path that means
+nothing on another machine. **Updates install automatically** is sent to every
+kernel when you click it but is not one of the converging four: each install
+keeps its own boot policy.
+
+Two marks say the machines differ. A quiet **mixed** on an ordinary kernel row
+means picking here sets every machine the same way. A louder **differs** on
+one of the four means the kernels disagree: under **All kernels** a click sets
+them all, and picking a machine above sets that one alone.
+
+The settings open from the gear at the bottom right, or the palette's **Open
+settings**, in seven tabs: General, Chat, Feed, Sessions, Automation, Task
+tracking and Debug. The tab you used last is remembered in this browser.
+
+## Renaming and ending a session from the Outline
+
+Right-click a session's name in the Outline pane, or press the Menu key (or
+Shift and F10) on the focused row, for two items: **Rename** and **Delete**.
+
+**Rename** turns the name into an input with the current name selected. Enter
+commits, Escape cancels, and clicking away commits as Enter does. The name is
+a label: mail, goals and history follow the session, not the word. Nothing
+changes locally until the kernel confirms, so a name it refuses leaves the old
+one standing; on a session from another machine the `host:` prefix stays fixed
+beside the input and you edit the bare name.
+
+**Delete** raises the same confirmation the tab strip uses. It names the
+session's open top-level goals and says that the session shuts down while its
+history stays on disk, to revive any time from the picker or the timeline.
+**End session** ends it, **Cancel** does nothing, and the row leaves on the
+kernel's next push rather than ahead of it.
+
+The pane itself is the rail's **Outline** button, off at the rail until you
+press it. Whether it exists in this browser at all is General, Panes,
+**Outline**, on by default, and with Task tracking off it is gone along with
+the feed.
+
+## Token usage: the two panels
+
+**Sessions against judges.** Settings, Debug, Diagnostics, **Token usage
+analytics** opens the **Token usage** panel: two bars, **Sessions** and
+**Judges**, over the last `1h`, `6h`, `24h` (the default), `7d` or `30d`. The
+judges' bar stacks **By judge** or by **Index vs triage**, the measure is
+**Tokens** or **Cost ($)**, and a line under the legend reads the judges as a
+percentage of the session tokens, with the combined figure. Judge cost is what
+was logged; session cost is tokens priced from a table.
+
+**What the API is costing.** The bottom bar's spend readout opens **API
+spend**, which the palette reaches as **Token usage** too: **Totals**, **Spend
+over time** and **By session**, over one day by hour, seven days by hour (the
+default) or ninety days by day, measured in dollars or tokens, ordered by
+spend or in your own order, and optionally merged by tag. The panel's choices
+are kept in this browser.
+
+## When a session's tab disappears
+
+The chat pane never jumps to another session on its own. If the tab you are
+on disappears (a kernel restart that hides a remote host's sessions until the
+host reconnects, a relay down, a session that ended), the pane goes blank: no
+tab is selected, the body names the session that vanished (and says it is
+reconnecting when that is known), and the message box is disabled with no
+session name in it. When that same session's tab returns, the pane goes back
+to it. A kernel restart does not reload the page: the panes reconnect and the
+board stays where it was. After a reload (one you take from the newer-build line,
+or your browser's own) the page remembers the tab you were
+on: until that session is listed again the pane stays blank and names it as not
+listed yet, and it never settles on another session meanwhile; if it never
+returns, the blank body stays until you pick a tab (a remembered tab that can
+never return, a subagent's viewer or a session still being created, says so at
+once). A tab view that stops showing your session keeps it on the strip as the
+peek. From the blank pane an arrow key or Next Tab lands on the first visible
+tab. Focus moves to a different session only when
+you pick a tab, or when you close the active tab yourself (then the pane returns
+to the tab you used before it).
+
+## A comment thread's mail
+
+A comment thread's mail is off, both directions, until you break it out: peers
+cannot see or mail the thread, and its own mail is refused with a line saying
+so. The comment box itself says nothing about it (the tab hover's Mail row and
+the Sessions pane show the state), except a count when messages are actually
+held for the thread; they land within seconds of a break-out. The moment you
+break the thread out it is a session like any other, mail on unless you toggle
+its mailbox off. Only peer mail is gated: what you type into the thread's
+box yourself, and plain text the kernel's own send route carries, is yours and
+still goes through; that is the human channel, by design, not a hole in the
+gate.
+
+## The tags a new session inherits
+
+A session started from another one joins its tags. Forking a session, breaking
+a comment thread out into its own session, and running `romp new` inside a
+session's shell all put the new session in the parent's groups, so a session's
+children land beside it in the tab strip. `romp new --no-inherit` starts one
+outside them; `romp new --in <tag>` names the tags directly (repeatable). The
+**+** picker shows the tags of the tab you are looking at pre-selected in its
+**Tags** row, where you can unpick or add before creating. Opening a name that
+already runs inherits nothing: `romp new --in` still applies to it, while from
+the picker, a name that already runs is focused and the Tags row is not applied
+(a message says so; the row is a prefill, and applying it would move the
+running session). Comment threads have no tab and inherit nothing until they
+are broken out; `romp new` run inside a thread inherits from the session the
+thread belongs to.
+
+## romp's mail tools, and Claude Code's own
+
+Not the same tools: romp peers are discovered only through the postal service's `list_agents`. Claude Code also ships its own `ListAgents` and `SendMessage` tools, which list the account's Anthropic cloud sessions and this session's own subagents: a different system, and a cloud session in that list is easy to mistake for a romp peer. The recommended setting is `"permissions": { "deny": ["ListAgents"] }` in the Claude Code settings, so the only list of agents a session sees is romp's; `SendMessage` must stay allowed, because continuing a subagent uses it.
+
+## The VS Code port forwarder and the browser dashboard
+
+!!! warning "The VS Code port forwarder is not a good path for the browser dashboard"
+
+    VS Code's Remote and Tunnels port forwarder multiplexes every forwarded
+    socket over one channel and does not close the far end when the browser
+    side goes away. The dashboard's panes are long-lived WebSockets that stream
+    view updates, and each pane reconnects when it hears nothing for thirty
+    seconds, so through that forwarder every reconnect left a dead connection
+    behind on the kernel's side, all of them still receiving full view payloads
+    over the one shared channel, and the live panes starved. One such incident
+    counted 84 connections from three real panes.
+
+    The kernel now protects itself: it pings every pane on each heartbeat and
+    drops one whose ping goes unanswered, a reconnecting pane retires its own
+    previous socket at once, and the timeline and feed cross the wire as
+    deltas instead of whole payloads. That keeps a forwarded dashboard usable,
+    but the forwarder still carries every byte over a channel it shares with
+    your editor, so prefer one of the two paths above. The VS Code romp view
+    is a different case: its sockets run on the kernel's own machine and close
+    when a panel closes, so it never leaks connections, but under Remote or
+    Tunnels the extension still relays each whole view payload to the local
+    window as it changes. It does not yet take the deltas the browser panes do.
+    A pane that falls 16 MB behind is dropped and reconnects on its own; the
+    drop is logged in the kernel log and shows in the Log (the settings panel's "Open log" button carries the unread count on the desktop; the phone's bottom bar reddens its bell), so a
+    link that cannot keep up reads as what it is rather than as a flaky network.
+
+## Reaching romp from a phone: the full Tailscale setup
+
+The user interface is a web page, so your phone can run it against a kernel on
+another machine. The obstacle is reaching that machine: the kernel listens only
+on `127.0.0.1`, which your phone is not on.
+
+[Tailscale](https://tailscale.com) closes that gap, and is free for personal
+use. It puts your own devices on a private encrypted network, so your phone can
+reach your laptop directly whatever network either one is on. Install it on both
+devices and sign in to the same account on each.
+
+In the Tailscale admin console, enable **HTTPS Certificates**, and leave
+**MagicDNS** on (it is on by default): the `ts.net` certificate names come from
+MagicDNS, so turning it off makes certificate provisioning fail in confusing
+ways.
+
+Three settings in the Tailscale app on the kernel's machine decide whether your
+phone can reach it at all:
+
+- **Allow incoming connections** must be on. Without it the machine joins the
+  network but serves nothing to it, which reads as Romp being broken rather than
+  as a Tailscale setting.
+- **Use Tailscale DNS settings** must be on. This is MagicDNS on the client, and
+  it is what makes the `ts.net` name resolve.
+- **Launch Tailscale at login** is worth turning on. The proxy below survives a
+  reboot, but it can only serve while Tailscale is running, so without this the
+  machine drops off the network until you next open the app.
+
+Then, on that same machine, one command opens Romp to your other devices:
+
+```bash
+tailscale serve --bg 29855
+```
+
+The bare-port form needs Tailscale 1.56 or newer; on older clients write
+`tailscale serve https / http://127.0.0.1:29855`. On macOS the `tailscale`
+command is not on your `PATH` until you enable **CLI integration** in the app's
+settings.
+
+Two commands go with it, for later rather than now. `tailscale serve status`
+prints where the proxy currently points, which is the first thing to check when
+a device cannot reach Romp. `tailscale serve reset` undoes the setup and returns
+the machine to local-only, so run it when you want remote access off, not as
+part of turning it on.
+
+!!! warning "If you change the kernel's port"
+
+    `tailscale serve` remembers the port you gave it, not whatever Romp is
+    running on now. Change `ROMP_KERNEL_PORT` and the proxy goes on pointing at
+    the old one, so the phone gets a dead page while everything looks healthy on
+    the machine itself. Re-run `tailscale serve --bg <new port>`: it replaces
+    the existing mapping rather than adding to it.
+
+On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
+page asking for your access token; paste in the one `romp` prints. A
+year-long cookie remembers the phone afterwards. Prefer this to putting
+`?token=<token>` in the address, which works but leaves the token in your
+browser history and in anything you share the link through. The cookie is itself
+a credential, so only do this on a phone you control.
+
+Only devices signed in to your Tailscale account can reach Romp: Tailscale
+checks each device's identity and encrypts the traffic between them, and nothing
+is exposed to your local network or to the internet. The proxy survives restarts
+of both Tailscale and the kernel.
+
+Two settings are worth changing while you are in the admin console. Turn on
+**device approval**, so a new device has to be approved before it can join, and
+leave key expiry enabled on the phone. Do not use `tailscale funnel`, the
+public-internet variant: it would leave the token as the only thing between the
+internet and your agents, with no device check in front of it.
+
+!!! warning "If other people are on your tailnet"
+
+    `tailscale serve` exposes Romp to **every** device on the tailnet, not just
+    yours. On a family or team tailnet, the access token becomes the only thing
+    standing between other members and your agents. Either keep the tailnet to
+    your own devices, or write an ACL restricting the kernel machine to them.
+
+## Notifications on a phone or browser
+
+Romp can buzz your phone when a session needs you or finishes a task, so you can
+put the phone down while the sessions work. Every notification is titled with
+the session's name: **Romp needs you: web** when that session is waiting on you,
+and **Romp: web** for anything else (a task finished, a turn ended); the line
+under it says what happened. On an iPhone, first add Romp to the
+Home Screen (share sheet, then **Add to Home Screen**) and open it from there:
+iOS only lets an installed app receive notifications, so in a plain Safari tab
+the option stays off and says so. On Android and on a desktop browser the page
+itself can receive them.
+
+Then tap the bell. On a phone it sits in the bar along the bottom; on a desktop
+it is in the bottom-right cluster. A small card opens with a main switch, two
+switches indented under it, and a button:
+
+- **Notifications** is the main switch. Off silences every device and the
+  desktop of every machine you have attached; the bells on individual sessions
+  and cards are mutes under it. While it is off, the two switches beneath it are
+  dimmed but still work, so you can set a phone up first and switch everything
+  on when you are ready.
+- **This device**, under it, turns them on for the phone or browser you are
+  holding. The first time, the browser asks for permission. If you refuse, the
+  row goes grey and tells you where to allow it again (on an iPhone, Settings,
+  then Notifications, then Romp; in a desktop browser, the site permission
+  beside the address). Turning this off silences only this device. With the
+  main switch off, the row says the device is set up but nothing arrives until
+  the main switch is on. What the kernel needs for this, the Python
+  `cryptography` package, the installer sets up; if the row says the package is
+  missing, run `bin/romp-sdk-setup` on the machine running Romp and turn it on
+  again.
+- **Also when a turn finishes**, also under it, adds a notification every time
+  any session finishes a turn you started, with the session's name and the
+  first line of what it said. Turns a session starts on its own, such as
+  reacting to one of its background agents finishing, or to a reminder, stay
+  quiet: nothing there was waiting on you. With many sessions running this is
+  still a lot of buzzing, so it is off unless you want it. A turn that ends by
+  asking you something buzzes once, not twice.
+- **Send a test notification** sends one notification to the device you are
+  holding, whatever the switches say, and prints the push service's answer under
+  the button, so you can see at once whether the phone is set up or why it is
+  not. The test is addressed to the session you were looking at when you
+  pressed the button, so you can switch to another session or another browser
+  tab, tap the notification, and check that it brings you back. With the main
+  switch off, the answer adds that real notifications will not arrive until it
+  is on.
+
+A restart of the kernel (an update deploys one) announces nothing by itself.
+What Romp has told you about is written down beside its other state, so the
+cards already waiting on you or already finished when it comes back stay
+quiet. A card that stops needing you and then needs you again is announced
+once, not at every turn, unless you acted on the card in between (answered
+it, resolved it, crossed it off) or it finished in the meantime.
+
+Tapping a notification brings Romp forward on the session it was about. On an
+iPhone with the app already open in the background, the switch happens as the
+app comes forward; a notification you swipe away instead is read the same way,
+so the next time you open the app it may land on that session. With the app in
+front, nothing moves until you next come back to it.
+
+The bell itself shows the state of the device you are looking at: lit when the
+main switch is on and this device is set up, and crossed out otherwise. Its
+tooltip says which of the two is off.
+
+## The token file: minting, permissions and refusals
+
+The kernel and the bus mint the token file when it is missing, one mint between
+them under a sibling lock file, `serve-token.lock`. An existing token is never
+replaced: a file left looser than `0600` is tightened at the next start (its
+value is kept, so every client stays valid), and a token that exists but cannot
+be read, or a symlink at that path, refuses to start instead of minting a
+replacement nobody else holds. Under the service that refusal repeats in
+`manager.log` every 10 seconds until you repair the file; the kernel then comes
+back on its own.
+
 ## Switches
 
 Effective immediately, no restart.
@@ -4505,3 +5272,4 @@ Effective immediately, no restart.
 `touch` to **disable**, `rm` to re-enable:
 
 - `~/.claude/romp-postal-off`: the postal service
+

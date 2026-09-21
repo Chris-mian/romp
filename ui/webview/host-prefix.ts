@@ -55,6 +55,23 @@ export function hostNameNodes(name: string, sid: string | null | undefined): Nod
   return [h, document.createTextNode(p.rest)];
 }
 
+/** A session's LABEL as the tab strip paints it (plans/artifacts-pane.md 9.3; the user's ruling of 2026-09-12: the name
+ *  bold in its identity colour, no chip): the quiet "host:" prefix of a remote session (hostNameNodes) and then the name in
+ *  a `.session-name` span, `.colored` with the strip's own token (`--chip-bg`) when the session has a colour; styles.css
+ *  inks it through the T390 lightness floor, so a dark identity colour reads on both themes. Built for the Artifacts
+ *  pane's picker; the strip, the mention pop and the Outline's rows adopt it at the cards owner's word, the placeholder
+ *  and the skeleton tab in the same commit as the strip (the three are one shape since PR 1907). */
+export function sessionLabelNodes(name: string, sid: string | null | undefined, color: { bg: string; fg: string } | null | undefined): Node[] {
+  const nodes = hostNameNodes(name, sid);
+  const text = nodes[nodes.length - 1];
+  const span = document.createElement("span");
+  const bg = color && typeof color.bg === "string" ? color.bg : "";
+  span.className = "session-name" + (bg ? " colored" : "");
+  if (bg) { span.style.setProperty("--chip-bg", bg); if (color && color.fg) span.style.setProperty("--chip-fg", color.fg); }
+  span.textContent = text.textContent || "";
+  return nodes.length > 1 ? [nodes[0], span] : [span];
+}
+
 /** Is this (prefixed) sid's host unreachable right now? Reads the federation manager's published set,
  *  which the KERNEL's own tunnel health fills. False wherever no manager is loaded (a single-kernel
  *  page, the Obsidian panel), so a local session never wears the mark. */

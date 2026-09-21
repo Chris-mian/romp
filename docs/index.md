@@ -2,6 +2,8 @@
 title: Romp
 ---
 
+<!-- Front page: keep it short and human. Rules in CLAUDE.md, "The documentation front pages". -->
+
 # ![Romp](assets/brand/romp-wordmark.png){ .romp-wordmark }
 
 Agents like Claude Code can work autonomously for long stretches, allowing
@@ -30,7 +32,8 @@ Its key features:
 
 ## Every session, one view { .feature-h }
 
-The timeline shows every session: what's running, what's idle, and what needs you.
+The Sessions pane shows every session on a timeline: what's running, what's
+idle, and what needs you.
 
 <video src="assets/guide/every-session-timeline.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
